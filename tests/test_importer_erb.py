@@ -43,7 +43,37 @@ def test_derive_title_content_list_field():
 
 
 def test_supported_sources():
-    assert erb.SUPPORTED == ("slack", "gmail", "google_drive", "github", "jira", "confluence")
+    assert erb.SUPPORTED == ("slack", "gmail", "google_drive", "github", "jira", "confluence",
+                             "hubspot")
+
+
+def test_erb_sources_are_registered_in_the_store():
+    # every source the bench importer loads must have a table/grouping registered
+    assert set(erb.SUPPORTED) <= set(store.SOURCE_TABLE)
+    for src in erb.SUPPORTED:
+        assert store.table(src) and store.grouping_col(src)
+
+
+# The source directories EnterpriseRAG-Bench ships, with their entry counts in the release
+# tarball's generated_data/sources/: slack 285,644 / gmail 121,448 / linear 35,315 /
+# google_drive 25,142 / hubspot 15,020 / fireflies 10,182 / github 8,078 / jira 6,126 /
+# confluence 5,313. Read these from the tarball: `fetch_generated_data` extracts only SUPPORTED,
+# so an extracted generated_data/ dir reflects the importer's coverage, not the bench's contents.
+BENCH_SOURCES = {"slack", "gmail", "google_drive", "github", "jira", "confluence",
+                 "hubspot", "linear", "fireflies"}
+
+
+def test_unloaded_bench_sources_are_declared():
+    """Linear and Fireflies ship bench data that no loader consumes yet; the set bounds which
+    sources may be missing a loader, so adding one to the store forces a decision here."""
+    assert set(erb.SUPPORTED) < BENCH_SOURCES
+    assert BENCH_SOURCES - set(erb.SUPPORTED) <= {"linear", "fireflies"}
+
+
+def test_byo_only_sources_have_no_bench_representation():
+    """Notion and S3 are the only sources the mock serves that the bench does not ship, so they can
+    arrive solely through a BYO corpus."""
+    assert set(store.SOURCE_TABLE) - BENCH_SOURCES == {"notion", "s3"}
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +381,125 @@ def test_jira_assignee_reporter_and_duedate():
     assert row["status"] == "In Progress"
 
 
+# --- HubSpot: bench company records mapped onto the mock's CRM schema -------------
+# Shapes below mirror real bench records (data/raw/generated_data/sources/hubspot): `notes` is a
+# list of undated CRM fragments, `timeline` is a dated activity log, and the `linked_*` arrays are
+# free-text stubs pointing at other sources rather than resolvable document ids.
+HS_RAW = {
+    "title_field_name": "company_name",
+    "content_field_names": ["next_step", "blockers", "timeline", "notes"],
+    "company_id": "hub-00013452",
+    "company_name": "Acacia Loop Services",
+    "company_domain": "acacia-loop.com",
+    "stage": "evaluation",
+    "owner": "Maya Chen",
+    "se_assigned": "Ethan Park",
+    "csm_assigned": "Priya Desai",
+    "created_at": "2025-11-05",
+    "updated_at": "2026-03-10",
+    "account_tier": "enterprise",
+    "industry": "financial_services",
+    "employee_count_range": "1000+",
+    "hq_region": "eu",
+    "next_step": "Finalize SLA + capacity-sizing workshop",
+    "blockers": ["legal review of KMS/HSM integration"],
+    "timeline": ["2026-02-18 - inbound signup via marketplace"],
+    "notes": [
+        "Inbound SMB — most traffic originates from US West customers",
+        "Customer complaint: chat replies lag by ~1s+, wants <300ms median",
+    ],
+    "linked_fireflies": ["ff_2026-02-19_abbeygate_intro"],
+    "linked_gmail_threads": ["gthread_1A9B2C_abbeygate_costs"],
+    "linked_drive_docs": ["drive:/deals/abbeygate/pricing_deck_v3.pdf"],
+    "linked_support_tickets": ["RINF-7421"],
+}
+
+
+def test_hubspot_company_maps_to_crm_properties():
+    """The bench's denormalized company record is mapped onto the mock's HubSpot-API-shaped
+    schema — not stored in ERB's own shape. Fields with a real HubSpot company property take that
+    name; the rest stay as custom properties, which is what a real portal looks like."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    erb.load_hubspot(conn, "dsid_hs1", HS_RAW, P)
+    row = conn.execute("SELECT * FROM hubspot_objects WHERE doc_id='dsid_hs1'").fetchone()
+    assert row["object_type"] == "companies"
+    assert row["title"] == "Acacia Loop Services"
+    assert row["author_email"] == "maya.chen@redwoodinference.com"   # owner (AE), resolved
+    assert row["owner_display"] == "Maya Chen"
+    props = store.jcol(row, "properties", {})
+    assert props["name"] == "Acacia Loop Services"
+    assert props["domain"] == "acacia-loop.com"
+    assert props["industry"] == "financial_services"
+    assert props["lifecyclestage"] == "evaluation"                    # stage -> HubSpot's own name
+    assert props["account_tier"] == "enterprise"                      # no default property -> custom
+    assert row["created_ts"] == erb.to_epoch("2025-11-05")
+    assert row["updated_ts"] == erb.to_epoch("2026-03-10")
+
+
+def test_hubspot_notes_materialize_as_note_objects():
+    """Real HubSpot models a note as its own object associated with the company, and this repo
+    already parses embedded conversations into first-class rows on import — so each `notes` entry
+    becomes a `notes` record linked to the company, not just text inside the company body."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    erb.load_hubspot(conn, "dsid_hs1", HS_RAW, P)
+    notes = conn.execute("SELECT * FROM hubspot_objects WHERE object_type='notes' "
+                         "ORDER BY doc_id").fetchall()
+    assert len(notes) == 2
+    assert notes[0]["content"].startswith("Inbound SMB")
+    # API fidelity: a HubSpot note carries its body in hs_note_body
+    assert store.jcol(notes[0], "properties", {})["hs_note_body"] == notes[0]["content"]
+    # each note is associated with the company, in both directions
+    assert [r["to_doc_id"] for r in store.hubspot_associations(conn, "dsid_hs1", "notes")] \
+        == sorted(n["doc_id"] for n in notes)
+    assert [r["to_doc_id"] for r in
+            store.hubspot_associations(conn, notes[0]["doc_id"], "companies")] == ["dsid_hs1"]
+
+
+def test_hubspot_timeline_stays_in_the_company_body():
+    """`timeline` is a dated activity log the bench lists in content_field_names — it is the
+    company's own text, not a set of note objects, so it must not be materialized."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    erb.load_hubspot(conn, "dsid_hs1", HS_RAW, P)
+    company = conn.execute("SELECT content FROM hubspot_objects WHERE doc_id='dsid_hs1'").fetchone()
+    assert "inbound signup via marketplace" in company["content"]
+    assert conn.execute("SELECT COUNT(*) FROM hubspot_objects WHERE object_type='notes'"
+                        ).fetchone()[0] == 2      # only the two `notes`, nothing from `timeline`
+
+
+def test_hubspot_linked_artifacts_stay_property_stubs():
+    """The bench's linked_* arrays are free-text references ("stubs/links" per the dataset's own
+    agents.md), not resolvable doc ids — so they stay properties and must never become
+    associations pointing at documents that do not exist."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    erb.load_hubspot(conn, "dsid_hs1", HS_RAW, P)
+    props = store.jcol(
+        conn.execute("SELECT properties FROM hubspot_objects WHERE doc_id='dsid_hs1'").fetchone(),
+        "properties", {})
+    assert props["linked_fireflies"] == ["ff_2026-02-19_abbeygate_intro"]
+    assert props["linked_support_tickets"] == ["RINF-7421"]
+    # the only associations are company <-> its own notes
+    to_types = {r["to_type"] for r in conn.execute("SELECT to_type FROM hubspot_associations")}
+    assert to_types == {"notes", "companies"}
+
+
+def test_hubspot_bundle_names_owner_se_and_csm():
+    """The AE owns the account; the SE and CSM are the other real people on it, so they belong in
+    the ACL bundle the same way reviewers/collaborators do for other sources."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    bundle = erb.load_hubspot(conn, "dsid_hs1", HS_RAW, P)
+    assert bundle["owner"] == "maya.chen@redwoodinference.com"
+    assert set(bundle["people"]) == {"ethan.park@redwoodinference.com",
+                                     "priya.desai@redwoodinference.com"}
+    grants = grants_for("hubspot", {**bundle, "org": "redwood"})
+    assert ("user", "maya.chen@redwoodinference.com") in grants
+    assert ("group", bundle["group"]) in grants
+
+
 def test_confluence_restricted_grants_reconciled_directory_group():
     """A doc's team label ("security") must reconcile to the directory's actual dept_slug group
     ("security-compliance") for the ACL grant — not become its own empty group."""
@@ -485,6 +634,99 @@ def test_synthesized_users_installed_after_load(tmp_path, monkeypatch):
     assert c.execute("SELECT 1 FROM group_members WHERE group_id='engineering' AND user_id=?",
                      (zoe,)).fetchone(), "synthesized owner missing from its team group_members"
     c.close()
+    get_settings.cache_clear()
+
+
+def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
+    """End of the wiring: a `sources/hubspot/` dir in generated_data must be walked, loaded, and
+    counted by the real import path — not just loadable via load_hubspot() in isolation."""
+    data = tmp_path / "data"; data.mkdir()
+    gen = tmp_path / "gen"; (gen / "sources" / "hubspot").mkdir(parents=True)
+    (gen / "employee_directory.yaml").write_text(yaml.safe_dump({"departments": {"Sales": [
+        {"name": "Maya Chen", "email": "maya.chen@redwoodinference.com", "title": "AE"}]}}))
+    (gen / "sources" / "hubspot" / "company-acacia-loop-services.json").write_text(
+        json.dumps({**HS_RAW, "dataset_doc_uuid": "dsid_hs_e2e"}))
+    monkeypatch.setenv("MOCK_DATA_DIR", str(data))
+    get_settings.cache_clear()
+    settings = get_settings()
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    res = erb.import_structured(settings, gen)
+
+    # import_structured returns the per-source counts directly; a company counts once even though
+    # it also materializes note rows (same as a gmail thread counting once).
+    assert res["hubspot"] == 1
+    c = sqlite3.connect(settings.db_path)
+    c.row_factory = sqlite3.Row
+    company = c.execute("SELECT * FROM hubspot_objects WHERE object_type='companies'").fetchone()
+    assert company["doc_id"] == "dsid_hs_e2e"
+    assert company["author_email"] == "maya.chen@redwoodinference.com"
+    assert c.execute("SELECT COUNT(*) FROM hubspot_objects WHERE object_type='notes'"
+                     ).fetchone()[0] == 2
+    # the company is ACL-granted, so a non-admin can actually reach it
+    assert c.execute("SELECT COUNT(*) FROM doc_acl WHERE doc_id='dsid_hs_e2e'").fetchone()[0] > 0
+    c.close()
+    get_settings.cache_clear()
+
+
+def _import_gen(tmp_path, monkeypatch, source: str, filename: str, raw: dict, employees: list):
+    """Run the real import over a one-document generated_data tree; returns the built settings."""
+    data = tmp_path / "data"; data.mkdir()
+    gen = tmp_path / "gen"; (gen / "sources" / source).mkdir(parents=True)
+    (gen / "employee_directory.yaml").write_text(
+        yaml.safe_dump({"departments": {"Team": employees}}))
+    (gen / "sources" / source / filename).write_text(json.dumps(raw))
+    monkeypatch.setenv("MOCK_DATA_DIR", str(data))
+    get_settings.cache_clear()
+    settings = get_settings()
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    erb.import_structured(settings, gen)
+    return settings
+
+
+def _granted(conn, doc_id) -> set:
+    return {(r["principal_type"], r["principal_id"])
+            for r in conn.execute("SELECT * FROM doc_acl WHERE doc_id=?", (doc_id,))}
+
+
+def test_materialized_note_rows_inherit_the_company_grants(tmp_path, monkeypatch):
+    """A materialized child row is reached through the same ACL-filtered queries as any other doc
+    (`_acl_clause` matches per row), so a note with no grants of its own is invisible to every
+    non-admin caller — the company would list zero notes."""
+    settings = _import_gen(
+        tmp_path, monkeypatch, "hubspot", "company-acacia.json",
+        {**HS_RAW, "dataset_doc_uuid": "dsid_hs_acl"},
+        [{"name": "Maya Chen", "email": "maya.chen@redwoodinference.com", "title": "AE"}])
+    conn = sqlite3.connect(settings.db_path); conn.row_factory = sqlite3.Row
+    company = _granted(conn, "dsid_hs_acl")
+    assert company                                     # sanity: the parent is granted
+    notes = [r[0] for r in conn.execute(
+        "SELECT doc_id FROM hubspot_objects WHERE object_type='notes'")]
+    assert notes
+    for n in notes:
+        assert _granted(conn, n) == company, f"note {n} does not inherit the company's grants"
+    conn.close()
+    get_settings.cache_clear()
+
+
+def test_thread_reply_rows_inherit_the_root_grants(tmp_path, monkeypatch):
+    """Same defect on the pre-existing thread loaders: `slack_thread`/`gmail_thread` ACL-filter
+    row by row, so ungranted replies silently truncate a thread for non-admin callers."""
+    settings = _import_gen(
+        tmp_path, monkeypatch, "slack", "1711-foo.json",
+        {"title_field_name": "file_name", "content_field_names": ["text"],
+         "dataset_doc_uuid": "dsid_s_acl", "file_name": "1711-foo.json", "channel": "partnerships",
+         "text": "andrea_p: Heads up on EU regions.\nmike_partner: On it, ETA next week.",
+         "participants": ["andrea_p", "mike_partner"]},
+        [{"name": "Andrea Park", "email": "andrea.park@redwoodinference.com", "title": "PM"}])
+    conn = sqlite3.connect(settings.db_path); conn.row_factory = sqlite3.Row
+    root = _granted(conn, "dsid_s_acl")
+    assert root
+    replies = [r[0] for r in conn.execute(
+        "SELECT doc_id FROM slack_messages WHERE thread_seq > 0")]
+    assert replies
+    for rid in replies:
+        assert _granted(conn, rid) == root, f"reply {rid} does not inherit the root's grants"
+    conn.close()
     get_settings.cache_clear()
 
 

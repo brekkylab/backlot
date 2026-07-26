@@ -276,6 +276,34 @@ def patch_notion_at(base_url: str) -> None:
                            "changed; update the shim before it silently hits api.notion.com")
 
 
+def point_hubspot_at(base_url: str) -> None:
+    """Redirect HubspotReader at the mock. The reader takes only an access token and builds
+    ``HubSpot(access_token=...)`` itself — but it does ``from hubspot import HubSpot`` *inside*
+    ``load_data()``, so rebinding the module attribute is enough and the reader needs no changes.
+
+    ``host`` is a plain kwarg on the current SDK (``_default_api_factory`` copies unknown kwargs
+    onto its Configuration). On 8.x it is silently IGNORED and the client talks to api.hubapi.com,
+    so this asserts the override actually took rather than letting a "mock" run hit production.
+    """
+    import hubspot
+
+    base = base_url.rstrip("/")
+    real = getattr(hubspot, "_enterprise_mock_real_HubSpot", hubspot.HubSpot)
+    hubspot._enterprise_mock_real_HubSpot = real   # idempotent across repeated calls
+
+    def _at_mock(*a, **kw):
+        kw.setdefault("host", base)
+        client = real(*a, **kw)
+        host = client.crm.companies.basic_api.api_client.configuration.host
+        if base not in host:
+            raise RuntimeError(
+                f"the HubSpot SDK is configured for {host!r}, not the mock at {base!r} — the "
+                f"`host` kwarg was ignored. Upgrade: pip install -U 'hubspot-api-client>=12'")
+        return client
+
+    hubspot.HubSpot = _at_mock
+
+
 def drop_self_from_syspath(file: str) -> None:
     """Remove a script's own directory from sys.path so a file named `jira.py` / `github.py`
     doesn't shadow the third-party `jira` / `github` package it (transitively) imports."""

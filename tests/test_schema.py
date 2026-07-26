@@ -52,9 +52,28 @@ def test_title_required_except_slack():
     assert _first_error({"source_type": "slack", "content": "c"}) == []  # slack ok without title
 
 
+def test_hubspot_record_accepted():
+    # a CRM record: the object type is the grouping unit, typed properties are free-form, and
+    # associations name the target record by doc_id
+    assert _first_error({
+        "source_type": "hubspot", "object_type": "contacts", "doc_id": "hs-c1",
+        "title": "Ava Stone", "content": "Ava Stone — VP Platform at Acme Health",
+        "author_email": "owner@acme.com",
+        "properties": {"firstname": "Ava", "lastname": "Stone", "email": "ava@acme-health.com"},
+        "associations": [{"to": "hs-co1", "to_type": "companies", "label": "Primary"}],
+    }) == []
+
+
+def test_hubspot_association_requires_a_target():
+    errs = _first_error({"source_type": "hubspot", "object_type": "contacts", "title": "t",
+                         "content": "c", "associations": [{"to_type": "companies"}]})
+    assert any("associations/0" in e for e in errs)
+
+
 def test_comments_only_where_supported():
-    # slack/gmail/drive have no comment API -> comments key is unexpected
-    for src in ("slack", "gmail", "google_drive"):
+    # slack/gmail/drive have no comment API, and HubSpot models notes/emails/meetings as their own
+    # object types rather than as comments on a record -> the comments key is unexpected
+    for src in ("slack", "gmail", "google_drive", "hubspot"):
         rec = {"source_type": src, "content": "c", "comments": [{"content": "x"}]}
         if src != "slack":
             rec["title"] = "t"

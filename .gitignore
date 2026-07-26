@@ -13,6 +13,8 @@ __pycache__/
 # Superpowers SDD scratch (progress ledgers, plans, specs) — not tracked.
 .superpowers/
 docs/superpowers/
+# Agent-created git worktrees (a full checkout each) — never committed.
+.claude/worktrees/
 
 # Editor / OS cruft.
 .DS_Store

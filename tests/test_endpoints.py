@@ -140,6 +140,28 @@ def crawl_confluence(client, headers):
     return out
 
 
+HUBSPOT_OBJECT_TYPES = ("companies", "contacts", "notes")
+
+
+def crawl_hubspot(client, headers, object_type, limit=2):
+    """Cursor-paginate one CRM object type. Terminates on the ABSENCE of paging.next — which is
+    exactly how the official client's fetch_all decides it is done, so a mock that always emits
+    paging.next would hang a real client rather than error."""
+    out, after = [], None
+    while True:
+        params = {"limit": limit}
+        if after:
+            params["after"] = after
+        j = client.get(f"/hubspot/crm/v3/objects/{object_type}", headers=headers,
+                       params=params).json()
+        out += j["results"]
+        nxt = (j.get("paging") or {}).get("next")
+        if not nxt:
+            break
+        after = nxt["after"]
+    return out
+
+
 def crawl_slack(client, headers):
     total, cursor = 0, None
     channels = []
@@ -199,6 +221,121 @@ def test_admin_confluence_crawls_all(client, admin_h, ro_conn):
 
 def test_admin_slack_crawls_all(client, admin_h, ro_conn):
     assert crawl_slack(client, admin_h) == db_count(ro_conn, "slack")
+
+
+def test_admin_hubspot_crawls_all(client, admin_h, ro_conn):
+    seen = []
+    for otype in HUBSPOT_OBJECT_TYPES:
+        seen += crawl_hubspot(client, admin_h, otype)
+    assert len(seen) == db_count(ro_conn, "hubspot")
+
+
+def test_hubspot_last_page_omits_paging_next(client, admin_h):
+    """The termination contract, asserted directly: a page that exhausts the type must not carry
+    paging.next. Getting this wrong makes the official SDK's fetch_all loop forever."""
+    j = client.get("/hubspot/crm/v3/objects/contacts", headers=admin_h,
+                   params={"limit": 100}).json()
+    assert j["results"]
+    assert "next" not in (j.get("paging") or {})
+
+
+def test_hubspot_read_one_record(client, admin_h):
+    listed = client.get("/hubspot/crm/v3/objects/companies", headers=admin_h,
+                        params={"limit": 100}).json()["results"]
+    acme = next(r for r in listed if r["properties"].get("name") == "Acme Health")
+    r = client.get(f"/hubspot/crm/v3/objects/companies/{acme['id']}", headers=admin_h)
+    assert r.status_code == 200
+    got = r.json()
+    assert got["id"] == acme["id"]
+    assert got["properties"]["domain"] == "acme-health.com"
+    # HubSpot ids are numeric strings, and createdAt/updatedAt are ISO 8601
+    assert got["id"].isdigit()
+    assert got["createdAt"].endswith("Z")
+
+
+def test_hubspot_missing_record_is_404(client, admin_h):
+    assert client.get("/hubspot/crm/v3/objects/companies/999999999999",
+                      headers=admin_h).status_code == 404
+
+
+def test_hubspot_unauth_is_401(client):
+    assert client.get("/hubspot/crm/v3/objects/companies").status_code == 401
+
+
+def test_hubspot_acl_hides_restricted_record(client, tokens):
+    """`hs-co-secret` is readable only by hana; another user's crawl must not contain it."""
+    users = {u["email"]: u["token"] for u in tokens["users"]}
+    ava_h = {"Authorization": f"Bearer {users['ava@acme.com']}"}
+    hana_h = {"Authorization": f"Bearer {users['hana@acme.com']}"}
+    names = lambda h: {r["properties"].get("name")  # noqa: E731
+                       for r in crawl_hubspot(client, h, "companies")}
+    assert "Stealth Health Co" not in names(ava_h)
+    assert "Stealth Health Co" in names(hana_h)
+
+
+def test_hubspot_associations_v4(client, admin_h):
+    listed = client.get("/hubspot/crm/v3/objects/contacts", headers=admin_h,
+                        params={"limit": 100}).json()["results"]
+    ava = next(r for r in listed if r["properties"].get("firstname") == "Ava")
+    j = client.get(f"/hubspot/crm/v4/objects/contacts/{ava['id']}/associations/companies",
+                   headers=admin_h).json()
+    assert len(j["results"]) == 1
+    assoc = j["results"][0]
+    assert assoc["toObjectId"].isdigit()
+    assert assoc["associationTypes"][0]["category"] == "HUBSPOT_DEFINED"
+    assert assoc["associationTypes"][0]["label"] == "Primary"
+
+
+def test_hubspot_search_filter_groups(client, admin_h):
+    """filterGroups combine as OR, filters within a group as AND — over arbitrary properties."""
+    body = {"filterGroups": [{"filters": [
+        {"propertyName": "industry", "operator": "EQ", "value": "healthcare"},
+        {"propertyName": "lifecyclestage", "operator": "EQ", "value": "evaluation"}]}]}
+    j = client.post("/hubspot/crm/v3/objects/companies/search", headers=admin_h, json=body).json()
+    assert [r["properties"]["name"] for r in j["results"]] == ["Acme Health"]
+    assert j["total"] == 1
+    # AND within a group: contradicting the second filter drops the row
+    body["filterGroups"][0]["filters"][1]["value"] = "qualified"
+    assert client.post("/hubspot/crm/v3/objects/companies/search", headers=admin_h,
+                       json=body).json()["results"] == []
+    # OR across groups: two single-filter groups match two different rows
+    body = {"filterGroups": [
+        {"filters": [{"propertyName": "lifecyclestage", "operator": "EQ", "value": "evaluation"}]},
+        {"filters": [{"propertyName": "lifecyclestage", "operator": "EQ", "value": "qualified"}]}]}
+    j = client.post("/hubspot/crm/v3/objects/companies/search", headers=admin_h, json=body).json()
+    assert {r["properties"]["name"] for r in j["results"]} == {"Acme Health", "Stealth Health Co"}
+
+
+def test_hubspot_search_total_counts_all_matches_not_the_page(client, admin_h):
+    """`total` is how many records matched, independent of how many fit on this page — so a
+    one-record page over two matches still reports 2, and carries a cursor for the rest."""
+    body = {"limit": 1, "filterGroups": [{"filters": [
+        {"propertyName": "name", "operator": "HAS_PROPERTY"}]}]}
+    j = client.post("/hubspot/crm/v3/objects/companies/search", headers=admin_h, json=body).json()
+    assert len(j["results"]) == 1
+    assert j["total"] == 2
+    assert j["paging"]["next"]["after"]
+
+
+def test_hubspot_search_has_property_and_contains_token(client, admin_h):
+    j = client.post("/hubspot/crm/v3/objects/companies/search", headers=admin_h, json={
+        "filterGroups": [{"filters": [{"propertyName": "domain",
+                                       "operator": "HAS_PROPERTY"}]}]}).json()
+    assert [r["properties"]["name"] for r in j["results"]] == ["Acme Health"]
+    j = client.post("/hubspot/crm/v3/objects/companies/search", headers=admin_h, json={
+        "filterGroups": [{"filters": [{"propertyName": "name", "operator": "CONTAINS_TOKEN",
+                                       "value": "Health"}]}]}).json()
+    assert {r["properties"]["name"] for r in j["results"]} == {"Acme Health", "Stealth Health Co"}
+
+
+def test_hubspot_batch_read(client, admin_h):
+    listed = client.get("/hubspot/crm/v3/objects/companies", headers=admin_h,
+                        params={"limit": 100}).json()["results"]
+    ids = [r["id"] for r in listed]
+    j = client.post("/hubspot/crm/v3/objects/companies/batch/read", headers=admin_h,
+                    json={"inputs": [{"id": i} for i in ids],
+                          "properties": ["name"]}).json()
+    assert {r["id"] for r in j["results"]} == set(ids)
 
 
 # --- content round-trips through each vendor's encoding -------------------------

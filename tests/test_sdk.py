@@ -296,6 +296,55 @@ def test_s3_sdk_read_matrix(live_server):
     assert part["ContentRange"].endswith(f"/{len(body)}")
 
 
+def test_hubspot_sdk_read_matrix(live_server):
+    """The official client points at the mock through the plain `host` kwarg — no shim. On 8.x that
+    kwarg is silently ignored and the client talks to api.hubapi.com, so the host assertion below
+    is the guard that a "mock" run is not really hitting production."""
+    pytest.importorskip("hubspot")
+    from hubspot import HubSpot
+    from hubspot.crm.companies import PublicObjectSearchRequest
+
+    base_url, settings = live_server
+    api = HubSpot(access_token=settings.admin_token, host=f"{base_url}/hubspot")
+    assert base_url in api.crm.companies.basic_api.api_client.configuration.host
+
+    # get_all pages until a response omits paging.next; returning at all proves that contract
+    companies = {c.properties.get("name"): c for c in api.crm.companies.get_all()}
+    assert {"Acme Health", "Stealth Health Co"} <= set(companies)
+    assert companies["Acme Health"].properties["domain"] == "acme-health.com"
+    assert companies["Acme Health"].id.isdigit()          # HubSpot ids are numeric strings
+
+    contacts = api.crm.contacts.get_all()
+    assert [c.properties.get("email") for c in contacts] == ["ava@acme-health.com"]
+
+    req = PublicObjectSearchRequest(filter_groups=[{"filters": [
+        {"propertyName": "industry", "operator": "EQ", "value": "healthcare"}]}])
+    found = api.crm.companies.search_api.do_search(public_object_search_request=req)
+    assert found.total == 1
+    assert found.results[0].properties["name"] == "Acme Health"
+
+    assoc = api.crm.associations.v4.basic_api.get_page(
+        object_type="companies", object_id=companies["Acme Health"].id,
+        to_object_type="contacts")
+    assert [a.to_object_id for a in assoc.results] == [contacts[0].id]
+    assert assoc.results[0].association_types[0].label == "Primary"
+
+
+def test_hubspot_sdk_acl_scopes_to_user(live_server, tokens):
+    """`hs-co-secret` is readable only by hana; ava's listing must not contain it."""
+    pytest.importorskip("hubspot")
+    from hubspot import HubSpot
+
+    base_url, _ = live_server
+
+    def names(token):
+        api = HubSpot(access_token=token, host=f"{base_url}/hubspot")
+        return {c.properties.get("name") for c in api.crm.companies.get_all()}
+
+    assert "Stealth Health Co" not in names(tokens["ava@acme.com"])
+    assert "Stealth Health Co" in names(tokens["hana@acme.com"])
+
+
 def test_s3_sdk_acl_scopes_to_user(live_server, tokens):
     base_url, settings = live_server
     s3 = _s3_client(base_url, tokens["ava@acme.com"])       # engineering, not people

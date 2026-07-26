@@ -331,6 +331,63 @@ def _corpus(tmp_path, name, lines):
     return p
 
 
+def _hubspot_corpus(tmp_path):
+    return _write(tmp_path, [
+        {"source_type": "hubspot", "object_type": "companies", "doc_id": "hs-co1",
+         "title": "Acme Health", "content": "Acme Health — mid-market healthcare provider.",
+         "author_email": "rep@acme.com", "author_groups": ["sales"], "visibility": "public",
+         "properties": {"name": "Acme Health", "domain": "acme-health.com"}},
+        {"source_type": "hubspot", "object_type": "contacts", "doc_id": "hs-c1",
+         "title": "Ava Stone", "content": "Ava Stone — VP Platform at Acme Health.",
+         "author_email": "rep@acme.com", "author_groups": ["sales"], "visibility": "public",
+         "properties": {"firstname": "Ava", "lastname": "Stone", "email": "ava@acme-health.com"},
+         "associations": [{"to": "hs-co1", "to_type": "companies", "label": "Primary"}]},
+        {"source_type": "hubspot", "object_type": "deals", "doc_id": "hs-d1",
+         "title": "Acme renewal", "content": "Renewal for Acme Health, 12 months.",
+         "author_email": "rep@acme.com", "author_groups": ["sales"], "visibility": "public",
+         "properties": {"dealname": "Acme renewal", "amount": "50000", "dealstage": "contractsent"},
+         "associations": [{"to": "hs-co1"}]},   # to_type omitted -> inferred from the target
+    ])
+
+
+def test_hubspot_byo_load(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    res = load(_hubspot_corpus(tmp_path), settings)
+    assert res["counts"]["hubspot"] == 3
+    conn = store.connect_ro(settings.db_path)
+    # the object type is the grouping unit, so it scopes the listing and is registered as a container
+    rows = {r["doc_id"]: r for r in store.list_documents(conn, "hubspot", container="contacts")}
+    assert list(rows) == ["hs-c1"]
+    assert store.jcol(rows["hs-c1"], "properties")["email"] == "ava@acme-health.com"
+    assert store.get_container(conn, "hubspot", "contacts") is not None
+    conn.close()
+
+
+def test_hubspot_byo_associations_are_bidirectional(tmp_path):
+    """A corpus declares a link once; real HubSpot exposes it from both records, so the loader
+    materialises the reverse direction rather than making every author write it twice."""
+    settings = Settings(data_dir=tmp_path)
+    load(_hubspot_corpus(tmp_path), settings)
+    conn = store.connect_ro(settings.db_path)
+    # declared direction: contact -> company
+    assert [r["to_doc_id"] for r in store.hubspot_associations(conn, "hs-c1", "companies")] \
+        == ["hs-co1"]
+    # reverse direction, never written by the corpus: company -> contacts
+    assert [r["to_doc_id"] for r in store.hubspot_associations(conn, "hs-co1", "contacts")] \
+        == ["hs-c1"]
+    conn.close()
+
+
+def test_hubspot_byo_association_infers_missing_target_type(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    load(_hubspot_corpus(tmp_path), settings)
+    conn = store.connect_ro(settings.db_path)
+    # hs-d1 declared {"to": "hs-co1"} with no to_type; the target's own object_type supplies it
+    assert [r["to_doc_id"] for r in store.hubspot_associations(conn, "hs-d1", "companies")] \
+        == ["hs-co1"]
+    conn.close()
+
+
 def test_append_preserves_prior_roster_and_org(tmp_path, monkeypatch):
     monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path))
     from app.config import get_settings

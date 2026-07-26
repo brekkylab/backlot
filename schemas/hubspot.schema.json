@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://brekkylab.dev/schemas/hubspot.schema.json",
+  "title": "BYO corpus record — hubspot",
+  "description": "A HubSpot CRM record (contact, company, deal, ticket, note, …). `object_type` is the grouping unit, because the CRM API is polymorphic over `{objectType}` and supports custom objects. HubSpot's typed fields live in `properties` and are searchable by name; `title`/`content` are the retrieval-facing text a record has no natural body for (a contact is properties, not prose). `associations` link records by doc_id — declare each link once and the loader materialises the reverse direction too.",
+  "type": "object",
+  "properties": {
+    "source_type": {
+      "const": "hubspot"
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The retrieval payload — for a note/email/meeting its body; for a contact/company/deal a readable summary of the record."
+    },
+    "title": {
+      "type": "string",
+      "description": "Record display name (contact: full name; company: name; deal: dealname; note/email/meeting: subject)."
+    },
+    "doc_id": {
+      "type": "string",
+      "description": "Stable id (default: dsid_<sha256(source_type+title+content)>). Association targets reference this."
+    },
+    "object_type": {
+      "type": "string",
+      "description": "CRM object type, plural as in the API path (contacts, companies, deals, tickets, notes, emails, meetings, calls, tasks, or a custom object). Default: the source_type."
+    },
+    "group": {
+      "type": "string",
+      "description": "ACL group owning this object type (default: slug(object_type))."
+    },
+    "author_email": {
+      "type": "string",
+      "format": "email",
+      "description": "The record owner (hubspot_owner_id resolves to this principal)."
+    },
+    "author_name": {
+      "type": "string"
+    },
+    "author_groups": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Groups the owner belongs to."
+    },
+    "visibility": {
+      "enum": [
+        "public",
+        "group",
+        "private"
+      ],
+      "description": "public = org-wide, group = the object type's group, private = owner only."
+    },
+    "readers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Explicit reader principals (emails -> users, else group ids). Overrides visibility."
+    },
+    "meta": {
+      "type": "object",
+      "description": "Free-form per-source structured extras merged into the record."
+    },
+    "properties": {
+      "type": "object",
+      "description": "HubSpot typed property values, keyed by internal property name (firstname, dealname, amount, …). Search filters can name any of these."
+    },
+    "associations": {
+      "type": "array",
+      "description": "Links to other CRM records. Each entry is stored in both directions, as real HubSpot associations are bidirectional.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "doc_id of the associated record."
+          },
+          "to_type": {
+            "type": "string",
+            "description": "Object type of the target (default: the target record's own object_type)."
+          },
+          "type_id": {
+            "type": "integer",
+            "description": "HubSpot association type id (default: synthesized per type pair)."
+          },
+          "category": {
+            "type": "string",
+            "description": "Association category (default: HUBSPOT_DEFINED)."
+          },
+          "label": {
+            "type": "string",
+            "description": "Association label, e.g. \"Primary\"."
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "archived": {
+      "type": "boolean",
+      "description": "Archived records are excluded unless the request asks for archived=true."
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "description": "createdate (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+    },
+    "updated": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "description": "hs_lastmodifieddate (epoch seconds or ISO 8601)."
+    }
+  },
+  "required": [
+    "source_type",
+    "content",
+    "title"
+  ],
+  "additionalProperties": false
+}

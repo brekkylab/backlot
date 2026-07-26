@@ -13,7 +13,7 @@ RUN apt-get update \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir \
-    fastapi "uvicorn[standard]" pydantic pydantic-settings pyyaml python-multipart
+    fastapi "uvicorn[standard]" pydantic pydantic-settings pyyaml python-multipart graphql-core
 
 WORKDIR /app
 COPY app ./app

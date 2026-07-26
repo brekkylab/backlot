@@ -39,6 +39,19 @@ def next_page_token(offset: int, page_len: int, total: int) -> str | None:
     return encode_cursor(nxt) if nxt < total else None
 
 
+# --- GraphQL sources ------------------------------------------------------------
+# The two GraphQL vendors disagree on pagination shape — Linear pages a Relay connection
+# (``first``/``after`` -> ``{nodes, pageInfo}``) while Fireflies is plain offset paging
+# (``limit``/``skip``) — so only the parts that genuinely coincide live here: the opaque
+# cursor above (Linear's ``after`` is an offset cursor like every other source's token) and
+# the page-size clamp below. The response shapes stay in each vendor's resolvers.
+
+def clamp_limit(limit: int | None, default: int, maximum: int) -> int:
+    """Page size with the vendor's default and hard cap applied (Fireflies caps at 50)."""
+    n = limit if limit and limit > 0 else default
+    return min(n, maximum)
+
+
 # --- GitHub: page/per_page + RFC5988 Link header --------------------------------
 
 def clamp_page(page: int | None, per_page: int | None, default: int, maximum: int) -> tuple[int, int]:

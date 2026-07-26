@@ -35,6 +35,17 @@ def test_cursor_walk_visits_every_item_once():
     assert seen == list(range(total))
 
 
+def test_clamp_limit_falls_back_to_the_default():
+    assert pg.clamp_limit(None, 10, 50) == 10
+    assert pg.clamp_limit(0, 10, 50) == 10
+    assert pg.clamp_limit(-5, 10, 50) == 10
+
+
+def test_clamp_limit_caps_at_the_maximum():
+    assert pg.clamp_limit(500, 10, 50) == 50
+    assert pg.clamp_limit(25, 10, 50) == 25
+
+
 def test_github_link_header():
     h = pg.github_link_header("http://x/repos/o/r/issues", {"state": "all"}, 1, 10, 25)
     assert 'rel="next"' in h and 'rel="last"' in h

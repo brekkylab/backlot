@@ -32,6 +32,10 @@ dependencies = [
     "jsonschema>=4.20",
     "pyjwt[crypto]>=2.8",
     "httpx>=0.27",  # /batch self-dispatches sub-requests in-process via httpx.ASGITransport
+    # GraphQL sources (app/graphql). The GraphQL.js port, pure Python with no transitive deps:
+    # parsing, validation, and error envelopes land close to what the real servers return, and
+    # introspection — which Linear's API supports — comes free.
+    "graphql-core>=3.2",
 ]
 
 [project.optional-dependencies]

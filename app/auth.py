@@ -1,9 +1,10 @@
 """Auth helpers shared by the vendor routers.
 
 Each vendor carries credentials differently (Slack bearer/query token, Google/GitHub
-bearer, Atlassian Basic email:api_token). These helpers extract the raw token, resolve
-it to a :class:`~app.acl.Caller` via the app's ACL, and compute the caller's visible
-principal set. Error *shaping* (Slack's ``ok:false`` vs a real 401) stays in the routers.
+bearer, Atlassian Basic email:api_token, Linear a scheme-less API key). These helpers
+extract the raw token, resolve it to a :class:`~app.acl.Caller` via the app's ACL, and
+compute the caller's visible principal set. Error *shaping* (Slack's ``ok:false`` vs a
+real 401) stays in the routers.
 """
 from __future__ import annotations
 
@@ -41,6 +42,25 @@ def bearer_token(request: Request) -> str | None:
     return None
 
 
+def api_key_token(request: Request) -> str | None:
+    """Parse ``Authorization: <key>`` — with or without a ``Bearer`` prefix.
+
+    Linear's GraphQL API carries a personal API key as the bare header value
+    (``Authorization: lin_api_...``, no scheme) and an OAuth access token as
+    ``Bearer <token>``, accepting both on the same header, so this accepts both too.
+    Anything that is not a ``Bearer`` prefix is returned verbatim rather than having its
+    first word stripped: to the real API the whole header value *is* the key, so a stray
+    scheme fails to resolve instead of being quietly discarded.
+    """
+    hdr = (_authorization(request) or "").strip()
+    if not hdr:
+        return None
+    parts = hdr.split(None, 1)
+    if parts[0].lower() == "bearer":
+        return parts[1].strip() or None if len(parts) == 2 else None
+    return hdr
+
+
 def basic_password(request: Request) -> tuple[str | None, str | None]:
     """Parse ``Authorization: Basic base64(user:pass)`` -> (user, pass)."""
     hdr = _authorization(request)
@@ -68,6 +88,10 @@ def slack_token(request: Request) -> str | None:
 
 def resolve_bearer(request: Request) -> Caller | None:
     return acl(request).resolve(bearer_token(request))
+
+
+def resolve_api_key(request: Request) -> Caller | None:
+    return acl(request).resolve(api_key_token(request))
 
 
 def resolve_basic(request: Request) -> Caller | None:

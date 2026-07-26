@@ -162,7 +162,8 @@ SAMPLE = [
      "content": "Acme Health — mid-market healthcare provider evaluating the platform.",
      "author_email": "rep@acme.com", "author_groups": ["sales"], "visibility": "public",
      "properties": {"name": "Acme Health", "domain": "acme-health.com",
-                    "industry": "healthcare", "lifecyclestage": "evaluation"}},
+                    "industry": "healthcare", "lifecyclestage": "evaluation",
+                    "employees": "150", "founded": "2011-03-01"}},
     {"source_type": "hubspot", "doc_id": "hs-c-ava", "object_type": "contacts",
      "group": "sales", "title": "Ava Stone",
      "content": "Ava Stone — VP Platform at Acme Health.",
@@ -183,6 +184,22 @@ SAMPLE = [
      "author_email": "hana@acme.com", "author_groups": ["people"],
      "readers": ["hana@acme.com"],
      "properties": {"name": "Stealth Health Co", "lifecyclestage": "qualified"}},
+    # Two more companies so a small page size actually produces a cursor: with only two rows a
+    # `limit=2` crawl never takes the paging branch, and the cursor path would go untested.
+    {"source_type": "hubspot", "doc_id": "hs-co-borealis", "object_type": "companies",
+     "group": "sales", "title": "Borealis Clinics",
+     "content": "Regional clinic network, procurement stage.", "author_email": "rep@acme.com",
+     "author_groups": ["sales"], "visibility": "public",
+     "properties": {"name": "Borealis Clinics", "domain": "borealis.example",
+                    "industry": "healthcare", "lifecyclestage": "procurement",
+                    "employees": "400", "founded": "2014-06-01"}},
+    # `archived` is only meaningful if something is archived: this row is excluded from the default
+    # listing and is the only row the archived view returns.
+    {"source_type": "hubspot", "doc_id": "hs-co-defunct", "object_type": "companies",
+     "group": "sales", "title": "Defunct Labs", "content": "Churned; record archived.",
+     "author_email": "rep@acme.com", "author_groups": ["sales"], "visibility": "public",
+     "archived": True,
+     "properties": {"name": "Defunct Labs", "lifecyclestage": "qualified", "employees": "12"}},
 ]
 
 

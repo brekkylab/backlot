@@ -32,7 +32,7 @@
     "author_email": {
       "type": "string",
       "format": "email",
-      "description": "The record owner (hubspot_owner_id resolves to this principal)."
+      "description": "The record owner; served as the record's author/owner principal."
     },
     "author_name": {
       "type": "string"

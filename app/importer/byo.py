@@ -379,8 +379,16 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
         to_doc = a["to"]
         to_type = a.get("to_type") or hs_types.get(to_doc)
         if to_type is None:
-            raise SystemExit(f"hubspot association {from_doc} -> {to_doc}: unknown target; give "
-                             f"'to_type' or include the target record in the corpus")
+            # `--append` loads one file at a time, so a target already in the DB is not in
+            # `hs_types`. Fall back to the stored row before giving up, or appending a contact to a
+            # previously-loaded company would fail for a link that is perfectly resolvable.
+            row = conn.execute("SELECT object_type FROM hubspot_objects WHERE doc_id = ?",
+                               (to_doc,)).fetchone()
+            to_type = row["object_type"] if row else None
+        if to_type is None:
+            raise SystemExit(
+                f"hubspot association {from_doc} -> {to_doc}: target not found in this corpus or "
+                f"the existing DB; add the target record or set 'to_type' on the association")
         category = a.get("category") or "HUBSPOT_DEFINED"
         label = a.get("label")
         # An explicit type_id applies only to the direction the author declared; the reverse gets

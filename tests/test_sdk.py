@@ -320,8 +320,8 @@ def test_hubspot_sdk_read_matrix(live_server):
     req = PublicObjectSearchRequest(filter_groups=[{"filters": [
         {"propertyName": "industry", "operator": "EQ", "value": "healthcare"}]}])
     found = api.crm.companies.search_api.do_search(public_object_search_request=req)
-    assert found.total == 1
-    assert found.results[0].properties["name"] == "Acme Health"
+    assert found.total == 2
+    assert {r.properties["name"] for r in found.results} == {"Acme Health", "Borealis Clinics"}
 
     assoc = api.crm.associations.v4.basic_api.get_page(
         object_type="companies", object_id=companies["Acme Health"].id,

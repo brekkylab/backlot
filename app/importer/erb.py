@@ -695,8 +695,10 @@ _HS_PROPERTY = {
     "industry": "industry",
     "stage": "lifecyclestage",
 }
-# Consumed as columns, relationships, or materialized rows — so not repeated as properties. The
-# first three are ERB's own envelope keys (see derive_title_content).
+# Excluded from `properties`: ERB's own envelope keys (see derive_title_content), the two dates that
+# become columns, the owner (which becomes author_email + owner_display), and the notes that become
+# their own rows. `se_assigned` / `csm_assigned` are deliberately NOT excluded — they feed the ACL
+# bundle *and* stay properties, since a real portal exposes the SE and CSM as fields on the record.
 _HS_NOT_A_PROPERTY = {"title_field_name", "content_field_names", "dataset_doc_uuid",
                       "created_at", "updated_at", "owner", "notes", "crm_notes"}
 
@@ -708,8 +710,10 @@ def _hs_notes(raw) -> list[str]:
     for key in ("notes", "crm_notes"):
         v = raw.get(key)
         if isinstance(v, list):
-            return [str(n) for n in v if str(n).strip()]
-        if isinstance(v, str) and v.strip():
+            out = [str(n) for n in v if str(n).strip()]
+            if out:              # an empty list must not mask a populated `crm_notes`
+                return out
+        elif isinstance(v, str) and v.strip():
             return [v]
     return []
 

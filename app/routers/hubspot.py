@@ -31,9 +31,8 @@ router = APIRouter(prefix="/hubspot", tags=["hubspot"])
 # `hubspot/utils/objects.py` in the official client pages at 100 (PAGE_MAX_SIZE); a larger `limit`
 # is clamped rather than rejected, matching how HubSpot itself caps a page.
 _PAGE_MAX = 100
-# HubSpot caps how deep a search can page; a bounded scan also keeps one request from walking a
-# 15k-record object type when a filter matches almost everything.
-_SEARCH_SCAN_MAX = 10_000
+# The associations endpoint pages at 500 per request, like the vendor's.
+_ASSOC_PAGE_MAX = 500
 
 
 # --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
@@ -57,10 +56,13 @@ def _qp(name: str, typ: str = "string") -> dict:
     return {"name": name, "in": "query", "schema": {"type": typ}}
 
 
+# Only parameters the mock actually honours are advertised: `propertiesWithHistory` and inline
+# `associations` expansion are not implemented, and declaring them would have clients ask for data
+# that silently never arrives (worse for `propertiesWithHistory`, which also makes the official
+# client drop its page size to 50).
 _P_LIST = [_qp("limit", "integer"), _qp("after"), _qp("properties"),
-           _qp("propertiesWithHistory"), _qp("associations"), _qp("archived", "boolean")]
-_P_READ = [_qp("properties"), _qp("propertiesWithHistory"), _qp("associations"),
            _qp("archived", "boolean")]
+_P_READ = [_qp("properties"), _qp("archived", "boolean")]
 _P_ASSOC = [_qp("limit", "integer"), _qp("after")]
 
 _FILTER_SCHEMA = {"type": "object", "properties": {
@@ -110,6 +112,12 @@ def _clamp(raw, default: int, cap: int) -> int:
     return max(1, min(n, cap))
 
 
+def _flag(raw) -> bool:
+    """`archived=1` must not silently serve the un-archived view; accept the spellings a raw caller
+    plausibly sends (the official client always sends `true`/`false`)."""
+    return str(raw or "").strip().lower() in {"true", "1", "yes"}
+
+
 def _props(row) -> dict:
     return store.jcol(row, "properties", {}) or {}
 
@@ -138,7 +146,7 @@ def _page(rows, limit: int, keep: list[str] | None) -> dict:
     has_more = len(rows) > limit
     rows = rows[:limit]
     out: dict = {"results": [_record(r, keep) for r in rows]}
-    if has_more and rows:
+    if has_more:
         after = synth.hubspot_record_id(rows[-1]["doc_id"])
         out["paging"] = {"next": {"after": after, "link": f"?after={after}"}}
     return out
@@ -159,6 +167,35 @@ async def _json_body(request: Request) -> dict:
     except Exception:  # noqa: BLE001 — empty/invalid body → treat as no params
         return {}
     return body if isinstance(body, dict) else {}
+
+
+# HubSpot's standard CRM objects exist in every portal whether or not any records do, so an empty
+# `deals` is an empty listing rather than an unknown type. Custom objects exist only where defined,
+# which for this mock means present in the corpus.
+_STANDARD_OBJECT_TYPES = frozenset({
+    "contacts", "companies", "deals", "tickets", "line_items", "products", "quotes",
+    "notes", "emails", "meetings", "calls", "tasks", "feedback_submissions",
+})
+
+
+def _known_type(request: Request, object_type: str) -> bool:
+    """Whether this object type exists at all — a standard CRM object, or a custom one the corpus
+    defines. Deliberately independent of the caller's ACL and of whether any record is visible: a
+    type whose every record the caller cannot read still exists and still returns an empty page."""
+    return (object_type in _STANDARD_OBJECT_TYPES
+            or store.get_container(auth.conn(request), "hubspot", object_type) is not None)
+
+
+def _resolve_cursor(request: Request, after: str | None):
+    """(doc_id, error) for an ``after`` cursor. A cursor that names no record is an error rather
+    than a silent restart — a client resuming with a stale cursor would otherwise re-read the whole
+    object type as though it were the first page."""
+    if not after:
+        return None, None
+    doc_id = _doc_id_for(request, after)
+    if doc_id is None:
+        return None, _error(400, f"Invalid 'after' cursor: {after}")
+    return doc_id, None
 
 
 # --------------------------------------------------------------------------- search filters
@@ -206,9 +243,19 @@ def _match_one(prop, f: dict) -> bool:
         hit = any(want and want <= _tokens(c) for c in cands)
         return hit if op == "CONTAINS_TOKEN" else not hit
     if op == "BETWEEN":
-        lo, hi = _num(target), _num(f.get("highValue"))
-        return any((n := _num(c)) is not None and lo is not None and hi is not None
-                   and lo <= n <= hi for c in cands)
+        # Numeric when all three parse as numbers, else lexicographic — the same fallback LT/GT
+        # use. Without it an ISO-8601 range returns nothing while `GT` on the same property works,
+        # which bites the mock's own `hs_timestamp` values.
+        hi_raw = f.get("highValue")
+        lo_n, hi_n = _num(target), _num(hi_raw)
+        for c in cands:
+            c_n = _num(c)
+            if None not in (lo_n, hi_n, c_n):
+                if lo_n <= c_n <= hi_n:
+                    return True
+            elif str(target) <= c <= str(hi_raw):
+                return True
+        return False
     if op in ("LT", "LTE", "GT", "GTE"):
         # numeric when both sides parse as numbers, else a string comparison — HubSpot property
         # types are not declared to this mock, so the values decide.
@@ -222,6 +269,29 @@ def _match_one(prop, f: dict) -> bool:
                 return True
         return False
     return False
+
+
+def _sorted(rows, sorts):
+    """Apply `sorts` (first entry wins, as HubSpot documents). Numeric when every value on that
+    property parses as a number, else lexicographic — the mock is not told property types."""
+    if not sorts:
+        return rows
+    spec = sorts[0] if isinstance(sorts, list) and sorts else None
+    if not isinstance(spec, dict) or not spec.get("propertyName"):
+        return rows
+    name = spec["propertyName"]
+    vals = [_props(r).get(name) for r in rows]
+    numeric = all(_num(v) is not None for v in vals if v is not None) and any(
+        v is not None for v in vals)
+
+    def key(r):
+        v = _props(r).get(name)
+        if v is None:                       # absent sorts last in both directions
+            return (1, 0.0 if numeric else "")
+        return (0, _num(v) if numeric else str(v))
+
+    return sorted(rows, key=key,
+                  reverse=str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING")
 
 
 def _matches(row, body: dict) -> bool:
@@ -247,13 +317,17 @@ async def list_objects(object_type: str, request: Request):
     caller = _caller(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+    if not _known_type(request, object_type):
+        return _error(404, f"Unable to infer object type from: {object_type}", "OBJECT_NOT_FOUND")
     qp = request.query_params
     limit = _clamp(qp.get("limit"), 10, _PAGE_MAX)
-    after_doc = _doc_id_for(request, qp.get("after")) if qp.get("after") else None
+    after_doc, err = _resolve_cursor(request, qp.get("after"))
+    if err is not None:
+        return err
     rows = store.list_hubspot_objects(
         auth.conn(request), object_type, after_doc_id=after_doc,
         visible_ids=_visible(request, caller), limit=limit + 1,
-        archived=(qp.get("archived") or "").lower() == "true")
+        archived=_flag(qp.get("archived")))
     return _page(rows, limit, _keep(qp.get("properties")))
 
 
@@ -277,28 +351,38 @@ async def search_objects(object_type: str, request: Request):
     caller = _caller(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+    if not _known_type(request, object_type):
+        return _error(404, f"Unable to infer object type from: {object_type}", "OBJECT_NOT_FOUND")
     body = await _json_body(request)
     limit = _clamp(body.get("limit"), 10, _PAGE_MAX)
     visible = _visible(request, caller)
     conn = auth.conn(request)
-    # Filters may name ANY property, so they are evaluated over the JSON column rather than
-    # compiled to SQL; the object-type and ACL predicates stay in SQL, and the scan is bounded the
-    # way HubSpot bounds search depth.
-    after_doc = _doc_id_for(request, body["after"]) if body.get("after") else None
+    after_doc, err = _resolve_cursor(request, body.get("after"))
+    if err is not None:
+        return err
+
+    # Filters may name ANY property, so they are evaluated over the JSON column rather than compiled
+    # to SQL; the object-type and ACL predicates stay in SQL. The whole object type is matched on
+    # every request, NOT just the rows past the cursor: `total` is a property of the query, so it
+    # must not shrink as the caller pages. `sorts` then orders the full match set, which is the only
+    # place a stable order can be established.
     hits: list = []
-    cursor = after_doc
-    scanned = 0
-    # Scan to the bound rather than stopping at `limit` matches: `total` is the number of matching
-    # records, not the size of this page, so an early exit would under-report it.
-    while scanned < _SEARCH_SCAN_MAX:
+    cursor = None
+    while True:
         batch = store.list_hubspot_objects(conn, object_type, after_doc_id=cursor,
                                            visible_ids=visible, limit=500)
         if not batch:
             break
-        scanned += len(batch)
         cursor = batch[-1]["doc_id"]
         hits += [r for r in batch if _matches(r, body)]
     total = len(hits)
+    hits = _sorted(hits, body.get("sorts"))
+
+    if after_doc is not None:
+        ids = [r["doc_id"] for r in hits]
+        if after_doc not in ids:
+            return _error(400, f"Invalid 'after' cursor: {body.get('after')}")
+        hits = hits[ids.index(after_doc) + 1:]
     out = _page(hits, limit, _keep(body.get("properties")))
     out["total"] = total
     return out
@@ -310,21 +394,32 @@ async def batch_read(object_type: str, request: Request):
     caller = _caller(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+    if not _known_type(request, object_type):
+        return _error(404, f"Unable to infer object type from: {object_type}", "OBJECT_NOT_FOUND")
     body = await _json_body(request)
     conn, visible = auth.conn(request), _visible(request, caller)
     keep = _keep(body.get("properties"))
-    results, errors = [], 0
+    results, errors = [], []
     for item in body.get("inputs") or []:
-        doc_id = _doc_id_for(request, str(item.get("id")))
+        rid = str(item.get("id"))
+        doc_id = _doc_id_for(request, rid)
         row = store.get_document(conn, "hubspot", doc_id, visible) if doc_id else None
         if row is None or row["object_type"] != object_type:
-            errors += 1
+            errors.append({"status": "error", "category": "OBJECT_NOT_FOUND",
+                           "message": f"Could not get some {object_type}. Some of the ids provided "
+                                      f"were not found.",
+                           "context": {"id": [rid]}})
             continue
         results.append(_record(row, keep))
-    out = {"status": "COMPLETE" if not errors else "PARTIAL", "results": results}
-    if errors:
-        out["numErrors"] = errors
-    return out
+    # A partial batch is **207** with `numErrors` + `errors`, and `status` stays COMPLETE — its
+    # allowed values are PENDING/PROCESSING/CANCELED/COMPLETE, so inventing "PARTIAL" would make the
+    # official client deserialize into the no-errors model and drop the error detail on the floor.
+    out: dict = {"status": "COMPLETE", "results": results}
+    if not errors:
+        return out
+    out["numErrors"] = len(errors)
+    out["errors"] = errors
+    return JSONResponse(status_code=207, content=out)
 
 
 @router.get("/crm/v4/objects/{object_type}/{record_id}/associations/{to_object_type}",
@@ -339,11 +434,22 @@ async def list_associations(object_type: str, record_id: str, to_object_type: st
     row = store.get_document(conn, "hubspot", doc_id, visible) if doc_id else None
     if row is None or row["object_type"] != object_type:
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")
-    limit = _clamp(request.query_params.get("limit"), 500, 500)
-    rows = store.hubspot_associations(conn, doc_id, to_object_type, visible_ids=visible,
-                                     limit=limit)
-    return {"results": [{
+    limit = _clamp(request.query_params.get("limit"), _ASSOC_PAGE_MAX, _ASSOC_PAGE_MAX)
+    after_to, err = _resolve_cursor(request, request.query_params.get("after"))
+    if err is not None:
+        return err
+    # limit+1 for the same reason listings do it: the extra row is the only evidence of a further
+    # page, and without paging here every association past the first page would be unreachable.
+    rows = store.hubspot_associations(conn, doc_id, to_object_type, after_to_doc_id=after_to,
+                                      visible_ids=visible, limit=limit + 1)
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    out: dict = {"results": [{
         "toObjectId": synth.hubspot_record_id(r["to_doc_id"]),
         "associationTypes": [{"category": r["assoc_category"], "typeId": r["assoc_type_id"],
                               "label": r["label"]}],
     } for r in rows]}
+    if has_more:
+        after = out["results"][-1]["toObjectId"]
+        out["paging"] = {"next": {"after": after, "link": f"?after={after}"}}
+    return out

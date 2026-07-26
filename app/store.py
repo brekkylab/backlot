@@ -419,14 +419,20 @@ def list_hubspot_objects(conn, object_type, *, after_doc_id=None, visible_ids=No
     return conn.execute(sql, params).fetchall()
 
 
-def hubspot_associations(conn, from_doc_id, to_type, *, visible_ids=None, limit=500,
-                         offset=0) -> list[sqlite3.Row]:
-    """Associations from one CRM record to every record of ``to_type``, ACL-scoped on the target."""
+def hubspot_associations(conn, from_doc_id, to_type, *, after_to_doc_id=None, visible_ids=None,
+                         limit=500) -> list[sqlite3.Row]:
+    """One page of associations from a CRM record to records of ``to_type``, ACL-scoped on the
+    target. Keyset-paginated by ``to_doc_id`` for the same reason the listings are: the API's
+    cursor is the last record id the caller saw, and a record past the first page must stay
+    reachable."""
     sql = "SELECT * FROM hubspot_associations WHERE from_doc_id = ? AND to_type = ?"
     params: list = [from_doc_id, to_type]
+    if after_to_doc_id:
+        sql += " AND to_doc_id > ?"
+        params.append(after_to_doc_id)
     clause, cparams = _acl_clause("hubspot_associations", visible_ids, col="to_doc_id")
-    sql += clause + " ORDER BY to_doc_id LIMIT ? OFFSET ?"
-    params += cparams + [limit, offset]
+    sql += clause + " ORDER BY to_doc_id LIMIT ?"
+    params += cparams + [limit]
     return conn.execute(sql, params).fetchall()
 
 

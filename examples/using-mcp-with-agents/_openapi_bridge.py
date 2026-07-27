@@ -18,7 +18,19 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import urllib.request
+
+# The bridge runs as an MCP **stdio subprocess**, and that transport passes only a whitelisted
+# environment — so an `SSL_CERT_FILE` exported by the caller does not reach us. On macOS Python has
+# no CA bundle of its own (`ssl.get_default_verify_paths().cafile` is None), so fetching the spec
+# from an HTTPS deployment would fail with CERTIFICATE_VERIFY_FAILED and the subprocess would exit,
+# surfacing to the client as an opaque "Connection closed". certifi ships with the [mcp] extra.
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+except ImportError:
+    pass
 
 
 def _auth_header(token: str, username: str | None) -> dict[str, str]:

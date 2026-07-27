@@ -25,6 +25,10 @@ service (like the other `examples/` dirs) — run the one you want:
 - **`gmail.py`** via the same **OpenAPI→MCP bridge** — Gmail MCP servers hard-wire `googleapis.com`
   and need real Google OAuth, so the bridge serves the mock's Gmail API (`/gmail/*`) as tools.
 - **`gdrive.py`** via the same **OpenAPI→MCP bridge** — likewise for Google Drive (`/drive/*`).
+- **`hubspot.py`** via the same **OpenAPI→MCP bridge** — no HubSpot MCP server takes a base-URL
+  override. Because the CRM API is polymorphic over `{object_type}`, the agent gets five tools that
+  each work across every object type (list, read, search, batch-read, associations) rather than a set
+  per type, so "find the account, then its notes" is two calls with the object type as an argument.
 
 Each service file builds its own MCP `StdioServerParameters` and calls `run_agent(...)`. Two shared
 helpers:
@@ -58,6 +62,8 @@ python -m pytest tests/test_mcp.py
 #   S3:        admin lists bucket objects through a signed AWS CLI call
 #   GitHub:    admin reads an ACL-restricted issue via the bridge, a user token is blocked
 #   Slack:     admin search surfaces a restricted-channel message via the bridge, a user can't
+#   HubSpot:   admin reads an ACL-restricted CRM record via the bridge, a user token is blocked;
+#              the polymorphic search tool round-trips filterGroups and returns `total`
 
 # drive it with an LLM agent (needs an API key). --agent defaults to anthropic; add --agent openai.
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/atlassian.py
@@ -66,6 +72,7 @@ OPENAI_API_KEY=…    python examples/using-mcp-with-agents/notion.py --agent op
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/s3.py
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/github.py   # via the OpenAPI→MCP bridge
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/slack.py    # via the OpenAPI→MCP bridge
+ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/hubspot.py  # via the OpenAPI→MCP bridge
 ```
 
 **Auth is per-service.** Retrieval is ACL-scoped by the identity you pass:

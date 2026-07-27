@@ -186,7 +186,10 @@ examples: the community-official [`mcp-atlassian`](https://github.com/sooperset/
 `npx` — it takes a first-class `BASE_URL` override: `BASE_URL=http://localhost:8000/notion`), and
 the **official** [`awslabs.aws-api-mcp-server`](https://github.com/awslabs/mcp/tree/main/src/aws-api-mcp-server)
 (S3, over `uvx` — it shells the AWS CLI, whose boto3 client honors a first-class
-`AWS_ENDPOINT_URL` override: `AWS_ENDPOINT_URL=http://localhost:8000/s3`).
+`AWS_ENDPOINT_URL` override: `AWS_ENDPOINT_URL=http://localhost:8000/s3`). Sources with no
+base-URL-switchable vendor server — GitHub, Slack, Gmail, Drive and HubSpot — go through a generic
+**OpenAPI→MCP bridge** that turns the mock's own typed `/openapi.json` into MCP tools
+(`GET /_mock/openapi/<source>` serves the per-source slice).
 For example, connecting `mcp-atlassian` over stdio:
 
 ```python

@@ -210,7 +210,11 @@ CREATE TABLE IF NOT EXISTS hubspot_objects (
     properties TEXT, archived INTEGER, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     owner_display TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_hubspot_object_type ON hubspot_objects(object_type);
+-- (object_type, doc_id), not object_type alone: every read of this table is "one object type,
+-- ordered by doc_id" — keyset paging and the search scan both are — and a single-column index
+-- leaves ORDER BY to a temp b-tree that re-sorts every matching row on each page. Same lesson as
+-- idx_s3_key(bucket, key): put the ordering column in the index so a page is a range seek.
+CREATE INDEX IF NOT EXISTS idx_hubspot_type_doc ON hubspot_objects(object_type, doc_id);
 
 -- Associations are bidirectional in real HubSpot, with a distinct type id per direction, so a row
 -- is stored per direction and a lookup stays a plain (from_doc_id, to_type) index match.
@@ -400,14 +404,19 @@ def list_s3_objects(conn, bucket, *, prefix="", start_after=None, start_at=None,
 
 
 def list_hubspot_objects(conn, object_type, *, after_doc_id=None, visible_ids=None, limit=100,
-                         archived=False) -> list[sqlite3.Row]:
+                         archived=False, columns="*") -> list[sqlite3.Row]:
     """One page of a CRM object type, keyset-paginated by ``doc_id``.
 
     HubSpot's ``after`` cursor is a *record id*, which the router maps back to a doc_id — so the
     bound is a keyset (``doc_id > ?``) rather than an OFFSET, and a page costs one indexed range
     scan regardless of how deep into the type it sits. ``archived`` splits the two views the API
-    exposes: archived records are hidden unless explicitly asked for."""
-    sql = "SELECT * FROM hubspot_objects WHERE object_type = ?"
+    exposes: archived records are hidden unless explicitly asked for.
+
+    ``columns`` narrows the projection. Search has to walk the whole object type to report an
+    honest ``total``, and ``content`` is by far the widest column (a note's body), so reading it for
+    rows that are only being *filtered* dominates that scan — the caller passes just the columns it
+    will actually read."""
+    sql = f"SELECT {columns} FROM hubspot_objects WHERE object_type = ?"
     params: list = [object_type]
     sql += " AND archived IS NOT NULL" if archived else " AND archived IS NULL"
     if after_doc_id:

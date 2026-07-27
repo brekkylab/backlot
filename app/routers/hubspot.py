@@ -19,6 +19,8 @@ omit it. :func:`_page` is the single place that decides this.
 from __future__ import annotations
 
 import json
+import re
+from functools import lru_cache
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -215,8 +217,27 @@ def _values_of(prop):
     return [str(prop)]
 
 
+# A token is a run of alphanumerics; `_` separates, so "audit_logging" holds the token "audit".
+_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+# Same class as a lookaround pair, so a needle matches only on token boundaries — equivalent to
+# testing membership in the haystack's token set, without having to build that set.
+_TOK = r"[^\W_]"
+
+
 def _tokens(s: str) -> set[str]:
-    return {t for t in "".join(c.lower() if c.isalnum() else " " for c in s).split() if t}
+    return set(_TOKEN_RE.findall(s.lower()))
+
+
+@lru_cache(maxsize=512)
+def _token_patterns(target: str) -> tuple:
+    """One compiled boundary-anchored pattern per token in the needle.
+
+    Scanning a large object type called this once per row with the same needle, and tokenizing the
+    whole haystack to test a couple of needle tokens: both are wasted. Compiling per needle (cached)
+    and searching the haystack lets a miss bail on the first absent token instead of building a full
+    token set for every row."""
+    return tuple(re.compile(f"(?<!{_TOK}){re.escape(t)}(?!{_TOK})")
+                 for t in _tokens(target))
 
 
 def _match_one(prop, f: dict) -> bool:
@@ -239,8 +260,8 @@ def _match_one(prop, f: dict) -> bool:
         hit = any(c in wanted for c in cands)
         return hit if op == "IN" else not hit
     if op in ("CONTAINS_TOKEN", "NOT_CONTAINS_TOKEN"):
-        want = _tokens(str(target or ""))
-        hit = any(want and want <= _tokens(c) for c in cands)
+        pats = _token_patterns(str(target or ""))
+        hit = bool(pats) and any(all(p.search(c.lower()) for p in pats) for c in cands)
         return hit if op == "CONTAINS_TOKEN" else not hit
     if op == "BETWEEN":
         # Numeric when all three parse as numbers, else lexicographic — the same fallback LT/GT
@@ -366,11 +387,16 @@ async def search_objects(object_type: str, request: Request):
     # every request, NOT just the rows past the cursor: `total` is a property of the query, so it
     # must not shrink as the caller pages. `sorts` then orders the full match set, which is the only
     # place a stable order can be established.
+    # Read only the columns the scan will actually use. `title`/`content` are needed solely to match
+    # a free-text `query`, and `content` is the widest column there is (a note's whole body), so
+    # pulling it for every row of a 69k-row object type dwarfs the filtering itself.
+    cols = ("doc_id, object_type, properties, archived, created_ts, updated_ts, owner_display"
+            + (", title, content" if (body.get("query") or "").strip() else ""))
     hits: list = []
     cursor = None
     while True:
         batch = store.list_hubspot_objects(conn, object_type, after_doc_id=cursor,
-                                           visible_ids=visible, limit=500)
+                                           visible_ids=visible, limit=2000, columns=cols)
         if not batch:
             break
         cursor = batch[-1]["doc_id"]

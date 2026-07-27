@@ -433,3 +433,17 @@ def test_repo_files_listing_and_kind_isolation(tmp_path):
     got = store.get_repo_file(conn, "svc", "src/b.py")
     assert got["content"] == "print(2)"
     assert store.get_repo_file(conn, "svc", "nope.py") is None
+
+
+def test_hubspot_listing_is_an_index_range_seek(tmp_path):
+    """Every read of hubspot_objects is "one object type, ordered by doc_id" — keyset paging and the
+    search scan both. With only object_type indexed, ORDER BY falls to a temp b-tree that re-sorts
+    every matching row on each page, so paging a large type costs O(rows) per page instead of
+    O(log rows + page). Measured on 69k notes that was ~1s per search page; the composite index made
+    it ~1ms. Same guard as test_list_s3_objects_prefix_uses_index_range_not_like."""
+    conn = _hubspot_mini_db(tmp_path)
+    plan = " ".join(r[-1] for r in conn.execute(
+        "EXPLAIN QUERY PLAN SELECT * FROM hubspot_objects WHERE object_type = ? AND doc_id > ? "
+        "ORDER BY doc_id LIMIT 10", ("contacts", "c0")))
+    assert "idx_hubspot_type_doc" in plan
+    assert "TEMP B-TREE" not in plan.upper(), f"ORDER BY is being sorted, not seeked: {plan}"

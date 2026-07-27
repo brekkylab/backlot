@@ -404,7 +404,7 @@ def list_s3_objects(conn, bucket, *, prefix="", start_after=None, start_at=None,
 
 
 def list_hubspot_objects(conn, object_type, *, after_doc_id=None, visible_ids=None, limit=100,
-                         archived=False, columns="*") -> list[sqlite3.Row]:
+                         archived=False, columns="*", prefilter=None) -> list[sqlite3.Row]:
     """One page of a CRM object type, keyset-paginated by ``doc_id``.
 
     HubSpot's ``after`` cursor is a *record id*, which the router maps back to a doc_id — so the
@@ -412,12 +412,21 @@ def list_hubspot_objects(conn, object_type, *, after_doc_id=None, visible_ids=No
     scan regardless of how deep into the type it sits. ``archived`` splits the two views the API
     exposes: archived records are hidden unless explicitly asked for.
 
+    ``prefilter`` is an optional ``(sql_fragment, params)`` the caller has established as a
+    *necessary* condition for a match, so pushing it down can only remove rows that would have been
+    rejected anyway. It exists because search must walk the whole object type to report an honest
+    total, and doing that row-by-row in Python is far slower than letting SQLite reject the bulk.
+
     ``columns`` narrows the projection. Search has to walk the whole object type to report an
     honest ``total``, and ``content`` is by far the widest column (a note's body), so reading it for
     rows that are only being *filtered* dominates that scan — the caller passes just the columns it
     will actually read."""
     sql = f"SELECT {columns} FROM hubspot_objects WHERE object_type = ?"
     params: list = [object_type]
+    if prefilter:
+        frag, fparams = prefilter
+        sql += f" AND {frag}"
+        params += fparams
     sql += " AND archived IS NOT NULL" if archived else " AND archived IS NULL"
     if after_doc_id:
         sql += " AND doc_id > ?"

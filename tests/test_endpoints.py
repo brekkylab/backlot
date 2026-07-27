@@ -432,6 +432,44 @@ def test_hubspot_search_every_operator(client, admin_h):
                                        value="Clinics")
 
 
+def test_hubspot_search_prefilter_cannot_change_results(client, admin_h, monkeypatch):
+    """The SQL pre-filter is a pure optimisation: it may only skip rows Python would have rejected
+    anyway. Every query is run twice — once with the pushdown, once with it disabled — and the
+    results and totals must be identical, so a pre-filter that is not a *necessary* condition fails
+    here rather than silently dropping matches."""
+    from app.routers import hubspot as hs
+
+    bodies = [
+        {"filterGroups": [{"filters": [{"propertyName": "industry", "operator": "EQ",
+                                        "value": "healthcare"}]}]},
+        {"filterGroups": [{"filters": [{"propertyName": "domain", "operator": "HAS_PROPERTY"}]}]},
+        {"filterGroups": [{"filters": [{"propertyName": "name", "operator": "CONTAINS_TOKEN",
+                                        "value": "Health"}]}]},
+        {"filterGroups": [{"filters": [{"propertyName": "lifecyclestage", "operator": "IN",
+                                        "values": ["evaluation", "procurement"]}]}]},
+        # a group whose filters mix a pushable and a non-pushable operator
+        {"filterGroups": [{"filters": [{"propertyName": "name", "operator": "HAS_PROPERTY"},
+                                       {"propertyName": "employees", "operator": "GT",
+                                        "value": "100"}]}]},
+        # OR across groups: no single filter is necessary, so nothing may be pushed down
+        {"filterGroups": [{"filters": [{"propertyName": "industry", "operator": "EQ",
+                                        "value": "healthcare"}]},
+                          {"filters": [{"propertyName": "lifecyclestage", "operator": "EQ",
+                                        "value": "qualified"}]}]},
+        {"query": "acme"},
+    ]
+
+    def run(body):
+        j = client.post("/hubspot/crm/v3/objects/companies/search", headers=admin_h,
+                        json={**body, "limit": 100}).json()
+        return j["total"], [r["id"] for r in j["results"]]
+
+    with_pushdown = [run(b) for b in bodies]
+    monkeypatch.setattr(hs, "_sql_prefilter", lambda body: None)
+    without = [run(b) for b in bodies]
+    assert with_pushdown == without
+
+
 def test_hubspot_search_sorts(client, admin_h):
     """`sorts` is advertised, so it has to order the whole match set — not just whatever landed on
     the page. Numeric properties sort numerically, which string ordering would get wrong."""

@@ -315,6 +315,56 @@ def _sorted(rows, sorts):
                   reverse=str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING")
 
 
+def _ascii_scalar(v) -> str | None:
+    """A value usable in a substring pre-filter: stored `properties` JSON is written with
+    `json.dumps` defaults, so non-ASCII lands escaped as \\uXXXX and a raw needle would not be
+    found — which for a *necessary* condition would wrongly drop real matches."""
+    if not isinstance(v, str) or not v or not v.isascii():
+        return None
+    return v if '"' not in v and "\\" not in v else None
+
+
+def _sql_prefilter(body: dict):
+    """A SQL condition every match must satisfy, or None.
+
+    Only a single filter group qualifies: within one group the filters are AND-ed, so each one is
+    individually necessary. Across groups they are OR-ed and no single filter has to hold. Python
+    stays the authority on what actually matches — this only shrinks what Python has to look at.
+    """
+    groups = body.get("filterGroups") or []
+    if len(groups) != 1 or (body.get("query") or "").strip():
+        return None
+    frags, params = [], []
+    for f in (groups[0].get("filters") or []):
+        if not isinstance(f, dict) or not f.get("propertyName"):
+            return None
+        name, op = f["propertyName"], (f.get("operator") or "EQ").upper()
+        if not name.isascii() or not name.replace("_", "").isalnum():
+            return None                      # keep the JSON path a literal we can trust
+        path = f"$.{name}"
+        if op == "HAS_PROPERTY":
+            frags.append("json_extract(properties, ?) IS NOT NULL")
+            params.append(path)
+        elif op in ("EQ", "IN", "CONTAINS_TOKEN"):
+            # The value (or every needle token) must appear somewhere in the properties text. True
+            # whether the property holds a scalar or a list, which is why this is a substring test
+            # rather than an equality one.
+            needles = ([f.get("value")] if op != "IN" else list(f.get("values") or []))
+            if op == "CONTAINS_TOKEN":
+                needles = list(_tokens(str(f.get("value") or "")))
+            vals = [_ascii_scalar(v) for v in needles]
+            if not vals or any(v is None for v in vals):
+                return None
+            if op == "IN":
+                frags.append("(" + " OR ".join(["instr(lower(properties), lower(?)) > 0"] * len(vals))
+                             + ")")
+            else:
+                frags += ["instr(lower(properties), lower(?)) > 0"] * len(vals)
+            params += vals
+        # every other operator (NEQ/NOT_*/comparisons/BETWEEN) has no safe necessary condition here
+    return (" AND ".join(frags), params) if frags else None
+
+
 def _matches(row, body: dict) -> bool:
     """``filterGroups`` are OR-ed; the ``filters`` inside one group are AND-ed. A free-text
     ``query`` additionally has to hit the record's text."""
@@ -392,11 +442,13 @@ async def search_objects(object_type: str, request: Request):
     # pulling it for every row of a 69k-row object type dwarfs the filtering itself.
     cols = ("doc_id, object_type, properties, archived, created_ts, updated_ts, owner_display"
             + (", title, content" if (body.get("query") or "").strip() else ""))
+    pre = _sql_prefilter(body)
     hits: list = []
     cursor = None
     while True:
         batch = store.list_hubspot_objects(conn, object_type, after_doc_id=cursor,
-                                           visible_ids=visible, limit=2000, columns=cols)
+                                           visible_ids=visible, limit=2000, columns=cols,
+                                           prefilter=pre)
         if not batch:
             break
         cursor = batch[-1]["doc_id"]

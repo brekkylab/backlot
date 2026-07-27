@@ -329,6 +329,12 @@ def grants_for(source: str, meta: dict) -> list[tuple[str, str]]:
         pass  # private to participants — no org/group scope
     elif source == "slack":
         add("org", org)  # channel privacy isn't recoverable from first-names → org-visible
+    elif source == "hubspot":
+        # A CRM is team-wide, and the object type's group is not a useful scope here: the bench
+        # names ~3.3k account owners of whom only the ~167 in the employee directory can
+        # authenticate, so both an owner-only and a group scope leave the corpus readable by admin
+        # and almost nobody else. Org-visible, like slack.
+        add("org", org)
     elif source == "confluence":
         conf = (meta.get("confidentiality") or "internal").lower()
         if conf in ("public", "internal"):

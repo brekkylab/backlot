@@ -497,7 +497,19 @@ def test_hubspot_bundle_names_owner_se_and_csm():
                                      "priya.desai@redwoodinference.com"}
     grants = grants_for("hubspot", {**bundle, "org": "redwood"})
     assert ("user", "maya.chen@redwoodinference.com") in grants
-    assert ("group", bundle["group"]) in grants
+
+
+def test_hubspot_is_org_visible():
+    """A CRM is team-wide, and the bench names ~3.3k account owners of whom only the ~167 in the
+    employee directory can authenticate. Scoping a record to its owner (or to the object type's
+    group, whose only members are those same synthesized owners) leaves the corpus visible to admin
+    and to almost nobody else — so HubSpot gets an org grant, the way Slack does."""
+    bundle = {"owner": "maya.chen@redwoodinference.com", "people": [], "group": "companies",
+              "confidentiality": None, "org": "redwood"}
+    grants = grants_for("hubspot", bundle)
+    assert ("org", "redwood") in grants
+    assert ("group", "companies") not in grants          # the org grant supersedes it
+    assert ("user", "maya.chen@redwoodinference.com") in grants   # named people still granted
 
 
 def test_confluence_restricted_grants_reconciled_directory_group():

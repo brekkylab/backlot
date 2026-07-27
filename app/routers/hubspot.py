@@ -301,18 +301,22 @@ def _sorted(rows, sorts):
     if not isinstance(spec, dict) or not spec.get("propertyName"):
         return rows
     name = spec["propertyName"]
-    vals = [_props(r).get(name) for r in rows]
-    numeric = all(_num(v) is not None for v in vals if v is not None) and any(
-        v is not None for v in vals)
+    # Decorate once: the properties JSON is parsed per row here, and re-parsing it inside the sort
+    # key would double that over the whole match set (15k+ rows on the bench corpus).
+    decorated = [(_props(r).get(name), r) for r in rows]
+    vals = [v for v, _ in decorated]
+    numeric = any(v is not None for v in vals) and all(
+        _num(v) is not None for v in vals if v is not None)
 
-    def key(r):
-        v = _props(r).get(name)
+    def key(pair):
+        v = pair[0]
         if v is None:                       # absent sorts last in both directions
             return (1, 0.0 if numeric else "")
         return (0, _num(v) if numeric else str(v))
 
-    return sorted(rows, key=key,
-                  reverse=str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING")
+    decorated.sort(key=key,
+                   reverse=str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING")
+    return [r for _, r in decorated]
 
 
 def _ascii_scalar(v) -> str | None:

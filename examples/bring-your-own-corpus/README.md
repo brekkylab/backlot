@@ -1,6 +1,6 @@
 # Bring your own corpus
 
-Serve **any** document set through the eight mock APIs — provide a JSONL where each line is one
+Serve **any** document set through the nine mock APIs — provide a JSONL where each line is one
 document, validate it, and load it:
 
 ```bash
@@ -38,11 +38,12 @@ Slack** (Slack messages have no title). One JSON object per line (JSONL) — for
 {"source_type": "confluence", "space": "handbook", "title": "On-call Runbook", "content": "Respond to gateway 502s: check dashboards, roll back, page on-call.", "author_email": "ava@acme.com", "author_groups": ["engineering"], "labels": ["oncall", "runbook"]}
 {"source_type": "notion", "teamspace": "engineering", "subtype": "database", "title": "Eng Tasks", "content": "Engineering task tracker.", "doc_id": "nt-tasks-db", "properties": {"Status": {"type": "select"}}}
 {"source_type": "notion", "teamspace": "engineering", "title": "Fix gateway 502s", "content": "Investigate token-bucket refill.", "parent": "nt-tasks-db", "properties": {"Status": "In Progress"}, "icon": "🐛"}
+{"source_type": "hubspot", "object_type": "contacts", "title": "Ava Stone", "content": "Ava Stone — VP Platform at Acme Health.", "properties": {"firstname": "Ava", "lastname": "Stone", "email": "ava@acme-health.com"}, "associations": [{"to": "hs-co-acme", "label": "Primary"}]}
 ```
 
 See `sample_corpus.jsonl` for a fully-populated record of every source type.
 
-- `source_type` ∈ `slack | gmail | google_drive | github | jira | confluence | notion | s3`.
+- `source_type` ∈ `slack | gmail | google_drive | github | jira | confluence | notion | s3 | hubspot`.
 - The grouping unit is named per service — `channel` (slack), `mailbox` (gmail),
   `folder` (google_drive), `repo` (github), `project` (jira), `space` (confluence),
   `teamspace` (notion), `bucket` (s3).

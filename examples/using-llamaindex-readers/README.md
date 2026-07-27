@@ -5,11 +5,12 @@ Point official [LlamaIndex readers](https://docs.llamaindex.ai/en/stable/module_
 first step of any LlamaIndex ingestion / RAG pipeline. Each script is self-contained:
 
     pip install -e ".[examples,llamaindex]"
+    pip install --no-deps llama-index-readers-hubspot     # see the HubSpot note below
     python examples/using-llamaindex-readers/github.py            # local throwaway mock
     python examples/using-llamaindex-readers/github.py --url http://localhost:8000 --token <usr-token>
 
 The only difference from talking to the real SaaS is where the reader points. Four readers take a
-host argument directly; four hardcode the host, so a small shim in `_llamaindex.py` redirects them.
+host argument directly; five hardcode the host, so a small shim in `_llamaindex.py` redirects them.
 
 | Source | Reader class | How it's pointed at the mock |
 |--------|--------------|------------------------------|
@@ -20,6 +21,7 @@ host argument directly; four hardcode the host, so a small shim in `_llamaindex.
 | Slack | `SlackReader` | `slack_reader_at()` swaps the `WebClient` class during construction |
 | Notion | `NotionPageReader` | `patch_notion_at()` (rebinds hardcoded URL constants) |
 | Gmail | `GmailReader` | `point_gmail_at()` (wraps `googleapiclient.discovery.build`) + patches `_get_credentials` |
+| HubSpot | `HubspotReader` | `point_hubspot_at()` (rebinds `hubspot.HubSpot` to inject `host=`) |
 | Drive | `GoogleDriveReader` | `point_drive_at()` (wraps `build`) + real `service_account_key=` injection hook |
 
 All reads are ACL-scoped by the credential you pass (`--token`, or the admin token by default),
@@ -29,6 +31,14 @@ exactly as against the real API.
 
 - **GitHub** (`github.py`): `GitHubIssuesClient(base_url=...)` is a first-class constructor arg —
   no shim needed.
+- **HubSpot** (`hubspot.py`): the reader is **not** in the `[llamaindex]` extra — it pins
+  `hubspot-api-client<9`, which no resolver can reconcile with the `>=12` that `[examples]` needs, so
+  declaring it would make `.[examples,llamaindex]` uninstallable. The pin is over-restrictive (the
+  reader only calls `HubSpot(access_token=...)` and `crm.{deals,contacts,companies}.get_all()`, all
+  present in 12.x and verified working), hence the `--no-deps` install above. It does
+  `from hubspot import HubSpot` *inside* `load_data()`, so `point_hubspot_at()` only has to rebind
+  the module attribute. Note the reader returns **three** Documents — one per object type, each the
+  `str()` of a list of SDK objects — not one Document per record.
 - **S3** (`s3.py`): `S3Reader(s3_endpoint_url=...)` points the reader itself, but whole-bucket
   loads hit a client-side fsspec/s3fs bug: `SimpleDirectoryReader`'s directory walk passes a
   `topdown` kwarg into `S3FileSystem._ls()`, which doesn't accept it, raising `TypeError`. The bug

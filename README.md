@@ -1,7 +1,8 @@
 # Enterprise Mock
 
 > **LocalStack for enterprise SaaS knowledge APIs.** Point your RAG/search connectors at
-> read-only mock **Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, and Amazon S3**
+> read-only mock **Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3, and
+> HubSpot**
 > APIs — real response shapes, real pagination, real per-document ACLs — entirely offline: no
 > accounts, no OAuth, no rate limits.
 
@@ -103,7 +104,7 @@ corpus are in [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus
 (use it for a full crawl); a user token sees only documents that user's ACL permits.
 
 - Slack: `Authorization: Bearer <token>` (also accepts `?token=` / form `token`)
-- Gmail / Drive / GitHub / Notion: `Authorization: Bearer <token>`
+- Gmail / Drive / GitHub / Notion / HubSpot: `Authorization: Bearer <token>`
 - Jira / Confluence: HTTP Basic `email:<token>` (the token is the password)
 - S3: AWS SigV4 — not the bearer token; use the `s3_access_key_id`/`s3_secret_access_key` pair from `GET /_mock/users` (derived from the token; per-user and an admin pair). See `examples/using-official-sdk/s3.py`
 
@@ -185,7 +186,10 @@ examples: the community-official [`mcp-atlassian`](https://github.com/sooperset/
 `npx` — it takes a first-class `BASE_URL` override: `BASE_URL=http://localhost:8000/notion`), and
 the **official** [`awslabs.aws-api-mcp-server`](https://github.com/awslabs/mcp/tree/main/src/aws-api-mcp-server)
 (S3, over `uvx` — it shells the AWS CLI, whose boto3 client honors a first-class
-`AWS_ENDPOINT_URL` override: `AWS_ENDPOINT_URL=http://localhost:8000/s3`).
+`AWS_ENDPOINT_URL` override: `AWS_ENDPOINT_URL=http://localhost:8000/s3`). Sources with no
+base-URL-switchable vendor server — GitHub, Slack, Gmail, Drive and HubSpot — go through a generic
+**OpenAPI→MCP bridge** that turns the mock's own typed `/openapi.json` into MCP tools
+(`GET /_mock/openapi/<source>` serves the per-source slice).
 For example, connecting `mcp-atlassian` over stdio:
 
 ```python
@@ -264,6 +268,7 @@ One runnable script per source (GitHub, S3, Confluence, Jira, Slack, Notion, Gma
 | `/atlassian/rest/api/3` | Jira | `search/jql` (JQL `project =`, `text\|summary\|description ~`), `issue/{key}`, `issue/{key}/comment`, `field`, `issueLinkType`, `project/search`, `project/{key}/role[/{id}]`, `serverInfo` (also under `rest/api/2`) |
 | `/atlassian/wiki/rest/api` | Confluence | `content`, `content/{id}`, `content/{id}/restriction/byOperation`, `space`, `space/{key}/permission` |
 | `/notion/v1` | Notion | `search`, `pages/{id}`, `blocks/{id}`, `blocks/{id}/children`, `databases/{id}` (version-aware), `data_sources/{id}`, `data_sources/{id}/query`, `databases/{id}/query` (legacy), `users[/{id}]`, `users/me`, `comments` |
+| `/hubspot/crm/v3`, `/hubspot/crm/v4` | HubSpot | `objects/{objectType}` (+`limit` max 100, `after`, `properties`, `archived`), `objects/{objectType}/{id}`, `objects/{objectType}/search` (`filterGroups` OR-ed, `filters` AND-ed, 13 operators over any property), `objects/{objectType}/batch/read`, `v4/objects/{type}/{id}/associations/{toType}` |
 | `/s3` | Amazon S3 | `ListBuckets`, `HeadBucket`, `GetBucketLocation`, `ListObjectsV2` (`prefix`/`delimiter`/`continuation-token`), `GetObject` (+`Range`), `HeadObject` |
 
 ## Tests
@@ -295,6 +300,14 @@ follow the org (`<org>.atlassian.net`, and the owner echoed from the request pat
 - Notion is **BYO-only** (not in EnterpriseRAG-Bench). A record's `content` is served verbatim as
   a synthesized block tree; `databases.retrieve` returns the `2025-09-03` data-sources shape by
   default and the `2022-06-28` inline-`properties` shape when that `Notion-Version` header is sent.
+- HubSpot is **polymorphic over `{objectType}`** — one set of routes serves contacts, companies,
+  deals, notes and custom objects — so the object type is the grouping unit and a record's typed
+  fields live in `properties`, searchable by name. EnterpriseRAG-Bench ships HubSpot as **company
+  (account) records only**, whose CRM notes are imported as first-class `notes` objects associated
+  with the company; contacts/deals/tickets arrive via BYO. The bench's `linked_*` fields are
+  free-text stubs referencing other sources, so they stay properties rather than becoming
+  associations. **A listing's last page omits `paging.next`** — the official client's `fetch_all`
+  treats its absence as "done", so emitting it unconditionally would hang a real client.
 - S3 is **BYO-only** (not in EnterpriseRAG-Bench). Requests are XML (not JSON) and SigV4-signed;
   the mock verifies the signature against the access-key/secret derived from your bearer token
   and only supports path-style addressing (the bucket stays in the path, not the hostname).

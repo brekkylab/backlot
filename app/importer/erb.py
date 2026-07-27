@@ -36,7 +36,7 @@ from app import store, synth
 from app.config import get_settings, infer_org
 
 # ---------------------------------------------------------------- constants
-SUPPORTED = ("slack", "gmail", "google_drive", "github", "jira", "confluence")
+SUPPORTED = ("slack", "gmail", "google_drive", "github", "jira", "confluence", "hubspot")
 
 INTERNAL_ROLES = {"owner", "author", "reviewer", "assignee", "reporter",
                   "collaborator", "participant_internal", "mailbox_owner"}
@@ -329,6 +329,12 @@ def grants_for(source: str, meta: dict) -> list[tuple[str, str]]:
         pass  # private to participants — no org/group scope
     elif source == "slack":
         add("org", org)  # channel privacy isn't recoverable from first-names → org-visible
+    elif source == "hubspot":
+        # A CRM is team-wide, and the object type's group is not a useful scope here: the bench
+        # names ~3.3k account owners of whom only the ~167 in the employee directory can
+        # authenticate, so both an owner-only and a group scope leave the corpus readable by admin
+        # and almost nobody else. Org-visible, like slack.
+        add("org", org)
     elif source == "confluence":
         conf = (meta.get("confidentiality") or "internal").lower()
         if conf in ("public", "internal"):
@@ -684,6 +690,102 @@ def load_jira(conn, dsid, raw, P):
             "confidentiality": None}
 
 
+# The bench's HubSpot docs are denormalized company (account) records — there are no contact/deal
+# objects in the corpus. These are the fields with a real HubSpot company property to map onto;
+# everything else becomes a custom property, which is what an actual portal looks like (a mix of
+# HubSpot defaults and portal-specific fields). We map the bench onto the mock's API-shaped schema
+# rather than storing ERB's shape, exactly as load_drive/load_github do for their sources.
+_HS_PROPERTY = {
+    "company_name": "name",
+    "company_domain": "domain",
+    "industry": "industry",
+    "stage": "lifecyclestage",
+}
+# Excluded from `properties`: ERB's own envelope keys (see derive_title_content), the two dates that
+# become columns, the owner (which becomes author_email + owner_display), and the notes that become
+# their own rows. `se_assigned` / `csm_assigned` are deliberately NOT excluded — they feed the ACL
+# bundle *and* stay properties, since a real portal exposes the SE and CSM as fields on the record.
+_HS_NOT_A_PROPERTY = {"title_field_name", "content_field_names", "dataset_doc_uuid",
+                      "created_at", "updated_at", "owner", "notes", "crm_notes"}
+
+
+def _hs_notes(raw) -> list[str]:
+    """The bench's CRM notes: usually a list of undated fragments, sometimes a single string.
+    (`timeline` is a *dated activity log* the bench lists in content_field_names — it is the
+    company's own body text, not a set of note objects, so it is deliberately not included.)"""
+    for key in ("notes", "crm_notes"):
+        v = raw.get(key)
+        if isinstance(v, list):
+            out = [str(n) for n in v if str(n).strip()]
+            if out:              # an empty list must not mask a populated `crm_notes`
+                return out
+        elif isinstance(v, str) and v.strip():
+            return [v]
+    return []
+
+
+def _hs_insert(conn, doc_id, object_type, author_email, title, content, properties,
+               created_ts, updated_ts=None, owner_display=None) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO hubspot_objects(doc_id, object_type, author_email, title, content, "
+        "properties, archived, created_ts, updated_ts, owner_display) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (doc_id, object_type, author_email, title, content, json.dumps(properties), None,
+         created_ts, updated_ts, owner_display))
+
+
+def _hs_associate(conn, a_doc, a_type, b_doc, b_type, label=None) -> None:
+    """Link two records in both directions — real HubSpot exposes an association from either end,
+    with a distinct type id per direction."""
+    for f_doc, f_type, t_doc, t_type in ((a_doc, a_type, b_doc, b_type),
+                                         (b_doc, b_type, a_doc, a_type)):
+        conn.execute(
+            "INSERT OR REPLACE INTO hubspot_associations(from_doc_id, from_type, to_doc_id, "
+            "to_type, assoc_category, assoc_type_id, label) VALUES (?,?,?,?,?,?,?)",
+            (f_doc, f_type, t_doc, t_type, "HUBSPOT_DEFINED",
+             synth.hubspot_assoc_type_id(f_type, t_type), label))
+
+
+def load_hubspot(conn, dsid, raw, P):
+    title, content = _title_content(raw)
+    object_type = "companies"
+    group = object_type
+    owner = raw.get("owner", "")
+    owner_email = P.resolve(owner, role="owner", group_hint=group) if owner else None
+    # The AE owns the account; the SE and CSM are the other real people on it, so they enter the
+    # ACL bundle the way reviewers/collaborators do elsewhere.
+    people = [P.resolve(n, role="collaborator")
+              for n in (raw.get("se_assigned"), raw.get("csm_assigned")) if n]
+    for otype in (object_type, "notes"):
+        conn.execute("INSERT OR REPLACE INTO hubspot_object_types(object_type, group_id) "
+                     "VALUES (?,?)", (otype, group))
+
+    # The linked_* arrays stay here as free-text stubs: the dataset documents them as
+    # "references to linked artifacts as stubs/links", so they name no resolvable doc_id and must
+    # never become associations pointing at documents that do not exist.
+    props = {_HS_PROPERTY.get(k, k): v for k, v in raw.items() if k not in _HS_NOT_A_PROPERTY}
+    created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
+    author = owner_email or f"unknown@{P.org_domain}"
+    _hs_insert(conn, dsid, object_type, author, title, content, props, created,
+               to_epoch(raw.get("updated_at")), owner)
+
+    # A HubSpot note is its own object associated with the company, and this repo already parses
+    # embedded conversations into first-class rows on import (Slack transcripts -> threads, Jira
+    # comments -> comment rows). Notes carry no date in the bench, so their time is the company's
+    # clock plus position: deterministic, ordered, and never NULL.
+    children: list[str] = []
+    for i, body in enumerate(_hs_notes(raw), start=1):
+        note_id = f"{dsid}::n{i}"
+        children.append(note_id)
+        # A note has no title in HubSpot; its body lives in hs_note_body, mirrored into `content`
+        # so full-text search and any RAG consumer see it.
+        _hs_insert(conn, note_id, "notes", author, "", body,
+                   {"hs_note_body": body, "hs_timestamp": synth.rfc3339(created + i)}, created + i)
+        _hs_associate(conn, dsid, object_type, note_id, "notes")
+
+    return {"owner": owner_email, "people": [p for p in people if p], "group": group,
+            "confidentiality": None, "_children": children}
+
+
 def load_gmail(conn, dsid, raw, P):
     title, content = _title_content(raw)
     # 'messages' is a list of RFC822 emails (a thread); some docs instead carry a single email
@@ -731,7 +833,8 @@ def load_gmail(conn, dsid, raw, P):
              m.get("message_id"), to_epoch(m.get("date")) or (root_ts + seq * 3600)))
     people = [owner_email, *internal]
     return {"owner": owner_email, "people": [p for p in people if p], "group": None,
-            "confidentiality": None, "_extra_rows": len(msgs) - 1 if msgs else 0}
+            "confidentiality": None, "_extra_rows": len(msgs) - 1 if msgs else 0,
+            "_children": [f"{dsid}::m{seq}" for seq in range(1, len(msgs))]}
 
 
 # Slack source `first_message_ts`: ~35% are the bench's opaque far-future "ordering keys" (valid
@@ -806,11 +909,13 @@ def load_slack(conn, dsid, raw, P):
              "", text, dsid, seq, root_ts + seq))
     # Slack speakers are display labels, not org identities; the doc is org-visible (see
     # grants_for), so no per-user ACL grants — `people` stays empty.
-    return {"owner": root_author, "people": [], "group": channel, "confidentiality": None}
+    return {"owner": root_author, "people": [], "group": channel, "confidentiality": None,
+            "_children": [f"{dsid}::m{seq}" for seq in range(1, len(turns))]}
 
 
 _LOADERS = {"google_drive": load_drive, "github": load_github, "confluence": load_confluence,
-            "jira": load_jira, "gmail": load_gmail, "slack": load_slack}
+            "jira": load_jira, "gmail": load_gmail, "slack": load_slack,
+            "hubspot": load_hubspot}
 
 
 def load_structured(conn, records, P, settings) -> dict:
@@ -924,9 +1029,16 @@ def import_structured(settings, gen_dir, *, question_ids=None) -> dict:
     # principals/group_members tables while they still get tokens — breaking group-scoped ACL.
     P.install(conn, settings)
     for dsid, bundle in result["bundles"].items():
+        # A loader may materialize child rows from one bench doc — a Slack transcript's turns, a
+        # Gmail thread's messages, a HubSpot company's notes. Those rows are reached through the
+        # same per-row ACL filter as any other doc (store._acl_clause matches on each row's
+        # doc_id), so they must carry the parent's grants: without them a non-admin caller sees a
+        # silently truncated thread or an empty note list, while admin sees everything.
+        docs = [dsid, *bundle.get("_children", [])]
         for ptype, pid in grants_for(bundle["_source"], {**bundle, "org": settings.org_name}):
-            conn.execute("INSERT OR REPLACE INTO doc_acl(doc_id, principal_type, principal_id)"
-                         " VALUES (?,?,?)", (dsid, ptype, pid))
+            for doc in docs:
+                conn.execute("INSERT OR REPLACE INTO doc_acl(doc_id, principal_type, principal_id)"
+                             " VALUES (?,?,?)", (doc, ptype, pid))
     conn.commit()
     P.write_tokens(settings)
     store.build_fts(conn)

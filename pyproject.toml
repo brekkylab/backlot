@@ -49,6 +49,7 @@ examples = [
     "google-auth>=2.29",
     "notion-client>=3.1",
     "boto3>=1.34",
+    "hubspot-api-client>=12",
 ]
 # Mirage examples (examples/using-mirage/): drive the mock through mirage's virtual filesystem.
 # The [fuse] extra (mfusepy) powers the optional `--fuse` real-OS-mount path; mounting also needs
@@ -78,6 +79,16 @@ llamaindex = [
     "llama-index-readers-confluence>=0.7",
     "llama-index-readers-notion>=0.5",
     "llama-index-readers-s3>=0.6",
+    # llama-index-readers-hubspot is deliberately NOT listed here — it pins
+    # hubspot-api-client<9, which no resolver can reconcile with the >=12 that [examples] needs, so
+    # declaring it would make `.[examples,llamaindex]` uninstallable under pip. The pin is
+    # over-restrictive rather than a real incompatibility (the reader only calls
+    # HubSpot(access_token=...) and crm.{deals,contacts,companies}.get_all(), all present in 12.x
+    # and verified working against it), so install it past its own pin:
+    #     pip install --no-deps llama-index-readers-hubspot     # or: uv pip install --no-deps ...
+    # Its only other dependency is llama-index-core, which the readers above already bring in.
+    # Taking 8.x instead would drag in a pkg_resources/setuptools<82 pin AND silently ignore the
+    # `host=` override, sending traffic meant for the mock to api.hubapi.com.
     "jira>=3.10",
     "atlassian-python-api>=4.0",
     "slack_sdk>=3.43",

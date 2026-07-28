@@ -295,10 +295,12 @@ def point_hubspot_at(base_url: str) -> None:
         kw.setdefault("host", base)
         client = real(*a, **kw)
         host = client.crm.companies.basic_api.api_client.configuration.host
-        if base not in host:
+        # Compare against the host actually requested, not the one captured when this was installed,
+        # so the guard stays correct for a caller that passes its own `host`.
+        if kw["host"] not in host:
             raise RuntimeError(
-                f"the HubSpot SDK is configured for {host!r}, not the mock at {base!r} — the "
-                f"`host` kwarg was ignored. Upgrade: pip install -U 'hubspot-api-client>=12'")
+                f"the HubSpot SDK is configured for {host!r}, not {kw['host']!r} — the `host` kwarg "
+                f"was ignored. Upgrade: pip install -U 'hubspot-api-client>=12'")
         return client
 
     hubspot.HubSpot = _at_mock

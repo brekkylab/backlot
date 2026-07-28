@@ -224,36 +224,42 @@ def test_notion(live_server):
     assert any("Check dashboards" in d.text for d in docs)  # SAMPLE nt-runbook body, case-correct
 
 
-def _point_hubspot_at(base_url: str) -> None:
+def _point_hubspot_at(monkeypatch, base_url: str) -> None:
     """Redirect HubspotReader at the mock.
 
     The reader takes only an access token and builds ``HubSpot(access_token=...)`` itself — but it
     does ``from hubspot import HubSpot`` *inside* ``load_data()``, so rebinding the module attribute
     is enough. ``host`` is a plain kwarg on the current SDK; on 8.x it is silently IGNORED and the
     client talks to api.hubapi.com, so this fails loudly rather than letting the test hit production.
+
+    Patched through ``monkeypatch`` so it is undone at teardown: this rebinds a *global* on the
+    ``hubspot`` module, and ``live_server`` is module-scoped, so a leaked wrapper would still be in
+    place when a later module gets its own server on a different port. The guard also compares
+    against the host that was actually requested rather than the one captured here, so it stays
+    correct for a caller that passes its own ``host``.
     """
     import hubspot
 
     base = base_url.rstrip("/")
-    real = getattr(hubspot, "_test_real_HubSpot", hubspot.HubSpot)
-    hubspot._test_real_HubSpot = real                      # idempotent across repeated calls
+    real = hubspot.HubSpot
 
     def _at_mock(*a, **kw):
         kw.setdefault("host", base)
         client = real(*a, **kw)
         host = client.crm.companies.basic_api.api_client.configuration.host
-        assert base in host, f"SDK configured for {host!r}, not the mock — `host` was ignored"
+        assert kw["host"] in host, (
+            f"SDK configured for {host!r}, not {kw['host']!r} — the `host` kwarg was ignored")
         return client
 
-    hubspot.HubSpot = _at_mock
+    monkeypatch.setattr(hubspot, "HubSpot", _at_mock)
 
 
-def test_hubspot(live_server):
+def test_hubspot(live_server, monkeypatch):
     pytest.importorskip("llama_index.readers.hubspot")
     from llama_index.readers.hubspot import HubspotReader
 
     base, admin = _base_token(live_server)
-    _point_hubspot_at(f"{base}/hubspot")
+    _point_hubspot_at(monkeypatch, f"{base}/hubspot")
     # The reader returns one Document per object type (deals/contacts/companies), each holding the
     # str() of a list of SDK objects — its own design, not one Document per record.
     docs = {d.metadata.get("type"): d for d in HubspotReader(access_token=admin).load_data()}

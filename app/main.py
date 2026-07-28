@@ -20,11 +20,11 @@ from app import openapi, store, synth
 from app.acl import Acl
 from app.config import get_settings
 from app.oauth import Oauth
-from app.routers import atlassian, github, google, notion, oauth, s3, slack
+from app.routers import atlassian, github, google, hubspot, notion, oauth, s3, slack
 
 
 def _build_index(conn) -> dict:
-    idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}, "s3": {}}
+    idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}, "s3": {}, "hubspot": {}}
     # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
     # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container "
@@ -40,6 +40,10 @@ def _build_index(conn) -> dict:
         idx["notion"][synth.notion_id(r["doc_id"]).replace("-", "")] = r["doc_id"]
     for r in conn.execute(f"SELECT doc_id, bucket, key FROM {store.table('s3')}"):
         idx["s3"][f"{r['bucket']}/{r['key']}"] = r["doc_id"]
+    # HubSpot record ids are numeric strings; the CRM routes and the v4 association payload both
+    # speak them, so one index resolves either back to a doc_id.
+    for r in conn.execute(f"SELECT doc_id FROM {store.table('hubspot')}"):
+        idx["hubspot"][synth.hubspot_record_id(r["doc_id"])] = r["doc_id"]
     return idx
 
 
@@ -240,3 +244,4 @@ app.include_router(github.router)
 app.include_router(atlassian.router)
 app.include_router(notion.router)
 app.include_router(s3.router)
+app.include_router(hubspot.router)

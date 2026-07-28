@@ -14,7 +14,8 @@ import pytest
 
 from app import store
 
-ALL_SOURCES = ["slack", "gmail", "google_drive", "github", "jira", "confluence", "notion", "s3"]
+ALL_SOURCES = ["slack", "gmail", "google_drive", "github", "jira", "confluence", "notion", "s3",
+               "hubspot"]
 
 
 # --- registry wiring ------------------------------------------------------------
@@ -41,6 +42,9 @@ def test_grouping_cols_per_source():
     assert store.grouping_col("confluence") == "space"
     assert store.grouping_col("notion") == "teamspace"
     assert store.grouping_col("s3") == "bucket"
+    # HubSpot has no channel/space concept; the API is polymorphic over `{objectType}`, so the
+    # object type is the grouping unit (see app/store.py GROUPING).
+    assert store.grouping_col("hubspot") == "object_type"
 
 
 def test_comment_tables_only_where_supported():
@@ -49,7 +53,8 @@ def test_comment_tables_only_where_supported():
     assert store.comment_table("confluence") == "confluence_comments"
     assert store.comment_table("github") == "github_comments"
     assert store.comment_table("notion") == "notion_comments"
-    for src in ("slack", "gmail", "google_drive", "s3"):
+    # HubSpot models notes/emails/meetings as their own object types, not as comments on a record.
+    for src in ("slack", "gmail", "google_drive", "s3", "hubspot"):
         assert store.comment_table(src) is None
 
 
@@ -231,6 +236,85 @@ def test_list_s3_objects_acl_scoped(tmp_path):
     assert none_visible == []
 
 
+# --- HubSpot: polymorphic objects + associations --------------------------------
+
+def _hubspot_mini_db(tmp_path):
+    """A hand-built CRM: two contacts, one company, one deal, plus associations — enough to
+    exercise object-type scoping and association lookup without the BYO importer."""
+    conn = store.connect_rw(tmp_path / "hs.sqlite")
+    rows = [
+        # (doc_id, object_type, title, properties)
+        ("c1", "contacts", "Ava Stone", '{"firstname": "Ava", "lastname": "Stone"}'),
+        ("c2", "contacts", "Bob Reyes", '{"firstname": "Bob", "lastname": "Reyes"}'),
+        ("co1", "companies", "Acme Health", '{"name": "Acme Health"}'),
+        ("d1", "deals", "Acme renewal", '{"dealname": "Acme renewal", "amount": "50000"}'),
+    ]
+    for doc_id, object_type, title, properties in rows:
+        conn.execute(
+            "INSERT INTO hubspot_objects(doc_id, object_type, author_email, title, content, "
+            "properties, created_ts) VALUES (?,?,?,?,?,?,1)",
+            (doc_id, object_type, "owner@x.com", title, title, properties))
+    # Both contacts belong to the company; the deal is associated with the company too.
+    # Real HubSpot associations are bidirectional with a distinct type id per direction, so a row
+    # is stored per direction and a lookup is a plain (from_doc_id, to_type) match.
+    for from_doc, from_type, to_doc, to_type in [
+        ("c1", "contacts", "co1", "companies"),
+        ("c2", "contacts", "co1", "companies"),
+        ("d1", "deals", "co1", "companies"),
+        ("co1", "companies", "c1", "contacts"),
+        ("co1", "companies", "c2", "contacts"),
+        ("co1", "companies", "d1", "deals"),
+    ]:
+        conn.execute(
+            "INSERT INTO hubspot_associations(from_doc_id, from_type, to_doc_id, to_type, "
+            "assoc_category, assoc_type_id, label) VALUES (?,?,?,?,'HUBSPOT_DEFINED',1,NULL)",
+            (from_doc, from_type, to_doc, to_type))
+    # Every doc carries an ACL grant, as the importers write them: org-wide for most, and c2
+    # restricted to group 'sales'.
+    for doc_id, ptype, pid in [("c1", "group", "everyone"), ("c2", "group", "sales"),
+                               ("co1", "group", "everyone"), ("d1", "group", "everyone")]:
+        conn.execute("INSERT INTO doc_acl VALUES (?,?,?)", (doc_id, ptype, pid))
+    conn.commit()
+    return conn
+
+
+def test_list_hubspot_objects_scoped_by_object_type(tmp_path):
+    conn = _hubspot_mini_db(tmp_path)
+    # the object type is the grouping unit, so the generic container scope selects by it
+    assert [r["doc_id"] for r in store.list_documents(conn, "hubspot", container="contacts")] \
+        == ["c1", "c2"]
+    assert [r["doc_id"] for r in store.list_documents(conn, "hubspot", container="deals")] == ["d1"]
+
+
+def test_hubspot_associations_from_a_record(tmp_path):
+    conn = _hubspot_mini_db(tmp_path)
+    rows = store.hubspot_associations(conn, "c1", "companies")
+    assert [r["to_doc_id"] for r in rows] == ["co1"]
+    assert rows[0]["assoc_category"] == "HUBSPOT_DEFINED"
+    assert rows[0]["assoc_type_id"] == 1
+
+
+def test_hubspot_associations_filtered_to_the_target_type(tmp_path):
+    conn = _hubspot_mini_db(tmp_path)
+    # c1 has no association to deals, only to companies
+    assert store.hubspot_associations(conn, "c1", "deals") == []
+
+
+def test_hubspot_associations_acl_scoped_on_the_target(tmp_path):
+    """An association must not leak a record the caller cannot read — the ACL applies to the
+    *target*, since that is the record whose existence the response reveals."""
+    conn = _hubspot_mini_db(tmp_path)
+    # admin (visible_ids=None) sees both contacts of the company
+    assert [r["to_doc_id"] for r in store.hubspot_associations(conn, "co1", "contacts")] \
+        == ["c1", "c2"]
+    # a caller with only 'everyone' cannot read c2, so that association is not revealed
+    rows = store.hubspot_associations(conn, "co1", "contacts", visible_ids={"everyone"})
+    assert [r["to_doc_id"] for r in rows] == ["c1"]
+    # a caller in 'sales' reads c2 but not c1
+    rows = store.hubspot_associations(conn, "co1", "contacts", visible_ids={"sales"})
+    assert [r["to_doc_id"] for r in rows] == ["c2"]
+
+
 # --- connection tuning ----------------------------------------------------------
 
 def test_connect_rw_busy_timeout(tmp_path):
@@ -349,3 +433,17 @@ def test_repo_files_listing_and_kind_isolation(tmp_path):
     got = store.get_repo_file(conn, "svc", "src/b.py")
     assert got["content"] == "print(2)"
     assert store.get_repo_file(conn, "svc", "nope.py") is None
+
+
+def test_hubspot_listing_is_an_index_range_seek(tmp_path):
+    """Every read of hubspot_objects is "one object type, ordered by doc_id" — keyset paging and the
+    search scan both. With only object_type indexed, ORDER BY falls to a temp b-tree that re-sorts
+    every matching row on each page, so paging a large type costs O(rows) per page instead of
+    O(log rows + page). Measured on 69k notes that was ~1s per search page; the composite index made
+    it ~1ms. Same guard as test_list_s3_objects_prefix_uses_index_range_not_like."""
+    conn = _hubspot_mini_db(tmp_path)
+    plan = " ".join(r[-1] for r in conn.execute(
+        "EXPLAIN QUERY PLAN SELECT * FROM hubspot_objects WHERE object_type = ? AND doc_id > ? "
+        "ORDER BY doc_id LIMIT 10", ("contacts", "c0")))
+    assert "idx_hubspot_type_doc" in plan
+    assert "TEMP B-TREE" not in plan.upper(), f"ORDER BY is being sorted, not seeked: {plan}"

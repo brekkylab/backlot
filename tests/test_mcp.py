@@ -231,6 +231,43 @@ def test_mcp_github_bridge_acl_enforced(live_server):
 
 # ------------------------------------------------------ Slack (generic OpenAPI→MCP bridge)
 
+def test_mcp_hubspot_bridge_acl_enforced(live_server):
+    """A CRM record the admin can read through the bridge's get_object tool is 404 for a scoped user.
+
+    HubSpot has no base-URL-switchable vendor MCP server, so the OpenAPI bridge is its only MCP
+    path — and because the API is polymorphic over `{object_type}`, one tool covers every object
+    type rather than there being a tool per type."""
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    row, email = _restricted_doc(settings, user["token"], "hubspot")
+    assert row is not None, f"no HubSpot record is ACL-restricted from {email} in the sample corpus"
+    record_id = synth.hubspot_record_id(row["doc_id"])
+
+    def reads(token):
+        return _bridge_call(base, "hubspot", token,
+                            tool_pred=lambda n: n.startswith("get_object"),
+                            args={"object_type": row["object_type"], "record_id": record_id},
+                            ok_pred=lambda t: '"properties"' in t and record_id in t)
+
+    assert reads(settings.admin_token), "admin should read the record through the OpenAPI bridge"
+    assert not reads(user["token"]), f"{email} should be blocked from the record via the bridge"
+
+
+def test_mcp_hubspot_bridge_search_tool(live_server):
+    """The polymorphic search operation reaches the bridge as a usable tool: filterGroups go through
+    as a request body, and `total` comes back."""
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    assert _bridge_call(
+        base, "hubspot", settings.admin_token,
+        tool_pred=lambda n: n.startswith("search_objects"),
+        args={"object_type": "companies",
+              "filterGroups": [{"filters": [{"propertyName": "industry", "operator": "EQ",
+                                             "value": "healthcare"}]}]},
+        ok_pred=lambda t: '"total"' in t and "Acme Health" in t)
+
+
 def test_mcp_slack_bridge_acl_enforced(live_server):
     """A message in an ACL-restricted Slack channel is found by admin search but not a scoped user."""
     pytest.importorskip("fastmcp")

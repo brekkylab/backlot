@@ -342,6 +342,75 @@ def test_notion_user_and_block_shape(tmp_path):
     assert b["heading_1"]["rich_text"][0]["plain_text"] == "On-call"
 
 
+# --- HubSpot ---------------------------------------------------------------------
+
+def _hubspot_conn(tmp_path):
+    s = _load(tmp_path, [
+        {"source_type": "hubspot", "doc_id": "hf-co", "object_type": "companies",
+         "title": "Acme Health", "content": "Mid-market provider.", "author_email": "rep@acme.com",
+         "visibility": "public", "created": "2026-01-05T00:00:00Z",
+         "updated": "2026-03-10T00:00:00Z",
+         "properties": {"name": "Acme Health", "domain": "acme-health.com"}},
+        {"source_type": "hubspot", "doc_id": "hf-ct", "object_type": "contacts", "title": "Ava",
+         "content": "VP Platform.", "author_email": "rep@acme.com", "visibility": "public",
+         "properties": {"firstname": "Ava"},
+         "associations": [{"to": "hf-co", "label": "Primary"}]},
+        {"source_type": "hubspot", "doc_id": "hf-arch", "object_type": "companies",
+         "title": "Defunct", "content": "Churned.", "author_email": "rep@acme.com",
+         "visibility": "public", "archived": True, "properties": {"name": "Defunct"}},
+    ])
+    return store.connect_ro(s.db_path)
+
+
+def test_hubspot_record_shape(tmp_path):
+    from app import synth
+    from app.routers.hubspot import _record
+    conn = _hubspot_conn(tmp_path)
+    obj = _record(store.get_document(conn, "hubspot", "hf-co"))
+    # a CRM record is {id, properties, createdAt, updatedAt, archived} — ids are numeric strings and
+    # the timestamps are ISO 8601 with milliseconds, as the vendor emits them
+    assert obj["id"] == synth.hubspot_record_id("hf-co")
+    assert obj["id"].isdigit()
+    assert obj["properties"]["domain"] == "acme-health.com"
+    assert obj["createdAt"] == "2026-01-05T00:00:00.000Z"
+    assert obj["updatedAt"] == "2026-03-10T00:00:00.000Z"
+    assert obj["archived"] is False
+    assert _record(store.get_document(conn, "hubspot", "hf-arch"))["archived"] is True
+
+
+def test_hubspot_properties_projection(tmp_path):
+    from app.routers.hubspot import _record
+    conn = _hubspot_conn(tmp_path)
+    row = store.get_document(conn, "hubspot", "hf-co")
+    assert set(_record(row, ["name"])["properties"]) == {"name"}
+    assert set(_record(row)["properties"]) == {"name", "domain"}     # no projection -> all
+
+
+def test_hubspot_association_shape(tmp_path):
+    from app import synth
+    conn = _hubspot_conn(tmp_path)
+    rows = store.hubspot_associations(conn, "hf-ct", "companies")
+    assert [r["to_doc_id"] for r in rows] == ["hf-co"]
+    # the v4 payload is {toObjectId, associationTypes:[{category, typeId, label}]}
+    assert synth.hubspot_record_id(rows[0]["to_doc_id"]).isdigit()
+    assert rows[0]["assoc_category"] == "HUBSPOT_DEFINED"
+    assert rows[0]["label"] == "Primary"
+    # the reverse direction exists and carries its own type id, as real HubSpot does
+    back = store.hubspot_associations(conn, "hf-co", "contacts")
+    assert [r["to_doc_id"] for r in back] == ["hf-ct"]
+    assert back[0]["assoc_type_id"] != rows[0]["assoc_type_id"]
+
+
+def test_hubspot_page_omits_paging_next_on_last_page(tmp_path):
+    """The termination contract at the builder level: `paging.next` appears only when a further page
+    exists, because the official client's fetch_all stops on its absence."""
+    from app.routers.hubspot import _page
+    conn = _hubspot_conn(tmp_path)
+    rows = store.list_hubspot_objects(conn, "companies", limit=3)   # 1 non-archived company
+    assert "paging" not in _page(rows, 10, None)
+    assert _page(rows, 1, None)["results"]                          # a full page still yields rows
+
+
 # --- S3 --------------------------------------------------------------------------
 
 NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"

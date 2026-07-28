@@ -161,6 +161,13 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
         return {"key": ex.get("key"), "subtype": subtype or "STANDARD",
                 "content_type": ex.get("content_type") or "text/plain",
                 "size": ex.get("size"), "created_ts": created, "updated_ts": updated}
+    if src == "hubspot":
+        # The object type is the grouping column, so it is set by the caller like every other
+        # container. HubSpot's typed fields stay in one JSON column because search filters may
+        # name any property (see schemas/hubspot.schema.json).
+        return {"properties": _j(ex.get("properties")),
+                "archived": (1 if ex.get("archived") else None),
+                "created_ts": created, "updated_ts": updated}
     return {}
 
 
@@ -215,6 +222,11 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
     counts: dict[str, int] = {}
     seen: set[str] = set()
     fts_ids: dict[str, list[str]] = {}
+    # HubSpot associations are resolved after the whole corpus is read: a link may name a target
+    # that appears on a later line, and an omitted `to_type` is filled in from the target's own
+    # object type. doc_id -> object_type, plus the declared links.
+    hs_types: dict[str, str] = {}
+    hs_links: list[tuple[str, str, dict]] = []      # (from_doc_id, from_type, declaration)
 
     for lineno, line in enumerate(lines, 1):
         line = line.strip()
@@ -284,7 +296,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                   "requested_reviewers", "resolution", "resolutiondate", "duedate",
                   "fix_versions", "versions", "assignee", "reporter", "minor_edit",
                   "version_message", "version_number", "properties", "icon", "cover",
-                  "key", "content_type", "size", "path"):
+                  "key", "content_type", "size", "path", "archived"):
             if k in rec:
                 extras[k] = rec[k]
         subtype = rec.get("subtype")
@@ -321,6 +333,11 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
 
         insert(doc_id, author, title, rec["content"], 0, subtype, parent_id, extras, created, updated)
 
+        if src == "hubspot":
+            hs_types[doc_id] = container
+            for a in rec.get("associations") or []:
+                hs_links.append((doc_id, container, a))
+
         # comments on the document — only jira/confluence/github expose them (slack uses replies)
         rec_comments = rec.get("comments") or []
         ctable = store.comment_table(src)
@@ -354,6 +371,36 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             rep_cts = created + i
             insert(rep_id, rep_author, rep.get("title") or "", rep["content"], i,
                    sub=rep.get("subtype"), ex=rep, cts=rep_cts)
+
+    # HubSpot associations: one declaration becomes two rows, because real HubSpot exposes a link
+    # from both records (with a distinct type id per direction) and a corpus author should not have
+    # to write it twice.
+    for from_doc, from_type, a in hs_links:
+        to_doc = a["to"]
+        to_type = a.get("to_type") or hs_types.get(to_doc)
+        if to_type is None:
+            # `--append` loads one file at a time, so a target already in the DB is not in
+            # `hs_types`. Fall back to the stored row before giving up, or appending a contact to a
+            # previously-loaded company would fail for a link that is perfectly resolvable.
+            row = conn.execute("SELECT object_type FROM hubspot_objects WHERE doc_id = ?",
+                               (to_doc,)).fetchone()
+            to_type = row["object_type"] if row else None
+        if to_type is None:
+            raise SystemExit(
+                f"hubspot association {from_doc} -> {to_doc}: target not found in this corpus or "
+                f"the existing DB; add the target record or set 'to_type' on the association")
+        category = a.get("category") or "HUBSPOT_DEFINED"
+        label = a.get("label")
+        # An explicit type_id applies only to the direction the author declared; the reverse gets
+        # its own synthesized id, since the two directions never share one in real HubSpot.
+        for f_doc, f_type, t_doc, t_type, tid in (
+                (from_doc, from_type, to_doc, to_type, a.get("type_id")),
+                (to_doc, to_type, from_doc, from_type, None)):
+            conn.execute(
+                "INSERT OR REPLACE INTO hubspot_associations(from_doc_id, from_type, to_doc_id, "
+                "to_type, assoc_category, assoc_type_id, label) VALUES (?,?,?,?,?,?,?)",
+                (f_doc, f_type, t_doc, t_type, category,
+                 tid or synth.hubspot_assoc_type_id(f_type, t_type), label))
 
     # principals: org, groups, users
     conn.execute("INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (org, "org", org, None))

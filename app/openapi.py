@@ -35,6 +35,7 @@ SOURCE_PREFIXES: dict[str, list[str]] = {
     "gdrive": ["/drive"],
     "notion": ["/notion/v1"],
     "atlassian": ["/atlassian", "/wiki"],
+    "hubspot": ["/hubspot"],
 }
 
 _METHODS = ("get", "post", "put", "delete", "patch")

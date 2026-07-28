@@ -33,6 +33,7 @@ SOURCE_TABLE = {
     "confluence": "confluence_pages",
     "notion": "notion_pages",
     "s3": "s3_objects",
+    "hubspot": "hubspot_objects",
 }
 
 
@@ -68,6 +69,10 @@ GROUPING = {
     "confluence": ("confluence_spaces", "space"),
     "notion": ("notion_teamspaces", "teamspace"),
     "s3": ("s3_buckets", "bucket"),
+    # HubSpot has no channel/space/repo equivalent — its API is polymorphic over `{objectType}`
+    # (contacts, companies, deals, …) and supports custom objects, so the object type *is* the
+    # grouping unit and the thing an ACL group hangs off.
+    "hubspot": ("hubspot_object_types", "object_type"),
 }
 
 
@@ -193,6 +198,34 @@ CREATE TABLE IF NOT EXISTS s3_objects (
 CREATE INDEX IF NOT EXISTS idx_s3_bucket ON s3_objects(bucket);
 CREATE INDEX IF NOT EXISTS idx_s3_key ON s3_objects(bucket, key);
 
+-- ── HubSpot: ONE polymorphic table, because the CRM API is polymorphic ──
+-- `{objectType}` is a path variable (/crm/v3/objects/{objectType}) and HubSpot supports custom
+-- objects, so a table per type would make every new object type a schema migration and would put
+-- a source's docs in more than one table, breaking `table()`'s one-table-per-source contract.
+-- HubSpot's typed properties therefore live in a JSON column: search filters can name ANY
+-- property, so they compile to json_extract() rather than to fixed columns.
+CREATE TABLE IF NOT EXISTS hubspot_objects (
+    doc_id TEXT PRIMARY KEY, object_type TEXT NOT NULL, author_email TEXT NOT NULL,
+    title TEXT NOT NULL, content TEXT NOT NULL,
+    properties TEXT, archived INTEGER, created_ts INTEGER NOT NULL, updated_ts INTEGER,
+    owner_display TEXT
+);
+-- (object_type, doc_id), not object_type alone: every read of this table is "one object type,
+-- ordered by doc_id" — keyset paging and the search scan both are — and a single-column index
+-- leaves ORDER BY to a temp b-tree that re-sorts every matching row on each page. Same lesson as
+-- idx_s3_key(bucket, key): put the ordering column in the index so a page is a range seek.
+CREATE INDEX IF NOT EXISTS idx_hubspot_type_doc ON hubspot_objects(object_type, doc_id);
+
+-- Associations are bidirectional in real HubSpot, with a distinct type id per direction, so a row
+-- is stored per direction and a lookup stays a plain (from_doc_id, to_type) index match.
+CREATE TABLE IF NOT EXISTS hubspot_associations (
+    from_doc_id TEXT NOT NULL, from_type TEXT NOT NULL,
+    to_doc_id TEXT NOT NULL, to_type TEXT NOT NULL,
+    assoc_category TEXT, assoc_type_id INTEGER NOT NULL, label TEXT,
+    PRIMARY KEY (from_doc_id, to_doc_id, assoc_type_id)
+);
+CREATE INDEX IF NOT EXISTS idx_hubspot_assoc_from ON hubspot_associations(from_doc_id, to_type);
+
 -- ── shared relationship tables (keyed by doc_id / names) ──
 -- ── per-service grouping tables (name of the grouping unit + its owning ACL group) ──
 CREATE TABLE IF NOT EXISTS slack_channels    (channel TEXT PRIMARY KEY, group_id TEXT);
@@ -203,6 +236,7 @@ CREATE TABLE IF NOT EXISTS jira_projects     (project TEXT PRIMARY KEY, group_id
 CREATE TABLE IF NOT EXISTS confluence_spaces (space   TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS notion_teamspaces (teamspace TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS s3_buckets        (bucket  TEXT PRIMARY KEY, group_id TEXT);
+CREATE TABLE IF NOT EXISTS hubspot_object_types (object_type TEXT PRIMARY KEY, group_id TEXT);
 
 CREATE TABLE IF NOT EXISTS principals (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, display_name TEXT, email TEXT
@@ -282,14 +316,17 @@ def jcol(row: sqlite3.Row, key: str, default=None):
 
 # --- ACL-aware document queries -------------------------------------------------
 
-def _acl_clause(tbl: str, visible_ids: set[str] | None) -> tuple[str, list]:
+def _acl_clause(tbl: str, visible_ids: set[str] | None, col: str = "doc_id") -> tuple[str, list]:
+    """``col`` names the column holding the doc whose ACL decides visibility — normally the row's
+    own ``doc_id``, but for a HubSpot association it is the *target* (``to_doc_id``), since the
+    target is the record whose existence the response would reveal."""
     if visible_ids is None:
         return "", []
     ids = list(visible_ids)
     if not ids:
         return " AND 0", []
     marks = ",".join("?" for _ in ids)
-    return (f" AND EXISTS (SELECT 1 FROM doc_acl a WHERE a.doc_id = {tbl}.doc_id "
+    return (f" AND EXISTS (SELECT 1 FROM doc_acl a WHERE a.doc_id = {tbl}.{col} "
             f"AND a.principal_id IN ({marks}))", ids)
 
 
@@ -362,6 +399,57 @@ def list_s3_objects(conn, bucket, *, prefix="", start_after=None, start_at=None,
         params.append(start_at)
     clause, cparams = _acl_clause("s3_objects", visible_ids)
     sql += clause + " ORDER BY key ASC LIMIT ?"
+    params += cparams + [limit]
+    return conn.execute(sql, params).fetchall()
+
+
+def list_hubspot_objects(conn, object_type, *, after_doc_id=None, visible_ids=None, limit=100,
+                         archived=False, columns="*", prefilter=None) -> list[sqlite3.Row]:
+    """One page of a CRM object type, keyset-paginated by ``doc_id``.
+
+    HubSpot's ``after`` cursor is a *record id*, which the router maps back to a doc_id — so the
+    bound is a keyset (``doc_id > ?``) rather than an OFFSET, and a page costs one indexed range
+    scan regardless of how deep into the type it sits. ``archived`` splits the two views the API
+    exposes: archived records are hidden unless explicitly asked for.
+
+    ``prefilter`` is an optional ``(sql_fragment, params)`` the caller has established as a
+    *necessary* condition for a match, so pushing it down can only remove rows that would have been
+    rejected anyway. It exists because search must walk the whole object type to report an honest
+    total, and doing that row-by-row in Python is far slower than letting SQLite reject the bulk.
+
+    ``columns`` narrows the projection. Search has to walk the whole object type to report an
+    honest ``total``, and ``content`` is by far the widest column (a note's body), so reading it for
+    rows that are only being *filtered* dominates that scan — the caller passes just the columns it
+    will actually read."""
+    sql = f"SELECT {columns} FROM hubspot_objects WHERE object_type = ?"
+    params: list = [object_type]
+    if prefilter:
+        frag, fparams = prefilter
+        sql += f" AND {frag}"
+        params += fparams
+    sql += " AND archived IS NOT NULL" if archived else " AND archived IS NULL"
+    if after_doc_id:
+        sql += " AND doc_id > ?"
+        params.append(after_doc_id)
+    clause, cparams = _acl_clause("hubspot_objects", visible_ids)
+    sql += clause + " ORDER BY doc_id LIMIT ?"
+    params += cparams + [limit]
+    return conn.execute(sql, params).fetchall()
+
+
+def hubspot_associations(conn, from_doc_id, to_type, *, after_to_doc_id=None, visible_ids=None,
+                         limit=500) -> list[sqlite3.Row]:
+    """One page of associations from a CRM record to records of ``to_type``, ACL-scoped on the
+    target. Keyset-paginated by ``to_doc_id`` for the same reason the listings are: the API's
+    cursor is the last record id the caller saw, and a record past the first page must stay
+    reachable."""
+    sql = "SELECT * FROM hubspot_associations WHERE from_doc_id = ? AND to_type = ?"
+    params: list = [from_doc_id, to_type]
+    if after_to_doc_id:
+        sql += " AND to_doc_id > ?"
+        params.append(after_to_doc_id)
+    clause, cparams = _acl_clause("hubspot_associations", visible_ids, col="to_doc_id")
+    sql += clause + " ORDER BY to_doc_id LIMIT ?"
     params += cparams + [limit]
     return conn.execute(sql, params).fetchall()
 

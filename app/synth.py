@@ -121,6 +121,18 @@ def jira_key(doc_id: str, project_key: str) -> str:
     return f"{project_key}-{hnum(doc_id, 16, 6) % 9000 + 1}"
 
 
+def hubspot_record_id(doc_id: str) -> str:
+    """HubSpot record ids are numeric strings (e.g. "5790939450")."""
+    return str(1_000_000_000 + hnum(doc_id, 0, 10) % 9_000_000_000)
+
+
+def hubspot_assoc_type_id(from_type: str, to_type: str) -> int:
+    """Association type id for one direction of a type pair. Real HubSpot uses well-known ids per
+    direction (contact->company is not company->contact), so this is direction-sensitive too —
+    derived from the ordered pair rather than being a shared constant."""
+    return hnum(f"{from_type}>{to_type}", 0, 6) % 900 + 1
+
+
 def confluence_id(doc_id: str) -> int:
     return 100_000 + hnum(doc_id, 24, 8) % 9_000_000
 

@@ -154,6 +154,52 @@ SAMPLE = [
      "key": "comp/bands.csv", "title": "Comp Bands", "content": "band,min,max\nL5,180,220",
      "content_type": "text/csv", "author_email": "hana@acme.com", "author_groups": ["people"],
      "visibility": "group"},
+
+    # HubSpot: the object type is the container, so these span three of them. The contact and the
+    # note are associated with the company (declared once; the loader writes both directions).
+    {"source_type": "hubspot", "doc_id": "hs-co-acme", "object_type": "companies",
+     "group": "sales", "title": "Acme Health",
+     "content": "Acme Health — mid-market healthcare provider evaluating the platform.",
+     "author_email": "rep@acme.com", "author_groups": ["sales"], "visibility": "public",
+     "properties": {"name": "Acme Health", "domain": "acme-health.com",
+                    "industry": "healthcare", "lifecyclestage": "evaluation",
+                    "employees": "150", "founded": "2011-03-01"}},
+    {"source_type": "hubspot", "doc_id": "hs-c-ava", "object_type": "contacts",
+     "group": "sales", "title": "Ava Stone",
+     "content": "Ava Stone — VP Platform at Acme Health.",
+     "author_email": "rep@acme.com", "author_groups": ["sales"], "visibility": "public",
+     "properties": {"firstname": "Ava", "lastname": "Stone", "email": "ava@acme-health.com"},
+     "associations": [{"to": "hs-co-acme", "label": "Primary"}]},
+    {"source_type": "hubspot", "doc_id": "hs-note-1", "object_type": "notes",
+     "group": "sales", "title": "",
+     "content": "Security review scheduled; wants EU data residency.",
+     "author_email": "rep@acme.com", "author_groups": ["sales"], "visibility": "public",
+     "properties": {"hs_note_body": "Security review scheduled; wants EU data residency."},
+     "associations": [{"to": "hs-co-acme"}]},
+    # Restricted by explicit readers rather than group visibility, so the `companies` container
+    # keeps a single owning group while still giving the ACL tests a hidden CRM record.
+    {"source_type": "hubspot", "doc_id": "hs-co-secret", "object_type": "companies",
+     "group": "sales", "title": "Stealth Health Co",
+     "content": "Confidential account under NDA — people team only.",
+     "author_email": "hana@acme.com", "author_groups": ["people"],
+     "readers": ["hana@acme.com"],
+     "properties": {"name": "Stealth Health Co", "lifecyclestage": "qualified"}},
+    # Two more companies so a small page size actually produces a cursor: with only two rows a
+    # `limit=2` crawl never takes the paging branch, and the cursor path would go untested.
+    {"source_type": "hubspot", "doc_id": "hs-co-borealis", "object_type": "companies",
+     "group": "sales", "title": "Borealis Clinics",
+     "content": "Regional clinic network, procurement stage.", "author_email": "rep@acme.com",
+     "author_groups": ["sales"], "visibility": "public",
+     "properties": {"name": "Borealis Clinics", "domain": "borealis.example",
+                    "industry": "healthcare", "lifecyclestage": "procurement",
+                    "employees": "400", "founded": "2014-06-01"}},
+    # `archived` is only meaningful if something is archived: this row is excluded from the default
+    # listing and is the only row the archived view returns.
+    {"source_type": "hubspot", "doc_id": "hs-co-defunct", "object_type": "companies",
+     "group": "sales", "title": "Defunct Labs", "content": "Churned; record archived.",
+     "author_email": "rep@acme.com", "author_groups": ["sales"], "visibility": "public",
+     "archived": True,
+     "properties": {"name": "Defunct Labs", "lifecyclestage": "qualified", "employees": "12"}},
 ]
 
 

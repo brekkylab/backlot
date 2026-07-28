@@ -6,8 +6,13 @@ The only change from talking to the real service is the base URL.
 
 ```bash
 pip install -e ".[examples]"
-python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py
+python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py, hubspot.py
 ```
+
+**HubSpot** (`hubspot.py`) points the official client with a plain `host=` kwarg — no shim and no
+first-class base-URL arg needed. It requires `hubspot-api-client>=12`: on 8.x that kwarg is silently
+**ignored** and the client talks to api.hubapi.com, so the script asserts its configured host before
+reading anything rather than letting a "mock" run hit production.
 
 `github.py` lists a repo's issues/PRs, then crawls its **code**: `repo.get_git_tree(...,
 recursive=True)` for the file tree, `repo.get_contents(path)` to read one file, and

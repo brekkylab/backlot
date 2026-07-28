@@ -466,17 +466,22 @@ def test_linear_list_scopes_to_a_team(db):
     assert store.count_linear_issues(db, "design") == 1
 
 
-def test_linear_list_orders_newest_first_by_created(db):
-    rows = store.list_linear_issues(db, "engineering", limit=100, order_by="createdAt")
+def test_linear_default_order_is_createdAt_ascending(db):
+    """Linear documents createdAt as the default ordering, and its `PaginationOrderBy` carries no
+    direction — so an absent `orderBy` must still order by creation, not by insertion order."""
+    default = [r["doc_id"] for r in store.list_linear_issues(db, "engineering", limit=100)]
+    explicit = [r["doc_id"] for r in store.list_linear_issues(db, "engineering", limit=100,
+                                                              order_by="createdAt")]
+    assert default == explicit
+    stamps = [r["created_ts"] for r in store.list_linear_issues(db, "engineering", limit=100)]
+    assert stamps == sorted(stamps)
+
+
+def test_linear_list_can_be_ordered_newest_first(db):
+    rows = store.list_linear_issues(db, "engineering", limit=100, order_by="createdAt",
+                                    descending=True)
     stamps = [r["created_ts"] for r in rows]
     assert stamps == sorted(stamps, reverse=True)
-
-
-def test_linear_list_orders_oldest_first_when_ascending(db):
-    rows = store.list_linear_issues(db, "engineering", limit=100, order_by="createdAt",
-                                    descending=False)
-    stamps = [r["created_ts"] for r in rows]
-    assert stamps == sorted(stamps)
 
 
 def test_linear_default_order_is_stable_across_pages(db):

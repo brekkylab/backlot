@@ -511,8 +511,16 @@ def list_hubspot_objects(conn, object_type, *, after_doc_id=None, visible_ids=No
 # always total — the sort column plus `doc_id` as the tiebreak — because an offset page over a
 # non-total order can silently repeat or skip a row between pages.
 
-# GraphQL `orderBy` value -> the column it sorts on. Linear pages newest-first by default, so the
-# caller asks for DESC; `doc_id` breaks ties into a stable total order either way.
+# GraphQL `orderBy` value -> the column it sorts on.
+#
+# Linear's pagination docs state "By default results are ordered by createdAt field", and its
+# `PaginationOrderBy` enum carries a FIELD ONLY — no direction — so the server fixes the
+# direction and a client that wants the other one uses the richer `sort:` input instead.
+# The direction is not documented; ASCENDING is the choice here because it is the only one that
+# makes an `after` cursor stable: with newest-first, creating an issue shifts every existing
+# offset by one and a mid-crawl cursor silently re-reads a row. `doc_id` breaks ties into a
+# total order either way, which offset paging requires.
+LINEAR_DEFAULT_ORDER_BY = "createdAt"
 LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts",
                         "updatedAt": "COALESCE(updated_ts, created_ts)"}
 
@@ -545,9 +553,10 @@ def _linear_order(order_by: str | None, descending: bool, sort=None) -> str:
             terms.append(f"{col} {direction}{tail}")
     if terms:
         return ", ".join(terms) + ", doc_id"
-    col = LINEAR_ORDER_COLUMNS.get(order_by or "")
-    if col is None:
-        return "doc_id"
+    # An ABSENT orderBy is not "unordered": Linear documents createdAt as the default, so falling
+    # through to raw insertion order (`doc_id`) was a real divergence — `issues(first: 10)`
+    # returned an arbitrary ten rather than the first ten by creation.
+    col = LINEAR_ORDER_COLUMNS[order_by or LINEAR_DEFAULT_ORDER_BY]
     direction = "DESC" if descending else "ASC"
     # NULL updated_ts sorts last on DESC, which is where an issue with no recorded edit belongs.
     return f"{col} {direction}, doc_id"
@@ -561,7 +570,7 @@ def _linear_archived(archived: bool) -> str:
 
 
 def list_linear_issues(conn, team=None, *, visible_ids=None, limit=50, offset=0,
-                       order_by=None, descending=True, prefilter=None, sort=None,
+                       order_by=None, descending=False, prefilter=None, sort=None,
                        archived=False) -> list[sqlite3.Row]:
     """One page of Linear issues, optionally scoped to a team.
 

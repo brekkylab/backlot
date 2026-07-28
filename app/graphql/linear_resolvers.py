@@ -720,17 +720,23 @@ def resolve_issue_comments(issue, info, first=None, after=None, last=None, befor
 
 
 def resolve_issue_parent(issue, info):
-    """``Issue.parent``. The bench names a parent by its human key, and keys are not unique, so
-    this resolves through the same ACL-scoped identifier lookup ``issue(id: "ENG-123")`` uses —
-    a parent the caller cannot read comes back null rather than leaking its existence.
+    """``Issue.parent`` — read off the ``parent_doc_id`` resolved at import, ACL-scoped, so a
+    parent the caller cannot read is null rather than a way to confirm it exists.
 
-    Bound rather than precomputed in :func:`_issue` so a page of 50 issues pays nothing unless
-    the client actually selects ``parent`` (`@linear/sdk`'s fragment selects ``parent { id }``)."""
-    key = issue["_row"]["parent_key"]
-    if not key:
+    Reads the SAME column ``Issue.children`` does, which is the entire point of resolving the key
+    once at import: the two directions are exact inverses because they consult one value, not
+    because two independent lookups happen to agree. It is also a primary-key lookup rather than
+    an identifier lookup — `@linear/sdk`'s Issue fragment selects ``parent { id }`` on every node,
+    so a 50-issue page did 50 indexed-identifier searches and cost ~45ms of the page.
+
+    Bound rather than precomputed in :func:`_issue`, so a page pays nothing unless ``parent`` is
+    actually selected."""
+    parent_doc_id = issue["_row"]["parent_doc_id"]
+    if not parent_doc_id:
         return None
     ctx = _ctx(info)
-    row = store.linear_issue_by_identifier(ctx["conn"], key, visible_ids=ctx["visible_ids"])
+    row = store.get_document(ctx["conn"], "linear", parent_doc_id,
+                             visible_ids=ctx["visible_ids"])
     return _issue(row, info) if row is not None else None
 
 

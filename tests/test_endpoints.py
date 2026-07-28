@@ -2294,3 +2294,21 @@ def test_linear_issue_with_no_relations_returns_empty_connections(client, admin_
                     "attachments { nodes { id } } releases { nodes { id } } } }",
             admin_h).json()["data"]["issue"]
     assert all(r[k]["nodes"] == [] for k in ("relations", "children", "attachments", "releases"))
+
+
+def test_linear_parent_and_children_read_the_same_column(client, admin_h, ro_conn):
+    """Both directions must consult the resolved `parent_doc_id`, not two independent lookups
+    that happen to agree — that is the whole reason the key is resolved once at import.
+
+    Also a performance contract: `@linear/sdk`'s Issue fragment selects `parent { id }` on every
+    node, so resolving it by identifier cost ~45ms on a 50-issue page."""
+    # `ro_conn` is the SAMPLE db; a fresh get_settings() would follow whatever MOCK_DATA_DIR
+    # another module last set, which is why this reads the fixture instead.
+    row = ro_conn.execute("SELECT doc_id, parent_doc_id, parent_key FROM linear_issues "
+                          "WHERE doc_id = 'lin-batch'").fetchone()
+    # the import pass resolved the KEY into a doc_id
+    assert row["parent_key"] == "ENG-103"
+    assert row["parent_doc_id"] == "lin-secret"
+    served = gql(client, '{ issue(id: "ENG-102") { parent { identifier } } }',
+                 admin_h).json()["data"]["issue"]["parent"]
+    assert served["identifier"] == "ENG-103"

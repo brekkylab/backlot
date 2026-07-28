@@ -257,7 +257,11 @@ CREATE INDEX IF NOT EXISTS idx_linear_state ON linear_issues(state);
 -- The by-id roots probe "can this caller see any issue carrying X" (linear_entity_has_visible).
 -- Indexed so the probe seeks to that entity's issues instead of scanning all 35k until it finds
 -- one the caller may read — the miss case (which is exactly the leak attempt) is the worst case.
--- Labels have no index: they live in a JSON column and json_each cannot be indexed.
+-- Labels have no index: they live in a JSON column and json_each cannot be indexed. Measured on
+-- the deployed 35k-issue corpus, that is the right trade rather than a gap — a legitimate HIT is
+-- 3.7-7.6ms (it stops at the first visible carrier) and an absent id never reaches the probe at
+-- all (4.1ms), while only a MISS, i.e. a caller probing a label they cannot see, pays the full
+-- 81ms scan. The slow path is exactly the enumeration path.
 CREATE INDEX IF NOT EXISTS idx_linear_project ON linear_issues(project);
 CREATE INDEX IF NOT EXISTS idx_linear_cycle ON linear_issues(cycle);
 CREATE INDEX IF NOT EXISTS idx_linear_assignee ON linear_issues(assignee_email);

@@ -266,7 +266,22 @@ CREATE TABLE IF NOT EXISTS linear_issues (
 -- page a range seek instead of a temp b-tree re-sort of the whole team (same lesson as
 -- idx_hubspot_type_doc). ENG alone is ~23k rows.
 CREATE INDEX IF NOT EXISTS idx_linear_team_doc ON linear_issues(team, doc_id);
-CREATE INDEX IF NOT EXISTS idx_linear_created_ts ON linear_issues(created_ts);
+-- The ORDER BY is always TOTAL — the sort key plus `doc_id` — so an index on the sort key ALONE
+-- does not satisfy it: SQLite reports "USE TEMP B-TREE FOR LAST TERM OF ORDER BY" and sorts the
+-- whole table for every page. That is not academic. When the default ordering moved from `doc_id`
+-- (the primary key, already an index) to Linear's documented `createdAt`, a page at offset 35,000
+-- went from 5ms to 699ms on the deployed corpus. These carry the tiebreak, so the ORDER BY is
+-- read straight off the index.
+CREATE INDEX IF NOT EXISTS idx_linear_created_doc ON linear_issues(created_ts, doc_id);
+CREATE INDEX IF NOT EXISTS idx_linear_team_created ON linear_issues(team, created_ts, doc_id);
+-- `orderBy: updatedAt` sorts on the same COALESCE the field is served with, so the index has to
+-- be on the expression, not the bare column.
+CREATE INDEX IF NOT EXISTS idx_linear_updated_doc
+    ON linear_issues(COALESCE(updated_ts, created_ts), doc_id);
+-- Superseded by idx_linear_created_doc, which has it as a prefix. Dropped explicitly because
+-- `CREATE INDEX IF NOT EXISTS` matches on NAME — it would never replace a differently-defined
+-- index of the same name on an already-built DB.
+DROP INDEX IF EXISTS idx_linear_created_ts;
 CREATE INDEX IF NOT EXISTS idx_linear_state ON linear_issues(state);
 -- The by-id roots probe "can this caller see any issue carrying X" (linear_entity_has_visible).
 -- Indexed so the probe seeks to that entity's issues instead of scanning all 35k until it finds

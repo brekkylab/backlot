@@ -302,13 +302,15 @@ def _issue_filter(conn, flt: dict) -> tuple[str, list]:
             }))
         elif key == "labels":
             for sub, every in (("some", False), ("every", True)):
-                if spec.get(sub):
+                if sub in spec and spec[sub] is not None:
                     add(*_labels_predicate(spec[sub], every=every))
             for sub in ("and", "or"):
                 if spec.get(sub):
                     raise GraphQLError(
                         f"labels.{sub} is not supported by this mock; use labels.some / labels.every")
-            if not any(spec.get(k) for k in ("some", "every")):
+            # Key PRESENCE, not truthiness: `some: {}` is present-but-empty and deserves the
+            # more precise "must constrain something" from _labels_predicate, not this one.
+            if not any(k in spec for k in ("some", "every")):
                 raise GraphQLError("a labels filter needs `some` or `every`")
         else:
             raise GraphQLError(f"unsupported issue filter field {key!r}")

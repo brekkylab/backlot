@@ -269,3 +269,10 @@ def test_comment_filter_by_the_served_id_round_trips(fclient):
     got = fclient.post("/linear/graphql", json={"query": q},
                        headers={"Authorization": fclient.__dict__["_admin"]}).json()
     assert [n["body"] for n in got["data"]["comments"]["nodes"]] == [first["body"]]
+
+
+def test_an_empty_labels_predicate_is_an_error_not_a_no_op(fclient):
+    """`labels: {some: {}}` constrains nothing. Compiling it to an empty fragment would drop the
+    whole filter and answer with the full corpus, so it is rejected instead."""
+    assert "must constrain something" in err(fclient, "{labels: {some: {}}}")
+    assert "needs `some` or `every`" in err(fclient, "{labels: {}}")

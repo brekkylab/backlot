@@ -455,8 +455,9 @@ def test_hubspot_listing_is_an_index_range_seek(tmp_path):
 
 def test_linear_list_and_count_agree(db):
     rows = store.list_linear_issues(db, limit=100)
-    assert store.count_linear_issues(db) == len(rows) == 4
-    assert {r["doc_id"] for r in rows} == {"lin-rl", "lin-batch", "lin-des", "lin-secret"}
+    assert store.count_linear_issues(db) == len(rows) == 5
+    assert {r["doc_id"] for r in rows} == {"lin-rl", "lin-batch", "lin-des", "lin-secret",
+                                           "lin-blackops"}
 
 
 def test_linear_list_scopes_to_a_team(db):
@@ -485,7 +486,7 @@ def test_linear_default_order_is_stable_across_pages(db):
     for offset in range(store.count_linear_issues(db)):
         page = store.list_linear_issues(db, limit=1, offset=offset)
         seen.append(page[0]["doc_id"])
-    assert len(seen) == len(set(seen)) == 4
+    assert len(seen) == len(set(seen)) == 5
 
 
 def test_linear_identifier_lookup(db):
@@ -506,11 +507,12 @@ def test_linear_comments_scoped_to_one_issue(db):
 
 
 def test_linear_comments_across_the_corpus(db):
-    assert store.count_linear_comments(db) == 2
+    assert store.count_linear_comments(db) == 3
 
 
 def test_linear_team_issue_counts(db):
-    assert store.linear_team_issue_counts(db) == {"engineering": 3, "design": 1}
+    assert store.linear_team_issue_counts(db) == {"engineering": 3, "design": 1,
+                                                 "blackops": 1}
 
 
 def test_linear_distinct_values_feed_the_reverse_index(db):

@@ -2029,17 +2029,26 @@ def test_linear_team_resolves_by_key_and_uuid(client, admin_h):
                admin_h).json()["data"]["team"]["key"] == "ENG"
 
 
-def test_linear_team_issue_count_is_the_visible_count(client, admin_h):
-    r = gql(client, "{ teams { nodes { key issueCount } } }", admin_h)
-    counts = {t["key"]: t["issueCount"] for t in r.json()["data"]["teams"]["nodes"]}
-    assert counts == {"ENG": 3, "DES": 1}
+def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens):
+    """Asserted for BOTH an admin and a restricted caller: as admin alone the count's ACL branch
+    never runs, so the assertion would hold with scoping removed entirely."""
+    admin = {t["key"]: t["issueCount"] for t in
+             gql(client, "{ teams { nodes { key issueCount } } }",
+                 admin_h).json()["data"]["teams"]["nodes"]}
+    assert admin == {"ENG": 3, "DES": 1, "BLA": 1}
+    ava_h = {"Authorization": linear_user_token(tokens, "ava@acme.com")}
+    ava = {t["key"]: t["issueCount"] for t in
+           gql(client, "{ teams { nodes { key issueCount } } }",
+               ava_h).json()["data"]["teams"]["nodes"]}
+    # ava cannot see lin-secret or the blackops team at all.
+    assert ava == {"ENG": 2, "DES": 1}
 
 
 def test_linear_state_type_is_linears_category(client, admin_h):
     r = gql(client, "{ issues { nodes { identifier state { name type } } } }", admin_h)
     types = {n["identifier"]: n["state"]["type"] for n in r.json()["data"]["issues"]["nodes"]}
-    assert types == {"ENG-101": "started", "ENG-102": "completed",
-                     "DES-77": "started", "ENG-103": "backlog"}
+    assert types == {"ENG-101": "started", "ENG-102": "completed", "DES-77": "started",
+                     "ENG-103": "backlog", "BLA-1": "triage"}
 
 
 def test_linear_priority_is_linears_numeric_scale(client, admin_h):

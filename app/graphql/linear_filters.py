@@ -138,10 +138,16 @@ def _derived_in(conn, column: str, derive, spec: dict) -> tuple[str, list]:
     names = _distinct(conn, column)
     # Reuse the comparator machinery by testing each derived value against it in Python.
     matched = [n for n in names if _matches(derive(n), spec)]
+    # A NEGATIVE predicate ("not this project") must keep rows whose column is NULL — they have
+    # no value, so they cannot be the excluded one. The SQL comparator's own `neq` already spells
+    # this out (`IS NULL OR <> ?`); an IN-list over distinct non-NULL names silently dropped them,
+    # so `project:{id:{neq:X}}` and `project:{name:{neq:X}}` disagreed on 24 real bench rows.
+    negative = any(op in spec for op in ("neq", "nin", "neqIgnoreCase"))
+    null_ok = f" OR {column} IS NULL" if negative else ""
     if not matched:
-        return "0", []
+        return (f"{column} IS NULL", []) if negative else ("0", [])
     marks = ",".join("?" for _ in matched)
-    return f"{column} IN ({marks})", list(matched)
+    return f"({column} IN ({marks}){null_ok})", list(matched)
 
 
 def _matches(value: str, spec: dict) -> bool:
@@ -171,15 +177,44 @@ def _matches(value: str, spec: dict) -> bool:
     return True
 
 
+def _label_predicate(spec: dict) -> tuple[str, list]:
+    """One ``IssueLabelFilter`` against the ``value`` column of a ``json_each`` row, INCLUDING its
+    ``and`` / ``or``. Reading only ``name`` (as an earlier version did) made a nested and/or
+    compile to nothing — and an empty fragment drops the WHOLE filter, so
+    ``labels:{some:{and:[{name:{eq:"nonexistent"}}]}}`` returned the unfiltered corpus. That is
+    precisely the silent-wrong-answer this module exists to prevent."""
+    parts: list[str] = []
+    params: list = []
+    for key, sub in (spec or {}).items():
+        if sub is None:
+            continue
+        if key == "name":
+            frag, p = _Comparator("value").render(sub)
+        elif key in ("and", "or"):
+            subs = [_label_predicate(x) for x in sub]
+            frags = [f for f, _ in subs if f]
+            for _, sp in subs:
+                params.extend(sp)
+            frag, p = (("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
+                       if frags else ""), []
+        else:
+            raise GraphQLError(f"unsupported label filter field {key!r}")
+        if frag:
+            parts.append(frag)
+            params.extend(p)
+    return _join(parts, "AND"), params
+
+
 def _labels_predicate(spec: dict, *, every: bool) -> tuple[str, list]:
-    """``labels: {some|every: {name: …}}`` over the JSON ``labels`` column.
+    """``labels: {some|every: {…}}`` over the JSON ``labels`` column.
 
     ``some`` is an EXISTS over ``json_each``; ``every`` is "no element fails", which also holds
     for an issue with no labels — the same semantics Linear's collection filters use."""
-    name_spec = spec.get("name") or {}
-    inner, params = _Comparator("value").render(name_spec)
+    inner, params = _label_predicate(spec)
     if not inner:
-        return "", []
+        # An empty inner predicate must NOT silently vanish: dropping it turns a narrowing filter
+        # into a full-corpus answer. Nothing legitimate produces one, so it is a client error.
+        raise GraphQLError("a labels filter must constrain something (e.g. labels.some.name)")
     if every:
         return (f"NOT EXISTS (SELECT 1 FROM json_each(COALESCE(labels, '[]')) "
                 f"WHERE NOT {inner})", params)
@@ -273,6 +308,8 @@ def _issue_filter(conn, flt: dict) -> tuple[str, list]:
                 if spec.get(sub):
                     raise GraphQLError(
                         f"labels.{sub} is not supported by this mock; use labels.some / labels.every")
+            if not any(spec.get(k) for k in ("some", "every")):
+                raise GraphQLError("a labels filter needs `some` or `every`")
         else:
             raise GraphQLError(f"unsupported issue filter field {key!r}")
     return _join(parts, "AND"), params
@@ -312,6 +349,29 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
     return _join(parts, "AND"), params
 
 
+def _map_comment_ids(conn, spec: dict) -> dict:
+    """Rewrite a comparator over ``Comment.id`` from served UUIDs back to stored row ids.
+
+    Unlike an issue, a comment has no app-level reverse index (there are 165k in the bench and
+    they are only ever reached through their parent), so the mapping is built on demand for just
+    the ids the comparator names. An unresolvable id becomes a sentinel that matches nothing,
+    which is what "no such comment" should return."""
+    out = {}
+    for op, val in spec.items():
+        values = val if isinstance(val, list) else [val]
+        wanted = {str(v) for v in values}
+        lookup: dict[str, str] = {}
+        for (row_id,) in conn.execute("SELECT id FROM linear_comments"):
+            served = synth.linear_comment_id(row_id)
+            if served in wanted:
+                lookup[served] = row_id
+                if len(lookup) == len(wanted):
+                    break
+        mapped = [lookup.get(str(v), "\x00none") for v in values]
+        out[op] = mapped if isinstance(val, list) else mapped[0]
+    return out
+
+
 def compile_comment_filter(conn, flt: dict | None) -> tuple[str, list] | None:
     """``CommentFilter`` -> ``(sql_fragment, params)``. Columns are on the aliased ``c`` table,
     matching :func:`app.store.list_linear_comments`'s join."""
@@ -334,7 +394,9 @@ def _comment_filter(conn, flt: dict) -> tuple[str, list]:
                 parts.append("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
             continue
         if key == "id":
-            frag, p = _Comparator("c.id").render(spec)
+            # `Comment.id` is served as synth.linear_comment_id(row id), so a filter written from
+            # a served id must be translated back or it can never match what the client just saw.
+            frag, p = _Comparator("c.id").render(_map_comment_ids(conn, spec))
         elif key == "body":
             frag, p = _Comparator("c.body").render(spec)
         elif key in ("createdAt", "updatedAt"):

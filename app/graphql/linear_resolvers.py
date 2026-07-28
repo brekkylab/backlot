@@ -43,25 +43,34 @@ def _org_domain(info) -> str:
 
 # --- pagination -------------------------------------------------------------------
 
-def _slice(first, after, last, before) -> tuple[int, int, bool]:
-    """Relay ``first``/``after`` (forward) or ``last``/``before`` (backward) -> ``(offset, limit,
-    backward)``.
+def _slice(first, after, last, before) -> tuple[int | None, int, int]:
+    """Relay ``first``/``after`` (forward) or ``last``/``before`` (backward) ->
+    ``(offset, limit, floor)``.
 
-    Backward paging is real in Linear, and with an offset cursor it is cheap: ``before`` is the
-    offset of the first row the caller has already seen, so the page is the ``last`` rows that
-    end just before it. Asking for both directions at once is a client bug, and the spec says to
-    reject it rather than guess."""
+    ``offset is None`` means "count back from the END of the result set" — the caller resolves it
+    with :func:`_from_end` once it knows the total. That case is ``last:`` with no ``before:``,
+    and it is why this returns an optional offset rather than an int: treating an absent
+    ``before`` as offset 0 served the FIRST n rows to every client asking for the last n,
+    silently, with ``hasPreviousPage: false`` on what it believed was the final page.
+
+    ``floor`` is the lower bound a from-the-end offset may not cross, so ``after`` still applies
+    when combined with ``last`` (Relay applies ``after`` first, then takes the last n of what
+    remains). Asking for both ``first`` and ``last`` is a client bug the spec says to reject."""
     if first is not None and last is not None:
         raise GraphQLError("passing both `first` and `last` is not supported")
+    start = pagination.decode_cursor(after) if after else 0
     if last is not None or (before is not None and first is None):
         limit = pagination.clamp_limit(last, PAGE_DEFAULT, PAGE_MAX)
-        end = pagination.decode_cursor(before) if before else None
-        offset = max(0, (end - limit)) if end is not None else 0
-        if end is not None:
-            limit = min(limit, end)
-        return offset, limit, True
-    return (pagination.decode_cursor(after) if after else 0,
-            pagination.clamp_limit(first, PAGE_DEFAULT, PAGE_MAX), False)
+        if before is None:
+            return None, limit, start        # resolved against the total by _from_end
+        end = pagination.decode_cursor(before)
+        return max(start, end - limit), min(limit, max(0, end - start)), start
+    return start, pagination.clamp_limit(first, PAGE_DEFAULT, PAGE_MAX), start
+
+
+def _from_end(offset: int | None, limit: int, floor: int, total: int) -> int:
+    """Resolve a from-the-end slice now that the total is known."""
+    return max(floor, total - limit) if offset is None else offset
 
 
 def _connection(nodes: list, offset: int, has_next: bool) -> dict:
@@ -90,6 +99,87 @@ def _page(rows: list, limit: int) -> tuple[list, bool]:
     """Split a limit+1 fetch into (page, has_next). Reading one row past the page is what makes
     ``hasNextPage`` free — the extra row is discarded, never served."""
     return (rows[:limit], True) if len(rows) > limit else (rows, False)
+
+
+# --- in-memory filters ----------------------------------------------------------------
+# `teams`, `users` and `Issue.labels` are served from small in-memory collections (three teams, a
+# principal list, an issue's own JSON labels), so their filters are evaluated here rather than
+# compiled to SQL the way `IssueFilter` is. They are evaluated AT ALL because the alternative —
+# accepting a declared `filter:` and ignoring it — answers a narrowing query with the FULL set,
+# which is the silent-wrong-answer this schema promises not to give.
+
+def _match_string(value, spec: dict | None) -> bool:
+    """A ``StringComparator`` against one Python value; mirrors the SQL comparator in
+    app/graphql/linear_filters.py, operator for operator."""
+    if not spec:
+        return True
+    v = "" if value is None else str(value)
+    known = ("eq", "neq", "in", "nin", "contains", "containsIgnoreCase", "startsWith",
+             "endsWith", "eqIgnoreCase", "neqIgnoreCase")
+    for op, raw in spec.items():
+        if raw is None:
+            continue
+        if op not in known:
+            raise GraphQLError(f"unsupported comparator {op!r}")
+        if op == "eq" and v != raw:
+            return False
+        if op == "neq" and v == raw:
+            return False
+        if op == "in" and v not in raw:
+            return False
+        if op == "nin" and v in raw:
+            return False
+        if op == "contains" and str(raw) not in v:
+            return False
+        if op == "containsIgnoreCase" and str(raw).lower() not in v.lower():
+            return False
+        if op == "startsWith" and not v.startswith(str(raw)):
+            return False
+        if op == "endsWith" and not v.endswith(str(raw)):
+            return False
+        if op == "eqIgnoreCase" and v.lower() != str(raw).lower():
+            return False
+        if op == "neqIgnoreCase" and v.lower() == str(raw).lower():
+            return False
+    return True
+
+
+def _match_fields(spec: dict | None, fields: dict) -> bool:
+    """A filter object whose keys map to already-computed values, plus ``and`` / ``or``."""
+    if not spec:
+        return True
+    for key, sub in spec.items():
+        if sub is None:
+            continue
+        if key == "and":
+            if not all(_match_fields(x, fields) for x in sub):
+                return False
+        elif key == "or":
+            if not any(_match_fields(x, fields) for x in sub):
+                return False
+        elif key in fields:
+            if not _match_string(fields[key], sub):
+                return False
+        else:
+            raise GraphQLError(f"unsupported filter field {key!r}")
+    return True
+
+
+def _match_team(container: str, spec) -> bool:
+    return _match_fields(spec, {"name": container,
+                                "key": synth.linear_team_key(container),
+                                "id": synth.linear_team_id(container)})
+
+
+def _match_user(row, spec) -> bool:
+    email = row["email"]
+    return _match_fields(spec, {"email": email, "name": row["display_name"],
+                                "displayName": (email or "").split("@", 1)[0],
+                                "id": synth.linear_user_id(email)})
+
+
+def _match_label(node: dict, spec) -> bool:
+    return _match_fields(spec, {"name": node["name"]})
 
 
 # --- shared shapes ------------------------------------------------------------------
@@ -369,13 +459,20 @@ def _resolve_issue_ids(info, flt):
 
 
 def _issue_page(info, *, team=None, first=None, after=None, last=None, before=None,
-                filter=None, orderBy=None, **_ignored) -> dict:
+                filter=None, orderBy=None, sort=None, includeArchived=False,
+                **_ignored) -> dict:
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
-    offset, limit, _backward = _slice(first, after, last, before)
+    offset, limit, floor = _slice(first, after, last, before)
     prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter))
+    if offset is None:
+        # `last:` with no `before:` is the only shape that needs a total, so the COUNT is paid
+        # here and not on every page.
+        offset = _from_end(None, limit, floor, store.count_linear_issues(
+            conn, team, visible_ids=visible, prefilter=prefilter, archived=includeArchived))
     rows = store.list_linear_issues(conn, team, visible_ids=visible, limit=limit + 1,
-                                    offset=offset, order_by=orderBy, prefilter=prefilter)
+                                    offset=offset, order_by=orderBy, prefilter=prefilter,
+                                    sort=sort, archived=includeArchived)
     rows, has_next = _page(rows, limit)
     return _connection([_issue(r, info) for r in rows], offset, has_next)
 
@@ -415,9 +512,10 @@ def resolve_team(_root, info, id):
     return _team(container, info)
 
 
-def resolve_teams(_root, info, first=None, after=None, last=None, before=None, **_ignored) -> dict:
+def resolve_teams(_root, info, first=None, after=None, last=None, before=None, filter=None,
+                  **_ignored) -> dict:
     ctx = _ctx(info)
-    offset, limit, _b = _slice(first, after, last, before)
+    offset, limit, floor = _slice(first, after, last, before)
     # A team the caller can see no issue in is not a team they can see — same rule the Slack
     # router applies to channels, and it keeps `teams` consistent with what `team.issues` returns.
     # An EXISTS probe per team, NOT the grouped count: `issueCount` is a bound field that only
@@ -426,6 +524,8 @@ def resolve_teams(_root, info, first=None, after=None, last=None, before=None, *
     names = [r["name"] for r in store.list_containers(ctx["conn"], "linear")
              if ctx["visible_ids"] is None
              or store.linear_team_has_visible(ctx["conn"], r["name"], ctx["visible_ids"])]
+    names = [n for n in names if _match_team(n, filter)]
+    offset = _from_end(offset, limit, floor, len(names))
     page = names[offset:offset + limit]
     return _connection([_team(n, info) for n in page], offset, offset + limit < len(names))
 
@@ -434,18 +534,23 @@ def resolve_comments(_root, info, first=None, after=None, last=None, before=None
                      filter=None, **_ignored) -> dict:
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
-    offset, limit, _b = _slice(first, after, last, before)
+    offset, limit, floor = _slice(first, after, last, before)
     prefilter = compile_comment_filter(conn, filter)
+    if offset is None:
+        offset = _from_end(None, limit, floor, store.count_linear_comments(
+            conn, visible_ids=visible, prefilter=prefilter))
     rows = store.list_linear_comments(conn, visible_ids=visible, limit=limit + 1, offset=offset,
                                       prefilter=prefilter)
     rows, has_next = _page(rows, limit)
     return _connection([_comment(r, info) for r in rows], offset, has_next)
 
 
-def resolve_users(_root, info, first=None, after=None, last=None, before=None, **_ignored) -> dict:
+def resolve_users(_root, info, first=None, after=None, last=None, before=None, filter=None,
+                  **_ignored) -> dict:
     ctx = _ctx(info)
-    offset, limit, _b = _slice(first, after, last, before)
-    rows = store.list_users(ctx["conn"])
+    offset, limit, floor = _slice(first, after, last, before)
+    rows = [r for r in store.list_users(ctx["conn"]) if _match_user(r, filter)]
+    offset = _from_end(offset, limit, floor, len(rows))
     page = rows[offset:offset + limit]
     return _connection([_user(r["email"], r["display_name"], info) for r in page],
                        offset, offset + limit < len(rows))
@@ -531,9 +636,12 @@ def resolve_issue_comments(issue, info, first=None, after=None, last=None, befor
                            filter=None, **_ignored) -> dict:
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
-    offset, limit, _b = _slice(first, after, last, before)
+    offset, limit, floor = _slice(first, after, last, before)
     doc_id = issue["_row"]["doc_id"]
     prefilter = compile_comment_filter(conn, filter)
+    if offset is None:
+        offset = _from_end(None, limit, floor, store.count_linear_comments(
+            conn, doc_id=doc_id, visible_ids=visible, prefilter=prefilter))
     rows = store.list_linear_comments(conn, doc_id=doc_id, visible_ids=visible, limit=limit + 1,
                                       offset=offset, prefilter=prefilter)
     rows, has_next = _page(rows, limit)
@@ -556,11 +664,12 @@ def resolve_issue_parent(issue, info):
 
 
 def resolve_issue_labels(issue, info, first=None, after=None, last=None, before=None,
-                         **_ignored) -> dict:
+                         filter=None, **_ignored) -> dict:
     """Labels are a JSON column on the issue, so the whole set is already in hand; the page is a
     slice of it rather than another query."""
-    offset, limit, _b = _slice(first, after, last, before)
-    nodes = _label_nodes(issue["_row"])
+    offset, limit, floor = _slice(first, after, last, before)
+    nodes = [n for n in _label_nodes(issue["_row"]) if _match_label(n, filter)]
+    offset = _from_end(offset, limit, floor, len(nodes))
     return _connection(nodes[offset:offset + limit], offset, offset + limit < len(nodes))
 
 

@@ -64,7 +64,7 @@ def test_linear_restricted_issue_visible_to_its_reader(db, acl, tokens):
 
 def test_linear_admin_sees_every_issue(db, acl):
     assert _visible(db, acl, "admin-service-token", "linear") == {
-        "lin-rl", "lin-batch", "lin-des", "lin-secret"}
+        "lin-rl", "lin-batch", "lin-des", "lin-secret", "lin-blackops"}
 
 
 def test_linear_comments_inherit_the_parent_issues_acl(db, acl, tokens):
@@ -82,7 +82,8 @@ def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
     from app import store as st
     ava = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
     assert st.linear_team_issue_counts(db, visible_ids=ava) == {"engineering": 2, "design": 1}
-    assert st.linear_team_issue_counts(db, visible_ids=None) == {"engineering": 3, "design": 1}
+    assert st.linear_team_issue_counts(db, visible_ids=None) == {
+        "engineering": 3, "design": 1, "blackops": 1}
 
 
 # --- Linear: the by-id relation roots ---------------------------------------------
@@ -177,19 +178,58 @@ def test_linear_by_id_roots_still_answer_for_visible_entities(sample_settings, t
 
 def test_linear_team_by_id_agrees_with_the_teams_listing(sample_settings, tokens):
     """`teams` omits a team the caller sees no issue in; `team(id:)` must not then confirm it.
-    mia is in `marketing` — she authors nothing in Linear, so she sees no team at all."""
+
+    Asserts on the team that IS hidden rather than branching on what happens to be listed — an
+    earlier version did `if key in listed: ... else: <the real assertion>`, and since the caller
+    saw every team the assertion never executed. Deleting `resolve_team`'s visibility check left
+    it green."""
     client, close = _linear_client(sample_settings)
     try:
-        mia = tokens["mia@acme.com"]
+        ava = tokens["ava@acme.com"]        # engineering; `blackops` is granted to hana only
         listed = {t["key"] for t in _gql(client, "{ teams { nodes { key } } }",
-                                         mia)["data"]["teams"]["nodes"]}
-        for key in ("ENG", "DES"):
-            byid = _gql(client, '{ team(id: "%s") { key } }' % key, mia)
-            if key in listed:
-                assert byid["data"]["team"]["key"] == key
-            else:
-                assert "Entity not found" in byid["errors"][0]["message"], \
-                    f"team(id: {key!r}) confirmed a team `teams` hid"
+                                         ava)["data"]["teams"]["nodes"]}
+        assert "BLA" not in listed, "precondition: blackops must be hidden from ava"
+        assert "ENG" in listed
+        hidden = _gql(client, '{ team(id: "BLA") { key name } }', ava)
+        assert hidden.get("data") is None
+        assert "Entity not found" in hidden["errors"][0]["message"]
+        # ...and hana, who is granted it, still gets it — so the above is the ACL, not a break.
+        assert _gql(client, '{ team(id: "BLA") { key } }',
+                    tokens["hana@acme.com"])["data"]["team"]["key"] == "BLA"
+        # the container-name and UUID spellings are scoped too, not just the key
+        assert "Entity not found" in _gql(client, '{ team(id: "blackops") { key } }',
+                                          ava)["errors"][0]["message"]
+    finally:
+        close()
+
+
+def test_linear_every_by_id_predicate_is_scoped_not_just_the_dispatch(sample_settings, tokens):
+    """Each of the five entity predicates gets its own hidden entity.
+
+    `lin-secret` carries a project, cycle, label and assignee that exist on no other issue, so a
+    predicate that matches too broadly (or drops half its condition) is caught here. Previously
+    only `state` and `creator` were reachable, and the other four could be broken silently."""
+    from app import synth
+
+    client, close = _linear_client(sample_settings)
+    try:
+        ava, hana = tokens["ava@acme.com"], tokens["hana@acme.com"]
+        cases = [
+            ("project", '{ project(id: "%s") { name } }'
+             % synth.linear_project_id("vault-rotation")),
+            ("cycle", '{ cycle(id: "%s") { name } }'
+             % synth.linear_cycle_id("2026-W40-embargo", "engineering")),
+            ("label", '{ issueLabel(id: "%s") { name } }'
+             % synth.linear_label_id("restricted-only")),
+            ("assignee", '{ user(id: "%s") { email } }'
+             % synth.linear_user_id("vault.keeper@acme.com")),
+            ("state", '{ workflowState(id: "%s") { name } }'
+             % synth.linear_state_id("Backlog", "engineering")),
+        ]
+        for kind, query in cases:
+            denied, granted = _gql(client, query, ava), _gql(client, query, hana)
+            assert "Entity not found" in denied["errors"][0]["message"], f"{kind} leaked to ava"
+            assert granted.get("errors") is None, f"{kind} wrongly denied to its reader: {granted}"
     finally:
         close()
 

@@ -230,12 +230,24 @@ SAMPLE = [
      "author_email": "mia@acme.com", "author_groups": ["design"], "visibility": "public",
      "identifier": "DES-77", "state": "In Review", "priority": "P2", "labels": ["tokens"]},
     # Restricted by explicit readers, so the `engineering` team keeps one owning group while the
-    # ACL tests still have a Linear issue that must stay hidden.
+    # ACL tests still have a Linear issue that must stay hidden. It carries a project, cycle,
+    # labels AND an assignee that appear on NO other issue, so each by-id relation root has an
+    # entity only this issue can reach — without that, the ACL tests would only ever exercise the
+    # `state` and `creator` predicates and the other four could be broken undetected.
     {"source_type": "linear", "doc_id": "lin-secret", "team": "engineering",
      "group": "engineering", "title": "Rotate the signing keys",
      "content": "Key rotation runbook — people team only.", "author_email": "hana@acme.com",
      "author_groups": ["people"], "readers": ["hana@acme.com"],
-     "identifier": "ENG-103", "state": "Backlog", "priority": "P3"},
+     "identifier": "ENG-103", "state": "Backlog", "priority": "P3",
+     "project": "vault-rotation", "cycle": "2026-W40-embargo", "labels": ["restricted-only"],
+     "assignee": "vault.keeper@acme.com", "assigneeName": "Vault Keeper",
+     "comments": [{"content": "Rotation window agreed.", "author_email": "hana@acme.com"}]},
+    # A team no ACL-restricted caller can see into, so `teams` and `team(id:)` can be checked for
+    # agreement. Only hana is granted it.
+    {"source_type": "linear", "doc_id": "lin-blackops", "team": "blackops", "group": "people",
+     "title": "Sealed programme", "content": "Sealed.", "author_email": "hana@acme.com",
+     "author_groups": ["people"], "readers": ["hana@acme.com"],
+     "identifier": "BLA-1", "state": "Triage"},
 ]
 
 

@@ -70,31 +70,49 @@ def test_confluence_next_link():
 from graphql import GraphQLError  # noqa: E402
 
 from app.graphql.linear_resolvers import (  # noqa: E402
-    PAGE_DEFAULT, PAGE_MAX, _connection, _page, _slice)
+    PAGE_DEFAULT, PAGE_MAX, _connection, _from_end, _page, _slice)
 
 
 def test_linear_forward_slice_defaults_to_linears_page_size():
-    assert _slice(None, None, None, None) == (0, PAGE_DEFAULT, False)
+    assert _slice(None, None, None, None) == (0, PAGE_DEFAULT, 0)
 
 
 def test_linear_first_is_capped_at_linears_maximum():
-    assert _slice(10_000, None, None, None) == (0, PAGE_MAX, False)
+    assert _slice(10_000, None, None, None) == (0, PAGE_MAX, 0)
 
 
 def test_linear_after_cursor_becomes_the_offset():
-    offset, limit, backward = _slice(10, pg.encode_cursor(30), None, None)
-    assert (offset, limit, backward) == (30, 10, False)
+    assert _slice(10, pg.encode_cursor(30), None, None) == (30, 10, 30)
 
 
 def test_linear_backward_slice_ends_just_before_the_cursor():
     # `before` is the offset of the first row already seen; `last: 5` is the 5 rows before it.
-    assert _slice(None, None, 5, pg.encode_cursor(20)) == (15, 5, True)
+    assert _slice(None, None, 5, pg.encode_cursor(20)) == (15, 5, 0)
 
 
 def test_linear_backward_slice_clamps_at_the_start():
     """Asking for more rows than exist before the cursor must not produce a negative offset or
     re-read rows at or past the cursor."""
-    assert _slice(None, None, 10, pg.encode_cursor(3)) == (0, 3, True)
+    assert _slice(None, None, 10, pg.encode_cursor(3)) == (0, 3, 0)
+
+
+def test_linear_last_without_before_defers_to_the_total():
+    """`last:` with no `before:` means "the final n rows", which cannot be known without the
+    total — so the slice defers rather than guessing. Guessing offset 0 (what an earlier version
+    did) served the FIRST n rows to every client asking for the last n."""
+    offset, limit, floor = _slice(None, None, 5, None)
+    assert offset is None and limit == 5 and floor == 0
+    assert _from_end(None, 5, 0, total=21) == 16      # the last 5 of 21
+    assert _from_end(None, 5, 0, total=3) == 0        # fewer rows than asked for
+    assert _from_end(7, 5, 0, total=21) == 7          # an explicit offset is left alone
+
+
+def test_linear_after_still_applies_when_combined_with_last():
+    """Relay applies `after` first, then takes the last n of what remains — so the tail may not
+    reach back past the cursor."""
+    offset, limit, floor = _slice(None, pg.encode_cursor(18), 5, None)
+    assert (offset, limit, floor) == (None, 5, 18)
+    assert _from_end(None, 5, 18, total=21) == 18     # floor wins over total-limit (=16)
 
 
 def test_linear_both_directions_at_once_is_rejected():

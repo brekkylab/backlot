@@ -513,10 +513,38 @@ def list_hubspot_objects(conn, object_type, *, after_doc_id=None, visible_ids=No
 
 # GraphQL `orderBy` value -> the column it sorts on. Linear pages newest-first by default, so the
 # caller asks for DESC; `doc_id` breaks ties into a stable total order either way.
-LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": "updated_ts"}
+LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts",
+                        "updatedAt": "COALESCE(updated_ts, created_ts)"}
 
 
-def _linear_order(order_by: str | None, descending: bool) -> str:
+# `IssueSortInput` key -> the column it sorts on. `updatedAt` uses the same COALESCE the field
+# itself is served with (an issue with no recorded edit reports its creation time), so a client
+# crawling "newest first until older than X" sees a monotonic sequence rather than one that
+# disagrees with the `updatedAt` it is reading.
+LINEAR_SORT_COLUMNS = {"title": "title", "priority": "priority", "estimate": "estimate",
+                       "createdAt": "created_ts",
+                       "updatedAt": "COALESCE(updated_ts, created_ts)"}
+
+
+def _linear_order(order_by: str | None, descending: bool, sort=None) -> str:
+    """The ORDER BY. Always TOTAL — the sort keys plus `doc_id` — because an offset page over a
+    non-total order can silently repeat or skip a row between pages.
+
+    `sort` (Linear's `IssueSortInput`) wins over `orderBy` when both are given, matching the real
+    API, where `sort` is the richer multi-key form. Accepting it and ignoring it, which an earlier
+    version did, answered every sorted query in insertion order."""
+    terms = []
+    for entry in sort or []:
+        for key, opts in (entry or {}).items():
+            col = LINEAR_SORT_COLUMNS.get(key)
+            if col is None:
+                continue
+            direction = "DESC" if (opts or {}).get("order") == "Descending" else "ASC"
+            nulls = (opts or {}).get("nulls")
+            tail = f" NULLS {'FIRST' if nulls == 'first' else 'LAST'}" if nulls else ""
+            terms.append(f"{col} {direction}{tail}")
+    if terms:
+        return ", ".join(terms) + ", doc_id"
     col = LINEAR_ORDER_COLUMNS.get(order_by or "")
     if col is None:
         return "doc_id"
@@ -525,8 +553,16 @@ def _linear_order(order_by: str | None, descending: bool) -> str:
     return f"{col} {direction}, doc_id"
 
 
+def _linear_archived(archived: bool) -> str:
+    """Linear EXCLUDES archived issues unless `includeArchived: true` is asked for. Accepting the
+    argument and never applying it served archived issues to every caller who explicitly asked
+    not to see them."""
+    return "" if archived else " AND archived_ts IS NULL"
+
+
 def list_linear_issues(conn, team=None, *, visible_ids=None, limit=50, offset=0,
-                       order_by=None, descending=True, prefilter=None) -> list[sqlite3.Row]:
+                       order_by=None, descending=True, prefilter=None, sort=None,
+                       archived=False) -> list[sqlite3.Row]:
     """One page of Linear issues, optionally scoped to a team.
 
     ``prefilter`` is an optional ``(sql_fragment, params)`` the resolver has established as a
@@ -543,13 +579,15 @@ def list_linear_issues(conn, team=None, *, visible_ids=None, limit=50, offset=0,
         frag, fparams = prefilter
         sql += f" AND {frag}"
         params += fparams
+    sql += _linear_archived(archived)
     clause, cparams = _acl_clause("linear_issues", visible_ids)
-    sql += clause + f" ORDER BY {_linear_order(order_by, descending)} LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {_linear_order(order_by, descending, sort)} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
 
-def count_linear_issues(conn, team=None, *, visible_ids=None, prefilter=None) -> int:
+def count_linear_issues(conn, team=None, *, visible_ids=None, prefilter=None,
+                        archived=False) -> int:
     """Total matching issues — what ``pageInfo.hasNextPage`` is decided against."""
     sql = "SELECT COUNT(*) FROM linear_issues WHERE 1=1"
     params: list = []
@@ -560,6 +598,7 @@ def count_linear_issues(conn, team=None, *, visible_ids=None, prefilter=None) ->
         frag, fparams = prefilter
         sql += f" AND {frag}"
         params += fparams
+    sql += _linear_archived(archived)
     clause, cparams = _acl_clause("linear_issues", visible_ids)
     return conn.execute(sql + clause, params + cparams).fetchone()[0]
 
@@ -628,12 +667,20 @@ def linear_distinct_values(conn) -> dict[str, list]:
         return [r[0] for r in conn.execute(
             f"SELECT DISTINCT {name} FROM linear_issues WHERE {name} IS NOT NULL AND {name} != ''")]
 
-    def per_team(name):
+    def per_team(name, default=None):
         # Workflow states and cycles are per-team entities in Linear, so their reverse map is
         # keyed on the (team, name) pair the id was derived from.
+        #
+        # `default` matters: the resolver SYNTHESIZES a state name for a row that has none
+        # (`_state` falls back to "Todo", since Linear declares the relation non-null). That id
+        # is served, so it must be resolvable — filtering NULLs out here left `workflowState(id:)`
+        # answering "Entity not found" for an id the API had just handed the caller, even as
+        # admin. The rule is: index exactly what is served.
+        expr = f"COALESCE({name}, ?)" if default is not None else name
+        params = [default] if default is not None else []
+        where = "" if default is not None else f" WHERE {name} IS NOT NULL AND {name} != ''"
         return [tuple(r) for r in conn.execute(
-            f"SELECT DISTINCT team, {name} FROM linear_issues "
-            f"WHERE {name} IS NOT NULL AND {name} != ''")]
+            f"SELECT DISTINCT team, {expr} FROM linear_issues{where}", params)]
 
     people: dict[str, str | None] = {}
     for email_col, name_col in (("author_email", "owner_display"),
@@ -646,7 +693,7 @@ def linear_distinct_values(conn) -> dict[str, list]:
             # order the two passes see them in.
             people[email] = display or people.get(email)
     return {
-        "states": per_team("state"),
+        "states": per_team("state", default=LINEAR_DEFAULT_STATE),
         "projects": col("project"),
         "cycles": per_team("cycle"),
         "labels": [r[0] for r in conn.execute(
@@ -665,6 +712,12 @@ def linear_team_has_visible(conn, team, visible_ids=None) -> bool:
                         [team, *params]).fetchone() is not None
 
 
+# `Issue.state` is non-null in Linear, so a row with no recorded state is served this name (see
+# linear_resolvers._state). It lives here because the reverse index and the visibility probe must
+# agree with the resolver on it, or an id the API served becomes unresolvable.
+LINEAR_DEFAULT_STATE = "Todo"
+
+
 # The by-id roots (`project(id:)`, `workflowState(id:)`, …) resolve an entity that has no table
 # of its own: it exists only as a column value on some issue. So "can the caller see it" means
 # "can the caller see any issue carrying it", and each kind names the predicate that asks.
@@ -672,7 +725,10 @@ def linear_team_has_visible(conn, team, visible_ids=None) -> bool:
 _LINEAR_ENTITY_PREDICATES = {
     "project": lambda v: ("project = ?", [v]),
     "cycle": lambda v: ("cycle = ? AND team = ?", [v[1], v[0]]),          # v = (team, name)
-    "state": lambda v: ("state = ? AND team = ?", [v[1], v[0]]),          # v = (team, name)
+    # COALESCE, to match the synthesized default above: a caller reading an issue with no state
+    # must be able to resolve the state id that issue served them.
+    "state": lambda v: (f"COALESCE(state, '{LINEAR_DEFAULT_STATE}') = ? AND team = ?",
+                        [v[1], v[0]]),                                    # v = (team, name)
     # A person is reachable as either end of an issue.
     "user": lambda v: ("(author_email = ? OR assignee_email = ?)", [v[0], v[0]]),  # v = (email, _)
     "label": lambda v: (

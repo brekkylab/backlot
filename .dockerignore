@@ -10,4 +10,5 @@ __pycache__/
 tests/
 examples/
 .env
-README.md
+# README.md is NOT ignored: pyproject.toml declares it as the package readme, so
+# `pip install .` in the image fails without it.

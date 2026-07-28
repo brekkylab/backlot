@@ -1,39 +1,32 @@
-# Multi-stage build: the builder downloads a small per-source subset of the
-# EnterpriseRAG-Bench corpus and bakes it into a SQLite DB, so the runtime image
-# starts instantly with data already present — `docker run -p 8000:8000 <image>`.
+# Multi-stage build.
 #
-# Build the full corpus instead with:  docker build --build-arg BUILD_ARGS=--all .
+#   docker build .                       -> `full`: the server WITH a corpus baked in, so
+#                                           `docker run -p 8000:8000 <image>` serves immediately.
+#   docker build --target serve .        -> the server WITHOUT any corpus. For a deployment that
+#                                           mounts its own data dir over /app/data, where a baked
+#                                           corpus is downloaded, imported, shipped and then
+#                                           discarded at startup. Builds in a minute instead of
+#                                           downloading ~1GB and importing half a million docs.
+#   docker build --build-arg BUILD_ARGS=--all .   -> bake the full corpus rather than a slice.
+#
+# Dependencies come from pyproject.toml, NOT a list repeated here. A hand-kept copy silently went
+# stale every time a runtime dep was added — the image ended up missing jsonschema, pyjwt and
+# httpx, and each was papered over with a `docker exec pip install` that a container recreate
+# would have thrown away. Installing the package makes that class of drift impossible.
 
-FROM python:3.13-slim AS builder
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir \
-    fastapi "uvicorn[standard]" pydantic pydantic-settings pyyaml python-multipart graphql-core
-
-WORKDIR /app
-COPY app ./app
-
-ARG BUILD_ARGS=""
-RUN python -m app.importer.erb ${BUILD_ARGS}
-
-
-FROM python:3.13-slim
+# ---------------------------------------------------------------- serve (no corpus)
+FROM python:3.13-slim AS serve
 
 ENV PATH="/opt/venv/bin:$PATH" \
     MOCK_DATA_DIR=/app/data \
     PYTHONUNBUFFERED=1
-COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
+RUN python -m venv /opt/venv
+# pyproject declares `readme`, so README.md has to be present for the install to resolve.
+COPY pyproject.toml README.md ./
 COPY app ./app
-# Copy only the runtime data (baked DB + tokens); raw zips are left in the builder.
-COPY --from=builder /app/data/mock.sqlite /app/data/mock.sqlite
-COPY --from=builder /app/data/tokens.yaml /app/data/tokens.yaml
+RUN pip install --no-cache-dir .
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
@@ -42,3 +35,23 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
 # app honors X-Forwarded-Proto/Host and emits https self-URLs (PyGithub follows those URLs).
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
      "--proxy-headers", "--forwarded-allow-ips", "*"]
+
+
+# ---------------------------------------------------------------- builder (bakes a corpus)
+FROM serve AS builder
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG BUILD_ARGS=""
+RUN python -m app.importer.erb ${BUILD_ARGS}
+
+
+# ---------------------------------------------------------------- full (default target)
+FROM serve AS full
+
+# Only the runtime data (baked DB + rosters); the raw tarball stays in the builder.
+COPY --from=builder /app/data/mock.sqlite /app/data/mock.sqlite
+COPY --from=builder /app/data/tokens.yaml /app/data/tokens.yaml

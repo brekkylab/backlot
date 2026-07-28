@@ -400,9 +400,16 @@ def resolve_issue(_root, info, id):
 
 
 def resolve_team(_root, info, id):
-    """``team(id:)`` takes a team UUID or its key (``ENG``)."""
+    """``team(id:)`` takes a team UUID or its key (``ENG``).
+
+    Scoped the same way ``teams`` is: a team the caller can see no issue in is not a team they can
+    see. Without this the two roots contradict each other — ``teams`` would omit the team while
+    ``team(id: "BLA")`` confirmed its existence and name."""
     ctx = _ctx(info)
     container = ctx.get("team_index", {}).get(str(id))
+    if container is not None and ctx["visible_ids"] is not None and not store.linear_team_has_visible(
+            ctx["conn"], container, ctx["visible_ids"]):
+        container = None
     if container is None:
         raise GraphQLError(f"Entity not found: Team - Could not find referenced Team. id={id}")
     return _team(container, info)
@@ -449,9 +456,27 @@ def resolve_users(_root, info, first=None, after=None, last=None, before=None, *
 # `workflowState(id:)`. Each id is a one-way hash of a name, so each root reads the reverse map
 # the app built at startup (see app.main._build_index). All five are declared non-null in Linear,
 # so a miss is an "Entity not found" error, matching the real API.
+#
+# THE INDEX IS NOT ACL-SCOPED, so the lookup alone is not enough. It is an unfiltered DISTINCT
+# over every issue, and these entities have no table of their own — a project, cycle, workflow
+# state, label or assignee exists only as a COLUMN VALUE on some issue. Resolving one without a
+# visibility check would hand a caller field values off a row they are denied: the name of a
+# project that appears on one hidden issue, or the identity of its assignee (who may not even
+# appear in the `users` directory that caller sees). Worse, the ids are pure functions of the
+# name in an open-source repo, so they are computable offline and the roots become an ENUMERABLE
+# oracle, not merely a confirmable one.
+#
+# So each root probes visibility the way `teams` already does, and a miss raises the SAME
+# "Entity not found" as a genuinely absent id — hidden and absent stay indistinguishable.
+# This costs the honest caller nothing: `@linear/sdk`'s lazy accessors only fire these for
+# entities hanging off an issue it just successfully read, so the probe always finds that issue.
 
-def _by_id(info, index_key: str, id_value, entity: str):
-    found = _ctx(info).get(index_key, {}).get(str(id_value))
+def _by_id(info, index_key: str, id_value, entity: str, kind: str | None = None):
+    ctx = _ctx(info)
+    found = ctx.get(index_key, {}).get(str(id_value))
+    if found is not None and kind is not None and not store.linear_entity_has_visible(
+            ctx["conn"], kind, found, visible_ids=ctx["visible_ids"]):
+        found = None   # exists in the corpus, but not for this caller — answer as if absent
     if found is None:
         raise GraphQLError(
             f"Entity not found: {entity} - Could not find referenced {entity}. id={id_value}")
@@ -459,26 +484,26 @@ def _by_id(info, index_key: str, id_value, entity: str):
 
 
 def resolve_user(_root, info, id) -> dict:
-    email, display = _by_id(info, "user_index", id, "User")
+    email, display = _by_id(info, "user_index", id, "User", kind="user")
     return _user(email, display, info)
 
 
 def resolve_workflow_state(_root, info, id) -> dict:
-    team, name = _by_id(info, "state_index", id, "WorkflowState")
+    team, name = _by_id(info, "state_index", id, "WorkflowState", kind="state")
     return _state(name, team, info)
 
 
 def resolve_project(_root, info, id) -> dict:
-    return _project(_by_id(info, "project_index", id, "Project"), info)
+    return _project(_by_id(info, "project_index", id, "Project", kind="project"), info)
 
 
 def resolve_cycle(_root, info, id) -> dict:
-    team, name = _by_id(info, "cycle_index", id, "Cycle")
+    team, name = _by_id(info, "cycle_index", id, "Cycle", kind="cycle")
     return _cycle(name, team, info)
 
 
 def resolve_issue_label(_root, info, id) -> dict:
-    name = _by_id(info, "label_index", id, "IssueLabel")
+    name = _by_id(info, "label_index", id, "IssueLabel", kind="label")
     return _label(name, synth.rfc3339(synth.epoch("linear-label:" + name)))
 
 

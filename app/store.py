@@ -254,6 +254,14 @@ CREATE TABLE IF NOT EXISTS linear_issues (
 CREATE INDEX IF NOT EXISTS idx_linear_team_doc ON linear_issues(team, doc_id);
 CREATE INDEX IF NOT EXISTS idx_linear_created_ts ON linear_issues(created_ts);
 CREATE INDEX IF NOT EXISTS idx_linear_state ON linear_issues(state);
+-- The by-id roots probe "can this caller see any issue carrying X" (linear_entity_has_visible).
+-- Indexed so the probe seeks to that entity's issues instead of scanning all 35k until it finds
+-- one the caller may read — the miss case (which is exactly the leak attempt) is the worst case.
+-- Labels have no index: they live in a JSON column and json_each cannot be indexed.
+CREATE INDEX IF NOT EXISTS idx_linear_project ON linear_issues(project);
+CREATE INDEX IF NOT EXISTS idx_linear_cycle ON linear_issues(cycle);
+CREATE INDEX IF NOT EXISTS idx_linear_assignee ON linear_issues(assignee_email);
+CREATE INDEX IF NOT EXISTS idx_linear_author ON linear_issues(author_email);
 -- `issue(id: "ENG-123")` resolves an identifier straight to its row; the bench's keys are NOT
 -- unique (5,055 of them repeat), so this is a lookup index, never a unique constraint.
 CREATE INDEX IF NOT EXISTS idx_linear_identifier ON linear_issues(identifier);
@@ -643,6 +651,40 @@ def linear_team_has_visible(conn, team, visible_ids=None) -> bool:
     clause, params = _acl_clause("linear_issues", visible_ids)
     return conn.execute(f"SELECT 1 FROM linear_issues WHERE team = ?{clause} LIMIT 1",
                         [team, *params]).fetchone() is not None
+
+
+# The by-id roots (`project(id:)`, `workflowState(id:)`, …) resolve an entity that has no table
+# of its own: it exists only as a column value on some issue. So "can the caller see it" means
+# "can the caller see any issue carrying it", and each kind names the predicate that asks.
+# Keyed exactly as app.main._build_index keys its reverse maps.
+_LINEAR_ENTITY_PREDICATES = {
+    "project": lambda v: ("project = ?", [v]),
+    "cycle": lambda v: ("cycle = ? AND team = ?", [v[1], v[0]]),          # v = (team, name)
+    "state": lambda v: ("state = ? AND team = ?", [v[1], v[0]]),          # v = (team, name)
+    # A person is reachable as either end of an issue.
+    "user": lambda v: ("(author_email = ? OR assignee_email = ?)", [v[0], v[0]]),  # v = (email, _)
+    "label": lambda v: (
+        "EXISTS (SELECT 1 FROM json_each(COALESCE(labels, '[]')) WHERE value = ?)", [v]),
+}
+
+
+def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
+    """Whether the caller can see ANY issue carrying this project / cycle / state / person / label.
+
+    Without this the by-id roots are an existence oracle over the whole corpus: their reverse
+    index is an unfiltered ``DISTINCT`` built at startup, so a caller who cannot read an issue
+    could still resolve that issue's project name, label, cycle, workflow state, and assignee —
+    column values on a row they are denied. ``teams`` already hides a team the caller sees no
+    issue in; this applies the same rule to the other five roots.
+
+    A ``LIMIT 1`` probe, so it stops at the first visible carrier rather than counting."""
+    build = _LINEAR_ENTITY_PREDICATES.get(kind)
+    if build is None:
+        raise ValueError(f"unknown linear entity kind {kind!r}")
+    frag, params = build(value)
+    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    return conn.execute(f"SELECT 1 FROM linear_issues WHERE {frag}{clause} LIMIT 1",
+                        [*params, *cparams]).fetchone() is not None
 
 
 def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:

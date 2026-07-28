@@ -368,6 +368,40 @@ def test_drive_owner_is_faithful():
     assert row["created_ts"] is not None
 
 
+def test_drive_doc_type_maps_onto_drive_mime_types():
+    """The bench's `doc_type` vocabulary (doc/sheet/slides/pdf) is not the mock's native subtype
+    vocabulary, so every imported row used to fall back to `application/octet-stream` — making
+    anything that branches on mimeType untestable against the bench corpus (issue #23)."""
+    from app.routers.google import _drive_file
+
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    base = {"title_field_name": "title", "content_field_names": ["body"], "body": "x",
+            "owner": "Maya Chen", "team": "research-applied-ml", "created_at": "2025-09-18"}
+    cases = {"doc": "application/vnd.google-apps.document",
+             "sheet": "application/vnd.google-apps.spreadsheet",
+             "slides": "application/vnd.google-apps.presentation",
+             "pdf": "application/pdf",
+             None: "application/vnd.google-apps.document"}  # unspecified -> a Doc, not a blob
+    for i, (doc_type, mime) in enumerate(cases.items()):
+        erb.load_drive(conn, f"dt_{i}", {**base, "title": f"T{i}", "doc_type": doc_type}, P)
+        row = store.get_document(conn, "google_drive", f"dt_{i}")
+        assert _drive_file(conn, row)["mimeType"] == mime, doc_type
+
+
+def test_drive_unknown_doc_type_falls_back_to_the_title_extension():
+    from app.routers.google import _drive_file
+
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    raw = {"title_field_name": "title", "content_field_names": ["body"], "body": "x",
+           "title": "Executed Addendum.pdf", "owner": "Maya Chen", "doc_type": "scan",
+           "team": "research-applied-ml", "created_at": "2025-09-18"}
+    erb.load_drive(conn, "dt_ext", raw, P)
+    row = store.get_document(conn, "google_drive", "dt_ext")
+    assert _drive_file(conn, row)["mimeType"] == "application/pdf"
+
+
 def test_jira_assignee_reporter_and_duedate():
     conn = _conn()
     P = Principals([], "redwoodinference.com")

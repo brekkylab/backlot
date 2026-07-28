@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://brekkylab.dev/schemas/linear.schema.json",
-  "title": "BYO corpus record — linear",
-  "description": "A Linear issue. `team` is the grouping unit, because `data.team.issues` is how both the GraphQL API and the official clients reach issues and because an issue's identifier prefix (ENG-123) IS the team key. Field names are Linear's own — `state` (not status), `estimate`, camelCase `branchName`/`dueDate` — so a corpus written against the real API needs no renaming. `identifier` and `branchName` are derived when omitted. Comments are served through the `Issue.comments` connection.",
+  "title": "BYO corpus record \u2014 linear",
+  "description": "A Linear issue. `team` is the grouping unit, because `data.team.issues` is how both the GraphQL API and the official clients reach issues and because an issue's identifier prefix (ENG-123) IS the team key. Field names are Linear's own \u2014 `state` (not status), `estimate`, camelCase `branchName`/`dueDate` \u2014 so a corpus written against the real API needs no renaming. `identifier` and `branchName` are derived when omitted. Comments are served through the `Issue.comments` connection.",
   "type": "object",
   "properties": {
     "source_type": {
@@ -16,7 +16,7 @@
     "content": {
       "type": "string",
       "minLength": 1,
-      "description": "The issue's markdown description — served as `Issue.description` and indexed for search."
+      "description": "The issue's markdown description \u2014 served as `Issue.description` and indexed for search."
     },
     "doc_id": {
       "type": "string",
@@ -32,7 +32,11 @@
     },
     "identifier": {
       "type": "string",
-      "description": "Human identifier, e.g. \"ENG-123\". Default: synthesized as <TEAMKEY>-<n> from the doc_id. Not required to be unique — the bench's own keys repeat — and `issue(id:)` resolves a repeated identifier to the first matching issue."
+      "description": "Human identifier, e.g. \"ENG-123\". Default: synthesized as <TEAMKEY>-<n> from the doc_id. Not required to be unique \u2014 the bench's own keys repeat \u2014 and `issue(id:)` resolves a repeated identifier to the first matching issue."
+    },
+    "parent": {
+      "type": "string",
+      "description": "The parent issue's identifier (e.g. \"ENG-20297\"), served as `Issue.parent`. Resolved at serve time through the same ACL-scoped lookup `issue(id:)` uses, so a parent the caller cannot read comes back null."
     },
     "state": {
       "type": "string",
@@ -79,7 +83,7 @@
     "assignee": {
       "type": "string",
       "format": "email",
-      "description": "Assignee's email. Omit for an unassigned issue — `assignee` then resolves to null, as it does in Linear."
+      "description": "Assignee's email. Omit for an unassigned issue \u2014 `assignee` then resolves to null, as it does in Linear."
     },
     "assigneeName": {
       "type": "string",

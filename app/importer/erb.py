@@ -968,6 +968,15 @@ def _linear_int(value) -> int | None:
         return None
 
 
+def _linear_parent(value) -> str | None:
+    """The bench's ``parent_issue`` is a list of keys on 16,813 docs and a bare string on 552.
+    Linear has exactly one parent, so take the first."""
+    if isinstance(value, (list, tuple)):
+        value = next((x for x in value if x), None)
+    s = str(value or "").strip()
+    return s or None
+
+
 def _linear_date(value) -> str | None:
     """A `TimelessDate` (`YYYY-MM-DD`) for dueDate — served verbatim, since that is the scalar's
     whole shape. Anything else is dropped."""
@@ -975,25 +984,35 @@ def _linear_date(value) -> str | None:
     return s if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s) else None
 
 
-# A Linear comment in the bench is a plain string in one of three shapes, measured across all
-# 165,223 of them: `YYYY-MM-DD - body` (54.6%), `YYYY-MM-DD Name: body` (38.0%) and undated
-# (7.2%). Parsing the first two recovers a real per-comment date for 93% of them and a real
-# author for 38% — worth doing, because otherwise every comment would share the issue's clock and
-# have no author at all.
-_LINEAR_C_DASH = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s*[-–—]\s*(?P<body>.*)$", re.DOTALL)
-# The name must START WITH A LETTER. Without that, a comment whose body opens with a clock
-# ("2025-02-18 09:15: rolled back") parses as author "09" with the body truncated to "15: rolled
-# back" — losing text and inventing a person. Requiring a letter drops those to the bare-date
-# form, which keeps the whole body.
-_LINEAR_C_NAMED = re.compile(
-    r"^(?P<date>\d{4}-\d{2}-\d{2})\s+\(?(?P<name>[A-Za-zÀ-ÿ][^:\n()]{0,39}?)\)?:\s*(?P<body>.*)$",
-    re.DOTALL)
-_LINEAR_C_BARE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<body>.*)$", re.DOTALL)
+# A Linear comment in the bench is a plain string. Measured across all 165,243 of them, the date
+# and the author are carried in a handful of interchangeable shapes:
+#     2025-02-18 - Maya Patel: filed the PRD      (dash + name — 60,282, the single most common)
+#     2025-02-18 - Created: initial hypothesis    (dash + a LABEL, not a person)
+#     2026-03-05 Anjali Rao: updated the criteria (no dash, name)
+#     2025-12-18 (Naomi Feldman): include audit   (parenthesised name)
+#     2025-02-18 09:15: rolled back               (no name at all — that is a clock)
+#     Implementation notes: use heuristics        (undated)
+# So the parse is two independent steps rather than a list of whole-line alternatives: peel off
+# the date (with an optional dash separator), then try to peel a `Name:` off what remains. Trying
+# whole-line patterns in order is what an earlier version did, and because the dash pattern had no
+# name group and was tried first, it swallowed the author of 60,282 comments into the body —
+# serving `body` as "Maya Patel: filed the PRD" and attributing it to nobody.
+_LINEAR_C_DATE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s*(?:[-–—]\s*)?(?P<rest>.*)$", re.DOTALL)
+# The name must START WITH A LETTER. Without that, "2025-02-18 09:15: rolled back" parses as
+# author "09" with the body truncated to "15: rolled back" — inventing a person and losing text.
+_LINEAR_C_NAME = re.compile(r"^\(?(?P<name>[A-Za-zÀ-ÿ][^:\n()]{0,39}?)\)?:\s*(?P<body>.*)$",
+                            re.DOTALL)
 
 
 def parse_linear_comments(comments) -> list[dict]:
-    """Bench comment strings -> ``{date, name, body}``. ``date``/``name`` are None when the
-    string doesn't carry them."""
+    """Bench comment strings -> ``{date, name, body, body_with_name}``.
+
+    ``body`` has the ``Name:`` prefix removed; ``body_with_name`` keeps it. Both are returned
+    because only the caller knows whether the name is a person: the prefix is just as often a
+    LABEL ("Created:", "Design review with PM and Accessibility:"), and stripping one of those
+    would delete text from the comment. :func:`load_linear` uses ``body`` when the name resolves
+    to somebody real and ``body_with_name`` when it doesn't, so nothing is ever lost.
+    """
     if isinstance(comments, str):          # 29 docs carry a single string instead of a list
         comments = [comments]
     out = []
@@ -1001,16 +1020,15 @@ def parse_linear_comments(comments) -> list[dict]:
         s = str(c).strip()
         if not s:
             continue
-        for pattern, has_name in ((_LINEAR_C_DASH, False), (_LINEAR_C_NAMED, True),
-                                  (_LINEAR_C_BARE, False)):
-            m = pattern.match(s)
-            if m:
-                out.append({"date": m.group("date"),
-                            "name": m.group("name").strip() if has_name else None,
-                            "body": m.group("body").strip()})
-                break
+        m = _LINEAR_C_DATE.match(s)
+        date, rest = (m.group("date"), m.group("rest")) if m else (None, s)
+        n = _LINEAR_C_NAME.match(rest)
+        if n:
+            out.append({"date": date, "name": n.group("name").strip(),
+                        "body": n.group("body").strip(), "body_with_name": rest.strip()})
         else:
-            out.append({"date": None, "name": None, "body": s})
+            out.append({"date": date, "name": None, "body": rest.strip(),
+                        "body_with_name": rest.strip()})
     return out
 
 
@@ -1043,8 +1061,8 @@ def load_linear(conn, dsid, raw, P):
         "INSERT OR REPLACE INTO linear_issues(doc_id, team, author_email, title, content, "
         "identifier, state, priority, estimate, labels, project, cycle, branch_name, due_date, "
         "created_ts, updated_ts, completed_ts, canceled_ts, started_ts, "
-        "assignee_email, assignee_display, owner_display) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "assignee_email, assignee_display, owner_display, parent_key) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (dsid, team, creator_email or f"unknown@{P.org_domain}", title, content,
          identifier, state, linear_priority(raw.get("priority")),
          _linear_int(raw.get("estimate")), json.dumps(_names(raw.get("labels"))),
@@ -1054,24 +1072,32 @@ def load_linear(conn, dsid, raw, P):
          ended if state_type == "completed" else None,
          ended if state_type == "canceled" else None,
          created if state_type in ("started", "completed") else None,
-         assignee_email, assignee_name or None, creator))
+         assignee_email, assignee_name or None, creator,
+         _linear_parent(raw.get("parent_issue"))))
 
+    prev_ts = created
     for seq, c in enumerate(parse_linear_comments(raw.get("comments")), start=1):
         # A comment author is matched against the EXISTING roster (`display_email`), never
         # minted with `P.resolve` the way an issue's creator/assignee is. The `Name:` segment in
-        # a Linear comment is far noisier than Jira's — 16,108 distinct strings across the
-        # corpus, most of them labels like "Design review" or "QA sign-off" that `_person_like`
-        # happily accepts as a two-token name. Minting those would add thousands of people who
-        # don't exist to `principals`. An unmatched name leaves the comment unattributed, which
-        # is both honest and a legal Linear response (`Comment.user` is nullable).
+        # a Linear comment is far noisier than Jira's — thousands of distinct strings, many of
+        # them labels like "Design review" or "QA sign-off" that `_person_like` happily accepts
+        # as a two-token name. Minting those would add people who don't exist to `principals`.
+        # An unmatched name leaves the comment unattributed, which is both honest and a legal
+        # Linear response (`Comment.user` is nullable) — and its body keeps the prefix, because
+        # an unresolved "Created:" is part of the text, not an attribution.
         author = P.display_email(c["name"])[0] if c["name"] else None
-        # A comment with no date of its own sits on the issue's clock plus its position, so a
-        # thread stays ordered and created_ts is never NULL (the column is NOT NULL).
+        body = c["body"] if author else c["body_with_name"]
+        # Comment time, in order of preference: its own date; else one second after the previous
+        # comment. MONOTONIC, not `created + seq`: a date-less comment at the end of a dated
+        # thread would otherwise land back at the issue's creation date and be served FIRST
+        # (`Issue.comments` orders by createdAt, as Linear does). Also never NULL — the column
+        # is NOT NULL.
+        ts = to_epoch(c["date"]) or (prev_ts + 1)
+        prev_ts = max(prev_ts, ts)
         conn.execute(
             "INSERT OR REPLACE INTO linear_comments(id, doc_id, seq, author_email, body, created_ts)"
             " VALUES (?,?,?,?,?,?)",
-            (f"{dsid}::c{seq}", dsid, seq, author, c["body"],
-             to_epoch(c["date"]) or (created + seq)))
+            (f"{dsid}::c{seq}", dsid, seq, author, body, ts))
 
     people = [creator_email, assignee_email]
     return {"owner": creator_email, "people": [p for p in people if p], "group": group,

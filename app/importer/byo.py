@@ -186,7 +186,11 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
                 "completed_ts": _epoch(ex.get("completedAt")),
                 "started_ts": _epoch(ex.get("startedAt")),
                 "assignee_email": ex.get("assignee"),
-                "assignee_display": ex.get("assigneeName")}
+                "assignee_display": ex.get("assigneeName"),
+                # `parent` is the generic hierarchy field; for Linear it holds the parent's
+                # human identifier (ENG-123), not a doc_id, because that is how Linear and the
+                # bench both name a parent.
+                "parent_key": parent_id}
     return {}
 
 
@@ -317,7 +321,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                   "version_message", "version_number", "properties", "icon", "cover",
                   "key", "content_type", "size", "path", "archived",
                   # Linear (its own field names: `state` not status, camelCase timestamps)
-                  "identifier", "state", "estimate", "project", "cycle", "branchName", "dueDate",
+                  "identifier", "estimate", "project", "cycle", "branchName", "dueDate",
                   "assigneeName", "archivedAt", "autoArchivedAt", "autoClosedAt", "canceledAt",
                   "completedAt", "startedAt"):
             if k in rec:

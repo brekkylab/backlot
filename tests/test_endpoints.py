@@ -2145,3 +2145,22 @@ def test_linear_unauthenticated_is_401(client):
     r = client.post("/linear/graphql", json={"query": "{ viewer { email } }"})
     assert r.status_code == 401
     assert r.json()["errors"][0]["message"] == "Authentication required"
+
+
+def test_linear_parent_resolves_and_is_acl_scoped(client, admin_h, tokens):
+    """`Issue.parent` is declared in the SDL and `@linear/sdk`'s fragment selects `parent { id }`.
+    The bench fills `parent_issue` on 46.7% of records, so it must resolve — and it must resolve
+    through the ACL, or it becomes another way to confirm a hidden issue exists."""
+    # lin-batch (ENG-102) is parented to lin-secret (ENG-103), which only hana can read.
+    q = '{ issue(id: "ENG-102") { identifier parent { identifier title } } }'
+    as_hana = gql(client, q, {"Authorization": linear_user_token(tokens, "hana@acme.com")})
+    assert as_hana.json()["data"]["issue"]["parent"]["identifier"] == "ENG-103"
+    as_ava = gql(client, q, {"Authorization": linear_user_token(tokens, "ava@acme.com")})
+    assert as_ava.json()["data"]["issue"]["parent"] is None    # hidden parent -> null, not a leak
+    # admin sees it, confirming the null above is the ACL and not a broken lookup
+    assert gql(client, q, admin_h).json()["data"]["issue"]["parent"]["identifier"] == "ENG-103"
+
+
+def test_linear_issue_without_a_parent_is_null(client, admin_h):
+    assert gql(client, '{ issue(id: "ENG-101") { parent { identifier } } }',
+               admin_h).json()["data"]["issue"]["parent"] is None

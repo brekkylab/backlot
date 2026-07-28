@@ -245,7 +245,11 @@ CREATE TABLE IF NOT EXISTS linear_issues (
     created_ts INTEGER NOT NULL, updated_ts INTEGER,
     archived_ts INTEGER, auto_archived_ts INTEGER, auto_closed_ts INTEGER,
     canceled_ts INTEGER, completed_ts INTEGER, started_ts INTEGER,
-    assignee_email TEXT, assignee_display TEXT, owner_display TEXT
+    assignee_email TEXT, assignee_display TEXT, owner_display TEXT,
+    -- The parent's human identifier (ENG-123), not a doc_id: the bench names a
+    -- parent by key, and keys are not unique, so resolution happens at serve time
+    -- through the same ACL-scoped lookup `issue(id: "ENG-123")` uses.
+    parent_key TEXT
 );
 -- (team, doc_id) rather than team alone: every read here is "one team, ordered by doc_id" —
 -- the Relay connection pages that way — so putting the ordering column in the index makes a
@@ -324,15 +328,19 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # live server is reading rides through the reader's lock instead of a spurious "locked".
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
-    # Self-heal a github_items table built before the `path` column existed: executescript(SCHEMA)
-    # below runs `CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path)`, and
-    # IF NOT EXISTS only guards the index name -- it still raises OperationalError if the table
-    # exists but lacks the referenced column. Idempotent: no-op on a fresh DB (table absent) or a
-    # DB that already has the column.
-    try:
-        conn.execute("ALTER TABLE github_items ADD COLUMN path TEXT")
-    except sqlite3.OperationalError:
-        pass  # table absent (fresh DB) or column already present
+    # Self-heal tables built before a column was added. `CREATE TABLE IF NOT EXISTS` in SCHEMA
+    # below does NOT alter an existing table, so a DB created by an earlier version keeps the old
+    # column set -- and then every INSERT naming the new column fails. (For github_items the
+    # symptom was different but the cause identical: `CREATE INDEX IF NOT EXISTS
+    # idx_github_repo_path ON github_items(repo, path)` guards only the index NAME and still
+    # raises if the referenced column is missing.) Each ALTER is idempotent: it no-ops on a fresh
+    # DB (table absent) and on a DB that already has the column.
+    for table, column, decl in (("github_items", "path", "TEXT"),
+                                ("linear_issues", "parent_key", "TEXT")):
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        except sqlite3.OperationalError:
+            pass  # table absent (fresh DB) or column already present
     conn.executescript(SCHEMA)
     return conn
 

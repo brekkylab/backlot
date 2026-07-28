@@ -881,17 +881,72 @@ def test_linear_synthesizes_an_identifier_when_the_key_is_missing():
 
 
 def test_linear_comment_shapes_are_all_parsed():
-    """The three shapes measured across all 165,223 bench comments."""
+    """The shapes measured across all 165,243 bench comments. The date and the name are peeled
+    off INDEPENDENTLY — an earlier whole-line-alternatives parse put the dash pattern first, and
+    since it had no name group it swallowed the author of 60,282 comments into the body."""
     parsed = erb.parse_linear_comments([
-        "2025-02-18 - Created: initial hypothesis captured.",       # 54.6%
-        "2026-03-05 Anjali Rao: Updated acceptance criteria.",       # 38.0%
-        "2025-12-18 (Naomi Feldman): Include the audit log.",        # the parenthesised variant
-        "Implementation notes: use model heuristics.",               # 7.2% undated
+        "2025-02-18 - Maya Patel: Filed initial PRD.",          # dash + name: the most common
+        "2025-02-18 - Created: initial hypothesis captured.",   # dash + a LABEL, not a person
+        "2026-03-05 Anjali Rao: Updated acceptance criteria.",  # no dash, name
+        "2025-12-18 (Naomi Feldman): Include the audit log.",   # parenthesised name
+        "Implementation notes: use model heuristics.",          # undated
     ])
-    assert [c["date"] for c in parsed] == ["2025-02-18", "2026-03-05", "2025-12-18", None]
-    assert [c["name"] for c in parsed] == [None, "Anjali Rao", "Naomi Feldman", None]
-    assert parsed[0]["body"] == "Created: initial hypothesis captured."
-    assert parsed[3]["body"] == "Implementation notes: use model heuristics."
+    assert [c["date"] for c in parsed] == [
+        "2025-02-18", "2025-02-18", "2026-03-05", "2025-12-18", None]
+    assert [c["name"] for c in parsed] == [
+        "Maya Patel", "Created", "Anjali Rao", "Naomi Feldman", "Implementation notes"]
+    # `body` drops the prefix, `body_with_name` keeps it — the loader picks per comment, so an
+    # unresolvable label like "Created:" never gets deleted from the text.
+    assert parsed[0]["body"] == "Filed initial PRD."
+    assert parsed[1]["body_with_name"] == "Created: initial hypothesis captured."
+
+
+def test_linear_comment_author_prefix_is_kept_when_the_name_is_not_a_person():
+    """"Created:" and "Design review:" are labels, not attributions. If they don't resolve to
+    somebody, the body must keep them rather than silently losing the words."""
+    conn = _conn()
+    P = Principals([{"name": "Maya Patel", "email": "maya.patel@redwoodinference.com",
+                     "dept_slug": "engineering"}], "redwoodinference.com")
+    raw = {**LINEAR_RAW, "creator": "Maya Patel", "assignee": "unassigned",
+           "comments": ["2025-02-20 - Maya Patel: filed the PRD.",
+                        "2025-02-21 - Created: initial hypothesis captured."]}
+    erb.load_linear(conn, "dsid_p", raw, P)
+    rows = conn.execute(
+        "SELECT author_email, body FROM linear_comments WHERE doc_id='dsid_p' ORDER BY seq"
+    ).fetchall()
+    # resolved -> attributed, and the name is not repeated in the body
+    assert rows[0]["author_email"] == "maya.patel@redwoodinference.com"
+    assert rows[0]["body"] == "filed the PRD."
+    # unresolved -> unattributed, and the text is intact
+    assert rows[1]["author_email"] is None
+    assert rows[1]["body"] == "Created: initial hypothesis captured."
+
+
+def test_linear_undated_comment_never_sorts_before_its_dated_neighbours():
+    """`Issue.comments` orders by createdAt (as Linear does). Anchoring an undated comment to the
+    ISSUE's creation date put a trailing "Next steps:" note at the FRONT of 1,270 real threads."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    raw = {**LINEAR_RAW, "created_at": "2025-01-01",
+           "comments": ["2025-02-01 - first", "2025-03-01 - second", "Next steps: trailing note"]}
+    erb.load_linear(conn, "dsid_m", raw, P)
+    rows = conn.execute(
+        "SELECT seq, created_ts FROM linear_comments WHERE doc_id='dsid_m' ORDER BY created_ts, seq"
+    ).fetchall()
+    assert [r["seq"] for r in rows] == [1, 2, 3]
+    assert rows[2]["created_ts"] == rows[1]["created_ts"] + 1   # one second after its predecessor
+
+
+def test_linear_parent_issue_is_stored_for_resolution():
+    """`Issue.parent` is declared in the SDL and the bench fills `parent_issue` on 46.7% of
+    records, so the key has to survive import for the resolver to look it up."""
+    conn, row, _c = _load_linear({**LINEAR_RAW, "parent_issue": ["ENG-20297", "ENG-1"]})
+    assert row["parent_key"] == "ENG-20297"        # a list -> the first; Linear has one parent
+    conn2, row2, _ = _load_linear({**LINEAR_RAW, "parent_issue": "ENG-555"}, dsid="dsid_ps")
+    assert row2["parent_key"] == "ENG-555"         # 552 bench docs use a bare string
+    conn3, row3, _ = _load_linear({k: v for k, v in LINEAR_RAW.items() if k != "parent_issue"},
+                                  dsid="dsid_pn")
+    assert row3["parent_key"] is None
 
 
 def test_linear_comment_clock_prefix_is_not_read_as_an_author():

@@ -320,7 +320,7 @@ def _issue(row, info) -> dict:
                          "viewerHasOnlySharedAccess": False, "disallowedIssueFields": []},
         "delegate": None, "botActor": None, "sourceComment": None,
         "syncedWith": None, "externalUserCreator": None, "asksExternalUserRequester": None,
-        "asksRequester": None, "lastAppliedTemplate": None, "parent": None,
+        "asksRequester": None, "lastAppliedTemplate": None,
         "projectMilestone": None, "recurringIssueTemplate": None, "snoozedBy": None,
         "favorite": None,
         "_row": row,   # not a schema field: how Issue.comments / Issue.labels reach the row
@@ -540,6 +540,21 @@ def resolve_issue_comments(issue, info, first=None, after=None, last=None, befor
     return _connection([_comment(r, info) for r in rows], offset, has_next)
 
 
+def resolve_issue_parent(issue, info):
+    """``Issue.parent``. The bench names a parent by its human key, and keys are not unique, so
+    this resolves through the same ACL-scoped identifier lookup ``issue(id: "ENG-123")`` uses —
+    a parent the caller cannot read comes back null rather than leaking its existence.
+
+    Bound rather than precomputed in :func:`_issue` so a page of 50 issues pays nothing unless
+    the client actually selects ``parent`` (`@linear/sdk`'s fragment selects ``parent { id }``)."""
+    key = issue["_row"]["parent_key"]
+    if not key:
+        return None
+    ctx = _ctx(info)
+    row = store.linear_issue_by_identifier(ctx["conn"], key, visible_ids=ctx["visible_ids"])
+    return _issue(row, info) if row is not None else None
+
+
 def resolve_issue_labels(issue, info, first=None, after=None, last=None, before=None,
                          **_ignored) -> dict:
     """Labels are a JSON column on the issue, so the whole set is already in hand; the page is a
@@ -565,7 +580,8 @@ RESOLVERS = {
         "cycle": resolve_cycle,
     },
     "Team": {"issues": resolve_team_issues, "issueCount": resolve_team_issue_count},
-    "Issue": {"comments": resolve_issue_comments, "labels": resolve_issue_labels},
+    "Issue": {"comments": resolve_issue_comments, "labels": resolve_issue_labels,
+              "parent": resolve_issue_parent},
 }
 
 

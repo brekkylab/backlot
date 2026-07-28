@@ -220,6 +220,8 @@ SAMPLE = [
      "author_email": "bob@acme.com", "author_groups": ["engineering"], "visibility": "public",
      "identifier": "ENG-102", "state": "Done", "priority": "P0", "estimate": 3,
      "labels": ["latency"], "project": "runtime-stability",
+     # Parented to the reader-restricted issue, so `Issue.parent` gets ACL coverage.
+     "parent": "ENG-103",
      "completedAt": "2026-03-10T00:00:00Z",
      "created": "2026-03-01T00:00:00Z", "updated": "2026-03-10T00:00:00Z"},
     {"source_type": "linear", "doc_id": "lin-des", "team": "design", "group": "design",

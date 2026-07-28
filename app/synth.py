@@ -319,6 +319,18 @@ def linear_comment_id(comment_row_id: str) -> str:
     return _uuid_from("linear-comment:" + comment_row_id)
 
 
+def linear_attachment_id(attachment_row_id: str) -> str:
+    return _uuid_from("linear-attachment:" + attachment_row_id)
+
+
+def linear_relation_id(relation_row_id: str) -> str:
+    return _uuid_from("linear-relation:" + relation_row_id)
+
+
+def linear_release_id(name: str) -> str:
+    return _uuid_from("linear-release:" + (name or ""))
+
+
 def linear_team_key(container: str) -> str:
     """A team's short key — the prefix its issue identifiers carry (``ENG-123``).
 

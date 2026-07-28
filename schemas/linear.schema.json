@@ -38,6 +38,34 @@
       "type": "string",
       "description": "The parent issue's identifier (e.g. \"ENG-20297\"), served as `Issue.parent`. Resolved at serve time through the same ACL-scoped lookup `issue(id:)` uses, so a parent the caller cannot read comes back null."
     },
+    "relations": {
+      "type": "array",
+      "description": "Issue relations, served as `Issue.relations` / `inverseRelations`. Each names a target by doc_id; an unresolvable target is a load error, never a dangling relation.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "doc_id of the related issue."
+          },
+          "type": {
+            "enum": [
+              "blocks",
+              "duplicate",
+              "related"
+            ],
+            "description": "Linear's relation vocabulary (default: related)."
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
     "state": {
       "type": "string",
       "description": "Workflow state NAME, e.g. \"In Progress\" / \"Done\" / \"Backlog\". Its Linear category (triage|backlog|unstarted|started|completed|canceled) is derived from the name and served as `state.type`."
@@ -71,6 +99,42 @@
     "cycle": {
       "type": "string",
       "description": "Cycle name, e.g. \"2025-W08\"; served as `cycle { name }`."
+    },
+    "release": {
+      "type": "string",
+      "description": "Release name (e.g. \"runtime-1.19\"), served as `Issue.releases`."
+    },
+    "attachments": {
+      "type": "array",
+      "description": "External links on the issue, served as `Issue.attachments`. A bare URL string is accepted; `title` is derived from the last path segment when absent, since Linear declares it non-null.",
+      "items": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "subtitle": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
     },
     "branchName": {
       "type": "string",

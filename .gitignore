@@ -26,3 +26,5 @@ node_modules/
 .idea/
 .vscode/
 .ruff_cache/
+
+/experiments/

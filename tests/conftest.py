@@ -222,6 +222,11 @@ SAMPLE = [
      "labels": ["latency"], "project": "runtime-stability",
      # Parented to the reader-restricted issue, so `Issue.parent` gets ACL coverage.
      "parent": "ENG-103",
+     "release": "runtime-1.19",
+     "attachments": ["https://ci.acme.test/builds/4821/artifacts.zip",
+                     {"url": "https://conf.acme.test/design/batching", "title": "Design doc"}],
+     # Relates to the RESTRICTED issue, so relation ACL scoping is covered too.
+     "relations": [{"to": "lin-rl", "type": "blocks"}, {"to": "lin-secret", "type": "related"}],
      "completedAt": "2026-03-10T00:00:00Z",
      "created": "2026-03-01T00:00:00Z", "updated": "2026-03-10T00:00:00Z"},
     {"source_type": "linear", "doc_id": "lin-des", "team": "design", "group": "design",

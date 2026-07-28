@@ -15,7 +15,7 @@ import pytest
 from app import store
 
 ALL_SOURCES = ["slack", "gmail", "google_drive", "github", "jira", "confluence", "notion", "s3",
-               "hubspot"]
+               "hubspot", "linear"]
 
 
 # --- registry wiring ------------------------------------------------------------
@@ -447,3 +447,87 @@ def test_hubspot_listing_is_an_index_range_seek(tmp_path):
         "ORDER BY doc_id LIMIT 10", ("contacts", "c0")))
     assert "idx_hubspot_type_doc" in plan
     assert "TEMP B-TREE" not in plan.upper(), f"ORDER BY is being sorted, not seeked: {plan}"
+
+
+# --- Linear -----------------------------------------------------------------------
+# Linear's store surface is its own set of functions (a Relay connection needs a total as well
+# as a page, and comments are ACL-scoped through their parent issue), so it gets its own block.
+
+def test_linear_list_and_count_agree(db):
+    rows = store.list_linear_issues(db, limit=100)
+    assert store.count_linear_issues(db) == len(rows) == 5
+    assert {r["doc_id"] for r in rows} == {"lin-rl", "lin-batch", "lin-des", "lin-secret",
+                                           "lin-blackops"}
+
+
+def test_linear_list_scopes_to_a_team(db):
+    rows = store.list_linear_issues(db, "design", limit=100)
+    assert [r["doc_id"] for r in rows] == ["lin-des"]
+    assert store.count_linear_issues(db, "design") == 1
+
+
+def test_linear_default_order_is_createdAt_ascending(db):
+    """Linear documents createdAt as the default ordering, and its `PaginationOrderBy` carries no
+    direction — so an absent `orderBy` must still order by creation, not by insertion order."""
+    default = [r["doc_id"] for r in store.list_linear_issues(db, "engineering", limit=100)]
+    explicit = [r["doc_id"] for r in store.list_linear_issues(db, "engineering", limit=100,
+                                                              order_by="createdAt")]
+    assert default == explicit
+    stamps = [r["created_ts"] for r in store.list_linear_issues(db, "engineering", limit=100)]
+    assert stamps == sorted(stamps)
+
+
+def test_linear_list_can_be_ordered_newest_first(db):
+    rows = store.list_linear_issues(db, "engineering", limit=100, order_by="createdAt",
+                                    descending=True)
+    stamps = [r["created_ts"] for r in rows]
+    assert stamps == sorted(stamps, reverse=True)
+
+
+def test_linear_default_order_is_stable_across_pages(db):
+    """An offset page over a non-total order can repeat or skip a row; walking one row at a time
+    must therefore visit each issue exactly once."""
+    seen = []
+    for offset in range(store.count_linear_issues(db)):
+        page = store.list_linear_issues(db, limit=1, offset=offset)
+        seen.append(page[0]["doc_id"])
+    assert len(seen) == len(set(seen)) == 5
+
+
+def test_linear_identifier_lookup(db):
+    assert store.linear_issue_by_identifier(db, "ENG-101")["doc_id"] == "lin-rl"
+    assert store.linear_issue_by_identifier(db, "NOPE-1") is None
+
+
+def test_linear_prefilter_is_pushed_into_sql(db):
+    flt = ("state = ?", ["Done"])
+    assert store.count_linear_issues(db, prefilter=flt) == 1
+    assert store.list_linear_issues(db, prefilter=flt)[0]["doc_id"] == "lin-batch"
+
+
+def test_linear_comments_scoped_to_one_issue(db):
+    rows = store.list_linear_comments(db, doc_id="lin-rl")
+    assert [r["body"] for r in rows] == ["Reproduced with a burst test.", "Fix is in review."]
+    assert store.count_linear_comments(db, doc_id="lin-rl") == 2
+
+
+def test_linear_comments_across_the_corpus(db):
+    assert store.count_linear_comments(db) == 3
+
+
+def test_linear_team_issue_counts(db):
+    assert store.linear_team_issue_counts(db) == {"engineering": 3, "design": 1,
+                                                 "blackops": 1}
+
+
+def test_linear_distinct_values_feed_the_reverse_index(db):
+    d = store.linear_distinct_values(db)
+    assert ("engineering", "In Progress") in d["states"]
+    assert "runtime-stability" in d["projects"]
+    assert ("engineering", "2025-W08") in d["cycles"]
+    assert {"bug", "gateway", "latency", "tokens"} <= set(d["labels"])
+    assert ("bob@acme.com", "Bob Stone") in d["users"]
+
+
+def test_linear_comment_table_is_registered(db):
+    assert store.comment_table("linear") == "linear_comments"

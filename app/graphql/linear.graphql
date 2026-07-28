@@ -1,0 +1,836 @@
+# Linear's GraphQL API, as served by the mock at `POST /linear/graphql`.
+#
+# PROVENANCE — this is not hand-drafted from the docs. The object types below were generated
+# from `@linear/sdk`'s OWN generated documents: the SDK ships one pre-built document per
+# operation, and `client.issues()` alone selects 171 field nodes across 11 fragments
+# (`reactionData`, `previousIdentifiers`, `slaBreachesAt`, `prioritySortOrder`, …). graphql-core
+# validates before executing, so a single missing field would reject the whole query and no
+# `@linear/sdk` call would work at all. Field types come from the SDK's own TypeScript
+# declarations, so `estimate` is `Float` and `dueDate` is `TimelessDate` exactly as upstream.
+#
+# The generated set covers the documents behind `issues` / `issue` / `team` / `teams` /
+# `team.issues` / `comments` / `issue.comments` / `issue.labels` / `users` / `viewer`, plus the
+# by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`) that the SDK's LAZY
+# relation accessors hit — `await issue.state` fires a fresh `workflowState(id:)` query rather
+# than reading the value out of the issue it just fetched.
+#
+# WHAT IS REAL vs WHAT IS A STUB. The mock has data behind issues, comments, teams, and the
+# `state` / `project` / `cycle` / `labels` / `creator` / `assignee` relations on an issue.
+# Everything else the SDK's fragments demand (`botActor`, `syncedWith`, `favorite`, the SLA
+# timestamps, the board/sort orders) resolves to null or an empty list: declared so real SDK
+# documents validate, not backed by a corpus. Fields are never silently faked — a null here means
+# "this mock has no such data", which is a legal Linear response. The one deliberate exception is
+# `Issue.sharedAccess`, which is NON-null because the SDK constructs it unconditionally and a null
+# crashes the client; its values ("nothing is shared") are accurate anyway.
+#
+# OUT OF SCOPE (deliberate): mutations — there is no Mutation type, so introspection reports
+# `mutationType: null` rather than advertising writes that would fail. Also attachments,
+# webhooks, roadmaps/initiatives and `documents` as first-class queries.
+
+# --- custom scalars ---------------------------------------------------------------
+# Linear's own scalar names. graphql-core passes them through unchanged, which is what we
+# want: `DateTime` is an ISO-8601 string, `TimelessDate` a bare `YYYY-MM-DD`, and the JSON
+# scalars carry already-shaped objects.
+scalar DateTime
+scalar TimelessDate
+scalar JSON
+scalar JSONObject
+scalar UUID
+
+# --- root -------------------------------------------------------------------------
+# Read-only: Linear's mutations are out of scope, so there is no Mutation type at all
+# (introspection therefore reports `mutationType: null`, which is honest — a declared-but-
+# unimplemented Mutation root would let a client's create call validate and then fail).
+type Query {
+  """One issue by its UUID **or** by its human identifier (`ENG-123`), as the real API accepts both."""
+  issue(id: String!): Issue!
+  issues(after: String, before: String, filter: IssueFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, sort: [IssueSortInput!]): IssueConnection!
+  """One team by its UUID **or** by its key (`ENG`)."""
+  team(id: String!): Team!
+  teams(after: String, before: String, filter: TeamFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): TeamConnection!
+  comments(after: String, before: String, filter: CommentFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): CommentConnection!
+  users(after: String, before: String, filter: UserFilter, first: Int, includeArchived: Boolean, includeDisabled: Boolean, last: Int, orderBy: PaginationOrderBy, sort: [UserSortInput!]): UserConnection!
+  """The authenticated user — how a client confirms which identity (and therefore which ACL scope) its credential resolved to."""
+  viewer: User!
+
+  # An `@linear/sdk` relation accessor (`await issue.state`, `await issue.assignee`) does NOT read
+  # the value out of the issue it already fetched — it fires a fresh query for that entity by id.
+  # These four roots are what make `issue.state` / `.assignee` / `.creator` / `.project` /
+  # `.cycle` / `.labels()` work instead of failing with "Cannot query field on type 'Query'".
+  user(id: String!): User!
+  workflowState(id: String!): WorkflowState!
+  project(id: String!): Project!
+  issueLabel(id: String!): IssueLabel!
+  cycle(id: String!): Cycle!
+  attachment(id: String!): Attachment!
+  issueRelation(id: String!): IssueRelation!
+  release(id: String!): Release!
+}
+
+# --- connections & entity types -----------------------------------------------------
+# PageInfo, the Issue/Comment/Team/User/IssueLabel connections, and the WorkflowState / Project /
+# Cycle / IssueLabel entity types all come from the generated block below: the SDK fetches an
+# issue's relations with SEPARATE queries (`workflowState(id:)`, `user(id:)`, `project(id:)`,
+# `issue_labels`), each selecting that type's own full fragment, so their real shapes are
+# available and there is nothing to hand-write.
+
+# --- id-only stubs ------------------------------------------------------------------
+# Every one of these appears in the SDK's generated fragments as `field { id }` and nowhere
+# else. They exist so those documents validate; the mock has no data behind them, so the
+# owning field always resolves to null and the type is never actually reached.
+type AgentSession { id: ID! }
+type Document { id: ID! }
+type ExternalUser { id: ID! }
+type Favorite { id: ID! }
+type Initiative { id: ID! }
+type InitiativeUpdate { id: ID! }
+type IntegrationsSettings { id: ID! }
+type ProjectMilestone { id: ID! }
+type ProjectStatus { id: ID! }
+type ReleasePipeline { id: ID! }
+type ReleaseStage { id: ID! }
+type ProjectUpdate { id: ID! }
+type Template { id: ID! }
+type TriageResponsibility { id: ID! }
+
+union ExternalEntityInfoMetadata =
+    ExternalEntityInfoGithubMetadata
+  | ExternalEntityInfoJiraMetadata
+  | ExternalEntitySlackMetadata
+
+# --- pagination / sorting inputs -----------------------------------------------------
+enum PaginationOrderBy { createdAt updatedAt }
+enum PaginationSortOrder { Ascending Descending }
+enum PaginationNulls { first last }
+
+input TitleSort { nulls: PaginationNulls, order: PaginationSortOrder }
+input PrioritySort { nulls: PaginationNulls, order: PaginationSortOrder }
+input EstimateSort { nulls: PaginationNulls, order: PaginationSortOrder }
+input CreatedAtSort { nulls: PaginationNulls, order: PaginationSortOrder }
+input UpdatedAtSort { nulls: PaginationNulls, order: PaginationSortOrder }
+
+"""The issue sort keys the mock can order by. Linear's own input is wider; anything it
+accepts and this does not is a validation error here rather than a silently ignored sort."""
+input IssueSortInput {
+  title: TitleSort
+  priority: PrioritySort
+  estimate: EstimateSort
+  createdAt: CreatedAtSort
+  updatedAt: UpdatedAtSort
+}
+
+input UserSortInput { name: NameSort, createdAt: CreatedAtSort, updatedAt: UpdatedAtSort }
+input NameSort { nulls: PaginationNulls, order: PaginationSortOrder }
+
+# --- filter inputs --------------------------------------------------------------------
+# Linear's filter inputs are enormous (every field crossed with every comparator). These
+# declare ONLY what the mock genuinely evaluates, on purpose: an unsupported key then comes
+# back as a GraphQL validation error naming the field, instead of being accepted and quietly
+# ignored — which would hand a client a full, wrong result set.
+input IDComparator { eq: ID, neq: ID, in: [ID!], nin: [ID!] }
+
+input StringComparator {
+  eq: String, neq: String, in: [String!], nin: [String!]
+  contains: String, containsIgnoreCase: String
+  startsWith: String, endsWith: String
+  eqIgnoreCase: String, neqIgnoreCase: String
+}
+
+input NullableStringComparator {
+  eq: String, neq: String, in: [String!], nin: [String!]
+  contains: String, containsIgnoreCase: String
+  startsWith: String, endsWith: String
+  eqIgnoreCase: String, neqIgnoreCase: String
+  null: Boolean
+}
+
+input NumberComparator {
+  eq: Float, neq: Float, lt: Float, lte: Float, gt: Float, gte: Float
+  in: [Float!], nin: [Float!]
+}
+
+input NullableNumberComparator {
+  eq: Float, neq: Float, lt: Float, lte: Float, gt: Float, gte: Float
+  in: [Float!], nin: [Float!]
+  null: Boolean
+}
+
+input DateComparator { eq: DateTime, neq: DateTime, lt: DateTime, lte: DateTime, gt: DateTime, gte: DateTime }
+
+input NullableDateComparator {
+  eq: DateTime, neq: DateTime, lt: DateTime, lte: DateTime, gt: DateTime, gte: DateTime
+  null: Boolean
+}
+
+input WorkflowStateFilter {
+  # No `id`: a state id is derived from (team, name), so it cannot be pushed down as a predicate
+  # over the single `state` column. Filter by `name` or `type` instead.
+  name: StringComparator
+  type: StringComparator
+  and: [WorkflowStateFilter!]
+  or: [WorkflowStateFilter!]
+}
+
+input UserFilter {
+  id: IDComparator
+  name: StringComparator
+  displayName: StringComparator
+  email: StringComparator
+  and: [UserFilter!]
+  or: [UserFilter!]
+}
+
+input NullableUserFilter {
+  id: IDComparator
+  name: StringComparator
+  displayName: StringComparator
+  email: StringComparator
+  null: Boolean
+  and: [NullableUserFilter!]
+  or: [NullableUserFilter!]
+}
+
+input TeamFilter {
+  id: IDComparator
+  key: StringComparator
+  name: StringComparator
+  and: [TeamFilter!]
+  or: [TeamFilter!]
+}
+
+input NullableProjectFilter {
+  id: IDComparator
+  name: StringComparator
+  null: Boolean
+  and: [NullableProjectFilter!]
+  or: [NullableProjectFilter!]
+}
+
+input IssueLabelFilter {
+  name: StringComparator
+  and: [IssueLabelFilter!]
+  or: [IssueLabelFilter!]
+}
+
+input IssueLabelCollectionFilter {
+  some: IssueLabelFilter
+  every: IssueLabelFilter
+  and: [IssueLabelCollectionFilter!]
+  or: [IssueLabelCollectionFilter!]
+}
+
+"""Attachment fields the mock can evaluate. Linear's own input is wider; as everywhere else in
+this schema, only what is implemented is declared, so an unsupported key is a validation error
+rather than a filter that is dropped and answered with the full set."""
+input AttachmentFilter {
+  id: IDComparator
+  title: StringComparator
+  subtitle: NullableStringComparator
+  url: StringComparator
+  sourceType: NullableStringComparator
+  and: [AttachmentFilter!]
+  or: [AttachmentFilter!]
+}
+
+input ReleaseFilter {
+  id: IDComparator
+  name: StringComparator
+  slugId: StringComparator
+  and: [ReleaseFilter!]
+  or: [ReleaseFilter!]
+}
+
+input CommentFilter {
+  id: IDComparator
+  body: StringComparator
+  createdAt: DateComparator
+  updatedAt: DateComparator
+  and: [CommentFilter!]
+  or: [CommentFilter!]
+}
+
+input IssueFilter {
+  id: IDComparator
+  title: StringComparator
+  description: NullableStringComparator
+  branchName: StringComparator
+  priority: NullableNumberComparator
+  estimate: NullableNumberComparator
+  dueDate: NullableDateComparator
+  createdAt: DateComparator
+  updatedAt: DateComparator
+  completedAt: NullableDateComparator
+  canceledAt: NullableDateComparator
+  state: WorkflowStateFilter
+  assignee: NullableUserFilter
+  creator: UserFilter
+  team: TeamFilter
+  project: NullableProjectFilter
+  labels: IssueLabelCollectionFilter
+  and: [IssueFilter!]
+  or: [IssueFilter!]
+}
+
+# --- types generated from @linear/sdk's own documents (see PROVENANCE above) ----------
+# Two fields needed a hand correction the SDK's TypeScript cannot express:
+#   * IssueSharedAccess.disallowedIssueFields is a LIST (`…DisallowedField[]`), fixed below.
+#   * Team.visibility / Issue.integrationSourceType / ExternalEntityInfo.service are enums
+#     upstream and stay `String` here — an enum name is a JSON string on the wire either way,
+#     and a partial enum would reject a value the mock has no member list for.
+type ActorBot {
+  avatarUrl: String
+  subType: String
+  id: ID
+  name: String
+  userDisplayName: String
+  type: String!
+}
+
+type AiPromptRules {
+  updatedAt: DateTime!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  id: ID!
+  updatedBy: User
+}
+
+type Attachment {
+  subtitle: String
+  title: String!
+  source: JSONObject
+  metadata: JSONObject!
+  url: String!
+  bodyData: String
+  updatedAt: DateTime!
+  sourceType: String
+  archivedAt: DateTime
+  createdAt: DateTime!
+  id: ID!
+  groupBySource: Boolean!
+  creator: User
+  issue: Issue!
+  originalIssue: Issue
+  externalUserCreator: ExternalUser
+}
+
+type AttachmentConnection {
+  nodes: [Attachment!]!
+  pageInfo: PageInfo!
+}
+
+type Comment {
+  url: String!
+  reactionData: JSONObject!
+  resolvingCommentId: String
+  documentContentId: String
+  initiativeId: String
+  initiativeUpdateId: String
+  issueId: String
+  parentId: String
+  projectId: String
+  projectUpdateId: String
+  body: String!
+  updatedAt: DateTime!
+  quotedText: String
+  archivedAt: DateTime
+  createdAt: DateTime!
+  editedAt: DateTime
+  resolvedAt: DateTime
+  id: ID!
+  agentSession: AgentSession
+  reactions: [Reaction!]!
+  botActor: ActorBot
+  resolvingComment: Comment
+  documentContent: DocumentContent
+  syncedWith: [ExternalEntityInfo!]
+  externalThread: SyncedExternalThread
+  externalUser: ExternalUser
+  initiative: Initiative
+  initiativeUpdate: InitiativeUpdate
+  issue: Issue
+  parent: Comment
+  project: Project
+  projectUpdate: ProjectUpdate
+  resolvingUser: User
+  user: User
+}
+
+type CommentConnection {
+  nodes: [Comment!]!
+  pageInfo: PageInfo!
+}
+
+type Cycle {
+  number: Float!
+  completedAt: DateTime
+  name: String
+  description: String
+  endsAt: DateTime!
+  updatedAt: DateTime!
+  completedScopeHistory: [Float!]!
+  completedIssueCountHistory: [Float!]!
+  inProgressScopeHistory: [Float!]!
+  progress: Float!
+  startsAt: DateTime!
+  autoArchivedAt: DateTime
+  archivedAt: DateTime
+  createdAt: DateTime!
+  scopeHistory: [Float!]!
+  issueCountHistory: [Float!]!
+  id: ID!
+  isFuture: Boolean!
+  isActive: Boolean!
+  isPast: Boolean!
+  isPrevious: Boolean!
+  isNext: Boolean!
+  inheritedFrom: Cycle
+  team: Team!
+}
+
+type DocumentContent {
+  content: String
+  contentState: String
+  updatedAt: DateTime!
+  restoredAt: DateTime
+  archivedAt: DateTime
+  createdAt: DateTime!
+  id: ID!
+  aiPromptRules: AiPromptRules
+  document: Document
+  initiative: Initiative
+  issue: Issue
+  projectMilestone: ProjectMilestone
+  project: Project
+  welcomeMessage: WelcomeMessage
+}
+
+type ExternalEntityInfo {
+  service: String!
+  id: ID!
+  metadata: ExternalEntityInfoMetadata
+}
+
+type ExternalEntityInfoGithubMetadata {
+  number: Float
+  owner: String
+  repo: String
+}
+
+type ExternalEntityInfoJiraMetadata {
+  issueTypeId: String
+  projectId: String
+  issueKey: String
+}
+
+type ExternalEntitySlackMetadata {
+  messageUrl: String
+  channelId: String
+  channelName: String
+  isFromSlack: Boolean!
+}
+
+type Issue {
+  trashed: Boolean
+  reactionData: JSONObject!
+  labelIds: [String!]!
+  integrationSourceType: String
+  url: String!
+  identifier: String!
+  priorityLabel: String!
+  previousIdentifiers: [String!]!
+  customerTicketCount: Float!
+  branchName: String!
+  dueDate: TimelessDate
+  estimate: Float
+  description: String
+  title: String!
+  number: Float!
+  updatedAt: DateTime!
+  boardOrder: Float!
+  sortOrder: Float!
+  prioritySortOrder: Float!
+  subIssueSortOrder: Float
+  priority: Float!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  startedTriageAt: DateTime
+  triagedAt: DateTime
+  addedToCycleAt: DateTime
+  addedToProjectAt: DateTime
+  addedToTeamAt: DateTime
+  autoArchivedAt: DateTime
+  autoClosedAt: DateTime
+  canceledAt: DateTime
+  completedAt: DateTime
+  startedAt: DateTime
+  slaStartedAt: DateTime
+  slaBreachesAt: DateTime
+  slaHighRiskAt: DateTime
+  slaMediumRiskAt: DateTime
+  snoozedUntilAt: DateTime
+  slaType: String
+  id: ID!
+  inheritsSharedAccess: Boolean!
+  reactions: [Reaction!]!
+  sharedAccess: IssueSharedAccess
+  delegate: User
+  botActor: ActorBot
+  sourceComment: Comment
+  cycle: Cycle
+  syncedWith: [ExternalEntityInfo!]
+  externalUserCreator: ExternalUser
+  asksExternalUserRequester: ExternalUser
+  asksRequester: User
+  lastAppliedTemplate: Template
+  parent: Issue
+  projectMilestone: ProjectMilestone
+  project: Project
+  recurringIssueTemplate: Template
+  team: Team!
+  assignee: User
+  creator: User
+  snoozedBy: User
+  favorite: Favorite
+  state: WorkflowState!
+  labels(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: IssueLabelFilter): IssueLabelConnection!
+  comments(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: CommentFilter): CommentConnection!
+  relations(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): IssueRelationConnection!
+  inverseRelations(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): IssueRelationConnection!
+  children(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: IssueFilter): IssueConnection!
+  attachments(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, url: String, filter: AttachmentFilter): AttachmentConnection!
+  releases(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: ReleaseFilter): ReleaseConnection!
+}
+
+type IssueConnection {
+  nodes: [Issue!]!
+  pageInfo: PageInfo!
+}
+
+type IssueLabel {
+  lastAppliedAt: DateTime
+  color: String!
+  description: String
+  name: String!
+  updatedAt: DateTime!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  id: ID!
+  isGroup: Boolean!
+  inheritedFrom: IssueLabel
+  parent: IssueLabel
+  team: Team
+  creator: User
+  retiredBy: User
+}
+
+type IssueLabelConnection {
+  nodes: [IssueLabel!]!
+  pageInfo: PageInfo!
+}
+
+type IssueRelation {
+  updatedAt: DateTime!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  type: String!
+  id: ID!
+  issue: Issue!
+  relatedIssue: Issue!
+}
+
+type IssueRelationConnection {
+  nodes: [IssueRelation!]!
+  pageInfo: PageInfo!
+}
+
+type IssueSharedAccess {
+  # A LIST of enum values upstream (`IssueSharedAccessDisallowedField[]`).
+  disallowedIssueFields: [String!]!
+  sharedWithCount: Float!
+  viewerHasOnlySharedAccess: Boolean!
+  isShared: Boolean!
+  sharedWithUsers: [User!]!
+}
+
+type PageInfo {
+  startCursor: String
+  endCursor: String
+  hasPreviousPage: Boolean!
+  hasNextPage: Boolean!
+}
+
+type Project {
+  trashed: Boolean
+  url: String!
+  microsoftTeamsChannelId: String
+  slackChannelId: String
+  labelIds: [String!]!
+  updateRemindersDay: String
+  targetDate: TimelessDate
+  startDate: TimelessDate
+  updateReminderFrequency: Float
+  updateRemindersHour: Float
+  icon: String
+  updatedAt: DateTime!
+  updateReminderFrequencyInWeeks: Float
+  name: String!
+  completedScopeHistory: [Float!]!
+  completedIssueCountHistory: [Float!]!
+  inProgressScopeHistory: [Float!]!
+  health: String
+  progress: Float!
+  scope: Float!
+  priorityLabel: String!
+  priority: Float!
+  color: String!
+  content: String
+  slugId: String!
+  targetDateResolution: String
+  startDateResolution: String
+  frequencyResolution: String!
+  description: String!
+  prioritySortOrder: Float!
+  sortOrder: Float!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  healthUpdatedAt: DateTime
+  autoArchivedAt: DateTime
+  canceledAt: DateTime
+  completedAt: DateTime
+  startedAt: DateTime
+  projectUpdateRemindersPausedUntilAt: DateTime
+  issueCountHistory: [Float!]!
+  scopeHistory: [Float!]!
+  id: ID!
+  slackIssueComments: Boolean!
+  slackNewIssue: Boolean!
+  slackIssueStatuses: Boolean!
+  state: String!
+  integrationsSettings: IntegrationsSettings
+  documentContent: DocumentContent
+  status: ProjectStatus!
+  syncedWith: [ExternalEntityInfo!]
+  convertedFromIssue: Issue
+  lastAppliedTemplate: Template
+  lastUpdate: ProjectUpdate
+  creator: User
+  lead: User
+  favorite: Favorite
+}
+
+type Reaction {
+  updatedAt: DateTime!
+  emoji: String!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  id: ID!
+  comment: Comment
+  externalUser: ExternalUser
+  initiativeUpdate: InitiativeUpdate
+  issue: Issue
+  projectUpdate: ProjectUpdate
+  user: User
+}
+
+type Release {
+  trashed: Boolean
+  issueCount: Float!
+  commitSha: String
+  url: String!
+  currentProgress: JSONObject!
+  description: String
+  targetDate: TimelessDate
+  startDate: TimelessDate
+  progressHistory: JSONObject!
+  updatedAt: DateTime!
+  name: String!
+  slugId: String!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  startedAt: DateTime
+  autoArchivedAt: DateTime
+  canceledAt: DateTime
+  completedAt: DateTime
+  id: ID!
+  version: String
+  releaseNotes: [ReleaseNote!]!
+  stage: ReleaseStage
+  pipeline: ReleasePipeline
+  creator: User
+}
+
+type ReleaseConnection {
+  nodes: [Release!]!
+  pageInfo: PageInfo!
+}
+
+type ReleaseNote {
+  generationStatus: String
+  url: String!
+  updatedAt: DateTime!
+  releaseCount: Float!
+  slugId: String!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  id: ID!
+  title: String
+  documentContent: DocumentContent
+  firstRelease: Release
+  lastRelease: Release
+  pipeline: ReleasePipeline
+}
+
+type SyncedExternalThread {
+  url: String
+  name: String
+  displayName: String
+  type: String!
+  subType: String
+  id: ID
+  isPersonalIntegrationRequired: Boolean!
+  isPersonalIntegrationConnected: Boolean!
+  isConnected: Boolean!
+}
+
+type Team {
+  cycleIssueAutoAssignCompleted: Boolean!
+  cycleLockToActive: Boolean!
+  cycleIssueAutoAssignStarted: Boolean!
+  cycleCalenderUrl: String!
+  upcomingCycleCount: Float!
+  autoArchivePeriod: Float!
+  autoClosePeriod: Float
+  securitySettings: JSONObject!
+  scimGroupName: String
+  autoCloseStateId: String
+  cycleCooldownTime: Float!
+  cycleStartDay: Float!
+  cycleDuration: Float!
+  icon: String
+  defaultTemplateForMembersId: String
+  defaultTemplateForNonMembersId: String
+  issueEstimationType: String!
+  updatedAt: DateTime!
+  displayName: String!
+  ledInitiativeCount: Float!
+  color: String
+  description: String
+  name: String!
+  key: String!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  retiredAt: DateTime
+  timezone: String!
+  issueCount: Float!
+  id: ID!
+  visibility: String!
+  defaultIssueEstimate: Float!
+  setIssueSortOrderOnStateChange: String!
+  allMembersCanJoin: Boolean
+  requirePriorityToLeaveTriage: Boolean!
+  autoCloseChildIssues: Boolean
+  autoCloseParentIssues: Boolean
+  scimManaged: Boolean!
+  private: Boolean!
+  inheritIssueEstimation: Boolean!
+  inheritWorkflowStatuses: Boolean!
+  cyclesEnabled: Boolean!
+  issueEstimationExtended: Boolean!
+  issueEstimationAllowZero: Boolean!
+  aiDiscussionSummariesEnabled: Boolean!
+  aiThreadSummariesEnabled: Boolean!
+  groupIssueHistory: Boolean!
+  slackIssueComments: Boolean!
+  slackNewIssue: Boolean!
+  slackIssueStatuses: Boolean!
+  triageEnabled: Boolean!
+  inviteHash: String!
+  issueOrderingNoPriorityFirst: Boolean!
+  issueSortOrderDefaultToBottom: Boolean!
+  integrationsSettings: IntegrationsSettings
+  activeCycle: Cycle
+  triageResponsibility: TriageResponsibility
+  defaultTemplateForMembers: Template
+  defaultTemplateForNonMembers: Template
+  defaultProjectTemplate: Template
+  defaultIssueState: WorkflowState
+  parent: Team
+  mergeWorkflowState: WorkflowState
+  draftWorkflowState: WorkflowState
+  startWorkflowState: WorkflowState
+  mergeableWorkflowState: WorkflowState
+  reviewWorkflowState: WorkflowState
+  triageIssueState: WorkflowState
+  markedAsDuplicateWorkflowState: WorkflowState
+  issues(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: IssueFilter, includeSubTeams: Boolean): IssueConnection!
+}
+
+type TeamConnection {
+  nodes: [Team!]!
+  pageInfo: PageInfo!
+}
+
+type User {
+  description: String
+  avatarUrl: String
+  createdIssueCount: Float!
+  avatarBackgroundColor: String!
+  statusUntilAt: DateTime
+  statusEmoji: String
+  initials: String!
+  updatedAt: DateTime!
+  lastSeen: DateTime
+  timezone: String
+  disableReason: String
+  statusLabel: String
+  archivedAt: DateTime
+  createdAt: DateTime!
+  id: ID!
+  gitHubUserId: String
+  displayName: String!
+  email: String!
+  name: String!
+  title: String
+  url: String!
+  active: Boolean!
+  isAssignable: Boolean!
+  guest: Boolean!
+  admin: Boolean!
+  owner: Boolean!
+  app: Boolean!
+  isMentionable: Boolean!
+  isMe: Boolean!
+  supportsAgentSessions: Boolean!
+  canAccessAnyPublicTeam: Boolean!
+  calendarHash: String
+  inviteHash: String!
+}
+
+type UserConnection {
+  nodes: [User!]!
+  pageInfo: PageInfo!
+}
+
+type WelcomeMessage {
+  updatedAt: DateTime!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  title: String
+  id: ID!
+  enabled: Boolean!
+  updatedBy: User
+}
+
+type WorkflowState {
+  description: String
+  updatedAt: DateTime!
+  position: Float!
+  color: String!
+  name: String!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  type: String!
+  id: ID!
+  inheritedFrom: WorkflowState
+  team: Team!
+}

@@ -14,6 +14,7 @@ truth** for the JSONL record that `app/importer/byo.py` accepts:
 | `notion.schema.json` | `notion` | `teamspace` |
 | `s3.schema.json` | `s3` | `bucket` |
 | `hubspot.schema.json` | `hubspot` | `object_type` |
+| `linear.schema.json` | `linear` | `team` |
 
 Edit these files directly to change the accepted record shape. `app/validation.py`
 loads them at runtime (keyed by each schema's `properties.source_type.const`), so a new source

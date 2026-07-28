@@ -36,7 +36,8 @@ from app import store, synth
 from app.config import get_settings, infer_org
 
 # ---------------------------------------------------------------- constants
-SUPPORTED = ("slack", "gmail", "google_drive", "github", "jira", "confluence", "hubspot")
+SUPPORTED = ("slack", "gmail", "google_drive", "github", "jira", "confluence", "hubspot",
+             "linear")
 
 INTERNAL_ROLES = {"owner", "author", "reviewer", "assignee", "reporter",
                   "collaborator", "participant_internal", "mailbox_owner"}
@@ -913,9 +914,323 @@ def load_slack(conn, dsid, raw, P):
             "_children": [f"{dsid}::m{seq}" for seq in range(1, len(turns))]}
 
 
+# ---------------------------------------------------------------- linear
+# The bench's Linear docs are one ticket per file, with a standard ERB envelope
+# (`title_field_name`/`content_field_names`/`dataset_doc_uuid`) plus the metadata its
+# `sources/linear/agents.md` documents: key, team, status, priority, created_at, updated_at,
+# creator, assignee, and optional project/cycle/estimate/due_date/labels.
+#
+# Two properties of the real data drive the mapping:
+#   * `key` is NOT unique — 22,729 distinct keys across 35,308 docs, one repeated 107 times — so
+#     the doc_id stays the dataset uuid and the key becomes `identifier`, which Linear does not
+#     require to be globally unique in *our* corpus even though its own product does.
+#   * the directory a file sits in disagrees with its own `team` field for ~2,750 docs (and two
+#     directories, business-ops/misc-chores, name no team at all). The `team` FIELD is the
+#     authority: its three values line up with the ENG/PM/DES identifier prefixes and each maps
+#     onto a real directory department, so the ACL group actually has members.
+
+# The bench writes P0-P3; Linear's API has a 0-4 integer scale with 1 the most urgent. Map onto
+# the API's scale (as load_hubspot maps onto real HubSpot property names) rather than serving a
+# vocabulary no Linear client understands. Labels are accepted too, for a BYO corpus that already
+# speaks Linear.
+_LINEAR_PRIORITY = {"p0": 1, "p1": 2, "p2": 3, "p3": 4,
+                    "urgent": 1, "high": 2, "medium": 3, "low": 4,
+                    "none": 0, "no priority": 0}
+
+
+def linear_priority(value) -> int | None:
+    """A bench priority -> Linear's 0-4. Unrecognized text becomes 0 ("No priority"), which is
+    what Linear itself stores for an unset priority; a missing value stays None."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value) if 0 <= int(value) <= 4 else 0
+    s = str(value).strip().lower()
+    if s.isdigit() and 0 <= int(s) <= 4:
+        return int(s)
+    return _LINEAR_PRIORITY.get(s, 0)
+
+
+def _linear_int(value) -> int | None:
+    """An estimate: the bench writes it as a numeric string, occasionally as an int, twice as
+    null. Anything non-numeric is dropped rather than coerced to 0 — a wrong estimate is worse
+    than an absent one."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
+
+
+def _linear_release(value) -> str | None:
+    """8 docs write `release` as a list; Linear attaches an issue to one release name."""
+    if isinstance(value, (list, tuple)):
+        value = next((x for x in value if x), None)
+    s = str(value or "").strip()
+    return s or None
+
+
+def _linear_parent(value) -> str | None:
+    """The bench's ``parent_issue`` is a list of keys on 16,813 docs and a bare string on 552.
+    Linear has exactly one parent, so take the first."""
+    if isinstance(value, (list, tuple)):
+        value = next((x for x in value if x), None)
+    s = str(value or "").strip()
+    return s or None
+
+
+# The bench writes a dependency as a bare issue key, sometimes with a relation word attached
+# ("blocks ENG-123"). Linear's IssueRelation.type vocabulary is blocks | duplicate | related.
+_LINEAR_REL_WORDS = (("duplicate", "duplicate"), ("blocked by", "blocks"), ("blocks", "blocks"),
+                     ("depends", "blocks"), ("related", "related"))
+_LINEAR_KEY = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b")
+
+
+def parse_linear_relations(value) -> list[tuple[str, str]]:
+    """A bench `dependencies` entry -> ``[(type, key), …]``.
+
+    Defaults to ``related``, which is Linear's own neutral relation, rather than guessing
+    ``blocks``: the corpus lists these under a heading that means "depends on" only sometimes, and
+    asserting a blocking relationship the data does not state would be inventing a dependency
+    graph. A word that IS present is honoured."""
+    out = []
+    for entry in (value if isinstance(value, (list, tuple)) else [value]):
+        text = str(entry or "")
+        rel = next((t for word, t in _LINEAR_REL_WORDS if word in text.lower()), "related")
+        for key in _LINEAR_KEY.findall(text):
+            out.append((rel, key))
+    return out
+
+
+def _linear_url_title(url: str) -> tuple[str, str | None]:
+    """`Attachment.title` is non-null in Linear. The bench's `links` are `Label: URL`, its
+    `attachments` are bare URLs — so a label is used when present and otherwise derived from the
+    last meaningful path segment, never left empty."""
+    text = str(url or "").strip()
+    m = re.match(r"^(?P<label>[^:]{1,60}):\s*(?P<url>https?://\S+)$", text)
+    if m:
+        return m.group("url"), m.group("label").strip()
+    parts = [p for p in text.rstrip("/").split("/") if p]
+    derived = parts[-1] if parts else text
+    return text, (derived or None)
+
+
+def parse_linear_attachments(*values) -> list[dict]:
+    """The bench's `links` and `attachments` are both external links, which is exactly Linear's
+    `Attachment`. Merged and de-duplicated on url, since a doc can list the same link in both."""
+    out, seen = [], set()
+    for value in values:
+        for entry in (value if isinstance(value, (list, tuple)) else [value]):
+            if not entry:
+                continue
+            url, title = _linear_url_title(entry)
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            out.append({"url": url, "title": title or url})
+    return out
+
+
+def _linear_date(value) -> str | None:
+    """A `TimelessDate` (`YYYY-MM-DD`) for dueDate — served verbatim, since that is the scalar's
+    whole shape. Anything else is dropped."""
+    s = str(value or "").strip()
+    return s if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s) else None
+
+
+# A Linear comment in the bench is a plain string. Measured across all 165,243 of them, the date
+# and the author are carried in a handful of interchangeable shapes:
+#     2025-02-18 - Maya Patel: filed the PRD      (dash + name — 60,282, the single most common)
+#     2025-02-18 - Created: initial hypothesis    (dash + a LABEL, not a person)
+#     2026-03-05 Anjali Rao: updated the criteria (no dash, name)
+#     2025-12-18 (Naomi Feldman): include audit   (parenthesised name)
+#     2025-02-18 09:15: rolled back               (no name at all — that is a clock)
+#     Implementation notes: use heuristics        (undated)
+# So the parse is two independent steps rather than a list of whole-line alternatives: peel off
+# the date (with an optional dash separator), then try to peel a `Name:` off what remains. Trying
+# whole-line patterns in order is what an earlier version did, and because the dash pattern had no
+# name group and was tried first, it swallowed the author of 60,282 comments into the body —
+# serving `body` as "Maya Patel: filed the PRD" and attributing it to nobody.
+_LINEAR_C_DATE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s*(?:[-–—]\s*)?(?P<rest>.*)$", re.DOTALL)
+# The name must START WITH A LETTER. Without that, "2025-02-18 09:15: rolled back" parses as
+# author "09" with the body truncated to "15: rolled back" — inventing a person and losing text.
+_LINEAR_C_NAME = re.compile(r"^\(?(?P<name>[A-Za-zÀ-ÿ][^:\n()]{0,39}?)\)?:\s*(?P<body>.*)$",
+                            re.DOTALL)
+
+
+def parse_linear_comments(comments) -> list[dict]:
+    """Bench comment strings -> ``{date, name, body, body_with_name}``.
+
+    ``body`` has the ``Name:`` prefix removed; ``body_with_name`` keeps it. Both are returned
+    because only the caller knows whether the name is a person: the prefix is just as often a
+    LABEL ("Created:", "Design review with PM and Accessibility:"), and stripping one of those
+    would delete text from the comment. :func:`load_linear` uses ``body`` when the name resolves
+    to somebody real and ``body_with_name`` when it doesn't, so nothing is ever lost.
+    """
+    if isinstance(comments, str):          # 29 docs carry a single string instead of a list
+        comments = [comments]
+    out = []
+    for c in comments or []:
+        s = str(c).strip()
+        if not s:
+            continue
+        m = _LINEAR_C_DATE.match(s)
+        date, rest = (m.group("date"), m.group("rest")) if m else (None, s)
+        n = _LINEAR_C_NAME.match(rest)
+        if n:
+            out.append({"date": date, "name": n.group("name").strip(),
+                        "body": n.group("body").strip(), "body_with_name": rest.strip()})
+        else:
+            out.append({"date": date, "name": None, "body": rest.strip(),
+                        "body_with_name": rest.strip()})
+    return out
+
+
+def load_linear(conn, dsid, raw, P):
+    title, content = _title_content(raw)
+    team = str(raw.get("team") or "engineering")
+    group = P.canonical_group(team) or team
+    creator = raw.get("creator", "")
+    assignee = raw.get("assignee", "")
+    creator_email = P.resolve(creator, role="author", group_hint=group) if creator else None
+    # "unassigned" is a real value in the bench (11 docs); it is not a person, so it must not
+    # become one — leave the assignee null, which is what Linear stores for an unassigned issue.
+    assignee_name = assignee if str(assignee).strip().lower() != "unassigned" else ""
+    assignee_email = (P.resolve(assignee_name, role="assignee", group_hint=group)
+                      if assignee_name else None)
+    conn.execute("INSERT OR REPLACE INTO linear_teams(team, group_id) VALUES (?,?)", (team, group))
+
+    identifier = str(raw.get("key") or "").strip() or synth.linear_identifier(
+        dsid, synth.linear_team_key(team))
+    state = raw.get("status")
+    created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
+    updated = to_epoch(raw.get("updated_at"))
+    # The bench records no lifecycle timestamps, but a state IS one: Linear sets completedAt the
+    # moment an issue enters a completed state and canceledAt when it is canceled, so derive them
+    # from the state category + the last-updated clock. Everything else stays NULL rather than
+    # being invented.
+    state_type = synth.linear_state_type(state)
+    ended = updated or created
+    conn.execute(
+        "INSERT OR REPLACE INTO linear_issues(doc_id, team, author_email, title, content, "
+        "identifier, state, priority, estimate, labels, project, cycle, branch_name, due_date, "
+        "created_ts, updated_ts, completed_ts, canceled_ts, started_ts, "
+        "assignee_email, assignee_display, owner_display, parent_key, release) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (dsid, team, creator_email or f"unknown@{P.org_domain}", title, content,
+         identifier, state, linear_priority(raw.get("priority")),
+         _linear_int(raw.get("estimate")), json.dumps(_names(raw.get("labels"))),
+         raw.get("project"), raw.get("cycle"),
+         synth.linear_branch_name(identifier, title, assignee_email),
+         _linear_date(raw.get("due_date")), created, updated,
+         ended if state_type == "completed" else None,
+         ended if state_type == "canceled" else None,
+         created if state_type in ("started", "completed") else None,
+         assignee_email, assignee_name or None, creator,
+         _linear_parent(raw.get("parent_issue")), _linear_release(raw.get("release"))))
+
+    for seq, att in enumerate(parse_linear_attachments(raw.get("links"),
+                                                       raw.get("attachments")), start=1):
+        conn.execute(
+            "INSERT OR REPLACE INTO linear_attachments(id, doc_id, seq, title, url, subtitle, "
+            "source_type, created_ts) VALUES (?,?,?,?,?,?,?,?)",
+            (f"{dsid}::a{seq}", dsid, seq, att["title"], att["url"], None, None, created))
+
+    prev_ts = created
+    for seq, c in enumerate(parse_linear_comments(raw.get("comments")), start=1):
+        # A comment author is matched against the EXISTING roster (`display_email`), never
+        # minted with `P.resolve` the way an issue's creator/assignee is. The `Name:` segment in
+        # a Linear comment is far noisier than Jira's — thousands of distinct strings, many of
+        # them labels like "Design review" or "QA sign-off" that `_person_like` happily accepts
+        # as a two-token name. Minting those would add people who don't exist to `principals`.
+        # An unmatched name leaves the comment unattributed, which is both honest and a legal
+        # Linear response (`Comment.user` is nullable) — and its body keeps the prefix, because
+        # an unresolved "Created:" is part of the text, not an attribution.
+        author = P.display_email(c["name"])[0] if c["name"] else None
+        body = c["body"] if author else c["body_with_name"]
+        # Comment time, in order of preference: its own date; else one second after the previous
+        # comment. MONOTONIC, not `created + seq`: a date-less comment at the end of a dated
+        # thread would otherwise land back at the issue's creation date and be served FIRST
+        # (`Issue.comments` orders by createdAt, as Linear does). Also never NULL — the column
+        # is NOT NULL.
+        ts = to_epoch(c["date"]) or (prev_ts + 1)
+        prev_ts = max(prev_ts, ts)
+        conn.execute(
+            "INSERT OR REPLACE INTO linear_comments(id, doc_id, seq, author_email, body, created_ts)"
+            " VALUES (?,?,?,?,?,?)",
+            (f"{dsid}::c{seq}", dsid, seq, author, body, ts))
+
+    people = [creator_email, assignee_email]
+    return {"owner": creator_email, "people": [p for p in people if p], "group": group,
+            "confidentiality": None,
+            # Consumed by the second pass below, which needs every issue loaded before it can
+            # resolve a key to a doc_id.
+            "_linear_parent_key": _linear_parent(raw.get("parent_issue")),
+            "_linear_relations": parse_linear_relations(raw.get("dependencies"))}
+
+
+def resolve_linear_references(conn, bundles) -> dict:
+    """SECOND PASS: turn the issue KEYS the bench references into doc_ids.
+
+    Has to be a second pass because a parent or a dependency target may be loaded after the issue
+    that names it. Has to happen at IMPORT rather than per request because bench identifiers are
+    not unique — 45.4% of parent references match more than one issue, and `ENG-314159` alone is
+    claimed by 218 children while being the identifier of 107 issues, so a serve-time join on
+    `identifier` would invent 23,326 edges from that one key.
+
+    Resolution picks the FIRST match by doc_id, the same rule `store.linear_issue_by_identifier`
+    applies, so `Issue.parent` and `Issue.children` are exact inverses rather than two independent
+    lookups. A key matching nothing resolves to nothing: a dangling reference must never become a
+    relation pointing at an issue that does not exist (the rule `load_hubspot` already applies to
+    its `linked_*` stubs).
+    """
+    key_to_doc: dict[str, str] = {}
+    for doc_id, identifier in conn.execute(
+            "SELECT doc_id, identifier FROM linear_issues WHERE identifier IS NOT NULL "
+            "ORDER BY doc_id"):
+        key_to_doc.setdefault(identifier, doc_id)
+
+    stats = {"parents": 0, "parents_dangling": 0, "relations": 0, "relations_dangling": 0}
+    for dsid, bundle in bundles.items():
+        if bundle.get("_source") != "linear":
+            continue
+        key = bundle.get("_linear_parent_key")
+        if key:
+            target = key_to_doc.get(key)
+            # An issue is not its own parent; the bench's repeated keys make that reachable.
+            if target and target != dsid:
+                conn.execute("UPDATE linear_issues SET parent_doc_id = ? WHERE doc_id = ?",
+                             (target, dsid))
+                stats["parents"] += 1
+            else:
+                stats["parents_dangling"] += 1
+        seen = set()
+        for seq, (rel_type, rel_key) in enumerate(bundle.get("_linear_relations") or [], start=1):
+            target = key_to_doc.get(rel_key)
+            if not target or target == dsid or (rel_type, target) in seen:
+                stats["relations_dangling"] += 1
+                continue
+            seen.add((rel_type, target))
+            conn.execute(
+                "INSERT OR REPLACE INTO linear_relations(id, from_doc_id, to_doc_id, type, "
+                "created_ts) VALUES (?,?,?,?,?)",
+                (f"{dsid}::r{seq}", dsid, target, rel_type,
+                 conn.execute("SELECT created_ts FROM linear_issues WHERE doc_id = ?",
+                              (dsid,)).fetchone()[0]))
+            stats["relations"] += 1
+    conn.commit()
+    return stats
+
+
 _LOADERS = {"google_drive": load_drive, "github": load_github, "confluence": load_confluence,
             "jira": load_jira, "gmail": load_gmail, "slack": load_slack,
-            "hubspot": load_hubspot}
+            "hubspot": load_hubspot, "linear": load_linear}
 
 
 def load_structured(conn, records, P, settings) -> dict:
@@ -950,6 +1265,12 @@ def load_structured(conn, records, P, settings) -> dict:
     if failures:
         print(f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
               file=sys.stderr, flush=True)
+    if counts.get("linear"):
+        # Needs every issue present, so it cannot run inside the per-doc loop above.
+        rstats = resolve_linear_references(conn, bundles)
+        print(f"  linear: resolved {rstats['parents']} parents "
+              f"({rstats['parents_dangling']} dangling) and {rstats['relations']} relations "
+              f"({rstats['relations_dangling']} dangling)", file=sys.stderr, flush=True)
     return {"bundles": bundles, "counts": counts, "failures": failures}
 
 

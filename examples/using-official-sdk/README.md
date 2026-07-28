@@ -9,6 +9,34 @@ pip install -e ".[examples]"
 python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py, hubspot.py
 ```
 
+## Linear is the one TypeScript example — and why
+
+Every script here is Python except [`linear/`](linear/), which is a small TypeScript project.
+That is not a stylistic choice: **`@linear/sdk` is the only client Linear publishes, and there is
+no official Python SDK at all.** Documenting a snippet would have been cheaper and was rejected —
+an example nobody executes cannot back the claim that the mock works with the real client — so it
+is a real project, and a dedicated CI job (`linear-sdk-example` in `.github/workflows/ci.yml`)
+installs and runs it on every push.
+
+```bash
+cd examples/using-official-sdk/linear
+npm install && npx tsx index.ts                       # spawns its own mock, like the Python ones
+npx tsx index.ts --url http://localhost:8000 --token <usr-token>
+```
+
+Two things it has to work around, both explained inline in `index.ts`:
+
+- **`LinearClient` has no base-URL option.** It accepts `apiKey`, `accessToken` and a
+  `RequestInit` — and nothing else. Pointing it elsewhere uses Linear's own documented pattern:
+  extend `LinearSdk` (the generated query layer under the client) with a custom request function,
+  here a `graphql-request` `GraphQLClient` aimed at `<base>/linear/graphql`. `GraphQLClient.request`
+  already has `LinearRequest`'s signature, so the shim is a few lines.
+- **The `Authorization` header carries the BARE key**, with no `Bearer` prefix — that is how a
+  Linear personal API key travels. (The mock accepts `Bearer <token>` too, Linear's OAuth shape.)
+
+`tests/test_sdk.py` stays Python-only and cannot exercise `@linear/sdk`; the CI job is what
+covers it.
+
 **HubSpot** (`hubspot.py`) points the official client with a plain `host=` kwarg — no shim and no
 first-class base-URL arg needed. It requires `hubspot-api-client>=12`: on 8.x that kwarg is silently
 **ignored** and the client talks to api.hubapi.com, so the script asserts its configured host before
@@ -32,6 +60,9 @@ python examples/using-official-sdk/gmail.py --url http://localhost:8000 --user a
 
 # bearer-token services: slack.py, github.py, notion.py — grab a token from GET /_mock/users:
 python examples/using-official-sdk/github.py --url http://localhost:8000 --token <usr-token>
+
+# Linear (TypeScript): --token is sent as the bare Authorization value, no Bearer prefix
+cd examples/using-official-sdk/linear && npx tsx index.ts --url http://localhost:8000 --token <usr-token>
 
 # Atlassian Basic auth: jira.py, confluence.py take --username and --password
 python examples/using-official-sdk/jira.py --url http://localhost:8000 \

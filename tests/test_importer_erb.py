@@ -44,7 +44,7 @@ def test_derive_title_content_list_field():
 
 def test_supported_sources():
     assert erb.SUPPORTED == ("slack", "gmail", "google_drive", "github", "jira", "confluence",
-                             "hubspot")
+                             "hubspot", "linear")
 
 
 def test_erb_sources_are_registered_in_the_store():
@@ -771,3 +771,324 @@ def test_qst_0001_owner_is_maya_chen(tmp_path):
                   params={"fields": "owners(displayName)"},
                   headers={"Authorization": "Bearer admin-service-token"}).json()
         assert r["owners"][0]["displayName"] == "Maya Chen"
+
+
+# ---------------------------------------------------------------------------
+# Linear: the bench record -> the API-faithful schema
+# ---------------------------------------------------------------------------
+# The mapping is where the bench and the API disagree, so these assert the translations rather
+# than the pass-throughs: P0-P3 -> Linear's 0-4, `status` -> `state`, a state category -> the
+# lifecycle timestamps the bench never records, and the three comment shapes.
+
+# A record shaped exactly like the bench's, per `sources/linear/agents.md`.
+LINEAR_RAW = {
+    "title_field_name": "title", "content_field_names": ["description", "comments"],
+    "dataset_doc_uuid": "dsid_lin", "key": "ENG-49121", "team": "engineering",
+    "title": "Variant-aware GPU allocation", "status": "In Progress", "priority": "P1",
+    "created_at": "2025-02-18", "updated_at": "2025-03-04",
+    "creator": "Amaya Chen", "assignee": "Diego Martinez",
+    "project": "runtime-memory-2025", "cycle": "2025-W08", "estimate": "5",
+    "due_date": "2025-03-15", "labels": ["kv-cache", "long-context"],
+    "description": "Long-context configs push peak GPU memory into fragile regions.",
+    "comments": ["2025-02-18 - Created: initial hypothesis captured.",
+                 "2025-02-20 Diego Martinez: ran baseline traces."],
+}
+
+
+def _load_linear(raw, dsid="dsid_lin"):
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    erb.load_linear(conn, dsid, raw, P)
+    row = conn.execute("SELECT * FROM linear_issues WHERE doc_id = ?", (dsid,)).fetchone()
+    comments = conn.execute(
+        "SELECT * FROM linear_comments WHERE doc_id = ? ORDER BY seq", (dsid,)).fetchall()
+    return conn, row, comments
+
+
+def test_linear_maps_the_bench_record_onto_the_api_schema():
+    _conn_, row, _c = _load_linear(LINEAR_RAW)
+    assert row["team"] == "engineering"
+    assert row["identifier"] == "ENG-49121"      # the bench key IS the Linear identifier
+    assert row["state"] == "In Progress"          # `status` -> Linear's `state`
+    assert row["priority"] == 2                   # P1 -> Linear's scale (1 is most urgent)
+    assert row["estimate"] == 5                   # the bench writes it as a string
+    assert row["project"] == "runtime-memory-2025"
+    assert row["cycle"] == "2025-W08"
+    assert row["due_date"] == "2025-03-15"
+    assert json.loads(row["labels"]) == ["kv-cache", "long-context"]
+    assert row["author_email"] == "amaya.chen@redwoodinference.com"
+    assert row["owner_display"] == "Amaya Chen"
+    assert row["assignee_email"] == "diego.martinez@redwoodinference.com"
+    assert row["assignee_display"] == "Diego Martinez"
+    assert row["title"] == "Variant-aware GPU allocation"
+    assert "fragile regions" in row["content"]
+
+
+def test_linear_container_is_the_team_field_not_the_directory():
+    """~2,750 bench files sit in a directory that disagrees with their own `team`, and two
+    directories (business-ops, misc-chores) name no team at all. The field is the authority."""
+    conn, row, _c = _load_linear({**LINEAR_RAW, "team": "design"})
+    assert row["team"] == "design"
+    assert conn.execute("SELECT team FROM linear_teams").fetchone()["team"] == "design"
+
+
+def test_linear_team_maps_onto_a_real_directory_department():
+    """The ACL group has to have members, so the three bench teams must reconcile to dept slugs."""
+    P = Principals([{"name": "A B", "email": "a.b@x.com", "dept_slug": "engineering"},
+                    {"name": "C D", "email": "c.d@x.com", "dept_slug": "product"},
+                    {"name": "E F", "email": "e.f@x.com", "dept_slug": "design-ux"}], "x.com")
+    assert P.canonical_group("engineering") == "engineering"
+    assert P.canonical_group("product-management") == "product"
+    assert P.canonical_group("design") == "design-ux"
+
+
+def test_linear_branch_name_is_derived_when_the_bench_has_none():
+    _conn_, row, _c = _load_linear(LINEAR_RAW)
+    assert row["branch_name"] == (
+        "diegomartinez/eng-49121-variant-aware-gpu-allocation")
+
+
+def test_linear_completed_timestamp_derives_from_the_state_category():
+    """The bench records no lifecycle timestamps, but a state IS one: Linear sets completedAt the
+    moment an issue enters a completed state."""
+    _conn_, row, _c = _load_linear({**LINEAR_RAW, "status": "Done"})
+    assert row["completed_ts"] == erb.to_epoch("2025-03-04")
+    assert row["canceled_ts"] is None
+
+
+def test_linear_canceled_timestamp_derives_from_the_state_category():
+    _conn_, row, _c = _load_linear({**LINEAR_RAW, "status": "Canceled"})
+    assert row["canceled_ts"] == erb.to_epoch("2025-03-04")
+    assert row["completed_ts"] is None
+
+
+def test_linear_open_issue_has_no_lifecycle_timestamps():
+    _conn_, row, _c = _load_linear({**LINEAR_RAW, "status": "Backlog"})
+    assert row["completed_ts"] is None and row["canceled_ts"] is None
+    assert row["archived_ts"] is None and row["auto_closed_ts"] is None
+
+
+def test_linear_unassigned_is_not_turned_into_a_person():
+    """"unassigned" is a literal value in the bench (11 docs). Linear stores no assignee for an
+    unassigned issue, and minting a user called "unassigned" would pollute the roster."""
+    _conn_, row, _c = _load_linear({**LINEAR_RAW, "assignee": "unassigned"})
+    assert row["assignee_email"] is None and row["assignee_display"] is None
+
+
+def test_linear_synthesizes_an_identifier_when_the_key_is_missing():
+    _conn_, row, _c = _load_linear({k: v for k, v in LINEAR_RAW.items() if k != "key"})
+    assert row["identifier"].startswith("ENG-")
+
+
+def test_linear_comment_shapes_are_all_parsed():
+    """The shapes measured across all 165,243 bench comments. The date and the name are peeled
+    off INDEPENDENTLY — an earlier whole-line-alternatives parse put the dash pattern first, and
+    since it had no name group it swallowed the author of 60,282 comments into the body."""
+    parsed = erb.parse_linear_comments([
+        "2025-02-18 - Maya Patel: Filed initial PRD.",          # dash + name: the most common
+        "2025-02-18 - Created: initial hypothesis captured.",   # dash + a LABEL, not a person
+        "2026-03-05 Anjali Rao: Updated acceptance criteria.",  # no dash, name
+        "2025-12-18 (Naomi Feldman): Include the audit log.",   # parenthesised name
+        "Implementation notes: use model heuristics.",          # undated
+    ])
+    assert [c["date"] for c in parsed] == [
+        "2025-02-18", "2025-02-18", "2026-03-05", "2025-12-18", None]
+    assert [c["name"] for c in parsed] == [
+        "Maya Patel", "Created", "Anjali Rao", "Naomi Feldman", "Implementation notes"]
+    # `body` drops the prefix, `body_with_name` keeps it — the loader picks per comment, so an
+    # unresolvable label like "Created:" never gets deleted from the text.
+    assert parsed[0]["body"] == "Filed initial PRD."
+    assert parsed[1]["body_with_name"] == "Created: initial hypothesis captured."
+
+
+def test_linear_comment_author_prefix_is_kept_when_the_name_is_not_a_person():
+    """"Created:" and "Design review:" are labels, not attributions. If they don't resolve to
+    somebody, the body must keep them rather than silently losing the words."""
+    conn = _conn()
+    P = Principals([{"name": "Maya Patel", "email": "maya.patel@redwoodinference.com",
+                     "dept_slug": "engineering"}], "redwoodinference.com")
+    raw = {**LINEAR_RAW, "creator": "Maya Patel", "assignee": "unassigned",
+           "comments": ["2025-02-20 - Maya Patel: filed the PRD.",
+                        "2025-02-21 - Created: initial hypothesis captured."]}
+    erb.load_linear(conn, "dsid_p", raw, P)
+    rows = conn.execute(
+        "SELECT author_email, body FROM linear_comments WHERE doc_id='dsid_p' ORDER BY seq"
+    ).fetchall()
+    # resolved -> attributed, and the name is not repeated in the body
+    assert rows[0]["author_email"] == "maya.patel@redwoodinference.com"
+    assert rows[0]["body"] == "filed the PRD."
+    # unresolved -> unattributed, and the text is intact
+    assert rows[1]["author_email"] is None
+    assert rows[1]["body"] == "Created: initial hypothesis captured."
+
+
+def test_linear_undated_comment_never_sorts_before_its_dated_neighbours():
+    """`Issue.comments` orders by createdAt (as Linear does). Anchoring an undated comment to the
+    ISSUE's creation date put a trailing "Next steps:" note at the FRONT of 1,270 real threads."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    raw = {**LINEAR_RAW, "created_at": "2025-01-01",
+           "comments": ["2025-02-01 - first", "2025-03-01 - second", "Next steps: trailing note"]}
+    erb.load_linear(conn, "dsid_m", raw, P)
+    rows = conn.execute(
+        "SELECT seq, created_ts FROM linear_comments WHERE doc_id='dsid_m' ORDER BY created_ts, seq"
+    ).fetchall()
+    assert [r["seq"] for r in rows] == [1, 2, 3]
+    assert rows[2]["created_ts"] == rows[1]["created_ts"] + 1   # one second after its predecessor
+
+
+def test_linear_parent_issue_is_stored_for_resolution():
+    """`Issue.parent` is declared in the SDL and the bench fills `parent_issue` on 46.7% of
+    records, so the key has to survive import for the resolver to look it up."""
+    conn, row, _c = _load_linear({**LINEAR_RAW, "parent_issue": ["ENG-20297", "ENG-1"]})
+    assert row["parent_key"] == "ENG-20297"        # a list -> the first; Linear has one parent
+    conn2, row2, _ = _load_linear({**LINEAR_RAW, "parent_issue": "ENG-555"}, dsid="dsid_ps")
+    assert row2["parent_key"] == "ENG-555"         # 552 bench docs use a bare string
+    conn3, row3, _ = _load_linear({k: v for k, v in LINEAR_RAW.items() if k != "parent_issue"},
+                                  dsid="dsid_pn")
+    assert row3["parent_key"] is None
+
+
+def test_linear_comment_clock_prefix_is_not_read_as_an_author():
+    """`2025-02-18 09:15: rolled back` must not parse as author "09" with the body truncated to
+    "15: rolled back" — that both invents a person and loses text."""
+    parsed = erb.parse_linear_comments(["2025-02-18 09:15: rolled back"])
+    assert parsed[0]["name"] is None
+    assert parsed[0]["body"] == "09:15: rolled back"
+
+
+def test_linear_comment_string_instead_of_a_list_is_tolerated():
+    """29 bench docs carry `comments` as a bare string."""
+    assert len(erb.parse_linear_comments("2025-02-18 - one note")) == 1
+
+
+def test_linear_comments_become_rows_with_real_dates():
+    _conn_, _row, comments = _load_linear(LINEAR_RAW)
+    assert [c["seq"] for c in comments] == [1, 2]
+    assert comments[0]["created_ts"] == erb.to_epoch("2025-02-18")
+    assert comments[1]["created_ts"] == erb.to_epoch("2025-02-20")
+
+
+def test_linear_comment_author_is_matched_never_minted():
+    """The `Name:` segment is far noisier than Jira's — 16,108 distinct strings, mostly labels
+    like "Design review" that `_person_like` would happily accept. A comment therefore matches
+    against the EXISTING roster and stays unattributed otherwise."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    raw = {**LINEAR_RAW, "creator": "Amaya Chen", "assignee": "unassigned",
+           "comments": ["2025-02-20 Amaya Chen: known person, resolved from the issue's creator.",
+                        "2025-02-21 Design review: a label, not a person."]}
+    erb.load_linear(conn, "dsid_c", raw, P)
+    rows = conn.execute(
+        "SELECT author_email FROM linear_comments WHERE doc_id='dsid_c' ORDER BY seq").fetchall()
+    assert rows[0]["author_email"] == "amaya.chen@redwoodinference.com"
+    assert rows[1]["author_email"] is None
+    assert "design.review@redwoodinference.com" not in P.users
+
+
+def test_linear_undated_comment_stays_on_the_issues_clock():
+    """created_ts is NOT NULL, and a random per-comment time would shuffle the thread."""
+    _conn_, row, comments = _load_linear({**LINEAR_RAW, "comments": ["no date here", "nor here"]})
+    assert [c["created_ts"] for c in comments] == [row["created_ts"] + 1, row["created_ts"] + 2]
+
+
+def test_linear_priority_normalisation():
+    assert [erb.linear_priority(v) for v in ("P0", "P1", "P2", "P3")] == [1, 2, 3, 4]
+    assert [erb.linear_priority(v) for v in ("Urgent", "High", "Medium", "Low")] == [1, 2, 3, 4]
+    assert erb.linear_priority(3) == 3                 # already Linear's scale
+    assert erb.linear_priority("unrecognised") == 0    # Linear's "No priority"
+    assert erb.linear_priority(None) is None
+
+
+def test_linear_grants_flow_through_the_shared_container_path():
+    """Linear needs no branch in `grants_for`: its container maps to a group like github/jira."""
+    bundle = {"owner": "a@x.com", "people": ["b@x.com"], "group": "engineering", "org": "acme"}
+    assert set(grants_for("linear", bundle)) == {
+        ("user", "a@x.com"), ("user", "b@x.com"), ("group", "engineering")}
+
+
+# --- Linear relations / attachments / release (#25) ---------------------------------
+
+def test_linear_relation_parsing_defaults_to_related():
+    """Linear's vocabulary is blocks | duplicate | related. The bench lists a dependency as a bare
+    key under a heading that means "depends on" only sometimes, so an unqualified entry becomes
+    `related` — asserting `blocks` would invent a dependency graph the data does not state."""
+    assert erb.parse_linear_relations(["ENG-31472"]) == [("related", "ENG-31472")]
+    assert erb.parse_linear_relations(["blocks ENG-1"]) == [("blocks", "ENG-1")]
+    assert erb.parse_linear_relations(["blocked by ENG-2"]) == [("blocks", "ENG-2")]
+    assert erb.parse_linear_relations(["duplicate of ENG-3"]) == [("duplicate", "ENG-3")]
+    assert erb.parse_linear_relations(["no key here"]) == []
+    assert erb.parse_linear_relations("ENG-9") == [("related", "ENG-9")]     # 6 docs use a string
+
+
+def test_linear_attachment_titles_are_never_empty():
+    """`Attachment.title` is non-null in Linear. `links` carry `Label: URL`; `attachments` are
+    bare URLs and need a derived title."""
+    got = erb.parse_linear_attachments(
+        ["Confluence: https://conf.example/a/design"], ["https://figma.example/frames.zip"])
+    assert got == [{"url": "https://conf.example/a/design", "title": "Confluence"},
+                   {"url": "https://figma.example/frames.zip", "title": "frames.zip"}]
+    assert all(a["title"] for a in got)
+
+
+def test_linear_attachments_dedupe_across_the_two_bench_fields():
+    """A doc can list the same link in both `links` and `attachments`."""
+    got = erb.parse_linear_attachments(["https://x.example/a"], ["https://x.example/a"])
+    assert len(got) == 1
+
+
+def test_linear_release_takes_one_name():
+    assert erb._linear_release(["runtime-1.19", "other"]) == "runtime-1.19"   # 8 docs use a list
+    assert erb._linear_release("console-2025.02") == "console-2025.02"
+    assert erb._linear_release(None) is None
+
+
+def test_linear_second_pass_resolves_keys_and_drops_dangling():
+    """The resolution has to be a SECOND pass (a target may load after its referrer) and has to
+    happen at import (bench identifiers repeat, so a serve-time join on `identifier` would attach
+    one issue's children to every issue sharing its key)."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    # The child is loaded BEFORE its parent, which is the case a single pass cannot handle.
+    erb.load_linear(conn, "d_child", {**LINEAR_RAW, "key": "ENG-2", "parent_issue": ["ENG-1"],
+                                      "dependencies": ["blocks ENG-1", "ENG-NOSUCH"]}, P)
+    erb.load_linear(conn, "d_parent", {**LINEAR_RAW, "key": "ENG-1", "parent_issue": None,
+                                       "dependencies": None}, P)
+    bundles = {
+        "d_child": {"_source": "linear", "_linear_parent_key": "ENG-1",
+                    "_linear_relations": [("blocks", "ENG-1"), ("related", "ENG-NOSUCH")]},
+        "d_parent": {"_source": "linear", "_linear_parent_key": None, "_linear_relations": []},
+    }
+    stats = erb.resolve_linear_references(conn, bundles)
+    assert stats["parents"] == 1 and stats["relations"] == 1
+    assert stats["relations_dangling"] == 1          # ENG-NOSUCH resolves to nothing
+    row = conn.execute("SELECT parent_doc_id FROM linear_issues WHERE doc_id='d_child'").fetchone()
+    assert row["parent_doc_id"] == "d_parent"
+    rels = conn.execute("SELECT from_doc_id, to_doc_id, type FROM linear_relations").fetchall()
+    assert [(r["from_doc_id"], r["to_doc_id"], r["type"]) for r in rels] == \
+        [("d_child", "d_parent", "blocks")]
+
+
+def test_linear_second_pass_never_makes_an_issue_its_own_parent():
+    """Reachable because bench keys repeat: two issues can share the key an issue names as its
+    parent, and one of them can be the issue itself."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    erb.load_linear(conn, "d_self", {**LINEAR_RAW, "key": "ENG-7", "parent_issue": ["ENG-7"]}, P)
+    stats = erb.resolve_linear_references(
+        conn, {"d_self": {"_source": "linear", "_linear_parent_key": "ENG-7",
+                          "_linear_relations": [("related", "ENG-7")]}})
+    assert stats["parents"] == 0 and stats["relations"] == 0
+    assert conn.execute(
+        "SELECT parent_doc_id FROM linear_issues WHERE doc_id='d_self'").fetchone()[0] is None
+
+
+def test_linear_loader_stores_release_and_attachments():
+    conn, row, _c = _load_linear({**LINEAR_RAW, "release": "runtime-1.19",
+                                  "links": ["Confluence: https://conf.example/x"],
+                                  "attachments": ["https://figma.example/y.zip"]})
+    assert row["release"] == "runtime-1.19"
+    atts = conn.execute(
+        "SELECT title, url FROM linear_attachments WHERE doc_id='dsid_lin' ORDER BY seq").fetchall()
+    assert [(a["title"], a["url"]) for a in atts] == [
+        ("Confluence", "https://conf.example/x"), ("y.zip", "https://figma.example/y.zip")]

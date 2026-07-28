@@ -277,6 +277,139 @@ def notion_blocks_to_text(blocks: list[dict]) -> str:
     return "\n".join(out)
 
 
+# --- Linear ----------------------------------------------------------------------
+# Linear ids are dashed UUIDs (issues, teams, users, workflow states, labels, projects,
+# cycles), so every one is a deterministic UUID derived from a namespaced seed — the same
+# construction Notion uses above. Human-facing values (the team key, the issue identifier,
+# the suggested branch name) follow Linear's own derivation rules instead.
+
+def linear_id(doc_id: str) -> str:
+    """Stable dashed-UUID issue id (reversible via the app index)."""
+    return _uuid_from("linear:" + doc_id)
+
+
+def linear_team_id(container: str) -> str:
+    return _uuid_from("linear-team:" + container)
+
+
+def linear_user_id(email: str) -> str:
+    return _uuid_from("linear-user:" + email)
+
+
+def linear_state_id(name: str, team: str = "") -> str:
+    """Workflow states are per-TEAM in Linear — ENG's "Done" and DES's "Done" are different
+    objects with different ids — so the team is part of the seed."""
+    return _uuid_from(f"linear-state:{team}:{name or ''}")
+
+
+def linear_label_id(name: str) -> str:
+    return _uuid_from("linear-label:" + (name or ""))
+
+
+def linear_project_id(name: str) -> str:
+    return _uuid_from("linear-project:" + (name or ""))
+
+
+def linear_cycle_id(name: str, team: str = "") -> str:
+    """Cycles belong to a team, like workflow states."""
+    return _uuid_from(f"linear-cycle:{team}:{name or ''}")
+
+
+def linear_comment_id(comment_row_id: str) -> str:
+    return _uuid_from("linear-comment:" + comment_row_id)
+
+
+def linear_attachment_id(attachment_row_id: str) -> str:
+    return _uuid_from("linear-attachment:" + attachment_row_id)
+
+
+def linear_relation_id(relation_row_id: str) -> str:
+    return _uuid_from("linear-relation:" + relation_row_id)
+
+
+def linear_release_id(name: str) -> str:
+    return _uuid_from("linear-release:" + (name or ""))
+
+
+def linear_team_key(container: str) -> str:
+    """A team's short key — the prefix its issue identifiers carry (``ENG-123``).
+
+    Deliberately the plain word-initials form with NO hash suffix, unlike
+    :func:`jira_project_key` / :func:`confluence_space_key`. Those add one because their keys
+    would otherwise collide across containers; here the readable form is worth more, because it
+    reproduces the corpus's own prefixes exactly (``engineering`` -> ``ENG``,
+    ``product-management`` -> ``PM``, ``design`` -> ``DES``) so a served identifier matches the
+    key written in the issue text and in every other source that cites it. Two containers CAN
+    collide on one key; the app index resolves a colliding key to the first team by name, and
+    the team's UUID always addresses it unambiguously."""
+    return _key(container, "TEAM")
+
+
+def linear_identifier(doc_id: str, team_key: str) -> str:
+    """A synthesized ``TEAM-123`` identifier, for a corpus that carries no issue key of its own."""
+    return f"{team_key}-{hnum(doc_id, 16, 6) % 9000 + 1}"
+
+
+def linear_issue_number(identifier: str) -> int:
+    """``Issue.number`` — the numeric half of the identifier, which is exactly how Linear
+    defines it ("the issue's unique number, scoped to the issue's team")."""
+    m = re.search(r"(\d+)\s*$", identifier or "")
+    return int(m.group(1)) if m else 0
+
+
+# Linear's priority scale, and the label it shows for each level.
+LINEAR_PRIORITY_LABELS = {0: "No priority", 1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}
+
+
+def linear_priority_label(priority) -> str:
+    return LINEAR_PRIORITY_LABELS.get(priority if isinstance(priority, int) else 0, "No priority")
+
+
+# Which of Linear's state *categories* a state name belongs to. Linear groups every workflow
+# state into one of these six, and clients branch on the category rather than the name.
+_LINEAR_STATE_TYPES = (
+    ("triage", ("triage",)),
+    ("canceled", ("cancel", "won't do", "wont do", "duplicate", "declined")),
+    ("completed", ("done", "complete", "shipped", "closed", "resolved", "merged")),
+    ("started", ("progress", "started", "review", "doing", "testing", "qa", "blocked")),
+    ("backlog", ("backlog", "icebox", "someday")),
+)
+
+
+def linear_state_type(name: str) -> str:
+    """Map a workflow-state name onto Linear's category. Unknown names fall to ``unstarted``,
+    which is Linear's own bucket for "created but not begun" (Todo / Planned)."""
+    n = (name or "").strip().lower()
+    for state_type, needles in _LINEAR_STATE_TYPES:
+        if any(needle in n for needle in needles):
+            return state_type
+    return "unstarted"
+
+
+_LINEAR_STATE_COLORS = {"triage": "#f2994a", "backlog": "#bec2c8", "unstarted": "#e2e2e2",
+                        "started": "#f2c94c", "completed": "#5e6ad2", "canceled": "#95a2b3"}
+
+
+def linear_state_color(name: str) -> str:
+    return _LINEAR_STATE_COLORS[linear_state_type(name)]
+
+
+def linear_branch_name(identifier: str, title: str, assignee_email: str | None = None) -> str:
+    """Linear's suggested git branch: ``<user>/<identifier>-<slugified title>``, lowercased and
+    truncated the way the product does. With no assignee Linear drops the user segment."""
+    slug = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", (title or "").lower())).strip("-")[:40]
+    slug = slug.rstrip("-")
+    stem = "-".join(p for p in ((identifier or "").lower(), slug) if p)
+    user = (assignee_email or "").split("@", 1)[0].replace(".", "").replace("_", "")
+    return f"{user}/{stem}" if user else stem
+
+
+def linear_url(identifier: str, title: str, org: str = "org") -> str:
+    """The issue's web URL. Real Linear is ``https://linear.app/<workspace>/issue/<ID>/<slug>``."""
+    slug = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", (title or "").lower())).strip("-")[:60]
+    return f"https://linear.app/{org}/issue/{identifier}/{slug}".rstrip("/")
+
+
 # --- S3 -------------------------------------------------------------------------
 # Credentials are derived deterministically from a caller's bearer token so the verifying
 # router (app.auth.resolve_sigv4) and the signing clients (examples/tests) agree on the

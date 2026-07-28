@@ -214,3 +214,25 @@ def test_fts_s3_acl_scoped(db, acl, tokens):
     assert store.count_search(db, "band", source_type="s3", visible_ids=None) >= 1
     ava_ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
     assert store.count_search(db, "band", source_type="s3", visible_ids=ava_ids) == 0
+
+
+# --- Linear ----------------------------------------------------------------------
+
+def test_fts_linear_search(db):
+    rows = store.search_documents(db, "token-bucket", "linear")
+    assert rows and any(r["doc_id"] == "lin-rl" for r in rows)
+    assert all("team" in r.keys() for r in rows)  # source-scoped to linear's own table
+
+
+def test_fts_linear_acl_scoped(db, acl, tokens):
+    # 'rotation' appears only in the reader-restricted issue; assert it IS findable unfiltered
+    # first, so the ==0 below proves the ACL rather than a vacuous no-match.
+    assert store.count_search(db, "rotation", "linear", visible_ids=None) >= 1
+    ava_ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
+    assert store.count_search(db, "rotation", "linear", visible_ids=ava_ids) == 0
+
+
+def test_fts_linear_scoped_to_one_team(db):
+    """`container` on a Linear search is the team, so a term present in both teams narrows."""
+    assert store.count_search(db, "states", "linear", container="design") >= 1
+    assert store.count_search(db, "states", "linear", container="engineering") == 0

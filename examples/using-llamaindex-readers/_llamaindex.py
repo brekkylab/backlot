@@ -27,6 +27,10 @@ S3 `s3_endpoint_url`); four hardcode it and need a small shim, all isolated here
     flow — so `gmail.py` additionally patches `GmailReader._get_credentials` to hand back the
     mock-issued credential.
   - Notion: `patch_notion_at` rebinds the module-level URL constants.
+  - Linear: `patch_linear_at` swaps the reader module's `requests` for a URL-rewriting
+    proxy. Its endpoint is a LOCAL VARIABLE inside `load_data`, not a module constant,
+    so there is nothing to rebind the way Notion's shim does — the `requests` import is
+    the only seam.
 
 This module also re-exports the serve/credential helpers from the sibling
 `using-official-sdk/_mockserver.py`, so these scripts share the same `--url` / `--token` behavior
@@ -62,8 +66,9 @@ if _inserted_sdk_dir:
 __all__ = [
     "serve_or_connect", "google_oauth_user", "google_service_account_info",
     "slack_base_url", "slack_reader_at", "notion_base_url", "s3_base_url", "github_base_url",
-    "atlassian_base_url", "drop_self_from_syspath",
+    "atlassian_base_url", "linear_base_url", "drop_self_from_syspath",
     "point_gmail_at", "point_drive_at", "patch_notion_at", "patch_s3fs_walk",
+    "point_hubspot_at", "patch_linear_at",
 ]
 
 
@@ -304,6 +309,51 @@ def point_hubspot_at(base_url: str) -> None:
         return client
 
     hubspot.HubSpot = _at_mock
+
+
+def patch_linear_at(base_url: str) -> None:
+    """Redirect LinearReader at the mock.
+
+    Harder than the other shims, and the reason is worth stating: `LinearReader.load_data` sets
+    ``graphql_endpoint = "https://api.linear.app/graphql"`` as a **local variable inside the
+    method**. There is no constructor argument and no module-level constant, so the
+    `patch_notion_at` trick — rebind a module attribute — has nothing to rebind.
+
+    What IS patchable is the module's `requests` import: the reader does ``import requests`` at
+    module scope and then calls ``requests.post(graphql_endpoint, ...)``. Swapping that one
+    attribute for a thin proxy lets the URL be rewritten on the way out, leaving the reader
+    untouched. Only api.linear.app is redirected, so a proxy left installed can't silently
+    capture some other host's traffic.
+
+    Idempotent; fails loudly if the reader stops importing `requests` (a rewrite that would
+    otherwise send a "mock" run to the real api.linear.app).
+    """
+    import llama_index.readers.linear.base as lb
+
+    base = base_url.rstrip("/")
+    real = getattr(lb, "_enterprise_mock_real_requests", None) or getattr(lb, "requests", None)
+    if real is None:
+        raise RuntimeError("patch_linear_at: llama_index.readers.linear.base no longer imports "
+                           "`requests` — update the shim before it hits api.linear.app")
+    lb._enterprise_mock_real_requests = real  # idempotent across repeated calls
+
+    class _RequestsAtMock:
+        """Forwards everything to the real `requests`, rewriting only Linear's hardcoded URL."""
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def post(self, url, *args, **kwargs):
+            if url.startswith("https://api.linear.app"):
+                url = url.replace("https://api.linear.app", base)
+            return real.post(url, *args, **kwargs)
+
+    lb.requests = _RequestsAtMock()
+
+
+def linear_base_url(base_url: str) -> str:
+    """Linear GraphQL base for `patch_linear_at` — the reader appends `/graphql` itself."""
+    return f"{base_url.rstrip('/')}/linear"
 
 
 def drop_self_from_syspath(file: str) -> None:

@@ -168,6 +168,29 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
         return {"properties": _j(ex.get("properties")),
                 "archived": (1 if ex.get("archived") else None),
                 "created_ts": created, "updated_ts": updated}
+    if src == "linear":
+        # Keys are Linear's own (camelCase `branchName`/`dueDate`, `state` not status), so a
+        # corpus written against the Linear API needs no renaming. `identifier` and `branchName`
+        # are both derivable, so an omitted one is synthesized at serve time rather than stored.
+        from app.importer.erb import linear_priority
+        return {"identifier": ex.get("identifier"), "state": ex.get("state"),
+                "priority": linear_priority(ex.get("priority")),
+                "estimate": ex.get("estimate"), "labels": _j(ex.get("labels")),
+                "project": ex.get("project"), "cycle": ex.get("cycle"),
+                "branch_name": ex.get("branchName"), "due_date": ex.get("dueDate"),
+                "created_ts": created, "updated_ts": updated,
+                "archived_ts": _epoch(ex.get("archivedAt")),
+                "auto_archived_ts": _epoch(ex.get("autoArchivedAt")),
+                "auto_closed_ts": _epoch(ex.get("autoClosedAt")),
+                "canceled_ts": _epoch(ex.get("canceledAt")),
+                "completed_ts": _epoch(ex.get("completedAt")),
+                "started_ts": _epoch(ex.get("startedAt")),
+                "assignee_email": ex.get("assignee"),
+                "assignee_display": ex.get("assigneeName"),
+                # `parent` is the generic hierarchy field; for Linear it holds the parent's
+                # human identifier (ENG-123), not a doc_id, because that is how Linear and the
+                # bench both name a parent.
+                "parent_key": parent_id, "release": ex.get("release")}
     return {}
 
 
@@ -227,6 +250,9 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
     # object type. doc_id -> object_type, plus the declared links.
     hs_types: dict[str, str] = {}
     hs_links: list[tuple[str, str, dict]] = []      # (from_doc_id, from_type, declaration)
+    # Linear relations name a target by doc_id and are resolved after the whole corpus is read,
+    # since a target may appear on a later line — the same second pass the ERB importer runs.
+    lin_links: list[tuple[str, dict, int]] = []
 
     for lineno, line in enumerate(lines, 1):
         line = line.strip()
@@ -296,7 +322,11 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                   "requested_reviewers", "resolution", "resolutiondate", "duedate",
                   "fix_versions", "versions", "assignee", "reporter", "minor_edit",
                   "version_message", "version_number", "properties", "icon", "cover",
-                  "key", "content_type", "size", "path", "archived"):
+                  "key", "content_type", "size", "path", "archived",
+                  # Linear (its own field names: `state` not status, camelCase timestamps)
+                  "identifier", "estimate", "project", "cycle", "branchName", "dueDate",
+                  "assigneeName", "archivedAt", "autoArchivedAt", "autoClosedAt", "canceledAt",
+                  "completedAt", "startedAt", "release", "relations", "attachments"):
             if k in rec:
                 extras[k] = rec[k]
         subtype = rec.get("subtype")
@@ -320,6 +350,16 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             if src == "s3" and cols.get("size") is None:
                 cols["size"] = len((body or "").encode("utf-8"))
             cols[gcol] = container
+            if src == "linear" and not cols.get("identifier"):
+                # MATERIALIZE the identifier the server would otherwise synthesize per request.
+                # Same reasoning as created_ts above: an id that is served has to be resolvable,
+                # and the app's reverse index is built from stored columns — so a serve-time-only
+                # identifier came back "Entity not found" from `issue(id: "ENG-749")` even though
+                # the API had just handed the caller that exact string. Deterministic, so the
+                # served value is unchanged; it is just written down now. (erb's load_linear
+                # already does this; only BYO could reach the gap.)
+                cols["identifier"] = synth.linear_identifier(
+                    did, synth.linear_team_key(container))
             names = list(cols)
             conn.execute(
                 f"INSERT OR REPLACE INTO {store.table(src)} ({', '.join(names)}) "
@@ -332,6 +372,22 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                 grants.append((did, pt, pid))
 
         insert(doc_id, author, title, rec["content"], 0, subtype, parent_id, extras, created, updated)
+
+        if src == "linear":
+            for j, att in enumerate(rec.get("attachments") or [], start=1):
+                url = att.get("url") if isinstance(att, dict) else str(att)
+                if not url:
+                    continue
+                title = (att.get("title") if isinstance(att, dict) else None) or \
+                    url.rstrip("/").rsplit("/", 1)[-1] or url
+                conn.execute(
+                    "INSERT OR REPLACE INTO linear_attachments(id, doc_id, seq, title, url, "
+                    "subtitle, source_type, created_ts) VALUES (?,?,?,?,?,?,?,?)",
+                    (f"{doc_id}::a{j}", doc_id, j, title, url,
+                     (att.get("subtitle") if isinstance(att, dict) else None),
+                     (att.get("sourceType") if isinstance(att, dict) else None), created))
+            for a in rec.get("relations") or []:
+                lin_links.append((doc_id, a, created))
 
         if src == "hubspot":
             hs_types[doc_id] = container
@@ -351,8 +407,12 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             conn.execute(
                 f"INSERT OR REPLACE INTO {ctable}"
                 "(id, doc_id, seq, author_email, body, created_ts, reactions) VALUES (?,?,?,?,?,?,?)",
+                # A comment with no explicit time sits on the DOC's clock plus its position, not
+                # on a hash of its own id: an independent synth.epoch per comment scatters a
+                # thread across two years, so any consumer that orders by createdAt (Linear's
+                # `Issue.comments` does) would serve the thread shuffled.
                 (cid := c.get("id") or f"{doc_id}::c{j}", doc_id, j, c.get("author_email"), body,
-                 _epoch(c.get("created_ts")) or synth.epoch(cid), _j(c.get("reactions"))),
+                 _epoch(c.get("created_ts")) or (created + j), _j(c.get("reactions"))),
             )
 
         for i, rep in enumerate(replies or [], start=1):
@@ -401,6 +461,43 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                 "to_type, assoc_category, assoc_type_id, label) VALUES (?,?,?,?,?,?,?)",
                 (f_doc, f_type, t_doc, t_type, category,
                  tid or synth.hubspot_assoc_type_id(f_type, t_type), label))
+
+    # Linear parents: `parent` names the target by IDENTIFIER, so it can only be resolved once
+    # every issue is loaded — the same second pass `erb.resolve_linear_references` runs, and for
+    # the same reason: `Issue.children` reads `parent_doc_id`, so without this a BYO corpus would
+    # serve `parent` but an empty `children`, and the two directions would disagree.
+    if counts.get("linear"):
+        key_to_doc: dict[str, str] = {}
+        for did, ident in conn.execute(
+                "SELECT doc_id, identifier FROM linear_issues WHERE identifier IS NOT NULL "
+                "ORDER BY doc_id"):
+            key_to_doc.setdefault(ident, did)
+        for did, pkey in conn.execute(
+                "SELECT doc_id, parent_key FROM linear_issues WHERE parent_key IS NOT NULL"
+        ).fetchall():
+            target = key_to_doc.get(pkey)
+            if target is None:
+                raise SystemExit(
+                    f"linear issue {did}: parent {pkey!r} matches no issue in this corpus; "
+                    f"add it or drop the `parent` field")
+            if target != did:
+                conn.execute("UPDATE linear_issues SET parent_doc_id = ? WHERE doc_id = ?",
+                             (target, did))
+
+    # Linear relations: resolve declared targets now that every doc_id is known. A target that
+    # does not exist is an error rather than a dangling relation, matching the hubspot rule.
+    for from_doc, a, created_ts in lin_links:
+        to_doc = a["to"]
+        if to_doc not in seen and not conn.execute(
+                "SELECT 1 FROM linear_issues WHERE doc_id = ?", (to_doc,)).fetchone():
+            raise SystemExit(
+                f"linear relation {from_doc} -> {to_doc}: target not found in this corpus or the "
+                f"existing DB; add the target issue or drop the relation")
+        conn.execute(
+            "INSERT OR REPLACE INTO linear_relations(id, from_doc_id, to_doc_id, type, created_ts)"
+            " VALUES (?,?,?,?,?)",
+            (a.get("id") or f"{from_doc}::r{to_doc}", from_doc, to_doc,
+             a.get("type") or "related", created_ts))
 
     # principals: org, groups, users
     conn.execute("INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (org, "org", org, None))

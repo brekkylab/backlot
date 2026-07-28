@@ -1,8 +1,8 @@
 # Enterprise Mock
 
 > **LocalStack for enterprise SaaS knowledge APIs.** Point your RAG/search connectors at
-> read-only mock **Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3, and
-> HubSpot**
+> read-only mock **Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3,
+> HubSpot, and Linear**
 > APIs — real response shapes, real pagination, real per-document ACLs — entirely offline: no
 > accounts, no OAuth, no rate limits.
 
@@ -10,7 +10,7 @@
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A **read-only** mock server that stands in for eight enterprise SaaS knowledge sources at once.
+A **read-only** mock server that stands in for ten enterprise SaaS knowledge sources at once.
 It speaks each service's real read API — the exact response shapes, pagination schemes, auth,
 and native permission endpoints their official SDKs expect — over a corpus **you** supply, so a
 RAG/search connector built on those SDKs can be exercised **end-to-end** without the live
@@ -105,6 +105,10 @@ corpus are in [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus
 
 - Slack: `Authorization: Bearer <token>` (also accepts `?token=` / form `token`)
 - Gmail / Drive / GitHub / Notion / HubSpot: `Authorization: Bearer <token>`
+- Linear: `Authorization: <token>` — the **bare** token, no `Bearer` prefix, which is how Linear
+  carries a personal API key. `Authorization: Bearer <token>` is accepted too (Linear's OAuth
+  shape); anything else, including a stray scheme like `Token <t>`, is a 401 rather than being
+  quietly stripped — to the real API the whole header value *is* the key
 - Jira / Confluence: HTTP Basic `email:<token>` (the token is the password)
 - S3: AWS SigV4 — not the bearer token; use the `s3_access_key_id`/`s3_secret_access_key` pair from `GET /_mock/users` (derived from the token; per-user and an admin pair). See `examples/using-official-sdk/s3.py`
 
@@ -253,8 +257,11 @@ from llama_index.readers.confluence import ConfluenceReader
 ConfluenceReader(base_url="http://localhost:8000/atlassian/wiki", cloud=False, api_token=TOKEN)
 ```
 
-One runnable script per source (GitHub, S3, Confluence, Jira, Slack, Notion, Gmail, Drive) is in
-[`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/).
+One runnable script per source (GitHub, S3, Confluence, Jira, Slack, Notion, Gmail, Drive,
+HubSpot, Linear) is in [`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/).
+`LinearReader` needs a shim rather than a constructor argument — it hardcodes its endpoint as a
+local variable inside `load_data`, so `patch_linear_at()` swaps the module's `requests` for a
+URL-rewriting proxy.
 
 ## Endpoints (read-only)
 
@@ -270,6 +277,7 @@ One runnable script per source (GitHub, S3, Confluence, Jira, Slack, Notion, Gma
 | `/notion/v1` | Notion | `search`, `pages/{id}`, `blocks/{id}`, `blocks/{id}/children`, `databases/{id}` (version-aware), `data_sources/{id}`, `data_sources/{id}/query`, `databases/{id}/query` (legacy), `users[/{id}]`, `users/me`, `comments` |
 | `/hubspot/crm/v3`, `/hubspot/crm/v4` | HubSpot | `objects/{objectType}` (+`limit` max 100, `after`, `properties`, `archived`), `objects/{objectType}/{id}`, `objects/{objectType}/search` (`filterGroups` OR-ed, `filters` AND-ed, 13 operators over any property), `objects/{objectType}/batch/read`, `v4/objects/{type}/{id}/associations/{toType}` |
 | `/s3` | Amazon S3 | `ListBuckets`, `HeadBucket`, `GetBucketLocation`, `ListObjectsV2` (`prefix`/`delimiter`/`continuation-token`), `GetObject` (+`Range`), `HeadObject` |
+| `/linear/graphql` | Linear | **GraphQL only** (one `POST`): `issues`, `issue(id:)` (UUID *or* `ENG-123`), `team(id:)` (UUID, key, or name), `teams`, `comments`, `users`, `viewer`, plus the `Team.issues` / `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}` connections and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`, `release`, `attachment`, `issueRelation`) the official SDK's lazy relation accessors call. Relay pagination (`first`/`after`, `last`/`before` → `{nodes, pageInfo}`), server-side `filter` compiled into SQL, and full introspection |
 
 ## Tests
 
@@ -308,6 +316,25 @@ follow the org (`<org>.atlassian.net`, and the owner echoed from the request pat
   free-text stubs referencing other sources, so they stay properties rather than becoming
   associations. **A listing's last page omits `paging.next`** — the official client's `fetch_all`
   treats its absence as "done", so emitting it unconditionally would hang a real client.
+- Linear is **GraphQL-only** (there is no REST surface to emulate) and the mock is **read-only**,
+  so there is no `Mutation` type at all — introspection reports `mutationType: null` rather than
+  advertising writes that would fail. The schema is generated from `@linear/sdk`'s own documents
+  (`client.issues()` alone selects 171 field nodes across 11 fragments), so real SDK calls
+  validate; fields no document corpus can back — reactions, SLA timestamps, board/sort orders,
+  bot actors — resolve to `null`/`[]` rather than being invented. `IssueFilter` declares **only**
+  what the mock actually evaluates, so an unsupported key is a validation error naming the field
+  instead of a silently-dropped filter answered with a full, wrong result set. EnterpriseRAG-Bench
+  ships Linear as its third-largest source (35,308 issues); its `P0`-`P3` priorities are mapped
+  onto Linear's own 0-4 scale and its `status` onto `state`, so the served payload speaks Linear's
+  vocabulary rather than the bench's. The bench's issue keys are **not unique** (5,055 repeat), so
+  `issue(id: "ENG-123")` resolves a repeated identifier to the first match while the UUID form is
+  always exact.
+- **Linear's official SDK is TypeScript-only.** `@linear/sdk` is the only client Linear publishes;
+  there is no official Python SDK, so `examples/using-official-sdk/linear/` is the one non-Python
+  example in the repo and a dedicated CI job runs it. `LinearClient` has no base-URL option, so it
+  is pointed at the mock by extending `LinearSdk` with a custom request function — Linear's own
+  documented pattern. There is also no MCP story: Linear's official MCP server is remote-hosted at
+  `https://mcp.linear.app/mcp` with no URL override, so no mock can substitute for it.
 - S3 is **BYO-only** (not in EnterpriseRAG-Bench). Requests are XML (not JSON) and SigV4-signed;
   the mock verifies the signature against the access-key/secret derived from your bearer token
   and only supports path-style addressing (the bucket stays in the path, not the hostname).

@@ -1,0 +1,20 @@
+{
+  "name": "enterprise-mock-linear-example",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Drive the official @linear/sdk against an enterprise-mock server.",
+  "scripts": {
+    "start": "tsx index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@linear/sdk": "^88.3.0",
+    "graphql-request": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -188,3 +188,27 @@ def test_linear_byo_round_trip_serves_what_it_loaded(tmp_path):
         assert [c["body"] for c in store.doc_comments(conn, "linear", "byo-1")] == ["Rolled out."]
     finally:
         conn.close()
+
+
+def test_linear_synthesized_identifier_is_resolvable(tmp_path):
+    """An omitted `identifier` is synthesized — and the synthesized value must be MATERIALIZED,
+    not produced per request. The app's reverse index is built from stored columns, so a
+    serve-time-only identifier came back "Entity not found" from `issue(id:)` even though the API
+    had just served that exact string to the caller."""
+    corpus = tmp_path / "c.jsonl"
+    corpus.write_text(json.dumps({
+        "source_type": "linear", "doc_id": "no-ident", "team": "engineering",
+        "title": "No identifier given", "content": "body", "author_email": "ava@acme.com",
+    }) + "\n")
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        row = store.get_document(conn, "linear", "no-ident")
+        assert row["identifier"], "identifier must be stored, not left to serve time"
+        assert row["identifier"].startswith("ENG-")
+        # ...and it resolves through the same lookup `issue(id:)` uses.
+        assert store.linear_issue_by_identifier(
+            conn, row["identifier"])["doc_id"] == "no-ident"
+    finally:
+        conn.close()

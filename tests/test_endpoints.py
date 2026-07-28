@@ -1995,6 +1995,13 @@ def test_linear_reader_field_set_all_resolves(client, admin_h):
                       "completedAt", "dueDate", "estimate"):
             assert field in issue, field
         assert issue["labels"]["nodes"] is not None
+    # Key-presence alone is a TAUTOLOGY: graphql-core always emits a selected field as a key, so
+    # the loop above passes even if every value is served as a constant null. Pin the values that
+    # must be real, including a lifecycle timestamp that is genuinely populated.
+    done = next(i for i in nodes if i["title"] == "Continuous batching stalls after compaction")
+    assert done["completedAt"] == "2026-03-10T00:00:00Z"     # not None, not synthesized
+    assert done["createdAt"] == "2026-03-01T00:00:00Z"
+    assert done["canceledAt"] is None                        # Done, so it was never canceled
     by_id = {i["title"]: i for i in nodes}
     rl = by_id["Rate limiter drops bursts under 50ms"]
     assert rl["creator"]["name"] and rl["assignee"]["name"] == "Bob Stone"

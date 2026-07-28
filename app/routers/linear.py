@@ -63,6 +63,7 @@ async def graphql(request: Request):
         "project_index": state.index.get("linear_projects", {}),
         "cycle_index": state.index.get("linear_cycles", {}),
         "label_index": state.index.get("linear_labels", {}),
+        "release_index": state.index.get("linear_releases", {}),
     }
     result = ENGINE.execute_request(await request.body(), context=context)
     return JSONResponse(result.payload, status_code=400 if result.request_error else 200)

@@ -246,10 +246,20 @@ CREATE TABLE IF NOT EXISTS linear_issues (
     archived_ts INTEGER, auto_archived_ts INTEGER, auto_closed_ts INTEGER,
     canceled_ts INTEGER, completed_ts INTEGER, started_ts INTEGER,
     assignee_email TEXT, assignee_display TEXT, owner_display TEXT,
-    -- The parent's human identifier (ENG-123), not a doc_id: the bench names a
-    -- parent by key, and keys are not unique, so resolution happens at serve time
-    -- through the same ACL-scoped lookup `issue(id: "ENG-123")` uses.
-    parent_key TEXT
+    -- The parent's human identifier (ENG-123), as the corpus wrote it, and the doc_id that key
+    -- was RESOLVED to at import. Both, because they answer different questions: `parent_key` is
+    -- the corpus's own value, `parent_doc_id` is what the API serves.
+    --
+    -- The resolution has to happen once, at import, because bench identifiers are not unique:
+    -- 45.4% of parent references point at a key that matches more than one issue, and `ENG-314159`
+    -- alone is claimed by 218 children while being the identifier of 107 issues — a serve-time
+    -- join on `identifier` would invent 23,326 edges from that key. Resolving once (first match by
+    -- doc_id, the same rule `linear_issue_by_identifier` applies) makes `Issue.parent` and
+    -- `Issue.children` EXACT inverses by construction rather than two lookups kept in step, and
+    -- drops the 24.8% dangling references at import instead of on every request.
+    parent_key TEXT, parent_doc_id TEXT,
+    -- Release name as the corpus writes it (`runtime-1.19`); served as `Issue.releases`.
+    release TEXT
 );
 -- (team, doc_id) rather than team alone: every read here is "one team, ordered by doc_id" —
 -- the Relay connection pages that way — so putting the ordering column in the index makes a
@@ -270,6 +280,10 @@ CREATE INDEX IF NOT EXISTS idx_linear_project ON linear_issues(project);
 CREATE INDEX IF NOT EXISTS idx_linear_cycle ON linear_issues(cycle);
 CREATE INDEX IF NOT EXISTS idx_linear_assignee ON linear_issues(assignee_email);
 CREATE INDEX IF NOT EXISTS idx_linear_author ON linear_issues(author_email);
+-- `Issue.children` is "every issue whose parent_doc_id is me" — an indexed equality, not a join
+-- on the non-unique identifier text.
+CREATE INDEX IF NOT EXISTS idx_linear_parent_doc ON linear_issues(parent_doc_id);
+CREATE INDEX IF NOT EXISTS idx_linear_release ON linear_issues(release);
 -- `issue(id: "ENG-123")` resolves an identifier straight to its row; the bench's keys are NOT
 -- unique (5,055 of them repeat), so this is a lookup index, never a unique constraint.
 CREATE INDEX IF NOT EXISTS idx_linear_identifier ON linear_issues(identifier);
@@ -288,6 +302,28 @@ CREATE INDEX IF NOT EXISTS idx_linear_comments_doc ON linear_comments(doc_id, se
 -- `Query.comments` pages the whole corpus ordered by time; without this the ORDER BY
 -- re-sorts all 165k bench comments in a temp b-tree on every page.
 CREATE INDEX IF NOT EXISTS idx_linear_comments_ts ON linear_comments(created_ts, id);
+
+-- Linear models a dependency as an IssueRelation with a `type` (blocks | duplicate | related).
+-- One row per DIRECTION is NOT stored: `Issue.relations` and `Issue.inverseRelations` are the two
+-- ends of the same row, so the row is written once from the declaring issue and read from either
+-- side. `to_doc_id` is resolved at import for the same reason `parent_doc_id` is — a dangling or
+-- ambiguous key must never become a relation pointing at an issue that does not exist.
+CREATE TABLE IF NOT EXISTS linear_relations (
+    id TEXT PRIMARY KEY, from_doc_id TEXT NOT NULL, to_doc_id TEXT NOT NULL,
+    type TEXT NOT NULL, created_ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_linear_rel_from ON linear_relations(from_doc_id);
+CREATE INDEX IF NOT EXISTS idx_linear_rel_to ON linear_relations(to_doc_id);
+
+-- An attachment is Linear's model for any external link on an issue, which is what the bench's
+-- `links` and `attachments` both are. `title` is non-null in Linear, so a bare URL gets one
+-- derived from its last path segment rather than an empty string.
+CREATE TABLE IF NOT EXISTS linear_attachments (
+    id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    title TEXT NOT NULL, url TEXT NOT NULL, subtitle TEXT, source_type TEXT,
+    created_ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_linear_attach_doc ON linear_attachments(doc_id, seq);
 
 -- ── shared relationship tables (keyed by doc_id / names) ──
 -- ── per-service grouping tables (name of the grouping unit + its owning ACL group) ──
@@ -336,7 +372,9 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # raises if the referenced column is missing.) Each ALTER is idempotent: it no-ops on a fresh
     # DB (table absent) and on a DB that already has the column.
     for table, column, decl in (("github_items", "path", "TEXT"),
-                                ("linear_issues", "parent_key", "TEXT")):
+                                ("linear_issues", "parent_key", "TEXT"),
+                                ("linear_issues", "parent_doc_id", "TEXT"),
+                                ("linear_issues", "release", "TEXT")):
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
         except sqlite3.OperationalError:
@@ -660,6 +698,96 @@ def count_linear_comments(conn, *, doc_id=None, visible_ids=None, prefilter=None
     return conn.execute(sql + clause, params + cparams).fetchone()[0]
 
 
+def linear_children(conn, parent_doc_id, *, visible_ids=None, limit=50, offset=0,
+                    prefilter=None) -> list[sqlite3.Row]:
+    """Sub-issues of an issue — every row whose resolved ``parent_doc_id`` is this one.
+
+    An indexed equality on a doc_id, NOT a join on ``identifier``: bench identifiers repeat, and
+    joining on them would attach one issue's children to all 107 issues that happen to share its
+    key. Resolution happened once at import (see the ``parent_doc_id`` column), which is also what
+    makes this the exact inverse of ``Issue.parent``."""
+    sql = "SELECT * FROM linear_issues WHERE parent_doc_id = ?"
+    params: list = [parent_doc_id]
+    if prefilter:
+        frag, fparams = prefilter
+        sql += f" AND {frag}"
+        params += fparams
+    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    sql += clause + " ORDER BY created_ts, doc_id LIMIT ? OFFSET ?"
+    return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
+
+
+def linear_relations(conn, doc_id, *, inverse=False, visible_ids=None, limit=50,
+                     offset=0) -> list[sqlite3.Row]:
+    """One page of an issue's relations. ``inverse=False`` is ``Issue.relations`` (rows this issue
+    declared), ``inverse=True`` is ``Issue.inverseRelations`` (rows pointing AT it) — the two ends
+    of the same stored row, which is why a relation is written once rather than per direction.
+
+    ACL-scoped on the OTHER end: a relation whose counterpart the caller cannot read is omitted
+    entirely rather than surfaced as an id, since its existence would disclose that issue."""
+    mine, other = ("to_doc_id", "from_doc_id") if inverse else ("from_doc_id", "to_doc_id")
+    clause, cparams = _acl_clause("i", visible_ids)
+    sql = (f"SELECT r.* FROM linear_relations r JOIN linear_issues i ON i.doc_id = r.{other} "
+           f"WHERE r.{mine} = ?{clause} ORDER BY r.created_ts, r.id LIMIT ? OFFSET ?")
+    return conn.execute(sql, [doc_id, *cparams, limit, offset]).fetchall()
+
+
+def linear_attachments(conn, doc_id, *, visible_ids=None, limit=50, offset=0,
+                       url=None, prefilter=None) -> list[sqlite3.Row]:
+    """An issue's attachments. Visibility is the parent issue's — an attachment carries no grant
+    of its own — so the ACL is applied through a join, as it is for comments. ``url`` is Linear's
+    own exact-match argument on this connection."""
+    join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = a.doc_id"
+    sql = f"SELECT a.* FROM linear_attachments a{join} WHERE a.doc_id = ?"
+    params: list = [doc_id]
+    if url is not None:
+        sql += " AND a.url = ?"
+        params.append(url)
+    if prefilter:
+        frag, fparams = prefilter
+        sql += f" AND {frag}"
+        params += fparams
+    clause, cparams = _acl_clause("i", visible_ids)
+    sql += clause + " ORDER BY a.seq LIMIT ? OFFSET ?"
+    return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
+
+
+def linear_attachment_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+    """Resolve a SERVED attachment uuid back to its row, scoped on the parent issue's ACL.
+
+    Attachments have no app-level reverse index (they are only ever reached through their issue),
+    so the served id is matched by re-deriving it over the rows of issues the caller can see —
+    which also means an attachment on a hidden issue is simply not found."""
+    from app import synth
+    join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = a.doc_id"
+    clause, cparams = _acl_clause("i", visible_ids)
+    rows = conn.execute(f"SELECT a.* FROM linear_attachments a{join} WHERE 1=1{clause}", cparams)
+    for row in rows:
+        if synth.linear_attachment_id(row["id"]) == served_id:
+            return row
+    return None
+
+
+def linear_relation_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+    """Same for a relation, scoped on BOTH ends: a relation is only visible to a caller who can
+    read the issues at each side of it."""
+    from app import synth
+    if visible_ids is None:
+        rows = conn.execute("SELECT * FROM linear_relations")
+    else:
+        clause_a, pa = _acl_clause("a", visible_ids)
+        clause_b, pb = _acl_clause("b", visible_ids)
+        rows = conn.execute(
+            f"SELECT r.* FROM linear_relations r "
+            f"JOIN linear_issues a ON a.doc_id = r.from_doc_id "
+            f"JOIN linear_issues b ON b.doc_id = r.to_doc_id WHERE 1=1{clause_a}{clause_b}",
+            [*pa, *pb])
+    for row in rows:
+        if synth.linear_relation_id(row["id"]) == served_id:
+            return row
+    return None
+
+
 def linear_distinct_values(conn) -> dict[str, list]:
     """The distinct entity names Linear's by-id roots have to resolve back to.
 
@@ -707,6 +835,7 @@ def linear_distinct_values(conn) -> dict[str, list]:
         "cycles": per_team("cycle"),
         "labels": [r[0] for r in conn.execute(
             "SELECT DISTINCT value FROM linear_issues, json_each(COALESCE(labels, '[]'))")],
+        "releases": col("release"),
         "users": sorted(people.items()),
     }
 
@@ -742,6 +871,7 @@ _LINEAR_ENTITY_PREDICATES = {
     "user": lambda v: ("(author_email = ? OR assignee_email = ?)", [v[0], v[0]]),  # v = (email, _)
     "label": lambda v: (
         "EXISTS (SELECT 1 FROM json_each(COALESCE(labels, '[]')) WHERE value = ?)", [v]),
+    "release": lambda v: ("release = ?", [v]),
 }
 
 

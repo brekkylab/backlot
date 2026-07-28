@@ -26,7 +26,8 @@ from app.routers import atlassian, github, google, hubspot, linear, notion, oaut
 def _build_index(conn) -> dict:
     idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}, "s3": {}, "hubspot": {},
            "linear": {}, "linear_teams": {}, "linear_users": {}, "linear_states": {},
-           "linear_projects": {}, "linear_cycles": {}, "linear_labels": {}}
+           "linear_projects": {}, "linear_cycles": {}, "linear_labels": {},
+           "linear_releases": {}}
     # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
     # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container "
@@ -79,6 +80,8 @@ def _build_index(conn) -> dict:
         idx["linear_cycles"][synth.linear_cycle_id(name, team)] = (team, name)
     for name in distinct["labels"]:
         idx["linear_labels"][synth.linear_label_id(name)] = name
+    for name in distinct["releases"]:
+        idx["linear_releases"][synth.linear_release_id(name)] = name
     return idx
 
 

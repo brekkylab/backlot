@@ -1005,3 +1005,90 @@ def test_linear_grants_flow_through_the_shared_container_path():
     bundle = {"owner": "a@x.com", "people": ["b@x.com"], "group": "engineering", "org": "acme"}
     assert set(grants_for("linear", bundle)) == {
         ("user", "a@x.com"), ("user", "b@x.com"), ("group", "engineering")}
+
+
+# --- Linear relations / attachments / release (#25) ---------------------------------
+
+def test_linear_relation_parsing_defaults_to_related():
+    """Linear's vocabulary is blocks | duplicate | related. The bench lists a dependency as a bare
+    key under a heading that means "depends on" only sometimes, so an unqualified entry becomes
+    `related` — asserting `blocks` would invent a dependency graph the data does not state."""
+    assert erb.parse_linear_relations(["ENG-31472"]) == [("related", "ENG-31472")]
+    assert erb.parse_linear_relations(["blocks ENG-1"]) == [("blocks", "ENG-1")]
+    assert erb.parse_linear_relations(["blocked by ENG-2"]) == [("blocks", "ENG-2")]
+    assert erb.parse_linear_relations(["duplicate of ENG-3"]) == [("duplicate", "ENG-3")]
+    assert erb.parse_linear_relations(["no key here"]) == []
+    assert erb.parse_linear_relations("ENG-9") == [("related", "ENG-9")]     # 6 docs use a string
+
+
+def test_linear_attachment_titles_are_never_empty():
+    """`Attachment.title` is non-null in Linear. `links` carry `Label: URL`; `attachments` are
+    bare URLs and need a derived title."""
+    got = erb.parse_linear_attachments(
+        ["Confluence: https://conf.example/a/design"], ["https://figma.example/frames.zip"])
+    assert got == [{"url": "https://conf.example/a/design", "title": "Confluence"},
+                   {"url": "https://figma.example/frames.zip", "title": "frames.zip"}]
+    assert all(a["title"] for a in got)
+
+
+def test_linear_attachments_dedupe_across_the_two_bench_fields():
+    """A doc can list the same link in both `links` and `attachments`."""
+    got = erb.parse_linear_attachments(["https://x.example/a"], ["https://x.example/a"])
+    assert len(got) == 1
+
+
+def test_linear_release_takes_one_name():
+    assert erb._linear_release(["runtime-1.19", "other"]) == "runtime-1.19"   # 8 docs use a list
+    assert erb._linear_release("console-2025.02") == "console-2025.02"
+    assert erb._linear_release(None) is None
+
+
+def test_linear_second_pass_resolves_keys_and_drops_dangling():
+    """The resolution has to be a SECOND pass (a target may load after its referrer) and has to
+    happen at import (bench identifiers repeat, so a serve-time join on `identifier` would attach
+    one issue's children to every issue sharing its key)."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    # The child is loaded BEFORE its parent, which is the case a single pass cannot handle.
+    erb.load_linear(conn, "d_child", {**LINEAR_RAW, "key": "ENG-2", "parent_issue": ["ENG-1"],
+                                      "dependencies": ["blocks ENG-1", "ENG-NOSUCH"]}, P)
+    erb.load_linear(conn, "d_parent", {**LINEAR_RAW, "key": "ENG-1", "parent_issue": None,
+                                       "dependencies": None}, P)
+    bundles = {
+        "d_child": {"_source": "linear", "_linear_parent_key": "ENG-1",
+                    "_linear_relations": [("blocks", "ENG-1"), ("related", "ENG-NOSUCH")]},
+        "d_parent": {"_source": "linear", "_linear_parent_key": None, "_linear_relations": []},
+    }
+    stats = erb.resolve_linear_references(conn, bundles)
+    assert stats["parents"] == 1 and stats["relations"] == 1
+    assert stats["relations_dangling"] == 1          # ENG-NOSUCH resolves to nothing
+    row = conn.execute("SELECT parent_doc_id FROM linear_issues WHERE doc_id='d_child'").fetchone()
+    assert row["parent_doc_id"] == "d_parent"
+    rels = conn.execute("SELECT from_doc_id, to_doc_id, type FROM linear_relations").fetchall()
+    assert [(r["from_doc_id"], r["to_doc_id"], r["type"]) for r in rels] == \
+        [("d_child", "d_parent", "blocks")]
+
+
+def test_linear_second_pass_never_makes_an_issue_its_own_parent():
+    """Reachable because bench keys repeat: two issues can share the key an issue names as its
+    parent, and one of them can be the issue itself."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    erb.load_linear(conn, "d_self", {**LINEAR_RAW, "key": "ENG-7", "parent_issue": ["ENG-7"]}, P)
+    stats = erb.resolve_linear_references(
+        conn, {"d_self": {"_source": "linear", "_linear_parent_key": "ENG-7",
+                          "_linear_relations": [("related", "ENG-7")]}})
+    assert stats["parents"] == 0 and stats["relations"] == 0
+    assert conn.execute(
+        "SELECT parent_doc_id FROM linear_issues WHERE doc_id='d_self'").fetchone()[0] is None
+
+
+def test_linear_loader_stores_release_and_attachments():
+    conn, row, _c = _load_linear({**LINEAR_RAW, "release": "runtime-1.19",
+                                  "links": ["Confluence: https://conf.example/x"],
+                                  "attachments": ["https://figma.example/y.zip"]})
+    assert row["release"] == "runtime-1.19"
+    atts = conn.execute(
+        "SELECT title, url FROM linear_attachments WHERE doc_id='dsid_lin' ORDER BY seq").fetchall()
+    assert [(a["title"], a["url"]) for a in atts] == [
+        ("Confluence", "https://conf.example/x"), ("y.zip", "https://figma.example/y.zip")]

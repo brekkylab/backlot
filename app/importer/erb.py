@@ -968,6 +968,14 @@ def _linear_int(value) -> int | None:
         return None
 
 
+def _linear_release(value) -> str | None:
+    """8 docs write `release` as a list; Linear attaches an issue to one release name."""
+    if isinstance(value, (list, tuple)):
+        value = next((x for x in value if x), None)
+    s = str(value or "").strip()
+    return s or None
+
+
 def _linear_parent(value) -> str | None:
     """The bench's ``parent_issue`` is a list of keys on 16,813 docs and a bare string on 552.
     Linear has exactly one parent, so take the first."""
@@ -975,6 +983,58 @@ def _linear_parent(value) -> str | None:
         value = next((x for x in value if x), None)
     s = str(value or "").strip()
     return s or None
+
+
+# The bench writes a dependency as a bare issue key, sometimes with a relation word attached
+# ("blocks ENG-123"). Linear's IssueRelation.type vocabulary is blocks | duplicate | related.
+_LINEAR_REL_WORDS = (("duplicate", "duplicate"), ("blocked by", "blocks"), ("blocks", "blocks"),
+                     ("depends", "blocks"), ("related", "related"))
+_LINEAR_KEY = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b")
+
+
+def parse_linear_relations(value) -> list[tuple[str, str]]:
+    """A bench `dependencies` entry -> ``[(type, key), …]``.
+
+    Defaults to ``related``, which is Linear's own neutral relation, rather than guessing
+    ``blocks``: the corpus lists these under a heading that means "depends on" only sometimes, and
+    asserting a blocking relationship the data does not state would be inventing a dependency
+    graph. A word that IS present is honoured."""
+    out = []
+    for entry in (value if isinstance(value, (list, tuple)) else [value]):
+        text = str(entry or "")
+        rel = next((t for word, t in _LINEAR_REL_WORDS if word in text.lower()), "related")
+        for key in _LINEAR_KEY.findall(text):
+            out.append((rel, key))
+    return out
+
+
+def _linear_url_title(url: str) -> tuple[str, str | None]:
+    """`Attachment.title` is non-null in Linear. The bench's `links` are `Label: URL`, its
+    `attachments` are bare URLs — so a label is used when present and otherwise derived from the
+    last meaningful path segment, never left empty."""
+    text = str(url or "").strip()
+    m = re.match(r"^(?P<label>[^:]{1,60}):\s*(?P<url>https?://\S+)$", text)
+    if m:
+        return m.group("url"), m.group("label").strip()
+    parts = [p for p in text.rstrip("/").split("/") if p]
+    derived = parts[-1] if parts else text
+    return text, (derived or None)
+
+
+def parse_linear_attachments(*values) -> list[dict]:
+    """The bench's `links` and `attachments` are both external links, which is exactly Linear's
+    `Attachment`. Merged and de-duplicated on url, since a doc can list the same link in both."""
+    out, seen = [], set()
+    for value in values:
+        for entry in (value if isinstance(value, (list, tuple)) else [value]):
+            if not entry:
+                continue
+            url, title = _linear_url_title(entry)
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            out.append({"url": url, "title": title or url})
+    return out
 
 
 def _linear_date(value) -> str | None:
@@ -1061,8 +1121,8 @@ def load_linear(conn, dsid, raw, P):
         "INSERT OR REPLACE INTO linear_issues(doc_id, team, author_email, title, content, "
         "identifier, state, priority, estimate, labels, project, cycle, branch_name, due_date, "
         "created_ts, updated_ts, completed_ts, canceled_ts, started_ts, "
-        "assignee_email, assignee_display, owner_display, parent_key) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "assignee_email, assignee_display, owner_display, parent_key, release) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (dsid, team, creator_email or f"unknown@{P.org_domain}", title, content,
          identifier, state, linear_priority(raw.get("priority")),
          _linear_int(raw.get("estimate")), json.dumps(_names(raw.get("labels"))),
@@ -1073,7 +1133,14 @@ def load_linear(conn, dsid, raw, P):
          ended if state_type == "canceled" else None,
          created if state_type in ("started", "completed") else None,
          assignee_email, assignee_name or None, creator,
-         _linear_parent(raw.get("parent_issue"))))
+         _linear_parent(raw.get("parent_issue")), _linear_release(raw.get("release"))))
+
+    for seq, att in enumerate(parse_linear_attachments(raw.get("links"),
+                                                       raw.get("attachments")), start=1):
+        conn.execute(
+            "INSERT OR REPLACE INTO linear_attachments(id, doc_id, seq, title, url, subtitle, "
+            "source_type, created_ts) VALUES (?,?,?,?,?,?,?,?)",
+            (f"{dsid}::a{seq}", dsid, seq, att["title"], att["url"], None, None, created))
 
     prev_ts = created
     for seq, c in enumerate(parse_linear_comments(raw.get("comments")), start=1):
@@ -1101,7 +1168,64 @@ def load_linear(conn, dsid, raw, P):
 
     people = [creator_email, assignee_email]
     return {"owner": creator_email, "people": [p for p in people if p], "group": group,
-            "confidentiality": None}
+            "confidentiality": None,
+            # Consumed by the second pass below, which needs every issue loaded before it can
+            # resolve a key to a doc_id.
+            "_linear_parent_key": _linear_parent(raw.get("parent_issue")),
+            "_linear_relations": parse_linear_relations(raw.get("dependencies"))}
+
+
+def resolve_linear_references(conn, bundles) -> dict:
+    """SECOND PASS: turn the issue KEYS the bench references into doc_ids.
+
+    Has to be a second pass because a parent or a dependency target may be loaded after the issue
+    that names it. Has to happen at IMPORT rather than per request because bench identifiers are
+    not unique — 45.4% of parent references match more than one issue, and `ENG-314159` alone is
+    claimed by 218 children while being the identifier of 107 issues, so a serve-time join on
+    `identifier` would invent 23,326 edges from that one key.
+
+    Resolution picks the FIRST match by doc_id, the same rule `store.linear_issue_by_identifier`
+    applies, so `Issue.parent` and `Issue.children` are exact inverses rather than two independent
+    lookups. A key matching nothing resolves to nothing: a dangling reference must never become a
+    relation pointing at an issue that does not exist (the rule `load_hubspot` already applies to
+    its `linked_*` stubs).
+    """
+    key_to_doc: dict[str, str] = {}
+    for doc_id, identifier in conn.execute(
+            "SELECT doc_id, identifier FROM linear_issues WHERE identifier IS NOT NULL "
+            "ORDER BY doc_id"):
+        key_to_doc.setdefault(identifier, doc_id)
+
+    stats = {"parents": 0, "parents_dangling": 0, "relations": 0, "relations_dangling": 0}
+    for dsid, bundle in bundles.items():
+        if bundle.get("_source") != "linear":
+            continue
+        key = bundle.get("_linear_parent_key")
+        if key:
+            target = key_to_doc.get(key)
+            # An issue is not its own parent; the bench's repeated keys make that reachable.
+            if target and target != dsid:
+                conn.execute("UPDATE linear_issues SET parent_doc_id = ? WHERE doc_id = ?",
+                             (target, dsid))
+                stats["parents"] += 1
+            else:
+                stats["parents_dangling"] += 1
+        seen = set()
+        for seq, (rel_type, rel_key) in enumerate(bundle.get("_linear_relations") or [], start=1):
+            target = key_to_doc.get(rel_key)
+            if not target or target == dsid or (rel_type, target) in seen:
+                stats["relations_dangling"] += 1
+                continue
+            seen.add((rel_type, target))
+            conn.execute(
+                "INSERT OR REPLACE INTO linear_relations(id, from_doc_id, to_doc_id, type, "
+                "created_ts) VALUES (?,?,?,?,?)",
+                (f"{dsid}::r{seq}", dsid, target, rel_type,
+                 conn.execute("SELECT created_ts FROM linear_issues WHERE doc_id = ?",
+                              (dsid,)).fetchone()[0]))
+            stats["relations"] += 1
+    conn.commit()
+    return stats
 
 
 _LOADERS = {"google_drive": load_drive, "github": load_github, "confluence": load_confluence,
@@ -1141,6 +1265,12 @@ def load_structured(conn, records, P, settings) -> dict:
     if failures:
         print(f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
               file=sys.stderr, flush=True)
+    if counts.get("linear"):
+        # Needs every issue present, so it cannot run inside the per-doc loop above.
+        rstats = resolve_linear_references(conn, bundles)
+        print(f"  linear: resolved {rstats['parents']} parents "
+              f"({rstats['parents_dangling']} dangling) and {rstats['relations']} relations "
+              f"({rstats['relations_dangling']} dangling)", file=sys.stderr, flush=True)
     return {"bundles": bundles, "counts": counts, "failures": failures}
 
 

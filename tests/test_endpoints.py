@@ -2201,3 +2201,96 @@ def test_linear_sort_input_overrides_the_default_ordering(client, admin_h):
          "{ nodes { createdAt } } }")
     got = [n["createdAt"] for n in gql(client, q, admin_h).json()["data"]["issues"]["nodes"]]
     assert got == sorted(got, reverse=True)
+
+
+# --- Linear relations / children / attachments / releases (#25) -----------------------
+
+def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):
+    """Linear DEFINES `children` as the inverse of `parent`, so the two must never disagree. They
+    are both read off the `parent_doc_id` resolved at import rather than joined on `identifier`,
+    because bench keys repeat — a join would attach one issue's children to every issue sharing
+    its key."""
+    kids = gql(client, '{ issue(id: "ENG-103") { children { nodes { identifier } } } }',
+               admin_h).json()["data"]["issue"]["children"]["nodes"]
+    assert [k["identifier"] for k in kids] == ["ENG-102"]
+    back = gql(client, '{ issue(id: "ENG-102") { parent { identifier } } }',
+               admin_h).json()["data"]["issue"]["parent"]
+    assert back["identifier"] == "ENG-103"
+
+
+def test_linear_children_is_acl_scoped(client, tokens):
+    """ENG-103 is restricted to hana, so ava cannot even reach it to ask for its children — and
+    the children list must never become a way to observe an issue she is denied."""
+    ava = {"Authorization": linear_user_token(tokens, "ava@acme.com")}
+    denied = gql(client, '{ issue(id: "ENG-103") { children { nodes { identifier } } } }', ava)
+    assert "Entity not found" in denied.json()["errors"][0]["message"]
+
+
+def test_linear_relations_and_their_inverse(client, admin_h):
+    rels = gql(client, '{ issue(id: "ENG-102") { relations { nodes { type relatedIssue '
+                       "{ identifier } } } } }", admin_h).json()["data"]["issue"]["relations"]["nodes"]
+    assert sorted((r["type"], r["relatedIssue"]["identifier"]) for r in rels) == \
+        [("blocks", "ENG-101"), ("related", "ENG-103")]
+    # the same row read from the other end
+    inv = gql(client, '{ issue(id: "ENG-101") { inverseRelations { nodes { type issue '
+                      "{ identifier } } } } }", admin_h).json()["data"]["issue"]
+    assert [(r["type"], r["issue"]["identifier"]) for r in inv["inverseRelations"]["nodes"]] == \
+        [("blocks", "ENG-102")]
+
+
+def test_linear_relation_to_a_hidden_issue_is_omitted(client, tokens, admin_h):
+    """A relation is scoped on the FAR end: surfacing one whose counterpart the caller cannot read
+    would disclose that issue's existence — the leak class the by-id roots were fixed for."""
+    ava = {"Authorization": linear_user_token(tokens, "ava@acme.com")}
+    q = '{ issue(id: "ENG-102") { relations { nodes { relatedIssue { identifier } } } } }'
+    seen = [r["relatedIssue"]["identifier"]
+            for r in gql(client, q, ava).json()["data"]["issue"]["relations"]["nodes"]]
+    assert seen == ["ENG-101"], "the relation to the restricted ENG-103 must be omitted"
+    # admin sees both, proving the omission is the ACL and not a broken join
+    assert len(gql(client, q, admin_h).json()["data"]["issue"]["relations"]["nodes"]) == 2
+
+
+def test_linear_attachments_from_both_bench_shapes(client, admin_h):
+    """`Attachment.title` is non-null in Linear, so a bare URL needs a derived title rather than
+    an empty string."""
+    nodes = gql(client, '{ issue(id: "ENG-102") { attachments { nodes { title url } } } }',
+                admin_h).json()["data"]["issue"]["attachments"]["nodes"]
+    got = {n["title"]: n["url"] for n in nodes}
+    assert got["Design doc"] == "https://conf.acme.test/design/batching"   # explicit title
+    assert got["artifacts.zip"] == "https://ci.acme.test/builds/4821/artifacts.zip"  # derived
+
+
+def test_linear_attachments_url_argument_and_filter(client, admin_h):
+    one = gql(client, '{ issue(id: "ENG-102") { attachments(url: "https://conf.acme.test/design/'
+                      'batching") { nodes { title } } } }', admin_h)
+    assert [n["title"] for n in one.json()["data"]["issue"]["attachments"]["nodes"]] == ["Design doc"]
+    none = gql(client, '{ issue(id: "ENG-102") { attachments(filter: {title: {eq: "nope"}}) '
+                       "{ nodes { title } } } }", admin_h)
+    assert none.json()["data"]["issue"]["attachments"]["nodes"] == []
+
+
+def test_linear_releases_and_the_by_id_root(client, admin_h):
+    nodes = gql(client, '{ issue(id: "ENG-102") { releases { nodes { id name slugId } } } }',
+                admin_h).json()["data"]["issue"]["releases"]["nodes"]
+    assert [n["name"] for n in nodes] == ["runtime-1.19"]
+    assert gql(client, '{ release(id: %s) { name } }' % lit(nodes[0]["id"]),
+               admin_h).json()["data"]["release"]["name"] == "runtime-1.19"
+
+
+def test_linear_release_by_id_is_acl_scoped(client, tokens):
+    """The release only appears on ENG-102, which ava CAN read — so she resolves it. Asserted to
+    pin that the scoping is on visibility, not a blanket denial."""
+    from app import synth
+    ava = {"Authorization": linear_user_token(tokens, "ava@acme.com")}
+    got = gql(client, '{ release(id: %s) { name } }' % lit(synth.linear_release_id("runtime-1.19")),
+              ava)
+    assert got.json()["data"]["release"]["name"] == "runtime-1.19"
+    absent = gql(client, '{ release(id: %s) { name } }' % lit(synth.linear_release_id("nope-9")), ava)
+    assert "Entity not found" in absent.json()["errors"][0]["message"]
+
+
+def test_linear_issue_with_no_relations_returns_empty_connections(client, admin_h):
+    r = gql(client, '{ issue(id: "DES-77") { relations { nodes { id } } children { nodes { id } } '
+                    "attachments { nodes { id } } releases { nodes { id } } } }",
+            admin_h).json()["data"]["issue"]
+    assert all(r[k]["nodes"] == [] for k in ("relations", "children", "attachments", "releases"))

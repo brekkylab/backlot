@@ -62,6 +62,9 @@ type Query {
   project(id: String!): Project!
   issueLabel(id: String!): IssueLabel!
   cycle(id: String!): Cycle!
+  attachment(id: String!): Attachment!
+  issueRelation(id: String!): IssueRelation!
+  release(id: String!): Release!
 }
 
 # --- connections & entity types -----------------------------------------------------
@@ -84,6 +87,8 @@ type InitiativeUpdate { id: ID! }
 type IntegrationsSettings { id: ID! }
 type ProjectMilestone { id: ID! }
 type ProjectStatus { id: ID! }
+type ReleasePipeline { id: ID! }
+type ReleaseStage { id: ID! }
 type ProjectUpdate { id: ID! }
 type Template { id: ID! }
 type TriageResponsibility { id: ID! }
@@ -214,6 +219,27 @@ input IssueLabelCollectionFilter {
   or: [IssueLabelCollectionFilter!]
 }
 
+"""Attachment fields the mock can evaluate. Linear's own input is wider; as everywhere else in
+this schema, only what is implemented is declared, so an unsupported key is a validation error
+rather than a filter that is dropped and answered with the full set."""
+input AttachmentFilter {
+  id: IDComparator
+  title: StringComparator
+  subtitle: NullableStringComparator
+  url: StringComparator
+  sourceType: NullableStringComparator
+  and: [AttachmentFilter!]
+  or: [AttachmentFilter!]
+}
+
+input ReleaseFilter {
+  id: IDComparator
+  name: StringComparator
+  slugId: StringComparator
+  and: [ReleaseFilter!]
+  or: [ReleaseFilter!]
+}
+
 input CommentFilter {
   id: IDComparator
   body: StringComparator
@@ -266,6 +292,30 @@ type AiPromptRules {
   createdAt: DateTime!
   id: ID!
   updatedBy: User
+}
+
+type Attachment {
+  subtitle: String
+  title: String!
+  source: JSONObject
+  metadata: JSONObject!
+  url: String!
+  bodyData: String
+  updatedAt: DateTime!
+  sourceType: String
+  archivedAt: DateTime
+  createdAt: DateTime!
+  id: ID!
+  groupBySource: Boolean!
+  creator: User
+  issue: Issue!
+  originalIssue: Issue
+  externalUserCreator: ExternalUser
+}
+
+type AttachmentConnection {
+  nodes: [Attachment!]!
+  pageInfo: PageInfo!
 }
 
 type Comment {
@@ -444,6 +494,11 @@ type Issue {
   state: WorkflowState!
   labels(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: IssueLabelFilter): IssueLabelConnection!
   comments(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: CommentFilter): CommentConnection!
+  relations(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): IssueRelationConnection!
+  inverseRelations(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): IssueRelationConnection!
+  children(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: IssueFilter): IssueConnection!
+  attachments(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, url: String, filter: AttachmentFilter): AttachmentConnection!
+  releases(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: ReleaseFilter): ReleaseConnection!
 }
 
 type IssueConnection {
@@ -470,6 +525,21 @@ type IssueLabel {
 
 type IssueLabelConnection {
   nodes: [IssueLabel!]!
+  pageInfo: PageInfo!
+}
+
+type IssueRelation {
+  updatedAt: DateTime!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  type: String!
+  id: ID!
+  issue: Issue!
+  relatedIssue: Issue!
+}
+
+type IssueRelationConnection {
+  nodes: [IssueRelation!]!
   pageInfo: PageInfo!
 }
 
@@ -560,6 +630,54 @@ type Reaction {
   issue: Issue
   projectUpdate: ProjectUpdate
   user: User
+}
+
+type Release {
+  trashed: Boolean
+  issueCount: Float!
+  commitSha: String
+  url: String!
+  currentProgress: JSONObject!
+  description: String
+  targetDate: TimelessDate
+  startDate: TimelessDate
+  progressHistory: JSONObject!
+  updatedAt: DateTime!
+  name: String!
+  slugId: String!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  startedAt: DateTime
+  autoArchivedAt: DateTime
+  canceledAt: DateTime
+  completedAt: DateTime
+  id: ID!
+  version: String
+  releaseNotes: [ReleaseNote!]!
+  stage: ReleaseStage
+  pipeline: ReleasePipeline
+  creator: User
+}
+
+type ReleaseConnection {
+  nodes: [Release!]!
+  pageInfo: PageInfo!
+}
+
+type ReleaseNote {
+  generationStatus: String
+  url: String!
+  updatedAt: DateTime!
+  releaseCount: Float!
+  slugId: String!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  id: ID!
+  title: String
+  documentContent: DocumentContent
+  firstRelease: Release
+  lastRelease: Release
+  pipeline: ReleasePipeline
 }
 
 type SyncedExternalThread {

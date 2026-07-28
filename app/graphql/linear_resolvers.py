@@ -182,6 +182,16 @@ def _match_label(node: dict, spec) -> bool:
     return _match_fields(spec, {"name": node["name"]})
 
 
+def _match_attachment(node: dict, spec) -> bool:
+    return _match_fields(spec, {"id": node["id"], "title": node["title"], "url": node["url"],
+                                "subtitle": node["subtitle"], "sourceType": node["sourceType"]})
+
+
+def _match_release(node: dict, spec) -> bool:
+    return _match_fields(spec, {"id": node["id"], "name": node["name"],
+                                "slugId": node["slugId"]})
+
+
 # --- shared shapes ------------------------------------------------------------------
 
 def _ts(value) -> str | None:
@@ -301,6 +311,43 @@ def _label(name: str, ts: str) -> dict:
 def _label_nodes(row) -> list[dict]:
     ts = synth.rfc3339(row["created_ts"])
     return [_label(name, ts) for name in _labels(row)]
+
+
+def _attachment(row, info) -> dict:
+    ts = synth.rfc3339(row["created_ts"])
+    return {"id": synth.linear_attachment_id(row["id"]), "title": row["title"],
+            "url": row["url"], "subtitle": row["subtitle"], "sourceType": row["source_type"],
+            "metadata": {}, "source": None, "bodyData": None, "groupBySource": False,
+            "createdAt": ts, "updatedAt": ts, "archivedAt": None,
+            "creator": None, "externalUserCreator": None, "originalIssue": None,
+            "_doc_id": row["doc_id"]}
+
+
+def _relation(row, info) -> dict:
+    ts = synth.rfc3339(row["created_ts"])
+    return {"id": synth.linear_relation_id(row["id"]), "type": row["type"],
+            "createdAt": ts, "updatedAt": ts, "archivedAt": None,
+            "_from": row["from_doc_id"], "_to": row["to_doc_id"]}
+
+
+def _release(name: str | None, info) -> dict | None:
+    """A ``Release``. The corpus knows a release only by name, so the fields Linear declares
+    non-null take neutral values — empty progress, zero issueCount — rather than invented
+    burndown data, exactly as ``_project`` does."""
+    if not name:
+        return None
+    slug = synth.hnum("linear-release:" + name, 0, 8).__format__("08x")
+    created = synth.rfc3339(synth.epoch("linear-release:" + name))
+    return {
+        "id": synth.linear_release_id(name), "name": name, "slugId": slug,
+        "url": f"https://linear.app/{_org(info)}/release/{slug}",
+        "issueCount": 0.0, "currentProgress": {}, "progressHistory": {},
+        "createdAt": created, "updatedAt": created,
+        "description": None, "version": None, "commitSha": None, "trashed": None,
+        "startDate": None, "targetDate": None, "startedAt": None, "completedAt": None,
+        "canceledAt": None, "autoArchivedAt": None, "archivedAt": None,
+        "releaseNotes": [], "stage": None, "pipeline": None, "creator": None,
+    }
 
 
 def _team_counts(info) -> dict[str, int]:
@@ -612,6 +659,30 @@ def resolve_issue_label(_root, info, id) -> dict:
     return _label(name, synth.rfc3339(synth.epoch("linear-label:" + name)))
 
 
+def resolve_release(_root, info, id) -> dict:
+    return _release(_by_id(info, "release_index", id, "Release", kind="release"), info)
+
+
+def resolve_attachment(_root, info, id) -> dict:
+    """Attachments live in their own table, so this resolves by row id and scopes on the parent
+    issue rather than going through the name-keyed reverse index the other roots use."""
+    ctx = _ctx(info)
+    row = store.linear_attachment_by_id(ctx["conn"], str(id), visible_ids=ctx["visible_ids"])
+    if row is None:
+        raise GraphQLError(
+            f"Entity not found: Attachment - Could not find referenced Attachment. id={id}")
+    return _attachment(row, info)
+
+
+def resolve_issue_relation(_root, info, id) -> dict:
+    ctx = _ctx(info)
+    row = store.linear_relation_by_id(ctx["conn"], str(id), visible_ids=ctx["visible_ids"])
+    if row is None:
+        raise GraphQLError(
+            f"Entity not found: IssueRelation - Could not find referenced IssueRelation. id={id}")
+    return _relation(row, info)
+
+
 def resolve_viewer(_root, info) -> dict:
     """The authenticated identity. The admin/service token is not a person in the corpus, so it
     reports as an app user — true, and it keeps the non-null contract."""
@@ -663,6 +734,96 @@ def resolve_issue_parent(issue, info):
     return _issue(row, info) if row is not None else None
 
 
+def resolve_issue_children(issue, info, first=None, after=None, last=None, before=None,
+                           filter=None, **_ignored) -> dict:
+    """``Issue.children`` — the exact inverse of ``Issue.parent``, read off the ``parent_doc_id``
+    resolved at import. Not a join on ``identifier``: bench keys repeat, so that would attach one
+    issue's children to every issue sharing its key."""
+    ctx = _ctx(info)
+    conn, visible = ctx["conn"], ctx["visible_ids"]
+    offset, limit, floor = _slice(first, after, last, before)
+    doc_id = issue["_row"]["doc_id"]
+    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter))
+    if offset is None:
+        offset = _from_end(None, limit, floor, len(store.linear_children(
+            conn, doc_id, visible_ids=visible, limit=PAGE_MAX, prefilter=prefilter)))
+    rows = store.linear_children(conn, doc_id, visible_ids=visible, limit=limit + 1,
+                                 offset=offset, prefilter=prefilter)
+    rows, has_next = _page(rows, limit)
+    return _connection([_issue(r, info) for r in rows], offset, has_next)
+
+
+def _relations_page(issue, info, *, inverse, first, after, last, before) -> dict:
+    ctx = _ctx(info)
+    conn, visible = ctx["conn"], ctx["visible_ids"]
+    offset, limit, floor = _slice(first, after, last, before)
+    doc_id = issue["_row"]["doc_id"]
+    if offset is None:
+        offset = _from_end(None, limit, floor, len(store.linear_relations(
+            conn, doc_id, inverse=inverse, visible_ids=visible, limit=PAGE_MAX)))
+    rows = store.linear_relations(conn, doc_id, inverse=inverse, visible_ids=visible,
+                                  limit=limit + 1, offset=offset)
+    rows, has_next = _page(rows, limit)
+    return _connection([_relation(r, info) for r in rows], offset, has_next)
+
+
+def resolve_issue_relations(issue, info, first=None, after=None, last=None, before=None,
+                            **_ignored) -> dict:
+    return _relations_page(issue, info, inverse=False, first=first, after=after, last=last,
+                           before=before)
+
+
+def resolve_issue_inverse_relations(issue, info, first=None, after=None, last=None, before=None,
+                                    **_ignored) -> dict:
+    return _relations_page(issue, info, inverse=True, first=first, after=after, last=last,
+                           before=before)
+
+
+def resolve_relation_issue(relation, info) -> dict:
+    return _issue_by_doc_id(info, relation["_from"])
+
+
+def resolve_relation_related_issue(relation, info) -> dict:
+    return _issue_by_doc_id(info, relation["_to"])
+
+
+def _issue_by_doc_id(info, doc_id):
+    """Both ends of a relation are declared non-null, and `linear_relations` already ACL-filtered
+    on the far end — so this only re-reads the row, and a miss means the ACL changed under us."""
+    ctx = _ctx(info)
+    row = store.get_document(ctx["conn"], "linear", doc_id, visible_ids=ctx["visible_ids"])
+    if row is None:
+        raise GraphQLError("Entity not found: Issue - Could not find referenced Issue.")
+    return _issue(row, info)
+
+
+def resolve_issue_attachments(issue, info, first=None, after=None, last=None, before=None,
+                              url=None, filter=None, **_ignored) -> dict:
+    ctx = _ctx(info)
+    conn, visible = ctx["conn"], ctx["visible_ids"]
+    offset, limit, floor = _slice(first, after, last, before)
+    doc_id = issue["_row"]["doc_id"]
+    nodes = [_attachment(r, info) for r in
+             store.linear_attachments(conn, doc_id, visible_ids=visible, limit=PAGE_MAX, url=url)]
+    nodes = [n for n in nodes if _match_attachment(n, filter)]
+    offset = _from_end(offset, limit, floor, len(nodes))
+    return _connection(nodes[offset:offset + limit], offset, offset + limit < len(nodes))
+
+
+def resolve_attachment_issue(attachment, info) -> dict:
+    return _issue_by_doc_id(info, attachment["_doc_id"])
+
+
+def resolve_issue_releases(issue, info, first=None, after=None, last=None, before=None,
+                           filter=None, **_ignored) -> dict:
+    """An issue names at most one release in the corpus, but Linear models it as a connection."""
+    offset, limit, floor = _slice(first, after, last, before)
+    rel = _release(issue["_row"]["release"], info)
+    nodes = [n for n in ([rel] if rel else []) if _match_release(n, filter)]
+    offset = _from_end(offset, limit, floor, len(nodes))
+    return _connection(nodes[offset:offset + limit], offset, offset + limit < len(nodes))
+
+
 def resolve_issue_labels(issue, info, first=None, after=None, last=None, before=None,
                          filter=None, **_ignored) -> dict:
     """Labels are a JSON column on the issue, so the whole set is already in hand; the page is a
@@ -687,10 +848,19 @@ RESOLVERS = {
         "project": resolve_project,
         "issueLabel": resolve_issue_label,
         "cycle": resolve_cycle,
+        "release": resolve_release,
+        "attachment": resolve_attachment,
+        "issueRelation": resolve_issue_relation,
     },
     "Team": {"issues": resolve_team_issues, "issueCount": resolve_team_issue_count},
     "Issue": {"comments": resolve_issue_comments, "labels": resolve_issue_labels,
-              "parent": resolve_issue_parent},
+              "parent": resolve_issue_parent, "children": resolve_issue_children,
+              "relations": resolve_issue_relations,
+              "inverseRelations": resolve_issue_inverse_relations,
+              "attachments": resolve_issue_attachments, "releases": resolve_issue_releases},
+    "IssueRelation": {"issue": resolve_relation_issue,
+                      "relatedIssue": resolve_relation_related_issue},
+    "Attachment": {"issue": resolve_attachment_issue},
 }
 
 

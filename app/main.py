@@ -1,4 +1,4 @@
-"""FastAPI app hosting all six vendor mocks under path prefixes.
+"""FastAPI app hosting every vendor mock under path prefixes.
 
 Startup opens the read-only SQLite DB, loads the ACL/token map, and builds reverse
 indexes (issue number / Jira key / Confluence id -> doc_id) for O(1) get-by-id.
@@ -20,11 +20,13 @@ from app import openapi, store, synth
 from app.acl import Acl
 from app.config import get_settings
 from app.oauth import Oauth
-from app.routers import atlassian, github, google, hubspot, notion, oauth, s3, slack
+from app.routers import atlassian, github, google, hubspot, linear, notion, oauth, s3, slack
 
 
 def _build_index(conn) -> dict:
-    idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}, "s3": {}, "hubspot": {}}
+    idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}, "s3": {}, "hubspot": {},
+           "linear": {}, "linear_teams": {}, "linear_users": {}, "linear_states": {},
+           "linear_projects": {}, "linear_cycles": {}, "linear_labels": {}}
     # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
     # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container "
@@ -44,6 +46,39 @@ def _build_index(conn) -> dict:
     # speak them, so one index resolves either back to a doc_id.
     for r in conn.execute(f"SELECT doc_id FROM {store.table('hubspot')}"):
         idx["hubspot"][synth.hubspot_record_id(r["doc_id"])] = r["doc_id"]
+    # Linear's `issue(id:)` accepts the UUID *or* the human identifier (ENG-123), and `team(id:)`
+    # the team UUID or its key — so one dict per entity resolves either spelling back to the row.
+    # The bench's identifiers are NOT unique (5,055 keys repeat) and two containers can reduce to
+    # one team key, so both use setdefault: the first row in doc_id/name order wins and the
+    # mapping stays stable across restarts, while the UUID form always addresses a row exactly.
+    # Exactly (doc_id, identifier), in that order: idx_linear_doc_ident covers it, so this is an
+    # index-only scan and never touches the wide issue rows.
+    for r in conn.execute(f"SELECT doc_id, identifier FROM {store.table('linear')} "
+                          f"ORDER BY doc_id"):
+        idx["linear"][synth.linear_id(r["doc_id"])] = r["doc_id"]
+        if r["identifier"]:
+            idx["linear"].setdefault(r["identifier"], r["doc_id"])
+    for r in store.list_containers(conn, "linear"):
+        idx["linear_teams"][synth.linear_team_id(r["name"])] = r["name"]
+        idx["linear_teams"].setdefault(synth.linear_team_key(r["name"]), r["name"])
+        # A mock affordance on top of the two real spellings: the container's own name. Costs
+        # nothing and saves a caller from having to derive `ENG` from `engineering` by hand.
+        idx["linear_teams"].setdefault(r["name"], r["name"])
+    # `@linear/sdk` resolves an issue's relations LAZILY: `await issue.state` issues a fresh
+    # `workflowState(id: <uuid>)`. Those uuids are one-way hashes of a name, so the only way to
+    # answer is a reverse map built here. Each source list is a DISTINCT over one column (see
+    # store.linear_distinct_values), so this is a handful of scans of one table, not per-row work.
+    distinct = store.linear_distinct_values(conn)
+    for email, display in distinct["users"]:
+        idx["linear_users"][synth.linear_user_id(email)] = (email, display)
+    for team, name in distinct["states"]:
+        idx["linear_states"][synth.linear_state_id(name, team)] = (team, name)
+    for name in distinct["projects"]:
+        idx["linear_projects"][synth.linear_project_id(name)] = name
+    for team, name in distinct["cycles"]:
+        idx["linear_cycles"][synth.linear_cycle_id(name, team)] = (team, name)
+    for name in distinct["labels"]:
+        idx["linear_labels"][synth.linear_label_id(name)] = name
     return idx
 
 
@@ -245,3 +280,4 @@ app.include_router(atlassian.router)
 app.include_router(notion.router)
 app.include_router(s3.router)
 app.include_router(hubspot.router)
+app.include_router(linear.router)

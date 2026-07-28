@@ -1939,3 +1939,209 @@ def test_mock_openapi_spec_endpoint(client):
     assert ids and len(ids) == len(set(ids)), "served spec must have unique operationIds (bridge-ready)"
     assert client.get("/_mock/openapi/s3").status_code == 404  # SigV4 — intentionally no bridge
     assert client.get("/_mock/openapi/nope").status_code == 404
+
+
+# --- Linear (GraphQL) -------------------------------------------------------------
+# Linear is GraphQL-only, so there is no REST surface to crawl. What matters instead is that the
+# schema answers what real clients ask for: the LlamaIndex reader's exact field set, `@linear/sdk`'s
+# by-id relation roots, and Linear's own error/status split. (The TypeScript SDK itself is
+# exercised by the Node CI job — pytest cannot drive `@linear/sdk`.)
+
+def gql(client, query, headers, **variables):
+    body = {"query": query}
+    if variables:
+        body["variables"] = variables
+    return client.post("/linear/graphql", json=body, headers=headers)
+
+
+def linear_user_token(tokens, email):
+    return next(u["token"] for u in tokens["users"] if u["email"] == email)
+
+
+def lit(value) -> str:
+    """A GraphQL string literal. GraphQL only accepts DOUBLE quotes, so Python's %r (single
+    quotes) is a syntax error on the wire — json.dumps produces the right thing."""
+    return json.dumps(str(value))
+
+
+# The exact selection `llama-index-readers-linear` sends, and every field its `load_data()`
+# dereferences by subscript. A KeyError on any of them is the failure this guards.
+READER_QUERY = """
+query Team($id: String!) {
+  team(id: $id) {
+    issues {
+      nodes {
+        id title description createdAt updatedAt archivedAt autoArchivedAt autoClosedAt
+        branchName canceledAt completedAt dueDate estimate
+        creator { name } assignee { name } state { name } project { name }
+        labels { nodes { name } }
+      }
+    }
+  }
+}
+"""
+
+
+def test_linear_reader_field_set_all_resolves(client, admin_h):
+    r = gql(client, READER_QUERY, admin_h, id="ENG")
+    assert r.status_code == 200
+    assert "errors" not in r.json(), r.json().get("errors")
+    nodes = r.json()["data"]["team"]["issues"]["nodes"]
+    assert nodes
+    for issue in nodes:
+        # Present as KEYS even when null — the reader subscripts every one of them.
+        for field in ("id", "title", "description", "createdAt", "updatedAt", "archivedAt",
+                      "autoArchivedAt", "autoClosedAt", "branchName", "canceledAt",
+                      "completedAt", "dueDate", "estimate"):
+            assert field in issue, field
+        assert issue["labels"]["nodes"] is not None
+    by_id = {i["title"]: i for i in nodes}
+    rl = by_id["Rate limiter drops bursts under 50ms"]
+    assert rl["creator"]["name"] and rl["assignee"]["name"] == "Bob Stone"
+    assert rl["state"]["name"] == "In Progress"
+    assert rl["project"]["name"] == "runtime-stability"
+    assert {label["name"] for label in rl["labels"]["nodes"]} == {"bug", "gateway"}
+    assert rl["estimate"] == 5
+    assert rl["dueDate"] == "2026-03-15"
+
+
+def test_linear_issue_by_uuid_and_by_identifier(client, admin_h):
+    by_key = gql(client, '{ issue(id: "ENG-101") { id identifier title } }', admin_h)
+    issue = by_key.json()["data"]["issue"]
+    assert issue["identifier"] == "ENG-101"
+    by_uuid = gql(client, "{ issue(id: %s) { identifier } }" % lit(issue["id"]), admin_h)
+    assert by_uuid.json()["data"]["issue"]["identifier"] == "ENG-101"
+
+
+def test_linear_missing_issue_is_a_field_error_not_a_400(client, admin_h):
+    """Linear declares `issue` non-null, so a miss nulls `data` and reports an error — but the
+    request itself was fine, so the status stays 200."""
+    r = gql(client, '{ issue(id: "NOPE-1") { identifier } }', admin_h)
+    assert r.status_code == 200
+    assert r.json()["data"] is None
+    assert "Entity not found" in r.json()["errors"][0]["message"]
+
+
+def test_linear_team_resolves_by_key_and_uuid(client, admin_h):
+    key = gql(client, '{ team(id: "ENG") { id key name } }', admin_h).json()["data"]["team"]
+    assert (key["key"], key["name"]) == ("ENG", "engineering")
+    assert gql(client, "{ team(id: %s) { key } }" % lit(key["id"]),
+               admin_h).json()["data"]["team"]["key"] == "ENG"
+
+
+def test_linear_team_issue_count_is_the_visible_count(client, admin_h):
+    r = gql(client, "{ teams { nodes { key issueCount } } }", admin_h)
+    counts = {t["key"]: t["issueCount"] for t in r.json()["data"]["teams"]["nodes"]}
+    assert counts == {"ENG": 3, "DES": 1}
+
+
+def test_linear_state_type_is_linears_category(client, admin_h):
+    r = gql(client, "{ issues { nodes { identifier state { name type } } } }", admin_h)
+    types = {n["identifier"]: n["state"]["type"] for n in r.json()["data"]["issues"]["nodes"]}
+    assert types == {"ENG-101": "started", "ENG-102": "completed",
+                     "DES-77": "started", "ENG-103": "backlog"}
+
+
+def test_linear_priority_is_linears_numeric_scale(client, admin_h):
+    r = gql(client, "{ issues { nodes { identifier priority priorityLabel } } }", admin_h)
+    got = {n["identifier"]: (n["priority"], n["priorityLabel"])
+           for n in r.json()["data"]["issues"]["nodes"]}
+    # The corpus writes P0-P3; the API serves Linear's own 0-4 scale (1 = most urgent).
+    assert got["ENG-102"] == (1, "Urgent")
+    assert got["ENG-101"] == (2, "High")
+    assert got["DES-77"] == (3, "Medium")
+    assert got["ENG-103"] == (4, "Low")
+
+
+def test_linear_comments_connection_on_an_issue(client, admin_h):
+    r = gql(client, '{ issue(id: "ENG-101") { comments { nodes { body user { email } } } } }',
+            admin_h)
+    nodes = r.json()["data"]["issue"]["comments"]["nodes"]
+    assert [c["body"] for c in nodes] == ["Reproduced with a burst test.", "Fix is in review."]
+    assert nodes[0]["user"]["email"] == "bob@acme.com"
+
+
+def test_linear_by_id_relation_roots_answer(client, admin_h):
+    """`@linear/sdk` resolves relations lazily — `await issue.state` fires `workflowState(id:)`
+    rather than reading the value off the issue it already has. Without these roots every
+    relation accessor in the SDK fails."""
+    issue = gql(client, '{ issue(id: "ENG-101") { state { id } assignee { id } project { id } '
+                        'cycle { id } labels { nodes { id } } } }',
+                admin_h).json()["data"]["issue"]
+    assert gql(client, "{ workflowState(id: %s) { name team { key } } }" % lit(issue["state"]["id"]),
+               admin_h).json()["data"]["workflowState"] == {"name": "In Progress",
+                                                            "team": {"key": "ENG"}}
+    assert gql(client, "{ user(id: %s) { email } }" % lit(issue["assignee"]["id"]),
+               admin_h).json()["data"]["user"]["email"] == "bob@acme.com"
+    assert gql(client, "{ project(id: %s) { name } }" % lit(issue["project"]["id"]),
+               admin_h).json()["data"]["project"]["name"] == "runtime-stability"
+    assert gql(client, "{ cycle(id: %s) { name } }" % lit(issue["cycle"]["id"]),
+               admin_h).json()["data"]["cycle"]["name"] == "2025-W08"
+    label_id = issue["labels"]["nodes"][0]["id"]
+    assert gql(client, "{ issueLabel(id: %s) { name } }" % lit(label_id),
+               admin_h).json()["data"]["issueLabel"]["name"] in {"bug", "gateway"}
+
+
+def test_linear_workflow_states_are_per_team(client, admin_h):
+    """Two teams' identically-named states are different objects in Linear, so their ids differ.
+    The corpus has no shared state name, so assert the construction directly instead."""
+    from app import synth
+    assert synth.linear_state_id("Done", "engineering") != synth.linear_state_id("Done", "design")
+
+
+def test_linear_viewer_reports_the_authenticated_identity(client, tokens):
+    h = {"Authorization": linear_user_token(tokens, "ava@acme.com")}
+    me = gql(client, "{ viewer { email isMe } }", h).json()["data"]["viewer"]
+    assert me == {"email": "ava@acme.com", "isMe": True}
+
+
+def test_linear_content_round_trips_verbatim(client, admin_h, ro_conn):
+    """`Issue.description` is the doc's retrieval payload; it must come back byte-for-byte."""
+    stored = {r["identifier"]: r["content"]
+              for r in ro_conn.execute("SELECT identifier, content FROM linear_issues")}
+    r = gql(client, "{ issues(first: 100) { nodes { identifier description } } }", admin_h)
+    served = {n["identifier"]: n["description"] for n in r.json()["data"]["issues"]["nodes"]}
+    assert served == stored
+
+
+def test_linear_crawl_reaches_every_document(client, admin_h, ro_conn):
+    """The completeness assertion the REST crawls make, in Relay form: page with `first`/`after`
+    to exhaustion and land on exactly the stored row count."""
+    seen, cursor, guard = [], None, 0
+    while True:
+        guard += 1
+        assert guard < 50
+        after = (", after: %s" % lit(cursor)) if cursor else ""
+        page = gql(client, "{ issues(first: 2%s) { nodes { identifier } "
+                           "pageInfo { hasNextPage endCursor } } }" % after,
+                   admin_h).json()["data"]["issues"]
+        seen += [n["identifier"] for n in page["nodes"]]
+        if not page["pageInfo"]["hasNextPage"]:
+            break
+        cursor = page["pageInfo"]["endCursor"]
+    assert len(seen) == len(set(seen)) == db_count(ro_conn, "linear")
+
+
+def test_linear_introspection_reports_the_served_schema(client, admin_h):
+    r = gql(client, "{ __schema { queryType { name } mutationType { name } } "
+                    '__type(name: "Issue") { fields { name } } }', admin_h)
+    data = r.json()["data"]
+    assert data["__schema"]["queryType"]["name"] == "Query"
+    # Read-only mock: no Mutation root at all, rather than one advertising writes that fail.
+    assert data["__schema"]["mutationType"] is None
+    names = {f["name"] for f in data["__type"]["fields"]}
+    assert {"identifier", "branchName", "estimate", "dueDate", "state", "labels"} <= names
+
+
+def test_linear_malformed_document_is_a_400_with_a_graphql_envelope(client, admin_h):
+    r = gql(client, "{ issues(first: }", admin_h)
+    assert r.status_code == 400
+    body = r.json()
+    assert "detail" not in body and "data" not in body
+    assert "Syntax Error" in body["errors"][0]["message"]
+
+
+def test_linear_unauthenticated_is_401(client):
+    r = client.post("/linear/graphql", json={"query": "{ viewer { email } }"})
+    assert r.status_code == 401
+    assert r.json()["errors"][0]["message"] == "Authentication required"

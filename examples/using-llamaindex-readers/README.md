@@ -23,6 +23,7 @@ host argument directly; five hardcode the host, so a small shim in `_llamaindex.
 | Gmail | `GmailReader` | `point_gmail_at()` (wraps `googleapiclient.discovery.build`) + patches `_get_credentials` |
 | HubSpot | `HubspotReader` | `point_hubspot_at()` (rebinds `hubspot.HubSpot` to inject `host=`) |
 | Drive | `GoogleDriveReader` | `point_drive_at()` (wraps `build`) + real `service_account_key=` injection hook |
+| Linear | `LinearReader` | `patch_linear_at()` (swaps the module's `requests` for a URL-rewriting proxy) |
 
 All reads are ACL-scoped by the credential you pass (`--token`, or the admin token by default),
 exactly as against the real API.
@@ -39,6 +40,21 @@ exactly as against the real API.
   `from hubspot import HubSpot` *inside* `load_data()`, so `point_hubspot_at()` only has to rebind
   the module attribute. Note the reader returns **three** Documents — one per object type, each the
   `str()` of a list of SDK objects — not one Document per record.
+- **Linear** (`linear.py`): the hardest one to point. `LinearReader.load_data` sets
+  `graphql_endpoint = "https://api.linear.app/graphql"` as a **local variable inside the method** —
+  there is no constructor argument and no module-level constant, so the rebind-a-URL-constant
+  approach Notion uses has nothing to rebind. The only seam is the module's `import requests`,
+  which `patch_linear_at()` swaps for a proxy that rewrites Linear's host and forwards everything
+  else untouched. The query is caller-supplied (`load_data(query)`), so the script carries the
+  GraphQL document — which doubles as a readable statement of what the mock serves.
+  **A client-side bug to know about:** the reader does `issue.get("assignee", {}).get("name", "")`,
+  and a GraphQL response always *includes* a selected field — so an unassigned issue arrives as
+  `assignee: null`, `.get`'s default never applies, and the reader raises
+  `AttributeError: 'NoneType' object has no attribute 'get'`. The same holds for `project`,
+  `state` and `creator`. Real Linear returns null for those too, so this reproduces against
+  api.linear.app and no mock-side change can fix it; the example filters to issues that have an
+  assignee and a project (`filter: {assignee: {null: false}, project: {null: false}}`, evaluated
+  server-side), and `tests/test_llamaindex.py` pins the diagnosis so a fixed release is noticed.
 - **S3** (`s3.py`): `S3Reader(s3_endpoint_url=...)` points the reader itself, but whole-bucket
   loads hit a client-side fsspec/s3fs bug: `SimpleDirectoryReader`'s directory walk passes a
   `topdown` kwarg into `S3FileSystem._ls()`, which doesn't accept it, raising `TypeError`. The bug

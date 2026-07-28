@@ -34,6 +34,7 @@ SOURCE_TABLE = {
     "notion": "notion_pages",
     "s3": "s3_objects",
     "hubspot": "hubspot_objects",
+    "linear": "linear_issues",
 }
 
 
@@ -50,6 +51,7 @@ COMMENT_TABLE = {
     "confluence": "confluence_comments",
     "github": "github_comments",
     "notion": "notion_comments",
+    "linear": "linear_comments",
 }
 
 
@@ -73,6 +75,9 @@ GROUPING = {
     # (contacts, companies, deals, …) and supports custom objects, so the object type *is* the
     # grouping unit and the thing an ACL group hangs off.
     "hubspot": ("hubspot_object_types", "object_type"),
+    # Linear's own container is the team: `data.team.issues` is how both the API and the
+    # official clients reach issues, and an issue's identifier prefix (ENG-123) is the team key.
+    "linear": ("linear_teams", "team"),
 }
 
 
@@ -226,6 +231,48 @@ CREATE TABLE IF NOT EXISTS hubspot_associations (
 );
 CREATE INDEX IF NOT EXISTS idx_hubspot_assoc_from ON hubspot_associations(from_doc_id, to_type);
 
+-- ── Linear: issues + their comments. Columns keep LINEAR's vocabulary, not Jira's — `state`
+-- (not status), `estimate` (not story points), `branch_name` (branchName), `identifier` — so the
+-- served payload can't drift toward the wrong vendor's model even though the two are close.
+-- `priority` is Linear's own 0-4 integer (0 none, 1 urgent … 4 low), NOT the corpus's "P1"
+-- string: the importer maps onto the API's scale, the way load_hubspot maps onto real HubSpot
+-- property names. `priorityLabel` is derived from it at serve time.
+CREATE TABLE IF NOT EXISTS linear_issues (
+    doc_id TEXT PRIMARY KEY, team TEXT NOT NULL, author_email TEXT NOT NULL,
+    title TEXT NOT NULL, content TEXT NOT NULL,
+    identifier TEXT, state TEXT, priority INTEGER, estimate INTEGER, labels TEXT,
+    project TEXT, cycle TEXT, branch_name TEXT, due_date TEXT,
+    created_ts INTEGER NOT NULL, updated_ts INTEGER,
+    archived_ts INTEGER, auto_archived_ts INTEGER, auto_closed_ts INTEGER,
+    canceled_ts INTEGER, completed_ts INTEGER, started_ts INTEGER,
+    assignee_email TEXT, assignee_display TEXT, owner_display TEXT
+);
+-- (team, doc_id) rather than team alone: every read here is "one team, ordered by doc_id" —
+-- the Relay connection pages that way — so putting the ordering column in the index makes a
+-- page a range seek instead of a temp b-tree re-sort of the whole team (same lesson as
+-- idx_hubspot_type_doc). ENG alone is ~23k rows.
+CREATE INDEX IF NOT EXISTS idx_linear_team_doc ON linear_issues(team, doc_id);
+CREATE INDEX IF NOT EXISTS idx_linear_created_ts ON linear_issues(created_ts);
+CREATE INDEX IF NOT EXISTS idx_linear_state ON linear_issues(state);
+-- `issue(id: "ENG-123")` resolves an identifier straight to its row; the bench's keys are NOT
+-- unique (5,055 of them repeat), so this is a lookup index, never a unique constraint.
+CREATE INDEX IF NOT EXISTS idx_linear_identifier ON linear_issues(identifier);
+-- COVERING index for the startup reverse-index build (app.main._build_index), which reads
+-- (doc_id, identifier) for every issue. Without it that query walks the doc_id primary-key index
+-- and then fetches each wide row (the `content` column is a full issue description) from a
+-- scattered table page: 5.6s for 35k rows on the 8GB bench DB, i.e. essentially the whole server
+-- startup. As an index-only scan it is ~40ms.
+CREATE INDEX IF NOT EXISTS idx_linear_doc_ident ON linear_issues(doc_id, identifier);
+
+CREATE TABLE IF NOT EXISTS linear_comments (
+    id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_linear_comments_doc ON linear_comments(doc_id, seq);
+-- `Query.comments` pages the whole corpus ordered by time; without this the ORDER BY
+-- re-sorts all 165k bench comments in a temp b-tree on every page.
+CREATE INDEX IF NOT EXISTS idx_linear_comments_ts ON linear_comments(created_ts, id);
+
 -- ── shared relationship tables (keyed by doc_id / names) ──
 -- ── per-service grouping tables (name of the grouping unit + its owning ACL group) ──
 CREATE TABLE IF NOT EXISTS slack_channels    (channel TEXT PRIMARY KEY, group_id TEXT);
@@ -237,6 +284,7 @@ CREATE TABLE IF NOT EXISTS confluence_spaces (space   TEXT PRIMARY KEY, group_id
 CREATE TABLE IF NOT EXISTS notion_teamspaces (teamspace TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS s3_buckets        (bucket  TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS hubspot_object_types (object_type TEXT PRIMARY KEY, group_id TEXT);
+CREATE TABLE IF NOT EXISTS linear_teams      (team    TEXT PRIMARY KEY, group_id TEXT);
 
 CREATE TABLE IF NOT EXISTS principals (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, display_name TEXT, email TEXT
@@ -435,6 +483,175 @@ def list_hubspot_objects(conn, object_type, *, after_doc_id=None, visible_ids=No
     sql += clause + " ORDER BY doc_id LIMIT ?"
     params += cparams + [limit]
     return conn.execute(sql, params).fetchall()
+
+
+# --- Linear: issues, their comments, and the identifier lookup ---------------------
+# Linear pages a Relay connection, and the mock's `after` is the same opaque offset cursor every
+# other source's page token is (see app/pagination.py), so these take an offset. The ORDER BY is
+# always total — the sort column plus `doc_id` as the tiebreak — because an offset page over a
+# non-total order can silently repeat or skip a row between pages.
+
+# GraphQL `orderBy` value -> the column it sorts on. Linear pages newest-first by default, so the
+# caller asks for DESC; `doc_id` breaks ties into a stable total order either way.
+LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": "updated_ts"}
+
+
+def _linear_order(order_by: str | None, descending: bool) -> str:
+    col = LINEAR_ORDER_COLUMNS.get(order_by or "")
+    if col is None:
+        return "doc_id"
+    direction = "DESC" if descending else "ASC"
+    # NULL updated_ts sorts last on DESC, which is where an issue with no recorded edit belongs.
+    return f"{col} {direction}, doc_id"
+
+
+def list_linear_issues(conn, team=None, *, visible_ids=None, limit=50, offset=0,
+                       order_by=None, descending=True, prefilter=None) -> list[sqlite3.Row]:
+    """One page of Linear issues, optionally scoped to a team.
+
+    ``prefilter`` is an optional ``(sql_fragment, params)`` the resolver has established as a
+    *necessary* condition for a match, so pushing it into SQL can only remove rows the caller
+    would have rejected anyway — it exists so an `issues(filter:)` query is an indexed scan
+    rather than a full materialize-then-filter in Python.
+    """
+    sql = "SELECT * FROM linear_issues WHERE 1=1"
+    params: list = []
+    if team is not None:
+        sql += " AND team = ?"
+        params.append(team)
+    if prefilter:
+        frag, fparams = prefilter
+        sql += f" AND {frag}"
+        params += fparams
+    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    sql += clause + f" ORDER BY {_linear_order(order_by, descending)} LIMIT ? OFFSET ?"
+    params += cparams + [limit, offset]
+    return conn.execute(sql, params).fetchall()
+
+
+def count_linear_issues(conn, team=None, *, visible_ids=None, prefilter=None) -> int:
+    """Total matching issues — what ``pageInfo.hasNextPage`` is decided against."""
+    sql = "SELECT COUNT(*) FROM linear_issues WHERE 1=1"
+    params: list = []
+    if team is not None:
+        sql += " AND team = ?"
+        params.append(team)
+    if prefilter:
+        frag, fparams = prefilter
+        sql += f" AND {frag}"
+        params += fparams
+    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    return conn.execute(sql + clause, params + cparams).fetchone()[0]
+
+
+def linear_issue_by_identifier(conn, identifier, visible_ids=None) -> sqlite3.Row | None:
+    """Resolve a human identifier (``ENG-123``) to its issue. The bench's keys are not unique
+    (5,055 repeat), so this deliberately returns the first by ``doc_id`` rather than pretending
+    the lookup is unambiguous — the UUID form of ``issue(id:)`` is the exact one."""
+    sql = "SELECT * FROM linear_issues WHERE identifier = ?"
+    params: list = [identifier]
+    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    return conn.execute(sql + clause + " ORDER BY doc_id LIMIT 1", params + cparams).fetchone()
+
+
+def list_linear_comments(conn, *, doc_id=None, visible_ids=None, limit=50, offset=0,
+                         prefilter=None) -> list[sqlite3.Row]:
+    """Comments on one issue, or across the corpus when ``doc_id`` is None (``Query.comments``).
+
+    A comment row carries no ACL grant of its own; visibility is the parent issue's, so the ACL
+    is applied to ``linear_issues`` through a join rather than to the comment table."""
+    # The join exists ONLY to reach the parent issue's ACL, so an admin read (visible_ids None)
+    # skips it: over 165k bench comments the join cost ~40ms per page for nothing.
+    join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = c.doc_id"
+    sql = f"SELECT c.* FROM linear_comments c{join} WHERE 1=1"
+    params: list = []
+    if doc_id is not None:
+        sql += " AND c.doc_id = ?"
+        params.append(doc_id)
+    if prefilter:
+        frag, fparams = prefilter
+        sql += f" AND {frag}"
+        params += fparams
+    clause, cparams = _acl_clause("i", visible_ids)
+    sql += clause + " ORDER BY c.created_ts, c.id LIMIT ? OFFSET ?"
+    return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
+
+
+def count_linear_comments(conn, *, doc_id=None, visible_ids=None, prefilter=None) -> int:
+    join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = c.doc_id"
+    sql = f"SELECT COUNT(*) FROM linear_comments c{join} WHERE 1=1"
+    params: list = []
+    if doc_id is not None:
+        sql += " AND c.doc_id = ?"
+        params.append(doc_id)
+    if prefilter:
+        frag, fparams = prefilter
+        sql += f" AND {frag}"
+        params += fparams
+    clause, cparams = _acl_clause("i", visible_ids)
+    return conn.execute(sql + clause, params + cparams).fetchone()[0]
+
+
+def linear_distinct_values(conn) -> dict[str, list]:
+    """The distinct entity names Linear's by-id roots have to resolve back to.
+
+    ``@linear/sdk``'s relation accessors are lazy — ``await issue.state`` fires a fresh
+    ``workflowState(id: <uuid>)`` query — and those uuids are one-way hashes of a name, so the app
+    builds a reverse index at startup (see ``app.main._build_index``). Everything here is a
+    ``DISTINCT`` over one column of ``linear_issues``: a handful of states and teams, a few
+    thousand projects and people. Labels come out of the JSON column via ``json_each``.
+
+    Users are returned as ``(email, display_name)`` pairs so a user reached by id shows the same
+    name as one reached inline on an issue.
+    """
+    def col(name):
+        return [r[0] for r in conn.execute(
+            f"SELECT DISTINCT {name} FROM linear_issues WHERE {name} IS NOT NULL AND {name} != ''")]
+
+    def per_team(name):
+        # Workflow states and cycles are per-team entities in Linear, so their reverse map is
+        # keyed on the (team, name) pair the id was derived from.
+        return [tuple(r) for r in conn.execute(
+            f"SELECT DISTINCT team, {name} FROM linear_issues "
+            f"WHERE {name} IS NOT NULL AND {name} != ''")]
+
+    people: dict[str, str | None] = {}
+    for email_col, name_col in (("author_email", "owner_display"),
+                                ("assignee_email", "assignee_display")):
+        for email, display in conn.execute(
+                f"SELECT DISTINCT {email_col}, {name_col} FROM linear_issues "
+                f"WHERE {email_col} IS NOT NULL AND {email_col} != ''"):
+            # Keep the first NON-EMPTY display name: a person can appear as an author with no
+            # recorded name and as an assignee with one, and the named form must win whichever
+            # order the two passes see them in.
+            people[email] = display or people.get(email)
+    return {
+        "states": per_team("state"),
+        "projects": col("project"),
+        "cycles": per_team("cycle"),
+        "labels": [r[0] for r in conn.execute(
+            "SELECT DISTINCT value FROM linear_issues, json_each(COALESCE(labels, '[]'))")],
+        "users": sorted(people.items()),
+    }
+
+
+def linear_team_has_visible(conn, team, visible_ids=None) -> bool:
+    """Whether the caller can see ANY issue in a team — a ``LIMIT 1`` existence check that stops
+    at the first visible row, so deciding which teams to surface costs a few cheap probes instead
+    of an ACL-filtered ``GROUP BY`` over every issue in the corpus. Same shape as
+    :func:`drive_folder_has_visible`."""
+    clause, params = _acl_clause("linear_issues", visible_ids)
+    return conn.execute(f"SELECT 1 FROM linear_issues WHERE team = ?{clause} LIMIT 1",
+                        [team, *params]).fetchone() is not None
+
+
+def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:
+    """team -> visible issue count, in one grouped scan — ``Team.issueCount`` for a whole page of
+    teams without a COUNT(*) per team."""
+    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    rows = conn.execute(
+        f"SELECT team, COUNT(*) FROM linear_issues WHERE 1=1{clause} GROUP BY team", cparams)
+    return {r[0]: r[1] for r in rows}
 
 
 def hubspot_associations(conn, from_doc_id, to_type, *, after_to_doc_id=None, visible_ids=None,

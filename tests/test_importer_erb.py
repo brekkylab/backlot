@@ -44,7 +44,7 @@ def test_derive_title_content_list_field():
 
 def test_supported_sources():
     assert erb.SUPPORTED == ("slack", "gmail", "google_drive", "github", "jira", "confluence",
-                             "hubspot")
+                             "hubspot", "linear")
 
 
 def test_erb_sources_are_registered_in_the_store():
@@ -771,3 +771,182 @@ def test_qst_0001_owner_is_maya_chen(tmp_path):
                   params={"fields": "owners(displayName)"},
                   headers={"Authorization": "Bearer admin-service-token"}).json()
         assert r["owners"][0]["displayName"] == "Maya Chen"
+
+
+# ---------------------------------------------------------------------------
+# Linear: the bench record -> the API-faithful schema
+# ---------------------------------------------------------------------------
+# The mapping is where the bench and the API disagree, so these assert the translations rather
+# than the pass-throughs: P0-P3 -> Linear's 0-4, `status` -> `state`, a state category -> the
+# lifecycle timestamps the bench never records, and the three comment shapes.
+
+# A record shaped exactly like the bench's, per `sources/linear/agents.md`.
+LINEAR_RAW = {
+    "title_field_name": "title", "content_field_names": ["description", "comments"],
+    "dataset_doc_uuid": "dsid_lin", "key": "ENG-49121", "team": "engineering",
+    "title": "Variant-aware GPU allocation", "status": "In Progress", "priority": "P1",
+    "created_at": "2025-02-18", "updated_at": "2025-03-04",
+    "creator": "Amaya Chen", "assignee": "Diego Martinez",
+    "project": "runtime-memory-2025", "cycle": "2025-W08", "estimate": "5",
+    "due_date": "2025-03-15", "labels": ["kv-cache", "long-context"],
+    "description": "Long-context configs push peak GPU memory into fragile regions.",
+    "comments": ["2025-02-18 - Created: initial hypothesis captured.",
+                 "2025-02-20 Diego Martinez: ran baseline traces."],
+}
+
+
+def _load_linear(raw, dsid="dsid_lin"):
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    erb.load_linear(conn, dsid, raw, P)
+    row = conn.execute("SELECT * FROM linear_issues WHERE doc_id = ?", (dsid,)).fetchone()
+    comments = conn.execute(
+        "SELECT * FROM linear_comments WHERE doc_id = ? ORDER BY seq", (dsid,)).fetchall()
+    return conn, row, comments
+
+
+def test_linear_maps_the_bench_record_onto_the_api_schema():
+    _conn_, row, _c = _load_linear(LINEAR_RAW)
+    assert row["team"] == "engineering"
+    assert row["identifier"] == "ENG-49121"      # the bench key IS the Linear identifier
+    assert row["state"] == "In Progress"          # `status` -> Linear's `state`
+    assert row["priority"] == 2                   # P1 -> Linear's scale (1 is most urgent)
+    assert row["estimate"] == 5                   # the bench writes it as a string
+    assert row["project"] == "runtime-memory-2025"
+    assert row["cycle"] == "2025-W08"
+    assert row["due_date"] == "2025-03-15"
+    assert json.loads(row["labels"]) == ["kv-cache", "long-context"]
+    assert row["author_email"] == "amaya.chen@redwoodinference.com"
+    assert row["owner_display"] == "Amaya Chen"
+    assert row["assignee_email"] == "diego.martinez@redwoodinference.com"
+    assert row["assignee_display"] == "Diego Martinez"
+    assert row["title"] == "Variant-aware GPU allocation"
+    assert "fragile regions" in row["content"]
+
+
+def test_linear_container_is_the_team_field_not_the_directory():
+    """~2,750 bench files sit in a directory that disagrees with their own `team`, and two
+    directories (business-ops, misc-chores) name no team at all. The field is the authority."""
+    conn, row, _c = _load_linear({**LINEAR_RAW, "team": "design"})
+    assert row["team"] == "design"
+    assert conn.execute("SELECT team FROM linear_teams").fetchone()["team"] == "design"
+
+
+def test_linear_team_maps_onto_a_real_directory_department():
+    """The ACL group has to have members, so the three bench teams must reconcile to dept slugs."""
+    P = Principals([{"name": "A B", "email": "a.b@x.com", "dept_slug": "engineering"},
+                    {"name": "C D", "email": "c.d@x.com", "dept_slug": "product"},
+                    {"name": "E F", "email": "e.f@x.com", "dept_slug": "design-ux"}], "x.com")
+    assert P.canonical_group("engineering") == "engineering"
+    assert P.canonical_group("product-management") == "product"
+    assert P.canonical_group("design") == "design-ux"
+
+
+def test_linear_branch_name_is_derived_when_the_bench_has_none():
+    _conn_, row, _c = _load_linear(LINEAR_RAW)
+    assert row["branch_name"] == (
+        "diegomartinez/eng-49121-variant-aware-gpu-allocation")
+
+
+def test_linear_completed_timestamp_derives_from_the_state_category():
+    """The bench records no lifecycle timestamps, but a state IS one: Linear sets completedAt the
+    moment an issue enters a completed state."""
+    _conn_, row, _c = _load_linear({**LINEAR_RAW, "status": "Done"})
+    assert row["completed_ts"] == erb.to_epoch("2025-03-04")
+    assert row["canceled_ts"] is None
+
+
+def test_linear_canceled_timestamp_derives_from_the_state_category():
+    _conn_, row, _c = _load_linear({**LINEAR_RAW, "status": "Canceled"})
+    assert row["canceled_ts"] == erb.to_epoch("2025-03-04")
+    assert row["completed_ts"] is None
+
+
+def test_linear_open_issue_has_no_lifecycle_timestamps():
+    _conn_, row, _c = _load_linear({**LINEAR_RAW, "status": "Backlog"})
+    assert row["completed_ts"] is None and row["canceled_ts"] is None
+    assert row["archived_ts"] is None and row["auto_closed_ts"] is None
+
+
+def test_linear_unassigned_is_not_turned_into_a_person():
+    """"unassigned" is a literal value in the bench (11 docs). Linear stores no assignee for an
+    unassigned issue, and minting a user called "unassigned" would pollute the roster."""
+    _conn_, row, _c = _load_linear({**LINEAR_RAW, "assignee": "unassigned"})
+    assert row["assignee_email"] is None and row["assignee_display"] is None
+
+
+def test_linear_synthesizes_an_identifier_when_the_key_is_missing():
+    _conn_, row, _c = _load_linear({k: v for k, v in LINEAR_RAW.items() if k != "key"})
+    assert row["identifier"].startswith("ENG-")
+
+
+def test_linear_comment_shapes_are_all_parsed():
+    """The three shapes measured across all 165,223 bench comments."""
+    parsed = erb.parse_linear_comments([
+        "2025-02-18 - Created: initial hypothesis captured.",       # 54.6%
+        "2026-03-05 Anjali Rao: Updated acceptance criteria.",       # 38.0%
+        "2025-12-18 (Naomi Feldman): Include the audit log.",        # the parenthesised variant
+        "Implementation notes: use model heuristics.",               # 7.2% undated
+    ])
+    assert [c["date"] for c in parsed] == ["2025-02-18", "2026-03-05", "2025-12-18", None]
+    assert [c["name"] for c in parsed] == [None, "Anjali Rao", "Naomi Feldman", None]
+    assert parsed[0]["body"] == "Created: initial hypothesis captured."
+    assert parsed[3]["body"] == "Implementation notes: use model heuristics."
+
+
+def test_linear_comment_clock_prefix_is_not_read_as_an_author():
+    """`2025-02-18 09:15: rolled back` must not parse as author "09" with the body truncated to
+    "15: rolled back" — that both invents a person and loses text."""
+    parsed = erb.parse_linear_comments(["2025-02-18 09:15: rolled back"])
+    assert parsed[0]["name"] is None
+    assert parsed[0]["body"] == "09:15: rolled back"
+
+
+def test_linear_comment_string_instead_of_a_list_is_tolerated():
+    """29 bench docs carry `comments` as a bare string."""
+    assert len(erb.parse_linear_comments("2025-02-18 - one note")) == 1
+
+
+def test_linear_comments_become_rows_with_real_dates():
+    _conn_, _row, comments = _load_linear(LINEAR_RAW)
+    assert [c["seq"] for c in comments] == [1, 2]
+    assert comments[0]["created_ts"] == erb.to_epoch("2025-02-18")
+    assert comments[1]["created_ts"] == erb.to_epoch("2025-02-20")
+
+
+def test_linear_comment_author_is_matched_never_minted():
+    """The `Name:` segment is far noisier than Jira's — 16,108 distinct strings, mostly labels
+    like "Design review" that `_person_like` would happily accept. A comment therefore matches
+    against the EXISTING roster and stays unattributed otherwise."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    raw = {**LINEAR_RAW, "creator": "Amaya Chen", "assignee": "unassigned",
+           "comments": ["2025-02-20 Amaya Chen: known person, resolved from the issue's creator.",
+                        "2025-02-21 Design review: a label, not a person."]}
+    erb.load_linear(conn, "dsid_c", raw, P)
+    rows = conn.execute(
+        "SELECT author_email FROM linear_comments WHERE doc_id='dsid_c' ORDER BY seq").fetchall()
+    assert rows[0]["author_email"] == "amaya.chen@redwoodinference.com"
+    assert rows[1]["author_email"] is None
+    assert "design.review@redwoodinference.com" not in P.users
+
+
+def test_linear_undated_comment_stays_on_the_issues_clock():
+    """created_ts is NOT NULL, and a random per-comment time would shuffle the thread."""
+    _conn_, row, comments = _load_linear({**LINEAR_RAW, "comments": ["no date here", "nor here"]})
+    assert [c["created_ts"] for c in comments] == [row["created_ts"] + 1, row["created_ts"] + 2]
+
+
+def test_linear_priority_normalisation():
+    assert [erb.linear_priority(v) for v in ("P0", "P1", "P2", "P3")] == [1, 2, 3, 4]
+    assert [erb.linear_priority(v) for v in ("Urgent", "High", "Medium", "Low")] == [1, 2, 3, 4]
+    assert erb.linear_priority(3) == 3                 # already Linear's scale
+    assert erb.linear_priority("unrecognised") == 0    # Linear's "No priority"
+    assert erb.linear_priority(None) is None
+
+
+def test_linear_grants_flow_through_the_shared_container_path():
+    """Linear needs no branch in `grants_for`: its container maps to a group like github/jira."""
+    bundle = {"owner": "a@x.com", "people": ["b@x.com"], "group": "engineering", "org": "acme"}
+    assert set(grants_for("linear", bundle)) == {
+        ("user", "a@x.com"), ("user", "b@x.com"), ("group", "engineering")}

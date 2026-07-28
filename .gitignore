@@ -16,6 +16,11 @@ docs/superpowers/
 # Agent-created git worktrees (a full checkout each) — never committed.
 .claude/worktrees/
 
+# Node deps + build output for the one TypeScript example (examples/using-official-sdk/linear/).
+node_modules/
+*.tsbuildinfo
+/examples/using-official-sdk/linear/dist/
+
 # Editor / OS cruft.
 .DS_Store
 .idea/

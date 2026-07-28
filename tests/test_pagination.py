@@ -1,3 +1,5 @@
+import pytest
+
 from app import pagination as pg
 
 
@@ -58,3 +60,72 @@ def test_github_link_header():
 def test_confluence_next_link():
     assert pg.confluence_next_link("/wiki/rest/api/content", {"type": "page"}, 0, 25, 25, 60) is not None
     assert pg.confluence_next_link("/wiki/rest/api/content", {}, 50, 25, 10, 60) is None
+
+
+# --- Linear: Relay connections ----------------------------------------------------
+# Linear pages a Relay connection (`first`/`after` -> `{nodes, pageInfo}`) rather than the
+# offset/token schemes above. The cursor underneath is this module's opaque offset cursor, so
+# what is Linear-specific is the slice arithmetic and the pageInfo flags.
+
+from graphql import GraphQLError  # noqa: E402
+
+from app.graphql.linear_resolvers import (  # noqa: E402
+    PAGE_DEFAULT, PAGE_MAX, _connection, _page, _slice)
+
+
+def test_linear_forward_slice_defaults_to_linears_page_size():
+    assert _slice(None, None, None, None) == (0, PAGE_DEFAULT, False)
+
+
+def test_linear_first_is_capped_at_linears_maximum():
+    assert _slice(10_000, None, None, None) == (0, PAGE_MAX, False)
+
+
+def test_linear_after_cursor_becomes_the_offset():
+    offset, limit, backward = _slice(10, pg.encode_cursor(30), None, None)
+    assert (offset, limit, backward) == (30, 10, False)
+
+
+def test_linear_backward_slice_ends_just_before_the_cursor():
+    # `before` is the offset of the first row already seen; `last: 5` is the 5 rows before it.
+    assert _slice(None, None, 5, pg.encode_cursor(20)) == (15, 5, True)
+
+
+def test_linear_backward_slice_clamps_at_the_start():
+    """Asking for more rows than exist before the cursor must not produce a negative offset or
+    re-read rows at or past the cursor."""
+    assert _slice(None, None, 10, pg.encode_cursor(3)) == (0, 3, True)
+
+
+def test_linear_both_directions_at_once_is_rejected():
+    with pytest.raises(GraphQLError):
+        _slice(5, None, 5, None)
+
+
+def test_linear_page_info_flags_the_middle_of_a_result_set():
+    page = _connection([{"id": 1}, {"id": 2}], offset=2, has_next=True)
+    assert page["pageInfo"]["hasNextPage"] is True
+    assert page["pageInfo"]["hasPreviousPage"] is True
+    assert pg.decode_cursor(page["pageInfo"]["startCursor"]) == 2
+    # endCursor is where the NEXT page starts, so it feeds straight back in as `after`.
+    assert pg.decode_cursor(page["pageInfo"]["endCursor"]) == 4
+
+
+def test_linear_page_info_terminates_on_the_last_page():
+    page = _connection([{"id": 9}], offset=9, has_next=False)
+    assert page["pageInfo"]["hasNextPage"] is False
+    assert page["pageInfo"]["hasPreviousPage"] is True
+
+
+def test_linear_limit_plus_one_probe_decides_has_next():
+    """`hasNextPage` comes from reading ONE row past the page, not from a COUNT — the schema has
+    no `totalCount`, so a count would be a full scan computed only to derive a boolean."""
+    assert _page([1, 2, 3], 2) == ([1, 2], True)     # the extra row is dropped, never served
+    assert _page([1, 2], 2) == ([1, 2], False)
+    assert _page([], 2) == ([], False)
+
+
+def test_linear_empty_page_has_no_cursors():
+    page = _connection([], offset=0, has_next=False)
+    assert page["pageInfo"] == {"hasNextPage": False, "hasPreviousPage": False,
+                                "startCursor": None, "endCursor": None}

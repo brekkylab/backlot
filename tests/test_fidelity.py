@@ -447,3 +447,99 @@ def test_list_objects_v2_delimiter_common_prefixes(live_server):
     root = _get_xml(base_url, "/s3/eng-artifacts?list-type=2&delimiter=/", settings.admin_token)
     prefixes = {cp.findtext(f"{NS}Prefix") for cp in root.iter(f"{NS}CommonPrefixes")}
     assert {"runbooks/", "design/"} <= prefixes
+
+
+# --- Linear -----------------------------------------------------------------------
+# Linear's auth is the one shape no other source in this repo uses: the personal API key is the
+# BARE `Authorization` value with no scheme, while an OAuth access token is `Bearer <token>`, and
+# the real API accepts both on the same header. Getting this wrong is silent — a stripped-scheme
+# parse would accept `Bearer <key>` and reject the bare key that every real Linear client sends.
+
+LINEAR_CORPUS = [
+    {"source_type": "linear", "doc_id": "lin-a", "team": "engineering", "group": "engineering",
+     "title": "Batching stall", "content": "A 50ms stall after compaction.",
+     "author_email": "ava@acme.com", "author_groups": ["engineering"], "visibility": "public",
+     "identifier": "ENG-9", "state": "In Progress", "priority": 2},
+]
+
+
+def _linear_client(tmp_path):
+    import os
+
+    from starlette.testclient import TestClient
+
+    from app.config import get_settings
+    from app.main import app
+
+    settings = _load(tmp_path, LINEAR_CORPUS)
+    prev = os.environ.get("MOCK_DATA_DIR")
+    os.environ["MOCK_DATA_DIR"] = str(settings.data_dir)
+    get_settings.cache_clear()
+    client = TestClient(app)
+    client.__enter__()
+
+    def close():
+        client.__exit__(None, None, None)
+        get_settings.cache_clear()
+        if prev is None:
+            os.environ.pop("MOCK_DATA_DIR", None)
+        else:
+            os.environ["MOCK_DATA_DIR"] = prev
+
+    return client, settings, close
+
+
+def _linear_identifiers(client, authorization):
+    r = client.post("/linear/graphql", json={"query": "{ issues { nodes { identifier } } }"},
+                    headers={"Authorization": authorization})
+    return r.status_code, r.json()
+
+
+def test_linear_accepts_a_bare_api_key_with_no_scheme(tmp_path):
+    """What `LinearReader` and `@linear/sdk` both send: `Authorization: <key>`, no prefix."""
+    client, settings, close = _linear_client(tmp_path)
+    try:
+        status, body = _linear_identifiers(client, settings.admin_token)
+        assert status == 200
+        assert [n["identifier"] for n in body["data"]["issues"]["nodes"]] == ["ENG-9"]
+    finally:
+        close()
+
+
+def test_linear_accepts_a_bearer_oauth_token(tmp_path):
+    """The OAuth shape, on the same header."""
+    client, settings, close = _linear_client(tmp_path)
+    try:
+        status, body = _linear_identifiers(client, f"Bearer {settings.admin_token}")
+        assert status == 200
+        assert [n["identifier"] for n in body["data"]["issues"]["nodes"]] == ["ENG-9"]
+    finally:
+        close()
+
+
+def test_linear_rejects_a_stray_scheme_rather_than_stripping_it(tmp_path):
+    """To the real API the WHOLE header value is the key, so `Token <key>` is simply a wrong key —
+    not a key with a scheme to discard. Stripping the first word would authenticate a credential
+    the real API refuses."""
+    client, settings, close = _linear_client(tmp_path)
+    try:
+        assert _linear_identifiers(client, f"Token {settings.admin_token}")[0] == 401
+    finally:
+        close()
+
+
+def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
+    """Real Linear splits these: a bad document never executed is a 400 with no `data` key, while
+    an error raised mid-execution is a 200 carrying `data` alongside `errors`."""
+    client, settings, close = _linear_client(tmp_path)
+    try:
+        h = {"Authorization": settings.admin_token}
+        bad = client.post("/linear/graphql", json={"query": "{ issues( }"}, headers=h)
+        assert bad.status_code == 400 and "data" not in bad.json()
+
+        missing = client.post("/linear/graphql",
+                              json={"query": '{ issue(id: "NOPE-1") { identifier } }'}, headers=h)
+        assert missing.status_code == 200
+        assert "data" in missing.json() and missing.json()["errors"]
+    finally:
+        close()

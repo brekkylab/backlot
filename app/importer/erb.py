@@ -36,7 +36,8 @@ from app import store, synth
 from app.config import get_settings, infer_org
 
 # ---------------------------------------------------------------- constants
-SUPPORTED = ("slack", "gmail", "google_drive", "github", "jira", "confluence", "hubspot")
+SUPPORTED = ("slack", "gmail", "google_drive", "github", "jira", "confluence", "hubspot",
+             "linear")
 
 INTERNAL_ROLES = {"owner", "author", "reviewer", "assignee", "reporter",
                   "collaborator", "participant_internal", "mailbox_owner"}
@@ -913,9 +914,173 @@ def load_slack(conn, dsid, raw, P):
             "_children": [f"{dsid}::m{seq}" for seq in range(1, len(turns))]}
 
 
+# ---------------------------------------------------------------- linear
+# The bench's Linear docs are one ticket per file, with a standard ERB envelope
+# (`title_field_name`/`content_field_names`/`dataset_doc_uuid`) plus the metadata its
+# `sources/linear/agents.md` documents: key, team, status, priority, created_at, updated_at,
+# creator, assignee, and optional project/cycle/estimate/due_date/labels.
+#
+# Two properties of the real data drive the mapping:
+#   * `key` is NOT unique — 22,729 distinct keys across 35,308 docs, one repeated 107 times — so
+#     the doc_id stays the dataset uuid and the key becomes `identifier`, which Linear does not
+#     require to be globally unique in *our* corpus even though its own product does.
+#   * the directory a file sits in disagrees with its own `team` field for ~2,750 docs (and two
+#     directories, business-ops/misc-chores, name no team at all). The `team` FIELD is the
+#     authority: its three values line up with the ENG/PM/DES identifier prefixes and each maps
+#     onto a real directory department, so the ACL group actually has members.
+
+# The bench writes P0-P3; Linear's API has a 0-4 integer scale with 1 the most urgent. Map onto
+# the API's scale (as load_hubspot maps onto real HubSpot property names) rather than serving a
+# vocabulary no Linear client understands. Labels are accepted too, for a BYO corpus that already
+# speaks Linear.
+_LINEAR_PRIORITY = {"p0": 1, "p1": 2, "p2": 3, "p3": 4,
+                    "urgent": 1, "high": 2, "medium": 3, "low": 4,
+                    "none": 0, "no priority": 0}
+
+
+def linear_priority(value) -> int | None:
+    """A bench priority -> Linear's 0-4. Unrecognized text becomes 0 ("No priority"), which is
+    what Linear itself stores for an unset priority; a missing value stays None."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value) if 0 <= int(value) <= 4 else 0
+    s = str(value).strip().lower()
+    if s.isdigit() and 0 <= int(s) <= 4:
+        return int(s)
+    return _LINEAR_PRIORITY.get(s, 0)
+
+
+def _linear_int(value) -> int | None:
+    """An estimate: the bench writes it as a numeric string, occasionally as an int, twice as
+    null. Anything non-numeric is dropped rather than coerced to 0 — a wrong estimate is worse
+    than an absent one."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
+
+
+def _linear_date(value) -> str | None:
+    """A `TimelessDate` (`YYYY-MM-DD`) for dueDate — served verbatim, since that is the scalar's
+    whole shape. Anything else is dropped."""
+    s = str(value or "").strip()
+    return s if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s) else None
+
+
+# A Linear comment in the bench is a plain string in one of three shapes, measured across all
+# 165,223 of them: `YYYY-MM-DD - body` (54.6%), `YYYY-MM-DD Name: body` (38.0%) and undated
+# (7.2%). Parsing the first two recovers a real per-comment date for 93% of them and a real
+# author for 38% — worth doing, because otherwise every comment would share the issue's clock and
+# have no author at all.
+_LINEAR_C_DASH = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s*[-–—]\s*(?P<body>.*)$", re.DOTALL)
+# The name must START WITH A LETTER. Without that, a comment whose body opens with a clock
+# ("2025-02-18 09:15: rolled back") parses as author "09" with the body truncated to "15: rolled
+# back" — losing text and inventing a person. Requiring a letter drops those to the bare-date
+# form, which keeps the whole body.
+_LINEAR_C_NAMED = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})\s+\(?(?P<name>[A-Za-zÀ-ÿ][^:\n()]{0,39}?)\)?:\s*(?P<body>.*)$",
+    re.DOTALL)
+_LINEAR_C_BARE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<body>.*)$", re.DOTALL)
+
+
+def parse_linear_comments(comments) -> list[dict]:
+    """Bench comment strings -> ``{date, name, body}``. ``date``/``name`` are None when the
+    string doesn't carry them."""
+    if isinstance(comments, str):          # 29 docs carry a single string instead of a list
+        comments = [comments]
+    out = []
+    for c in comments or []:
+        s = str(c).strip()
+        if not s:
+            continue
+        for pattern, has_name in ((_LINEAR_C_DASH, False), (_LINEAR_C_NAMED, True),
+                                  (_LINEAR_C_BARE, False)):
+            m = pattern.match(s)
+            if m:
+                out.append({"date": m.group("date"),
+                            "name": m.group("name").strip() if has_name else None,
+                            "body": m.group("body").strip()})
+                break
+        else:
+            out.append({"date": None, "name": None, "body": s})
+    return out
+
+
+def load_linear(conn, dsid, raw, P):
+    title, content = _title_content(raw)
+    team = str(raw.get("team") or "engineering")
+    group = P.canonical_group(team) or team
+    creator = raw.get("creator", "")
+    assignee = raw.get("assignee", "")
+    creator_email = P.resolve(creator, role="author", group_hint=group) if creator else None
+    # "unassigned" is a real value in the bench (11 docs); it is not a person, so it must not
+    # become one — leave the assignee null, which is what Linear stores for an unassigned issue.
+    assignee_name = assignee if str(assignee).strip().lower() != "unassigned" else ""
+    assignee_email = (P.resolve(assignee_name, role="assignee", group_hint=group)
+                      if assignee_name else None)
+    conn.execute("INSERT OR REPLACE INTO linear_teams(team, group_id) VALUES (?,?)", (team, group))
+
+    identifier = str(raw.get("key") or "").strip() or synth.linear_identifier(
+        dsid, synth.linear_team_key(team))
+    state = raw.get("status")
+    created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
+    updated = to_epoch(raw.get("updated_at"))
+    # The bench records no lifecycle timestamps, but a state IS one: Linear sets completedAt the
+    # moment an issue enters a completed state and canceledAt when it is canceled, so derive them
+    # from the state category + the last-updated clock. Everything else stays NULL rather than
+    # being invented.
+    state_type = synth.linear_state_type(state)
+    ended = updated or created
+    conn.execute(
+        "INSERT OR REPLACE INTO linear_issues(doc_id, team, author_email, title, content, "
+        "identifier, state, priority, estimate, labels, project, cycle, branch_name, due_date, "
+        "created_ts, updated_ts, completed_ts, canceled_ts, started_ts, "
+        "assignee_email, assignee_display, owner_display) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (dsid, team, creator_email or f"unknown@{P.org_domain}", title, content,
+         identifier, state, linear_priority(raw.get("priority")),
+         _linear_int(raw.get("estimate")), json.dumps(_names(raw.get("labels"))),
+         raw.get("project"), raw.get("cycle"),
+         synth.linear_branch_name(identifier, title, assignee_email),
+         _linear_date(raw.get("due_date")), created, updated,
+         ended if state_type == "completed" else None,
+         ended if state_type == "canceled" else None,
+         created if state_type in ("started", "completed") else None,
+         assignee_email, assignee_name or None, creator))
+
+    for seq, c in enumerate(parse_linear_comments(raw.get("comments")), start=1):
+        # A comment author is matched against the EXISTING roster (`display_email`), never
+        # minted with `P.resolve` the way an issue's creator/assignee is. The `Name:` segment in
+        # a Linear comment is far noisier than Jira's — 16,108 distinct strings across the
+        # corpus, most of them labels like "Design review" or "QA sign-off" that `_person_like`
+        # happily accepts as a two-token name. Minting those would add thousands of people who
+        # don't exist to `principals`. An unmatched name leaves the comment unattributed, which
+        # is both honest and a legal Linear response (`Comment.user` is nullable).
+        author = P.display_email(c["name"])[0] if c["name"] else None
+        # A comment with no date of its own sits on the issue's clock plus its position, so a
+        # thread stays ordered and created_ts is never NULL (the column is NOT NULL).
+        conn.execute(
+            "INSERT OR REPLACE INTO linear_comments(id, doc_id, seq, author_email, body, created_ts)"
+            " VALUES (?,?,?,?,?,?)",
+            (f"{dsid}::c{seq}", dsid, seq, author, c["body"],
+             to_epoch(c["date"]) or (created + seq)))
+
+    people = [creator_email, assignee_email]
+    return {"owner": creator_email, "people": [p for p in people if p], "group": group,
+            "confidentiality": None}
+
+
 _LOADERS = {"google_drive": load_drive, "github": load_github, "confluence": load_confluence,
             "jira": load_jira, "gmail": load_gmail, "slack": load_slack,
-            "hubspot": load_hubspot}
+            "hubspot": load_hubspot, "linear": load_linear}
 
 
 def load_structured(conn, records, P, settings) -> dict:

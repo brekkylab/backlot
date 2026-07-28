@@ -18,3 +18,33 @@ jobs:
       - name: Unit tests
         # e2e tests self-skip when the data DB is absent; unit tests need no data.
         run: pytest -q
+
+  # The Linear example is the only non-Python client in the repo, because `@linear/sdk` is the
+  # only client Linear publishes (there is no official Python SDK). pytest cannot drive it, so
+  # this job is what keeps it honest — an unexecuted TypeScript example rots, and the reason for
+  # writing a real example instead of a README snippet was that it gets verified. A separate job
+  # so the Python one above stays untouched; Python is still installed here because the example
+  # spawns the mock itself, exactly as the Python examples do.
+  linear-sdk-example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the mock
+        run: pip install -e .
+      - name: Install the example's dependencies
+        working-directory: examples/using-official-sdk/linear
+        run: npm install
+      - name: Typecheck
+        working-directory: examples/using-official-sdk/linear
+        run: npx tsc --noEmit
+      - name: Run the example against a mock it starts itself
+        working-directory: examples/using-official-sdk/linear
+        env:
+          PYTHON: python
+        run: npx tsx index.ts

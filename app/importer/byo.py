@@ -168,6 +168,25 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
         return {"properties": _j(ex.get("properties")),
                 "archived": (1 if ex.get("archived") else None),
                 "created_ts": created, "updated_ts": updated}
+    if src == "linear":
+        # Keys are Linear's own (camelCase `branchName`/`dueDate`, `state` not status), so a
+        # corpus written against the Linear API needs no renaming. `identifier` and `branchName`
+        # are both derivable, so an omitted one is synthesized at serve time rather than stored.
+        from app.importer.erb import linear_priority
+        return {"identifier": ex.get("identifier"), "state": ex.get("state"),
+                "priority": linear_priority(ex.get("priority")),
+                "estimate": ex.get("estimate"), "labels": _j(ex.get("labels")),
+                "project": ex.get("project"), "cycle": ex.get("cycle"),
+                "branch_name": ex.get("branchName"), "due_date": ex.get("dueDate"),
+                "created_ts": created, "updated_ts": updated,
+                "archived_ts": _epoch(ex.get("archivedAt")),
+                "auto_archived_ts": _epoch(ex.get("autoArchivedAt")),
+                "auto_closed_ts": _epoch(ex.get("autoClosedAt")),
+                "canceled_ts": _epoch(ex.get("canceledAt")),
+                "completed_ts": _epoch(ex.get("completedAt")),
+                "started_ts": _epoch(ex.get("startedAt")),
+                "assignee_email": ex.get("assignee"),
+                "assignee_display": ex.get("assigneeName")}
     return {}
 
 
@@ -296,7 +315,11 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                   "requested_reviewers", "resolution", "resolutiondate", "duedate",
                   "fix_versions", "versions", "assignee", "reporter", "minor_edit",
                   "version_message", "version_number", "properties", "icon", "cover",
-                  "key", "content_type", "size", "path", "archived"):
+                  "key", "content_type", "size", "path", "archived",
+                  # Linear (its own field names: `state` not status, camelCase timestamps)
+                  "identifier", "state", "estimate", "project", "cycle", "branchName", "dueDate",
+                  "assigneeName", "archivedAt", "autoArchivedAt", "autoClosedAt", "canceledAt",
+                  "completedAt", "startedAt"):
             if k in rec:
                 extras[k] = rec[k]
         subtype = rec.get("subtype")
@@ -351,8 +374,12 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             conn.execute(
                 f"INSERT OR REPLACE INTO {ctable}"
                 "(id, doc_id, seq, author_email, body, created_ts, reactions) VALUES (?,?,?,?,?,?,?)",
+                # A comment with no explicit time sits on the DOC's clock plus its position, not
+                # on a hash of its own id: an independent synth.epoch per comment scatters a
+                # thread across two years, so any consumer that orders by createdAt (Linear's
+                # `Issue.comments` does) would serve the thread shuffled.
                 (cid := c.get("id") or f"{doc_id}::c{j}", doc_id, j, c.get("author_email"), body,
-                 _epoch(c.get("created_ts")) or synth.epoch(cid), _j(c.get("reactions"))),
+                 _epoch(c.get("created_ts")) or (created + j), _j(c.get("reactions"))),
             )
 
         for i, rep in enumerate(replies or [], start=1):

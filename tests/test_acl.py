@@ -47,3 +47,39 @@ def test_forbidden_direct_fetch_is_hidden(db, acl, tokens):
 
 def test_admin_visible_ids_is_none(db, acl):
     assert acl.visible_ids(db, acl.resolve("admin-service-token")) is None
+
+
+# --- Linear ---------------------------------------------------------------------
+# Linear's container is the team and its grants come from the shared `grants_for` path, so what
+# needs asserting is that the GraphQL layer honours the same filter — including on the comment
+# rows, which carry no grant of their own and inherit the parent issue's.
+
+def test_linear_restricted_issue_hidden_from_nonreader(db, acl, tokens):
+    assert _visible(db, acl, tokens["ava@acme.com"], "linear") == {"lin-rl", "lin-batch", "lin-des"}
+
+
+def test_linear_restricted_issue_visible_to_its_reader(db, acl, tokens):
+    assert "lin-secret" in _visible(db, acl, tokens["hana@acme.com"], "linear")
+
+
+def test_linear_admin_sees_every_issue(db, acl):
+    assert _visible(db, acl, "admin-service-token", "linear") == {
+        "lin-rl", "lin-batch", "lin-des", "lin-secret"}
+
+
+def test_linear_comments_inherit_the_parent_issues_acl(db, acl, tokens):
+    """A comment row has no ACL grant of its own — visibility is the issue's. Without the join in
+    `list_linear_comments` a hidden issue's comments would leak through `Query.comments`."""
+    from app import store as st
+    ids = acl.visible_ids(db, acl.resolve(tokens["mia@acme.com"]))
+    # mia sees the public issues, so she sees their comments...
+    assert st.count_linear_comments(db, doc_id="lin-rl", visible_ids=ids) == 2
+    # ...but not a restricted issue's.
+    assert st.count_linear_comments(db, doc_id="lin-secret", visible_ids=ids) == 0
+
+
+def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
+    from app import store as st
+    ava = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
+    assert st.linear_team_issue_counts(db, visible_ids=ava) == {"engineering": 2, "design": 1}
+    assert st.linear_team_issue_counts(db, visible_ids=None) == {"engineering": 3, "design": 1}

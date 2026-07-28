@@ -200,6 +200,40 @@ SAMPLE = [
      "author_email": "rep@acme.com", "author_groups": ["sales"], "visibility": "public",
      "archived": True,
      "properties": {"name": "Defunct Labs", "lifecyclestage": "qualified", "employees": "12"}},
+
+    # Linear: the team is the container, so these span two of them. `lin-rl` carries the full
+    # surface the LlamaIndex reader dereferences (state/project/labels/creator/assignee/estimate/
+    # dueDate/branchName) plus comments; `lin-secret` is the hidden one the ACL tests assert on.
+    {"source_type": "linear", "doc_id": "lin-rl", "team": "engineering", "group": "engineering",
+     "title": "Rate limiter drops bursts under 50ms",
+     "content": "Token-bucket refill is off by one tick under sustained burst load.",
+     "author_email": "ava@acme.com", "author_groups": ["engineering"], "visibility": "public",
+     "identifier": "ENG-101", "state": "In Progress", "priority": "P1", "estimate": 5,
+     "labels": ["bug", "gateway"], "project": "runtime-stability", "cycle": "2025-W08",
+     "dueDate": "2026-03-15", "assignee": "bob@acme.com", "assigneeName": "Bob Stone",
+     "created": "2026-02-18T00:00:00Z", "updated": "2026-03-04T00:00:00Z",
+     "comments": [{"content": "Reproduced with a burst test.", "author_email": "bob@acme.com"},
+                  {"content": "Fix is in review.", "author_email": "ava@acme.com"}]},
+    {"source_type": "linear", "doc_id": "lin-batch", "team": "engineering",
+     "group": "engineering", "title": "Continuous batching stalls after compaction",
+     "content": "A 50ms stall when the batcher merges requests right after compaction.",
+     "author_email": "bob@acme.com", "author_groups": ["engineering"], "visibility": "public",
+     "identifier": "ENG-102", "state": "Done", "priority": "P0", "estimate": 3,
+     "labels": ["latency"], "project": "runtime-stability",
+     "completedAt": "2026-03-10T00:00:00Z",
+     "created": "2026-03-01T00:00:00Z", "updated": "2026-03-10T00:00:00Z"},
+    {"source_type": "linear", "doc_id": "lin-des", "team": "design", "group": "design",
+     "title": "Revamp field states and selects",
+     "content": "Focus rings, hover and disabled states for selects.",
+     "author_email": "mia@acme.com", "author_groups": ["design"], "visibility": "public",
+     "identifier": "DES-77", "state": "In Review", "priority": "P2", "labels": ["tokens"]},
+    # Restricted by explicit readers, so the `engineering` team keeps one owning group while the
+    # ACL tests still have a Linear issue that must stay hidden.
+    {"source_type": "linear", "doc_id": "lin-secret", "team": "engineering",
+     "group": "engineering", "title": "Rotate the signing keys",
+     "content": "Key rotation runbook — people team only.", "author_email": "hana@acme.com",
+     "author_groups": ["people"], "readers": ["hana@acme.com"],
+     "identifier": "ENG-103", "state": "Backlog", "priority": "P3"},
 ]
 
 

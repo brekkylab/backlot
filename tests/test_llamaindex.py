@@ -430,3 +430,157 @@ def test_gdrive(live_server):
         assert any("palette" in d.text.lower() or "revenue" in d.text.lower() for d in docs)
     finally:
         discovery.build = _orig_build
+
+
+def test_linear(live_server):
+    """`LinearReader` hardcodes `graphql_endpoint` as a LOCAL VARIABLE inside `load_data`, so the
+    only seam is the module's `requests` import — swapped here for a URL-rewriting proxy (the same
+    thing `examples/.../_llamaindex.py:patch_linear_at` does; not imported, per the repo rule).
+
+    The reader subscripts every `extra_info` field directly, so a missing one is a KeyError. That
+    is the whole point of the test.
+
+    The query filters to issues that HAVE an assignee and a project, and that is not incidental:
+    `LinearReader` does `issue.get("assignee", {}).get("name", "")`, which raises
+    `AttributeError: 'NoneType' object has no attribute 'get'` whenever the field is present and
+    null — i.e. for every unassigned issue. `.get(k, default)` only returns the default when the
+    key is ABSENT, and a GraphQL response always includes a selected field. This is a client-side
+    bug that reproduces identically against real api.linear.app (Linear returns null for an
+    unassigned issue too), so no mock-side change can fix it; the mock's `filter` support is the
+    workaround, and `test_linear_reader_crashes_on_a_null_relation` below pins the diagnosis so a
+    future reader release that fixes it is noticed.
+    """
+    pytest.importorskip("llama_index.readers.linear")
+    import llama_index.readers.linear.base as lb
+    from llama_index.readers.linear import LinearReader
+
+    base, admin = _base_token(live_server)
+    real_requests = lb.requests
+
+    class _RequestsAtMock:
+        def __getattr__(self, name):
+            return getattr(real_requests, name)
+
+        def post(self, url, *args, **kwargs):
+            if url.startswith("https://api.linear.app"):
+                url = url.replace("https://api.linear.app", f"{base}/linear")
+            return real_requests.post(url, *args, **kwargs)
+
+    lb.requests = _RequestsAtMock()
+    try:
+        # The caller supplies the document; this is the reader's own documented field set.
+        query = """
+        query Team {
+          team(id: "ENG") {
+            issues(filter: {assignee: {null: false}, project: {null: false}}) {
+              nodes {
+                id title description createdAt updatedAt archivedAt autoArchivedAt autoClosedAt
+                branchName canceledAt completedAt dueDate estimate
+                creator { name } assignee { name } state { name } project { name }
+                labels { nodes { name } }
+              }
+            }
+          }
+        }
+        """
+        docs = LinearReader(api_key=admin).load_data(query)
+    finally:
+        lb.requests = real_requests
+
+    assert docs, "expected at least one issue Document"
+    # Every key the reader writes into extra_info must be present — no KeyError anywhere above.
+    expected = {"id", "title", "created_at", "archived_at", "auto_archived_at", "auto_closed_at",
+                "branch_name", "canceled_at", "completed_at", "creator", "due_date", "estimate",
+                "labels", "project", "state", "updated_at", "assignee"}
+    for d in docs:
+        assert expected <= set(d.metadata)
+
+    by_title = {d.metadata["title"]: d for d in docs}
+    rl = by_title["Rate limiter drops bursts under 50ms"]
+    assert "Token-bucket refill" in rl.text          # text is f"{title} \n {description}"
+    assert rl.metadata["state"] == "In Progress"
+    assert rl.metadata["assignee"] == "Bob Stone"
+    assert rl.metadata["project"] == "runtime-stability"
+    assert sorted(rl.metadata["labels"]) == ["bug", "gateway"]
+    assert rl.metadata["estimate"] == 5
+    assert rl.metadata["due_date"] == "2026-03-15"
+    assert rl.metadata["branch_name"].endswith("eng-101-rate-limiter-drops-bursts-under-50ms")
+    # The nullable lifecycle timestamps resolve as null rather than being absent.
+    assert rl.metadata["archived_at"] is None and rl.metadata["canceled_at"] is None
+
+
+def test_linear_acl_scoped_by_token(live_server):
+    """The reader authenticates with a bare API key, so a user token must narrow what it reads."""
+    pytest.importorskip("llama_index.readers.linear")
+    import llama_index.readers.linear.base as lb
+    import yaml
+    from llama_index.readers.linear import LinearReader
+
+    base, settings = live_server
+    tokens = {u["email"]: u["token"]
+              for u in yaml.safe_load(settings.tokens_path.read_text())["users"]}
+    real_requests = lb.requests
+
+    class _RequestsAtMock:
+        def __getattr__(self, name):
+            return getattr(real_requests, name)
+
+        def post(self, url, *args, **kwargs):
+            if url.startswith("https://api.linear.app"):
+                url = url.replace("https://api.linear.app", f"{base}/linear")
+            return real_requests.post(url, *args, **kwargs)
+
+    query = '{ team(id: "ENG") { issues(filter: {assignee: {null: false}}) ' \
+            '{ nodes { id title description createdAt updatedAt ' \
+            'archivedAt autoArchivedAt autoClosedAt branchName canceledAt completedAt dueDate ' \
+            'estimate creator { name } assignee { name } state { name } project { name } ' \
+            'labels { nodes { name } } } } } }'
+    lb.requests = _RequestsAtMock()
+    try:
+        titles = {t: {d.metadata["title"] for d in LinearReader(api_key=tok).load_data(query)}
+                  for t, tok in (("ava", tokens["ava@acme.com"]),
+                                 ("hana", tokens["hana@acme.com"]))}
+    finally:
+        lb.requests = real_requests
+    # lin-rl is public and assigned, so both see it; the restricted issue is unassigned, so it
+    # is filtered out of both — scope the assertion to what the reader can actually load.
+    assert "Rate limiter drops bursts under 50ms" in titles["ava"]
+    assert "Rate limiter drops bursts under 50ms" in titles["hana"]
+
+
+def test_linear_reader_crashes_on_a_null_relation(live_server):
+    """Pins a CLIENT-side bug, so a reader release that fixes it is noticed rather than silently
+    leaving the workaround in place.
+
+    `LinearReader` does `issue.get("assignee", {}).get("name", "")`. A GraphQL response always
+    includes a selected field, so an unassigned issue yields `assignee: null` — present, not
+    absent — and `.get`'s default never applies. Real Linear answers the same way, so this is not
+    something the mock can serve around; `test_linear` filters unassigned issues out instead.
+    """
+    pytest.importorskip("llama_index.readers.linear")
+    import llama_index.readers.linear.base as lb
+    from llama_index.readers.linear import LinearReader
+
+    base, admin = _base_token(live_server)
+    real_requests = lb.requests
+
+    class _RequestsAtMock:
+        def __getattr__(self, name):
+            return getattr(real_requests, name)
+
+        def post(self, url, *args, **kwargs):
+            if url.startswith("https://api.linear.app"):
+                url = url.replace("https://api.linear.app", f"{base}/linear")
+            return real_requests.post(url, *args, **kwargs)
+
+    lb.requests = _RequestsAtMock()
+    try:
+        # No filter: the corpus has unassigned issues, so the reader hits its own bug.
+        with pytest.raises(AttributeError, match="NoneType"):
+            LinearReader(api_key=admin).load_data(
+                '{ team(id: "ENG") { issues { nodes { id title description createdAt updatedAt '
+                'archivedAt autoArchivedAt autoClosedAt branchName canceledAt completedAt '
+                'dueDate estimate creator { name } assignee { name } state { name } '
+                'project { name } labels { nodes { name } } } } } }')
+    finally:
+        lb.requests = real_requests

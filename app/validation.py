@@ -50,10 +50,21 @@ def record_errors(rec: dict) -> list[str]:
     return msgs
 
 
+def jsonl_lines(text: str) -> list[str]:
+    """Split a JSONL document into records on ``\\n`` — and ONLY on ``\\n``.
+
+    Not ``str.splitlines()``, which also breaks on U+2028/U+2029, U+0085 and the vertical tab.
+    Those are ordinary characters inside a JSON string, and JSON Lines separates records by ``\\n``,
+    so splitting on them tears one valid record into two invalid halves. Real text contains them:
+    one U+2028 shows up in the bench corpus, and it was enough to make a converted artifact fail
+    to load with "Unterminated string"."""
+    return text.split("\n")
+
+
 def validate_file(path: Path) -> list[tuple[int, str]]:
     """Return [(lineno, message), ...] for every problem in a JSONL corpus ([] == all valid)."""
     problems: list[tuple[int, str]] = []
-    for lineno, raw in enumerate(Path(path).read_text().splitlines(), 1):
+    for lineno, raw in enumerate(jsonl_lines(Path(path).read_text()), 1):
         line = raw.strip()
         if not line:
             continue

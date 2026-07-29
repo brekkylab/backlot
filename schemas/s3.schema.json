@@ -31,8 +31,11 @@
       "description": "The bucket this object belongs to (default: the source_type)."
     },
     "group": {
-      "type": "string",
-      "description": "ACL group owning the bucket (default: slug(bucket))."
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ACL group owning the bucket (default: slug(bucket)); null means the container owns no group, so nothing is group-scoped to it."
     },
     "author_email": {
       "type": "string",
@@ -40,7 +43,8 @@
       "description": "Object owner."
     },
     "author_name": {
-      "type": "string"
+      "type": "string",
+      "description": "The author's display name, used for their principal entry (this API exposes no owner display name on the document itself)."
     },
     "author_groups": {
       "type": "array",
@@ -61,7 +65,7 @@
       "items": {
         "type": "string"
       },
-      "description": "Explicit reader principals. Overrides visibility."
+      "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
     },
     "meta": {
       "type": "object"

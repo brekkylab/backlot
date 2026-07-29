@@ -26,7 +26,9 @@ if subprocess.run([sys.executable, "-m", "app.importer.byo", str(CORPUS), "--dry
     raise SystemExit("corpus is invalid")
 
 # 2. Serve it with a real mock server and keep it running until Ctrl+C.
-records = [json.loads(line) for line in CORPUS.read_text().splitlines() if line.strip()]
+# split on "\n" only, not splitlines(): JSON Lines separates records by \n, and
+# splitlines() also breaks on U+2028/U+2029 — ordinary characters inside a JSON string.
+records = [json.loads(line) for line in CORPUS.read_text().split("\n") if line.strip()]
 with mock_server(records) as mock:
     health = httpx.get(f"{mock.base_url}/health").json()
     print(f"\nserving {health['documents']} docs at {mock.base_url}")

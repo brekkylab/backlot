@@ -275,3 +275,90 @@ def test_fireflies_schema_duration_is_minutes_not_seconds():
     seconds would silently serve 60x-long meetings."""
     desc = validation.SERVICE_SCHEMAS["fireflies"]["properties"]["duration"]["description"]
     assert "MINUTES" in desc
+
+
+# --- fields that make an ERB import expressible (#17) ------------------------------
+
+def test_confluence_accepts_confidentiality_ownership_and_reviewers():
+    assert record_errors({
+        "source_type": "confluence", "space": "ENG", "title": "Runbook", "content": "c",
+        "author_email": "ava@a.com", "author_name": "Tom\u00e1s Rr\u00e9",
+        # free text, not an enum: the bench writes "restricted (finance/customer-sensitive)" too
+        "confidentiality": "restricted (customer-sensitive)", "owner_team": "engineering",
+        "reviewers": ["bob@a.com"]}) == []
+
+
+def test_drive_collaborators_and_jira_severity_squad_accepted():
+    assert record_errors({"source_type": "google_drive", "folder": "research", "title": "t",
+                          "content": "c", "collaborators": ["bob@a.com"],
+                          "author_name": "Ava Chen"}) == []
+    assert record_errors({"source_type": "jira", "project": "PAY", "title": "t", "content": "c",
+                          "severity": "Sev1", "squad": "payments-core"}) == []
+
+
+def test_slack_participants_accepted():
+    assert record_errors({"source_type": "slack", "channel": "incidents", "content": "c",
+                          "participants": ["ava", "infra-bot"]}) == []
+
+
+def test_gmail_messages_array_is_the_thread_not_slack_replies():
+    """A Gmail thread's later messages get their own array: `replies` stays Slack-only, since a
+    reply (with reactions and files) is not what a further email in a thread is."""
+    assert record_errors({
+        "source_type": "gmail", "mailbox": "ava", "title": "Retry storm", "content": "c",
+        "mailbox_owner": "Ava Chen",
+        "messages": [{"content": "On it.", "author_email": "bob@a.com", "to": "ava@a.com",
+                      "message_id": "<b@a>", "created": "2026-01-04T10:00:00Z"},
+                     # a header-only message: empty is allowed here, unlike a slack reply
+                     {"content": ""}]}) == []
+    # the key is still required
+    assert any("messages/0" in e for e in record_errors({
+        "source_type": "gmail", "title": "t", "content": "c", "messages": [{"to": "x@a.com"}]}))
+    # and `messages` is gmail's alone
+    assert any("messages" in e for e in record_errors({
+        "source_type": "slack", "content": "c", "messages": [{"content": "x"}]}))
+
+
+def test_gmail_thread_content_may_be_empty_but_no_other_source():
+    """A thread opened by a header-only message still carries its content in `messages`; every
+    other source's `content` is the document itself, so it stays non-empty."""
+    assert record_errors({"source_type": "gmail", "title": "t", "content": "",
+                          "messages": [{"content": "body"}]}) == []
+    assert any("content" in e for e in record_errors(
+        {"source_type": "confluence", "title": "t", "content": ""}))
+
+
+def test_group_may_be_null_to_mean_no_group_owns_the_container():
+    for src, extra in (("gmail", {"mailbox": "ava", "title": "t"}),
+                       ("google_drive", {"folder": "scratch", "title": "t"}),
+                       ("slack", {"channel": "incidents"})):
+        assert record_errors({"source_type": src, "content": "c", "group": None, **extra}) == [], src
+
+
+def test_readers_accept_typed_principal_ids():
+    assert record_errors({"source_type": "jira", "project": "PAY", "title": "t", "content": "c",
+                          "readers": ["user:ava@a.com", "group:eng", "org:acme"]}) == []
+
+
+# --- the shipped example corpus ---------------------------------------------------
+
+def _example_corpus():
+    from app.config import REPO_ROOT
+    return REPO_ROOT / "examples" / "bring-your-own-corpus" / "sample_corpus.jsonl"
+
+
+def test_example_corpus_is_valid():
+    """`examples/bring-your-own-corpus/sample_corpus.jsonl` is the file the walkthrough loads and
+    the one a reader copies from, and nothing validated it — `sample_corpus_path` above is the
+    in-code conftest SAMPLE, a different corpus. Read the shipped file itself."""
+    assert validate_file(_example_corpus()) == []
+
+
+def test_example_corpus_covers_every_served_source():
+    """It is documented as "a fully-populated record of every source type", so a source missing
+    from it is a broken promise — and one that goes unnoticed: `linear` was absent for two
+    releases after its loader landed, because only a human running `run.py` ever read this file."""
+    import json
+    records = [json.loads(line) for line in _example_corpus().read_text().split("\n")
+               if line.strip()]
+    assert {r["source_type"] for r in records} == set(store.SOURCE_TABLE)

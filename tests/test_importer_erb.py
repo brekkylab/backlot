@@ -1390,3 +1390,446 @@ def test_fireflies_root_level_document_lands_in_uncategorized():
 def test_fireflies_erb_path_is_not_hubspot_property_data():
     """iter_records injects `_erb_path`; it must never leak into a served field."""
     assert "_erb_path" in erb._HS_NOT_A_PROPERTY
+
+
+# ---------------------------------------------------------------------------
+# ERB -> BYO-JSONL -> DB equivalence (#17)
+#
+# The unified dataset redistributes ERB pre-converted into BYO-JSONL, which only works if
+# BYO-JSONL can hold everything the loaders above write. So the acceptance criterion is a DIFF of
+# two databases, not a spot check: import ERB directly, convert the same ERB to BYO-JSONL, import
+# THAT, and require every table to match row for row. Anything a loader can express and the BYO
+# mapping cannot shows up here as a column that differs.
+# ---------------------------------------------------------------------------
+
+RT_EMPLOYEES = {
+    "Engineering": [
+        {"name": "Ava Chen", "email": "ava.chen@redwoodinference.com", "title": "SRE"},
+        # accented + a middle initial: `_slug` would mangle both, so a converted artifact cannot
+        # recover these display names from the email — the roster sidecar has to carry them.
+        {"name": "Tomás Rré", "email": "tomas.rre@redwoodinference.com", "title": "Eng"},
+    ],
+    "Research & Applied ML": [
+        {"name": "Maya Chen", "email": "maya.chen@redwoodinference.com", "title": "RS"},
+    ],
+}
+
+# One document per source, each carrying the fields that only `erb.py` could express: confluence
+# confidentiality/owner_team/reviewers, drive collaborators + a `doc_type`, jira severity/squad,
+# a multi-message gmail thread, a multi-turn slack transcript (plus a far-future ts that only the
+# rank-based remap can place), hubspot notes, and a linear issue with a parent/relation.
+RT_DOCS = {
+    "confluence": {
+        "restricted.json": {
+            "title_field_name": "title", "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_conf_1", "title": "Gateway incident runbook",
+            "body": "Roll back the gateway, then page the on-call.",
+            "space": "ENG", "owner_team": "engineering", "author": "Ava Chen",
+            # 'Zoe Newperson' is not in the directory -> synthesized user, and a reviewer takes no
+            # group hint, so it must land in the roster with no group.
+            "reviewers": ["Maya Chen", "Zoe Newperson"],
+            "confidentiality": "restricted (customer-sensitive)",
+            "labels": ["oncall", "runbook"],
+            "created_at": "2026-01-05", "last_updated": "2026-02-01"},
+        "internal.json": {
+            "title_field_name": "title", "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_conf_2", "title": "Handbook", "body": "How we work.",
+            "space": "HANDBOOK", "author": "Maya Chen", "confidentiality": "internal",
+            "created_at": "2026-01-06"},
+    },
+    "google_drive": {
+        "model.json": {
+            "title_field_name": "title", "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_drive_1", "title": "Q1 revenue model",
+            "body": "month,revenue\nJan,120000", "team": "Research & Applied ML",
+            "drive_area": "research", "owner": "Maya Chen",
+            "collaborators": ["Ava Chen", "Ravi Other"], "doc_type": "sheet",
+            "created_at": "2026-01-02", "last_modified": "2026-01-09"},
+        "teamless.json": {
+            "title_field_name": "title", "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_drive_2", "title": "Scratch", "body": "notes",
+            "owner": "Ava Chen", "doc_type": "doc", "created_at": "2026-01-03"},
+    },
+    "jira": {
+        "latency.json": {
+            "title_field_name": "summary", "content_field_names": ["description"],
+            "dataset_doc_uuid": "dsid_jira_1", "summary": "SEV1: checkout latency spike",
+            "description": "p95 checkout latency jumped to 2.1s.", "project": "PAY",
+            "squad": "engineering", "reporter": "Ava Chen", "assignee": "Maya Chen",
+            "severity": "Sev1", "status": "In Progress", "issue_type": "Incident",
+            "priority": "P1", "labels": ["latency"], "components": ["gateway"],
+            "comments": ["2026-01-06 Maya Chen: looking now",
+                         "2026-01-07 Zoe Newperson: rolled back"],
+            "created_at": "2026-01-05", "updated_at": "2026-01-08", "due_date": "2026-02-01"},
+    },
+    "github": {
+        "pr.json": {
+            "title_field_name": "title", "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_gh_1", "title": "Fix token-bucket refill off-by-one",
+            "body": "Corrects the refill tick; adds a test.", "repo": "gateway",
+            "author": "Ava Chen", "reviewers": ["Maya Chen"], "state": "closed",
+            "labels": ["bug"], "pr_number": 42,
+            "created_at": "2026-01-03", "updated_at": "2026-01-04"},
+    },
+    "gmail": {
+        "thread.json": {
+            "title_field_name": "subject", "content_field_names": ["messages"],
+            "dataset_doc_uuid": "dsid_gm_1", "subject": "[P0] Acme Health — retry storm",
+            "mailbox_owner": "Ava Chen", "participants_internal": ["Maya Chen"],
+            "attachments": ["postmortem.pdf"], "first_email_at": "2026-01-04T09:00:00Z",
+            "messages": [
+                "From: Ava Chen <ava.chen@redwoodinference.com>\n"
+                "To: ops@redwoodinference.com\nCc: maya.chen@redwoodinference.com\n"
+                "Date: Mon, 04 Jan 2026 09:00:00 -0800\nSubject: [P0] retry storm\n"
+                "Message-ID: <a@redwood>\n\nSeeing 5xx spikes from the gateway.",
+                "From: Maya Chen <maya.chen@redwoodinference.com>\n"
+                "To: ava.chen@redwoodinference.com\n"
+                "Date: Mon, 04 Jan 2026 10:00:00 -0800\nSubject: Re: [P0] retry storm\n"
+                "Message-ID: <b@redwood>\n\nOn it — draining the bad pool.",
+                # no Date header: its time is the root's clock + an hour per position, which the
+                # converted record has to carry explicitly.
+                "From: ops-bot@redwoodinference.com\nSubject: Re: [P0] retry storm\n\nAuto-ack.",
+            ]},
+        "single.json": {
+            "title_field_name": "subject", "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_gm_2", "subject": "Lunch", "mailbox_owner": "Maya Chen",
+            "body": "Anyone up for lunch?"},
+    },
+    "slack": {
+        "thread.json": {
+            "title_field_name": "channel", "content_field_names": ["messages"],
+            "dataset_doc_uuid": "dsid_sl_1", "channel": "incidents",
+            "participants": ["ava", "maya_r", "infra-bot"], "first_message_ts": "1767513600",
+            "messages": "ava: Anyone seeing 502s from the gateway?\n"
+                        "maya_r: Looking now.\ninfra-bot: alert cleared"},
+        "future.json": {
+            "title_field_name": "file_name", "content_field_names": ["text"],
+            "dataset_doc_uuid": "dsid_sl_2", "file_name": "0001-eu.json",
+            "channel": "partnerships", "participants": ["andrea_p"],
+            # beyond the year-2035 cutoff: rank-based and order-preserving, so the remapped value
+            # cannot be recomputed from this record alone and has to be baked into the artifact.
+            "first_message_ts": "9999999999",
+            "text": "andrea_p: EU regions land next week."},
+    },
+    "hubspot": {"company.json": {**HS_RAW, "dataset_doc_uuid": "dsid_hs_1"}},
+    # Fireflies' container comes from the DIRECTORY LAYOUT, not a field, so the subdirectory here
+    # is load-bearing: `iter_records` injects `_erb_path` and the first segment is the channel.
+    "fireflies": {
+        "sales-calls/discovery.json": {
+            "title_field_name": "title", "content_field_names": ["transcript"],
+            "dataset_doc_uuid": "dsid_ff_1", "title": "Acacia Loop — discovery",
+            "meeting_id": "mtg-4471", "recorded_at": "2026-02-19T15:00:00Z",
+            "duration_minutes": "42", "call_type": "discovery",
+            "redwood_owner": "Maya Chen", "redwood_attendees": ["Ava Chen"],
+            "customer_company": "Acacia Loop Services",
+            "customer_attendees": ["Dana Ruiz, CTO"],
+            "summary": "Discovery call on latency and KMS.",
+            "topics": ["latency", "kms"], "action_items": ["Maya: send pricing"],
+            # Six line formats and an auto-notes preamble whose "Date:"/"Duration:" lines look
+            # exactly like speaker lines — the parse has to agree between the two importers.
+            "transcript": "Date: 2026-02-19\nDuration: ~42 minutes\n"
+                          "[00:00] Maya Chen: Thanks for making time.\n"
+                          "00:18 - Dana Ruiz: Our p95 sits at 300ms.\n"
+                          "00:41 [Ava Chen]: We can cut that with the two-tier cache.\n"
+                          "And the gateway change lands next week.\n"
+                          "(01:05) Speaker 3: What about KMS?"},
+        "uncategorized-root.json": {
+            "title_field_name": "title", "content_field_names": ["transcript"],
+            "dataset_doc_uuid": "dsid_ff_2", "title": "Untitled sync",
+            "recorded_at": "2026-03-01T09:00:00Z",
+            # no attendees at all -> ungated parse; and a root-level file -> "uncategorized"
+            "transcript": "Speaker 1: quick sync.\nSpeaker 2: agreed."},
+    },
+    "linear": {
+        "child.json": {
+            "title_field_name": "title", "content_field_names": ["description"],
+            "dataset_doc_uuid": "dsid_lin_1", "title": "Ship the two-tier cache",
+            "description": "Cache the gateway's hot path.", "key": "ENG-7",
+            "team": "engineering", "status": "Done", "priority": "P1", "creator": "Ava Chen",
+            "assignee": "Maya Chen", "estimate": "5", "labels": ["cache"], "project": "gateway",
+            "cycle": "Cycle 41", "due_date": "2026-04-01", "release": "runtime-1.19",
+            "created_at": "2026-01-01", "updated_at": "2026-03-20",
+            "links": ["Design: https://example.com/design"],
+            "attachments": ["https://example.com/bench.zip"],
+            "comments": ["2026-02-01 - Maya Chen: rolled out to 10%", "Created: initial scope"],
+            "parent_issue": ["ENG-8"], "dependencies": ["blocks ENG-8"]},
+        "parent.json": {
+            "title_field_name": "title", "content_field_names": ["description"],
+            "dataset_doc_uuid": "dsid_lin_2", "title": "Caching epic",
+            "description": "Umbrella.", "key": "ENG-8", "team": "engineering",
+            "status": "In Progress", "priority": "P2", "creator": "Maya Chen",
+            "assignee": "unassigned", "created_at": "2026-01-01"},
+    },
+}
+
+
+def _write_generated_data(root: Path) -> Path:
+    """Materialize an ERB ``generated_data/`` tree from RT_DOCS."""
+    gen = root / "gen"
+    (gen).mkdir(parents=True, exist_ok=True)
+    (gen / "employee_directory.yaml").write_text(
+        yaml.safe_dump({"departments": RT_EMPLOYEES}))
+    for src, docs in RT_DOCS.items():
+        d = gen / "sources" / src
+        d.mkdir(parents=True, exist_ok=True)
+        for name, raw in docs.items():
+            # a name may carry a subdirectory — Fireflies' container IS the layout
+            (d / name).parent.mkdir(parents=True, exist_ok=True)
+            (d / name).write_text(json.dumps(raw))
+    return gen
+
+
+def _dump_db(path) -> dict[str, list]:
+    """Every user table as sorted row tuples, so two DBs can be compared table by table."""
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'docs_fts%' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        out = {}
+        for t in tables:
+            cols = [c[1] for c in conn.execute(f"PRAGMA table_info({t})")]
+            out[t] = sorted((tuple(r[c] for c in cols) for r in conn.execute(f"SELECT * FROM {t}")),
+                            key=repr)
+        return out
+    finally:
+        conn.close()
+
+
+def _import_erb_directly(gen: Path, data_dir: Path):
+    from app.config import Settings
+    data_dir.mkdir(parents=True, exist_ok=True)
+    settings = Settings(data_dir=data_dir)
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    erb.import_structured(settings, gen)
+    return settings
+
+
+def _import_via_byo(gen: Path, data_dir: Path, out_dir: Path):
+    from app.config import Settings
+    from app.importer import byo
+    data_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    settings = Settings(data_dir=data_dir)
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    erb.export_byo(settings, gen, out_dir)
+    byo.load(out_dir / "corpus.jsonl", settings, roster=out_dir / "roster.yaml")
+    return settings
+
+
+def test_erb_to_byo_round_trip_builds_an_equivalent_database(tmp_path):
+    """The acceptance criterion for the unified dataset: ERB -> BYO-JSONL -> DB must be
+    indistinguishable from ERB -> DB. Compared table by table, including doc_acl, principals,
+    group_members, and every per-service column."""
+    gen = _write_generated_data(tmp_path)
+    direct = _import_erb_directly(gen, tmp_path / "direct")
+    viabyo = _import_via_byo(gen, tmp_path / "viabyo", tmp_path / "artifact")
+
+    a, b = _dump_db(direct.db_path), _dump_db(viabyo.db_path)
+    assert set(a) == set(b), "table sets differ"
+    for t in sorted(a):
+        assert a[t] == b[t], (
+            f"table {t} differs\n  only in direct: {[r for r in a[t] if r not in b[t]]}\n"
+            f"  only via byo:  {[r for r in b[t] if r not in a[t]]}")
+
+
+def test_erb_to_byo_round_trip_writes_the_same_tokens(tmp_path):
+    """`tokens.yaml` is the roster a caller authenticates with, so the converted artifact has to
+    reproduce it exactly — including the rule that only the employee directory gets a token."""
+    gen = _write_generated_data(tmp_path)
+    direct = _import_erb_directly(gen, tmp_path / "direct")
+    viabyo = _import_via_byo(gen, tmp_path / "viabyo", tmp_path / "artifact")
+
+    ta = yaml.safe_load(direct.tokens_path.read_text())
+    tb = yaml.safe_load(viabyo.tokens_path.read_text())
+    assert ta["org"] == tb["org"] and ta["org_domain"] == tb["org_domain"]
+    key = lambda us: sorted((u["email"], u["name"], u["token"]) for u in us)   # noqa: E731
+    assert key(ta["users"]) == key(tb["users"])
+
+
+def test_erb_to_byo_output_validates_against_the_byo_schemas(tmp_path):
+    """--dry-run has to still catch a bad corpus, so the converted artifact must pass the very
+    same validator a hand-written corpus does — no private back door into the loader."""
+    from app.validation import validate_file
+    from app.config import Settings
+    gen = _write_generated_data(tmp_path)
+    data = tmp_path / "data"; data.mkdir()
+    settings = Settings(data_dir=data)
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    out = tmp_path / "artifact"; out.mkdir()
+    erb.export_byo(settings, gen, out)
+    assert validate_file(out / "corpus.jsonl") == []
+
+
+# ---------------------------------------------------------------------------
+# fidelity fixes the round-trip exposed
+# ---------------------------------------------------------------------------
+
+def test_byo_drive_subtypes_are_all_accepted_by_the_schema():
+    """`_drive_type` is the mock's Drive subtype vocabulary (#23), and a converted record has to
+    carry its output — so the BYO drive schema must accept every value it can produce, or an
+    artifact fails validation on a file type the importer itself created."""
+    from app.validation import record_errors
+    for doc_type, title in (("doc", "Runbook"), ("sheet", "Model"), ("slides", "Deck"),
+                            ("pdf", "MSA"), ("folder", "Deals"), (None, "Notes"),
+                            (None, "redlines.docx"), (None, "export.csv"), (None, "logo.png")):
+        raw = {"title_field_name": "title", "content_field_names": ["body"], "title": title,
+               "body": "x", **({"doc_type": doc_type} if doc_type else {})}
+        subtype, mime_type = erb._drive_type(raw, title)
+        errs = record_errors({"source_type": "google_drive", "folder": "f", "title": title,
+                             "content": "x", "subtype": subtype,
+                             **({"mime_type": mime_type} if mime_type else {})})
+        assert errs == [], f"{doc_type or title} -> subtype {subtype!r}: {errs}"
+
+
+def test_drive_folder_row_exists_even_without_a_team():
+    """A file's folder and its folder row are the same expression: a doc with no team used to be
+    filed in a folder `gdrive_folders` had no row for (group_id is nullable; the row is not)."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    erb.load_drive(conn, "dsid_nt", {"title_field_name": "title", "content_field_names": ["body"],
+                                     "title": "Scratch", "body": "x", "owner": "Ava Chen"}, P)
+    folder = conn.execute("SELECT folder FROM gdrive_files WHERE doc_id='dsid_nt'").fetchone()[0]
+    row = conn.execute("SELECT * FROM gdrive_folders WHERE folder=?", (folder,)).fetchone()
+    assert row is not None and row["group_id"] is None
+
+
+def test_unresolvable_principals_are_dropped_not_stored_as_nulls():
+    """`P.resolve` returns None for a reference that is not a person. Such a name must not hold a
+    slot in a list of principals — `requested_reviewers` is rendered per entry into a GitHub user,
+    so a null 500s the pull-request endpoint (8 bench documents carry one)."""
+    from app.routers.github import _gh_user
+    with pytest.raises(AttributeError):
+        _gh_user(None)                      # the crash the null caused
+
+    conn = _conn()
+    P = Principals([{"name": "Ava Chen", "email": "ava.chen@redwoodinference.com",
+                     "dept_slug": "engineering"}], "redwoodinference.com")
+    raw = {"title_field_name": "title", "content_field_names": ["body"], "title": "PR",
+           "body": "x", "repo": "gateway", "author": "Ava Chen",
+           # 'Customer Success Team' is a team label, not a person -> resolves to nobody
+           "reviewers": ["Ava Chen", "Customer Success Team"]}
+    erb.load_github(conn, "dsid_rv", raw, P)
+    stored = json.loads(conn.execute(
+        "SELECT requested_reviewers FROM github_items WHERE doc_id='dsid_rv'").fetchone()[0])
+    assert stored == ["ava.chen@redwoodinference.com"]
+    assert None not in stored
+
+
+def test_slack_thread_id_only_when_the_transcript_has_replies():
+    """Real Slack puts `thread_ts` on a message that is part of a thread and leaves it off a
+    standalone post — and the router reads this column to decide."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    single = {"title_field_name": "file_name", "content_field_names": ["text"],
+              "file_name": "f.json", "channel": "partnerships", "participants": ["andrea_p"],
+              "text": "andrea_p: EU regions land next week."}
+    erb.load_slack(conn, "dsid_one", single, P)
+    assert conn.execute("SELECT thread_id FROM slack_messages WHERE doc_id='dsid_one'"
+                        ).fetchone()[0] is None
+    threaded = {**single, "participants": ["andrea_p", "mike_p"],
+                "text": "andrea_p: EU regions?\nmike_p: next week."}
+    erb.load_slack(conn, "dsid_two", threaded, P)
+    assert conn.execute("SELECT thread_id FROM slack_messages WHERE doc_id='dsid_two'"
+                        ).fetchone()[0] == "dsid_two"
+    assert conn.execute("SELECT COUNT(*) FROM slack_messages WHERE thread_id='dsid_two'"
+                        ).fetchone()[0] == 2
+
+
+def test_hubspot_properties_are_stored_as_canonical_json():
+    """The stored JSON must not depend on the source file's key order, or two importers (or two
+    re-imports of a rewritten file) disagree byte for byte over identical data."""
+    conn = _conn()
+    P = Principals([], "redwoodinference.com")
+    erb.load_hubspot(conn, "dsid_a", {**HS_RAW}, P)
+    erb.load_hubspot(conn, "dsid_b", {k: HS_RAW[k] for k in reversed(list(HS_RAW))}, P)
+    a, b = (conn.execute("SELECT properties FROM hubspot_objects WHERE doc_id=?", (d,)).fetchone()[0]
+            for d in ("dsid_a", "dsid_b"))
+    assert a == b
+
+
+def test_export_byo_writes_a_roster_carrying_names_and_who_may_authenticate(tmp_path):
+    """The roster is the half of a converted artifact the records cannot hold: `_slug` is lossy, so
+    a display name is unrecoverable from an email, and only the directory may authenticate."""
+    P = Principals([{"name": "Tomás Rré", "email": "tomas.rre@redwoodinference.com",
+                     "dept_slug": "engineering"}], "redwoodinference.com")
+    # a name resolved during load that is NOT in the directory
+    P.resolve("Zoe Newperson", role="owner", group_hint="research-applied-ml")
+    P.resolve("Ravi Other", role="collaborator")
+
+    from app.config import Settings
+    settings = Settings(data_dir=tmp_path, org_name="redwood",
+                        org_domain="redwoodinference.com")
+    out = tmp_path / "roster.yaml"
+    P.write_roster(out, settings)
+    roster = yaml.safe_load(out.read_text())
+
+    assert roster["org"] == "redwood" and roster["org_domain"] == "redwoodinference.com"
+    # the directory user keeps its accented name and sits under its group
+    assert roster["departments"] == {
+        "engineering": [{"name": "Tomás Rré", "email": "tomas.rre@redwoodinference.com"}]}
+    contacts = {c["email"]: c for c in roster["contacts"]}
+    assert contacts["zoe.newperson@redwoodinference.com"]["group"] == "research-applied-ml"
+    # a collaborator takes no group hint, so it has none
+    assert "group" not in contacts["ravi.other@redwoodinference.com"]
+
+    # ...and byo reads exactly this back
+    from app.importer.byo import load_roster
+    parsed = load_roster(out)
+    assert parsed["users"]["tomas.rre@redwoodinference.com"] == {
+        "name": "Tomás Rré", "group": "engineering", "token": True}
+    assert parsed["users"]["ravi.other@redwoodinference.com"]["token"] is False
+
+
+def test_every_supported_source_has_a_byo_converter_and_a_round_trip_fixture():
+    """The converter fails SOFT — `export_byo` logs and skips a doc it cannot convert — so a source
+    added to `SUPPORTED` without a converter would silently drop every one of its documents from the
+    artifact instead of erroring. Same for the fixture: the equivalence diff above only covers what
+    the tree contains, so a source missing from RT_DOCS is a source the diff never checks."""
+    assert set(erb._BYO_CONVERTERS) == set(erb.SUPPORTED)
+    assert set(RT_DOCS) == set(erb.SUPPORTED)
+
+
+def test_export_byo_converts_every_document_it_was_given(tmp_path):
+    """The counts `export_byo` returns must account for every record, per source — the guard on the
+    soft failure above actually firing."""
+    from app.config import Settings
+    gen = _write_generated_data(tmp_path)
+    data = tmp_path / "data"; data.mkdir()
+    settings = Settings(data_dir=data)
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    out = tmp_path / "artifact"
+    counts = erb.export_byo(settings, gen, out)
+    assert counts == {src: len(docs) for src, docs in RT_DOCS.items()}
+    # and the artifact holds at least one record per document (hubspot notes add more)
+    assert sum(1 for line in (out / "corpus.jsonl").read_text().split("\n") if line.strip()) \
+        >= sum(counts.values())
+
+
+def test_grants_for_fallback_is_a_fallback_not_a_conjunction():
+    """`add("group", group) or add("org", org)` read as "group else org" and behaved as "both":
+    `add` returns None, so the right-hand side always ran."""
+    g = grants_for("gmail", {"org": "acme", "group": "eng", "owner": None, "people": []})
+    assert ("group", "eng") not in g and ("org", "acme") not in g
+    # the live fallback — a Drive file whose container has no group is org-visible, not invisible
+    assert grants_for("google_drive", {"org": "acme", "group": None, "owner": None,
+                                       "people": []}) == [("org", "acme")]
+    # ...and one that HAS a group gets exactly that, never the org too
+    assert grants_for("google_drive", {"org": "acme", "group": "eng", "owner": None,
+                                       "people": []}) == [("group", "eng")]
+
+
+def test_a_gmail_thread_with_no_participants_is_granted_to_nobody():
+    """Gmail's model is "private to the participants" — so a thread that resolved none of them has
+    nobody to grant to, and an org fallback would publish a private thread to the whole company.
+    3 of the bench's ~121k threads land here, and the org grant was their ONLY grant."""
+    assert grants_for("gmail", {"org": "acme", "group": None, "owner": None, "people": []}) == []
+    # a thread that DOES name someone still grants to them
+    assert grants_for("gmail", {"org": "acme", "group": None, "owner": "ava@acme.com",
+                                "people": ["bob@acme.com"]}) == [
+        ("user", "ava@acme.com"), ("user", "bob@acme.com")]
+    # and no other source loses its scope
+    for src in ("slack", "hubspot", "fireflies"):
+        assert ("org", "acme") in grants_for(src, {"org": "acme", "group": "c", "owner": None,
+                                                  "people": []}), src

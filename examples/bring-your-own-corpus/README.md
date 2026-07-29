@@ -18,11 +18,13 @@ python examples/bring-your-own-corpus/run.py
 
 `sample_corpus.jsonl` is a runnable sample for a fictional "Acme". It deliberately fills in
 **every** field the schemas expose — `created`/`updated` on all records, plus the per-service
-fidelity fields (slack rich replies with reactions/files/edited; gmail `to`/`html`/threaded
-`in_reply_to`; drive `trashed`/`parents`; github `closed_at`/`merged_by`/`milestone`/
+fidelity fields (slack rich replies with reactions/files/edited and `participants`; gmail
+`to`/`html`/`mailbox_owner` and a `messages` thread with `in_reply_to`; drive
+`trashed`/`parents`/`collaborators`; github `closed_at`/`merged_by`/`milestone`/
 `requested_reviewers` + comment reactions; jira `assignee`/`resolution`/`resolutiondate`/
-`duedate`; confluence `version_number`/`version_message`/`minor_edit`) — so you can see that
-none of the response structure has to be synthesized: it can all be set directly from the corpus.
+`duedate`/`severity`/`squad`; confluence `version_number`/`version_message`/`minor_edit`/
+`confidentiality`/`owner_team`/`reviewers`) — so you can see that none of the response structure
+has to be synthesized: it can all be set directly from the corpus.
 
 ## Record format
 
@@ -75,6 +77,30 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   names no speaker folds into the sentence above it. Either way the two round-trip exactly,
   so full-text search and the per-sentence API can never disagree; a record with neither is
   a load error, because one of the two IS the transcript.
+- **Gmail threads:** a gmail record may carry a `messages` array — the thread's later messages,
+  this record being the first. Each is a full message with its own `author_email`, `to`/`cc`,
+  `message_id` and `created`, sharing the root's thread id and ACL. It is a separate array from
+  slack's `replies` on purpose: a threaded reply and a further email in a thread are different
+  things, and only the latter has recipients and a Message-ID of its own. A message's `content`
+  may be empty — a header-only auto-ack is still a message, and dropping it would renumber the
+  rest of the thread.
+- **Owner display name:** `author_name` is served as the document's owner, under each service's
+  own name for it — gmail uses `mailbox_owner` (a mailbox's owner is usually not the sender of a
+  given message in it) and fireflies `host_name` (the meeting's host).
+  It is stored rather than derived because a name does not survive an email address — "Tomás Rré"
+  slugs to `tomas.rre`, and there is no way back.
+- **Typed reader principals:** a `readers` entry may say what it is — `user:<email>`,
+  `group:<id>`, `org:<name>`. Unprefixed, an address is a user and anything else a group. Use the
+  typed form when a document is org-readable *and* names its owners; the shorthand cannot name the
+  org principal at all.
+- **`group: null`:** the container owns no ACL group. A real state, not a missing value — a Gmail
+  mailbox has no group scope, so inferring one from its name would invent a grantable principal.
+  An *absent* `group` still defaults to the container slug.
+- **Stating the roster:** pass `--roster roster.yaml` and `principals`/`group_members`/
+  `tokens.yaml` come from that file alone, instead of every `author_email` becoming a token-holding
+  user. That is how a corpus converted from an existing dataset carries the people it already knows
+  — including which of them are real accounts. See
+  [`schemas/README.md`](../../schemas/README.md).
 - **Timestamps:** every record accepts `created` (epoch seconds or ISO 8601) — it drives the
   Slack `ts` / Gmail `Date`+`internalDate` / Drive `createdTime` / GitHub `created_at` / Jira
   `created` / Confluence version time. Drive/GitHub/Jira/Confluence also accept `updated`

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://brekkylab.dev/schemas/github.schema.json",
-  "title": "BYO corpus record \u2014 github",
+  "title": "BYO corpus record — github",
   "description": "A GitHub issue or pull request. Title -> title, content -> body markdown. `container` is the repo name.",
   "type": "object",
   "properties": {
@@ -26,8 +26,11 @@
       "description": "The repo this document belongs to (default: the source_type)."
     },
     "group": {
-      "type": "string",
-      "description": "ACL group owning the repo (default: slug(container))."
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ACL group owning the repo (default: slug(container)); null means the container owns no group, so nothing is group-scoped to it."
     },
     "author_email": {
       "type": "string",
@@ -35,7 +38,8 @@
       "description": "Author / sender / owner."
     },
     "author_name": {
-      "type": "string"
+      "type": "string",
+      "description": "The owner's display name as the corpus writes it, served as the document's owner (a name is not recoverable from an email address)."
     },
     "author_groups": {
       "type": "array",
@@ -57,7 +61,7 @@
       "items": {
         "type": "string"
       },
-      "description": "Explicit reader principals (emails -> users, else group ids). Overrides visibility."
+      "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility."
     },
     "meta": {
       "type": "object",

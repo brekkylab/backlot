@@ -86,6 +86,7 @@ Schema (`schemas/`), then loaded.
 ```bash
 python -m app.importer.byo mycorpus.jsonl              # validate + load -> data/
 python -m app.importer.byo mycorpus.jsonl --dry-run    # validate only, no DB writes
+python -m app.importer.byo mycorpus.jsonl --roster roster.yaml   # state the principals, don't derive them
 ```
 
 ```json
@@ -93,9 +94,23 @@ python -m app.importer.byo mycorpus.jsonl --dry-run    # validate only, no DB wr
 {"source_type": "gmail", "mailbox": "ceo", "title": "Q1 board deck draft", "content": "Draft narrative for the Q1 board meeting.", "author_email": "ceo@acme.com", "to": "ava@acme.com", "readers": ["ceo@acme.com", "ava@acme.com"]}
 ```
 
-The record format (fields, ACL, Slack threads), a runnable walkthrough (`run.py`), and a sample
-corpus are in [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus/); the schemas are in
-[`schemas/README.md`](schemas/README.md).
+The record format (fields, ACL, Slack/Gmail threads), a runnable walkthrough (`run.py`), and a
+sample corpus are in [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus/); the
+schemas are in [`schemas/README.md`](schemas/README.md).
+
+The schema is expressive enough to hold an **entire existing dataset losslessly**, which is how the
+bench is redistributed in it:
+
+```bash
+python -m app.importer.erb --export-byo out/     # ERB -> out/corpus.jsonl + out/roster.yaml
+python -m app.importer.byo out/corpus.jsonl --roster out/roster.yaml
+```
+
+That produces a database *equivalent* to importing the bench directly — same rows, same column
+values, same `doc_acl`, same `tokens.yaml`, asserted as a table-by-table diff in
+`tests/test_importer_erb.py`. `roster.yaml` carries what the records cannot: display names (an
+address does not round-trip a name) and which people are real accounts rather than just document
+owners.
 
 ## Auth & tokens
 

@@ -26,27 +26,38 @@ Each line is one document:
       ],
       "created": "2026-03-01T09:00:00Z",    # optional creation time (epoch seconds or ISO 8601)
       "updated": 1740900000,                # optional modified time (drive/github/jira/confluence)
+      "author_name": "Ava Chen",            # optional display name -> the owner's served name
       "replies": [                          # slack only: threaded replies — full messages, not just text
         {"content": "on it", "author_email": "bob@acme.com",
          "reactions": [{"name": "eyes", "count": 1}]}
+      ],
+      "messages": [                         # gmail only: the thread's later messages
+        {"content": "On it.", "author_email": "ava@acme.com", "message_id": "<b@acme>"}
       ]
     }
 
-For slack, a record with a `replies` array becomes a thread: the record is the root
-message and each reply is a threaded reply (served via conversations.replies; only the
-root shows in conversations.history). Replies inherit the root's container and ACL.
+Child rows are per-source, because the child of a document means something different in each
+API: slack `replies` are threaded replies (reactions, files), gmail `messages` are further
+RFC822 messages in the thread (each with its own sender/recipients/Message-ID), fireflies
+`sentences` are utterances with a speaker and timing, and `comments` are a comment API's rows.
+In every case the record itself is the root — seq 0 — each child takes the next sequence
+number, and children inherit the root's container and ACL (slack: served via
+conversations.replies, with only the root in conversations.history).
 
 ACL rules per doc: `readers` (emails→users, else groups) win; else `private`→author only;
 `group`→the container's group; default→org-wide (everyone). Group membership is the union of
 each author's `author_groups` plus the group of every container they authored in — so a
-`group`-restricted doc is visible to authors in that container. This one script is the BYO
-counterpart to `app.importer.erb` — it builds the DB + ACL + `data/tokens.yaml` from JSONL.
+`group`-restricted doc is visible to authors in that container. Pass ``--roster`` to state the
+principals instead of deriving them from the records (see :func:`load_roster`), which is how a
+corpus converted from an existing dataset carries a roster it already knows. This one script is
+the BYO counterpart to `app.importer.erb` — it builds the DB + ACL + `data/tokens.yaml` from
+JSONL, and `erb.export_byo` writes an artifact this loads into an equivalent DB.
 
 Every record is validated against its per-service JSON Schema before loading (a bad corpus
 never half-loads). ``--dry-run`` validates the whole file and reports problems without touching
 the DB — there's no separate validate command.
 
-Usage:  python -m app.importer.byo path/to/corpus.jsonl [--append | --dry-run]
+Usage:  python -m app.importer.byo path/to/corpus.jsonl [--append | --dry-run] [--roster r.yaml]
 """
 from __future__ import annotations
 
@@ -61,7 +72,7 @@ import yaml
 
 from app import store, synth
 from app.config import Settings, get_settings, infer_org
-from app.validation import record_errors, validate_file
+from app.validation import jsonl_lines, record_errors, validate_file
 
 
 def slugify(text: str) -> str:
@@ -89,6 +100,19 @@ def _j(v):
     return json.dumps(v, sort_keys=True) if isinstance(v, (list, dict)) else v
 
 
+def _principal(pid: str) -> tuple[str, str]:
+    """A `readers` entry -> ``(principal_type, id)``.
+
+    The shorthand is unchanged — an address is a user, anything else a group — but a `user:` /
+    `group:` / `org:` prefix states the type outright. Needed because the shorthand cannot name the
+    ORG principal at all, so a document that is org-readable *and* names its owners had no
+    spelling: `readers` replaced the org grant instead of adding to it."""
+    for t in ("user", "group", "org"):
+        if pid.startswith(t + ":"):
+            return t, pid[len(t) + 1:]
+    return ("user", pid) if "@" in pid else ("group", pid)
+
+
 def _epoch(v):
     """Parse a BYO time (epoch seconds int/float, or ISO 8601 string) -> unix seconds.
 
@@ -109,27 +133,43 @@ def _epoch(v):
 
 
 def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_domain,
-                     created=None, updated=None) -> dict:
+                     created=None, updated=None, owner_display=None) -> dict:
     """Map generic BYO fields (+ meta) to the target service table's own columns.
 
     ``created``/``updated`` are pre-parsed epoch seconds (or None). Services with a
-    distinct modified time carry ``updated_ts``; slack/gmail carry only ``created_ts``."""
+    distinct modified time carry ``updated_ts``; slack/gmail carry only ``created_ts``.
+
+    ``owner_display`` is the owner's name *as the corpus wrote it*, resolved by the caller from
+    whichever field the service names it in — ``author_name`` generally, gmail's ``mailbox_owner``
+    (a mailbox's owner is not the sender of any one message in it) and fireflies' ``host_name``.
+    Every service whose table has the column takes it; slack/notion/s3 have none, since none of
+    those APIs exposes an owner display name. It is a stored column and not derived from the email
+    because a display name is not recoverable from an address: an accented or initialled name
+    ("Tomás Rré", "Aisha K. Patel") does not survive the round trip through ``<slug>@<domain>``."""
     if src == "slack":
         return {"thread_id": thread_id, "thread_seq": seq,
                 "subtype": subtype or ex.get("subtype"),
                 "reactions": _j(ex.get("reactions")), "files": _j(ex.get("files")),
-                "edited": _j(ex.get("edited")), "created_ts": created}
+                "edited": _j(ex.get("edited")), "created_ts": created,
+                # Who spoke in this conversation. Slack-only and root-only: it is the thread's
+                # cast, not a per-message field, so a reply leaves it NULL.
+                "participants": _j(ex.get("participants"))}
     if src == "gmail":
-        return {"thread_id": ex.get("thread") or doc_id, "label_ids": _j(ex.get("label_ids")),
+        # `thread` names the thread this message belongs to (default: the doc's own id), so every
+        # message of a multi-message thread shares one thread_id while carrying its own position
+        # in `thread_seq`.
+        return {"thread_id": ex.get("thread") or doc_id, "thread_seq": seq,
+                "label_ids": _j(ex.get("label_ids")),
                 "to_addr": ex.get("to"), "cc": ex.get("cc"), "bcc": ex.get("bcc"),
                 "reply_to": ex.get("reply_to"), "message_id": ex.get("message_id"),
                 "in_reply_to": ex.get("in_reply_to"), "refs": _j(ex.get("references")),
                 "attachments": _j(ex.get("attachments")), "created_ts": created,
-                "body_html": ex.get("html")}
+                "body_html": ex.get("html"), "owner_display": owner_display}
     if src == "google_drive":
         return {"subtype": subtype, "mime_type": ex.get("mime_type"), "parents": _j(ex.get("parents")),
                 "created_ts": created, "updated_ts": updated,
-                "trashed": (1 if ex.get("trashed") else None)}
+                "trashed": (1 if ex.get("trashed") else None),
+                "collaborators": _j(ex.get("collaborators")), "owner_display": owner_display}
     if src == "github":
         return {"kind": subtype or "issue", "path": ex.get("path"), "state": ex.get("state"),
                 "labels": _j(ex.get("labels")), "assignees": _j(ex.get("assignees")),
@@ -138,7 +178,8 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
                 "reactions": _j(ex.get("reactions")), "created_ts": created, "updated_ts": updated,
                 "closed_ts": _epoch(ex.get("closed_at")), "closed_by": ex.get("closed_by"),
                 "merged_by": ex.get("merged_by"), "milestone": ex.get("milestone"),
-                "requested_reviewers": _j(ex.get("requested_reviewers"))}
+                "requested_reviewers": _j(ex.get("requested_reviewers")),
+                "owner_display": owner_display}
     if src == "jira":
         return {"status": ex.get("status"), "issuetype": ex.get("issuetype"),
                 "priority": ex.get("priority"), "labels": _j(ex.get("labels")),
@@ -147,12 +188,23 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
                 "created_ts": created, "updated_ts": updated,
                 "assignee_email": ex.get("assignee"), "reporter_email": ex.get("reporter"),
                 "resolution": ex.get("resolution"), "resolution_ts": _epoch(ex.get("resolutiondate")),
-                "duedate": ex.get("duedate"), "fix_versions": _j(ex.get("fix_versions"))}
+                "duedate": ex.get("duedate"), "fix_versions": _j(ex.get("fix_versions")),
+                # `severity` is a separate axis from `priority` (how bad vs. when to fix) and
+                # `squad` is the owning team, which need not be the project's ACL group.
+                "severity": ex.get("severity"), "squad": ex.get("squad"),
+                "owner_display": owner_display}
     if src == "confluence":
         return {"subtype": subtype or "page", "parent_id": parent_id, "labels": _j(ex.get("labels")),
                 "created_ts": created, "updated_ts": updated,
                 "version_number": ex.get("version_number"), "version_message": ex.get("version_message"),
-                "minor_edit": (1 if ex.get("minor_edit") else None)}
+                "minor_edit": (1 if ex.get("minor_edit") else None),
+                # Confluence's own confidentiality label, free text and stored verbatim rather
+                # than forced into an enum: the bench writes "restricted (customer-sensitive)" and
+                # "restricted (finance/customer-sensitive)" alongside plain "internal". It is a
+                # served label only — ACL still comes from `visibility`/`readers`, so a corpus that
+                # wants a restricted page group-scoped says so there too.
+                "reviewers": _j(ex.get("reviewers")), "confidentiality": ex.get("confidentiality"),
+                "owner_team": ex.get("owner_team"), "owner_display": owner_display}
     if src == "notion":
         return {"subtype": subtype or "page", "parent_id": parent_id,
                 "properties": _j(ex.get("properties")), "icon": ex.get("icon"),
@@ -167,7 +219,8 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
         # name any property (see schemas/hubspot.schema.json).
         return {"properties": _j(ex.get("properties")),
                 "archived": (1 if ex.get("archived") else None),
-                "created_ts": created, "updated_ts": updated}
+                "created_ts": created, "updated_ts": updated,
+                "owner_display": owner_display}
     if src == "linear":
         # Keys are Linear's own (camelCase `branchName`/`dueDate`, `state` not status), so a
         # corpus written against the Linear API needs no renaming. `identifier` and `branchName`
@@ -187,6 +240,7 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
                 "started_ts": _epoch(ex.get("startedAt")),
                 "assignee_email": ex.get("assignee"),
                 "assignee_display": ex.get("assigneeName"),
+                "owner_display": owner_display,
                 # `parent` is the generic hierarchy field; for Linear it holds the parent's
                 # human identifier (ENG-123), not a doc_id, because that is how Linear and the
                 # bench both name a parent.
@@ -212,7 +266,9 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
                 "transcript_url": (ex.get("transcript_url")
                                    or synth.fireflies_transcript_url(tid)),
                 "meeting_link": ex.get("meeting_link") or synth.fireflies_meeting_link(doc_id),
-                "owner_display": ex.get("host_name")}
+                # `host_name` is where a Fireflies record names its owner; the caller resolves
+                # which field that is per service, so this branch just takes the value.
+                "owner_display": owner_display}
     return {}
 
 
@@ -242,7 +298,10 @@ def _emails(rec: dict):
     for r in rec.get("readers") or []:
         if isinstance(r, str) and "@" in r:
             yield r
-    for child in (rec.get("comments") or []) + (rec.get("sentences") or []):
+    # Every child-row array: `messages[]` is gmail's, and a thread's later messages carry senders
+    # the root does not — for a converted mail corpus that is most of the addresses in it.
+    for child in ((rec.get("comments") or []) + (rec.get("sentences") or [])
+                  + (rec.get("messages") or []) + (rec.get("replies") or [])):
         cv = child.get("author_email") if isinstance(child, dict) else None
         if isinstance(cv, str) and "@" in cv:
             yield cv
@@ -253,13 +312,55 @@ def _infer_org(records: list[dict], settings: Settings) -> tuple[str, str]:
     return infer_org((e for rec in records for e in _emails(rec)), settings)
 
 
-def load(path: Path, settings: Settings | None = None, reset: bool = True) -> dict:
+def load_roster(path) -> dict:
+    """Read a roster sidecar — the CLOSED set of principals a corpus's emails refer to.
+
+    By default the roster is derived from the corpus: every ``author_email`` becomes a user with a
+    token and a display name guessed from the address. That is right for a hand-written corpus and
+    wrong for a converted one, where the people are already known and only some of them are real
+    accounts. A roster file states them instead::
+
+        org: redwood                      # optional (default: inferred from the corpus)
+        org_domain: redwoodinference.com  # optional
+        departments:                      # authenticating users -> a bearer token each
+          Engineering:
+            - {name: Ava Chen, email: ava.chen@redwoodinference.com}
+        contacts:                         # principals with NO token (display-only)
+          - {name: Zoe Newperson, email: zoe.newperson@redwoodinference.com, group: engineering}
+
+    ``departments`` is exactly the shape of the bench's ``employee_directory.yaml``, so that file
+    is usable as a roster verbatim; a department name becomes its group id via ``slugify``.
+    ``contacts`` covers people a corpus names who are not accounts — they still own and read
+    documents, they just cannot authenticate, which is the distinction ``tokens.yaml`` draws.
+
+    With a roster supplied, `principals`, `group_members` and `tokens.yaml` come from it ALONE: a
+    record's `author_email` / `readers` are then references into it, and an address that isn't in
+    it (a Slack display handle, an outside sender) stays a plain address on the document instead of
+    silently becoming an org account with a working token.
+    """
+    data = yaml.safe_load(Path(path).read_text()) or {}
+    users: dict[str, dict] = {}
+    for dept, people in (data.get("departments") or {}).items():
+        for p in people or []:
+            users[p["email"]] = {"name": p.get("name") or _display_name(p["email"]),
+                                 "group": slugify(dept) or None, "token": True}
+    for p in data.get("contacts") or []:
+        # A contact never upgrades an account: `departments` is the authenticating roster, so a
+        # duplicated email keeps its token rather than losing it to listing order.
+        users.setdefault(p["email"], {"name": p.get("name") or _display_name(p["email"]),
+                                      "group": (slugify(p["group"]) if p.get("group") else None),
+                                      "token": False})
+    return {"org": data.get("org"), "org_domain": data.get("org_domain"), "users": users}
+
+
+def load(path: Path, settings: Settings | None = None, reset: bool = True,
+         roster: Path | None = None) -> dict:
     settings = settings or get_settings()
     if reset and settings.db_path.exists():
         settings.db_path.unlink()
     conn = store.connect_rw(settings.db_path)
 
-    lines = Path(path).read_text().splitlines()
+    lines = jsonl_lines(Path(path).read_text())
     # infer the org from the corpus (dominant email domain) before building any grants,
     # since public docs are granted to the org principal — see _infer_org.
     _scan = []
@@ -271,6 +372,14 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             except json.JSONDecodeError:
                 pass  # malformed lines are reported precisely in the main loop below
     org_name, org_domain = _infer_org(_scan, settings)
+    roster_data = load_roster(roster) if roster else None
+    closed = roster_data is not None
+    if closed:
+        # A roster states the org rather than leaving it to be guessed from the dominant author
+        # domain — which a converted corpus can get wrong, since its documents also carry outside
+        # senders and display-only handles.
+        org_name = roster_data.get("org") or org_name
+        org_domain = roster_data.get("org_domain") or org_domain
     if not reset:
         row = conn.execute("SELECT id FROM principals WHERE type='org' LIMIT 1").fetchone()
         if row:
@@ -351,23 +460,33 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
         seen.add(doc_id)
         gcol = store.grouping_col(src)
         container = str(rec.get(gcol) or src)   # channel / mailbox / folder / repo / project / space
-        group = str(rec.get("group") or slugify(container) or src)
+        # An explicit `"group": null` means the container owns NO ACL group — which is a real
+        # state, not a missing value: a Gmail mailbox has no group scope (a thread is private to
+        # its participants), so inferring one from the mailbox name would invent a grantable
+        # principal. Only an ABSENT `group` falls back to the container slug.
+        group = rec["group"] if "group" in rec else (slugify(container) or src)
+        group = str(group) if group is not None else None
         containers[(src, container)] = group
-        groups.add(group)
+        if group:
+            groups.add(group)
 
         def register(email: str | None, name: str | None = None) -> None:
-            if email:
+            # With a closed roster the principal set is the sidecar's, so a record's emails are
+            # references to it rather than declarations of new people (see `load_roster`).
+            if email and not closed:
                 users.setdefault(email, name or _display_name(email))
-                memberships.add((group, email))
+                if group:
+                    memberships.add((group, email))
 
         # `host_email` is Fireflies' own name for the doc's author, accepted so a corpus written
         # against the API needs no renaming (the generic `author_email` still works).
         author = rec.get("author_email") or (rec.get("host_email") if src == "fireflies" else None)
         register(author, rec.get("author_name") or rec.get("host_name"))
         for g in rec.get("author_groups", []):
-            groups.add(g)
-            if author:
-                memberships.add((g, author))
+            if not closed:
+                groups.add(g)
+                if author:
+                    memberships.add((g, author))
 
         # grant tuples (principal_type, principal_id), shared by the whole thread
         readers = rec.get("readers")
@@ -375,15 +494,17 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
         if readers:
             grant_types = []
             for pid in readers:
-                if "@" in pid:
-                    grant_types.append(("user", pid))
-                    users.setdefault(pid, _display_name(pid))
-                else:
-                    grant_types.append(("group", pid))
-                    groups.add(pid)
+                ptype, pval = _principal(pid)
+                grant_types.append((ptype, pval))
+                if closed:
+                    continue
+                if ptype == "user":
+                    users.setdefault(pval, _display_name(pval))
+                elif ptype == "group":
+                    groups.add(pval)
         elif vis == "private" and author:
             grant_types = [("user", author)]
-        elif vis == "group":
+        elif vis == "group" and group:
             grant_types = [("group", group)]
         else:
             grant_types = [("org", org)]
@@ -399,6 +520,10 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                   "fix_versions", "versions", "assignee", "reporter", "minor_edit",
                   "version_message", "version_number", "properties", "icon", "cover",
                   "key", "content_type", "size", "path", "archived",
+                  # confluence confidentiality/ownership, drive collaborators, jira severity/squad,
+                  # slack participants — the per-service people-and-scope fields
+                  "reviewers", "confidentiality", "owner_team", "collaborators",
+                  "severity", "squad", "participants",
                   # Linear (its own field names: `state` not status, camelCase timestamps)
                   "identifier", "estimate", "project", "cycle", "branchName", "dueDate",
                   "assigneeName", "archivedAt", "autoArchivedAt", "autoClosedAt", "canceledAt",
@@ -421,6 +546,22 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
 
         replies = rec.get("replies") if src == "slack" else None
         thread_id = doc_id if replies else None
+        # gmail's own child-row array. `replies` stays Slack-only (a Slack reply is a *reply*,
+        # with reactions and files); a Gmail thread is a sequence of full RFC822 messages, each
+        # with its own sender, recipients and Message-ID, so it gets an array that reads like one
+        # — the same per-source choice `sentences` makes for a Fireflies transcript (#15).
+        messages = rec.get("messages") if src == "gmail" else None
+        # The thread every message of this record belongs to: the record's own `thread` when it
+        # names one, else its doc_id — the SAME expression `_service_columns` applies to the root,
+        # so a record that opens a thread under an explicit id keeps its messages in it rather than
+        # splitting them into a second thread named after the root's doc_id.
+        gmail_thread = (rec.get("thread") or doc_id) if src == "gmail" else None
+        # The owner's display name as the corpus wrote it, under each service's own name for it:
+        # gmail's owner is the MAILBOX's owner (often not the sender of any one message in the
+        # thread) and fireflies' is the meeting HOST, where every other source's is the author's.
+        owner_display = {"gmail": rec.get("mailbox_owner"),
+                         "fireflies": rec.get("host_name") or rec.get("author_name")
+                         }.get(src, rec.get("author_name"))
 
         if src == "fireflies":
             # Needs the doc_id (analytics is seeded from it), so it can only run here — the
@@ -431,11 +572,11 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                 doc_id, _ff_speaker_stats(sentences), secs)
             extras["participants"] = extras.get("participants") or [
                 e for e in dict.fromkeys(s.get("author_email") for s in sentences) if e]
-            extras.setdefault("host_name", rec.get("host_name") or rec.get("author_name"))
 
-        def insert(did, email, ttl, body, seq=0, sub=None, par=None, ex=None, cts=None, uts=None):
+        def insert(did, email, ttl, body, seq=0, sub=None, par=None, ex=None, cts=None, uts=None,
+                   odisp=None):
             cols = _service_columns(src, ex or {}, sub, par, did, thread_id, seq,
-                                    org_domain, cts, uts)
+                                    org_domain, cts, uts, odisp)
             cols.update(doc_id=did, author_email=email or f"unknown@{org_domain}",
                         title=ttl, content=body)
             if src == "s3" and cols.get("size") is None:
@@ -462,7 +603,8 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             for pt, pid in grant_types:
                 grants.append((did, pt, pid))
 
-        insert(doc_id, author, title, rec["content"], 0, subtype, parent_id, extras, created, updated)
+        insert(doc_id, author, title, rec["content"], 0, subtype, parent_id, extras, created,
+               updated, owner_display)
 
         if src == "linear":
             for j, att in enumerate(rec.get("attachments") or [], start=1):
@@ -536,6 +678,32 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             insert(rep_id, rep_author, rep.get("title") or "", rep["content"], i,
                    sub=rep.get("subtype"), ex=rep, cts=rep_cts)
 
+        # A gmail thread's later messages. Each is a full message in its own right — sender,
+        # To/Cc, Message-ID, body — sharing the root's thread_id and ACL and carrying its position
+        # in `thread_seq`, which is what `users.messages.list` / `users.threads.get` page over.
+        for i, msg in enumerate(messages or [], start=1):
+            # The key is required, its value may be EMPTY: 2.3% of real thread messages are
+            # headers with no body (an auto-ack, a bare forward), and dropping those would drop
+            # messages from the middle of a thread and renumber the rest.
+            if "content" not in msg:
+                raise SystemExit(f"line {lineno}: each gmail message needs 'content'")
+            # No fallback to the ROOT's author, unlike a slack reply: a thread's messages have
+            # different senders by definition, so attributing an unattributed one to whoever
+            # opened the thread would invent a sender. It falls through to `unknown@<org_domain>`.
+            m_author = msg.get("author_email")
+            register(m_author, msg.get("author_name"))
+            msg_id = msg.get("doc_id") or f"{doc_id}::m{i}"
+            if msg_id in seen:
+                continue
+            seen.add(msg_id)
+            # Its own `created` when given, else the root's clock + an hour per position — the
+            # spread a real reply chain has, and never NULL.
+            insert(msg_id, m_author, msg.get("title") or title, msg["content"], i,
+                   # `thread` is forced to the ROOT's thread: a child must never open a thread of
+                   # its own, or `users.threads.get` would return a one-message thread.
+                   ex={**msg, "thread": gmail_thread},
+                   cts=_epoch(msg.get("created")) or (created + i * 3600))
+
     # HubSpot associations: one declaration becomes two rows, because real HubSpot exposes a link
     # from both records (with a distinct type id per direction) and a corpus author should not have
     # to write it twice.
@@ -576,17 +744,26 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                 "SELECT doc_id, identifier FROM linear_issues WHERE identifier IS NOT NULL "
                 "ORDER BY doc_id"):
             key_to_doc.setdefault(ident, did)
+        dangling = 0
         for did, pkey in conn.execute(
                 "SELECT doc_id, parent_key FROM linear_issues WHERE parent_key IS NOT NULL"
         ).fetchall():
             target = key_to_doc.get(pkey)
             if target is None:
-                raise SystemExit(
-                    f"linear issue {did}: parent {pkey!r} matches no issue in this corpus; "
-                    f"add it or drop the `parent` field")
+                # A parent names an IDENTIFIER, not a doc_id, and an identifier that is not in this
+                # corpus is a normal property of a real dataset rather than a corpus error: a slice
+                # of an issue tracker references issues outside it (24.8% of the bench's parent
+                # references do). So keep `parent_key` — it is what the corpus said — and leave
+                # `parent_doc_id` NULL, which is exactly what `Issue.parent` serving null means.
+                # `relations` stay strict by contrast: those name a doc_id, so a miss is a typo.
+                dangling += 1
+                continue
             if target != did:
                 conn.execute("UPDATE linear_issues SET parent_doc_id = ? WHERE doc_id = ?",
                              (target, did))
+        if dangling:
+            print(f"  linear: {dangling} parent reference(s) match no issue in this corpus; "
+                  f"kept as `parent` with no resolved parent issue", file=sys.stderr)
 
     # Linear relations: resolve declared targets now that every doc_id is known. A target that
     # does not exist is an error rather than a dangling relation, matching the hubspot rule.
@@ -602,6 +779,13 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             " VALUES (?,?,?,?,?)",
             (a.get("id") or f"{from_doc}::r{to_doc}", from_doc, to_doc,
              a.get("type") or "related", created_ts))
+
+    if closed:
+        # The roster IS the principal set: users, the groups they belong to, and the memberships
+        # between them. Nothing the records referenced adds to it.
+        users = {e: u["name"] for e, u in roster_data["users"].items()}
+        groups = {u["group"] for u in roster_data["users"].values() if u["group"]}
+        memberships = {(u["group"], e) for e, u in roster_data["users"].items() if u["group"]}
 
     # principals: org, groups, users
     conn.execute("INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (org, "org", org, None))
@@ -624,7 +808,12 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
         for s, ids in fts_ids.items():
             store.fts_add_docs(conn, s, ids)
 
-    users_rows = {e: {"email": e, "name": n, "token": _user_token(e)} for e, n in users.items()}
+    # Every principal is a document owner/reader; only some are ACCOUNTS. Without a roster the two
+    # sets coincide (a corpus's authors are its users); with one, `contacts` are principals with no
+    # token, so they show as owners and grantees but never authenticate.
+    tokened = users if not closed else {
+        e: u["name"] for e, u in roster_data["users"].items() if u["token"]}
+    users_rows = {e: {"email": e, "name": n, "token": _user_token(e)} for e, n in tokened.items()}
     token_org, token_domain = org_name, org_domain
     token_admin = settings.admin_token
     if not reset and settings.tokens_path.exists():
@@ -652,13 +841,16 @@ def main(argv: list[str]) -> int:
     ap.add_argument("corpus", help="path to a JSONL corpus file")
     ap.add_argument("--append", action="store_true", help="add to the existing DB instead of resetting")
     ap.add_argument("--dry-run", action="store_true", help="validate the corpus only; don't touch the DB")
+    ap.add_argument("--roster", type=Path, default=None,
+                    help="roster YAML naming the corpus's principals (see load_roster); with it, "
+                         "principals/groups/tokens come from the file instead of from the records")
     args = ap.parse_args(argv)
     corpus = Path(args.corpus)
 
     if args.dry_run:
         problems = validate_file(corpus)
         if not problems:
-            n = sum(1 for line in corpus.read_text().splitlines() if line.strip())
+            n = sum(1 for line in jsonl_lines(corpus.read_text()) if line.strip())
             print(f"OK: {n} records valid.")
             return 0
         print(f"INVALID: {len(problems)} problem(s) in {corpus}", file=sys.stderr)
@@ -667,7 +859,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     settings = get_settings()
-    res = load(corpus, settings, reset=not args.append)
+    res = load(corpus, settings, reset=not args.append, roster=args.roster)
     print(f"Loaded {res['total']} documents into {settings.db_path}")
     for src, n in sorted(res["counts"].items()):
         print(f"  {src:14s} {n}")

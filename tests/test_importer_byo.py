@@ -608,3 +608,254 @@ def test_byo_emails_includes_every_author_alias():
     # author_email still wins for every other source, and both are yielded when both are present
     assert set(_emails({"author_email": "a@x.com", "host_email": "h@x.com"})) == {"a@x.com",
                                                                                  "h@x.com"}
+
+
+# --- gmail multi-message threads ---------------------------------------------------
+
+def test_byo_gmail_thread_messages(tmp_path):
+    """A Gmail thread is N messages sharing one thread id, each with its own sender, recipients and
+    Message-ID — the shape `replies` cannot express (a reply is Slack's model, not email's)."""
+    corpus = _write(tmp_path, [
+        {"source_type": "gmail", "doc_id": "th-1", "mailbox": "ava", "title": "Retry storm",
+         "content": "Seeing 5xx.", "author_email": "ava@a.com", "to": "ops@a.com",
+         "message_id": "<a@a>", "created": "2026-01-04T09:00:00Z",
+         "mailbox_owner": "Ava Chen",
+         "messages": [
+             {"content": "On it.", "author_email": "bob@a.com", "to": "ava@a.com",
+              "message_id": "<b@a>", "created": "2026-01-04T10:00:00Z"},
+             # header-only auto-ack: a real thread contains these, so an empty body is allowed
+             {"content": "", "author_email": "bot@a.com", "title": "Re: Retry storm"},
+         ]},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        rows = store.gmail_thread(conn, "th-1")
+        assert [r["thread_seq"] for r in rows] == [0, 1, 2]
+        assert [r["doc_id"] for r in rows] == ["th-1", "th-1::m1", "th-1::m2"]
+        # every message shares the ROOT's thread id — a child must not open a thread of its own
+        assert {r["thread_id"] for r in rows} == {"th-1"}
+        assert [r["author_email"] for r in rows] == ["ava@a.com", "bob@a.com", "bot@a.com"]
+        assert [r["message_id"] for r in rows] == ["<a@a>", "<b@a>", None]
+        assert rows[2]["content"] == "" and rows[2]["title"] == "Re: Retry storm"
+        # a subject defaults to the thread's; a date-less message is an hour past the root
+        assert rows[2]["title"] != rows[1]["title"]
+        assert rows[2]["created_ts"] == rows[0]["created_ts"] + 2 * 3600
+        # the mailbox owner is served as the owner, not the sender of any one message
+        assert rows[0]["owner_display"] == "Ava Chen"
+        # children inherit the root's ACL, or a non-admin reader sees a truncated thread
+        assert store.doc_grants(conn, "th-1::m1") == store.doc_grants(conn, "th-1")
+    finally:
+        conn.close()
+
+
+def test_byo_gmail_message_requires_the_content_key(tmp_path):
+    corpus = _write(tmp_path, [
+        {"source_type": "gmail", "title": "t", "content": "c", "messages": [{"to": "x@a.com"}]}])
+    with pytest.raises(SystemExit):
+        load(corpus, Settings(data_dir=tmp_path))
+
+
+# --- per-service people/scope fields ----------------------------------------------
+
+def test_byo_per_service_people_and_scope_fields(tmp_path):
+    """The fields an ERB import writes that BYO could not: confluence confidentiality/owner_team/
+    reviewers, drive collaborators, jira severity/squad, slack participants, and the owner's
+    display name on every source whose table has one."""
+    corpus = _write(tmp_path, [
+        {"source_type": "confluence", "doc_id": "c1", "space": "ENG", "title": "Runbook",
+         "content": "x", "author_email": "ava@a.com", "author_name": "Tomás Rré",
+         "confidentiality": "restricted (customer-sensitive)", "owner_team": "engineering",
+         "reviewers": ["bob@a.com", "cara@a.com"]},
+        {"source_type": "google_drive", "doc_id": "d1", "folder": "research", "title": "Model",
+         "content": "x", "author_email": "ava@a.com", "author_name": "Ava Chen",
+         "collaborators": ["bob@a.com"]},
+        {"source_type": "jira", "doc_id": "j1", "project": "PAY", "title": "Latency",
+         "content": "x", "author_email": "ava@a.com", "author_name": "Ava Chen",
+         "severity": "Sev1", "squad": "payments-core"},
+        {"source_type": "slack", "doc_id": "s1", "channel": "incidents", "content": "502s?",
+         "author_email": "ava@a.com", "participants": ["ava", "bob"]},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        c = store.get_document(conn, "confluence", "c1")
+        assert c["confidentiality"] == "restricted (customer-sensitive)"
+        assert c["owner_team"] == "engineering"
+        assert json.loads(c["reviewers"]) == ["bob@a.com", "cara@a.com"]
+        # the display name is STORED: it cannot be recovered from the email (the accents are lost)
+        assert c["owner_display"] == "Tomás Rré"
+        d = store.get_document(conn, "google_drive", "d1")
+        assert json.loads(d["collaborators"]) == ["bob@a.com"] and d["owner_display"] == "Ava Chen"
+        j = store.get_document(conn, "jira", "j1")
+        assert (j["severity"], j["squad"], j["owner_display"]) == ("Sev1", "payments-core",
+                                                                  "Ava Chen")
+        s = store.get_document(conn, "slack", "s1")
+        assert json.loads(s["participants"]) == ["ava", "bob"]
+    finally:
+        conn.close()
+
+
+def test_byo_group_null_means_the_container_owns_no_group(tmp_path):
+    """`"group": null` is a real state, not a missing value — a Gmail mailbox has no group scope,
+    and inferring one from its name would invent a grantable principal."""
+    corpus = _write(tmp_path, [
+        {"source_type": "gmail", "doc_id": "g1", "mailbox": "ava", "title": "t", "content": "c",
+         "author_email": "ava@a.com", "group": None},
+        {"source_type": "google_drive", "doc_id": "d1", "folder": "scratch", "title": "t",
+         "content": "c", "author_email": "ava@a.com"},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        assert store.get_container(conn, "gmail", "ava")["group_id"] is None
+        # an ABSENT group still falls back to the container slug
+        assert store.get_container(conn, "google_drive", "scratch")["group_id"] == "scratch"
+        # ...and a null group never becomes a principal
+        assert conn.execute("SELECT COUNT(*) FROM principals WHERE id='ava'").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_byo_typed_reader_principals(tmp_path):
+    """`readers` can name the ORG principal, so a document that is org-readable AND names its
+    owners is expressible — with the bare shorthand it was one or the other."""
+    corpus = _write(tmp_path, [
+        {"source_type": "confluence", "doc_id": "c1", "title": "t", "content": "c",
+         "author_email": "ava@acme.com",
+         "readers": ["user:ava@acme.com", "group:eng", "org:acme"]},
+        {"source_type": "confluence", "doc_id": "c2", "title": "t2", "content": "c",
+         "author_email": "ava@acme.com", "readers": ["ava@acme.com", "eng"]},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        assert {(r["principal_type"], r["principal_id"]) for r in conn.execute(
+            "SELECT * FROM doc_acl WHERE doc_id='c1'")} == {
+                ("user", "ava@acme.com"), ("group", "eng"), ("org", "acme")}
+        # the unprefixed shorthand is unchanged
+        assert {(r["principal_type"], r["principal_id"]) for r in conn.execute(
+            "SELECT * FROM doc_acl WHERE doc_id='c2'")} == {
+                ("user", "ava@acme.com"), ("group", "eng")}
+    finally:
+        conn.close()
+
+
+# --- roster sidecar ---------------------------------------------------------------
+
+def test_byo_roster_is_the_closed_principal_set(tmp_path):
+    """With a roster, a record's emails REFERENCE principals rather than declaring them: only
+    `departments` members get a token, `contacts` are principals without one, and an address in no
+    roster (a Slack display handle) stays a plain address instead of becoming an org account."""
+    roster = tmp_path / "roster.yaml"
+    roster.write_text(yaml.safe_dump({
+        "org": "redwood", "org_domain": "redwoodinference.com",
+        "departments": {"Engineering": [
+            {"name": "Ava Chen", "email": "ava.chen@redwoodinference.com"}]},
+        "contacts": [{"name": "Tomás Rré", "email": "tomas.rre@redwoodinference.com",
+                      "group": "engineering"},
+                     {"name": "Zoe Newperson", "email": "zoe.newperson@redwoodinference.com"}],
+    }))
+    corpus = _write(tmp_path, [
+        {"source_type": "confluence", "doc_id": "c1", "space": "ENG", "group": "engineering",
+         "title": "t", "content": "c", "author_email": "ava.chen@redwoodinference.com",
+         "readers": ["user:tomas.rre@redwoodinference.com", "org:redwood"]},
+        # a slack display handle: never an account, even though it authors a message
+        {"source_type": "slack", "doc_id": "s1", "channel": "incidents", "content": "hi",
+         "author_email": "infrabot@redwoodinference.com"},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings, roster=roster)
+
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    assert tokens["org"] == "redwood" and tokens["org_domain"] == "redwoodinference.com"
+    assert [u["email"] for u in tokens["users"]] == ["ava.chen@redwoodinference.com"]
+
+    conn = store.connect_ro(settings.db_path)
+    try:
+        people = {r["id"]: r["display_name"] for r in conn.execute(
+            "SELECT id, display_name FROM principals WHERE type='user'")}
+        assert set(people) == {"ava.chen@redwoodinference.com", "tomas.rre@redwoodinference.com",
+                               "zoe.newperson@redwoodinference.com"}
+        # the roster's names win over anything derivable from the address
+        assert people["tomas.rre@redwoodinference.com"] == "Tomás Rré"
+        # the slack handle authored a row but is not a principal
+        assert "infrabot@redwoodinference.com" not in people
+        # membership comes from the roster, not from the containers a user wrote in
+        assert {(r["group_id"], r["user_id"]) for r in conn.execute(
+            "SELECT * FROM group_members")} == {
+                ("engineering", "ava.chen@redwoodinference.com"),
+                ("engineering", "tomas.rre@redwoodinference.com")}
+        assert {r["id"] for r in conn.execute("SELECT id FROM principals WHERE type='group'")} == {
+            "engineering"}
+    finally:
+        conn.close()
+
+
+def test_byo_roster_departments_alone_is_an_employee_directory(tmp_path):
+    """The bench's `employee_directory.yaml` is usable as a roster verbatim, which is what lets a
+    converted corpus ship the directory it was resolved against."""
+    directory = tmp_path / "employee_directory.yaml"
+    directory.write_text(yaml.safe_dump({"departments": {
+        "Research & Applied ML": [{"name": "Maya Chen", "email": "maya.chen@r.com",
+                                   "title": "RS"}]}}))
+    corpus = _write(tmp_path, [
+        {"source_type": "jira", "doc_id": "j1", "project": "PAY", "title": "t", "content": "c",
+         "author_email": "maya.chen@r.com", "visibility": "group",
+         "group": "research-applied-ml"}])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings, roster=directory)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        # the department name becomes its group id via slugify, as Principals does
+        assert {(r["group_id"], r["user_id"]) for r in conn.execute("SELECT * FROM group_members")} \
+            == {("research-applied-ml", "maya.chen@r.com")}
+    finally:
+        conn.close()
+
+
+def test_byo_jsonl_records_split_only_on_newline(tmp_path):
+    """A record whose text contains U+2028 is one record. `str.splitlines()` breaks on it, which
+    tore a valid line into two invalid halves — one such character appears in the bench corpus."""
+    body = "before\u2028after"          # U+2028 LINE SEPARATOR, inside a JSON string
+    corpus = tmp_path / "corpus.jsonl"
+    # ensure_ascii=False, so the character reaches the file raw rather than as an escape
+    corpus.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+        {"source_type": "confluence", "doc_id": "c1", "title": "t", "content": body},
+        {"source_type": "confluence", "doc_id": "c2", "title": "t2", "content": "second"},
+    ]), encoding="utf-8")
+    # guards the test itself: without a character splitlines() breaks on, it proves nothing
+    assert len(corpus.read_text().splitlines()) == 3
+
+    from app.validation import validate_file
+    assert validate_file(corpus) == []
+    settings = Settings(data_dir=tmp_path)
+    assert load(corpus, settings)["counts"] == {"confluence": 2}
+    conn = store.connect_ro(settings.db_path)
+    try:
+        assert store.get_document(conn, "confluence", "c1")["content"] == body
+    finally:
+        conn.close()
+
+
+def test_byo_gmail_messages_join_the_root_s_declared_thread(tmp_path):
+    """A record may open a thread under an explicit `thread` id that is not its doc_id. Its
+    messages have to land in THAT thread — keying them off the root's doc_id instead split one
+    conversation into two."""
+    corpus = _write(tmp_path, [
+        {"source_type": "gmail", "doc_id": "gm-1", "thread": "gm-deck", "mailbox": "ceo",
+         "title": "Deck", "content": "draft", "author_email": "ceo@a.com",
+         "messages": [{"content": "reviewed", "author_email": "ava@a.com"}]}])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        rows = store.gmail_thread(conn, "gm-deck")
+        assert [(r["doc_id"], r["thread_seq"]) for r in rows] == [("gm-1", 0), ("gm-1::m1", 1)]
+        assert {r["thread_id"] for r in rows} == {"gm-deck"}
+    finally:
+        conn.close()

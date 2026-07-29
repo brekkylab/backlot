@@ -333,6 +333,13 @@ class Principals:
 
 
 # ---------------------------------------------------------------- ACL derivation
+# Sources whose visibility model is the people on the document and nothing wider. A document here
+# with no identifiable people is readable by NOBODY (admin still bypasses), and must not fall back
+# to an org grant: that would publish a private thread to the entire company. Measured on the bench,
+# 3 of ~121k Gmail threads resolve no participant at all — and the org grant was their ONLY grant.
+_PARTICIPANTS_ONLY = {"gmail"}
+
+
 def grants_for(source: str, meta: dict) -> list[tuple[str, str]]:
     """Derive a document's ACL grants from its real people + scope signals — no random assignment.
 
@@ -383,8 +390,18 @@ def grants_for(source: str, meta: dict) -> list[tuple[str, str]]:
     else:  # github / jira / google_drive → container group
         add("group", group)
 
-    if not grants:  # never leave a doc ungranted
-        add("group", group) or add("org", org)
+    if not grants and source not in _PARTICIPANTS_ONLY:
+        # Reaching here means the source's scope grant above was a NO-OP — its container has no
+        # group (a Drive file with no `team`). Fall back to the org rather than leave the document
+        # invisible to every non-admin caller.
+        #
+        # Written as if/else, not `add("group", group) or add("org", org)`: `add` returns None, so
+        # the `or` always evaluated its right-hand side and granted BOTH. That reads as a fallback
+        # and behaved as a conjunction.
+        if group:
+            add("group", group)
+        else:
+            add("org", org)
     return grants
 
 

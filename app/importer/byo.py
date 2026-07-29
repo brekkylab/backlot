@@ -491,7 +491,11 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
         # grant tuples (principal_type, principal_id), shared by the whole thread
         readers = rec.get("readers")
         vis = rec.get("visibility")
-        if readers:
+        # `is not None`, not truthiness: an explicit `"readers": []` means NOBODY may read this
+        # document — admin-only — which is a state a corpus otherwise could not express at all, and
+        # the honest reading of an empty list of readers. Falling through to the public default
+        # instead would make the most restrictive spelling produce the least restrictive result.
+        if readers is not None:
             grant_types = []
             for pid in readers:
                 ptype, pval = _principal(pid)

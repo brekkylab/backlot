@@ -1805,3 +1805,31 @@ def test_export_byo_converts_every_document_it_was_given(tmp_path):
     # and the artifact holds at least one record per document (hubspot notes add more)
     assert sum(1 for line in (out / "corpus.jsonl").read_text().split("\n") if line.strip()) \
         >= sum(counts.values())
+
+
+def test_grants_for_fallback_is_a_fallback_not_a_conjunction():
+    """`add("group", group) or add("org", org)` read as "group else org" and behaved as "both":
+    `add` returns None, so the right-hand side always ran."""
+    g = grants_for("gmail", {"org": "acme", "group": "eng", "owner": None, "people": []})
+    assert ("group", "eng") not in g and ("org", "acme") not in g
+    # the live fallback — a Drive file whose container has no group is org-visible, not invisible
+    assert grants_for("google_drive", {"org": "acme", "group": None, "owner": None,
+                                       "people": []}) == [("org", "acme")]
+    # ...and one that HAS a group gets exactly that, never the org too
+    assert grants_for("google_drive", {"org": "acme", "group": "eng", "owner": None,
+                                       "people": []}) == [("group", "eng")]
+
+
+def test_a_gmail_thread_with_no_participants_is_granted_to_nobody():
+    """Gmail's model is "private to the participants" — so a thread that resolved none of them has
+    nobody to grant to, and an org fallback would publish a private thread to the whole company.
+    3 of the bench's ~121k threads land here, and the org grant was their ONLY grant."""
+    assert grants_for("gmail", {"org": "acme", "group": None, "owner": None, "people": []}) == []
+    # a thread that DOES name someone still grants to them
+    assert grants_for("gmail", {"org": "acme", "group": None, "owner": "ava@acme.com",
+                                "people": ["bob@acme.com"]}) == [
+        ("user", "ava@acme.com"), ("user", "bob@acme.com")]
+    # and no other source loses its scope
+    for src in ("slack", "hubspot", "fireflies"):
+        assert ("org", "acme") in grants_for(src, {"org": "acme", "group": "c", "owner": None,
+                                                  "people": []}), src

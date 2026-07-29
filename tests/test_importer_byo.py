@@ -903,3 +903,26 @@ def test_byo_all_undated_comments_keep_the_doc_clock_plus_position(tmp_path):
             1_700_000_001, 1_700_000_002, 1_700_000_003]
     finally:
         conn.close()
+
+
+def test_byo_empty_readers_means_nobody(tmp_path):
+    """`"readers": []` is the only way to say "admin-only", and it has to mean that: falling
+    through to the public default would make the most restrictive spelling produce the least
+    restrictive result. An ABSENT `readers` is still public."""
+    corpus = _write(tmp_path, [
+        {"source_type": "gmail", "doc_id": "gm-dark", "mailbox": "inbox", "title": "t",
+         "content": "c", "readers": []},
+        {"source_type": "gmail", "doc_id": "gm-open", "mailbox": "inbox", "title": "t2",
+         "content": "c"},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        assert store.doc_grants(conn, "gm-dark") == []
+        assert store.doc_grants(conn, "gm-open")           # absent readers -> the org default
+        # ...so it is invisible to a user token and reachable only by admin (visible_ids=None)
+        assert store.get_document(conn, "gmail", "gm-dark", visible_ids={"acme"}) is None
+        assert store.get_document(conn, "gmail", "gm-dark") is not None
+    finally:
+        conn.close()

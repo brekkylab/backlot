@@ -1,6 +1,6 @@
 # Bring your own corpus
 
-Serve **any** document set through the nine mock APIs — provide a JSONL where each line is one
+Serve **any** document set through all eleven mock APIs — provide a JSONL where each line is one
 document, validate it, and load it:
 
 ```bash
@@ -57,7 +57,7 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   `public | group | private` (default `public`). Group membership is derived from each author's
   `author_groups` plus the grouping unit they wrote in.
 - Groups, users, and a per-user token for each are derived from the corpus and written to
-  `data/tokens.yaml` — the same token-scoped ACL then applies across all eight APIs and MCP.
+  `data/tokens.yaml` — the same token-scoped ACL then applies across every one of them and MCP.
 - **Org:** the org name + domain are inferred from the corpus's dominant author email domain
   (a `@acme.com` corpus serves as org `acme`, so Slack `auth.test`, `/_mock/users`, and default
   emails all say `acme` — not a hardcoded default). Override with `MOCK_ORG_NAME` /

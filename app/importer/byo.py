@@ -1,16 +1,20 @@
 """Load a Bring-Your-Own (BYO) corpus from JSONL into the mock DB.
 
-Serve *any* document set through the six vendor APIs — not just EnterpriseRAG-Bench.
+Serve *any* document set through all eleven vendor APIs — not just EnterpriseRAG-Bench.
 Each line is one document:
 
     {
-      "source_type": "confluence",        # required: slack|gmail|google_drive|github|jira|confluence
+      "source_type": "confluence",        # required: one of the eleven served sources
+                                          #   (slack|gmail|google_drive|github|jira|confluence|
+                                          #    notion|s3|hubspot|linear|fireflies)
       "title": "Onboarding guide",         # required except for slack (messages have no title)
       "content": "Full text...",            # required
       "doc_id": "my-123",                  # optional (default: dsid_<sha256(src+title+content)>)
-      "space": "handbook",                 # the grouping unit, named per service: slack "channel",
-                                             #   gmail "mailbox", google_drive "folder", github "repo",
-                                             #   jira "project", confluence "space" (default: source_type)
+      "space": "handbook",                 # the grouping unit, named per service: slack/fireflies
+                                             #   "channel", gmail "mailbox", google_drive "folder",
+                                             #   github "repo", jira "project", confluence "space",
+                                             #   notion "teamspace", s3 "bucket", hubspot
+                                             #   "object_type", linear "team" (default: source_type)
       "group": "people",                   # optional ACL group owning that unit (default: slug(unit))
       "author_email": "ava@acme.com",      # optional author/sender/owner
       "author_groups": ["people","eng"],   # optional groups the author belongs to

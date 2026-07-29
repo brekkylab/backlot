@@ -645,20 +645,26 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
         ctable = store.comment_table(src)
         if rec_comments and ctable is None:
             raise SystemExit(f"line {lineno}: comments are not supported for source_type {src!r}")
+        prev_c_ts = created
         for j, c in enumerate(rec_comments, start=1):
             body = c.get("body") or c.get("content")
             if not body:
                 raise SystemExit(f"line {lineno}: each comment needs 'content'")
             register(c.get("author_email"), c.get("author_name"))
+            # A comment with no explicit time follows the PREVIOUS comment, not the doc's clock
+            # plus its position — the rule `erb.load_linear` already applies, and for its reason:
+            # in a thread that mixes dated and undated comments, `created + j` lands an undated one
+            # back at the document's creation time and any consumer ordering by createdAt (Linear's
+            # `Issue.comments` does) serves the thread inverted. Monotonic, so it cannot. For an
+            # all-undated thread this is exactly `created + j`, as before. Never a hash of the
+            # comment's own id, which would scatter one thread across two years.
+            c_ts = _epoch(c.get("created_ts")) or (prev_c_ts + 1)
+            prev_c_ts = max(prev_c_ts, c_ts)
             conn.execute(
                 f"INSERT OR REPLACE INTO {ctable}"
                 "(id, doc_id, seq, author_email, body, created_ts, reactions) VALUES (?,?,?,?,?,?,?)",
-                # A comment with no explicit time sits on the DOC's clock plus its position, not
-                # on a hash of its own id: an independent synth.epoch per comment scatters a
-                # thread across two years, so any consumer that orders by createdAt (Linear's
-                # `Issue.comments` does) would serve the thread shuffled.
                 (cid := c.get("id") or f"{doc_id}::c{j}", doc_id, j, c.get("author_email"), body,
-                 _epoch(c.get("created_ts")) or (created + j), _j(c.get("reactions"))),
+                 c_ts, _j(c.get("reactions"))),
             )
 
         for i, rep in enumerate(replies or [], start=1):

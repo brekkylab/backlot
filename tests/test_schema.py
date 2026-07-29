@@ -338,3 +338,27 @@ def test_group_may_be_null_to_mean_no_group_owns_the_container():
 def test_readers_accept_typed_principal_ids():
     assert record_errors({"source_type": "jira", "project": "PAY", "title": "t", "content": "c",
                           "readers": ["user:ava@a.com", "group:eng", "org:acme"]}) == []
+
+
+# --- the shipped example corpus ---------------------------------------------------
+
+def _example_corpus():
+    from app.config import REPO_ROOT
+    return REPO_ROOT / "examples" / "bring-your-own-corpus" / "sample_corpus.jsonl"
+
+
+def test_example_corpus_is_valid():
+    """`examples/bring-your-own-corpus/sample_corpus.jsonl` is the file the walkthrough loads and
+    the one a reader copies from, and nothing validated it — `sample_corpus_path` above is the
+    in-code conftest SAMPLE, a different corpus. Read the shipped file itself."""
+    assert validate_file(_example_corpus()) == []
+
+
+def test_example_corpus_covers_every_served_source():
+    """It is documented as "a fully-populated record of every source type", so a source missing
+    from it is a broken promise — and one that goes unnoticed: `linear` was absent for two
+    releases after its loader landed, because only a human running `run.py` ever read this file."""
+    import json
+    records = [json.loads(line) for line in _example_corpus().read_text().split("\n")
+               if line.strip()]
+    assert {r["source_type"] for r in records} == set(store.SOURCE_TABLE)

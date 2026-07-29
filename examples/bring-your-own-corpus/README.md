@@ -23,8 +23,10 @@ fidelity fields (slack rich replies with reactions/files/edited and `participant
 `trashed`/`parents`/`collaborators`; github `closed_at`/`merged_by`/`milestone`/
 `requested_reviewers` + comment reactions; jira `assignee`/`resolution`/`resolutiondate`/
 `duedate`/`severity`/`squad`; confluence `version_number`/`version_message`/`minor_edit`/
-`confidentiality`/`owner_team`/`reviewers`) — so you can see that none of the response structure
-has to be synthesized: it can all be set directly from the corpus.
+`confidentiality`/`owner_team`/`reviewers`; linear a parent/child pair with `relations`,
+`attachments`, `estimate`/`cycle`/`project`/`release` and lifecycle timestamps) — so you can see
+that none of the response structure has to be synthesized: it can all be set directly from the
+corpus. `tests/test_schema.py` asserts it stays valid and keeps covering every served source.
 
 ## Record format
 

@@ -859,3 +859,47 @@ def test_byo_gmail_messages_join_the_root_s_declared_thread(tmp_path):
         assert {r["thread_id"] for r in rows} == {"gm-deck"}
     finally:
         conn.close()
+
+
+def test_byo_comment_times_are_monotonic_across_a_mixed_thread(tmp_path):
+    """A thread that mixes dated and undated comments must stay in order. `created + position`
+    lands an undated comment back at the DOCUMENT's creation time, so a dated one written earlier
+    in the array sorts after it — and `Issue.comments` orders by createdAt, so the thread is served
+    inverted. This is the rule `erb.load_linear` already applied."""
+    corpus = _write(tmp_path, [
+        {"source_type": "linear", "doc_id": "ln-1", "team": "engineering", "title": "t",
+         "content": "c", "author_email": "ava@a.com", "created": "2026-02-08T09:00:00Z",
+         "comments": [
+             {"content": "first, dated later", "created_ts": "2026-02-09T10:00:00Z"},
+             {"content": "second, undated"},
+             {"content": "third, dated later still", "created_ts": "2026-02-11T08:00:00Z"},
+             {"content": "fourth, undated"}]},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        rows = store.doc_comments(conn, "linear", "ln-1")
+        times = [r["created_ts"] for r in rows]
+        assert times == sorted(times), f"comments out of order: {times}"
+        # the undated one follows its predecessor rather than jumping back to the doc's clock
+        assert times[1] == times[0] + 1 and times[3] == times[2] + 1
+    finally:
+        conn.close()
+
+
+def test_byo_all_undated_comments_keep_the_doc_clock_plus_position(tmp_path):
+    """The monotonic rule must not change the ordinary case."""
+    corpus = _write(tmp_path, [
+        {"source_type": "jira", "doc_id": "j-1", "project": "PAY", "title": "t", "content": "c",
+         "author_email": "ava@a.com", "created": 1_700_000_000,
+         "comments": [{"content": "one"}, {"content": "two"}, {"content": "three"}]},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        assert [r["created_ts"] for r in store.doc_comments(conn, "jira", "j-1")] == [
+            1_700_000_001, 1_700_000_002, 1_700_000_003]
+    finally:
+        conn.close()

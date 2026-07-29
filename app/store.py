@@ -522,24 +522,32 @@ def _acl_clause(tbl: str, visible_ids: set[str] | None, col: str = "doc_id") -> 
             f"AND a.principal_id IN ({marks}))", ids)
 
 
-def _scope(sql: str, params: list, gcol: str, container: str | None, author_email: str | None) -> str:
+def _scope(sql: str, params: list, gcol: str, container: str | None, author_email: str | None,
+           not_author_email: str | None = None) -> str:
     if container is not None:
         sql += f" AND {gcol} = ?"
         params.append(container)
     if author_email is not None:
         sql += " AND author_email = ?"
         params.append(author_email)
+    # The complement of an author filter — Drive's `sharedWithMe` partitions the visible set on
+    # "owned by the caller" vs not, and pushing the negative half down keeps a Shared-with-me
+    # listing from materializing the whole corpus to filter it in Python.
+    if not_author_email is not None:
+        sql += " AND author_email <> ?"
+        params.append(not_author_email)
     return sql
 
 
 def list_documents(conn, source_type, container=None, visible_ids=None, limit=100,
-                   offset=0, author_email=None, state=None) -> list[sqlite3.Row]:
+                   offset=0, author_email=None, state=None,
+                   not_author_email=None) -> list[sqlite3.Row]:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError.
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE 1=1"
     params: list = []
-    sql = _scope(sql, params, grouping_col(source_type), container, author_email)
+    sql = _scope(sql, params, grouping_col(source_type), container, author_email, not_author_email)
     if state is not None:
         sql += " AND COALESCE(state, 'open') = ?"
         params.append(state)

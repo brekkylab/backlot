@@ -478,6 +478,41 @@ _ATT_MIME = {
 }
 
 
+# The bench's Drive ``doc_type`` vocabulary -> the mock's Drive subtype vocabulary (the keys
+# ``app.routers.google._NATIVE`` recognises as Workspace types). The bench says "doc"/"sheet"/
+# "slides", none of which are native keys, so every imported row used to fall back to
+# ``application/octet-stream`` — and to the binary ``webViewLink`` shape — leaving nothing in the
+# corpus that exercises native-vs-binary handling, ``export`` vs ``alt=media``, or per-type links.
+_DRIVE_SUBTYPE = {
+    "doc": "document", "document": "document", "gdoc": "document", "notes": "document",
+    "memo": "document",
+    "sheet": "spreadsheet", "spreadsheet": "spreadsheet", "gsheet": "spreadsheet",
+    "slides": "presentation", "slide": "presentation", "deck": "presentation",
+    "presentation": "presentation", "gslides": "presentation",
+    "folder": "folder",
+}
+
+
+def _ext(name: str | None) -> str | None:
+    m = re.search(r"\.([A-Za-z0-9]{1,5})$", (name or "").strip())
+    return m.group(1).lower() if m else None
+
+
+def _drive_type(raw: dict, title: str) -> tuple[str, str | None]:
+    """``(subtype, mime_type)`` for a bench Drive row. A recognised ``doc_type`` maps onto a native
+    Workspace subtype (the router derives the mimeType from it); anything else is a binary, whose
+    type comes from the ``doc_type`` itself when it names a file kind ("pdf") and otherwise from the
+    title's or path's extension. A row with no usable type signal is a Doc — the bench's Drive
+    corpus is prose, and that beats calling it an opaque blob."""
+    key = (raw.get("doc_type") or "").strip().lower()
+    if key in _DRIVE_SUBTYPE:
+        return _DRIVE_SUBTYPE[key], None
+    ext = key if key in _ATT_MIME else (_ext(title) or _ext(raw.get("path") or raw.get("file_path")))
+    if ext in _ATT_MIME:
+        return ext, _ATT_MIME[ext]
+    return "document", None
+
+
 def _gmail_attachments(raw: dict) -> list[dict]:
     """Normalize a gmail doc's thread-level ``attachments`` into the {filename, mime, size}
     shape the Gmail router serves (payload parts + download endpoint). The bench lists them as
@@ -627,11 +662,13 @@ def load_drive(conn, dsid, raw, P):
     if group:
         conn.execute("INSERT OR REPLACE INTO gdrive_folders(folder, group_id) VALUES (?,?)",
                      (raw.get("drive_area") or group, group))
+    subtype, mime_type = _drive_type(raw, title)
     conn.execute(
         "INSERT OR REPLACE INTO gdrive_files(doc_id, folder, author_email, title, content, "
-        "subtype, created_ts, updated_ts, collaborators, owner_display) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "subtype, mime_type, created_ts, updated_ts, collaborators, owner_display) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (dsid, raw.get("drive_area") or group or "drive", owner_email or f"unknown@{P.org_domain}",
-         title, content, raw.get("doc_type"), (to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
+         title, content, subtype, mime_type, (to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
          to_epoch(raw.get("last_modified")), json.dumps(collabs),
          owner))
     return {"owner": owner_email, "people": collabs, "group": group, "confidentiality": None}

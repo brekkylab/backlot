@@ -1,8 +1,9 @@
 # Import from EnterpriseRAG-Bench
 
 [EnterpriseRAG-Bench](https://github.com/onyx-dot-app/EnterpriseRAG-Bench) ships structured
-``generated_data/`` — real owners/authors/dates/participants/ACL signals per doc, across six
-sources (Google Drive, GitHub, Confluence, Jira, Gmail, Slack). One command downloads it, loads
+``generated_data/`` — real owners/authors/dates/participants/ACL signals per doc, across **all
+nine** of the sources it ships (Slack, Gmail, Linear, Google Drive, HubSpot, Fireflies, GitHub,
+Jira, Confluence — 511,962 documents). One command downloads it, loads
 it into the per-service tables, derives the ACL from the real people/scope fields, and writes
 ``tokens.yaml`` for the resolved roster:
 
@@ -16,7 +17,8 @@ python -m app.importer.erb --ref some-branch                          # fetch a 
 This is faithful representation, not synthesis: names are resolved to real emails via the
 employee directory (``app.importer.principals``), and **every import parses the real
 conversations embedded in the content** (Slack transcripts → threads, GitHub PR reviews / Jira
-comments → real comments, Gmail threads → per-email messages).
+comments → real comments, Gmail threads → per-email messages, Fireflies transcripts →
+per-sentence utterances with speakers and timings).
 
 ## Walkthrough
 

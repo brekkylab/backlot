@@ -253,6 +253,50 @@ SAMPLE = [
      "title": "Sealed programme", "content": "Sealed.", "author_email": "hana@acme.com",
      "author_groups": ["people"], "readers": ["hana@acme.com"],
      "identifier": "BLA-1", "state": "Triage"},
+    # --- fireflies: meeting transcripts -------------------------------------------------
+    # Structured `sentences` (the child-row form), so content is DERIVED from them and the
+    # round-trip is exercised. Carries a null-speaker sentence, a repeated speaker (so speaker_id
+    # ordinals are checked for reuse), summary notes and explicit timings.
+    {"source_type": "fireflies", "doc_id": "ff-discovery", "channel": "sales-calls",
+     "group": "engineering", "title": "Acme x Northwind — latency discovery",
+     "host_email": "ava@acme.com", "host_name": "Ava Chen", "author_groups": ["engineering"],
+     "visibility": "public", "duration": 32.5, "calendar_id": "cal-nw-1",
+     "created": "2026-04-02T15:00:00Z",
+     "summary": {"overview": "Northwind wants sub-300ms p95 on batching.",
+                 "topics_discussed": ["latency budget", "batching", "pricing"],
+                 "action_items": ["Ava: send the batching benchmark"],
+                 "keywords": ["latency", "batching"], "meeting_type": "discovery"},
+     "meeting_attendees": [{"displayName": "Ava Chen", "email": "ava@acme.com",
+                            "location": None},
+                           {"displayName": "Dana Ruiz", "email": "dana@northwind.example",
+                            "location": "Northwind"}],
+     "sentences": [
+         {"speaker_name": "Ava Chen", "author_email": "ava@acme.com", "start_time": 0,
+          "text": "Thanks for joining — let's start with the latency budget."},
+         {"speaker_name": "Dana Ruiz", "start_time": 14,
+          "text": "Our p95 sits around 300ms today and batching is the suspect."},
+         {"speaker_name": "Ava Chen", "author_email": "ava@acme.com", "start_time": 31,
+          "text": "Understood. I'll send the batching benchmark after this."},
+         {"speaker_name": None, "start_time": 46, "text": "(crosstalk)"}]},
+    # Only a `content` body, no `sentences` — the parse-it-back path, including a continuation
+    # line that must fold into the sentence above it rather than becoming its own.
+    {"source_type": "fireflies", "doc_id": "ff-allhands", "channel": "all-hands",
+     "group": "people", "title": "April all-hands", "author_email": "hana@acme.com",
+     "visibility": "public", "created": "2026-04-10T16:00:00Z",
+     "content": "[00:00] Hana: welcome everyone, quick numbers first.\n"
+                "[00:30] Mia: design shipped the new selects.\n"
+                "We also cleared the focus-ring backlog.\n"
+                "[01:15] Hana: great — that's a wrap."},
+    # Restricted by explicit readers, so the ACL tests have a transcript that must stay hidden
+    # from everyone but hana (its channel is one no other transcript uses, so a channel_id filter
+    # can be checked for leaking too).
+    {"source_type": "fireflies", "doc_id": "ff-secret", "channel": "board",
+     "group": "people", "title": "Board pre-read walkthrough",
+     "host_email": "hana@acme.com", "readers": ["hana@acme.com"], "duration": 61.0,
+     "created": "2026-04-15T09:00:00Z",
+     "summary": {"overview": "Sealed board pre-read.", "meeting_type": "other"},
+     "sentences": [{"speaker_name": "Hana Ito", "author_email": "hana@acme.com",
+                    "start_time": 0, "text": "This one stays in the room."}]},
 ]
 
 

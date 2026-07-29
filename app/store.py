@@ -35,6 +35,7 @@ SOURCE_TABLE = {
     "s3": "s3_objects",
     "hubspot": "hubspot_objects",
     "linear": "linear_issues",
+    "fireflies": "fireflies_transcripts",
 }
 
 
@@ -45,13 +46,19 @@ def table(source_type: str) -> str:
         raise ValueError(f"unknown source_type {source_type!r}")
 
 
-# source_type -> its comment table (only services whose API exposes comments)
+# source_type -> its child-rows table. For most services those child rows ARE comments; for
+# Fireflies they are the transcript's sentences, which are not comments but are exactly "the
+# child rows of a doc in this source" — so they reuse this slot rather than adding a parallel
+# mechanism. Every table here therefore shares the child-row column contract
+# (id, doc_id, seq, author_email, body, created_ts, reactions) that :func:`doc_comments` reads,
+# and adds its own columns beside it (see fireflies_sentences).
 COMMENT_TABLE = {
     "jira": "jira_comments",
     "confluence": "confluence_comments",
     "github": "github_comments",
     "notion": "notion_comments",
     "linear": "linear_comments",
+    "fireflies": "fireflies_sentences",
 }
 
 
@@ -78,6 +85,9 @@ GROUPING = {
     # Linear's own container is the team: `data.team.issues` is how both the API and the
     # official clients reach issues, and an issue's identifier prefix (ENG-123) is the team key.
     "linear": ("linear_teams", "team"),
+    # Fireflies groups transcripts by `channel` — its own grouping concept, and one of the
+    # documented `transcripts(channel_id:)` filters — so container->group needs no per-source code.
+    "fireflies": ("fireflies_channels", "channel"),
 }
 
 
@@ -340,6 +350,60 @@ CREATE TABLE IF NOT EXISTS linear_attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_linear_attach_doc ON linear_attachments(doc_id, seq);
 
+-- A Fireflies transcript: one root document per meeting, plus its ordered sentences below.
+-- `content` is the sentences concatenated (see synth.fireflies_transcript_text), so full-text
+-- search and any RAG consumer work against the meeting as one document — and the concatenation
+-- is an EXACT inverse of fireflies_sentences, never a second copy that can drift.
+--
+-- `author_email` is the core column every doc table carries; for a transcript it is the HOST
+-- (the API's `host_email`). `organizer_email` is separate because the real API exposes both and
+-- they legitimately differ; it is NULL when the meeting's organizer is its host, which is what
+-- the bench describes.
+CREATE TABLE IF NOT EXISTS fireflies_transcripts (
+    doc_id TEXT PRIMARY KEY, channel TEXT NOT NULL, author_email TEXT NOT NULL,
+    title TEXT NOT NULL, content TEXT NOT NULL,
+    -- The API-facing transcript id. Synthesized (synth.fireflies_id) rather than taken from the
+    -- bench's `meeting_id`, which is NOT unique — 10,147 distinct values across 10,173 documents,
+    -- one repeated 3 times — and `id` is the argument `transcript(id:)` looks a meeting up by, so
+    -- a duplicate would make that lookup ambiguous. The corpus's own value is kept as
+    -- `calendar_id`, which is where a real Fireflies transcript carries its calendar-side id.
+    transcript_id TEXT, calendar_id TEXT, calendar_type TEXT,
+    organizer_email TEXT, duration REAL,
+    created_ts INTEGER NOT NULL,
+    -- JSON: the API's nested objects, stored whole because that is the shape served.
+    -- `summary` carries overview/keywords/action_items/outline/topics_discussed/meeting_type;
+    -- `analytics` carries sentiments/speakers/categories.
+    summary TEXT, analytics TEXT, participants TEXT, meeting_attendees TEXT,
+    audio_url TEXT, video_url TEXT, transcript_url TEXT, meeting_link TEXT,
+    owner_display TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fireflies_channel ON fireflies_transcripts(channel);
+-- `transcripts(fromDate:/toDate:)` is a date range and the default order is newest-first, so the
+-- ordering column carries its doc_id tiebreak (same lesson as idx_linear_created_doc).
+CREATE INDEX IF NOT EXISTS idx_fireflies_created_doc
+    ON fireflies_transcripts(created_ts, doc_id);
+CREATE INDEX IF NOT EXISTS idx_fireflies_channel_created
+    ON fireflies_transcripts(channel, created_ts, doc_id);
+-- `transcript(id:)` resolves a synthesized transcript id straight to its row.
+CREATE INDEX IF NOT EXISTS idx_fireflies_transcript_id
+    ON fireflies_transcripts(transcript_id);
+-- `transcripts(host_email:)` / `organizers:` filter on these directly.
+CREATE INDEX IF NOT EXISTS idx_fireflies_host ON fireflies_transcripts(author_email);
+
+-- The transcript's sentences: the child rows of a Fireflies doc. Carries the shared child-row
+-- contract (id, doc_id, seq, author_email, body, created_ts, reactions) that doc_comments reads,
+-- so it fits the COMMENT_TABLE slot, plus the per-sentence fields the Fireflies API serves.
+-- `body` IS the sentence text and `author_email` is the speaker RESOLVED to an identity — NULL
+-- for an anonymous label ("Speaker 3"), which the corpus deliberately contains and which the real
+-- API also leaves unattributed. `speaker_name` is always the label as transcribed.
+-- start_time/end_time are seconds (REAL), as the API returns them.
+CREATE TABLE IF NOT EXISTS fireflies_sentences (
+    id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT,
+    speaker_name TEXT, speaker_id INTEGER, start_time REAL, end_time REAL
+);
+CREATE INDEX IF NOT EXISTS idx_fireflies_sentences_doc ON fireflies_sentences(doc_id, seq);
+
 -- ── shared relationship tables (keyed by doc_id / names) ──
 -- ── per-service grouping tables (name of the grouping unit + its owning ACL group) ──
 CREATE TABLE IF NOT EXISTS slack_channels    (channel TEXT PRIMARY KEY, group_id TEXT);
@@ -352,6 +416,7 @@ CREATE TABLE IF NOT EXISTS notion_teamspaces (teamspace TEXT PRIMARY KEY, group_
 CREATE TABLE IF NOT EXISTS s3_buckets        (bucket  TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS hubspot_object_types (object_type TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS linear_teams      (team    TEXT PRIMARY KEY, group_id TEXT);
+CREATE TABLE IF NOT EXISTS fireflies_channels (channel TEXT PRIMARY KEY, group_id TEXT);
 
 CREATE TABLE IF NOT EXISTS principals (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, display_name TEXT, email TEXT
@@ -436,6 +501,12 @@ def jcol(row: sqlite3.Row, key: str, default=None):
 
 
 # --- ACL-aware document queries -------------------------------------------------
+
+def _like_escape(needle: str | None) -> str:
+    """Neutralize LIKE wildcards in a user-supplied needle so they match literally. Use with
+    ``LIKE ? ESCAPE '\\'``; without it a search for ``100%`` matches everything."""
+    return (needle or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
 
 def _acl_clause(tbl: str, visible_ids: set[str] | None, col: str = "doc_id") -> tuple[str, list]:
     """``col`` names the column holding the doc whose ACL decides visibility — normally the row's
@@ -954,7 +1025,7 @@ def list_drive_by_name(conn, name_substr, container=None, visible_ids=None,
     optionally within a folder — the SQL path for a name lookup. Without it the endpoint listed the
     WHOLE corpus (~25k rows, ~1.6s) then substring-matched in Python; a title LIKE builds only the
     matches (~14ms). LIKE wildcards in the needle are escaped so they stay literal."""
-    needle = (name_substr or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    needle = _like_escape(name_substr)
     # SQLite LIKE is case-insensitive for ASCII by default (matching Drive's case-insensitive
     # `name contains`); no lower() wrapper, which would force a per-row scan.
     sql = ("SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 "
@@ -1011,6 +1082,98 @@ def get_document(conn, source_type, doc_id, visible_ids=None) -> sqlite3.Row | N
     sql += clause
     params += cparams
     return conn.execute(sql, params).fetchone()
+
+
+# --- fireflies ------------------------------------------------------------------
+# Fireflies pages with `limit`/`skip` (offset-based, capped at 50 by the API) rather than a Relay
+# connection, so these take a plain limit/offset and there is no cursor to keep stable.
+
+# The API's `scope` decides WHICH text a `keyword` is matched against. `content` is the
+# transcript's sentences concatenated, so "sentences" is a match on content and needs no join.
+_FF_SCOPE_COLS = {"title": ("title",), "sentences": ("content",), "all": ("title", "content")}
+
+
+def fireflies_scope_columns(scope: str | None) -> tuple[str, ...] | None:
+    """The columns a `scope` searches, or None if the value isn't one Fireflies accepts."""
+    return _FF_SCOPE_COLS.get((scope or "all").lower())
+
+
+def _fireflies_where(*, channel=None, host_email=None, organizers=None, participants=None,
+                     from_ts=None, to_ts=None, keyword=None, scope=None,
+                     visible_ids=None) -> tuple[str, list]:
+    sql = " WHERE 1=1"
+    params: list = []
+    if channel is not None:
+        sql += " AND channel = ?"
+        params.append(channel)
+    if host_email:
+        sql += " AND lower(author_email) = ?"
+        params.append(host_email.lower())
+    if organizers:
+        # `organizer_email` is null when the organizer IS the host, which is the common case, so
+        # the filter has to consider both — otherwise organizing a meeting you also hosted would
+        # not match your own address.
+        marks = ", ".join("?" for _ in organizers)
+        sql += (f" AND lower(COALESCE(organizer_email, author_email)) IN ({marks})")
+        params += [o.lower() for o in organizers]
+    for email in participants or []:
+        # `participants` is a JSON array column; json_each is the exact membership test (a LIKE on
+        # the serialized text would match an address that is merely a substring of another).
+        sql += (" AND EXISTS (SELECT 1 FROM json_each(fireflies_transcripts.participants) "
+                "WHERE lower(json_each.value) = ?)")
+        params.append(email.lower())
+    if from_ts is not None:
+        sql += " AND created_ts >= ?"
+        params.append(from_ts)
+    if to_ts is not None:
+        sql += " AND created_ts <= ?"
+        params.append(to_ts)
+    if keyword:
+        cols = fireflies_scope_columns(scope) or ("title", "content")
+        sql += " AND (" + " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in cols) + ")"
+        params += [f"%{_like_escape(keyword)}%" for _ in cols]
+    clause, cparams = _acl_clause("fireflies_transcripts", visible_ids)
+    return sql + clause, params + cparams
+
+
+def list_fireflies_transcripts(conn, *, channel=None, host_email=None, organizers=None,
+                               participants=None, from_ts=None, to_ts=None, keyword=None,
+                               scope=None, visible_ids=None, limit=50, offset=0
+                               ) -> list[sqlite3.Row]:
+    """One page of transcripts, newest first — the order the real API returns them in.
+
+    The ORDER BY carries its `doc_id` tiebreak so it is TOTAL, and the tiebreak runs DESC with the
+    sort key rather than ASC against it: both directions are equally valid for an arbitrary
+    tiebreak, but a uniform direction is a backwards scan of idx_fireflies_created_doc while a
+    mixed one is a temp b-tree over the whole table. Measured on the 10,173-transcript bench
+    corpus, `skip=9000` went from 86ms to under 1ms.
+    """
+    where, params = _fireflies_where(
+        channel=channel, host_email=host_email, organizers=organizers, participants=participants,
+        from_ts=from_ts, to_ts=to_ts, keyword=keyword, scope=scope, visible_ids=visible_ids)
+    return conn.execute(
+        f"SELECT * FROM fireflies_transcripts{where} ORDER BY created_ts DESC, doc_id DESC "
+        f"LIMIT ? OFFSET ?", params + [limit, offset]).fetchall()
+
+
+def count_fireflies_transcripts(conn, **kw) -> int:
+    where, params = _fireflies_where(**kw)
+    return conn.execute(f"SELECT COUNT(*) FROM fireflies_transcripts{where}", params).fetchone()[0]
+
+
+def fireflies_transcript_by_id(conn, transcript_id, visible_ids=None) -> sqlite3.Row | None:
+    """Resolve the API-facing transcript id to its row. Unlike Linear's identifier this IS
+    unique — it is derived from the doc_id — so there is no first-match ambiguity."""
+    sql = "SELECT * FROM fireflies_transcripts WHERE transcript_id = ?"
+    clause, cparams = _acl_clause("fireflies_transcripts", visible_ids)
+    return conn.execute(sql + clause, [transcript_id] + cparams).fetchone()
+
+
+def fireflies_sentences(conn, doc_id) -> list[sqlite3.Row]:
+    """A transcript's sentences in order. No ACL clause: the caller has already been cleared for
+    the parent transcript, and a sentence is not independently addressable."""
+    return conn.execute("SELECT * FROM fireflies_sentences WHERE doc_id = ? ORDER BY seq",
+                        (doc_id,)).fetchall()
 
 
 # --- full-text search (FTS5) ----------------------------------------------------

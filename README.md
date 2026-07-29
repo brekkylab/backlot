@@ -2,7 +2,7 @@
 
 > **LocalStack for enterprise SaaS knowledge APIs.** Point your RAG/search connectors at
 > read-only mock **Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3,
-> HubSpot, and Linear**
+> HubSpot, Linear, and Fireflies**
 > APIs — real response shapes, real pagination, real per-document ACLs — entirely offline: no
 > accounts, no OAuth, no rate limits.
 
@@ -104,7 +104,7 @@ corpus are in [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus
 (use it for a full crawl); a user token sees only documents that user's ACL permits.
 
 - Slack: `Authorization: Bearer <token>` (also accepts `?token=` / form `token`)
-- Gmail / Drive / GitHub / Notion / HubSpot: `Authorization: Bearer <token>`
+- Gmail / Drive / GitHub / Notion / HubSpot / Fireflies: `Authorization: Bearer <token>`
 - Linear: `Authorization: <token>` — the **bare** token, no `Bearer` prefix, which is how Linear
   carries a personal API key. `Authorization: Bearer <token>` is accepted too (Linear's OAuth
   shape); anything else, including a stray scheme like `Token <t>`, is a 401 rather than being
@@ -278,6 +278,7 @@ URL-rewriting proxy.
 | `/hubspot/crm/v3`, `/hubspot/crm/v4` | HubSpot | `objects/{objectType}` (+`limit` max 100, `after`, `properties`, `archived`), `objects/{objectType}/{id}`, `objects/{objectType}/search` (`filterGroups` OR-ed, `filters` AND-ed, 13 operators over any property), `objects/{objectType}/batch/read`, `v4/objects/{type}/{id}/associations/{toType}` |
 | `/s3` | Amazon S3 | `ListBuckets`, `HeadBucket`, `GetBucketLocation`, `ListObjectsV2` (`prefix`/`delimiter`/`continuation-token`), `GetObject` (+`Range`), `HeadObject` |
 | `/linear/graphql` | Linear | **GraphQL only** (one `POST`): `issues`, `issue(id:)` (UUID *or* `ENG-123`), `team(id:)` (UUID, key, or name), `teams`, `comments`, `users`, `viewer`, plus the `Team.issues` / `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}` connections and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`, `release`, `attachment`, `issueRelation`) the official SDK's lazy relation accessors call. Relay pagination (`first`/`after`, `last`/`before` → `{nodes, pageInfo}`), server-side `filter` compiled into SQL, and full introspection |
+| `/fireflies/graphql` | Fireflies | **GraphQL only** (one `POST`): `transcripts`, `transcript(id:)`, `user[(id:)]`, `users`. Offset pagination — `limit` (**max 50**, clamped) / `skip`, returning a **bare list**, not a Relay connection — plus the documented filters: `keyword` × `scope` (`title`\|`sentences`\|`all`), `fromDate`/`toDate`, `host_email`, `organizers`, `participants`, `user_id`, `mine`, `channel_id`. Field names are snake_case, as Fireflies' own schema has them. Full introspection |
 
 ## Tests
 
@@ -335,6 +336,35 @@ follow the org (`<org>.atlassian.net`, and the owner echoed from the request pat
   is pointed at the mock by extending `LinearSdk` with a custom request function — Linear's own
   documented pattern. There is also no MCP story: Linear's official MCP server is remote-hosted at
   `https://mcp.linear.app/mcp` with no URL override, so no mock can substitute for it.
+- Fireflies is **GraphQL-only** and, like Linear, read-only — no `Mutation` type at all. Two
+  things set it apart from every other GraphQL source here and clients depend on both: pagination
+  is **offset-based** (`limit`, capped at 50 and *clamped* rather than rejected, plus `skip`) and
+  `transcripts` returns a **bare list**, not a `{nodes, pageInfo}` connection; and field names are
+  **snake_case** (`host_email`, `audio_url`, `meeting_attendees`), which is Fireflies' own
+  convention, not a translation. Note the units differ within one response, as they do in the real
+  API: `duration` is **minutes**, sentence `start_time`/`end_time` are **seconds**.
+  EnterpriseRAG-Bench ships Fireflies as 10,173 transcripts, but as **one flat text blob per
+  meeting** — not structured per-sentence records — so the sentences the API serves are *parsed*
+  from it (~619k of them) across the six line formats the corpus uses, gated on each meeting's
+  declared attendees so a transcript's auto-notes header (`Date:`, `Duration:`) cannot mint a
+  speaker. `content` is **defined as** the sentence concatenation and is an exact inverse of the
+  sentence rows, so full-text search reads the meeting as one document that can never drift from
+  its parts. Only *start* times are in the data (99.9% of lines) — end times are derived, wall-clock
+  transcripts are rebased onto elapsed time, and a garbled reading is dropped rather than tearing a
+  50-hour hole in a 60-minute meeting. The bench's `meeting_id` is **not unique**, so it is served
+  as `calendar_id` and `Transcript.id` is synthesized (unique by construction, so `transcript(id:)`
+  is never ambiguous). Transcripts are **org-visible** plus a per-user grant for everyone who
+  resolves: the corpus names 1,104 distinct hosts of whom only the ~167 directory employees can
+  authenticate, so an owner-or-channel scope would leave ~91% of meetings readable by admin alone
+  (same arithmetic as HubSpot). `analytics.sentiments` and the classifier buckets are **synthesized
+  or null, never derived from the text**; per-speaker talk time and word counts *are* computed from
+  the sentences.
+- **Fireflies has no SDK, no LlamaIndex reader, and no MCP server** — and raw HTTP is the
+  *official* path, not a workaround. The vendor's own quickstart is four raw-HTTP examples (curl,
+  Python `requests.post`, JS `axios.post`, Java `HttpClient`) posting to one endpoint with a Bearer
+  key, so the base URL is just a variable in user code and there is nothing to shim:
+  `examples/using-official-sdk/fireflies.py` uses `httpx` directly.
+  `llama-index-readers-fireflies` does not exist on PyPI, so there is no reader script.
 - S3 is **BYO-only** (not in EnterpriseRAG-Bench). Requests are XML (not JSON) and SigV4-signed;
   the mock verifies the signature against the access-key/secret derived from your bearer token
   and only supports path-style addressing (the bucket stays in the path, not the hostname).

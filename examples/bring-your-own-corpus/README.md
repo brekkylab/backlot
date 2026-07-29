@@ -43,10 +43,12 @@ Slack** (Slack messages have no title). One JSON object per line (JSONL) — for
 
 See `sample_corpus.jsonl` for a fully-populated record of every source type.
 
-- `source_type` ∈ `slack | gmail | google_drive | github | jira | confluence | notion | s3 | hubspot`.
+- `source_type` ∈ `slack | gmail | google_drive | github | jira | confluence | notion | s3 |
+  hubspot | linear | fireflies`.
 - The grouping unit is named per service — `channel` (slack), `mailbox` (gmail),
   `folder` (google_drive), `repo` (github), `project` (jira), `space` (confluence),
-  `teamspace` (notion), `bucket` (s3).
+  `teamspace` (notion), `bucket` (s3), `object_type` (hubspot), `team` (linear),
+  `channel` (fireflies).
 - **ACL per doc:** `readers` (emails → users, other ids → groups) win; else `visibility`
   `public | group | private` (default `public`). Group membership is derived from each author's
   `author_groups` plus the grouping unit they wrote in.
@@ -62,6 +64,17 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   root appears in `conversations.history`; the full thread comes back from `conversations.replies`
   (shared `thread_ts`, increasing `ts`, `reply_count` on the root). Reply times follow the root's
   `created` + position, so the thread stays ordered.
+- **Fireflies transcripts:** a fireflies record's child rows are `sentences`, not `replies`
+  — a transcript should read like a transcript, so `replies` on a `fireflies` record is
+  rejected rather than ignored. Each sentence carries `text`, an optional `speaker_name`
+  (null for an unattributed utterance), an optional `author_email` resolving the speaker to
+  an identity, and optional `start_time`/`end_time` in **seconds** (`duration` on the record
+  is in **minutes** — Fireflies' own units). `content` and `sentences` are two views of the
+  same text: supply `sentences` and `content` is derived from them, or supply only `content`
+  (a plain `Speaker: text` body) and the sentences are parsed back out of it. A line that
+  names no speaker folds into the sentence above it. Either way the two round-trip exactly,
+  so full-text search and the per-sentence API can never disagree; a record with neither is
+  a load error, because one of the two IS the transcript.
 - **Timestamps:** every record accepts `created` (epoch seconds or ISO 8601) — it drives the
   Slack `ts` / Gmail `Date`+`internalDate` / Drive `createdTime` / GitHub `created_at` / Jira
   `created` / Confluence version time. Drive/GitHub/Jira/Confluence also accept `updated`

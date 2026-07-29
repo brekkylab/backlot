@@ -15,7 +15,7 @@ import pytest
 from app import store
 
 ALL_SOURCES = ["slack", "gmail", "google_drive", "github", "jira", "confluence", "notion", "s3",
-               "hubspot", "linear"]
+               "hubspot", "linear", "fireflies"]
 
 
 # --- registry wiring ------------------------------------------------------------
@@ -45,6 +45,9 @@ def test_grouping_cols_per_source():
     # HubSpot has no channel/space concept; the API is polymorphic over `{objectType}`, so the
     # object type is the grouping unit (see app/store.py GROUPING).
     assert store.grouping_col("hubspot") == "object_type"
+    assert store.grouping_col("linear") == "team"
+    # Fireflies groups meetings into channels, its own concept and a documented filter.
+    assert store.grouping_col("fireflies") == "channel"
 
 
 def test_comment_tables_only_where_supported():
@@ -53,6 +56,10 @@ def test_comment_tables_only_where_supported():
     assert store.comment_table("confluence") == "confluence_comments"
     assert store.comment_table("github") == "github_comments"
     assert store.comment_table("notion") == "notion_comments"
+    assert store.comment_table("linear") == "linear_comments"
+    # Fireflies' child rows are SENTENCES, not comments; the slot is "the child rows of a doc in
+    # this source", so it is reused rather than duplicated (see app/store.py COMMENT_TABLE).
+    assert store.comment_table("fireflies") == "fireflies_sentences"
     # HubSpot models notes/emails/meetings as their own object types, not as comments on a record.
     for src in ("slack", "gmail", "google_drive", "s3", "hubspot"):
         assert store.comment_table(src) is None
@@ -531,3 +538,117 @@ def test_linear_distinct_values_feed_the_reverse_index(db):
 
 def test_linear_comment_table_is_registered(db):
     assert store.comment_table("linear") == "linear_comments"
+
+
+# --- fireflies ------------------------------------------------------------------
+# Sentences occupy the per-source child-rows slot, so the registry assertion above already
+# covers the table wiring; these cover the reads the GraphQL resolvers are built on.
+
+def test_fireflies_child_rows_use_the_shared_comment_slot(db):
+    # Not comments, but the same "child rows of a doc" mapping — and therefore the same column
+    # contract, which is what makes doc_comments work against it unchanged.
+    assert store.comment_table("fireflies") == "fireflies_sentences"
+    rows = store.doc_comments(db, "fireflies", "ff-discovery")
+    assert [r["seq"] for r in rows] == [1, 2, 3, 4]
+    assert rows[0]["body"].startswith("Thanks for joining")
+
+
+def test_fireflies_scope_columns_are_the_api_vocabulary():
+    assert store.fireflies_scope_columns("title") == ("title",)
+    assert store.fireflies_scope_columns("sentences") == ("content",)
+    assert store.fireflies_scope_columns("all") == ("title", "content")
+    assert store.fireflies_scope_columns(None) == ("title", "content")   # default
+    assert store.fireflies_scope_columns("ALL") == ("title", "content")  # case-insensitive
+    assert store.fireflies_scope_columns("body") is None                 # not an API value
+
+
+def test_fireflies_transcripts_are_newest_first(db):
+    rows = store.list_fireflies_transcripts(db, limit=50)
+    tss = [r["created_ts"] for r in rows]
+    assert tss == sorted(tss, reverse=True)
+    assert {r["doc_id"] for r in rows} == {"ff-discovery", "ff-allhands", "ff-secret"}
+
+
+def test_fireflies_limit_and_skip_walk_the_corpus_without_gaps(db):
+    everything = [r["doc_id"] for r in store.list_fireflies_transcripts(db, limit=50)]
+    walked = []
+    for skip in range(0, len(everything)):
+        page = store.list_fireflies_transcripts(db, limit=1, offset=skip)
+        walked += [r["doc_id"] for r in page]
+    assert walked == everything
+    # past the end is an empty page, not an error
+    assert store.list_fireflies_transcripts(db, limit=5, offset=999) == []
+
+
+def test_fireflies_keyword_honours_every_scope(db):
+    # "selects" appears only in a SENTENCE of ff-allhands, never in any title.
+    assert [r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, keyword="selects", scope="sentences")] == ["ff-allhands"]
+    assert store.list_fireflies_transcripts(db, keyword="selects", scope="title") == []
+    assert [r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, keyword="selects", scope="all")] == ["ff-allhands"]
+    # "all-hands" appears only in a TITLE.
+    assert [r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, keyword="all-hands", scope="title")] == ["ff-allhands"]
+    assert store.list_fireflies_transcripts(db, keyword="all-hands", scope="sentences") == []
+
+
+def test_fireflies_keyword_wildcards_stay_literal(db):
+    # A LIKE metacharacter in the needle must not turn into a match-everything pattern.
+    assert store.list_fireflies_transcripts(db, keyword="%") == []
+    assert store.list_fireflies_transcripts(db, keyword="_atency") == []
+    assert [r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency")]
+
+
+def test_fireflies_filters_narrow_by_channel_host_and_date(db):
+    assert [r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, channel="all-hands")] == ["ff-allhands"]
+    assert [r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, host_email="AVA@acme.com")] == ["ff-discovery"]          # case-insensitive
+    ts = store.list_fireflies_transcripts(db, channel="sales-calls")[0]["created_ts"]
+    assert [r["doc_id"] for r in store.list_fireflies_transcripts(db, to_ts=ts)] == ["ff-discovery"]
+    assert "ff-discovery" not in [r["doc_id"] for r in
+                                  store.list_fireflies_transcripts(db, from_ts=ts + 1)]
+
+
+def test_fireflies_organizer_filter_falls_back_to_the_host(db):
+    # organizer_email is NULL when the organizer IS the host, so filtering by the host's address
+    # must still match — otherwise organizing your own meeting would not find it.
+    assert db.execute("SELECT organizer_email FROM fireflies_transcripts "
+                      "WHERE doc_id = 'ff-discovery'").fetchone()[0] is None
+    assert [r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, organizers=["ava@acme.com"])] == ["ff-discovery"]
+
+
+def test_fireflies_participant_filter_is_exact_membership(db):
+    assert [r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, participants=["ava@acme.com"])] == ["ff-discovery"]
+    # a substring of a stored address must NOT match (json_each, not a LIKE on the JSON text)
+    assert store.list_fireflies_transcripts(db, participants=["ava@acme.co"]) == []
+
+
+def test_fireflies_transcript_by_id_is_unambiguous(db):
+    row = store.list_fireflies_transcripts(db, limit=1)[0]
+    assert store.fireflies_transcript_by_id(db, row["transcript_id"])["doc_id"] == row["doc_id"]
+    assert store.fireflies_transcript_by_id(db, "deadbeefdeadbeefdeadbeef") is None
+    # unique by construction (derived from the doc_id), unlike Linear's identifier
+    n, distinct = db.execute("SELECT COUNT(*), COUNT(DISTINCT transcript_id) "
+                             "FROM fireflies_transcripts").fetchone()
+    assert n == distinct
+
+
+def test_fireflies_sentences_come_back_in_spoken_order(db):
+    rows = store.fireflies_sentences(db, "ff-discovery")
+    assert [r["seq"] for r in rows] == [1, 2, 3, 4]
+    assert [r["start_time"] for r in rows] == sorted(r["start_time"] for r in rows)
+    # every window is forward-going and contiguous with the next
+    for a, b in zip(rows, rows[1:]):
+        assert a["start_time"] < a["end_time"] <= b["start_time"]
+
+
+def test_fireflies_counts_agree_with_the_pages(db):
+    for kw, scope in [(None, None), ("latency", "all"), ("selects", "sentences"),
+                      ("all-hands", "title")]:
+        total = store.count_fireflies_transcripts(db, keyword=kw, scope=scope)
+        assert total == len(store.list_fireflies_transcripts(db, keyword=kw, scope=scope,
+                                                             limit=50))

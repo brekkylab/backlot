@@ -191,7 +191,39 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
                 # human identifier (ENG-123), not a doc_id, because that is how Linear and the
                 # bench both name a parent.
                 "parent_key": parent_id, "release": ex.get("release")}
+    if src == "fireflies":
+        # Keys are the Fireflies API's own, so a corpus written against it needs no renaming.
+        # `transcript_id` and the three media/web URLs are derived from the doc_id when omitted,
+        # and MATERIALIZED here rather than synthesized per request for the same reason Linear's
+        # `identifier` is: `transcript(id:)` has to resolve the id the API just handed the caller,
+        # and the app's reverse index is built from stored columns.
+        tid = ex.get("transcript_id") or synth.fireflies_id(doc_id)
+        return {"transcript_id": tid,
+                "calendar_id": ex.get("calendar_id"),
+                "calendar_type": ex.get("calendar_type") or "google_calendar",
+                "organizer_email": ex.get("organizer_email"),
+                "duration": _ff_minutes(ex.get("duration")),
+                "created_ts": created,
+                "summary": _j(ex.get("summary")), "analytics": _j(ex.get("analytics")),
+                "participants": _j(ex.get("participants")),
+                "meeting_attendees": _j(ex.get("meeting_attendees")),
+                "audio_url": ex.get("audio_url") or synth.fireflies_media_url(tid, "audio"),
+                "video_url": ex.get("video_url") or synth.fireflies_media_url(tid, "video"),
+                "transcript_url": (ex.get("transcript_url")
+                                   or synth.fireflies_transcript_url(tid)),
+                "meeting_link": ex.get("meeting_link") or synth.fireflies_meeting_link(doc_id),
+                "owner_display": ex.get("host_name")}
     return {}
+
+
+def _ff_minutes(value) -> float | None:
+    """A Fireflies `duration` in MINUTES, which is the unit the API uses."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _emails(rec: dict):
@@ -271,6 +303,40 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
         # Slack messages have no title; the other five carry a natural one.
         title = rec.get("title") or ""
 
+        # Fireflies: `content` is DEFINED as the sentence concatenation, so the two can never be
+        # allowed to disagree. A record that supplies `sentences` has its content derived from
+        # them; one that supplies only `content` has its sentences parsed back out of it, so a BYO
+        # author can write a plain "Speaker: text" transcript and still get per-sentence rows.
+        # Either way the round-trip holds, exactly as it does for an ERB import. This runs before
+        # `_doc_id`, which hashes the content — so the id covers the transcript either way.
+        sentences = None
+        if src == "fireflies":
+            # The same parser the ERB loader uses, so a BYO transcript and a bench transcript are
+            # stored identically.
+            from app.importer.erb import parse_fireflies_transcript
+            given = rec.get("sentences")
+            if not given and not (rec.get("content") or "").strip():
+                # Stated here rather than as a schema `anyOf`, whose error ("is not valid under
+                # any of the given schemas") names neither field and so tells the author nothing.
+                raise SystemExit(f"line {lineno}: a fireflies record needs 'sentences' or "
+                                 f"'content' — one of the two IS the transcript")
+            if given:
+                sentences = [{"speaker_name": s.get("speaker_name") or s.get("speaker"),
+                              "text": s.get("text") or s.get("content") or "",
+                              "start_time": s.get("start_time"), "end_time": s.get("end_time"),
+                              "speaker_id": s.get("speaker_id"),
+                              "author_email": s.get("author_email")} for s in given]
+            else:
+                sentences = parse_fireflies_transcript(rec.get("content") or "")
+            ff_minutes = _ff_minutes(rec.get("duration"))
+            synth.fireflies_fill_times(sentences, (ff_minutes * 60) if ff_minutes else None)
+            ordinals: dict[str, int] = {}
+            for s in sentences:
+                ordinals.setdefault(s["speaker_name"] or "", len(ordinals))
+                if s.get("speaker_id") is None:
+                    s["speaker_id"] = ordinals[s["speaker_name"] or ""]
+            rec = {**rec, "content": synth.fireflies_transcript_text(sentences)}
+
         doc_id = _doc_id(rec)
         if doc_id in seen:
             continue
@@ -286,8 +352,10 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                 users.setdefault(email, name or _display_name(email))
                 memberships.add((group, email))
 
-        author = rec.get("author_email")
-        register(author, rec.get("author_name"))
+        # `host_email` is Fireflies' own name for the doc's author, accepted so a corpus written
+        # against the API needs no renaming (the generic `author_email` still works).
+        author = rec.get("author_email") or (rec.get("host_email") if src == "fireflies" else None)
+        register(author, rec.get("author_name") or rec.get("host_name"))
         for g in rec.get("author_groups", []):
             groups.add(g)
             if author:
@@ -326,7 +394,11 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                   # Linear (its own field names: `state` not status, camelCase timestamps)
                   "identifier", "estimate", "project", "cycle", "branchName", "dueDate",
                   "assigneeName", "archivedAt", "autoArchivedAt", "autoClosedAt", "canceledAt",
-                  "completedAt", "startedAt", "release", "relations", "attachments"):
+                  "completedAt", "startedAt", "release", "relations", "attachments",
+                  # Fireflies (its own field names, as the GraphQL API returns them)
+                  "host_email", "organizer_email", "duration", "summary", "analytics",
+                  "participants", "meeting_attendees", "audio_url", "video_url",
+                  "transcript_url", "meeting_link", "calendar_id", "calendar_type"):
             if k in rec:
                 extras[k] = rec[k]
         subtype = rec.get("subtype")
@@ -341,6 +413,17 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
 
         replies = rec.get("replies") if src == "slack" else None
         thread_id = doc_id if replies else None
+
+        if src == "fireflies":
+            # Needs the doc_id (analytics is seeded from it), so it can only run here — the
+            # sentences themselves were built before `_doc_id`, above.
+            from app.importer.erb import _ff_speaker_stats
+            secs = (_ff_minutes(rec.get("duration")) or 0) * 60 or None
+            extras["analytics"] = extras.get("analytics") or synth.fireflies_analytics(
+                doc_id, _ff_speaker_stats(sentences), secs)
+            extras["participants"] = extras.get("participants") or [
+                e for e in dict.fromkeys(s.get("author_email") for s in sentences) if e]
+            extras.setdefault("host_name", rec.get("host_name") or rec.get("author_name"))
 
         def insert(did, email, ttl, body, seq=0, sub=None, par=None, ex=None, cts=None, uts=None):
             cols = _service_columns(src, ex or {}, sub, par, did, thread_id, seq,
@@ -393,6 +476,19 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             hs_types[doc_id] = container
             for a in rec.get("associations") or []:
                 hs_links.append((doc_id, container, a))
+
+        for j, s in enumerate(sentences or [], start=1):
+            register(s.get("author_email"), s.get("speaker_name"))
+            conn.execute(
+                "INSERT OR REPLACE INTO fireflies_sentences(id, doc_id, seq, author_email, body, "
+                "created_ts, reactions, speaker_name, speaker_id, start_time, end_time) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                # A sentence sits on the MEETING's clock plus its own offset, so ordering by time
+                # never shuffles a transcript (same reasoning as a comment's created + j above).
+                (f"{doc_id}::s{j}", doc_id, j, s.get("author_email"), s["text"],
+                 int(created + (s.get("start_time") or 0)), None,
+                 s.get("speaker_name") or None, s.get("speaker_id"),
+                 s.get("start_time"), s.get("end_time")))
 
         # comments on the document — only jira/confluence/github expose them (slack uses replies)
         rec_comments = rec.get("comments") or []

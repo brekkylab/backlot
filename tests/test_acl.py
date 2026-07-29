@@ -257,3 +257,112 @@ def test_linear_hidden_assignee_is_not_nameable_by_id(sample_settings, tokens):
         assert "Entity not found" in got["errors"][0]["message"]
     finally:
         close()
+
+
+# --- fireflies ------------------------------------------------------------------
+# `ff-secret` is granted to hana only, and it is the sole transcript in the `board` channel, so
+# both the unfiltered list and every filter have to agree about hiding it.
+
+def _ff_gql(client, query, token, **variables):
+    body = {"query": query}
+    if variables:
+        body["variables"] = variables
+    return client.post("/fireflies/graphql", json=body,
+                       headers={"Authorization": f"Bearer {token}"}).json()
+
+
+def test_fireflies_store_reads_are_acl_scoped(db, acl, tokens):
+    assert "ff-secret" in _visible(db, acl, "admin-service-token", "fireflies")    # admin
+    assert "ff-secret" in _visible(db, acl, tokens["hana@acme.com"], "fireflies")  # granted
+    assert "ff-secret" not in _visible(db, acl, tokens["ava@acme.com"], "fireflies")
+    # the org-visible transcripts are readable by both
+    for email in ("hana@acme.com", "ava@acme.com"):
+        assert {"ff-discovery", "ff-allhands"} <= _visible(db, acl, tokens[email], "fireflies")
+
+
+def test_fireflies_transcripts_list_hides_denied_meetings(sample_settings, tokens):
+    client, close = _linear_client(sample_settings)
+    try:
+        q = "{ transcripts(limit: 50) { title } }"
+        ava = _ff_gql(client, q, tokens["ava@acme.com"])["data"]["transcripts"]
+        hana = _ff_gql(client, q, tokens["hana@acme.com"])["data"]["transcripts"]
+        assert "Board pre-read walkthrough" not in [t["title"] for t in ava]
+        assert "Board pre-read walkthrough" in [t["title"] for t in hana]
+    finally:
+        close()
+
+
+def test_fireflies_transcript_by_id_denies_rather_than_reveals(sample_settings, tokens):
+    """A transcript the caller may not read must be indistinguishable from one that does not
+    exist — the id is a pure function of the doc_id (app/synth.py), so it is computable offline
+    and a different error would confirm the meeting exists."""
+    from app import synth
+
+    client, close = _linear_client(sample_settings)
+    try:
+        q = 'query($i:String!){ transcript(id:$i) { title } }'
+        tid = synth.fireflies_id("ff-secret")
+        assert _ff_gql(client, q, tokens["ava@acme.com"], i=tid)["data"]["transcript"] is None
+        granted = _ff_gql(client, q, tokens["hana@acme.com"], i=tid)["data"]["transcript"]
+        assert granted["title"] == "Board pre-read walkthrough"      # the id IS real
+        # an absent id looks exactly the same to the denied caller
+        assert _ff_gql(client, q, tokens["ava@acme.com"],
+                       i="deadbeefdeadbeefdeadbeef")["data"]["transcript"] is None
+    finally:
+        close()
+
+
+def test_fireflies_filters_do_not_leak_a_denied_meeting(sample_settings, tokens):
+    """Every narrowing argument goes through the same ACL clause: a filter that a hidden
+    transcript is the ONLY match for must return nothing, not the hidden row."""
+    client, close = _linear_client(sample_settings)
+    try:
+        for args in ('channel_id: "board"',                       # its channel alone
+                     'host_email: "hana@acme.com"',               # its host
+                     'keyword: "stays in the room", scope: "sentences"',   # its own sentence
+                     'keyword: "Board pre-read", scope: "title"'):
+            q = "{ transcripts(%s, limit: 50) { title } }" % args
+            ava = _ff_gql(client, q, tokens["ava@acme.com"])["data"]["transcripts"]
+            assert "Board pre-read walkthrough" not in [t["title"] for t in ava], args
+            hana = _ff_gql(client, q, tokens["hana@acme.com"])["data"]["transcripts"]
+            assert "Board pre-read walkthrough" in [t["title"] for t in hana], args
+    finally:
+        close()
+
+
+def test_fireflies_sentences_of_a_denied_meeting_are_unreachable(sample_settings, tokens):
+    """Sentences are fetched off a transcript the caller was already cleared for, so denying the
+    parent is what protects them — this pins that there is no second path to the text."""
+    client, close = _linear_client(sample_settings)
+    try:
+        q = "{ transcripts(limit: 50) { sentences { text } } }"
+        ava = _ff_gql(client, q, tokens["ava@acme.com"])["data"]["transcripts"]
+        said = [s["text"] for t in ava for s in t["sentences"]]
+        assert not any("stays in the room" in s for s in said)
+    finally:
+        close()
+
+
+def test_fireflies_mine_is_scoped_to_the_calling_user(sample_settings, tokens):
+    """`mine` means the caller's OWN meetings. The caller's address is the only identity the
+    server can vouch for, so it must never widen to everyone's."""
+    client, close = _linear_client(sample_settings)
+    try:
+        q = "{ transcripts(mine: true, limit: 50) { title host_email } }"
+        ava = _ff_gql(client, q, tokens["ava@acme.com"])["data"]["transcripts"]
+        assert [t["title"] for t in ava] == ["Acme x Northwind — latency discovery"]
+        hana = _ff_gql(client, q, tokens["hana@acme.com"])["data"]["transcripts"]
+        assert {t["host_email"] for t in hana} == {"hana@acme.com"}
+    finally:
+        close()
+
+
+def test_fireflies_mine_returns_nothing_for_a_token_that_is_not_a_person(sample_settings):
+    """An admin/service token has no user, so "my meetings" is empty rather than all of them."""
+    client, close = _linear_client(sample_settings)
+    try:
+        got = _ff_gql(client, "{ transcripts(mine: true, limit: 50) { title } }",
+                      sample_settings.admin_token)
+        assert got["data"]["transcripts"] == []
+    finally:
+        close()

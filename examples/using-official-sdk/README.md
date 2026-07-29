@@ -6,8 +6,22 @@ The only change from talking to the real service is the base URL.
 
 ```bash
 pip install -e ".[examples]"
-python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py, hubspot.py
+python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py, hubspot.py, fireflies.py
 ```
+
+## Fireflies has no SDK — and raw HTTP is the official path
+
+`fireflies.py` uses `httpx` directly, and that is not a workaround for a missing client.
+**Fireflies publishes no SDK at all**, and its own quickstart documents four raw-HTTP
+examples — curl, Python `requests.post`, JS `axios.post`, Java `HttpClient` — each posting a
+GraphQL document to one endpoint with a Bearer key. So the base URL is just a variable in
+user code and there is nothing to shim: this script is the vendor's documented usage with
+the URL pointed elsewhere. It is the cheapest example here for exactly that reason, and the
+contrast with `linear/` below is the point — Linear *does* publish a client, and pointing
+that at the mock takes a real shim.
+
+There is no LlamaIndex reader either (`llama-index-readers-fireflies` is not on PyPI), which
+is recorded in `examples/using-llamaindex-readers/README.md`.
 
 ## Linear is the one TypeScript example — and why
 

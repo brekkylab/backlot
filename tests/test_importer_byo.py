@@ -456,3 +456,121 @@ def test_append_incremental_fts_finds_new_and_keeps_old(tmp_path, monkeypatch):
     assert len(store.search_documents(conn, "beta", "notion")) == 1       # new doc indexed
     assert len(store.search_documents(conn, "alpha", "confluence")) == 1  # old doc still indexed
     conn.close()
+
+
+# --- fireflies -------------------------------------------------------------------
+# A transcript's child rows are `sentences`, NOT `replies` (which stays Slack-only), so a BYO
+# author writing a transcript writes something that reads like a transcript.
+
+def test_fireflies_byo_load_with_structured_sentences(tmp_path):
+    corpus = _write(tmp_path, [
+        {"source_type": "fireflies", "doc_id": "ff-1", "channel": "sales-calls",
+         "title": "Acme discovery", "host_email": "ava@acme.com", "host_name": "Ava Chen",
+         "duration": 31.5, "calendar_id": "cal-9", "created": "2026-04-02T15:00:00Z",
+         "summary": {"overview": "Discovery.", "topics_discussed": ["latency"],
+                     "action_items": ["Ava: send pricing"], "meeting_type": "discovery"},
+         "sentences": [
+             {"speaker_name": "Ava Chen", "author_email": "ava@acme.com", "start_time": 0,
+              "text": "Let's talk latency."},
+             {"speaker_name": "Dana Ruiz", "start_time": 12, "text": "Our p95 is 300ms."},
+             {"speaker_name": "Ava Chen", "author_email": "ava@acme.com", "start_time": 25,
+              "text": "Understood."}]},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    assert load(corpus, settings)["counts"]["fireflies"] == 1
+    conn = store.connect_ro(settings.db_path)
+    row = conn.execute("SELECT * FROM fireflies_transcripts").fetchone()
+    assert row["channel"] == "sales-calls"
+    assert row["author_email"] == "ava@acme.com"       # host_email is the author alias
+    assert row["owner_display"] == "Ava Chen"
+    assert row["duration"] == 31.5
+    assert row["calendar_id"] == "cal-9"
+    # content is DERIVED from the sentences, so it is never a second copy that can drift
+    assert row["content"] == ("Ava Chen: Let's talk latency.\n"
+                             "Dana Ruiz: Our p95 is 300ms.\n"
+                             "Ava Chen: Understood.")
+    sents = conn.execute("SELECT * FROM fireflies_sentences ORDER BY seq").fetchall()
+    assert [s["speaker_name"] for s in sents] == ["Ava Chen", "Dana Ruiz", "Ava Chen"]
+    assert [s["speaker_id"] for s in sents] == [0, 1, 0]      # ordinals reuse per speaker
+    assert [s["author_email"] for s in sents] == ["ava@acme.com", None, "ava@acme.com"]
+    assert [s["start_time"] for s in sents] == [0.0, 12.0, 25.0]
+    assert all(s["end_time"] > s["start_time"] for s in sents)
+    # derived where the record was silent
+    assert row["transcript_id"] and row["transcript_url"].endswith(row["transcript_id"])
+    assert row["audio_url"] and row["video_url"] and row["meeting_link"]
+    assert row["calendar_type"] == "google_calendar"
+    assert json.loads(row["analytics"])["sentiments"]["positive_pct"] is not None
+    assert json.loads(row["participants"]) == ["ava@acme.com"]
+
+
+def test_fireflies_byo_parses_sentences_out_of_a_plain_body(tmp_path):
+    """A record with only `content` still gets per-sentence rows, so an author can write a plain
+    "Speaker: text" transcript. The un-prefixed line folds into the sentence above it."""
+    corpus = _write(tmp_path, [
+        {"source_type": "fireflies", "doc_id": "ff-2", "channel": "all-hands",
+         "title": "All hands", "author_email": "hana@acme.com",
+         "content": "[00:00] Hana: numbers first.\n"
+                    "[00:30] Mia: design shipped selects.\n"
+                    "And cleared the backlog.\n"
+                    "[01:00] Hana: that's a wrap."},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    sents = conn.execute("SELECT * FROM fireflies_sentences ORDER BY seq").fetchall()
+    assert [s["speaker_name"] for s in sents] == ["Hana", "Mia", "Hana"]
+    assert sents[1]["body"] == "design shipped selects.\nAnd cleared the backlog."
+    assert [s["start_time"] for s in sents] == [0.0, 30.0, 60.0]
+
+
+def test_fireflies_byo_content_and_sentences_always_round_trip(tmp_path):
+    """The invariant that makes `content` a safe definition rather than a duplicate, checked for
+    both the supplied-sentences and the parsed-body path."""
+    from app import synth
+
+    corpus = _write(tmp_path, [
+        {"source_type": "fireflies", "doc_id": "ff-a", "title": "Given sentences",
+         "sentences": [{"speaker_name": "A", "text": "one"},
+                       {"speaker_name": None, "text": "(crosstalk)"},
+                       {"speaker_name": "B", "text": "two"}]},
+        {"source_type": "fireflies", "doc_id": "ff-b", "title": "Parsed body",
+         "content": "[00:00] A: one.\n[00:05] B: two."},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    for row in conn.execute("SELECT doc_id, content FROM fireflies_transcripts"):
+        stored = [{"speaker_name": s["speaker_name"], "text": s["body"]} for s in
+                  conn.execute("SELECT speaker_name, body FROM fireflies_sentences "
+                               "WHERE doc_id=? ORDER BY seq", (row["doc_id"],))]
+        assert synth.fireflies_transcript_text(stored) == row["content"], row["doc_id"]
+    # a null-speaker sentence renders bare, so an empty "Speaker: " prefix never enters the text
+    assert conn.execute("SELECT content FROM fireflies_transcripts WHERE doc_id='ff-a'"
+                        ).fetchone()[0] == "A: one\n(crosstalk)\nB: two"
+
+
+def test_fireflies_byo_sentences_sit_on_the_meeting_clock(tmp_path):
+    corpus = _write(tmp_path, [
+        {"source_type": "fireflies", "doc_id": "ff-3", "title": "Timed",
+         "created": "2026-04-02T15:00:00Z",
+         "sentences": [{"speaker_name": "A", "text": "one", "start_time": 0},
+                       {"speaker_name": "B", "text": "two", "start_time": 90}]},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    rows = conn.execute("SELECT created_ts, start_time FROM fireflies_sentences "
+                        "ORDER BY seq").fetchall()
+    assert [r["created_ts"] for r in rows] == [1775142000, 1775142090]
+
+
+def test_fireflies_byo_replies_are_still_rejected(tmp_path):
+    """`replies` stays Slack-only; a transcript's child rows are `sentences`. The schema is what
+    enforces it, so the mistake is caught at validation rather than silently dropped."""
+    corpus = _write(tmp_path, [
+        {"source_type": "fireflies", "title": "Wrong array", "content": "A: hi",
+         "replies": [{"content": "nope"}]},
+    ])
+    with pytest.raises(SystemExit) as e:
+        load(corpus, Settings(data_dir=tmp_path))
+    assert "replies" in str(e.value)

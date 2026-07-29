@@ -24,12 +24,21 @@ host argument directly; five hardcode the host, so a small shim in `_llamaindex.
 | HubSpot | `HubspotReader` | `point_hubspot_at()` (rebinds `hubspot.HubSpot` to inject `host=`) |
 | Drive | `GoogleDriveReader` | `point_drive_at()` (wraps `build`) + real `service_account_key=` injection hook |
 | Linear | `LinearReader` | `patch_linear_at()` (swaps the module's `requests` for a URL-rewriting proxy) |
+| Fireflies | **none exists** | n/a — `llama-index-readers-fireflies` is not on PyPI; see the note below |
 
 All reads are ACL-scoped by the credential you pass (`--token`, or the admin token by default),
 exactly as against the real API.
 
 ## Per-source notes
 
+- **Fireflies** (no script): there is **no LlamaIndex reader for Fireflies** —
+  `llama-index-readers-fireflies` does not exist on PyPI (checked). This is recorded here
+  rather than left as a silent gap in the table above, so the absence reads as a fact about
+  the ecosystem rather than as an omission in this directory. Nothing is lost: Fireflies
+  publishes no SDK either, and its own quickstart is a raw HTTP POST, so
+  `examples/using-official-sdk/fireflies.py` already shows the officially documented way to
+  read it — pointing that at the mock is a one-line base-URL change with no shim at all.
+  A reader, if one ever ships, would need no mock-side work.
 - **GitHub** (`github.py`): `GitHubIssuesClient(base_url=...)` is a first-class constructor arg —
   no shim needed.
 - **HubSpot** (`hubspot.py`): the reader is **not** in the `[llamaindex]` extra — it pins

@@ -614,6 +614,22 @@ def _drive_owned_by(owner_email: str | None, me: str | None) -> bool:
     return bool(me) and (owner_email or "").lower() == me.lower()
 
 
+def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) -> dict:
+    """``sharedWithMeTime`` as a ``**``-mergeable fragment: real Drive populates it only on items
+    shared with the caller (and omits ``parents`` on them), so its presence is how a client tells a
+    shared item from its own — the same partition ``q: sharedWithMe`` filters on, which is why the
+    two have to agree.
+
+    Empty when the caller is unknown (the admin/service token: nothing was shared *with* it, so
+    there is no time to report) or when the caller owns the item. The mock records no share event,
+    so the file's creation time stands in — stable, and never later than a real share would be.
+    ``modifiedTime`` would be wrong here: a share time that moved every time the document was
+    edited would reorder ``orderBy=sharedWithMeTime`` for an unrelated reason."""
+    if not me or _drive_owned_by(owner_email, me):
+        return {}
+    return {"sharedWithMeTime": synth.rfc3339(created)}
+
+
 def _drive_facts(row) -> dict:
     """The values `q` clauses are evaluated against, taken from a stored row."""
     modified = row["updated_ts"] or (row["created_ts"] or synth.epoch(row["doc_id"])) + 3600
@@ -682,16 +698,21 @@ def _visible_drive_folders(conn, ids) -> list[str]:
     return sorted(f for f in folders if store.drive_folder_has_visible(conn, f, ids))
 
 
-def _drive_folder_obj(conn, name: str) -> dict:
+def _drive_folder_obj(conn, name: str, me: str | None = None) -> dict:
     """A Drive file object for a folder container. Its id matches what files in it report as
     their parent (``synth.drive_folder_id``), and it hangs under ``root`` so a client that
-    navigates from My Drive root (e.g. mirage) can discover and descend into it."""
+    navigates from My Drive root (e.g. mirage) can discover and descend into it.
+
+    The mock models no folder owner, so a folder is never owned by the caller and carries
+    ``sharedWithMeTime`` like any other item the ``sharedWithMe`` filter returns — the folder stream
+    has to answer a clause the same way the row stream does."""
     fid = synth.drive_folder_id(name)
     ts = synth.epoch("folder:" + name)
     return {
         "kind": "drive#file", "id": fid, "name": name,
         "mimeType": DRIVE_FOLDER_MIME, "parents": ["root"],
         "createdTime": synth.rfc3339(ts), "modifiedTime": synth.rfc3339(ts),
+        **_shared_with_me_time(None, me, ts),
         "trashed": False, "explicitlyTrashed": False, "starred": False,
         "shared": True, "ownedByMe": False, "viewedByMe": False,
         "version": "1", "spaces": ["drive"],
@@ -840,12 +861,16 @@ _DRIVE_ORDER_KEYS = {
     "folder": lambda f: f.get("mimeType") != DRIVE_FOLDER_MIME,  # folders first
     "starred": lambda f: bool(f.get("starred")),
     "quotaBytesUsed": lambda f: int(f.get("quotaBytesUsed") or f.get("size") or 0),
+    # Sortable because the mock DOES model the relation behind it — owner vs caller — even though it
+    # records no share event (see _shared_with_me_time). Absent for the admin/service token, where
+    # every key ties and the order falls back to the id, as it would on real Drive over nulls.
+    "sharedWithMeTime": lambda f: f.get("sharedWithMeTime") or "",
 }
-# Documented by Drive, but derived from per-caller signals this mock does not model: nothing here
-# is ever viewed, modified-by-me or stamped with a share time. Sorting by one of these could only
-# be a no-op, and a silently unapplied sort is the very failure this fix is about — so they 400,
-# which tells a consumer "verify this against real Drive" instead of quietly agreeing.
-_DRIVE_ORDER_UNMODELLED = ("viewedByMeTime", "modifiedByMeTime", "sharedWithMeTime")
+# Documented by Drive, but derived from per-caller signals this mock does not model at all: nothing
+# here is ever viewed or modified *by* anyone in particular. Sorting by one of these could only be a
+# no-op, and a silently unapplied sort is the very failure this fix is about — so they 400, which
+# tells a consumer "verify this against real Drive" instead of quietly agreeing.
+_DRIVE_ORDER_UNMODELLED = ("viewedByMeTime", "modifiedByMeTime")
 
 
 def _drive_order_specs(order_by: str | None) -> list[tuple]:
@@ -908,7 +933,7 @@ def _drive_folder_candidates(conn, ids, q: str, me: str | None) -> list[dict]:
     covers document content, not container names), so it can't take part in an FTS match."""
     if _DRIVE_FULLTEXT_RE.search(q) or _drive_q_excludes_folders(q):
         return []
-    return [f for f in (_drive_folder_obj(conn, n) for n in _visible_drive_folders(conn, ids))
+    return [f for f in (_drive_folder_obj(conn, n, me) for n in _visible_drive_folders(conn, ids))
             if _drive_q_match_facts(_drive_obj_facts(f), q, me)]
 
 
@@ -1042,7 +1067,7 @@ async def drive_files_get(file_id: str, request: Request):
         name = _drive_folder_name_by_id(conn, file_id)  # folders aren't stored as rows
         if name is not None:
             keys = _drive_get_field_keys(request.query_params.get("fields"))
-            return _drive_project([_drive_folder_obj(conn, name)], keys)[0]
+            return _drive_project([_drive_folder_obj(conn, name, caller.email)], keys)[0]
         raise HTTPException(status_code=404, detail="File not found")
     if request.query_params.get("alt") == "media":
         # raw download — real API errors on native Docs-editors types (use export)
@@ -1215,6 +1240,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "trashed": bool(row["trashed"]), "explicitlyTrashed": bool(row["trashed"]),
         "starred": False, "shared": bool(shared), "viewedByMe": False,
         "ownedByMe": _drive_owned_by(author, me),
+        **_shared_with_me_time(author, me, created),
         "version": str(2 if row["updated_ts"] else 1),
         "spaces": ["drive"], "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",

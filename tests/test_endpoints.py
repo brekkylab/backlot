@@ -1881,6 +1881,49 @@ def test_drive_shared_with_me_partitions_by_owner(client, tokens):
     assert brand in own and brand not in shared
 
 
+def test_drive_shared_items_carry_shared_with_me_time(client, tokens):
+    """Real Drive populates `sharedWithMeTime` only on items shared with the caller, and omits
+    `parents` on them — so its presence is how a client classifies one. Filtering on
+    `sharedWithMe` while never emitting the field left a row that the filter calls shared unable to
+    say so itself."""
+    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    shared = client.get("/drive/v3/files", headers=mia,
+                        params={"q": "sharedWithMe=true and trashed=false",
+                                "pageSize": 100}).json()["files"]
+    own = client.get("/drive/v3/files", headers=mia,
+                     params={"q": "sharedWithMe=false and trashed=false",
+                             "pageSize": 100}).json()["files"]
+    assert shared and own
+    assert all(f["sharedWithMeTime"] for f in shared), "every shared item needs the timestamp"
+    assert all("sharedWithMeTime" not in f for f in own), "an item you own was never shared with you"
+    # folders come out of the same filter, so they must answer the same way
+    assert any(f["mimeType"] == FOLDER_MIME for f in shared)
+    # and files.get agrees with the listing
+    one = shared[0]
+    assert client.get(f"/drive/v3/files/{one['id']}", headers=mia).json() == one
+
+
+def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
+    """The admin/service token is not a Drive user, so nothing was shared *with* it — no timestamp
+    to invent. `orderBy` on the field still answers (all-equal keys), as real Drive does for nulls."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 20}).json()["files"]
+    assert files and all("sharedWithMeTime" not in f for f in files)
+    assert client.get("/drive/v3/files", headers=admin_h,
+                      params={"pageSize": 5, "orderBy": "sharedWithMeTime"}).status_code == 200
+
+
+def test_drive_order_by_shared_with_me_time(client, tokens):
+    """The mock models the relation this key sorts on (owner vs caller), so it sorts rather than
+    400s — unlike the view/modify-by-me timestamps, which have no counterpart here at all."""
+    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    r = client.get("/drive/v3/files", headers=mia,
+                   params={"q": "sharedWithMe=true", "pageSize": 100,
+                           "orderBy": "sharedWithMeTime desc"})
+    assert r.status_code == 200
+    times = [f["sharedWithMeTime"] for f in r.json()["files"]]
+    assert times == sorted(times, reverse=True)
+
+
 def test_drive_owned_by_me_reflects_the_caller(client, tokens):
     """`ownedByMe` is per-caller in real Drive; the mock reported False for every file."""
     mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}

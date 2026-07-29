@@ -227,15 +227,23 @@ def _ff_minutes(value) -> float | None:
 
 
 def _emails(rec: dict):
-    """Yield every email that appears in a record (author, readers, comment authors)."""
-    v = rec.get("author_email")
-    if isinstance(v, str) and "@" in v:
-        yield v
+    """Yield every email that appears in a record (author, readers, child-row authors).
+
+    Drives org inference (`_infer_org`), so an author alias missing here makes a corpus that uses
+    only that alias fall back to the DEFAULT org — which then mis-grants every public doc, since
+    those are granted to the org principal. `host_email` is Fireflies' own name for the author and
+    `sentences[]` is its child-row array, so both belong here for the same reason
+    `comments[].author_email` does.
+    """
+    for key in ("author_email", "host_email"):
+        v = rec.get(key)
+        if isinstance(v, str) and "@" in v:
+            yield v
     for r in rec.get("readers") or []:
         if isinstance(r, str) and "@" in r:
             yield r
-    for c in rec.get("comments") or []:
-        cv = c.get("author_email") if isinstance(c, dict) else None
+    for child in (rec.get("comments") or []) + (rec.get("sentences") or []):
+        cv = child.get("author_email") if isinstance(child, dict) else None
         if isinstance(cv, str) and "@" in cv:
             yield cv
 

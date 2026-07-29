@@ -574,3 +574,37 @@ def test_fireflies_byo_replies_are_still_rejected(tmp_path):
     with pytest.raises(SystemExit) as e:
         load(corpus, Settings(data_dir=tmp_path))
     assert "replies" in str(e.value)
+
+
+def test_fireflies_byo_org_is_inferred_from_host_email_and_sentence_authors(tmp_path):
+    """`host_email` is Fireflies' own name for the author and `sentences[]` is its child-row array,
+    so both have to feed org inference. Without them a fireflies-only corpus fell back to the
+    DEFAULT org (`example`) while its users were @northwind.example — and since a public doc is
+    granted to the ORG principal, every one of them would have been granted to an org nobody in the
+    corpus belongs to."""
+    corpus = _write(tmp_path, [
+        {"source_type": "fireflies", "title": "A", "channel": "sales",
+         "host_email": "dana@northwind.example",
+         "sentences": [{"speaker_name": "Dana", "author_email": "dana@northwind.example",
+                        "text": "hi"},
+                       {"speaker_name": "Eli", "author_email": "eli@northwind.example",
+                        "text": "yo"}]},
+        {"source_type": "fireflies", "title": "B", "channel": "sales",
+         "host_email": "eli@northwind.example",
+         "sentences": [{"speaker_name": "Eli", "author_email": "eli@northwind.example",
+                        "text": "again"}]},
+    ])
+    res = load(corpus, Settings(data_dir=tmp_path))
+    assert (res["org"], res["org_domain"]) == ("northwind", "northwind.example")
+
+
+def test_byo_emails_includes_every_author_alias():
+    """The generator behind org inference. A new per-source author alias must be added here too."""
+    from app.importer.byo import _emails
+    rec = {"source_type": "fireflies", "host_email": "h@x.com", "readers": ["r@x.com"],
+           "sentences": [{"author_email": "s@x.com"}, {"speaker_name": "no email"}],
+           "comments": [{"author_email": "c@x.com"}]}
+    assert set(_emails(rec)) == {"h@x.com", "r@x.com", "s@x.com", "c@x.com"}
+    # author_email still wins for every other source, and both are yielded when both are present
+    assert set(_emails({"author_email": "a@x.com", "host_email": "h@x.com"})) == {"a@x.com",
+                                                                                 "h@x.com"}

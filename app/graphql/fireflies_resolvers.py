@@ -258,8 +258,26 @@ def resolve_user(_root, info, id=None):
 
 
 def resolve_users(_root, info, **_ignored):
+    """The Fireflies WORKSPACE's users — the people with an account, i.e. the authenticating
+    roster, not every person the corpus happens to name.
+
+    The real `users` query takes no pagination arguments, because a real workspace has tens or
+    hundreds of members. The mock's `principals` table is much broader: every internal reference
+    across every source is registered there (16,034 of them on the deployed bench corpus, of whom
+    only 327 have a token). Serving all of those as workspace members would be both wrong — they
+    have no Fireflies account — and a 1.6 MB unpaginated response, the same hazard Slack's
+    `users.list` documents. Scoping to the roster is what bounds it, rather than inventing `limit`
+    arguments the vendor's schema does not have.
+
+    `user(id:)` deliberately still resolves ANY principal: a transcript's host is a real reference
+    even when that person never had an account, so `Transcript.user` must not come back null.
+    """
     ctx = _ctx(info)
-    return [_user(r["email"], r["display_name"]) for r in store.list_users(ctx["conn"])]
+    roster = ctx.get("roster")
+    rows = store.list_users(ctx["conn"])
+    if roster is not None:
+        rows = [r for r in rows if r["email"] in roster]
+    return [_user(r["email"], r["display_name"]) for r in rows]
 
 
 RESOLVERS = {

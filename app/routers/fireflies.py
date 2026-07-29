@@ -52,6 +52,10 @@ async def graphql(request: Request):
         # user_id -> email, built once at startup (app.main), so `user(id:)` and the
         # `transcripts(user_id:)` filter can reverse a served id without scanning.
         "user_index": state.index.get("fireflies_users", {}),
+        # The workspace roster: the addresses that can actually authenticate. `users` is scoped to
+        # it, because the principals table holds every person the whole corpus names (16k on the
+        # bench) and almost none of them have a Fireflies account. See resolve_users.
+        "roster": frozenset(state.acl.email_to_token()) if getattr(state, "acl", None) else None,
     }
     result = ENGINE.execute_request(await request.body(), context=context)
     return JSONResponse(result.payload, status_code=400 if result.request_error else 200)

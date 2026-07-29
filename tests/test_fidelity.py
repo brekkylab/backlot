@@ -813,3 +813,65 @@ def test_fireflies_no_openapi_entry_for_the_graphql_route(tmp_path):
         assert "fireflies" not in openapi.SOURCE_PREFIXES
     finally:
         close()
+
+
+def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path):
+    """`users` must be the people with an ACCOUNT. The mock's principals table registers every
+    internal reference across every source — 16,034 on the deployed bench corpus, of whom 327 have
+    a token — so serving all of them would be wrong (they have no Fireflies account) AND a 1.6 MB
+    unpaginated response. The real query takes no pagination args, so scoping is what bounds it.
+
+    `user(id:)` must still resolve a display-only principal, or a transcript whose host never had
+    an account would serve `user: null`.
+    """
+    import os
+
+    from starlette.testclient import TestClient
+
+    from app import store, synth
+    from app.config import get_settings
+    from app.main import app
+
+    settings = _load(tmp_path, FIREFLIES_CORPUS)
+    # A principal the corpus names but who has no token — what an ERB append creates. Inserted
+    # BEFORE startup because the user_id -> email index is built in the lifespan, exactly as
+    # Linear's by-id indexes are.
+    conn = store.connect_rw(settings.db_path)
+    conn.execute("INSERT OR REPLACE INTO principals(id, type, display_name, email) "
+                 "VALUES (?,?,?,?)",
+                 ("ghost@acme.com", "user", "Ghost Person", "ghost@acme.com"))
+    conn.commit()
+    conn.close()
+
+    prev = os.environ.get("MOCK_DATA_DIR")
+    os.environ["MOCK_DATA_DIR"] = str(settings.data_dir)
+    get_settings.cache_clear()
+    client = TestClient(app)
+    client.__enter__()
+
+    def close():
+        client.__exit__(None, None, None)
+        get_settings.cache_clear()
+        if prev is None:
+            os.environ.pop("MOCK_DATA_DIR", None)
+        else:
+            os.environ["MOCK_DATA_DIR"] = prev
+
+    try:
+        emails = {u["email"] for u in _ff(client, settings, "{ users { email } }")["data"]["users"]}
+        assert "ghost@acme.com" not in emails, "a tokenless principal is not a workspace member"
+        assert "ava@acme.com" in emails                    # the corpus's real, tokened host
+        assert emails <= set(_roster_emails(settings))
+
+        # ...but the display-only person is still addressable by id
+        got = _ff(client, settings, 'query($i:String){ user(id:$i) { email name } }',
+                  i=synth.fireflies_user_id("ghost@acme.com"))["data"]["user"]
+        assert got["email"] == "ghost@acme.com" and got["name"] == "Ghost Person"
+    finally:
+        close()
+
+
+def _roster_emails(settings):
+    import yaml
+    data = yaml.safe_load(settings.tokens_path.read_text()) or {}
+    return [u["email"] for u in data.get("users", [])]

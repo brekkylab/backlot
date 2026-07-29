@@ -202,7 +202,10 @@ def test_admin_gmail_crawls_all(client, admin_h, ro_conn):
 
 
 def test_admin_drive_crawls_all(client, admin_h, ro_conn):
-    assert len(crawl_drive(client, admin_h)) == db_count(ro_conn, "google_drive")
+    # An unfiltered files.list includes folders on real Drive, and the mock synthesizes one per
+    # container — so a full crawl is every stored file plus every folder.
+    folders = ro_conn.execute("SELECT COUNT(*) FROM gdrive_folders").fetchone()[0]
+    assert len(crawl_drive(client, admin_h)) == db_count(ro_conn, "google_drive") + folders
 
 
 def test_admin_github_crawls_all(client, admin_h, ro_conn, org):
@@ -1845,6 +1848,236 @@ def test_drive_export_and_media_stay_non_json(client, admin_h):
     pdf = _drive_find(client, admin_h, "Whitepaper")
     med = client.get(f"/drive/v3/files/{pdf['id']}", params={"alt": "media"}, headers=admin_h)
     assert med.status_code == 200 and "application/json" not in med.headers["content-type"]
+
+
+# --- Drive fidelity: measured divergences from real Google Drive (issue #23) ---------------
+#
+# Each case below was diffed against https://www.googleapis.com/drive/v3 with equivalent
+# credentials; the mock's old behaviour returned 200 with wrong/unfiltered data, so a consumer
+# could not tell anything was off.
+
+FOLDER_MIME = "application/vnd.google-apps.folder"
+DOC_MIME = "application/vnd.google-apps.document"
+
+
+def _drive_ids(client, headers, **params):
+    j = client.get("/drive/v3/files", headers=headers, params=params).json()
+    return [f["id"] for f in j.get("files", [])]
+
+
+def test_drive_shared_with_me_partitions_by_owner(client, tokens):
+    """`q=sharedWithMe=true` must return only items shared with the caller by someone else, and
+    `false` must exclude them — real Drive's "Shared with me" is the only way to enumerate those.
+    The mock used to ignore the clause, so both returned the caller's whole visible corpus."""
+    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    all_ids = set(_drive_ids(client, mia, q="trashed=false", pageSize=100))
+    shared = set(_drive_ids(client, mia, q="sharedWithMe=true and trashed=false", pageSize=100))
+    own = set(_drive_ids(client, mia, q="sharedWithMe=false and trashed=false", pageSize=100))
+    assert shared and own                      # SAMPLE gives mia both her own and others' files
+    assert shared != own and not (shared & own)
+    assert shared | own == all_ids             # together they partition the visible corpus
+    # mia authored "Brand guidelines v3"; it is hers, not shared with her
+    brand = _drive_find(client, mia, "Brand")["id"]
+    assert brand in own and brand not in shared
+
+
+def test_drive_shared_items_carry_shared_with_me_time(client, tokens):
+    """Real Drive populates `sharedWithMeTime` only on items shared with the caller, and omits
+    `parents` on them — so its presence is how a client classifies one. Filtering on
+    `sharedWithMe` while never emitting the field left a row that the filter calls shared unable to
+    say so itself."""
+    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    shared = client.get("/drive/v3/files", headers=mia,
+                        params={"q": "sharedWithMe=true and trashed=false",
+                                "pageSize": 100}).json()["files"]
+    own = client.get("/drive/v3/files", headers=mia,
+                     params={"q": "sharedWithMe=false and trashed=false",
+                             "pageSize": 100}).json()["files"]
+    assert shared and own
+    assert all(f["sharedWithMeTime"] for f in shared), "every shared item needs the timestamp"
+    assert all("sharedWithMeTime" not in f for f in own), "an item you own was never shared with you"
+    # folders come out of the same filter, so they must answer the same way
+    assert any(f["mimeType"] == FOLDER_MIME for f in shared)
+    # and files.get agrees with the listing
+    one = shared[0]
+    assert client.get(f"/drive/v3/files/{one['id']}", headers=mia).json() == one
+
+
+def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
+    """The admin/service token is not a Drive user, so nothing was shared *with* it — no timestamp
+    to invent. `orderBy` on the field still answers (all-equal keys), as real Drive does for nulls."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 20}).json()["files"]
+    assert files and all("sharedWithMeTime" not in f for f in files)
+    assert client.get("/drive/v3/files", headers=admin_h,
+                      params={"pageSize": 5, "orderBy": "sharedWithMeTime"}).status_code == 200
+
+
+def test_drive_order_by_shared_with_me_time(client, tokens):
+    """The mock models the relation this key sorts on (owner vs caller), so it sorts rather than
+    400s — unlike the view/modify-by-me timestamps, which have no counterpart here at all."""
+    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    r = client.get("/drive/v3/files", headers=mia,
+                   params={"q": "sharedWithMe=true", "pageSize": 100,
+                           "orderBy": "sharedWithMeTime desc"})
+    assert r.status_code == 200
+    times = [f["sharedWithMeTime"] for f in r.json()["files"]]
+    assert times == sorted(times, reverse=True)
+
+
+def test_drive_owned_by_me_reflects_the_caller(client, tokens):
+    """`ownedByMe` is per-caller in real Drive; the mock reported False for every file."""
+    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    assert _drive_find(client, mia, "Brand")["ownedByMe"] is True
+    assert _drive_find(client, mia, "Whitepaper")["ownedByMe"] is False
+
+
+def test_drive_order_by_sorts_the_result(client, admin_h):
+    """`orderBy` was accepted and never applied — silent, so a client that relies on server-side
+    ordering appears to work against the mock and misbehaves against production."""
+    names = [f["name"] for f in client.get(
+        "/drive/v3/files", headers=admin_h,
+        params={"q": "trashed=false", "pageSize": 100, "orderBy": "name",
+                "fields": "files(name)"}).json()["files"]]
+    # Drive collates names case-insensitively (folder names in the SAMPLE are lowercase, file
+    # names are not, so a case-sensitive sort would put every folder last)
+    assert names == sorted(names, key=str.casefold)
+    desc = [f["name"] for f in client.get(
+        "/drive/v3/files", headers=admin_h,
+        params={"q": "trashed=false", "pageSize": 100, "orderBy": "name desc",
+                "fields": "files(name)"}).json()["files"]]
+    assert desc == sorted(names, key=str.casefold, reverse=True)
+    mods = [f["modifiedTime"] for f in client.get(
+        "/drive/v3/files", headers=admin_h,
+        params={"q": "trashed=false", "pageSize": 100, "orderBy": "modifiedTime desc",
+                "fields": "files(modifiedTime)"}).json()["files"]]
+    assert mods == sorted(mods, reverse=True)
+
+
+def test_drive_order_by_paginates_in_sorted_order(client, admin_h):
+    """A sort must span the whole result set, not sort each page in isolation."""
+    everything = [f["name"] for f in client.get(
+        "/drive/v3/files", headers=admin_h,
+        params={"pageSize": 100, "orderBy": "name", "fields": "files(name)"}).json()["files"]]
+    paged, token = [], None
+    while True:
+        p = {"pageSize": 2, "orderBy": "name", "fields": "files(name),nextPageToken"}
+        if token:
+            p["pageToken"] = token
+        j = client.get("/drive/v3/files", headers=admin_h, params=p).json()
+        paged += [f["name"] for f in j["files"]]
+        token = j.get("nextPageToken")
+        if not token:
+            break
+    assert paged == everything == sorted(everything, key=str.casefold)
+
+
+def test_drive_order_by_does_not_change_the_rows_themselves(client, admin_h):
+    """Sorting builds the whole result set to order it, and defers the per-page `shared` lookup —
+    so the served objects must still be identical to the unsorted ones, field for field."""
+    plain = {f["id"]: f for f in client.get(
+        "/drive/v3/files", headers=admin_h, params={"pageSize": 100}).json()["files"]}
+    sorted_ = {f["id"]: f for f in client.get(
+        "/drive/v3/files", headers=admin_h,
+        params={"pageSize": 100, "orderBy": "modifiedTime desc"}).json()["files"]}
+    assert plain and plain == sorted_
+    assert any(f["shared"] for f in plain.values())   # ...and `shared` is really resolved
+
+
+def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
+    """Real Drive 400s an undocumented sort key. The mock models no per-caller view/share
+    timestamps, so those documented keys are rejected loudly rather than silently ignored."""
+    for bad in ("bogusKey", "name descending", "viewedByMeTime"):
+        r = client.get("/drive/v3/files", headers=admin_h, params={"orderBy": bad})
+        assert r.status_code == 400, f"orderBy={bad!r} should 400, got {r.status_code}"
+    ok = client.get("/drive/v3/files", headers=admin_h,
+                    params={"orderBy": "folder,name desc", "pageSize": 5})
+    assert ok.status_code == 200
+
+
+def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
+    """An unknown field name used to be accepted and yield empty file objects (200 {}), so a typo
+    or a stale field name in a consumer's mask passed every mock-backed test and 400d in
+    production."""
+    r = client.get("/drive/v3/files", headers=admin_h,
+                   params={"pageSize": 1, "fields": "files(totallyBogusField)"})
+    assert r.status_code == 400
+    assert "totallyBogusField" in r.json()["detail"]
+    bad_top = client.get("/drive/v3/files", headers=admin_h,
+                         params={"pageSize": 1, "fields": "bogusTop,files(id)"})
+    assert bad_top.status_code == 400
+    # a documented field the mock does not synthesize is still valid (real Drive omits it, 200)
+    ok = client.get("/drive/v3/files", headers=admin_h,
+                    params={"pageSize": 1, "fields": "files(id,thumbnailLink,capabilities/canEdit)"})
+    assert ok.status_code == 200 and "thumbnailLink" not in ok.json()["files"][0]
+
+
+def test_drive_get_honors_the_fields_mask(client, admin_h):
+    """The same projection requested two ways must give the same object; files.get ignored the
+    mask entirely and added keys nobody asked for."""
+    mask = "id,name,mimeType,size,modifiedTime,webViewLink"
+    row = client.get("/drive/v3/files", headers=admin_h,
+                     params={"q": "name contains 'Brand'", "pageSize": 1,
+                             "fields": f"files({mask})"}).json()["files"][0]
+    got = client.get(f"/drive/v3/files/{row['id']}", headers=admin_h,
+                     params={"fields": mask}).json()
+    assert got == row
+    r = client.get(f"/drive/v3/files/{row['id']}", headers=admin_h,
+                   params={"fields": "totallyBogusField"})
+    assert r.status_code == 400
+
+
+def test_drive_folders_are_found_by_mime_type(client, admin_h):
+    """Folders were returned by `'root' in parents` but invisible to `mimeType='…folder'`, so a
+    crawler indexing folders by type concluded the account had none."""
+    by_parent = _drive_ids(client, admin_h, q="'root' in parents", pageSize=100)
+    by_mime = _drive_ids(client, admin_h, q=f"mimeType='{FOLDER_MIME}'", pageSize=100)
+    assert by_parent and set(by_mime) == set(by_parent)
+    # and the negation excludes them
+    not_folders = _drive_ids(client, admin_h, q=f"mimeType!='{FOLDER_MIME}'", pageSize=100)
+    assert not set(not_folders) & set(by_parent)
+
+
+def test_drive_folders_honor_the_fields_projection(client, admin_h):
+    """Synthesized folder rows bypassed the projection: `files(id,name)` returned 18 keys."""
+    for q in ("'root' in parents", f"mimeType='{FOLDER_MIME}'"):
+        files = client.get("/drive/v3/files", headers=admin_h,
+                           params={"q": q, "pageSize": 5, "fields": "files(id,name)"}).json()["files"]
+        assert files and all(set(f) == {"id", "name"} for f in files), q
+
+
+def test_drive_folders_match_the_same_q_clauses_as_files(client, admin_h):
+    """Folders now flow through `_drive_q_match`, so every clause that should match one does."""
+    folders = client.get("/drive/v3/files", headers=admin_h,
+                         params={"q": "'root' in parents", "pageSize": 100,
+                                 "fields": "files(id,name)"}).json()["files"]
+    one = folders[0]
+    hit = _drive_ids(client, admin_h, q=f"name contains '{one['name']}' and mimeType='{FOLDER_MIME}'")
+    assert one["id"] in hit
+    # a folder is not trashed, so trashed=true excludes it
+    assert one["id"] not in _drive_ids(client, admin_h, q=f"mimeType='{FOLDER_MIME}' and trashed=true")
+
+
+def test_drive_folder_permissions_resolve(client, admin_h):
+    """A folder id is a first-class file id in real Drive: files.get and permissions.list both
+    answer for it. permissions.list 404d because folders are not stored as rows."""
+    folder = client.get("/drive/v3/files", headers=admin_h,
+                        params={"q": "'root' in parents", "pageSize": 1}).json()["files"][0]
+    got = client.get(f"/drive/v3/files/{folder['id']}", headers=admin_h)
+    assert got.status_code == 200 and got.json()["mimeType"] == FOLDER_MIME
+    perms = client.get(f"/drive/v3/files/{folder['id']}/permissions", headers=admin_h)
+    assert perms.status_code == 200 and perms.json()["permissions"]
+
+
+def test_drive_native_docs_report_size(client, admin_h):
+    """Google populates `size` for binary content *and for Docs Editors files*; the mock omitted
+    it on native rows, which taught implementors something false about the API."""
+    doc = _drive_find(client, admin_h, "Brand")
+    assert doc["mimeType"] == DOC_MIME
+    assert int(doc["size"]) > 0
+    assert "md5Checksum" not in doc          # real Drive omits checksums on native files
+    folder = client.get("/drive/v3/files", headers=admin_h,
+                        params={"q": "'root' in parents", "pageSize": 1}).json()["files"][0]
+    assert "size" not in folder              # ...but not for folders or shortcuts
 
 
 # --- OpenAPI enrichment: notion -----------------------------------------------------------

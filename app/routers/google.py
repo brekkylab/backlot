@@ -81,11 +81,13 @@ class DrivePermissionList(_GLoose):
 
 # drive_files_get / .export return raw Response/PlainTextResponse on some branches — they get
 # openapi_extra params only (no JSON response_model, which would mis-serialize the raw body).
-_P_DRIVE_LIST = [_gqp("pageSize", "integer"), _gqp("pageToken"), _gqp("q"), _gqp("fields")]
-_P_DRIVE_ALT = [_gqp("alt")]
+_P_DRIVE_LIST = [_gqp("pageSize", "integer"), _gqp("pageToken"), _gqp("q"), _gqp("fields"),
+                 _gqp("orderBy")]
+_P_DRIVE_ALT = [_gqp("alt"), _gqp("fields")]
 _P_DRIVE_EXPORT = [_gqp("mimeType", required=True)]
 
 DRIVE_DOC_MIME = "application/vnd.google-apps.document"
+DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
 
 # --- Google-style multipart/mixed batch (google-api-python-client BatchHttpRequest) -------------
 # The client POSTs one multipart/mixed body to a single batch_uri; each part is an application/http
@@ -601,45 +603,91 @@ def _gmail_message(row, fmt: str) -> dict:
 # ================================ Drive =========================================
 
 _DRIVE_FULLTEXT_RE = re.compile(r"fullText\s+contains\s+'([^']+)'")
+# `sharedWithMe = true|false`, or the bare `sharedWithMe` Drive also accepts (meaning true).
+_DRIVE_SHARED_RE = re.compile(r"sharedWithMe\b(?:\s*=\s*(true|false))?")
+_DRIVE_MIME_RE = re.compile(r"mimeType\s*(=|!=)\s*'([^']+)'")
 
 
-def _drive_q_match(row, q: str) -> bool:
-    """Honor the common Drive `q` clauses connectors use (folder scoping, mimeType,
-    name contains, modifiedTime, trashed). `fullText contains` is handled upstream via FTS
-    (see drive_files_list), so it's stripped from `q` before this runs. Unrecognized clauses
+def _drive_owned_by(owner_email: str | None, me: str | None) -> bool:
+    """Whether the caller owns this file. The admin/service token is not a Drive user (its
+    ``caller.email`` is None), so it owns nothing — for it, everything reads as shared."""
+    return bool(me) and (owner_email or "").lower() == me.lower()
+
+
+def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) -> dict:
+    """``sharedWithMeTime`` as a ``**``-mergeable fragment: real Drive populates it only on items
+    shared with the caller (and omits ``parents`` on them), so its presence is how a client tells a
+    shared item from its own — the same partition ``q: sharedWithMe`` filters on, which is why the
+    two have to agree.
+
+    Empty when the caller is unknown (the admin/service token: nothing was shared *with* it, so
+    there is no time to report) or when the caller owns the item. The mock records no share event,
+    so the file's creation time stands in — stable, and never later than a real share would be.
+    ``modifiedTime`` would be wrong here: a share time that moved every time the document was
+    edited would reorder ``orderBy=sharedWithMeTime`` for an unrelated reason."""
+    if not me or _drive_owned_by(owner_email, me):
+        return {}
+    return {"sharedWithMeTime": synth.rfc3339(created)}
+
+
+def _drive_facts(row) -> dict:
+    """The values `q` clauses are evaluated against, taken from a stored row."""
+    modified = row["updated_ts"] or (row["created_ts"] or synth.epoch(row["doc_id"])) + 3600
+    return {"trashed": bool(row["trashed"]),
+            "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
+            "mime": _drive_mime(row), "name": row["title"] or "",
+            "modified": synth.rfc3339(modified), "owner_email": row["author_email"],
+            # real Drive keys `in owners` on the owner's email; the mock also accepts the owner
+            # display name, since that's the only owner identifier some callers have.
+            "owners": {(row["author_email"] or "").lower(), (row["owner_display"] or "").lower()}}
+
+
+def _drive_obj_facts(obj: dict) -> dict:
+    """The same values taken from an already-built file object — the synthesized folders, which
+    exist only as objects, are matched through this so every clause treats them like a row."""
+    return {"trashed": bool(obj.get("trashed")), "parents": obj.get("parents") or [],
+            "mime": obj.get("mimeType") or "", "name": obj.get("name") or "",
+            "modified": obj.get("modifiedTime") or "",
+            "owner_email": (obj.get("owners") or [{}])[0].get("emailAddress"),
+            "owners": {(o.get("emailAddress") or "").lower() for o in (obj.get("owners") or [])}}
+
+
+def _drive_q_match_facts(f: dict, q: str, me: str | None = None) -> bool:
+    """Honor the Drive `q` clauses connectors use (folder scoping, mimeType, name contains,
+    modifiedTime, trashed, sharedWithMe, in owners). `fullText contains` is handled upstream via
+    FTS (see drive_files_list), so it's stripped from `q` before this runs. Unrecognized clauses
     are ignored."""
-    trashed = bool(row["trashed"])
     m = re.search(r"trashed\s*=\s*(true|false)", q)
     if m:
-        if (m.group(1) == "true") != trashed:
+        if (m.group(1) == "true") != f["trashed"]:
             return False
-    elif trashed:  # real API excludes trashed by default
+    elif f["trashed"]:  # real API excludes trashed by default
         return False
     for fid in re.findall(r"'([^']+)'\s+in\s+parents", q):
-        parents = store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])]
-        if fid not in parents:
+        if fid not in f["parents"]:
             return False
-    m = re.search(r"mimeType\s*(=|!=)\s*'([^']+)'", q)
-    if m:
-        native = _NATIVE.get(row["subtype"] or "document")
-        mime = native[0] if native else (row["mime_type"] or "application/octet-stream")
-        if (m.group(1) == "=") != (mime == m.group(2)):
-            return False
+    m = _DRIVE_MIME_RE.search(q)
+    if m and (m.group(1) == "=") != (f["mime"] == m.group(2)):
+        return False
     m = re.search(r"name\s+contains\s+'([^']+)'", q)
-    if m and m.group(1).lower() not in (row["title"] or "").lower():
+    if m and m.group(1).lower() not in f["name"].lower():
         return False
     m = re.search(r"modifiedTime\s*>\s*'([^']+)'", q)
-    if m:
-        modified = row["updated_ts"] or (row["created_ts"] or synth.epoch(row["doc_id"])) + 3600
-        if synth.rfc3339(modified) <= m.group(1):
-            return False
-    # `'<who>' in owners` — real Drive keys on the owner's email; the mock also accepts the
-    # owner display name, since that's the only owner identifier some callers have.
+    if m and f["modified"] <= m.group(1):
+        return False
+    # "Shared with me" = visible to the caller and not owned by them. Items shared with you carry
+    # no My Drive parent on real Drive, so this clause is the only way to enumerate that section.
+    m = _DRIVE_SHARED_RE.search(q)
+    if m and ((m.group(1) or "true") == "true") == _drive_owned_by(f["owner_email"], me):
+        return False
     for who in re.findall(r"'([^']+)'\s+in\s+owners", q):
-        w = who.strip().lower()
-        if w not in ((row["author_email"] or "").lower(), (row["owner_display"] or "").lower()):
+        if who.strip().lower() not in f["owners"]:
             return False
     return True
+
+
+def _drive_q_match(row, q: str, me: str | None = None) -> bool:
+    return _drive_q_match_facts(_drive_facts(row), q, me)
 
 
 def _visible_drive_folders(conn, ids) -> list[str]:
@@ -650,16 +698,21 @@ def _visible_drive_folders(conn, ids) -> list[str]:
     return sorted(f for f in folders if store.drive_folder_has_visible(conn, f, ids))
 
 
-def _drive_folder_obj(conn, name: str) -> dict:
+def _drive_folder_obj(conn, name: str, me: str | None = None) -> dict:
     """A Drive file object for a folder container. Its id matches what files in it report as
     their parent (``synth.drive_folder_id``), and it hangs under ``root`` so a client that
-    navigates from My Drive root (e.g. mirage) can discover and descend into it."""
+    navigates from My Drive root (e.g. mirage) can discover and descend into it.
+
+    The mock models no folder owner, so a folder is never owned by the caller and carries
+    ``sharedWithMeTime`` like any other item the ``sharedWithMe`` filter returns — the folder stream
+    has to answer a clause the same way the row stream does."""
     fid = synth.drive_folder_id(name)
     ts = synth.epoch("folder:" + name)
     return {
         "kind": "drive#file", "id": fid, "name": name,
-        "mimeType": "application/vnd.google-apps.folder", "parents": ["root"],
+        "mimeType": DRIVE_FOLDER_MIME, "parents": ["root"],
         "createdTime": synth.rfc3339(ts), "modifiedTime": synth.rfc3339(ts),
+        **_shared_with_me_time(None, me, ts),
         "trashed": False, "explicitlyTrashed": False, "starred": False,
         "shared": True, "ownedByMe": False, "viewedByMe": False,
         "version": "1", "spaces": ["drive"],
@@ -682,16 +735,176 @@ def _drive_folder_name_by_id(conn, file_id: str) -> str | None:
     return None
 
 
+# --- `fields` projection -------------------------------------------------------------------
+# Every field of the Drive v3 `files` resource per Google's reference — deliberately the whole
+# documented set, not just the keys this mock synthesizes: real Drive accepts a documented field
+# it has no value for (and omits it from the response) while rejecting anything unknown with 400.
+# Validating against it is what makes a mock-backed test able to catch a typo'd or stale mask.
+_DRIVE_FILE_FIELDS = frozenset("""
+    appProperties capabilities contentHints contentRestrictions copyRequiresWriterPermission
+    createdTime description driveId explicitlyTrashed exportLinks fileExtension folderColorRgb
+    fullFileExtension hasAugmentedPermissions hasThumbnail headRevisionId iconLink id
+    imageMediaMetadata inheritedPermissionsDisabled isAppAuthorized kind labelInfo
+    lastModifyingUser linkShareMetadata md5Checksum mimeType modifiedByMe modifiedByMeTime
+    modifiedTime name originalFilename ownedByMe owners parents permissionIds permissions
+    properties quotaBytesUsed resourceKey sha1Checksum sha256Checksum shared sharedWithMeTime
+    sharingUser shortcutDetails size spaces starred teamDriveId thumbnailLink thumbnailVersion
+    trashed trashedTime trashingUser version videoMediaMetadata viewedByMe viewedByMeTime
+    viewersCanCopyContent webContentLink webViewLink writersCanShare
+""".split())
+_DRIVE_LIST_FIELDS = frozenset({"kind", "nextPageToken", "incompleteSearch", "files"})
+
+
+def _split_mask(mask: str) -> list[str]:
+    """Split a `fields` mask on its top-level commas, so a nested group stays whole
+    (``files(id,name),nextPageToken`` -> ``['files(id,name)', 'nextPageToken']``)."""
+    out, depth, cur = [], 0, ""
+    for ch in mask:
+        if ch == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+            continue
+        depth += (ch == "(") - (ch == ")")
+        depth = max(depth, 0)
+        cur += ch
+    out.append(cur)
+    return [t.strip() for t in out if t.strip()]
+
+
+def _mask_names(mask: str) -> set[str]:
+    """The leading key of each comma-separated entry: a nested mask (``capabilities/canEdit``,
+    ``owners(emailAddress)``) selects — and is validated as — its parent key."""
+    return {t.split("/")[0].split("(")[0].strip() for t in _split_mask(mask)}
+
+
+def _check_mask(names, allowed: frozenset) -> None:
+    """Reject an unknown field name the way real Drive does. Without this a bogus name simply
+    matched nothing and vanished, so the response was a 200 full of empty objects and no
+    mock-backed test could catch a mask that 400s in production."""
+    for n in sorted(names):
+        if n != "*" and n not in allowed:
+            raise HTTPException(status_code=400, detail=f"Invalid field selection {n}")
+
+
 def _drive_file_field_keys(fields: str | None) -> set[str] | None:
-    """Top-level file keys a client asked for via ``fields=…files(id,name,…)`` — so a list
-    response carries only those, not the full ~30-field object. None = no projection (return
-    everything). Nested masks (``capabilities/canEdit``) keep the whole parent key."""
-    m = re.search(r"files\(([^)]*)\)", fields or "")
-    if not m:
+    """File keys a ``files.list`` caller selected — so the response carries only those, not the
+    full ~30-field object. Google accepts both the group form (``files(id,name)``) and the path
+    form (``files/id``); both are honored. ``None`` = no projection (an absent mask, or one that
+    asks for everything with ``*``).
+
+    Top-level names are validated but not projected: the mock always returns ``kind`` and
+    ``incompleteSearch``, because its typed response model (``DriveFileList``, which the OpenAPI
+    schema is built from) declares them."""
+    if not (fields or "").strip():
         return None
-    keys = {tok.strip().split("/")[0].split("(")[0]
-            for tok in m.group(1).split(",") if tok.strip()}
-    return keys or None
+    top, keys = set(), set()
+    for tok in _split_mask(fields):
+        if tok == "*":
+            return None
+        group = re.fullmatch(r"files\s*\((.*)\)", tok, re.DOTALL)
+        if group:
+            top.add("files")
+            keys |= _mask_names(group.group(1))
+        elif tok.startswith("files/"):
+            top.add("files")
+            keys |= _mask_names(tok[len("files/"):])
+        else:
+            top.add(tok.split("/")[0].split("(")[0])
+    _check_mask(top, _DRIVE_LIST_FIELDS)
+    _check_mask(keys, _DRIVE_FILE_FIELDS)
+    return None if "*" in keys else (keys or None)
+
+
+def _drive_get_field_keys(fields: str | None) -> set[str] | None:
+    """The same projection for ``files.get``, whose mask names file fields directly
+    (``fields=id,name,size``). Applying it is what makes one file look the same whether a client
+    read it out of a listing or resolved it by id."""
+    if not (fields or "").strip():
+        return None
+    keys = _mask_names(fields)
+    _check_mask(keys, _DRIVE_FILE_FIELDS)
+    return None if "*" in keys else (keys or None)
+
+
+def _drive_project(files: list[dict], keys: set[str] | None) -> list[dict]:
+    return files if not keys else [{k: v for k, v in f.items() if k in keys} for f in files]
+
+
+def _drive_fill_shared(conn, files: list[dict], stored: set[str]) -> None:
+    """Resolve ``shared`` for one page of stored files, in one query. Objects not in ``stored`` are
+    the synthesized folders, left alone: their sharing comes from the files they hold, not from a
+    grant on the folder id."""
+    have = store.docs_with_grants(conn, [f["id"] for f in files if f["id"] in stored])
+    for f in files:
+        if f["id"] in stored:
+            f["shared"] = f["id"] in have
+
+
+# --- `orderBy` -----------------------------------------------------------------------------
+
+def _natural_key(name: str) -> list[tuple]:
+    """Drive's ``name_natural``: digit runs compare numerically, so ``v2`` sorts before ``v10``."""
+    return [(0, int(t), "") if t.isdigit() else (1, 0, t.casefold())
+            for t in re.split(r"(\d+)", name) if t]
+
+
+# Real Drive's documented `orderBy` keys -> the sort key each takes from the served file object
+# (sorting what the client actually sees, so folders and stored rows order together). Names sort
+# case-insensitively, the way Drive's collation presents them. `recency` is Drive's "most recent
+# by any signal"; the mock models exactly one modification timestamp, which stands in for it.
+_DRIVE_ORDER_KEYS = {
+    "createdTime": lambda f: f.get("createdTime") or "",
+    "modifiedTime": lambda f: f.get("modifiedTime") or "",
+    "recency": lambda f: f.get("modifiedTime") or "",
+    "name": lambda f: (f.get("name") or "").casefold(),
+    "name_natural": lambda f: _natural_key(f.get("name") or ""),
+    "folder": lambda f: f.get("mimeType") != DRIVE_FOLDER_MIME,  # folders first
+    "starred": lambda f: bool(f.get("starred")),
+    "quotaBytesUsed": lambda f: int(f.get("quotaBytesUsed") or f.get("size") or 0),
+    # Sortable because the mock DOES model the relation behind it — owner vs caller — even though it
+    # records no share event (see _shared_with_me_time). Absent for the admin/service token, where
+    # every key ties and the order falls back to the id, as it would on real Drive over nulls.
+    "sharedWithMeTime": lambda f: f.get("sharedWithMeTime") or "",
+}
+# Documented by Drive, but derived from per-caller signals this mock does not model at all: nothing
+# here is ever viewed or modified *by* anyone in particular. Sorting by one of these could only be a
+# no-op, and a silently unapplied sort is the very failure this fix is about — so they 400, which
+# tells a consumer "verify this against real Drive" instead of quietly agreeing.
+_DRIVE_ORDER_UNMODELLED = ("viewedByMeTime", "modifiedByMeTime")
+
+
+def _drive_order_specs(order_by: str | None) -> list[tuple]:
+    """Parse ``orderBy`` — comma-separated keys, each optionally suffixed ``desc`` — into
+    ``(key function, reverse)`` pairs. An unusable key is a 400, as on the real API; it used to be
+    accepted and never applied, so any client relying on server-side ordering appeared to work
+    against the mock and misbehaved in production."""
+    specs = []
+    for tok in (order_by or "").split(","):
+        parts = tok.split()
+        if not parts:
+            continue
+        key = parts[0]
+        if len(parts) > 2 or (len(parts) == 2 and parts[1] != "desc"):
+            raise HTTPException(status_code=400, detail=f"Invalid sort key: {tok.strip()}")
+        if key in _DRIVE_ORDER_UNMODELLED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Sorting by '{key}' is not supported by this mock (it models no per-caller "
+                       f"view/share timestamps). Supported: {', '.join(sorted(_DRIVE_ORDER_KEYS))}.")
+        if key not in _DRIVE_ORDER_KEYS:
+            raise HTTPException(status_code=400, detail=f"Invalid sort key: {tok.strip()}")
+        specs.append((_DRIVE_ORDER_KEYS[key], len(parts) == 2))
+    return specs
+
+
+def _drive_sort(files: list[dict], specs: list[tuple]) -> list[dict]:
+    """Apply the keys last-first: Python's sort is stable, so the first key wins. The id pre-sort
+    makes ties deterministic, which is what keeps a sorted walk from repeating or skipping a row
+    across pages."""
+    files.sort(key=lambda f: f.get("id") or "")
+    for keyfn, reverse in reversed(specs):
+        files.sort(key=keyfn, reverse=reverse)
+    return files
 
 
 def _drive_q_plain_folder(q: str) -> bool:
@@ -703,26 +916,65 @@ def _drive_q_plain_folder(q: str) -> bool:
     return residual.strip() == ""
 
 
-def _drive_root_folders(conn, ids, q: str, offset: int, limit: int) -> dict:
-    """Listing for ``'root' in parents``: the mock's files always live in a folder, so the
-    root holds exactly the (visible) folder objects. Honors the ``name``/``mimeType`` clauses
-    a client may add."""
-    names = _visible_drive_folders(conn, ids)
-    m = re.search(r"name\s+contains\s+'([^']+)'", q)
-    if m:
-        names = [n for n in names if m.group(1).lower() in n.lower()]
-    m = re.search(r"mimeType\s*(=|!=)\s*'([^']+)'", q)
-    if m:  # a non-folder mimeType filter excludes every folder
-        is_folder = m.group(2) == "application/vnd.google-apps.folder"
-        if (m.group(1) == "=") != is_folder:
-            names = []
-    folders = [_drive_folder_obj(conn, n) for n in names]
-    page = folders[offset:offset + limit]
-    body = {"kind": "drive#fileList", "incompleteSearch": False, "files": page}
-    token = next_page_token(offset, len(page), len(folders))
-    if token:
-        body["nextPageToken"] = token
-    return body
+def _drive_q_excludes_folders(q: str) -> bool:
+    """True when ``q`` carries a mimeType clause no folder can satisfy. Only an optimization —
+    ``_drive_q_match_facts`` would reject them anyway — but it skips building the folder stream
+    (and its per-folder ACL probes) for the common query that only wants files."""
+    m = _DRIVE_MIME_RE.search(q)
+    return bool(m) and ((m.group(1) == "=") != (m.group(2) == DRIVE_FOLDER_MIME))
+
+
+def _drive_folder_candidates(conn, ids, q: str, me: str | None) -> list[dict]:
+    """The caller's visible folders as file objects, filtered by ``q`` through the same clause
+    matcher stored rows go through — so ``mimeType='…folder'`` finds them, not only
+    ``'root' in parents``, and they honor the ``fields`` projection like any other row.
+
+    Skipped for a ``fullText contains`` query: a folder's only text is its name (the mock's index
+    covers document content, not container names), so it can't take part in an FTS match."""
+    if _DRIVE_FULLTEXT_RE.search(q) or _drive_q_excludes_folders(q):
+        return []
+    return [f for f in (_drive_folder_obj(conn, n, me) for n in _visible_drive_folders(conn, ids))
+            if _drive_q_match_facts(_drive_obj_facts(f), q, me)]
+
+
+def _drive_shared_with_me_scope(q: str, me: str | None) -> tuple[str | None, str | None]:
+    """``sharedWithMe`` as an SQL owner filter — ``(author_email, not_author_email)``. Drive's
+    "Shared with me" is a first-class listing a client pages through, so the half of the corpus it
+    can never contain is excluded in SQL rather than materialized and dropped in Python."""
+    m = _DRIVE_SHARED_RE.search(q)
+    if m is None or not me:
+        return None, None
+    return (None, me) if (m.group(1) or "true") == "true" else (me, None)
+
+
+def _drive_q_rows(conn, q: str, container: str | None, ids, me: str | None) -> list:
+    """Rows matching a non-trivial ``q``: build the smallest candidate set SQL can produce, then
+    apply the remaining clauses in Python."""
+    ft = _DRIVE_FULLTEXT_RE.search(q)
+    if ft:  # fullText contains → FTS candidates (ranked), then the other q clauses
+        # Honor real Drive semantics: a quoted value (`fullText contains '"X Y"'`) is an exact
+        # phrase (tokens adjacent); unquoted is separate terms. A grep push-down sends the quoted
+        # form for a literal pattern, so the exact doc surfaces instead of being buried under
+        # coincidental docs that merely contain the words scattered.
+        ft_raw = ft.group(1)
+        phrase = len(ft_raw) >= 2 and ft_raw[0] == '"' and ft_raw[-1] == '"'
+        ft_term = ft_raw[1:-1] if phrase else ft_raw
+        q_rest = _DRIVE_FULLTEXT_RE.sub(" ", q)  # FTS owns fullText; strip it from the rest
+        candidates = store.search_documents(conn, ft_term, "google_drive", ids,
+                                            limit=10_000, phrase=phrase)
+    else:
+        q_rest = q
+        nm = re.search(r"name\s+contains\s+'([^']+)'", q)
+        if nm:  # a name lookup (mirage resolves every gdrive file this way) — SQL title LIKE
+            # instead of materializing the whole corpus (~25k rows, ~1.6s) to substring-match in
+            # Python. The remaining q clauses still filter the (small) name-matched set below.
+            candidates = store.list_drive_by_name(conn, nm.group(1), container, ids, limit=100_000)
+        else:  # scope to the folder and/or the owner (if any) to shrink the set before the filter
+            owner, not_owner = _drive_shared_with_me_scope(q, me)
+            candidates = store.list_documents(conn, "google_drive", container=container,
+                                              visible_ids=ids, limit=100_000,
+                                              author_email=owner, not_author_email=not_owner)
+    return [r for r in candidates if _drive_q_match(r, q_rest, me)]
 
 
 @router.get("/drive/v3/drives")
@@ -736,59 +988,70 @@ async def drive_shared_drives(request: Request):
 @router.get("/drive/v3/files", response_model=DriveFileList,
             openapi_extra={"parameters": _P_DRIVE_LIST})
 async def drive_files_list(request: Request):
+    """A listing is the union of two streams — the stored files and the synthesized folders — put
+    through one matcher, one sort and one projection, so a query that should match a folder does
+    and every row comes back shaped the way the caller asked for."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
+    me = caller.email
     limit = _int(request, "pageSize", get_settings().default_page_size)
     offset = decode_cursor(request.query_params.get("pageToken"))
     q = request.query_params.get("q", "") or ""
+    keys = _drive_file_field_keys(request.query_params.get("fields"))   # 400 on an unknown field
+    order = _drive_order_specs(request.query_params.get("orderBy"))     # 400 on an unusable key
     parent_ids = re.findall(r"'([^']+)'\s+in\s+parents", q)
-    if "root" in parent_ids:
-        return _drive_root_folders(conn, ids, q, offset, limit)
     # A folder-scoped parent resolves to one container name (for the SQL-scoped paths below).
-    container = next((n for pid in parent_ids
-                      if (n := _drive_folder_name_by_id(conn, pid))), None)
-    if container is not None and _drive_q_plain_folder(q):
-        # The common case (a client walking the tree): just this folder's files. SQL-scoped and
-        # SQL-paginated — one page of rows per request, not a full scan re-run for every page.
-        total = store.count_drive_folder(conn, container, ids)
-        rows = store.list_drive_folder(conn, container, ids, limit=limit, offset=offset)
+    scoped = [pid for pid in parent_ids if pid != "root"]
+    container = next((n for pid in scoped if (n := _drive_folder_name_by_id(conn, pid))), None)
+    # The mock's folders all hang directly under the root, so a query scoped inside one can only
+    # match files — no folder stream to build.
+    folders = [] if scoped else _drive_folder_candidates(conn, ids, q, me)
+
+    # The row stream as (count, fetch) so the SQL paths stay SQL-paginated: a crawl costs one page
+    # of rows per request, not a full-corpus scan re-run for every page.
+    if "root" in parent_ids:
+        total_rows, fetch = 0, lambda o, n: []  # every stored file lives in a folder
+    elif container is not None and _drive_q_plain_folder(q):
+        # The common case: a client walking the tree wants just this folder's files.
+        total_rows = store.count_drive_folder(conn, container, ids)
+        fetch = lambda o, n: store.list_drive_folder(conn, container, ids, limit=n, offset=o)  # noqa: E731
     elif q.strip():  # filter the visible set by the query, then paginate
-        ft = _DRIVE_FULLTEXT_RE.search(q)
-        if ft:  # fullText contains → FTS candidates (ranked), then the other q clauses
-            # Honor real Drive semantics: a quoted value (`fullText contains '"X Y"'`) is an exact
-            # phrase (tokens adjacent); unquoted is separate terms. A grep push-down sends the quoted
-            # form for a literal pattern, so the exact doc surfaces instead of being buried under
-            # coincidental docs that merely contain the words scattered.
-            ft_raw = ft.group(1)
-            phrase = len(ft_raw) >= 2 and ft_raw[0] == '"' and ft_raw[-1] == '"'
-            ft_term = ft_raw[1:-1] if phrase else ft_raw
-            q_rest = _DRIVE_FULLTEXT_RE.sub(" ", q)  # FTS owns fullText; strip it from the rest
-            candidates = store.search_documents(conn, ft_term, "google_drive", ids,
-                                                limit=10_000, phrase=phrase)
-        else:
-            q_rest = q
-            nm = re.search(r"name\s+contains\s+'([^']+)'", q)
-            if nm:  # a name lookup (mirage resolves every gdrive file this way) — SQL title LIKE
-                # instead of materializing the whole corpus (~25k rows, ~1.6s) to substring-match in
-                # Python. The remaining q clauses still filter the (small) name-matched set below.
-                candidates = store.list_drive_by_name(conn, nm.group(1), container, ids, limit=100_000)
-            else:  # scope to the folder (if any) to shrink the set before the Python filter
-                candidates = store.list_documents(conn, "google_drive", container=container,
-                                                  visible_ids=ids, limit=100_000)
-        matched = [r for r in candidates if _drive_q_match(r, q_rest)]
-        total = len(matched)
-        rows = matched[offset:offset + limit]
+        matched = _drive_q_rows(conn, q, container, ids, me)
+        total_rows, fetch = len(matched), lambda o, n: matched[o:o + n]  # noqa: E731
     else:
-        total = store.count_documents(conn, "google_drive", visible_ids=ids)
-        rows = store.list_documents(conn, "google_drive", visible_ids=ids, limit=limit, offset=offset)
-    shared = store.docs_with_grants(conn, [r["doc_id"] for r in rows])  # one query, not one per file
-    keys = _drive_file_field_keys(request.query_params.get("fields"))  # honor fields → smaller payload
-    files = [_drive_file(conn, r, shared=r["doc_id"] in shared) for r in rows]
-    if keys:
-        files = [{k: v for k, v in f.items() if k in keys} for f in files]
-    body = {"kind": "drive#fileList", "incompleteSearch": False, "files": files}
-    token = next_page_token(offset, len(rows), total)
+        total_rows = store.count_documents(conn, "google_drive", visible_ids=ids)
+        fetch = lambda o, n: store.list_documents(  # noqa: E731
+            conn, "google_drive", visible_ids=ids, limit=n, offset=o)
+
+    stored: set[str] = set()  # ids that came from the row stream (vs. a synthesized folder)
+
+    def objects(o: int, n: int, *, with_shared: bool = True) -> list[dict]:
+        rows = fetch(o, n) if n > 0 else []
+        stored.update(r["doc_id"] for r in rows)
+        shared = store.docs_with_grants(conn, [r["doc_id"] for r in rows]) if with_shared else ()
+        return [_drive_file(conn, r, shared=r["doc_id"] in shared, me=me) for r in rows]
+
+    total = total_rows + len(folders)
+    if order:
+        # A sort spans the whole result set, so it needs the whole set: paging in SQL would order
+        # each page in isolation. Materializing the corpus costs more than a paged listing, which
+        # is why it happens only when a sort is actually asked for — and `shared`, the one field
+        # that costs a query per page and that no sort key reads, is deferred to the page below.
+        files = _drive_sort(objects(0, total_rows, with_shared=False) + folders,
+                            order)[offset:offset + limit]
+        _drive_fill_shared(conn, files, stored)
+    else:
+        # No sort: the stored rows first (SQL-paginated), the folder objects as the tail. Real
+        # Drive leaves the default order unspecified, and keeping folders last means a client that
+        # reads files[0] out of an unfiltered listing still gets a file.
+        files = objects(offset, min(limit, max(0, total_rows - offset)))
+        if len(files) < limit:
+            start = max(0, offset - total_rows)
+            files += folders[start:start + limit - len(files)]
+    body = {"kind": "drive#fileList", "incompleteSearch": False,
+            "files": _drive_project(files, keys)}
+    token = next_page_token(offset, len(files), total)
     if token:
         body["nextPageToken"] = token
     return body
@@ -803,7 +1066,8 @@ async def drive_files_get(file_id: str, request: Request):
     if row is None:
         name = _drive_folder_name_by_id(conn, file_id)  # folders aren't stored as rows
         if name is not None:
-            return _drive_folder_obj(conn, name)
+            keys = _drive_get_field_keys(request.query_params.get("fields"))
+            return _drive_project([_drive_folder_obj(conn, name, caller.email)], keys)[0]
         raise HTTPException(status_code=404, detail="File not found")
     if request.query_params.get("alt") == "media":
         # raw download — real API errors on native Docs-editors types (use export)
@@ -812,7 +1076,11 @@ async def drive_files_get(file_id: str, request: Request):
                                 detail="Only files with binary content can be downloaded. Use Export with Docs Editors files.")
         mime = row["mime_type"] or "application/octet-stream"
         return Response(row["content"].encode("utf-8"), media_type=mime)
-    return _drive_file(conn, row)
+    # Same projection as files.list: a file resolved by id and the same file read out of a listing
+    # must come back identical, or caching/diffing behaves differently depending on which call
+    # produced the row.
+    keys = _drive_get_field_keys(request.query_params.get("fields"))
+    return _drive_project([_drive_file(conn, row, me=caller.email)], keys)[0]
 
 
 @router.get("/drive/v3/files/{file_id}/export", openapi_extra={"parameters": _P_DRIVE_EXPORT})
@@ -843,7 +1111,14 @@ async def drive_files_permissions(file_id: str, request: Request):
     ids = auth.visible_ids(request, caller)
     row = store.get_document(conn, "google_drive", file_id, visible_ids=ids)
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        # A folder id is a first-class file id on real Drive — files.get answers for one, so
+        # permissions.list has to as well. Folders aren't stored as rows, so their sharing comes
+        # from the grants on the files they hold.
+        name = _drive_folder_name_by_id(conn, file_id)
+        if name is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        return {"kind": "drive#permissionList",
+                "permissions": _drive_permissions(conn, file_id, folder=name)}
     return {"kind": "drive#permissionList", "permissions": _drive_permissions(conn, file_id)}
 
 
@@ -929,17 +1204,26 @@ def _drive_user(email: str) -> dict:
             "photoLink": synth.github_avatar(synth.github_user_id(email))}
 
 
-def _drive_file(conn, row, shared: bool | None = None) -> dict:
+def _drive_mime(row) -> str:
+    """The mimeType this row serves: a native Workspace type from its subtype, else its own
+    declared type (and only a type-less binary falls back to an opaque blob)."""
+    native = _native(row)
+    return native[0] if native else (row["mime_type"] or "application/octet-stream")
+
+
+def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) -> dict:
+    """The served ``files`` resource for a stored row. ``me`` is the caller's email, which decides
+    the per-caller ``ownedByMe`` (None for the admin/service token, which owns nothing)."""
     created = row["created_ts"] or synth.epoch(row["doc_id"])
     modified = row["updated_ts"] or created + 3600
     author = row["author_email"]
     native = _native(row)
+    mime = _drive_mime(row)
     if native is not None:
-        mime, seg, _ = native
+        seg = native[1]
         view = (f"https://docs.google.com/{seg}/d/{row['doc_id']}/edit" if seg
                 else f"https://drive.google.com/drive/folders/{row['doc_id']}")
     else:  # binary file (PDF, image, office doc)
-        mime = row["mime_type"] or "application/octet-stream"
         view = f"https://drive.google.com/file/d/{row['doc_id']}/view"
     is_folder = row["subtype"] == "folder"
     # "shared" = visible to anyone besides the owner — true for org/group/multi-reader docs.
@@ -947,13 +1231,16 @@ def _drive_file(conn, row, shared: bool | None = None) -> dict:
     if shared is None:
         shared = bool(store.doc_grants(conn, row["doc_id"]))
     ext = row["title"].rsplit(".", 1)[-1] if (native is None and "." in row["title"]) else None
+    nbytes = len((row["content"] or "").encode("utf-8"))
     f = {
         "kind": "drive#file", "id": row["doc_id"], "name": row["title"], "mimeType": mime,
         "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
         "createdTime": synth.rfc3339(created), "modifiedTime": synth.rfc3339(modified),
         "owners": [_drive_user(author)], "lastModifyingUser": _drive_user(author),
         "trashed": bool(row["trashed"]), "explicitlyTrashed": bool(row["trashed"]),
-        "starred": False, "shared": bool(shared), "ownedByMe": False, "viewedByMe": False,
+        "starred": False, "shared": bool(shared), "viewedByMe": False,
+        "ownedByMe": _drive_owned_by(author, me),
+        **_shared_with_me_time(author, me, created),
         "version": str(2 if row["updated_ts"] else 1),
         "spaces": ["drive"], "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
@@ -964,10 +1251,15 @@ def _drive_file(conn, row, shared: bool | None = None) -> dict:
             "canReadRevisions": not is_folder, "canAddChildren": is_folder,
             "canModifyContent": False},
     }
-    if native is None:  # binaries report bytes + checksums; native Workspace files don't
-        f["size"] = str(len(row["content"]))
+    # Per Google's reference, `size` "is populated for files with binary content stored in Google
+    # Drive AND for Docs Editors files; it is not populated for shortcuts or folders" — so a native
+    # Doc/Sheet/Slides carries it too. Checksums, a download link and the file-extension pair stay
+    # binary-only, which is also what real Drive does for the Docs-editors types.
+    if not is_folder:
+        f["size"] = str(nbytes)
+    if native is None:
         f["md5Checksum"] = hashlib.md5(row["content"].encode()).hexdigest()
-        f["quotaBytesUsed"] = str(len(row["content"]))
+        f["quotaBytesUsed"] = str(nbytes)
         f["webContentLink"] = f"https://drive.google.com/uc?id={row['doc_id']}&export=download"
         if ext:
             f["fileExtension"] = ext
@@ -975,9 +1267,13 @@ def _drive_file(conn, row, shared: bool | None = None) -> dict:
     return f
 
 
-def _drive_permissions(conn, doc_id: str) -> list[dict]:
-    """Build from the doc's ACL grants (preserving user/group/org identity) + an owner."""
-    grants = store.doc_grants(conn, doc_id)
+def _drive_permissions(conn, doc_id: str, *, folder: str | None = None) -> list[dict]:
+    """Build from the doc's ACL grants (preserving user/group/org identity) + an owner. For a
+    synthesized folder, ``folder`` names the container and the grants come from its files (which is
+    what makes the folder visible in the first place); the mock models no folder owner, so there is
+    no owner permission to add."""
+    grants = (store.container_grants(conn, "google_drive", folder) if folder
+              else store.doc_grants(conn, doc_id))
     domain = get_settings().org_domain
     perms = []
     for g in grants:

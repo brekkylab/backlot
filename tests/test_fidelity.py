@@ -190,6 +190,27 @@ def test_drive_permissions_and_trashed(tmp_path):
     assert _drive_q_match(d2, "trashed = true") is True
 
 
+def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
+    """Google: `size` "is populated for files with binary content stored in Google Drive AND for
+    Docs Editors files; it is not populated for shortcuts or folders." The mock set it only in the
+    binary branch, so it taught implementors that native Docs have no byte size (issue #23)."""
+    from app.routers.google import _drive_file
+    s = _load(tmp_path, [
+        {"source_type": "google_drive", "doc_id": "n1", "folder": "mk", "title": "Doc",
+         "content": "hello there", "author_email": "a@x.com", "subtype": "document"},
+        {"source_type": "google_drive", "doc_id": "b1", "folder": "mk", "title": "Scan.pdf",
+         "content": "%PDF-1.7", "author_email": "a@x.com", "subtype": "pdf",
+         "meta": {"mime_type": "application/pdf"}},
+    ])
+    conn = store.connect_ro(s.db_path)
+    native = _drive_file(conn, store.get_document(conn, "google_drive", "n1"))
+    assert native["size"] == str(len("hello there"))
+    # checksums and a download link stay binary-only, as they are on real Drive
+    assert "md5Checksum" not in native and "webContentLink" not in native
+    binary = _drive_file(conn, store.get_document(conn, "google_drive", "b1"))
+    assert binary["size"] == str(len("%PDF-1.7")) and binary["md5Checksum"]
+
+
 # --- Gmail -----------------------------------------------------------------------
 
 def test_gmail_raw_and_headers(tmp_path):

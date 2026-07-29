@@ -410,6 +410,201 @@ def linear_url(identifier: str, title: str, org: str = "org") -> str:
     return f"https://linear.app/{org}/issue/{identifier}/{slug}".rstrip("/")
 
 
+# --- Fireflies ------------------------------------------------------------------
+# The bench ships a transcript as ONE flat text blob with speaker-labeled, timestamped lines —
+# not as structured per-sentence records — so the importer parses it (erb.parse_fireflies_
+# transcript, which sits with the other conversation parsers) and the concatenation below is the
+# EXACT inverse: `content` is DEFINED as fireflies_transcript_text(sentences), so full-text search
+# and any RAG consumer read the meeting as one document while the sentence rows stay the single
+# source of truth. Verified round-trip-exact over all 10,173 bench transcripts.
+
+def fireflies_transcript_text(sentences) -> str:
+    """The stored ``content`` for a transcript: its sentences, one per line, ``Speaker: text``.
+
+    Inverse of :func:`app.importer.erb.parse_fireflies_transcript` — re-parsing this text yields
+    the same sentences, so the pair is a fixed point (the ``notion_blocks`` /
+    ``notion_blocks_to_text`` relationship, same problem, same solution).
+
+    A sentence whose speaker is unknown renders bare (no ``": "`` prefix), because the real API
+    leaves ``speaker_name`` null when diarization produced no label and an empty prefix must not
+    become part of the text.
+    """
+    out = []
+    for s in sentences:
+        speaker = (s.get("speaker_name") if isinstance(s, dict) else s[0]) or ""
+        text = (s.get("text") if isinstance(s, dict) else s[1]) or ""
+        out.append(f"{speaker}: {text}" if speaker else text)
+    return "\n".join(out)
+
+
+# ~150 words/minute is ordinary conversational speech; used only to give a sentence an end_time
+# when the transcript's own timestamps don't bound it (the last line of a meeting, or the 0.09%
+# of bench sentences that carry no timestamp at all).
+_WORDS_PER_SEC = 2.5
+
+
+# A transcript that opens later than this clearly isn't counting elapsed time from zero — it is
+# stamped with the wall clock ("[10:03:12] Ben Carter: …" for a meeting that started at 10:02).
+_WALL_CLOCK_FLOOR = 600.0
+# With no declared duration to check against, a reading this far past the previous one is a
+# garbled hour field, not a real gap (the corpus's transcription noise is deliberate).
+_MAX_PLAUSIBLE_GAP = 1800.0
+
+
+def _fireflies_normalize_readings(sentences, duration_secs: float | None) -> None:
+    """Make one transcript's raw timestamp readings a coherent elapsed-time sequence, in place.
+
+    Two things in the corpus break a naive reading, both of which ``agents.md`` sets up: some
+    transcripts stamp the WALL CLOCK rather than elapsed offsets, and some carry a garbled hour
+    field on a late line ("57:00:12" in a 62-minute meeting). So the readings are rebased onto the
+    transcript's own start when they plainly don't begin near zero, and any reading that then lands
+    implausibly far ahead is discarded — dropped to ``None``, which makes it inherit the running
+    clock rather than tear a 50-hour hole in the meeting.
+    """
+    readings = [s["start_time"] for s in sentences if s.get("start_time") is not None]
+    if not readings:
+        return
+    base = min(readings)
+    if base >= _WALL_CLOCK_FLOOR:  # wall-clock transcript -> rebase onto its own first reading
+        for s in sentences:
+            if s.get("start_time") is not None:
+                s["start_time"] = float(s["start_time"]) - base
+    ceiling = float(duration_secs) * 2 if duration_secs else None
+    prev = 0.0
+    for s in sentences:
+        t = s.get("start_time")
+        if t is None:
+            continue
+        t = float(t)
+        limit = ceiling if ceiling is not None else prev + _MAX_PLAUSIBLE_GAP
+        if t < 0 or t > limit:
+            s["start_time"] = None
+        else:
+            prev = max(prev, t)
+
+
+def fireflies_fill_times(sentences, duration_secs: float | None = None) -> None:
+    """Fill each sentence's ``start_time``/``end_time`` in place (seconds).
+
+    The transcript timestamps only the START of a line, and it timestamps periodically rather than
+    per line — ``agents.md`` says every 15-60 seconds — so several consecutive sentences routinely
+    carry the SAME clock reading, and the last one carries no end at all. The real API serves an
+    ordered, contiguous, non-overlapping timeline, so each run of sentences sharing a reading is
+    spread evenly across the window up to the next distinct reading. That keeps every real
+    timestamp as the anchor of its run while giving each sentence its own window, instead of
+    emitting several sentences that all claim the same instant.
+
+    The final window is a speaking-rate estimate, clamped to the meeting's own duration when known.
+    A sentence with no reading at all inherits the running clock rather than jumping back to 0.
+    """
+    if not sentences:
+        return
+    _fireflies_normalize_readings(sentences, duration_secs)
+    clock = 0.0
+    for s in sentences:
+        if s.get("start_time") is None:
+            s["start_time"] = clock
+        else:
+            s["start_time"] = float(s["start_time"])
+        clock = max(clock, s["start_time"])
+    n = len(sentences)
+    i = 0
+    while i < n:
+        start = sentences[i]["start_time"]
+        j = i + 1
+        while j < n and sentences[j]["start_time"] <= start:
+            j += 1          # the run of sentences anchored at this same reading
+        if j < n:
+            window_end = sentences[j]["start_time"]
+        else:
+            spoken = sum(len((s.get("text") or "").split()) for s in sentences[i:j])
+            window_end = start + max(1.0, spoken / _WORDS_PER_SEC)
+            if duration_secs and float(duration_secs) > start:
+                window_end = min(window_end, float(duration_secs))
+        step = (window_end - start) / (j - i)
+        for k, s in enumerate(sentences[i:j]):
+            s["start_time"] = start + step * k
+            s["end_time"] = start + step * (k + 1)
+        i = j
+
+
+def fireflies_id(doc_id: str) -> str:
+    """A transcript's API-facing id: the 24-character lowercase hex Fireflies serves.
+
+    Synthesized rather than taken from the bench's ``meeting_id`` because that value is not
+    unique and ``transcript(id:)`` looks a meeting up by this one (see the store schema).
+    """
+    return _digest("fireflies:" + doc_id)[:24]
+
+
+def fireflies_user_id(email: str) -> str:
+    """A workspace user's id. Fireflies' own ids are 24-character hex, like a transcript's; keyed
+    on the address so it is stable and reversible through the app's startup index."""
+    return _digest("fireflies-user:" + (email or ""))[:24]
+
+
+# No `fireflies_speaker_id` here on purpose: Fireflies numbers speakers WITHIN one meeting, so an
+# ordinal assigned by first appearance (which both importers do) is the whole definition. A hash of
+# the name would be stable but would not be an ordinal, and nothing needs one.
+
+def fireflies_transcript_url(transcript_id: str) -> str:
+    """The meeting's page in the Fireflies web app — what the API returns as `transcript_url`."""
+    return f"https://app.fireflies.ai/view/{transcript_id}"
+
+
+def fireflies_media_url(transcript_id: str, kind: str) -> str:
+    """The `audio_url` / `video_url` the API serves. The mock serves the URLs, not the media."""
+    ext = "mp4" if kind == "video" else "mp3"
+    return f"https://cdn.fireflies.ai/{kind}/{transcript_id}.{ext}"
+
+
+def fireflies_meeting_link(doc_id: str) -> str:
+    """The conferencing link the meeting was recorded from. Google Meet's code shape (xxx-xxxx-xxx)
+    since `calendar_type` is google_calendar for a meeting the bench does not say otherwise about."""
+    d = _digest("fireflies-meet:" + doc_id)
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    code = "".join(letters[int(d[i : i + 2], 16) % 26] for i in range(0, 20, 2))
+    return f"https://meet.google.com/{code[:3]}-{code[3:7]}-{code[7:10]}"
+
+
+# Fireflies' own sentiment buckets and the analytics envelope shape. Out of scope to COMPUTE
+# (the issue is explicit: analytics is served from stored or synthesized values, never derived
+# from the text), so a transcript with no stored analytics gets a deterministic, self-consistent
+# one: the three sentiment shares sum to 100 and the per-speaker durations sum to the meeting.
+def fireflies_analytics(doc_id: str, speakers: list[dict] | None = None,
+                        duration_secs: float | None = None) -> dict:
+    """The `analytics` object: sentiments, per-speaker talk time, and categories.
+
+    ``duration_pct`` is each speaker's share of the TALK TIME, not of the meeting's declared
+    length. In real Fireflies the two are near-identical (a transcript covers its whole meeting)
+    and the shares sum to ~100. A corpus transcript often does not span its declared duration —
+    the bench's own timestamps stop early on most meetings — so dividing by the declared length
+    would emit a set of shares summing to 4%, which reads as a bug in every consumer that charts
+    it. Sharing out the talk time keeps the field's meaning and its arithmetic.
+    """
+    pos = 20 + hnum(doc_id, salt="ff-pos") % 51           # 20-70
+    neg = hnum(doc_id, salt="ff-neg") % max(1, 101 - pos - 10)
+    neutral = 100 - pos - neg
+    total = float(sum(s.get("duration_secs") or 0.0 for s in speakers or []))
+    spk = []
+    for s in speakers or []:
+        share = s.get("duration_secs")
+        spk.append({"name": s.get("name"),
+                    "duration": round(float(share), 2) if share is not None else None,
+                    "word_count": s.get("word_count"),
+                    "longest_monologue": s.get("longest_monologue"),
+                    "monologues_count": s.get("monologues_count"),
+                    "filler_words": s.get("filler_words"),
+                    "questions": s.get("questions"),
+                    "duration_pct": (round(float(share) / total * 100, 2)
+                                     if share is not None and total else None)})
+    return {
+        "sentiments": {"positive_pct": pos, "neutral_pct": neutral, "negative_pct": neg},
+        "speakers": spk,
+        "categories": {"questions": None, "date_times": None, "metrics": None, "tasks": None},
+    }
+
+
 # --- S3 -------------------------------------------------------------------------
 # Credentials are derived deterministically from a caller's bearer token so the verifying
 # router (app.auth.resolve_sigv4) and the signing clients (examples/tests) agree on the

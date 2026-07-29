@@ -1,0 +1,240 @@
+# Fireflies.ai's meeting-transcript GraphQL API, served at POST /fireflies/graphql.
+#
+# Two things distinguish this schema from Linear's, and both are why the GraphQL foundation
+# shares only an execution engine and not response shapes:
+#
+#   * Pagination is `limit`/`skip` — OFFSET-BASED, not a Relay connection. `transcripts` returns
+#     a bare list. `limit` is capped at 50 by the real API and clamped (not rejected) here.
+#   * Field names are snake_case (`host_email`, `meeting_attendees`, `audio_url`), which is
+#     Fireflies' own convention, not a translation.
+#
+# NULLS ARE HONEST. Every field below is nullable except the ids, and a value the corpus does
+# not carry resolves to null rather than to an invented one. The specific stubs are:
+#
+#   * `Sentence.ai_filters` — Fireflies' per-sentence classifier output (task/question/metric
+#     flags). Deriving it would mean running the classifiers this mock deliberately does not.
+#   * `Summary.transcript_chapters`, `bullet_gist`, `gist` — further LLM renderings of the same
+#     notes; the corpus carries one set of notes, served as `overview`/`action_items`/`outline`/
+#     `topics_discussed`/`keywords`, so the rest stay null instead of being duplicated under a
+#     second name.
+#   * `Analytics.categories` — its four buckets are classifier output, as `ai_filters` is.
+#   * `Transcript.meeting_info` fields other than the ones the corpus states.
+#   * `Transcript.apps_preview` — third-party app output, which no corpus has.
+#   * `User.minutes_consumed`, `is_admin`, `integrations` — account/billing state, which is not
+#     what this mock models.
+#
+# Mutations are deliberately absent: this is a read-only mock, so the schema declares no
+# Mutation type at all rather than accepting writes and dropping them.
+
+"Unix epoch milliseconds, which is what Fireflies returns for a meeting date."
+scalar DateTime
+
+type Query {
+  """
+  Transcripts the caller may read, newest first.
+
+  Every argument narrows the set; they combine with AND. `limit` is clamped to 50 (the API's
+  documented maximum) and `skip` offsets into the result — an out-of-range `skip` is an empty
+  list, not an error.
+  """
+  transcripts(
+    "Substring to match. What it matches against is decided by `scope`."
+    keyword: String
+    "Which text `keyword` searches: title | sentences | all. Defaults to all."
+    scope: String
+    "Only meetings recorded at or after this instant (ISO 8601 or epoch millis)."
+    fromDate: DateTime
+    "Only meetings recorded at or before this instant (ISO 8601 or epoch millis)."
+    toDate: DateTime
+    "The meeting host's address."
+    host_email: String
+    "Match any of these organizer addresses."
+    organizers: [String]
+    "Only meetings every one of these addresses took part in."
+    participants: [String]
+    "The calling user's id, as returned by `user`."
+    user_id: String
+    "Only the calling user's own meetings (those they hosted)."
+    mine: Boolean
+    "Restrict to one channel."
+    channel_id: String
+    "Page size, 1-50. Values above 50 are clamped, not rejected."
+    limit: Int
+    "How many transcripts to skip before the page starts."
+    skip: Int
+  ): [Transcript]
+
+  "One transcript by its id. Null when it does not exist OR the caller may not read it."
+  transcript(id: String!): Transcript
+
+  "The authenticated user, or another user by id."
+  user(id: String): User
+
+  "Users in the workspace."
+  users: [User]
+}
+
+type Transcript {
+  id: String!
+  title: String
+  "Epoch milliseconds, which is the shape Fireflies returns."
+  date: DateTime
+  "The same instant as an ISO 8601 string."
+  dateString: String
+  "Meeting length in MINUTES — Fireflies' unit, not seconds."
+  duration: Float
+  host_email: String
+  "Whoever put the meeting on the calendar. Falls back to the host, as it does in Fireflies."
+  organizer_email: String
+  "Addresses that took part in the meeting."
+  participants: [String]
+  "The workspace user who owns the recording."
+  user: User
+  "Workspace members present. Distinct from `participants`, which is addresses."
+  fireflies_users: [String]
+  meeting_link: String
+  calendar_id: String
+  "Alias Fireflies also exposes for `calendar_id`."
+  cal_id: String
+  calendar_type: String
+  "Channels the meeting belongs to."
+  channels: [String]
+  transcript_url: String
+  "URL of the recording. The mock serves the URL; there are no media bytes behind it."
+  audio_url: String
+  "URL of the recording. The mock serves the URL; there are no media bytes behind it."
+  video_url: String
+  "The utterances, in spoken order."
+  sentences: [Sentence]
+  "Fireflies' auto-generated notes."
+  summary: Summary
+  analytics: Analytics
+  "The calendar guest list, which can name people who never spoke."
+  meeting_attendees: [Attendee]
+  "Per-attendee attendance. Null: the corpus records who was invited, not who dialed in."
+  meeting_attendance: [Attendance]
+  meeting_info: MeetingInfo
+  "Third-party app output. Always null — no corpus carries it."
+  apps_preview: JSON
+  "Speaker roster with talk-time, the same values as `analytics.speakers`."
+  speakers: [Speaker]
+}
+
+type Sentence {
+  "0-based position in the transcript."
+  index: Int
+  "The speaker's label as transcribed. Null when diarization produced none."
+  speaker_name: String
+  "The speaker's number WITHIN this meeting — Fireflies does not number globally."
+  speaker_id: Int
+  text: String
+  "The text before punctuation/casing cleanup. Same as `text` here: the corpus carries one form."
+  raw_text: String
+  "Seconds from the start of the meeting."
+  start_time: Float
+  "Seconds from the start of the meeting."
+  end_time: Float
+  "Per-sentence classifier flags. Always null — see the header."
+  ai_filters: AiFilters
+}
+
+type AiFilters {
+  task: String
+  pricing: String
+  metric: String
+  question: String
+  date_and_time: String
+  sentiment: String
+}
+
+type Summary {
+  keywords: [String]
+  "Newline-joined action items, the shape Fireflies returns."
+  action_items: String
+  outline: String
+  overview: String
+  shorthand_bullet: String
+  short_summary: String
+  topics_discussed: [String]
+  "Which kind of meeting this was, e.g. discovery / demo / security_review."
+  meeting_type: String
+  "Further LLM renderings of the same notes. Null — see the header."
+  bullet_gist: String
+  "Further LLM renderings of the same notes. Null — see the header."
+  gist: String
+  "Further LLM renderings of the same notes. Null — see the header."
+  transcript_chapters: [String]
+}
+
+type Analytics {
+  sentiments: Sentiments
+  "Per-speaker talk time and word counts, computed from the sentences."
+  speakers: [Speaker]
+  "Classifier buckets. Always null — see the header."
+  categories: Categories
+}
+
+type Sentiments {
+  positive_pct: Float
+  neutral_pct: Float
+  negative_pct: Float
+}
+
+type Categories {
+  questions: Int
+  date_times: Int
+  metrics: Int
+  tasks: Int
+}
+
+type Speaker {
+  name: String
+  "Talk time in SECONDS."
+  duration: Float
+  word_count: Int
+  "Share of the meeting this speaker held the floor, as a percentage."
+  duration_pct: Float
+  longest_monologue: Float
+  monologues_count: Int
+  filler_words: Int
+  questions: Int
+}
+
+type Attendee {
+  displayName: String
+  email: String
+  phoneNumber: String
+  name: String
+  location: String
+}
+
+type Attendance {
+  displayName: String
+  email: String
+  "Null: the corpus records the guest list, not dial-in times."
+  joinedAt: String
+  duration: Float
+}
+
+type MeetingInfo {
+  fred_joined: Boolean
+  silent_meeting: Boolean
+  summary_status: String
+}
+
+type User {
+  user_id: String!
+  email: String
+  name: String
+  num_transcripts: Int
+  recent_meeting: String
+  "Account/billing state, which this mock does not model. Always null."
+  minutes_consumed: Float
+  "Account/billing state, which this mock does not model. Always null."
+  is_admin: Boolean
+  "Account/billing state, which this mock does not model. Always null."
+  integrations: [String]
+}
+
+"An arbitrary JSON value, for the fields Fireflies types loosely."
+scalar JSON

@@ -2545,3 +2545,191 @@ def test_linear_parent_and_children_read_the_same_column(client, admin_h, ro_con
     served = gql(client, '{ issue(id: "ENG-102") { parent { identifier } } }',
                  admin_h).json()["data"]["issue"]["parent"]
     assert served["identifier"] == "ENG-103"
+
+
+# --- fireflies: POST /fireflies/graphql -----------------------------------------
+# Fireflies has no SDK and no LlamaIndex reader; the vendor's own quickstart is a raw HTTP POST,
+# so this IS the client story rather than a fallback for one.
+
+def ff_gql(client, query, headers, **variables):
+    body = {"query": query}
+    if variables:
+        body["variables"] = variables
+    return client.post("/fireflies/graphql", json=body, headers=headers)
+
+
+def test_fireflies_requires_a_bearer_key(client):
+    r = client.post("/fireflies/graphql", json={"query": "{ transcripts { id } }"})
+    assert r.status_code == 401
+    # a GraphQL error envelope, not a framework 403 — clients parse errors[0].message
+    assert r.json()["errors"][0]["message"]
+    assert "data" not in r.json()
+    bad = client.post("/fireflies/graphql", json={"query": "{ transcripts { id } }"},
+                      headers={"Authorization": "Bearer not-a-real-key"})
+    assert bad.status_code == 401
+
+
+def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_conn):
+    r = ff_gql(client, "{ transcripts(limit: 50) { id title } }", admin_h)
+    assert r.status_code == 200
+    served = r.json()["data"]["transcripts"]
+    assert len(served) == store.count_fireflies_transcripts(ro_conn)
+    assert len(served) == ro_conn.execute("SELECT COUNT(*) FROM fireflies_transcripts").fetchone()[0]
+
+
+def test_fireflies_transcript_content_round_trips_through_the_api(client, admin_h, ro_conn):
+    """The sentences the API serves must rebuild the stored `content` byte for byte — that is the
+    whole point of defining content as the concatenation."""
+    from app import synth
+
+    r = ff_gql(client, "{ transcripts(limit: 50) { id title sentences "
+                       "{ speaker_name text } } }", admin_h)
+    for t in r.json()["data"]["transcripts"]:
+        row = store.fireflies_transcript_by_id(ro_conn, t["id"])
+        assert synth.fireflies_transcript_text(t["sentences"]) == row["content"]
+
+
+def test_fireflies_serves_the_documented_metadata_surface(client, admin_h):
+    r = ff_gql(client, """
+        { transcripts(limit: 1) {
+            id title date dateString duration host_email organizer_email participants
+            meeting_link calendar_id cal_id calendar_type channels
+            transcript_url audio_url video_url
+            user { user_id email name }
+            summary { overview keywords action_items outline topics_discussed meeting_type }
+            analytics { sentiments { positive_pct neutral_pct negative_pct }
+                        speakers { name duration word_count duration_pct } }
+            meeting_attendees { displayName email location }
+            sentences { index speaker_name speaker_id text raw_text start_time end_time }
+        } }""", admin_h)
+    assert r.status_code == 200 and "errors" not in r.json()
+    t = r.json()["data"]["transcripts"][0]
+    assert t["id"] and t["title"]
+    assert t["date"] and t["dateString"]
+    assert t["channels"] and t["transcript_url"] and t["audio_url"] and t["video_url"]
+    assert t["sentences"] and t["analytics"]["sentiments"]["positive_pct"] is not None
+
+
+def test_fireflies_sentence_windows_are_ordered_and_contiguous(client, admin_h):
+    r = ff_gql(client, "{ transcripts(limit: 50) { sentences { index start_time end_time } } }",
+               admin_h)
+    for t in r.json()["data"]["transcripts"]:
+        sents = t["sentences"]
+        assert [s["index"] for s in sents] == list(range(len(sents)))
+        for a, b in zip(sents, sents[1:]):
+            assert a["start_time"] < a["end_time"] <= b["start_time"]
+
+
+def test_fireflies_date_is_epoch_millis_matching_the_iso_string(client, admin_h):
+    """Fireflies returns `date` as epoch MILLISECONDS — a client that divides by 1000 must land on
+    the same instant `dateString` states."""
+    import datetime as dt
+
+    r = ff_gql(client, "{ transcripts(limit: 50) { date dateString } }", admin_h)
+    for t in r.json()["data"]["transcripts"]:
+        parsed = dt.datetime.fromisoformat(t["dateString"].replace("Z", "+00:00"))
+        assert t["date"] == parsed.timestamp() * 1000
+
+
+def test_fireflies_organizer_falls_back_to_the_host(client, admin_h, ro_conn):
+    """The column is NULL when a meeting's organizer is its host; the FIELD must still answer,
+    because Fireflies itself never returns a null organizer for a hosted meeting."""
+    assert ro_conn.execute("SELECT organizer_email FROM fireflies_transcripts "
+                      "WHERE doc_id='ff-discovery'").fetchone()[0] is None
+    r = ff_gql(client, "{ transcripts(limit: 50) { host_email organizer_email } }", admin_h)
+    served = r.json()["data"]["transcripts"]
+    assert all(t["organizer_email"] for t in served)
+    assert any(t["organizer_email"] == t["host_email"] for t in served)
+
+
+def test_fireflies_transcript_by_id_matches_the_listing(client, admin_h):
+    listed = ff_gql(client, "{ transcripts(limit: 1) { id title } }",
+                    admin_h).json()["data"]["transcripts"][0]
+    one = ff_gql(client, 'query($i:String!){ transcript(id:$i) { id title } }',
+                 admin_h, i=listed["id"]).json()["data"]["transcript"]
+    assert one == listed
+    absent = ff_gql(client, '{ transcript(id: "deadbeefdeadbeefdeadbeef") { id } }',
+                    admin_h).json()
+    assert absent["data"]["transcript"] is None
+
+
+def test_fireflies_limit_is_clamped_over_http(client, admin_h, ro_conn):
+    total = store.count_fireflies_transcripts(ro_conn)
+    got = ff_gql(client, "query($l:Int){ transcripts(limit:$l) { id } }",
+                 admin_h, l=10_000).json()["data"]["transcripts"]
+    assert len(got) == min(50, total)     # clamped to the documented max, not an error
+
+
+def test_fireflies_skip_pages_without_gaps_or_repeats(client, admin_h, ro_conn):
+    total = store.count_fireflies_transcripts(ro_conn)
+    walked = []
+    for skip in range(total + 1):
+        page = ff_gql(client, "query($s:Int){ transcripts(limit:1, skip:$s) { id } }",
+                      admin_h, s=skip).json()["data"]["transcripts"]
+        walked += [t["id"] for t in page]
+    assert len(walked) == total == len(set(walked))
+    # past the end is an empty list, not an error
+    beyond = ff_gql(client, "{ transcripts(limit: 5, skip: 9999) { id } }", admin_h).json()
+    assert beyond["data"]["transcripts"] == []
+
+
+def test_fireflies_keyword_scope_over_http(client, admin_h):
+    def titles(**args):
+        arglist = ", ".join(f'{k}: "{v}"' for k, v in args.items())
+        return {t["title"] for t in ff_gql(
+            client, "{ transcripts(%s, limit: 50) { title } }" % arglist,
+            admin_h).json()["data"]["transcripts"]}
+
+    assert titles(keyword="selects", scope="title") == set()
+    assert titles(keyword="selects", scope="sentences") == {"April all-hands"}
+    assert titles(keyword="selects", scope="all") == {"April all-hands"}
+    assert titles(keyword="all-hands", scope="title") == {"April all-hands"}
+
+
+def test_fireflies_unknown_scope_is_a_field_error_not_a_silent_widening(client, admin_h):
+    """Silently searching everything would hide a client's typo. A field error keeps the
+    GraphQL-over-HTTP contract: 200 with partial data alongside errors."""
+    r = ff_gql(client, '{ transcripts(keyword: "x", scope: "body") { id } }', admin_h)
+    assert r.status_code == 200
+    body = r.json()
+    assert "data" in body                                  # field error -> data key present
+    assert body["data"]["transcripts"] is None
+    assert "scope must be one of" in body["errors"][0]["message"]
+
+
+def test_fireflies_request_errors_are_400_with_no_data_key(client, admin_h):
+    """The engine's request/field split: a malformed or invalid document is decided before
+    execution, so the response carries no `data` entry at all."""
+    for query in ("{ transcripts(", "{ transcripts { nosuchfield } }", "{ }"):
+        r = ff_gql(client, query, admin_h)
+        assert r.status_code == 400, query
+        assert "data" not in r.json(), query
+        assert r.json()["errors"], query
+
+
+def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens):
+    """`user` with no id is the authenticated user. An admin/service token is not a person."""
+    assert ff_gql(client, "{ user { user_id email } }",
+                  admin_h).json()["data"]["user"] is None
+    ava = next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    h = {"Authorization": f"Bearer {ava}"}
+    me = ff_gql(client, "{ user { user_id email name } }", h).json()["data"]["user"]
+    assert me["email"] == "ava@acme.com" and me["user_id"]
+    # the served user_id round-trips back through user(id:)
+    again = ff_gql(client, 'query($i:String){ user(id:$i) { email } }', h,
+                   i=me["user_id"]).json()["data"]["user"]
+    assert again["email"] == "ava@acme.com"
+
+
+def test_fireflies_introspection_describes_the_schema(client, admin_h):
+    """There is no OpenAPI entry for this route on purpose, so introspection is how a client
+    discovers the surface."""
+    r = ff_gql(client, "{ __schema { queryType { fields { name } } } }", admin_h)
+    names = {f["name"] for f in r.json()["data"]["__schema"]["queryType"]["fields"]}
+    assert {"transcripts", "transcript", "user", "users"} <= names
+
+
+def test_fireflies_declares_no_mutations(client, admin_h):
+    """A read-only mock declares no Mutation type rather than accepting writes and dropping them."""
+    r = ff_gql(client, "{ __schema { mutationType { name } } }", admin_h)
+    assert r.json()["data"]["__schema"]["mutationType"] is None

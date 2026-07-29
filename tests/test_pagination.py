@@ -147,3 +147,60 @@ def test_linear_empty_page_has_no_cursors():
     page = _connection([], offset=0, has_next=False)
     assert page["pageInfo"] == {"hasNextPage": False, "hasPreviousPage": False,
                                 "startCursor": None, "endCursor": None}
+
+
+# --- fireflies: offset pagination, not a Relay connection ------------------------
+# Fireflies pages with `limit`/`skip` and documents `limit` as "max 50". It CLAMPS rather than
+# erroring, so these pin the clamp and the offset walk (the cursor helpers above do not apply).
+
+def test_fireflies_limit_clamps_at_fifty():
+    from app.graphql.fireflies_resolvers import PAGE_DEFAULT, PAGE_MAX, clamp_limit
+
+    assert PAGE_MAX == 50
+    assert clamp_limit(1) == 1
+    assert clamp_limit(50) == 50
+    assert clamp_limit(51) == 50          # clamped, not rejected
+    assert clamp_limit(10_000) == 50
+    assert clamp_limit(None) == PAGE_DEFAULT
+    # a value that cannot be a page size falls back to the default rather than returning nothing
+    for bad in (0, -1, "abc", 2.5):
+        assert clamp_limit(bad) in (PAGE_DEFAULT, 2)
+
+
+def test_fireflies_skip_is_never_negative():
+    from app.graphql.fireflies_resolvers import clamp_skip
+
+    assert clamp_skip(0) == 0
+    assert clamp_skip(7) == 7
+    assert clamp_skip(-5) == 0            # a negative offset would be a SQL error
+    assert clamp_skip(None) == 0
+    assert clamp_skip("nope") == 0
+
+
+def test_fireflies_datetime_arguments_accept_iso_and_epoch():
+    """Fireflies documents these as ISO 8601 but returns `date` as epoch MILLISECONDS, and
+    clients pass back what they were handed — so both have to coerce to the same instant."""
+    from app.graphql.fireflies_resolvers import to_epoch_seconds
+
+    assert to_epoch_seconds("2026-04-02T15:00:00Z") == 1775142000
+    assert to_epoch_seconds("2026-04-02T15:00:00+00:00") == 1775142000
+    assert to_epoch_seconds(1775142000) == 1775142000              # seconds
+    assert to_epoch_seconds(1775142000000) == 1775142000           # milliseconds
+    assert to_epoch_seconds("1775142000") == 1775142000
+    assert to_epoch_seconds(None) is None
+    assert to_epoch_seconds("not a date") is None
+
+
+def test_fireflies_offset_walk_visits_every_transcript_once(db):
+    from app import store
+
+    total = store.count_fireflies_transcripts(db)
+    seen = []
+    skip = 0
+    while True:
+        page = store.list_fireflies_transcripts(db, limit=2, offset=skip)
+        if not page:
+            break
+        seen += [r["doc_id"] for r in page]
+        skip += 2
+    assert len(seen) == total == len(set(seen))

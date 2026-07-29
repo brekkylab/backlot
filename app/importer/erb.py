@@ -37,7 +37,7 @@ from app.config import get_settings, infer_org
 
 # ---------------------------------------------------------------- constants
 SUPPORTED = ("slack", "gmail", "google_drive", "github", "jira", "confluence", "hubspot",
-             "linear")
+             "linear", "fireflies")
 
 INTERNAL_ROLES = {"owner", "author", "reviewer", "assignee", "reporter",
                   "collaborator", "participant_internal", "mailbox_owner"}
@@ -330,6 +330,13 @@ def grants_for(source: str, meta: dict) -> list[tuple[str, str]]:
         pass  # private to participants — no org/group scope
     elif source == "slack":
         add("org", org)  # channel privacy isn't recoverable from first-names → org-visible
+    elif source == "fireflies":
+        # A meeting recorder is workspace-wide, and the same arithmetic that makes HubSpot
+        # org-visible applies: the bench names 1,104 distinct meeting hosts of whom only the ~167
+        # in the employee directory can authenticate, so an owner-or-channel scope would leave
+        # ~91% of the 10,173 transcripts readable by admin and almost nobody else. Org-visible,
+        # on top of the real per-user grants added above for everyone who does resolve.
+        add("org", org)
     elif source == "hubspot":
         # A CRM is team-wide, and the object type's group is not a useful scope here: the bench
         # names ~3.3k account owners of whom only the ~167 in the employee directory can
@@ -385,6 +392,13 @@ def iter_records(sources_dir: Path, sources: tuple[str, ...] = SUPPORTED
                 continue
             dsid = raw.get("dataset_doc_uuid")
             if dsid:
+                # The record's own path within its source, e.g. "all-hands/2025-01-14-x.json".
+                # Fireflies needs it: the bench's subdirectories ARE the workspaces its
+                # `agents.md` describes, and they become the transcript's channel — the only
+                # source whose container lives in the layout rather than in a field. Prefixed
+                # with `_` and excluded from HubSpot's property passthrough, so it can never be
+                # mistaken for corpus data.
+                raw["_erb_path"] = path.relative_to(base).as_posix()
                 yield src, dsid, raw
 
 
@@ -744,7 +758,8 @@ _HS_PROPERTY = {
 # their own rows. `se_assigned` / `csm_assigned` are deliberately NOT excluded — they feed the ACL
 # bundle *and* stay properties, since a real portal exposes the SE and CSM as fields on the record.
 _HS_NOT_A_PROPERTY = {"title_field_name", "content_field_names", "dataset_doc_uuid",
-                      "created_at", "updated_at", "owner", "notes", "crm_notes"}
+                      "created_at", "updated_at", "owner", "notes", "crm_notes",
+                      "_erb_path"}  # injected by iter_records, not corpus data
 
 
 def _hs_notes(raw) -> list[str]:
@@ -1265,9 +1280,322 @@ def resolve_linear_references(conn, bundles) -> dict:
     return stats
 
 
+# ---------------------------------------------------------------- fireflies
+# The bench's Fireflies docs are meeting transcripts, one per file, with a standard ERB envelope
+# plus the metadata its `sources/fireflies/agents.md` documents: meeting_id, recorded_at,
+# duration_minutes, call_type, title, redwood_owner/redwood_attendees, customer_company/
+# customer_attendees, and optional summary/topics/action_items/next_steps/competitors_mentioned/
+# crm_deal_id/transcription_quality.
+#
+# Four properties of the real data drive the mapping:
+#   * the transcript is ONE FLAT TEXT BLOB, not structured per-sentence records. So the sentence
+#     rows the API serves are PARSED from it here (620k sentences over 10,173 docs), and
+#     `synth.fireflies_transcript_text` is the exact inverse. Only start times are in the data
+#     (99.91% of lines); end times are derived (synth.fireflies_fill_times).
+#   * the blob is written in six interchangeable line formats — "[00:00] Name:", "00:00 - Name:",
+#     "00:00 [Name]:", "(00:00) Name:", "[S00:12] Name (Role):", and un-timestamped "Name:" — and
+#     ~7.7% of docs open with an auto-notes preamble whose "Date:"/"Duration:" lines look exactly
+#     like speaker lines. Hence one recognizer for all six plus participant gating (below).
+#   * NO email addresses appear anywhere in the corpus, so host/organizer/attendee identities are
+#     resolved through `Principals` exactly as every other loader does.
+#   * `meeting_id` is not unique (10,147 distinct over 10,173 docs), so it becomes `calendar_id`
+#     and the API's `id` is synthesized — see the fireflies_transcripts schema.
+
+_FF_CLOCK = r"\d{1,2}:\d{2}(?::\d{2})?"
+# A leading timestamp in any form the bench writes, optionally followed by a "-"/"–" separator.
+# The optional letter inside the brackets absorbs a quirk the corpus contains ("[S00:12]").
+_FF_TS = (rf"(?:\[[A-Za-z]?(?P<b>{_FF_CLOCK})\]|\((?P<p>{_FF_CLOCK})\)|(?P<r>{_FF_CLOCK}))"
+          r"\s*(?:[-–—]\s*)?")
+# 1-4 name-ish words, optionally bracketed ("[Maya]"), with a trailing "(Role)" / ", Role" that
+# is stripped before matching ("Ari (Redwood AE)", "Mark, Sentinel CISO").
+_FF_WHO = r"[A-Za-z@][\w.'’\-]*(?: +[A-Za-z0-9][\w.'’\-]*){0,3}"
+_FF_UTT = re.compile(rf"^\s*(?:{_FF_TS})?(?:\[(?P<name>{_FF_WHO})\]|(?P<name2>{_FF_WHO}))"
+                     rf"(?: *[(,][^)]*\)?)?:[ \t]*(?P<text>.*)$")
+
+# Fireflies' own auto-notes header labels. Each looks exactly like a speaker line
+# ("Date: 2025-02-20", "Duration: ~52 minutes"), so none may ever mint a speaker.
+_FF_NOT_SPEAKER = {
+    "date", "duration", "attendees", "attendees present", "participants", "header",
+    "meeting header", "meeting", "meeting date", "meeting title", "meeting start", "title",
+    "time", "location", "host", "organizer", "recorded", "recording", "meeting recording",
+    "summary", "auto-summary", "summary (auto)", "auto-generated summary", "human summary",
+    "topics", "topics covered", "transcript", "transcript body", "action items", "next steps",
+    "questions", "notes", "notes on transcription", "agenda", "call type", "start", "end", "note",
+}
+
+
+def _ff_role_stripped(name: str) -> str:
+    """'Leah Nguyen - Head of Product' / 'Ana Ruiz, CTO' / 'Ari (Redwood AE)' -> the bare name."""
+    s = re.sub(r"\s*\([^)]*\)", "", str(name or ""))
+    s = re.sub(r"\s+[-–—]\s+.*$", "", s)
+    return re.sub(r"\s*,.*$", "", s).strip()
+
+
+def fireflies_speaker_map(attendees) -> dict[str, str]:
+    """canonical key -> the attendee's clean display name, for every declared attendee AND their
+    first name alone, because transcripts overwhelmingly label speakers by first name. Reuses
+    :func:`canonical`, so a middle initial collapses too ('Priya S.' resolves to 'Priya Shah')."""
+    out: dict[str, str] = {}
+    for a in attendees or []:
+        clean = _ff_role_stripped(a)
+        if not clean:
+            continue
+        out.setdefault(canonical(clean), clean)
+        first = clean.split()[0]
+        if len(first) > 1:
+            out.setdefault(canonical(first), clean)
+    return out
+
+
+def _ff_resolve_speaker(label: str, pmap: dict[str, str]) -> str | None:
+    """A speaker label -> the declared attendee's display name, or None if it names nobody.
+    Tries the whole label and then each side of a dash, so a role-prefixed label
+    ('Moderator - Alex', 'AE - Priya Shah') still resolves."""
+    for cand in [label, *(p.strip() for p in re.split(r"\s+[-–—]\s+", label))]:
+        if cand and (key := canonical(_ff_role_stripped(cand))) in pmap:
+            return pmap[key]
+    return None
+
+
+def _ff_secs(clock: str) -> float:
+    parts = [int(x) for x in clock.split(":")]
+    return float(parts[0] * 60 + parts[1] if len(parts) == 2
+                 else parts[0] * 3600 + parts[1] * 60 + parts[2])
+
+
+def parse_fireflies_transcript(text, attendees: list | None = None) -> list[dict]:
+    """A flat Fireflies transcript blob -> ``[{speaker_name, text, start_time}]``.
+
+    Mirrors :func:`parse_slack_transcript`: a line only starts a NEW sentence when its speaker is
+    a declared attendee, so the auto-notes preamble ("Date: …", "Duration: …") and mid-transcript
+    prose (numbered action-item recaps) stay continuation text of the current sentence instead of
+    minting fake speakers. When gating recognizes nobody at all — the corpus deliberately contains
+    transcripts labeled only "Speaker 1"/"Speaker 2", which ``agents.md`` calls for — it falls back
+    to ungated splitting so those meetings still get sentences.
+    """
+    pmap = fireflies_speaker_map(attendees)
+    lines = _unescape(_stringify(text)).split("\n")
+
+    def run(gated: bool) -> list[dict]:
+        out: list[list] = []
+        cur: list | None = None
+        for line in lines:
+            m = _FF_UTT.match(line)
+            speaker = None
+            if m:
+                label = m.group("name") or m.group("name2")
+                if gated:
+                    speaker = _ff_resolve_speaker(label, pmap)
+                elif label.strip().lower() not in _FF_NOT_SPEAKER:
+                    speaker = label.strip()
+            if speaker is not None:
+                clock = m.group("b") or m.group("p") or m.group("r")
+                cur = [speaker, [m.group("text")], _ff_secs(clock) if clock else None]
+                out.append(cur)
+            elif cur is not None:
+                cur[1].append(line)  # continuation (incl. a non-speaker "phrase: text" line)
+        return [{"speaker_name": s, "text": "\n".join(ls).rstrip(), "start_time": t}
+                for s, ls, t in out]
+
+    sentences = (run(True) if pmap else []) or run(False)
+    if sentences:
+        return sentences
+    # 17 of the bench's transcripts are prose with no speaker labels at all. They still have to
+    # serve their text, and `content` is defined as the sentence concatenation, so the whole body
+    # becomes ONE unattributed sentence rather than an empty document. speaker_name stays null,
+    # which is what the real API returns when diarization produced no label.
+    body = "\n".join(lines).strip()
+    return [{"speaker_name": None, "text": body, "start_time": 0.0}] if body else []
+
+
+def _ff_attendee_names(raw) -> tuple[list[str], list[str]]:
+    """(internal Redwood names, external customer names) as the bench declares them."""
+    internal = [_ff_role_stripped(n) for n in _names(raw.get("redwood_attendees"))]
+    owner = _ff_role_stripped(raw.get("redwood_owner") or "")
+    if owner and owner not in internal:
+        internal.insert(0, owner)
+    external = [_ff_role_stripped(n) for n in _names(raw.get("customer_attendees"))]
+    return [n for n in internal if n], [n for n in external if n]
+
+
+def _ff_summary(raw) -> dict:
+    """The bench's auto-notes fields mapped onto the real API's `summary` object.
+
+    They are NOT folded into `content`: the API's own `keyword`/`scope` filter searches `title` and
+    `sentences`, so putting summary prose in the sentence text would both break the sentence
+    round-trip and make `scope: sentences` match words nobody said.
+    """
+    def lines(*keys):
+        for k in keys:
+            v = raw.get(k)
+            if isinstance(v, list) and v:
+                return [str(x) for x in v if str(x).strip()]
+            if isinstance(v, str) and v.strip():
+                return [s for s in (ln.strip() for ln in v.split("\n")) if s]
+        return []
+
+    overview = raw.get("summary")
+    if isinstance(overview, list):
+        overview = "\n".join(str(x) for x in overview)
+    topics = lines("topics", "topics_covered", "transcript_topics", "Topics")
+    actions = lines("action_items", "action_items_auto", "fireflies_action_items")
+    return {
+        "overview": (str(overview).strip() or None) if overview else None,
+        "topics_discussed": topics or None,
+        "action_items": actions or None,
+        # Fireflies renders action items as one newline-joined string too; both shapes are real.
+        "shorthand_bullet": "\n".join(actions) or None,
+        "keywords": lines("keywords", "meeting_keywords", "tags", "auto_tags") or None,
+        # `next_steps` has no Fireflies field of its own; the product folds next steps into the
+        # outline, which is exactly what it is.
+        "outline": lines("next_steps", "next_steps_verbose") or None,
+        "meeting_type": raw.get("call_type") or None,
+    }
+
+
+# Where the transcript body lives. `transcript` covers 99.1% of the corpus; the rest of this
+# list is the long tail of ad-hoc key names the bench also uses, and the `*_continued` keys are
+# docs whose body is split across several fields (they are appended, not treated as alternatives).
+_FF_BODY_KEYS = ("transcript", "transcript_text", "transcript_body", "full_transcript",
+                 "meeting_transcript", "Transcript", "transcript_full", "detailed_transcript",
+                 "transcription", "full_transcript_body", "transcript_final", "body_transcript",
+                 "body", "content")
+_FF_BODY_MORE = ("transcript_continued", "transcript_continued_2", "transcript_continued_3",
+                 "additional_transcript", "additional_transcript_part2", "continued_transcript",
+                 "tail_transcript")
+
+
+def _ff_transcript_text(raw) -> str:
+    """The transcript body. Falls back to the ERB envelope's own derived content for the 3 docs
+    that carry no transcript field at all, so such a meeting still serves its text."""
+    first = next((_stringify(raw[k]) for k in _FF_BODY_KEYS if raw.get(k)), "")
+    parts = [first] + [_stringify(raw[k]) for k in _FF_BODY_MORE if raw.get(k)]
+    body = "\n\n".join(p for p in parts if p)
+    return body or derive_title_content(raw)[1]
+
+
+def _ff_duration(value) -> float | None:
+    """Meeting length in MINUTES, which is the unit the Fireflies API's `duration` uses. The bench
+    writes it as a string ("72"), an int, or prose ("~64 minutes")."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    m = re.search(r"\d+(?:\.\d+)?", str(value))
+    return float(m.group()) if m else None
+
+
+def _ff_speaker_stats(sentences) -> list[dict]:
+    """Per-speaker talk time and word counts, computed from the sentences themselves — the only
+    part of `analytics` the transcript actually supports (sentiment is not derivable, see
+    synth.fireflies_analytics)."""
+    agg: dict[str, dict] = {}
+    for s in sentences:
+        name = s.get("speaker_name") or None
+        a = agg.setdefault(name or "", {"name": name, "duration_secs": 0.0, "word_count": 0,
+                                        "monologues_count": 0, "longest_monologue": 0.0})
+        span = max(0.0, float(s.get("end_time") or 0) - float(s.get("start_time") or 0))
+        a["duration_secs"] += span
+        a["word_count"] += len((s.get("text") or "").split())
+        a["monologues_count"] += 1
+        a["longest_monologue"] = max(a["longest_monologue"], span)
+    for a in agg.values():
+        a["duration_secs"] = round(a["duration_secs"], 2)
+        a["longest_monologue"] = round(a["longest_monologue"], 2)
+    return list(agg.values())
+
+
+def _ff_meeting_attendees(raw, internal: list[str], external: list[str], P) -> list[dict]:
+    """The API's `meeting_attendees` — {displayName, email, phoneNumber, name, location}. The bench
+    names people without emails, so each is resolved the way its side allows: Redwood attendees to
+    org identities, customer attendees to external contacts."""
+    out = []
+    for name, role in [(n, "participant_internal") for n in internal] + \
+                      [(n, "participant_external") for n in external]:
+        out.append({"displayName": name, "email": P.resolve(name, role=role),
+                    "phoneNumber": None, "name": name,
+                    "location": raw.get("customer_company") if role in EXTERNAL_ROLES else None})
+    return out
+
+
+def load_fireflies(conn, dsid, raw, P):
+    # The bench's subdirectory is the workspace its agents.md describes -> the Fireflies channel.
+    # A doc at the source root (11 of them, which agents.md says should not exist) lands in
+    # "uncategorized", the label the Fireflies UI itself uses for an ungrouped meeting.
+    path = raw.get("_erb_path") or ""
+    channel = path.split("/")[0] if "/" in path else "uncategorized"
+    title = str(raw.get(raw.get("title_field_name", "title"), "")).strip()
+
+    internal, external = _ff_attendee_names(raw)
+    # The channel IS the ACL group, as it is for slack: a Fireflies channel is a workspace
+    # grouping, not a department, so it must not be reconciled against the directory's dept slugs
+    # (and `call_type` is a meeting kind, not an org unit — it is served as `summary.meeting_type`).
+    group = channel
+    owner_display = _ff_role_stripped(raw.get("redwood_owner") or "")
+    host_email = P.resolve(owner_display, role="owner") if owner_display else None
+    # Everyone named on the meeting, resolved the way each kind of reference can be: Redwood
+    # attendees are internal identities, customer attendees are external contacts (never
+    # principals). Only the internal ones can authenticate, so only they become ACL grants.
+    internal_emails = [e for e in (P.resolve(n, role="participant_internal") for n in internal) if e]
+    external_emails = [e for e in (P.resolve(n, role="participant_external") for n in external) if e]
+
+    sentences = parse_fireflies_transcript(_ff_transcript_text(raw), internal + external)
+    duration = _ff_duration(raw.get("duration_minutes"))
+    synth.fireflies_fill_times(sentences, (duration * 60) if duration else None)
+    # content is DEFINED as the sentence concatenation, so it and the sentence rows can never drift.
+    content = synth.fireflies_transcript_text(sentences)
+    created_ts = to_epoch(raw.get("recorded_at")) or synth.epoch(dsid)
+    tid = synth.fireflies_id(dsid)
+
+    # speaker_id is a per-MEETING ordinal in Fireflies, assigned by first appearance.
+    ordinals: dict[str, int] = {}
+    for s in sentences:
+        ordinals.setdefault(s["speaker_name"] or "", len(ordinals))
+
+    conn.execute("INSERT OR REPLACE INTO fireflies_channels(channel, group_id) VALUES (?,?)",
+                 (channel, group))
+    conn.execute(
+        "INSERT OR REPLACE INTO fireflies_transcripts(doc_id, channel, author_email, title, "
+        "content, transcript_id, calendar_id, calendar_type, organizer_email, duration, "
+        "created_ts, summary, analytics, participants, meeting_attendees, audio_url, video_url, "
+        "transcript_url, meeting_link, owner_display) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (dsid, channel, host_email or f"unknown@{P.org_domain}", title, content, tid,
+         raw.get("meeting_id"), "google_calendar", None, duration, created_ts,
+         json.dumps(_ff_summary(raw)),
+         json.dumps(synth.fireflies_analytics(
+             dsid, _ff_speaker_stats(sentences), (duration * 60) if duration else None)),
+         json.dumps(internal_emails + external_emails),
+         json.dumps(_ff_meeting_attendees(raw, internal, external, P)),
+         synth.fireflies_media_url(tid, "audio"), synth.fireflies_media_url(tid, "video"),
+         synth.fireflies_transcript_url(tid), synth.fireflies_meeting_link(dsid), owner_display))
+
+    for seq, s in enumerate(sentences, start=1):
+        name = s["speaker_name"] or ""
+        conn.execute(
+            "INSERT OR REPLACE INTO fireflies_sentences(id, doc_id, seq, author_email, body, "
+            "created_ts, reactions, speaker_name, speaker_id, start_time, end_time) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            # A sentence sits on the meeting's own clock (start + its offset), so ordering by time
+            # never shuffles a transcript. The speaker resolves to an identity only when the label
+            # names a declared attendee — an anonymous "Speaker 3" stays unattributed, as it is.
+            (f"{dsid}::s{seq}", dsid, seq,
+             P.resolve(name, role="participant_internal") if name in internal else None,
+             s["text"], int(created_ts + (s["start_time"] or 0)), None,
+             name or None, ordinals.get(name), s["start_time"], s["end_time"]))
+
+    # Like slack/hubspot, the corpus names far more people than can authenticate — only 938 of
+    # 10,173 hosts and 3,184 of 27,786 attendee references are in the employee directory — so an
+    # owner-or-group scope would leave ~91% of the meetings readable by admin and nobody else.
+    # Org-visible, plus a real per-user grant for everyone who does resolve (see grants_for).
+    return {"owner": host_email, "people": internal_emails, "group": group,
+            "confidentiality": None,
+            "_children": [f"{dsid}::s{i}" for i in range(1, len(sentences) + 1)]}
+
+
 _LOADERS = {"google_drive": load_drive, "github": load_github, "confluence": load_confluence,
             "jira": load_jira, "gmail": load_gmail, "slack": load_slack,
-            "hubspot": load_hubspot, "linear": load_linear}
+            "hubspot": load_hubspot, "linear": load_linear, "fireflies": load_fireflies}
 
 
 def load_structured(conn, records, P, settings) -> dict:

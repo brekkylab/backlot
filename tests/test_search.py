@@ -236,3 +236,60 @@ def test_fts_linear_scoped_to_one_team(db):
     """`container` on a Linear search is the team, so a term present in both teams narrows."""
     assert store.count_search(db, "states", "linear", container="design") >= 1
     assert store.count_search(db, "states", "linear", container="engineering") == 0
+
+
+# --- fireflies: keyword x scope --------------------------------------------------
+# Fireflies' `keyword` is scoped by `scope` (title | sentences | all) rather than being one
+# index over everything, so it does not go through search_documents; these pin that the three
+# values really do search different text. `content` is the sentences concatenated, which is what
+# makes "sentences" a column match and keeps FTS (title+content) meaningful for this source too.
+
+def test_fireflies_transcripts_are_in_the_shared_fts_index(db):
+    rows = store.search_documents(db, "batching", "fireflies")
+    assert {r["doc_id"] for r in rows} == {"ff-discovery"}
+    assert store.search_documents(db, "zqxjkbrqznope", "fireflies") == []
+
+
+def test_fireflies_fts_indexes_the_sentence_text(db):
+    """The transcript is indexed through `content`, i.e. through its sentences — so a word only
+    ever spoken (never in a title or a summary) is still findable."""
+    rows = store.search_documents(db, "crosstalk", "fireflies")
+    assert {r["doc_id"] for r in rows} == {"ff-discovery"}
+
+
+def test_fireflies_scope_title_ignores_the_transcript_body(db):
+    # "selects" is spoken in ff-allhands but appears in no title
+    assert store.list_fireflies_transcripts(db, keyword="selects", scope="title") == []
+    assert [r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, keyword="selects", scope="sentences")] == ["ff-allhands"]
+
+
+def test_fireflies_scope_sentences_ignores_the_title(db):
+    # "all-hands" is the title of ff-allhands and is never spoken in it
+    assert store.list_fireflies_transcripts(db, keyword="all-hands", scope="sentences") == []
+    assert [r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, keyword="all-hands", scope="title")] == ["ff-allhands"]
+
+
+def test_fireflies_scope_all_is_the_union(db):
+    title_hits = {r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, keyword="latency", scope="title")}
+    sent_hits = {r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, keyword="latency", scope="sentences")}
+    all_hits = {r["doc_id"] for r in store.list_fireflies_transcripts(
+        db, keyword="latency", scope="all")}
+    assert all_hits == title_hits | sent_hits
+    assert title_hits and sent_hits          # both sides actually contribute
+
+
+def test_fireflies_scope_defaults_to_all(db):
+    assert ({r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency")}
+            == {r["doc_id"] for r in store.list_fireflies_transcripts(
+                db, keyword="latency", scope="all")})
+
+
+def test_fireflies_summary_prose_is_not_keyword_searchable_as_a_sentence(db):
+    """The summary is auto-notes, not speech. `scope: sentences` must not match words that only
+    appear there, or a RAG consumer would attribute them to a speaker."""
+    assert "sub-300ms" in (store.get_document(db, "fireflies", "ff-discovery")["summary"] or "")
+    assert store.list_fireflies_transcripts(db, keyword="sub-300ms", scope="sentences") == []

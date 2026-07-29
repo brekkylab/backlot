@@ -212,3 +212,66 @@ def test_linear_synthesized_identifier_is_resolvable(tmp_path):
             conn, row["identifier"])["doc_id"] == "no-ident"
     finally:
         conn.close()
+
+
+# --- fireflies -------------------------------------------------------------------
+
+def test_fireflies_schema_accepts_sentences_or_content(tmp_path):
+    """Either view of the transcript is a complete record: `sentences` (the structured form) or
+    `content` (a plain body the loader parses)."""
+    assert record_errors({"source_type": "fireflies", "title": "T",
+                          "sentences": [{"speaker_name": "A", "text": "hi"}]}) == []
+    assert record_errors({"source_type": "fireflies", "title": "T", "content": "A: hi"}) == []
+
+
+def test_fireflies_record_with_neither_sentences_nor_content_is_rejected(tmp_path):
+    """A schema `anyOf` would report "not valid under any of the given schemas", naming neither
+    field, so the loader states it instead."""
+    corpus = tmp_path / "c.jsonl"
+    corpus.write_text(json.dumps({"source_type": "fireflies", "title": "Empty"}) + "\n")
+    with pytest.raises(SystemExit) as e:
+        load(corpus, Settings(data_dir=tmp_path))
+    assert "'sentences' or 'content'" in str(e.value)
+
+
+def test_fireflies_schema_rejects_the_slack_replies_array():
+    """`replies` is Slack's child-row array. A transcript's child rows are `sentences`, so writing
+    `replies` on a transcript is a mistake worth catching rather than silently ignoring."""
+    errs = record_errors({"source_type": "fireflies", "title": "T", "content": "A: hi",
+                          "replies": [{"content": "x"}]})
+    assert errs and any("replies" in e for e in errs)
+
+
+def test_fireflies_schema_sentence_shape_is_checked():
+    ok = record_errors({"source_type": "fireflies", "title": "T", "sentences": [
+        {"speaker_name": "A", "speaker_id": 0, "author_email": "a@x.com",
+         "text": "hi", "start_time": 0, "end_time": 1.5}]})
+    assert ok == []
+    # a null speaker is legal (the API returns one when diarization produced no label)
+    assert record_errors({"source_type": "fireflies", "title": "T",
+                          "sentences": [{"speaker_name": None, "text": "(crosstalk)"}]}) == []
+    bad = record_errors({"source_type": "fireflies", "title": "T",
+                         "sentences": [{"text": "hi", "speaker_nam": "typo"}]})
+    assert bad and any("speaker_nam" in e for e in bad)
+
+
+def test_fireflies_schema_uses_the_apis_own_field_names():
+    """A corpus written against the real Fireflies API should need no renaming."""
+    assert record_errors({
+        "source_type": "fireflies", "title": "T", "content": "A: hi",
+        "host_email": "h@x.com", "organizer_email": "o@x.com", "duration": 42,
+        "participants": ["a@x.com"], "transcript_id": "abc", "calendar_id": "c",
+        "calendar_type": "google_calendar", "meeting_link": "https://meet.example/x",
+        "audio_url": "https://a", "video_url": "https://v", "transcript_url": "https://t",
+        "meeting_attendees": [{"displayName": "A", "email": "a@x.com", "location": None}],
+        "summary": {"overview": "o", "topics_discussed": ["t"], "action_items": ["a"],
+                    "keywords": ["k"], "meeting_type": "discovery"},
+        "analytics": {"sentiments": {"positive_pct": 50}},
+    }) == []
+
+
+def test_fireflies_schema_duration_is_minutes_not_seconds():
+    """The API's unit is MINUTES; the description has to say so, because a corpus author guessing
+    seconds would silently serve 60x-long meetings."""
+    desc = validation.SERVICE_SCHEMAS["fireflies"]["properties"]["duration"]["description"]
+    assert "MINUTES" in desc

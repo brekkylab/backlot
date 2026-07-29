@@ -20,14 +20,15 @@ from app import openapi, store, synth
 from app.acl import Acl
 from app.config import get_settings
 from app.oauth import Oauth
-from app.routers import atlassian, github, google, hubspot, linear, notion, oauth, s3, slack
+from app.routers import (atlassian, fireflies, github, google, hubspot, linear, notion, oauth, s3,
+                         slack)
 
 
 def _build_index(conn) -> dict:
     idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}, "s3": {}, "hubspot": {},
            "linear": {}, "linear_teams": {}, "linear_users": {}, "linear_states": {},
            "linear_projects": {}, "linear_cycles": {}, "linear_labels": {},
-           "linear_releases": {}}
+           "linear_releases": {}, "fireflies_users": {}}
     # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
     # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container "
@@ -82,6 +83,12 @@ def _build_index(conn) -> dict:
         idx["linear_labels"][synth.linear_label_id(name)] = name
     for name in distinct["releases"]:
         idx["linear_releases"][synth.linear_release_id(name)] = name
+    # Fireflies needs NO transcript-id index: `transcript(id:)` resolves against the stored
+    # `transcript_id` column (indexed), because unlike Linear's identifier that id is unique by
+    # construction. Only `user_id` needs reversing — it is a one-way hash of an address, and both
+    # `user(id:)` and the `transcripts(user_id:)` filter accept it.
+    for r in store.list_users(conn):
+        idx["fireflies_users"][synth.fireflies_user_id(r["email"])] = r["email"]
     return idx
 
 
@@ -284,3 +291,4 @@ app.include_router(notion.router)
 app.include_router(s3.router)
 app.include_router(hubspot.router)
 app.include_router(linear.router)
+app.include_router(fireflies.router)

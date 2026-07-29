@@ -14,7 +14,7 @@ os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 import pytest
 import yaml
 
-from app import store
+from app import store, synth
 from app.config import get_settings
 from app.importer import erb
 from app.importer.erb import Principals, canonical, grants_for
@@ -44,7 +44,7 @@ def test_derive_title_content_list_field():
 
 def test_supported_sources():
     assert erb.SUPPORTED == ("slack", "gmail", "google_drive", "github", "jira", "confluence",
-                             "hubspot", "linear")
+                             "hubspot", "linear", "fireflies")
 
 
 def test_erb_sources_are_registered_in_the_store():
@@ -63,11 +63,12 @@ BENCH_SOURCES = {"slack", "gmail", "google_drive", "github", "jira", "confluence
                  "hubspot", "linear", "fireflies"}
 
 
-def test_unloaded_bench_sources_are_declared():
-    """Linear and Fireflies ship bench data that no loader consumes yet; the set bounds which
-    sources may be missing a loader, so adding one to the store forces a decision here."""
-    assert set(erb.SUPPORTED) < BENCH_SOURCES
-    assert BENCH_SOURCES - set(erb.SUPPORTED) <= {"linear", "fireflies"}
+def test_every_bench_source_has_a_loader():
+    """All nine source directories EnterpriseRAG-Bench ships are now loaded — Fireflies was the
+    last one. A new bench directory therefore has to be handled here rather than silently
+    skipped by `keep_sources`/`iter_records`."""
+    assert set(erb.SUPPORTED) == BENCH_SOURCES
+    assert set(erb.SUPPORTED) <= set(erb._LOADERS)
 
 
 def test_byo_only_sources_have_no_bench_representation():
@@ -1126,3 +1127,266 @@ def test_linear_loader_stores_release_and_attachments():
         "SELECT title, url FROM linear_attachments WHERE doc_id='dsid_lin' ORDER BY seq").fetchall()
     assert [(a["title"], a["url"]) for a in atts] == [
         ("Confluence", "https://conf.example/x"), ("y.zip", "https://figma.example/y.zip")]
+
+
+# ---------------------------------------------------------------------------
+# fireflies: the bench -> API-schema mapping
+#
+# The bench ships a transcript as ONE FLAT TEXT BLOB (not structured per-sentence records), in
+# several interchangeable line formats, often behind an auto-notes preamble whose "Date:" /
+# "Duration:" lines look exactly like speaker lines. These cover the parse, the exact
+# sentence<->content inverse, and the mapping onto the served columns.
+# ---------------------------------------------------------------------------
+
+FF_RAW = {
+    "dataset_doc_uuid": "dsid_ff1",
+    "_erb_path": "sales-calls/2026-04-02-northwind-latency-discovery.json",
+    "title_field_name": "title",
+    "content_field_names": ["summary", "topics", "action_items", "next_steps", "transcript"],
+    "title": "Northwind — latency discovery",
+    "meeting_id": "ff-20260402-northwind-001",
+    "recorded_at": "2026-04-02T15:00:00Z",
+    "duration_minutes": "32",
+    "call_type": "discovery",
+    "redwood_owner": "Ava Chen - Account Executive",
+    "redwood_attendees": ["Ava Chen - Account Executive", "Bob Stone - Solutions Engineer"],
+    "customer_company": "Northwind",
+    "customer_attendees": ["Dana Ruiz, Head of Platform"],
+    "summary": "Northwind wants sub-300ms p95.",
+    "topics": ["latency budget", "batching"],
+    "action_items": ["Ava: send the batching benchmark"],
+    "next_steps": ["Schedule a follow-up"],
+    "transcript": (
+        "Meeting header:\n"
+        "Date: 2026-04-02 15:00 UTC\n"
+        "Duration: ~32 minutes\n"
+        "\n"
+        "[00:00] Ava: thanks for joining, let's start with the latency budget.\n"
+        "00:14 - Dana: our p95 sits around 300ms today.\n"
+        "00:31 [Bob]: batching is the likely suspect here.\n"
+        "We can prove it with the benchmark.\n"
+        "(00:52) Ava (Redwood AE): understood, I'll send it over.\n"
+    ),
+}
+
+
+def _ff_load(raw=None, employees=None):
+    """Load one fireflies record into an in-memory DB; return (conn, bundle)."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(store.SCHEMA)
+    P = erb.Principals(employees if employees is not None else [
+        {"name": "Ava Chen", "email": "ava.chen@acme.com", "dept_slug": "sales"},
+        {"name": "Bob Stone", "email": "bob.stone@acme.com", "dept_slug": "engineering"},
+    ], "acme.com")
+    bundle = erb.load_fireflies(conn, "dsid_ff1", dict(raw or FF_RAW), P)
+    return conn, bundle
+
+
+def test_fireflies_parses_every_timestamp_and_speaker_form():
+    sents = erb.parse_fireflies_transcript(FF_RAW["transcript"],
+                                           ["Ava Chen", "Bob Stone", "Dana Ruiz"])
+    # "[00:00] Ava:", "00:14 - Dana:", "00:31 [Bob]:", "(00:52) Ava (Redwood AE):" — all four.
+    assert [s["speaker_name"] for s in sents] == ["Ava Chen", "Dana Ruiz", "Bob Stone", "Ava Chen"]
+    assert [s["start_time"] for s in sents] == [0.0, 14.0, 31.0, 52.0]
+    # the un-prefixed line folds into the sentence above it, it does not become its own
+    assert sents[2]["text"].endswith("We can prove it with the benchmark.")
+    assert len(sents) == 4
+
+
+def test_fireflies_auto_notes_preamble_never_mints_a_speaker():
+    """"Date: …" / "Duration: …" parse as `Name: text`; gating on the declared attendees is what
+    stops them becoming speakers (and inventing 'Date' as a person)."""
+    sents = erb.parse_fireflies_transcript(FF_RAW["transcript"], ["Ava Chen", "Bob Stone",
+                                                                 "Dana Ruiz"])
+    assert "Date" not in {s["speaker_name"] for s in sents}
+    assert "Duration" not in {s["speaker_name"] for s in sents}
+    assert "Meeting header" not in {s["speaker_name"] for s in sents}
+
+
+def test_fireflies_speaker_resolution_tolerates_first_names_and_initials():
+    m = erb.fireflies_speaker_map(["Ava Chen - Account Executive", "Dana Ruiz, Head of Platform"])
+    assert erb._ff_resolve_speaker("Ava", m) == "Ava Chen"        # first name only
+    assert erb._ff_resolve_speaker("Ava C.", m) == "Ava Chen"     # first + initial
+    assert erb._ff_resolve_speaker("Moderator - Ava", m) == "Ava Chen"   # role-prefixed
+    assert erb._ff_resolve_speaker("Dana Ruiz", m) == "Dana Ruiz"  # role stripped from the decl
+    assert erb._ff_resolve_speaker("Someone Else", m) is None
+
+
+def test_fireflies_anonymous_speakers_survive_when_nobody_is_recognized():
+    """The corpus deliberately contains transcripts labeled only "Speaker 1"/"Speaker 2"
+    (agents.md calls for it). Gating would drop every one, so it falls back to ungated."""
+    sents = erb.parse_fireflies_transcript(
+        "[00:00] Speaker 1: kickoff.\n[00:10] Speaker 2: agreed.\n", ["Ava Chen"])
+    assert [s["speaker_name"] for s in sents] == ["Speaker 1", "Speaker 2"]
+
+
+def test_fireflies_content_is_the_exact_inverse_of_the_sentences():
+    conn, _ = _ff_load()
+    row = conn.execute("SELECT content FROM fireflies_transcripts").fetchone()
+    stored = [{"speaker_name": r["speaker_name"], "text": r["body"]} for r in
+              conn.execute("SELECT speaker_name, body FROM fireflies_sentences ORDER BY seq")]
+    assert synth.fireflies_transcript_text(stored) == row["content"]
+
+
+def test_fireflies_parse_is_a_fixed_point():
+    """parse -> join -> parse must return the same sentences, which is what makes `content` a
+    safe definition rather than a second copy that can drift."""
+    people = ["Ava Chen", "Bob Stone", "Dana Ruiz"]
+    once = erb.parse_fireflies_transcript(FF_RAW["transcript"], people)
+    text = synth.fireflies_transcript_text(once)
+    twice = erb.parse_fireflies_transcript(text, people)
+    assert synth.fireflies_transcript_text(twice) == text
+    assert [s["speaker_name"] for s in twice] == [s["speaker_name"] for s in once]
+
+
+def test_fireflies_summary_notes_are_not_folded_into_the_sentences():
+    """The bench lists summary/topics/action_items in content_field_names, but they are auto-notes,
+    not speech. Folding them into `content` would make `scope: sentences` match words nobody said
+    (and break the round-trip), so they map onto the API's `summary` object instead."""
+    conn, _ = _ff_load()
+    row = conn.execute("SELECT content, summary FROM fireflies_transcripts").fetchone()
+    assert "sub-300ms" not in row["content"]          # the summary prose is NOT in the sentences
+    summary = json.loads(row["summary"])
+    assert summary["overview"] == "Northwind wants sub-300ms p95."
+    assert summary["topics_discussed"] == ["latency budget", "batching"]
+    assert summary["action_items"] == ["Ava: send the batching benchmark"]
+    assert summary["outline"] == ["Schedule a follow-up"]      # next_steps -> outline
+    assert summary["meeting_type"] == "discovery"              # call_type -> meeting_type
+
+
+def test_fireflies_maps_the_bench_onto_the_api_columns():
+    conn, bundle = _ff_load()
+    row = conn.execute("SELECT * FROM fireflies_transcripts").fetchone()
+    assert row["title"] == "Northwind — latency discovery"
+    # the bench subdirectory is the workspace -> the channel, and the channel IS the ACL group
+    assert row["channel"] == "sales-calls"
+    assert bundle["group"] == "sales-calls"
+    assert conn.execute("SELECT group_id FROM fireflies_channels").fetchone()[0] == "sales-calls"
+    # host resolves through the directory; the display name keeps the bench's own spelling
+    assert row["author_email"] == "ava.chen@acme.com"
+    assert row["owner_display"] == "Ava Chen"
+    # duration is MINUTES (the API's unit), parsed out of the bench's string
+    assert row["duration"] == 32.0
+    assert row["created_ts"] == 1775142000        # 2026-04-02T15:00:00Z
+    # meeting_id is NOT unique in the corpus, so it becomes calendar_id and `id` is synthesized
+    assert row["calendar_id"] == "ff-20260402-northwind-001"
+    assert row["transcript_id"] == synth.fireflies_id("dsid_ff1")
+    assert row["transcript_url"].endswith(row["transcript_id"])
+    assert row["audio_url"] and row["video_url"] and row["meeting_link"]
+
+
+def test_fireflies_resolves_internal_and_external_attendees_differently():
+    """No email appears anywhere in the Fireflies corpus, so identities come from Principals:
+    Redwood attendees become org users, customer attendees external contacts (never principals)."""
+    conn, bundle = _ff_load()
+    attendees = json.loads(conn.execute(
+        "SELECT meeting_attendees FROM fireflies_transcripts").fetchone()[0])
+    by_name = {a["displayName"]: a for a in attendees}
+    assert by_name["Ava Chen"]["email"] == "ava.chen@acme.com"
+    assert by_name["Dana Ruiz"]["email"].endswith("@external.example")
+    assert by_name["Dana Ruiz"]["location"] == "Northwind"       # the customer company
+    # only addresses that can authenticate become ACL grants
+    assert all(not e.endswith("@external.example") for e in bundle["people"])
+    assert "ava.chen@acme.com" in bundle["people"]
+
+
+def test_fireflies_speaker_ids_are_per_meeting_ordinals():
+    conn, _ = _ff_load()
+    rows = conn.execute("SELECT speaker_name, speaker_id FROM fireflies_sentences "
+                        "ORDER BY seq").fetchall()
+    assert [r["speaker_id"] for r in rows] == [0, 1, 2, 0]   # Ava reuses her own ordinal
+    assert all(isinstance(r["speaker_id"], int) for r in rows)
+
+
+def test_fireflies_sentences_sit_on_the_meetings_clock():
+    conn, _ = _ff_load()
+    base = conn.execute("SELECT created_ts FROM fireflies_transcripts").fetchone()[0]
+    rows = conn.execute("SELECT created_ts, start_time FROM fireflies_sentences "
+                        "ORDER BY seq").fetchall()
+    assert [r["created_ts"] for r in rows] == [base + int(r["start_time"]) for r in rows]
+
+
+def test_fireflies_only_resolvable_speakers_get_an_identity():
+    conn, _ = _ff_load()
+    rows = conn.execute("SELECT speaker_name, author_email FROM fireflies_sentences "
+                        "ORDER BY seq").fetchall()
+    assert rows[0]["author_email"] == "ava.chen@acme.com"   # a declared Redwood attendee
+    assert rows[1]["author_email"] is None                  # Dana is external, not an identity
+    assert rows[1]["speaker_name"] == "Dana Ruiz"           # but her label is still served
+
+
+def test_fireflies_transcript_without_speaker_labels_still_serves_its_text():
+    """17 bench transcripts are prose with no speaker labels. `content` is defined as the sentence
+    concatenation, so the body becomes ONE unattributed sentence rather than an empty document."""
+    raw = {**FF_RAW, "transcript": "Just prose about the meeting. No labels at all."}
+    conn, _ = _ff_load(raw)
+    row = conn.execute("SELECT content FROM fireflies_transcripts").fetchone()
+    assert row["content"] == "Just prose about the meeting. No labels at all."
+    sent = conn.execute("SELECT speaker_name, body FROM fireflies_sentences").fetchone()
+    assert sent["speaker_name"] is None       # honest: no label was produced
+    assert sent["body"] == row["content"]
+
+
+def test_fireflies_transcript_missing_entirely_falls_back_to_the_envelope():
+    """3 bench documents carry no transcript field at all; the ERB envelope's own derived content
+    is used so the meeting is not served empty."""
+    raw = {k: v for k, v in FF_RAW.items() if k != "transcript"}
+    conn, _ = _ff_load(raw)
+    assert conn.execute("SELECT content FROM fireflies_transcripts").fetchone()["content"]
+
+
+def test_fireflies_is_org_visible_like_slack_and_hubspot():
+    """The corpus names 1,104 distinct hosts of whom only the ~167 directory employees can
+    authenticate, so an owner-or-channel scope would leave ~91% of transcripts admin-only."""
+    grants = erb.grants_for("fireflies", {"org": "acme", "group": "sales-calls",
+                                          "owner": "ava.chen@acme.com",
+                                          "people": ["bob.stone@acme.com"]})
+    assert ("org", "acme") in grants
+    assert ("user", "ava.chen@acme.com") in grants
+    assert ("user", "bob.stone@acme.com") in grants
+    assert not any(t == "group" for t, _ in grants)
+
+
+def test_fireflies_external_addresses_never_become_acl_grants():
+    grants = erb.grants_for("fireflies", {"org": "acme", "group": "sales-calls",
+                                          "owner": "ava.chen@acme.com",
+                                          "people": ["dana.ruiz@external.example"]})
+    assert not any(pid.endswith("@external.example") for _, pid in grants)
+
+
+def test_fireflies_duration_parses_every_shape_the_bench_writes():
+    assert erb._ff_duration("72") == 72.0
+    assert erb._ff_duration(64) == 64.0
+    assert erb._ff_duration("~46 minutes") == 46.0
+    assert erb._ff_duration("about 52 min") == 52.0
+    assert erb._ff_duration(None) is None
+    assert erb._ff_duration("unknown") is None
+
+
+def test_fireflies_list_valued_transcript_is_joined():
+    """125 bench documents carry `transcript` as a LIST of already-split utterances."""
+    raw = {**FF_RAW, "transcript": ["[00:00] Ava: first.", "[00:10] Dana: second."]}
+    conn, _ = _ff_load(raw)
+    rows = conn.execute("SELECT speaker_name FROM fireflies_sentences ORDER BY seq").fetchall()
+    assert [r["speaker_name"] for r in rows] == ["Ava Chen", "Dana Ruiz"]
+
+
+def test_fireflies_escaped_newlines_are_unescaped_before_parsing():
+    """Some bench documents carry literal ``\\n`` instead of real newlines; left as-is the whole
+    transcript collapses to one line and only the first speaker is ever found."""
+    raw = {**FF_RAW, "transcript": "[00:00] Ava: first.\\n[00:10] Dana: second."}
+    conn, _ = _ff_load(raw)
+    assert conn.execute("SELECT COUNT(*) FROM fireflies_sentences").fetchone()[0] == 2
+
+
+def test_fireflies_root_level_document_lands_in_uncategorized():
+    """11 bench documents sit at the source root, which its own agents.md says should not happen."""
+    conn, _ = _ff_load({**FF_RAW, "_erb_path": "2026-04-02-a-meeting.json"})
+    assert conn.execute("SELECT channel FROM fireflies_transcripts").fetchone()[0] == \
+        "uncategorized"
+
+
+def test_fireflies_erb_path_is_not_hubspot_property_data():
+    """iter_records injects `_erb_path`; it must never leak into a served field."""
+    assert "_erb_path" in erb._HS_NOT_A_PROPERTY

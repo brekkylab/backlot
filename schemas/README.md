@@ -15,10 +15,27 @@ truth** for the JSONL record that `app/importer/byo.py` accepts:
 | `s3.schema.json` | `s3` | `bucket` |
 | `hubspot.schema.json` | `hubspot` | `object_type` |
 | `linear.schema.json` | `linear` | `team` |
+| `fireflies.schema.json` | `fireflies` | `channel` |
 
 Edit these files directly to change the accepted record shape. `app/validation.py`
 loads them at runtime (keyed by each schema's `properties.source_type.const`), so a new source
 type is just a new `*.schema.json` file here.
+
+## Child rows are named per source
+
+Most sources' child rows are **comments** (`comments`). Two are not, and each uses the array a
+reader of that source would expect:
+
+- **Slack** uses `replies` — a thread's messages.
+- **Fireflies** uses `sentences` — a transcript's utterances, each with a speaker and its
+  timing. `replies` is deliberately *not* overloaded for this: writing a transcript should read
+  like writing a transcript, and a `replies` array on a `fireflies` record is rejected rather
+  than silently ignored.
+
+Fireflies is also the one source where `content` and its child rows are two views of the **same**
+text: supply `sentences` and `content` is derived from them, or supply only `content` and the
+sentences are parsed back out of it. Either way the two round-trip exactly, so full-text search
+and the per-sentence API can never disagree.
 
 ## Validate a corpus
 

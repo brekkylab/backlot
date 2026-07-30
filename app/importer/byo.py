@@ -464,7 +464,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
     memberships: set[tuple[str, str]] = set()      # (group_id, email)
     grants: list[tuple[str, str, str]] = []        # (doc_id, principal_type, principal_id)
     counts: dict[str, int] = {}
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()   # (source_type, doc_id)
     fts_ids: dict[str, list[str]] = {}
     # HubSpot associations are resolved after the whole corpus is read: a link may name a target
     # that appears on a later line, and an omitted `to_type` is filled in from the target's own
@@ -527,9 +527,13 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
             rec = {**rec, "content": synth.fireflies_transcript_text(sentences)}
 
         doc_id = _doc_id(rec)
-        if doc_id in seen:
-            continue
-        seen.add(doc_id)
+        # Recorded, not deduplicated: `seen` answers "is this document in the corpus" for the
+        # cross-reference resolution further down. Two records sharing a (source, doc_id) are both
+        # written, and the row-level `INSERT OR REPLACE` leaves the later one — which is what a
+        # direct ERB import of the same documents produces. The bench has four such pairs (three
+        # across sources, one within jira); skipping the repeat instead would keep the earlier
+        # document and diverge.
+        seen.add((src, doc_id))
         gcol = store.grouping_col(src)
         container = str(rec.get(gcol) or src)   # channel / mailbox / folder / repo / project / space
         # An explicit `"group": null` means the container owns NO ACL group — which is a real
@@ -750,9 +754,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
             register(rep_author, rep.get("author_name"))
             rep_id = rep.get("doc_id") or (
                 "dsid_" + hashlib.sha256((doc_id + str(i) + rep["content"]).encode()).hexdigest()[:32])
-            if rep_id in seen:
-                continue
-            seen.add(rep_id)
+            seen.add((src, rep_id))
             # A reply is a full message (reactions/files/subtype/edited carry through);
             # its time is the root's + its position so the thread stays ordered (created is now
             # always set, so a reply ts is never NULL).
@@ -775,9 +777,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
             m_author = msg.get("author_email")
             register(m_author, msg.get("author_name"))
             msg_id = msg.get("doc_id") or f"{doc_id}::m{i}"
-            if msg_id in seen:
-                continue
-            seen.add(msg_id)
+            seen.add((src, msg_id))
             # Its own `created` when given, else the root's clock + an hour per position — the
             # spread a real reply chain has, and never NULL.
             insert(msg_id, m_author, msg.get("title") or title, msg["content"], i,
@@ -851,7 +851,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
     # does not exist is an error rather than a dangling relation, matching the hubspot rule.
     for from_doc, a, created_ts in lin_links:
         to_doc = a["to"]
-        if to_doc not in seen and not conn.execute(
+        if ("linear", to_doc) not in seen and not conn.execute(
                 "SELECT 1 FROM linear_issues WHERE doc_id = ?", (to_doc,)).fetchone():
             raise SystemExit(
                 f"linear relation {from_doc} -> {to_doc}: target not found in this corpus or the "

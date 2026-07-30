@@ -2198,6 +2198,20 @@ def load_structured(conn, records, P, settings) -> dict:
             bundle["_source"] = src
             bundles[dsid] = bundle
             counts[src] += 1
+            # A loader may materialize child rows from one bench doc — a Slack transcript's turns, a
+            # Gmail thread's messages, a HubSpot company's notes. Those rows are reached through the
+            # same per-row ACL filter as any other doc (store._acl_clause matches on each row's
+            # doc_id), so they must carry the parent's grants: without them a non-admin caller sees
+            # a silently truncated thread or an empty note list, while admin sees everything.
+            #
+            # Written here rather than from `bundles` afterwards: four bench documents share a
+            # doc_id with another (a drive/confluence pair, a hubspot/confluence pair, a
+            # jira/confluence pair, and two jira issues), and a dict keyed by doc_id keeps only the
+            # last of each — so the earlier document's container group was never granted.
+            for ptype, pid in grants_for(src, {**bundle, "org": settings.org_name}):
+                for doc in (dsid, *bundle.get("_children", [])):
+                    conn.execute("INSERT OR REPLACE INTO doc_acl(doc_id, principal_type,"
+                                 " principal_id) VALUES (?,?,?)", (doc, ptype, pid))
         except Exception as e:  # one bad doc must not sink the import
             failures.append((dsid, src, repr(e)))
         if i % 5000 == 0:
@@ -2304,17 +2318,6 @@ def import_structured(settings, gen_dir, *, question_ids=None) -> dict:
     # installing earlier would omit every synthesized user (and their group membership) from the
     # principals/group_members tables while they still get tokens — breaking group-scoped ACL.
     P.install(conn, settings)
-    for dsid, bundle in result["bundles"].items():
-        # A loader may materialize child rows from one bench doc — a Slack transcript's turns, a
-        # Gmail thread's messages, a HubSpot company's notes. Those rows are reached through the
-        # same per-row ACL filter as any other doc (store._acl_clause matches on each row's
-        # doc_id), so they must carry the parent's grants: without them a non-admin caller sees a
-        # silently truncated thread or an empty note list, while admin sees everything.
-        docs = [dsid, *bundle.get("_children", [])]
-        for ptype, pid in grants_for(bundle["_source"], {**bundle, "org": settings.org_name}):
-            for doc in docs:
-                conn.execute("INSERT OR REPLACE INTO doc_acl(doc_id, principal_type, principal_id)"
-                             " VALUES (?,?,?)", (doc, ptype, pid))
     conn.commit()
     P.write_tokens(settings)
     store.build_fts(conn)

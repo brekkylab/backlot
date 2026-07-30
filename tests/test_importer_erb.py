@@ -1890,3 +1890,41 @@ def test_select_records_drops_a_document_with_no_content(tmp_path):
     assert "dsid_empty_thread" not in ids
     # and a document that does carry content is still yielded from the same directory
     assert any(dsid.startswith("dsid_sl") for dsid in ids)
+
+
+def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
+    """Four bench documents share a `dataset_doc_uuid` with another: three across sources (a drive
+    file that is also a confluence page, plus a hubspot and a jira one) and two jira issues sharing
+    one. Within a source the row is overwritten, so both importers must keep the LAST record; across
+    sources each has its own table, so both survive and BOTH containers' ACL groups must be granted.
+    Resolving either of those differently is enough to make the full-corpus round-trip diverge."""
+    gen = _write_generated_data(tmp_path)
+    jira_first = json.loads(sorted((gen / "sources" / "jira").glob("*.json"))[0].read_text())
+    dsid = jira_first["dataset_doc_uuid"]
+    # `zz-` so it sorts last: iter_records walks the source in path order. The title lives in
+    # whichever field `title_field_name` names, so that is the one to change.
+    (gen / "sources" / "jira" / "zz-repeat.json").write_text(json.dumps(
+        {**jira_first, jira_first["title_field_name"]: "Repeated id, later record",
+         "status": "Resolved"}))
+    conf_first = json.loads(sorted((gen / "sources" / "confluence").glob("*.json"))[0].read_text())
+    (gen / "sources" / "confluence" / "zz-shared.json").write_text(json.dumps(
+        {**conf_first, "dataset_doc_uuid": dsid,
+         conf_first["title_field_name"]: "Same id, under confluence"}))
+
+    direct = _import_erb_directly(gen, tmp_path / "direct")
+    viabyo = _import_via_byo(gen, tmp_path / "viabyo", tmp_path / "artifact")
+
+    for label, settings in (("direct", direct), ("via byo", viabyo)):
+        conn = sqlite3.connect(settings.db_path)
+        assert conn.execute("SELECT title FROM jira_issues WHERE doc_id=?", (dsid,)).fetchone() \
+            == ("Repeated id, later record",), f"{label} kept the earlier of the two jira records"
+        assert conn.execute("SELECT title FROM confluence_pages WHERE doc_id=?",
+                            (dsid,)).fetchone() == ("Same id, under confluence",), \
+            f"{label} lost the confluence document to the jira one that shares its id"
+        conn.close()
+
+    a, b = _dump_db(direct.db_path), _dump_db(viabyo.db_path)
+    for t in sorted(a):
+        assert a[t] == b[t], (
+            f"table {t} differs\n  only in direct: {[r for r in a[t] if r not in b[t]]}\n"
+            f"  only via byo:  {[r for r in b[t] if r not in a[t]]}")

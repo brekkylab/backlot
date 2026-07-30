@@ -979,3 +979,29 @@ def test_verify_manifest_catches_a_tampered_shard(tmp_path):
     shard.write_bytes(shard.read_bytes() + b"\x00")
     problems = byo.verify_manifest(out)
     assert len(problems) == 1 and "bytes" in problems[0]
+
+
+def test_two_sources_may_share_a_doc_id(tmp_path):
+    """Ids are per service, not corpus-wide. The bench has three documents that appear under two
+    sources with the same `dataset_doc_uuid` (a drive file that is also a confluence page, plus a
+    hubspot and a jira one), and a direct ERB import keeps both because each source is its own
+    table. Deduping across the whole corpus dropped whichever source sorted later, which is what
+    made the full round-trip diverge: gdrive_files 25,108 vs 25,107."""
+    corpus = tmp_path / "shared-id.jsonl"
+    corpus.write_text("\n".join(json.dumps(r) for r in [
+        {"source_type": "confluence", "space": "handbook", "doc_id": "shared-1",
+         "title": "Sprint plan (page)", "content": "The confluence rendering.",
+         "author_email": "ava@acme.com"},
+        {"source_type": "google_drive", "folder": "users", "doc_id": "shared-1",
+         "title": "Sprint plan (doc)", "content": "The drive document.",
+         "author_email": "ava@acme.com"},
+    ]) + "\n")
+    data = tmp_path / "data"; data.mkdir()
+    settings = Settings(data_dir=data)
+    res = byo.load(corpus, settings)
+    assert res["total"] == 2
+    conn = store.connect_ro(settings.db_path)
+    assert conn.execute("SELECT title FROM confluence_pages WHERE doc_id='shared-1'").fetchone()[0] \
+        == "Sprint plan (page)"
+    assert conn.execute("SELECT title FROM gdrive_files WHERE doc_id='shared-1'").fetchone()[0] \
+        == "Sprint plan (doc)"

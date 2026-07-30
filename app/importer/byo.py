@@ -961,7 +961,13 @@ def main(argv: list[str]) -> int:
         return 1
 
     settings = get_settings()
-    res = load(corpus, settings, reset=not args.append, roster=args.roster)
+    # A sharded artifact ships its own roster beside the manifest, so importing one takes the
+    # directory and nothing else; `--roster` still wins when it is given.
+    roster = args.roster
+    if roster is None and corpus.is_dir() and (corpus / "roster.yaml").exists():
+        roster = corpus / "roster.yaml"
+        print(f"using the artifact's own roster: {roster}", file=sys.stderr)
+    res = load(corpus, settings, reset=not args.append, roster=roster)
     print(f"Loaded {res['total']} documents into {settings.db_path}")
     for src, n in sorted(res["counts"].items()):
         print(f"  {src:14s} {n}")

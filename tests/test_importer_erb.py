@@ -1873,3 +1873,20 @@ def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
     m2 = _json.loads((tmp_path / "sharded2" / "manifest.json").read_text())
     assert [s["sha256"] for i in m2["sources"].values() for s in i["shards"]] == \
            [s["sha256"] for i in manifest["sources"].values() for s in i["shards"]]
+
+
+def test_select_records_drops_a_document_with_no_content(tmp_path):
+    """The bench ships a slack thread whose `messages` is "". A direct import accepted it and the
+    converted artifact then failed its own BYO schema (`content: '' should be non-empty`), so both
+    paths have to make the same call — which they do only if the record source drops it."""
+    gen = _write_generated_data(tmp_path)
+    empty = gen / "sources" / "slack" / "general" / "empty-thread.json"
+    empty.parent.mkdir(parents=True, exist_ok=True)
+    empty.write_text(json.dumps({
+        "channel": "general", "messages": "", "participants": ["Ava Chen"],
+        "title_field_name": "channel", "content_field_names": ["messages"],
+        "dataset_doc_uuid": "dsid_empty_thread"}))
+    ids = {dsid for _src, dsid, _raw in erb.select_records(gen)}
+    assert "dsid_empty_thread" not in ids
+    # and a document that does carry content is still yielded from the same directory
+    assert any(dsid.startswith("dsid_sl") for dsid in ids)

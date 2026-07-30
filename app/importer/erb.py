@@ -2238,9 +2238,22 @@ def select_records(gen_dir: Path, question_ids: set[str] | None = None):
     so containers aren't left empty) — that container-expansion is NOT needed for validation, so
     it is skipped here.
     """
+    skipped_empty = 0
     for src, dsid, raw in iter_records(gen_dir / "sources"):
-        if question_ids is None or dsid in question_ids:
-            yield src, dsid, raw
+        if question_ids is not None and dsid not in question_ids:
+            continue
+        # The bench ships one document with no content at all (a slack thread whose `messages` is
+        # ""). There is nothing to serve for it, and a thread with zero messages is a state the real
+        # API cannot produce — so it is dropped here, where every consumer of the corpus sees the
+        # same decision. Dropping it in only one of them is what made a converted artifact fail the
+        # BYO schema (`content: '' should be non-empty`) while a direct import accepted it.
+        if not (derive_title_content(raw)[1] or "").strip():
+            skipped_empty += 1
+            continue
+        yield src, dsid, raw
+    if skipped_empty:
+        print(f"  skipped {skipped_empty} document(s) with empty content", file=sys.stderr,
+              flush=True)
 
 
 class _NullConn:

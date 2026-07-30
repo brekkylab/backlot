@@ -66,10 +66,12 @@ Usage:  python -m app.importer.byo path/to/corpus.jsonl [--append | --dry-run] [
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path  # noqa: F401  (kept for typing/backcompat)
 
 import yaml
@@ -311,9 +313,68 @@ def _emails(rec: dict):
             yield cv
 
 
-def _infer_org(records: list[dict], settings: Settings) -> tuple[str, str]:
+def _infer_org(records, settings: Settings) -> tuple[str, str]:
     """Derive (org_name, org_domain) from the corpus's dominant author email domain."""
     return infer_org((e for rec in records for e in _emails(rec)), settings)
+
+
+def corpus_records(source) -> Iterator[tuple[int, str]]:
+    """``(lineno, line)`` over a plain JSONL file, a ``.jsonl.gz``, or a sharded artifact directory.
+
+    A directory is read through its ``manifest.json``, shard by shard, because the whole point of
+    sharding is a corpus too large to hold at once: reading the 581k-record ERB conversion with
+    ``read_text()`` would materialize several gigabytes of ``str``. Line numbers run across the
+    whole artifact so an error message still names one place.
+
+    Records are split on ``\\n`` alone (``newline="\\n"``), for the reason ``jsonl_lines`` documents:
+    U+2028 and the vertical tab are ordinary characters inside a JSON string, and Python's universal
+    newlines would otherwise tear a valid record in half.
+    """
+    source = Path(source)
+    if source.is_dir():
+        manifest = json.loads((source / "manifest.json").read_text())
+        paths = [source / s["path"] for src in sorted(manifest["sources"])
+                 for s in manifest["sources"][src]["shards"]]
+    else:
+        paths = [source]
+    n = 0
+    for p in paths:
+        opener = gzip.open if p.suffix == ".gz" else open
+        with opener(p, "rt", encoding="utf-8", newline="\n") as fh:
+            for line in fh:
+                n += 1
+                yield n, line.rstrip("\n")
+
+
+def verify_manifest(source) -> list[str]:
+    """Problems found checking a sharded artifact against its manifest ([] == intact).
+
+    Size and digest, per shard: a truncated or swapped download has to fail before it half-loads a
+    database, which is the same reason ``--dry-run`` exists for a hand-written corpus.
+    """
+    source = Path(source)
+    mf = source / "manifest.json"
+    if not mf.exists():
+        return [f"{mf} not found"]
+    manifest = json.loads(mf.read_text())
+    problems = []
+    for src in sorted(manifest.get("sources", {})):
+        for shard in manifest["sources"][src]["shards"]:
+            p = source / shard["path"]
+            if not p.exists():
+                problems.append(f"{shard['path']}: missing")
+                continue
+            if p.stat().st_size != shard["bytes"]:
+                problems.append(f"{shard['path']}: {p.stat().st_size} bytes, manifest says "
+                                f"{shard['bytes']}")
+                continue
+            h = hashlib.sha256()
+            with open(p, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            if h.hexdigest() != shard["sha256"]:
+                problems.append(f"{shard['path']}: sha256 mismatch")
+    return problems
 
 
 def load_roster(path) -> dict:
@@ -364,17 +425,24 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
         settings.db_path.unlink()
     conn = store.connect_rw(settings.db_path)
 
-    lines = jsonl_lines(Path(path).read_text())
     # infer the org from the corpus (dominant email domain) before building any grants,
-    # since public docs are granted to the org principal — see _infer_org.
+    # since public docs are granted to the org principal — see _infer_org. Read in its own pass,
+    # keeping only the emails: a sharded corpus is streamed rather than held in memory.
     _scan = []
-    for _ln in lines:
+    for _no, _ln in corpus_records(path):
         _ln = _ln.strip()
         if _ln:
             try:
-                _scan.append(json.loads(_ln))
+                _rec = json.loads(_ln)
             except json.JSONDecodeError:
-                pass  # malformed lines are reported precisely in the main loop below
+                continue  # malformed lines are reported precisely in the main loop below
+            # Keep only what `_emails` reads, and drop the child rows' bodies: the addresses are
+            # kilobytes where the corpus is gigabytes.
+            _scan.append({
+                **{k: _rec[k] for k in ("author_email", "host_email", "readers") if k in _rec},
+                **{c: [{"author_email": r.get("author_email")} for r in (_rec.get(c) or [])
+                       if isinstance(r, dict)]
+                   for c in ("comments", "sentences", "messages", "replies") if c in _rec}})
     org_name, org_domain = _infer_org(_scan, settings)
     roster_data = load_roster(roster) if roster else None
     closed = roster_data is not None
@@ -407,7 +475,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
     # since a target may appear on a later line — the same second pass the ERB importer runs.
     lin_links: list[tuple[str, dict, int]] = []
 
-    for lineno, line in enumerate(lines, 1):
+    for lineno, line in corpus_records(path):
         line = line.strip()
         if not line:
             continue
@@ -852,7 +920,8 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Import (load) a BYO JSONL corpus into the mock DB.")
-    ap.add_argument("corpus", help="path to a JSONL corpus file")
+    ap.add_argument("corpus", help="a JSONL corpus file, a .jsonl.gz, or a directory holding "
+                                   "manifest.json + data/<source>/part-*.jsonl.gz shards")
     ap.add_argument("--append", action="store_true", help="add to the existing DB instead of resetting")
     ap.add_argument("--dry-run", action="store_true", help="validate the corpus only; don't touch the DB")
     ap.add_argument("--roster", type=Path, default=None,
@@ -862,9 +931,28 @@ def main(argv: list[str]) -> int:
     corpus = Path(args.corpus)
 
     if args.dry_run:
-        problems = validate_file(corpus)
+        if corpus.is_dir():
+            # A sharded artifact is checked against its manifest first: a truncated download is a
+            # different failure from a bad record, and saying so is cheaper than a schema error.
+            broken = verify_manifest(corpus)
+            if broken:
+                print(f"INVALID: {len(broken)} shard problem(s) in {corpus}", file=sys.stderr)
+                for b in broken:
+                    print(f"  {b}", file=sys.stderr)
+                return 1
+        problems, n = [], 0
+        for lineno, line in corpus_records(corpus):
+            line = line.strip()
+            if not line:
+                continue
+            n += 1
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as e:
+                problems.append((lineno, f"invalid JSON: {e}"))
+                continue
+            problems.extend((lineno, m) for m in record_errors(rec))
         if not problems:
-            n = sum(1 for line in jsonl_lines(corpus.read_text()) if line.strip())
             print(f"OK: {n} records valid.")
             return 0
         print(f"INVALID: {len(problems)} problem(s) in {corpus}", file=sys.stderr)

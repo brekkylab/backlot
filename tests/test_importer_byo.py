@@ -926,3 +926,56 @@ def test_byo_empty_readers_means_nobody(tmp_path):
         assert store.get_document(conn, "gmail", "gm-dark") is not None
     finally:
         conn.close()
+
+
+def _shard_artifact(tmp_path):
+    """A two-shard artifact plus the manifest that describes it, written the way `export_byo` does."""
+    import gzip as _gz
+    import hashlib as _hl
+    import io as _io
+    import json as _js
+    rows = [
+        {"source_type": "confluence", "space": "handbook", "title": "Onboarding",
+         "content": "How we onboard.", "author_email": "ava@acme.com"},
+        {"source_type": "slack", "channel": "incidents", "content": "502s from the gateway?",
+         "author_email": "bob@acme.com"},
+    ]
+    out = tmp_path / "artifact"
+    sources = {}
+    for rec in rows:
+        src = rec["source_type"]
+        d = out / "data" / src
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "part-00000.jsonl.gz"
+        with _io.TextIOWrapper(_gz.GzipFile(p, "wb", mtime=0), encoding="utf-8") as fh:
+            fh.write(_js.dumps(rec) + "\n")
+        sources[src] = {"documents": 1, "records": 1, "shards": [
+            {"path": str(p.relative_to(out)), "records": 1, "bytes": p.stat().st_size,
+             "sha256": _hl.sha256(p.read_bytes()).hexdigest()}]}
+    (out / "manifest.json").write_text(_js.dumps(
+        {"schema": 1, "documents": len(rows), "records": len(rows), "shard_records": 1,
+         "sources": sources}))
+    return out
+
+
+def test_load_reads_a_sharded_artifact_as_one_corpus(tmp_path):
+    """A sharded directory has to load exactly like the single file it was split from — the corpus
+    is too large to hold in memory, so `load` streams it shard by shard through the manifest."""
+    out = _shard_artifact(tmp_path)
+    data = tmp_path / "data"; data.mkdir()
+    settings = Settings(data_dir=data)
+    res = byo.load(out, settings)
+    assert res["total"] == 2
+    assert res["counts"] == {"confluence": 1, "slack": 1}
+    # line numbers run across the whole artifact, so a report names one place
+    assert [n for n, _ in byo.corpus_records(out)] == [1, 2]
+
+
+def test_verify_manifest_catches_a_tampered_shard(tmp_path):
+    """The digest is the whole point: a truncated or swapped download must fail before it loads."""
+    out = _shard_artifact(tmp_path)
+    assert byo.verify_manifest(out) == []
+    shard = next(out.glob("data/*/part-00000.jsonl.gz"))
+    shard.write_bytes(shard.read_bytes() + b"\x00")
+    problems = byo.verify_manifest(out)
+    assert len(problems) == 1 and "bytes" in problems[0]

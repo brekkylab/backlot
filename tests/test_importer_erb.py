@@ -1833,3 +1833,43 @@ def test_a_gmail_thread_with_no_participants_is_granted_to_nobody():
     for src in ("slack", "hubspot", "fireflies"):
         assert ("org", "acme") in grants_for(src, {"org": "acme", "group": "c", "owner": None,
                                                   "people": []}), src
+
+
+def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
+    """Sharded output has to be checkable from the manifest alone and byte-identical across runs —
+    a dataset consumer verifies a download without the corpus it came from, and gzip's default
+    header would put the current time in every shard."""
+    import gzip as _gzip
+    import json as _json
+    from app.config import Settings
+    gen = _write_generated_data(tmp_path)
+    data = tmp_path / "data"; data.mkdir()
+    settings = Settings(data_dir=data)
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+
+    out = tmp_path / "sharded"
+    counts = erb.export_byo(settings, gen, out, shard_records=2)
+    manifest = _json.loads((out / "manifest.json").read_text())
+
+    # every shard the manifest names exists, and its recorded size and digest match the file
+    seen = 0
+    for src, info in manifest["sources"].items():
+        assert info["documents"] == counts[src]
+        for shard in info["shards"]:
+            p = out / shard["path"]
+            assert p.exists() and p.stat().st_size == shard["bytes"]
+            assert erb._sha256(p) == shard["sha256"]
+            lines = [l for l in _gzip.open(p, "rt").read().split("\n") if l.strip()]
+            assert len(lines) == shard["records"] <= 2
+            assert all(_json.loads(l)["source_type"] == src for l in lines)
+            seen += len(lines)
+    assert seen == manifest["records"] > 0
+    assert manifest["roster"]["sha256"] == erb._sha256(out / "roster.yaml")
+    assert not (out / "corpus.jsonl").exists()      # sharded mode writes no single file
+
+    # a second conversion of the same input reproduces the same digests
+    again = erb.export_byo(settings, gen, tmp_path / "sharded2", shard_records=2)
+    assert again == counts
+    m2 = _json.loads((tmp_path / "sharded2" / "manifest.json").read_text())
+    assert [s["sha256"] for i in m2["sources"].values() for s in i["shards"]] == \
+           [s["sha256"] for i in manifest["sources"].values() for s in i["shards"]]

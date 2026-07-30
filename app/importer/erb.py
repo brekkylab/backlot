@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import gzip
 import hashlib
+import io
 import json
 import re
 import shutil
@@ -2051,14 +2053,98 @@ def to_byo(src: str, dsid: str, raw: dict, P: "Principals", org: str) -> list[di
     return records
 
 
-def export_byo(settings, gen_dir, out_dir, *, question_ids=None) -> dict:
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+class _ByoWriter:
+    """Writes converted records as one plain file, or as per-source gzip shards + a manifest.
+
+    The full corpus is ~788k records / ~1 GB gzipped, which is neither a file a host wants nor one
+    a consumer can fetch selectively — so records go to ``data/<source>/part-NNNNN.jsonl.gz`` and a
+    caller who wants a single source pulls one folder. The manifest records each shard's record
+    count, byte size and SHA-256 so a download can be verified without re-reading the corpus.
+
+    Shards are gzipped with ``mtime=0``: the same input has to produce the same checksums, and
+    gzip's default header carries the current time.
+    """
+
+    def __init__(self, out_dir: Path, shard_records: int | None):
+        self.out_dir = Path(out_dir)
+        self.shard_records = shard_records
+        self.shards: dict[str, list[dict]] = {}
+        self._open: dict[str, tuple] = {}          # source -> (path, fh, records_written)
+        self._plain = None
+        if shard_records is None:
+            self._plain = open(self.out_dir / "corpus.jsonl", "w")
+
+    def write(self, src: str, rec: dict) -> None:
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        if self._plain is not None:
+            self._plain.write(line)
+            return
+        path, fh, n = self._open.get(src) or self._new_shard(src)
+        fh.write(line)
+        n += 1
+        if n >= self.shard_records:
+            self._close_shard(src, path, fh, n)
+        else:
+            self._open[src] = (path, fh, n)
+
+    def _new_shard(self, src: str) -> tuple:
+        d = self.out_dir / "data" / src
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"part-{len(self.shards.get(src, [])):05d}.jsonl.gz"
+        # GzipFile, not gzip.open: only the former takes `mtime`, and the default header would
+        # stamp the current time into every shard and change its digest run to run.
+        fh = io.TextIOWrapper(gzip.GzipFile(path, "wb", compresslevel=9, mtime=0),
+                              encoding="utf-8")
+        self._open[src] = (path, fh, 0)
+        return self._open[src]
+
+    def _close_shard(self, src: str, path: Path, fh, n: int) -> None:
+        fh.close()
+        self._open.pop(src, None)
+        self.shards.setdefault(src, []).append({
+            "path": str(path.relative_to(self.out_dir)), "records": n,
+            "bytes": path.stat().st_size, "sha256": _sha256(path)})
+
+    def close(self, *, counts: dict, documents: int) -> None:
+        if self._plain is not None:
+            self._plain.close()
+            return
+        for src, (path, fh, n) in list(self._open.items()):
+            self._close_shard(src, path, fh, n)
+        roster = self.out_dir / "roster.yaml"
+        manifest = {
+            "schema": 1,
+            "documents": documents,
+            "records": sum(s["records"] for v in self.shards.values() for s in v),
+            "shard_records": self.shard_records,
+            "sources": {src: {"documents": counts.get(src, 0),
+                              "records": sum(s["records"] for s in shards),
+                              "shards": shards}
+                        for src, shards in sorted(self.shards.items())},
+        }
+        if roster.exists():
+            manifest["roster"] = {"path": "roster.yaml", "sha256": _sha256(roster),
+                                  "bytes": roster.stat().st_size}
+        (self.out_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+
+
+def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=None) -> dict:
     """Convert ERB to a BYO-JSONL artifact: ``corpus.jsonl`` + ``roster.yaml``.
 
     The counterpart of :func:`import_structured` — same records, same principal resolution, same
     global precomputation, but written as a corpus ``app.importer.byo`` imports rather than
     straight into a DB. ``tests/test_importer_erb.py`` requires the two to produce equivalent
-    databases. #18 wraps this with sharding/compression/manifest for the full 512k-document corpus;
-    this writes one plain file.
+    databases. With ``shard_records`` set it writes per-source gzip shards plus a ``manifest.json``
+    instead of one plain file — what the full 512k-document corpus needs to be distributable.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2070,21 +2156,22 @@ def export_byo(settings, gen_dir, out_dir, *, question_ids=None) -> dict:
     _LINEAR_KEY_TO_DOC.update(build_linear_key_index(records))
     counts: dict[str, int] = {s: 0 for s in SUPPORTED}
     failures: list[tuple[str, str, str]] = []
-    with open(out_dir / "corpus.jsonl", "w") as fh:
-        for i, (src, dsid, raw) in enumerate(records, 1):
-            try:
-                for rec in to_byo(src, dsid, raw, P, settings.org_name):
-                    fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                counts[src] += 1
-            except Exception as e:  # one bad doc must not sink the conversion (as in load_structured)
-                failures.append((dsid, src, repr(e)))
-            if i % 25000 == 0:
-                print(f"  converted {i}/{len(records)} ({len(failures)} skipped)",
-                      file=sys.stderr, flush=True)
+    writer = _ByoWriter(out_dir, shard_records)
+    for i, (src, dsid, raw) in enumerate(records, 1):
+        try:
+            for rec in to_byo(src, dsid, raw, P, settings.org_name):
+                writer.write(src, rec)
+            counts[src] += 1
+        except Exception as e:  # one bad doc must not sink the conversion (as in load_structured)
+            failures.append((dsid, src, repr(e)))
+        if i % 25000 == 0:
+            print(f"  converted {i}/{len(records)} ({len(failures)} skipped)",
+                  file=sys.stderr, flush=True)
     if failures:
         print(f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
               file=sys.stderr, flush=True)
     P.write_roster(out_dir / "roster.yaml", settings)
+    writer.close(counts=counts, documents=len(records))
     return counts
 
 
@@ -2238,6 +2325,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--export-byo", type=Path, default=None, metavar="DIR",
                     help="write a BYO-JSONL artifact (corpus.jsonl + roster.yaml) into DIR instead "
                          "of building the DB; `app.importer.byo` loads it to an equivalent DB")
+    ap.add_argument("--shard-records", type=int, default=None, metavar="N",
+                    help="with --export-byo: write data/<source>/part-*.jsonl.gz shards of N "
+                         "records each plus manifest.json, instead of one corpus.jsonl")
     args = ap.parse_args(argv)
     settings = get_settings()
 
@@ -2259,7 +2349,8 @@ def main(argv: list[str]) -> int:
             question_ids.update(json.loads(line).get("expected_doc_ids", []))
 
     if args.export_byo:
-        counts = export_byo(settings, gen_dir, args.export_byo, question_ids=question_ids)
+        counts = export_byo(settings, gen_dir, args.export_byo, question_ids=question_ids,
+                            shard_records=args.shard_records)
         print(f"Converted {sum(counts.values())} documents -> {args.export_byo}/corpus.jsonl")
         for src, n in counts.items():
             print(f"  {src:14s} {n}")

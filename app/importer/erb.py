@@ -2113,7 +2113,7 @@ class _ByoWriter:
             "path": str(path.relative_to(self.out_dir)), "records": n,
             "bytes": path.stat().st_size, "sha256": _sha256(path)})
 
-    def close(self, *, counts: dict, documents: int) -> None:
+    def close(self, *, counts: dict, documents: int, skipped: int = 0) -> None:
         if self._plain is not None:
             self._plain.close()
             return
@@ -2123,6 +2123,7 @@ class _ByoWriter:
         manifest = {
             "schema": 1,
             "documents": documents,
+            "skipped": skipped,
             "records": sum(s["records"] for v in self.shards.values() for s in v),
             "shard_records": self.shard_records,
             "sources": {src: {"documents": counts.get(src, 0),
@@ -2138,7 +2139,8 @@ class _ByoWriter:
 
 
 def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=None) -> dict:
-    """Convert ERB to a BYO-JSONL artifact: ``corpus.jsonl`` + ``roster.yaml``.
+    """Convert ERB to a BYO-JSONL artifact: ``corpus.jsonl`` + ``roster.yaml``, or per-source shards
+    plus ``manifest.json`` when ``shard_records`` is set.
 
     The counterpart of :func:`import_structured` — same records, same principal resolution, same
     global precomputation, but written as a corpus ``app.importer.byo`` imports rather than
@@ -2171,7 +2173,10 @@ def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=N
         print(f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
               file=sys.stderr, flush=True)
     P.write_roster(out_dir / "roster.yaml", settings)
-    writer.close(counts=counts, documents=len(records))
+    # Successes, not attempts: per-source `documents` counts what was written, so a top-level
+    # `len(records)` would contradict its own sum the moment one document is skipped — and that field
+    # is what a consumer reads to decide whether it got everything.
+    writer.close(counts=counts, documents=sum(counts.values()), skipped=len(failures))
     return counts
 
 
@@ -2339,12 +2344,17 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--tokens-only", action="store_true",
                     help="resolve the roster and write tokens.yaml WITHOUT building the DB (fast)")
     ap.add_argument("--export-byo", type=Path, default=None, metavar="DIR",
-                    help="write a BYO-JSONL artifact (corpus.jsonl + roster.yaml) into DIR instead "
-                         "of building the DB; `app.importer.byo` loads it to an equivalent DB")
+                    help="write a BYO-JSONL artifact into DIR instead of building the DB: "
+                         "corpus.jsonl + roster.yaml, or shards + manifest.json with "
+                         "--shard-records; `app.importer.byo` loads either to an equivalent DB")
     ap.add_argument("--shard-records", type=int, default=None, metavar="N",
                     help="with --export-byo: write data/<source>/part-*.jsonl.gz shards of N "
                          "records each plus manifest.json, instead of one corpus.jsonl")
     args = ap.parse_args(argv)
+    if args.shard_records is not None and args.shard_records < 1:
+        # 0 makes `n >= shard_records` always true: one shard per record, 600k files for the bench,
+        # which is the very thing sharding was added to avoid.
+        ap.error("--shard-records must be at least 1")
     settings = get_settings()
 
     if args.no_download:
@@ -2367,7 +2377,9 @@ def main(argv: list[str]) -> int:
     if args.export_byo:
         counts = export_byo(settings, gen_dir, args.export_byo, question_ids=question_ids,
                             shard_records=args.shard_records)
-        print(f"Converted {sum(counts.values())} documents -> {args.export_byo}/corpus.jsonl")
+        dest = (f"{args.export_byo}/data/<source>/part-*.jsonl.gz + manifest.json"
+                if args.shard_records else f"{args.export_byo}/corpus.jsonl")
+        print(f"Converted {sum(counts.values())} documents -> {dest}")
         for src, n in counts.items():
             print(f"  {src:14s} {n}")
         print(f"Roster -> {args.export_byo}/roster.yaml "

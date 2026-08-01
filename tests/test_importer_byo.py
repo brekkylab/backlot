@@ -1,4 +1,7 @@
 """app.importer.byo: load an arbitrary BYO JSONL corpus -> DB, honoring per-doc ACL."""
+import gzip
+import hashlib
+import io
 import json
 
 import pytest
@@ -6,7 +9,7 @@ import yaml
 
 from app import store
 from app.acl import Acl
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.routers.slack import _message
 from app.importer import byo
 from app.importer.byo import load
@@ -976,9 +979,93 @@ def test_verify_manifest_catches_a_tampered_shard(tmp_path):
     out = _shard_artifact(tmp_path)
     assert byo.verify_manifest(out) == []
     shard = next(out.glob("data/*/part-00000.jsonl.gz"))
-    shard.write_bytes(shard.read_bytes() + b"\x00")
+    good = shard.read_bytes()
+    shard.write_bytes(good + b"\x00")
     problems = byo.verify_manifest(out)
     assert len(problems) == 1 and "bytes" in problems[0]
+
+    # A swap that keeps the byte count is what the digest is FOR. The size check above answers the
+    # other cases and returns early, so without this the sha256 comparison never runs in the suite.
+    shard.write_bytes(good[:-1] + bytes([good[-1] ^ 0xFF]))
+    assert shard.stat().st_size == len(good)
+    problems = byo.verify_manifest(out)
+    assert len(problems) == 1 and "sha256 mismatch" in problems[0]
+
+
+def test_verify_manifest_checks_the_roster_too(tmp_path):
+    """The roster is the closed principal set — it decides who holds a token and what they can see —
+    and importing a directory picks it up without being asked, so a swapped one must not pass."""
+    out = _shard_artifact(tmp_path)
+    roster = out / "roster.yaml"
+    roster.write_text(yaml.safe_dump({"org": "Acme", "org_domain": "acme.com",
+                                      "departments": {"eng": [{"email": "ava@acme.com"}]}}))
+    mf = out / "manifest.json"
+    manifest = json.loads(mf.read_text())
+    manifest["roster"] = {"path": "roster.yaml", "bytes": roster.stat().st_size,
+                          "sha256": hashlib.sha256(roster.read_bytes()).hexdigest()}
+    mf.write_text(json.dumps(manifest))
+    assert byo.verify_manifest(out) == []
+
+    roster.write_text(roster.read_text() + "\n# swapped for another org's\n")
+    problems = byo.verify_manifest(out)
+    assert any("roster.yaml" in p for p in problems), problems
+
+
+def test_import_refuses_a_shard_that_does_not_match_the_manifest(tmp_path, monkeypatch):
+    """A shard that is short but validly terminated is what a resumed download looks like. Rewriting
+    one to fewer records leaves a well-formed gzip stream, so nothing downstream notices: the import
+    used to report success on a corpus missing documents the manifest counts."""
+    out = _shard_artifact(tmp_path)
+    shard = next(out.glob("data/*/part-00000.jsonl.gz"))
+    with gzip.open(shard, "rt", encoding="utf-8") as fh:
+        kept = fh.readlines()[:-1]
+    with io.TextIOWrapper(gzip.GzipFile(shard, "wb", mtime=0), encoding="utf-8") as fh:
+        fh.writelines(kept)
+
+    data = tmp_path / "data-refused"
+    monkeypatch.setenv("MOCK_DATA_DIR", str(data))
+    get_settings.cache_clear()
+    with pytest.raises(SystemExit) as e:
+        byo.main([str(out)])
+    assert e.value.code == 1
+    assert not (data / "mock.sqlite").exists(), "a rejected artifact must not leave a database"
+
+
+def test_a_single_gzipped_corpus_file_loads(tmp_path):
+    """The README documents `python -m app.importer.byo corpus.jsonl.gz`; every other test reaches a
+    `.gz` through a shard directory, so the plain single-file case had no coverage."""
+    corpus = tmp_path / "corpus.jsonl.gz"
+    with io.TextIOWrapper(gzip.GzipFile(corpus, "wb", mtime=0), encoding="utf-8") as fh:
+        fh.write(json.dumps({"source_type": "slack", "channel": "general",
+                             "author_email": "ava@acme.com", "content": "Gzipped."}) + "\n")
+    settings = Settings(data_dir=tmp_path / "d")
+    res = byo.load(corpus, settings)
+    assert res["total"] == 1
+    conn = store.connect_ro(settings.db_path)
+    assert conn.execute("SELECT content FROM slack_messages").fetchone()[0] == "Gzipped."
+    conn.close()
+
+
+def test_a_directory_without_a_manifest_is_refused_clearly(tmp_path):
+    """It is the same situation `verify_manifest` names, so it should not surface as a traceback."""
+    empty = tmp_path / "not-an-artifact"
+    empty.mkdir()
+    with pytest.raises(SystemExit) as e:
+        list(byo.corpus_records(empty))
+    assert "manifest.json" in str(e.value)
+
+
+def test_a_manifest_naming_a_shard_outside_the_artifact_is_refused(tmp_path):
+    """The artifact is downloaded, so its manifest is untrusted input."""
+    out = _shard_artifact(tmp_path)
+    mf = out / "manifest.json"
+    manifest = json.loads(mf.read_text())
+    src = sorted(manifest["sources"])[0]
+    manifest["sources"][src]["shards"][0]["path"] = "../escaped.jsonl.gz"
+    mf.write_text(json.dumps(manifest))
+    with pytest.raises(SystemExit) as e:
+        list(byo.corpus_records(out))
+    assert "outside" in str(e.value)
 
 
 def test_two_sources_may_share_a_doc_id(tmp_path):

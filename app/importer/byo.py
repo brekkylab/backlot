@@ -332,9 +332,20 @@ def corpus_records(source) -> Iterator[tuple[int, str]]:
     """
     source = Path(source)
     if source.is_dir():
-        manifest = json.loads((source / "manifest.json").read_text())
-        paths = [source / s["path"] for src in sorted(manifest["sources"])
-                 for s in manifest["sources"][src]["shards"]]
+        mf = source / "manifest.json"
+        if not mf.exists():
+            raise SystemExit(f"{mf} not found — pass a JSONL file, a .jsonl.gz, or a sharded "
+                             f"artifact directory")
+        manifest = json.loads(mf.read_text())
+        # The artifact is downloaded, which makes its manifest untrusted input: a shard path has to
+        # stay inside the directory it came with.
+        paths = []
+        for src in sorted(manifest["sources"]):
+            for s in manifest["sources"][src]["shards"]:
+                p = (source / s["path"]).resolve()
+                if not p.is_relative_to(source.resolve()):
+                    raise SystemExit(f"manifest names a shard outside {source}: {s['path']}")
+                paths.append(p)
     else:
         paths = [source]
     n = 0
@@ -374,7 +385,35 @@ def verify_manifest(source) -> list[str]:
                     h.update(chunk)
             if h.hexdigest() != shard["sha256"]:
                 problems.append(f"{shard['path']}: sha256 mismatch")
+    # The roster is checked too, and not as an afterthought: it is the closed principal set, so it
+    # decides who holds a token and what they can see. Importing a directory picks it up on its own,
+    # which is exactly why its digest cannot go unverified.
+    r = manifest.get("roster")
+    if r:
+        rp = source / r["path"]
+        if not rp.exists():
+            problems.append(f"{r['path']}: missing")
+        elif rp.stat().st_size != r["bytes"]:
+            problems.append(f"{r['path']}: {rp.stat().st_size} bytes, manifest says {r['bytes']}")
+        elif hashlib.sha256(rp.read_bytes()).hexdigest() != r["sha256"]:
+            problems.append(f"{r['path']}: sha256 mismatch")
     return problems
+
+
+def _verify_or_die(corpus: Path) -> None:
+    """Refuse a sharded artifact that does not match its manifest.
+
+    Shared by ``--dry-run`` and the path that writes a database, because a corpus worth validating
+    before a rehearsal is worth validating before the real thing.
+    """
+    if not corpus.is_dir():
+        return
+    broken = verify_manifest(corpus)
+    if broken:
+        print(f"INVALID: {len(broken)} shard problem(s) in {corpus}", file=sys.stderr)
+        for b in broken:
+            print(f"  {b}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def load_roster(path) -> dict:
@@ -428,22 +467,28 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
     # infer the org from the corpus (dominant email domain) before building any grants,
     # since public docs are granted to the org principal — see _infer_org. Read in its own pass,
     # keeping only the emails: a sharded corpus is streamed rather than held in memory.
-    _scan = []
-    for _no, _ln in corpus_records(path):
-        _ln = _ln.strip()
-        if _ln:
+    def _scanned():
+        """Just what `_emails` reads, one record at a time.
+
+        `infer_org` consumes the addresses exactly once (app/config.py), so nothing needs to be held:
+        yielding keeps the memory constant where a list would build one dict per document plus one
+        per child row — millions of them at bench scale, in a pass whose whole point is to stream.
+        """
+        for _no, _ln in corpus_records(path):
+            _ln = _ln.strip()
+            if not _ln:
+                continue
             try:
                 _rec = json.loads(_ln)
             except json.JSONDecodeError:
                 continue  # malformed lines are reported precisely in the main loop below
-            # Keep only what `_emails` reads, and drop the child rows' bodies: the addresses are
-            # kilobytes where the corpus is gigabytes.
-            _scan.append({
+            yield {
                 **{k: _rec[k] for k in ("author_email", "host_email", "readers") if k in _rec},
                 **{c: [{"author_email": r.get("author_email")} for r in (_rec.get(c) or [])
                        if isinstance(r, dict)]
-                   for c in ("comments", "sentences", "messages", "replies") if c in _rec}})
-    org_name, org_domain = _infer_org(_scan, settings)
+                   for c in ("comments", "sentences", "messages", "replies") if c in _rec}}
+
+    org_name, org_domain = _infer_org(_scanned(), settings)
     roster_data = load_roster(roster) if roster else None
     closed = roster_data is not None
     if closed:
@@ -931,15 +976,9 @@ def main(argv: list[str]) -> int:
     corpus = Path(args.corpus)
 
     if args.dry_run:
-        if corpus.is_dir():
-            # A sharded artifact is checked against its manifest first: a truncated download is a
-            # different failure from a bad record, and saying so is cheaper than a schema error.
-            broken = verify_manifest(corpus)
-            if broken:
-                print(f"INVALID: {len(broken)} shard problem(s) in {corpus}", file=sys.stderr)
-                for b in broken:
-                    print(f"  {b}", file=sys.stderr)
-                return 1
+        # A sharded artifact is checked against its manifest first: a truncated download is a
+        # different failure from a bad record, and saying so is cheaper than a schema error.
+        _verify_or_die(corpus)
         problems, n = [], 0
         for lineno, line in corpus_records(corpus):
             line = line.strip()
@@ -959,6 +998,12 @@ def main(argv: list[str]) -> int:
         for lineno, msg in problems:
             print(f"  line {lineno}: {msg}", file=sys.stderr)
         return 1
+
+    # The same check `--dry-run` makes, on the path that actually writes a database. A shard that is
+    # short but validly terminated — what a resumed or re-uploaded download looks like — otherwise
+    # loads as a quietly incomplete corpus and reports success. Measured at 0.67 s of sha256 over the
+    # 1.0 GB bench artifact, in front of an import that writes 14 GB.
+    _verify_or_die(corpus)
 
     settings = get_settings()
     # A sharded artifact ships its own roster beside the manifest, so importing one takes the

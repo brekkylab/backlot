@@ -121,10 +121,16 @@ python -m app.importer.erb --export-byo out/ --shard-records 50000
 ```
 
 Each source becomes `out/data/<source>/part-NNNNN.jsonl.gz` alongside `out/manifest.json`, which
-records every shard's path, record count, byte size, and SHA-256. `python -m app.importer.byo out/`
-loads the whole thing in one command and checks the manifest before reading a record, so a truncated
-download fails as a bad checksum instead of a quietly short corpus. Shards are gzipped with
-`mtime=0`, so the same input always produces the same checksums.
+records every shard's path, record count, byte size, and SHA-256, plus the same for `roster.yaml`.
+`python -m app.importer.byo out/` loads the whole thing in one command and checks every digest before
+reading a record, so a damaged or swapped download fails up front instead of half-loading a database.
+The roster is checked with the shards, since importing a directory picks it up automatically and it
+decides who holds a token. Shards are gzipped with `mtime=0`, so the same input always produces the
+same checksums.
+
+A shard that is short but validly terminated — what a resumed or re-uploaded download looks like — is
+the case this catches that nothing else would: the gzip stream reads cleanly to its end, so only the
+digest tells you records are missing.
 
 ## Auth & tokens
 

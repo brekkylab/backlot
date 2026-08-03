@@ -452,6 +452,9 @@ def iter_records(sources_dir: Path, sources: tuple[str, ...] = SUPPORTED
                 yield src, dsid, raw
 
 
+SNAPSHOT_FILE = ".erb-source.json"
+
+
 def fetch_generated_data(settings, *, ref: str = "main") -> Path:
     """Download + extract generated_data (sources for SUPPORTED + employee_directory.yaml).
     Returns the extracted ``generated_data`` directory. Cached under settings.raw_dir."""
@@ -485,7 +488,26 @@ def fetch_generated_data(settings, *, ref: str = "main") -> Path:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with tf.extractfile(m) as fsrc:
                     dest.write_bytes(fsrc.read())
+    # Which bench this is. A ref name will not do it: `main` has moved past the commit that added
+    # generated_data, and the one tag (v1.0.0) predates that commit, so neither pins the data. The
+    # tarball's digest does, and it is recorded here because this is the only moment the bytes that
+    # produced this directory are still identifiable.
+    (out / SNAPSHOT_FILE).write_text(json.dumps(
+        {"repo": repo, "ref": ref, "tarball_sha256": _sha256(tar_path),
+         "tarball_bytes": tar_path.stat().st_size}, indent=1, sort_keys=True) + "\n")
     return out
+
+
+def read_snapshot(gen_dir) -> dict | None:
+    """What ``fetch_generated_data`` recorded about the tarball this directory came from, if any.
+    Absent for a tree assembled by hand, so a caller treats it as unknown rather than a mismatch."""
+    path = Path(gen_dir) / SNAPSHOT_FILE
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def parse_gmail_thread(messages: list[str]) -> list[dict]:
@@ -2113,7 +2135,7 @@ class _ByoWriter:
             "path": str(path.relative_to(self.out_dir)), "records": n,
             "bytes": path.stat().st_size, "sha256": _sha256(path)})
 
-    def close(self, *, counts: dict, documents: int, skipped: int = 0) -> None:
+    def close(self, *, counts: dict, documents: int, layer: dict | None = None) -> None:
         if self._plain is not None:
             self._plain.close()
             return
@@ -2123,7 +2145,6 @@ class _ByoWriter:
         manifest = {
             "schema": 1,
             "documents": documents,
-            "skipped": skipped,
             "records": sum(s["records"] for v in self.shards.values() for s in v),
             "shard_records": self.shard_records,
             "sources": {src: {"documents": counts.get(src, 0),
@@ -2134,11 +2155,17 @@ class _ByoWriter:
         if roster.exists():
             manifest["roster"] = {"path": "roster.yaml", "sha256": _sha256(roster),
                                   "bytes": roster.stat().st_size}
+        if layer is not None:
+            # Keyed per layer rather than flat: a tool that folds another layer in rewrites the
+            # top-level `documents` to the combined total, so a flat `source_documents` beside it
+            # would describe a whole the converted layer is only part of.
+            manifest["layers"] = {"converted": layer}
         (self.out_dir / "manifest.json").write_text(
             json.dumps(manifest, indent=1, sort_keys=True) + "\n")
 
 
-def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=None) -> dict:
+def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=None,
+               allow_excluded=0) -> dict:
     """Convert ERB to a BYO-JSONL artifact: ``corpus.jsonl`` + ``roster.yaml``, or per-source shards
     plus ``manifest.json`` when ``shard_records`` is set.
 
@@ -2150,7 +2177,8 @@ def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=N
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    P, records = _resolve_roster(settings, gen_dir, question_ids=question_ids)
+    P, records, excluded = _resolve_roster(settings, gen_dir, question_ids=question_ids,
+                                           allow_excluded=allow_excluded)
     # Both global precomputations, before any record is converted — same as load_structured.
     _SLACK_TS_REMAP.clear()
     _SLACK_TS_REMAP.update(build_slack_ts_remap(records))
@@ -2176,7 +2204,22 @@ def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=N
     # Successes, not attempts: per-source `documents` counts what was written, so a top-level
     # `len(records)` would contradict its own sum the moment one document is skipped — and that field
     # is what a consumer reads to decide whether it got everything.
-    writer.close(counts=counts, documents=sum(counts.values()), skipped=len(failures))
+    #
+    # `source_documents` is what the bench offered for this selection, so the layer states its own
+    # arithmetic: source_documents == documents + excluded + failed. Without it a consumer holding a
+    # short count has to leave the artifact to find out whether anything is missing, which is the
+    # whole reason the losses are recorded by name.
+    layer = {
+        "description": "EnterpriseRAG-Bench, redistributed as BYO-JSONL (MIT, onyx-dot-app)",
+        "source_documents": len(records) + len(excluded),
+        "documents": sum(counts.values()),
+        "excluded": excluded,
+        "failed": [{"doc_id": d, "source": s, "error": e} for d, s, e in failures],
+    }
+    snapshot = read_snapshot(gen_dir)
+    if snapshot:
+        layer["snapshot"] = snapshot
+    writer.close(counts=counts, documents=sum(counts.values()), layer=layer)
     return counts
 
 
@@ -2248,7 +2291,19 @@ def parse_employees(path: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------- orchestration
-def select_records(gen_dir: Path, question_ids: set[str] | None = None):
+KNOWN_EMPTY_DOCS = {
+    # A slack thread whose `messages` is "" while its metadata asserts six participants and two
+    # timestamps 55 seconds apart: damaged input rather than a thread that is empty by design, and a
+    # thread with zero messages is a state the real API cannot produce. Three more documents carry
+    # the same mismatch with 3, 5 and 9 characters of body, which is why the rule below tests for
+    # empty rather than for some minimum length — the lengths run 0, 3, 5, 9 and then thirty-one
+    # more under fifty, so a cutoff would be a number with nothing in the data behind it.
+    "dsid_33cbedf0709949fd9416c8c864a86cf2",
+}
+
+
+def select_records(gen_dir: Path, question_ids: set[str] | None = None,
+                   excluded: list | None = None):
     """Yield ``(source_type, dsid, raw_json)`` records under ``gen_dir/sources``.
 
     If ``question_ids`` is None, every record is yielded. Otherwise only records whose ``dsid``
@@ -2256,23 +2311,26 @@ def select_records(gen_dir: Path, question_ids: set[str] | None = None):
     interface (which also pulls in every other record sharing a selected doc's container/thread,
     so containers aren't left empty) — that container-expansion is NOT needed for validation, so
     it is skipped here.
+
+    A document with no content is dropped, here rather than in any one consumer: dropping it in
+    only one of them is what made a converted artifact fail the BYO schema (``content: '' should be
+    non-empty``) while a direct import accepted it. Pass a list as ``excluded`` to collect what
+    went. Each entry names the record, because a count cannot be resolved back to a document
+    without rescanning the raw bench — 3.65 GB to answer "which one?" — and ``_erb_path`` is what
+    makes it a lookup instead of a scan.
     """
-    skipped_empty = 0
     for src, dsid, raw in iter_records(gen_dir / "sources"):
         if question_ids is not None and dsid not in question_ids:
             continue
-        # The bench ships one document with no content at all (a slack thread whose `messages` is
-        # ""). There is nothing to serve for it, and a thread with zero messages is a state the real
-        # API cannot produce — so it is dropped here, where every consumer of the corpus sees the
-        # same decision. Dropping it in only one of them is what made a converted artifact fail the
-        # BYO schema (`content: '' should be non-empty`) while a direct import accepted it.
         if not (derive_title_content(raw)[1] or "").strip():
-            skipped_empty += 1
+            if excluded is not None:
+                excluded.append({"source": src, "doc_id": dsid,
+                                 "path": raw.get("_erb_path", ""),
+                                 # The mechanical rule, not a diagnosis: the same damage also
+                                 # produces near-empty bodies that this test does not catch.
+                                 "reason": "content empty after strip"})
             continue
         yield src, dsid, raw
-    if skipped_empty:
-        print(f"  skipped {skipped_empty} document(s) with empty content", file=sys.stderr,
-              flush=True)
 
 
 class _NullConn:
@@ -2285,35 +2343,57 @@ class _NullConn:
         return None
 
 
-def _resolve_roster(settings, gen_dir, *, question_ids=None):
-    """Shared prefix: build Principals, materialize records, harvest emails. Returns (P, records)."""
+def _resolve_roster(settings, gen_dir, *, question_ids=None, allow_excluded=0):
+    """Shared prefix: build Principals, materialize records, harvest emails.
+
+    Returns ``(P, records, excluded)``. Every consumer of the corpus goes through here, so this is
+    also where an exclusion ``KNOWN_EMPTY_DOCS`` does not name stops the run.
+    """
     emails = [e["email"] for e in parse_employees(settings.employee_yaml)]
     settings.org_name, settings.org_domain = infer_org(emails, settings)
     P = Principals.from_directory(settings.employee_yaml, settings.org_domain)
-    records = []
-    for rec in select_records(gen_dir, question_ids):
+    records, excluded = [], []
+    for rec in select_records(gen_dir, question_ids, excluded):
         records.append(rec)
         if len(records) % 25000 == 0:
             print(f"  materialized {len(records)} records...", file=sys.stderr, flush=True)
+    # An exclusion this file does not declare means the input changed: `generated_data` has had one
+    # commit ever, so the same bench has to yield the same set. Refusing costs a flag; accepting is
+    # how a document goes missing with a line on stderr as the only record of it. Nothing caps the
+    # list because this gate bounds how long it can get.
+    undeclared = [e for e in excluded if e["doc_id"] not in KNOWN_EMPTY_DOCS]
+    if len(undeclared) > allow_excluded:
+        print(f"{len(undeclared)} document(s) excluded that KNOWN_EMPTY_DOCS does not name:",
+              file=sys.stderr)
+        for e in undeclared:
+            print(f"  {e['source']}/{e['path']}  ({e['doc_id']}) — {e['reason']}", file=sys.stderr)
+        print(f"Read them, then declare them or pass --allow-excluded {len(undeclared)}.",
+              file=sys.stderr)
+        raise SystemExit(1)
+    if excluded:
+        print("  excluded " + ", ".join(f"{e['source']}/{e['path']}" for e in excluded),
+              file=sys.stderr, flush=True)
     print(f"  materialized {len(records)} records; loading...", file=sys.stderr, flush=True)
     # (Gmail-header email harvesting was dropped: it scanned every message body — minutes of CPU —
     # for marginal value under the directory-only roster. Message senders come straight from the
     # parsed From: headers, and principals still dedupe by canonical name.)
-    return P, records
+    return P, records, excluded
 
 
-def dump_tokens(settings, gen_dir, *, question_ids=None) -> int:
+def dump_tokens(settings, gen_dir, *, question_ids=None, allow_excluded=0) -> int:
     """Resolve principals over the corpus and write ``tokens.yaml`` WITHOUT building the DB — a
     fast roster preview (skips the row inserts + FTS build). Returns the tokened-user count.
     Uses the real loaders via a no-op connection, so the roster matches a full import exactly."""
-    P, records = _resolve_roster(settings, gen_dir, question_ids=question_ids)
+    P, records, _ = _resolve_roster(settings, gen_dir, question_ids=question_ids,
+                                    allow_excluded=allow_excluded)
     load_structured(_NullConn(), records, P, settings)  # resolve-only; inserts are no-ops
     P.write_tokens(settings)
     return sum(1 for u in P.users.values() if not u["external"] and not u["is_bot"])
 
 
-def import_structured(settings, gen_dir, *, question_ids=None) -> dict:
-    P, records = _resolve_roster(settings, gen_dir, question_ids=question_ids)
+def import_structured(settings, gen_dir, *, question_ids=None, allow_excluded=0) -> dict:
+    P, records, _ = _resolve_roster(settings, gen_dir, question_ids=question_ids,
+                                    allow_excluded=allow_excluded)
 
     if settings.db_path.exists():
         settings.db_path.unlink()
@@ -2350,6 +2430,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--shard-records", type=int, default=None, metavar="N",
                     help="with --export-byo: write data/<source>/part-*.jsonl.gz shards of N "
                          "records each plus manifest.json, instead of one corpus.jsonl")
+    ap.add_argument("--allow-excluded", type=int, default=0, metavar="N",
+                    help="proceed with up to N empty-content documents that KNOWN_EMPTY_DOCS does "
+                         "not name (default 0: any undeclared exclusion stops the run)")
     args = ap.parse_args(argv)
     if args.shard_records is not None and args.shard_records < 1:
         # 0 makes `n >= shard_records` always true: one shard per record, 600k files for the bench,
@@ -2376,7 +2459,8 @@ def main(argv: list[str]) -> int:
 
     if args.export_byo:
         counts = export_byo(settings, gen_dir, args.export_byo, question_ids=question_ids,
-                            shard_records=args.shard_records)
+                            shard_records=args.shard_records,
+                            allow_excluded=args.allow_excluded)
         dest = (f"{args.export_byo}/data/<source>/part-*.jsonl.gz + manifest.json"
                 if args.shard_records else f"{args.export_byo}/corpus.jsonl")
         print(f"Converted {sum(counts.values())} documents -> {dest}")
@@ -2389,12 +2473,14 @@ def main(argv: list[str]) -> int:
         return 0
 
     if args.tokens_only:
-        n = dump_tokens(settings, gen_dir, question_ids=question_ids)
+        n = dump_tokens(settings, gen_dir, question_ids=question_ids,
+                        allow_excluded=args.allow_excluded)
         print(f"Wrote {n} users to {settings.tokens_path} (roster only; no DB built)")
         print(f"Org: {settings.org_name} ({settings.org_domain})")
         return 0
 
-    counts = import_structured(settings, gen_dir, question_ids=question_ids)
+    counts = import_structured(settings, gen_dir, question_ids=question_ids,
+                               allow_excluded=args.allow_excluded)
     print(f"Loaded {sum(counts.values())} documents into {settings.db_path}")
     for src, n in counts.items():
         print(f"  {src:14s} {n}")

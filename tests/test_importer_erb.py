@@ -1892,6 +1892,74 @@ def test_select_records_drops_a_document_with_no_content(tmp_path):
     assert any(dsid.startswith("dsid_sl") for dsid in ids)
 
 
+def _with_empty_thread(tmp_path, dsid="dsid_empty_thread"):
+    """A generated_data tree plus one slack thread whose `messages` is "", as the bench ships."""
+    gen = _write_generated_data(tmp_path)
+    empty = gen / "sources" / "slack" / "general" / "empty-thread.json"
+    empty.parent.mkdir(parents=True, exist_ok=True)
+    empty.write_text(json.dumps({
+        "channel": "general", "messages": "", "participants": ["Ava Chen"],
+        "title_field_name": "channel", "content_field_names": ["messages"],
+        "dataset_doc_uuid": dsid}))
+    return gen
+
+
+def _settings_for(tmp_path, gen):
+    from app.config import Settings
+    data = tmp_path / "data"; data.mkdir()
+    settings = Settings(data_dir=data)
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    return settings
+
+
+def test_an_undeclared_empty_document_stops_the_export(tmp_path, capsys):
+    """`generated_data` has had one commit ever, so the same bench has to yield the same exclusions.
+    One the code does not declare means the input changed, and the run stops naming it rather than
+    dropping a document behind a line on stderr."""
+    gen = _with_empty_thread(tmp_path)
+    settings = _settings_for(tmp_path, gen)
+    with pytest.raises(SystemExit):
+        erb.export_byo(settings, gen, tmp_path / "out", shard_records=2)
+    err = capsys.readouterr().err
+    assert "general/empty-thread.json" in err and "dsid_empty_thread" in err
+    assert "--allow-excluded 1" in err          # and says how to proceed once someone has looked
+
+
+def test_a_declared_exclusion_is_recorded_by_identity_and_the_layer_adds_up(tmp_path, monkeypatch):
+    """A count cannot be resolved back to a document without rescanning the raw bench, so the
+    manifest names what went — and states the total it came out of, because a consumer holding a
+    short count should not have to leave the artifact to learn whether anything is missing."""
+    gen = _with_empty_thread(tmp_path)
+    monkeypatch.setattr(erb, "KNOWN_EMPTY_DOCS", {"dsid_empty_thread"})
+    settings = _settings_for(tmp_path, gen)
+    out = tmp_path / "out"
+    erb.export_byo(settings, gen, out, shard_records=2)
+
+    layer = json.loads((out / "manifest.json").read_text())["layers"]["converted"]
+    assert layer["excluded"] == [{"source": "slack", "doc_id": "dsid_empty_thread",
+                                 "path": "general/empty-thread.json",
+                                 "reason": "content empty after strip"}]
+    assert layer["source_documents"] == (layer["documents"] + len(layer["excluded"])
+                                        + len(layer["failed"]))
+
+
+def test_the_snapshot_the_data_came_from_reaches_the_manifest(tmp_path):
+    """Neither ref nor tag pins this data — `main` moved past the commit that added generated_data
+    and the one tag predates it — so the artifact carries the tarball digest instead."""
+    gen = _with_empty_thread(tmp_path)
+    monkey = {"repo": "onyx-dot-app/EnterpriseRAG-Bench", "ref": "main",
+              "tarball_sha256": "0" * 64, "tarball_bytes": 1000142917}
+    assert erb.read_snapshot(gen) is None            # a hand-assembled tree records nothing
+    (gen / erb.SNAPSHOT_FILE).write_text(json.dumps(monkey))
+    assert erb.read_snapshot(gen) == monkey
+
+    settings = _settings_for(tmp_path, gen)
+    out = tmp_path / "out"
+    erb.export_byo(settings, gen, out, shard_records=2, allow_excluded=1)
+    assert json.loads((out / "manifest.json").read_text())["layers"]["converted"]["snapshot"] \
+        == monkey
+
+
 def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
     """Four bench documents share a `dataset_doc_uuid` with another: three across sources (a drive
     file that is also a confluence page, plus a hubspot and a jira one) and two jira issues sharing

@@ -3,6 +3,7 @@ import gzip
 import hashlib
 import io
 import json
+import sqlite3
 
 import pytest
 import yaml
@@ -19,6 +20,47 @@ def _write(tmp_path, records):
     p = tmp_path / "corpus.jsonl"
     p.write_text("\n".join(json.dumps(r) for r in records))
     return p
+
+
+def _dump_tables(path) -> dict[str, list]:
+    """Every user table as sorted row tuples, so two DBs can be compared table by table."""
+    conn = sqlite3.connect(path)
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'docs_fts%' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        return {t: sorted((tuple(r) for r in conn.execute(f"SELECT * FROM {t}")), key=repr)
+                for t in tables}
+    finally:
+        conn.close()
+
+
+def test_load_records_builds_the_same_db_as_load_from_a_file(tmp_path):
+    """The record-source seam has to be a pure refactor: the same records loaded from an
+    in-memory factory and from a JSONL file must produce identical tables."""
+    records = [
+        {"source_type": "confluence", "doc_id": "a", "space": "handbook", "group": "eng",
+         "title": "A", "content": "alpha", "author_email": "ava@acme.com",
+         "visibility": "public",
+         "comments": [{"content": "looks right", "author_email": "bob@acme.com"}]},
+        {"source_type": "slack", "channel": "eng", "group": "eng", "content": "hello",
+         "author_email": "bob@acme.com", "visibility": "public",
+         "replies": [{"content": "hi back", "author_email": "ava@acme.com"}]},
+        {"source_type": "linear", "doc_id": "l1", "team": "engineering", "group": "eng",
+         "title": "Fix it", "content": "broken", "author_email": "ava@acme.com",
+         "identifier": "ENG-1", "state": "Todo", "visibility": "group"},
+    ]
+
+    (tmp_path / "file").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "recs").mkdir(parents=True, exist_ok=True)
+
+    from_file = Settings(data_dir=tmp_path / "file")
+    byo.load(_write(tmp_path / "file", records), from_file)
+
+    from_recs = Settings(data_dir=tmp_path / "recs")
+    byo.load_records(lambda: enumerate(records, 1), from_recs)
+
+    assert _dump_tables(from_file.db_path) == _dump_tables(from_recs.db_path)
 
 
 def test_byo_load_and_acl(tmp_path):

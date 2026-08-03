@@ -459,6 +459,36 @@ def load_roster(path) -> dict:
 
 def load(path: Path, settings: Settings | None = None, reset: bool = True,
          roster: Path | None = None) -> dict:
+    """Load a BYO-JSONL corpus — a file, a ``.jsonl.gz``, or a sharded directory — into the DB."""
+
+    def _from_file():
+        for lineno, line in corpus_records(path):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield lineno, json.loads(line)
+            except json.JSONDecodeError as e:
+                raise SystemExit(f"line {lineno}: invalid JSON: {e}")
+
+    return load_records(_from_file, settings, reset, roster)
+
+
+def load_records(records_factory, settings: Settings | None = None, reset: bool = True,
+                 roster: Path | None = None, validate: bool = True) -> dict:
+    """Load already-parsed BYO records into the DB. ``load`` is this over a JSONL file.
+
+    ``records_factory`` is called to get a FRESH iterator of ``(where, record)`` pairs, twice:
+    the org has to be inferred from every author's address before the first grant is written, so
+    the corpus is read in two passes rather than held in memory (a sharded ERB conversion is
+    581k records). ``where`` is whatever names the record in an error message — a line number
+    from a file, an index from a generator.
+
+    ``validate=False`` skips the per-record JSON Schema check. Only for records this repo
+    generated itself (``erb.to_byo``): they come from code the schemas describe, and jsonschema
+    over a million bench documents is pure cost on that path. A corpus from OUTSIDE always
+    validates, which is why ``load`` does not expose the flag.
+    """
     settings = settings or get_settings()
     if reset and settings.db_path.exists():
         settings.db_path.unlink()
@@ -474,14 +504,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
         yielding keeps the memory constant where a list would build one dict per document plus one
         per child row — millions of them at bench scale, in a pass whose whole point is to stream.
         """
-        for _no, _ln in corpus_records(path):
-            _ln = _ln.strip()
-            if not _ln:
-                continue
-            try:
-                _rec = json.loads(_ln)
-            except json.JSONDecodeError:
-                continue  # malformed lines are reported precisely in the main loop below
+        for _no, _rec in records_factory():
             yield {
                 **{k: _rec[k] for k in ("author_email", "host_email", "readers") if k in _rec},
                 **{c: [{"author_email": r.get("author_email")} for r in (_rec.get(c) or [])
@@ -520,17 +543,10 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
     # since a target may appear on a later line — the same second pass the ERB importer runs.
     lin_links: list[tuple[str, dict, int]] = []
 
-    for lineno, line in corpus_records(path):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError as e:
-            raise SystemExit(f"line {lineno}: invalid JSON: {e}")
+    for lineno, rec in records_factory():
         # Schema pre-validation: source_type/content/title, enums, comment/reply shapes,
         # and unknown-key rejection all come from schemas/ (see app.validation).
-        errors = record_errors(rec)
+        errors = record_errors(rec) if validate else []
         if errors:
             raise SystemExit(f"line {lineno}: " + "; ".join(errors))
         src = rec["source_type"]

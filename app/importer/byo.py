@@ -66,10 +66,12 @@ Usage:  python -m app.importer.byo path/to/corpus.jsonl [--append | --dry-run] [
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path  # noqa: F401  (kept for typing/backcompat)
 
 import yaml
@@ -311,9 +313,107 @@ def _emails(rec: dict):
             yield cv
 
 
-def _infer_org(records: list[dict], settings: Settings) -> tuple[str, str]:
+def _infer_org(records, settings: Settings) -> tuple[str, str]:
     """Derive (org_name, org_domain) from the corpus's dominant author email domain."""
     return infer_org((e for rec in records for e in _emails(rec)), settings)
+
+
+def corpus_records(source) -> Iterator[tuple[int, str]]:
+    """``(lineno, line)`` over a plain JSONL file, a ``.jsonl.gz``, or a sharded artifact directory.
+
+    A directory is read through its ``manifest.json``, shard by shard, because the whole point of
+    sharding is a corpus too large to hold at once: reading the 581k-record ERB conversion with
+    ``read_text()`` would materialize several gigabytes of ``str``. Line numbers run across the
+    whole artifact so an error message still names one place.
+
+    Records are split on ``\\n`` alone (``newline="\\n"``), for the reason ``jsonl_lines`` documents:
+    U+2028 and the vertical tab are ordinary characters inside a JSON string, and Python's universal
+    newlines would otherwise tear a valid record in half.
+    """
+    source = Path(source)
+    if source.is_dir():
+        mf = source / "manifest.json"
+        if not mf.exists():
+            raise SystemExit(f"{mf} not found — pass a JSONL file, a .jsonl.gz, or a sharded "
+                             f"artifact directory")
+        manifest = json.loads(mf.read_text())
+        # The artifact is downloaded, which makes its manifest untrusted input: a shard path has to
+        # stay inside the directory it came with.
+        paths = []
+        for src in sorted(manifest["sources"]):
+            for s in manifest["sources"][src]["shards"]:
+                p = (source / s["path"]).resolve()
+                if not p.is_relative_to(source.resolve()):
+                    raise SystemExit(f"manifest names a shard outside {source}: {s['path']}")
+                paths.append(p)
+    else:
+        paths = [source]
+    n = 0
+    for p in paths:
+        opener = gzip.open if p.suffix == ".gz" else open
+        with opener(p, "rt", encoding="utf-8", newline="\n") as fh:
+            for line in fh:
+                n += 1
+                yield n, line.rstrip("\n")
+
+
+def verify_manifest(source) -> list[str]:
+    """Problems found checking a sharded artifact against its manifest ([] == intact).
+
+    Size and digest, per shard: a truncated or swapped download has to fail before it half-loads a
+    database, which is the same reason ``--dry-run`` exists for a hand-written corpus.
+    """
+    source = Path(source)
+    mf = source / "manifest.json"
+    if not mf.exists():
+        return [f"{mf} not found"]
+    manifest = json.loads(mf.read_text())
+    problems = []
+    for src in sorted(manifest.get("sources", {})):
+        for shard in manifest["sources"][src]["shards"]:
+            p = source / shard["path"]
+            if not p.exists():
+                problems.append(f"{shard['path']}: missing")
+                continue
+            if p.stat().st_size != shard["bytes"]:
+                problems.append(f"{shard['path']}: {p.stat().st_size} bytes, manifest says "
+                                f"{shard['bytes']}")
+                continue
+            h = hashlib.sha256()
+            with open(p, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            if h.hexdigest() != shard["sha256"]:
+                problems.append(f"{shard['path']}: sha256 mismatch")
+    # The roster is checked too, and not as an afterthought: it is the closed principal set, so it
+    # decides who holds a token and what they can see. Importing a directory picks it up on its own,
+    # which is exactly why its digest cannot go unverified.
+    r = manifest.get("roster")
+    if r:
+        rp = source / r["path"]
+        if not rp.exists():
+            problems.append(f"{r['path']}: missing")
+        elif rp.stat().st_size != r["bytes"]:
+            problems.append(f"{r['path']}: {rp.stat().st_size} bytes, manifest says {r['bytes']}")
+        elif hashlib.sha256(rp.read_bytes()).hexdigest() != r["sha256"]:
+            problems.append(f"{r['path']}: sha256 mismatch")
+    return problems
+
+
+def _verify_or_die(corpus: Path) -> None:
+    """Refuse a sharded artifact that does not match its manifest.
+
+    Shared by ``--dry-run`` and the path that writes a database, because a corpus worth validating
+    before a rehearsal is worth validating before the real thing.
+    """
+    if not corpus.is_dir():
+        return
+    broken = verify_manifest(corpus)
+    if broken:
+        print(f"INVALID: {len(broken)} shard problem(s) in {corpus}", file=sys.stderr)
+        for b in broken:
+            print(f"  {b}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def load_roster(path) -> dict:
@@ -364,18 +464,31 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
         settings.db_path.unlink()
     conn = store.connect_rw(settings.db_path)
 
-    lines = jsonl_lines(Path(path).read_text())
     # infer the org from the corpus (dominant email domain) before building any grants,
-    # since public docs are granted to the org principal — see _infer_org.
-    _scan = []
-    for _ln in lines:
-        _ln = _ln.strip()
-        if _ln:
+    # since public docs are granted to the org principal — see _infer_org. Read in its own pass,
+    # keeping only the emails: a sharded corpus is streamed rather than held in memory.
+    def _scanned():
+        """Just what `_emails` reads, one record at a time.
+
+        `infer_org` consumes the addresses exactly once (app/config.py), so nothing needs to be held:
+        yielding keeps the memory constant where a list would build one dict per document plus one
+        per child row — millions of them at bench scale, in a pass whose whole point is to stream.
+        """
+        for _no, _ln in corpus_records(path):
+            _ln = _ln.strip()
+            if not _ln:
+                continue
             try:
-                _scan.append(json.loads(_ln))
+                _rec = json.loads(_ln)
             except json.JSONDecodeError:
-                pass  # malformed lines are reported precisely in the main loop below
-    org_name, org_domain = _infer_org(_scan, settings)
+                continue  # malformed lines are reported precisely in the main loop below
+            yield {
+                **{k: _rec[k] for k in ("author_email", "host_email", "readers") if k in _rec},
+                **{c: [{"author_email": r.get("author_email")} for r in (_rec.get(c) or [])
+                       if isinstance(r, dict)]
+                   for c in ("comments", "sentences", "messages", "replies") if c in _rec}}
+
+    org_name, org_domain = _infer_org(_scanned(), settings)
     roster_data = load_roster(roster) if roster else None
     closed = roster_data is not None
     if closed:
@@ -396,7 +509,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
     memberships: set[tuple[str, str]] = set()      # (group_id, email)
     grants: list[tuple[str, str, str]] = []        # (doc_id, principal_type, principal_id)
     counts: dict[str, int] = {}
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()   # (source_type, doc_id)
     fts_ids: dict[str, list[str]] = {}
     # HubSpot associations are resolved after the whole corpus is read: a link may name a target
     # that appears on a later line, and an omitted `to_type` is filled in from the target's own
@@ -407,7 +520,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
     # since a target may appear on a later line — the same second pass the ERB importer runs.
     lin_links: list[tuple[str, dict, int]] = []
 
-    for lineno, line in enumerate(lines, 1):
+    for lineno, line in corpus_records(path):
         line = line.strip()
         if not line:
             continue
@@ -459,9 +572,13 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
             rec = {**rec, "content": synth.fireflies_transcript_text(sentences)}
 
         doc_id = _doc_id(rec)
-        if doc_id in seen:
-            continue
-        seen.add(doc_id)
+        # Recorded, not deduplicated: `seen` answers "is this document in the corpus" for the
+        # cross-reference resolution further down. Two records sharing a (source, doc_id) are both
+        # written, and the row-level `INSERT OR REPLACE` leaves the later one — which is what a
+        # direct ERB import of the same documents produces. The bench has four such pairs (three
+        # across sources, one within jira); skipping the repeat instead would keep the earlier
+        # document and diverge.
+        seen.add((src, doc_id))
         gcol = store.grouping_col(src)
         container = str(rec.get(gcol) or src)   # channel / mailbox / folder / repo / project / space
         # An explicit `"group": null` means the container owns NO ACL group — which is a real
@@ -682,9 +799,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
             register(rep_author, rep.get("author_name"))
             rep_id = rep.get("doc_id") or (
                 "dsid_" + hashlib.sha256((doc_id + str(i) + rep["content"]).encode()).hexdigest()[:32])
-            if rep_id in seen:
-                continue
-            seen.add(rep_id)
+            seen.add((src, rep_id))
             # A reply is a full message (reactions/files/subtype/edited carry through);
             # its time is the root's + its position so the thread stays ordered (created is now
             # always set, so a reply ts is never NULL).
@@ -707,9 +822,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
             m_author = msg.get("author_email")
             register(m_author, msg.get("author_name"))
             msg_id = msg.get("doc_id") or f"{doc_id}::m{i}"
-            if msg_id in seen:
-                continue
-            seen.add(msg_id)
+            seen.add((src, msg_id))
             # Its own `created` when given, else the root's clock + an hour per position — the
             # spread a real reply chain has, and never NULL.
             insert(msg_id, m_author, msg.get("title") or title, msg["content"], i,
@@ -783,7 +896,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
     # does not exist is an error rather than a dangling relation, matching the hubspot rule.
     for from_doc, a, created_ts in lin_links:
         to_doc = a["to"]
-        if to_doc not in seen and not conn.execute(
+        if ("linear", to_doc) not in seen and not conn.execute(
                 "SELECT 1 FROM linear_issues WHERE doc_id = ?", (to_doc,)).fetchone():
             raise SystemExit(
                 f"linear relation {from_doc} -> {to_doc}: target not found in this corpus or the "
@@ -852,7 +965,8 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Import (load) a BYO JSONL corpus into the mock DB.")
-    ap.add_argument("corpus", help="path to a JSONL corpus file")
+    ap.add_argument("corpus", help="a JSONL corpus file, a .jsonl.gz, or a directory holding "
+                                   "manifest.json + data/<source>/part-*.jsonl.gz shards")
     ap.add_argument("--append", action="store_true", help="add to the existing DB instead of resetting")
     ap.add_argument("--dry-run", action="store_true", help="validate the corpus only; don't touch the DB")
     ap.add_argument("--roster", type=Path, default=None,
@@ -862,9 +976,22 @@ def main(argv: list[str]) -> int:
     corpus = Path(args.corpus)
 
     if args.dry_run:
-        problems = validate_file(corpus)
+        # A sharded artifact is checked against its manifest first: a truncated download is a
+        # different failure from a bad record, and saying so is cheaper than a schema error.
+        _verify_or_die(corpus)
+        problems, n = [], 0
+        for lineno, line in corpus_records(corpus):
+            line = line.strip()
+            if not line:
+                continue
+            n += 1
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as e:
+                problems.append((lineno, f"invalid JSON: {e}"))
+                continue
+            problems.extend((lineno, m) for m in record_errors(rec))
         if not problems:
-            n = sum(1 for line in jsonl_lines(corpus.read_text()) if line.strip())
             print(f"OK: {n} records valid.")
             return 0
         print(f"INVALID: {len(problems)} problem(s) in {corpus}", file=sys.stderr)
@@ -872,8 +999,20 @@ def main(argv: list[str]) -> int:
             print(f"  line {lineno}: {msg}", file=sys.stderr)
         return 1
 
+    # The same check `--dry-run` makes, on the path that actually writes a database. A shard that is
+    # short but validly terminated — what a resumed or re-uploaded download looks like — otherwise
+    # loads as a quietly incomplete corpus and reports success. Measured at 0.67 s of sha256 over the
+    # 1.0 GB bench artifact, in front of an import that writes 14 GB.
+    _verify_or_die(corpus)
+
     settings = get_settings()
-    res = load(corpus, settings, reset=not args.append, roster=args.roster)
+    # A sharded artifact ships its own roster beside the manifest, so importing one takes the
+    # directory and nothing else; `--roster` still wins when it is given.
+    roster = args.roster
+    if roster is None and corpus.is_dir() and (corpus / "roster.yaml").exists():
+        roster = corpus / "roster.yaml"
+        print(f"using the artifact's own roster: {roster}", file=sys.stderr)
+    res = load(corpus, settings, reset=not args.append, roster=roster)
     print(f"Loaded {res['total']} documents into {settings.db_path}")
     for src, n in sorted(res["counts"].items()):
         print(f"  {src:14s} {n}")

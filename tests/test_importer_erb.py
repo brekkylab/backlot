@@ -1833,3 +1833,166 @@ def test_a_gmail_thread_with_no_participants_is_granted_to_nobody():
     for src in ("slack", "hubspot", "fireflies"):
         assert ("org", "acme") in grants_for(src, {"org": "acme", "group": "c", "owner": None,
                                                   "people": []}), src
+
+
+def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
+    """Sharded output has to be checkable from the manifest alone and byte-identical across runs —
+    a dataset consumer verifies a download without the corpus it came from, and gzip's default
+    header would put the current time in every shard."""
+    import gzip as _gzip
+    import json as _json
+    from app.config import Settings
+    gen = _write_generated_data(tmp_path)
+    data = tmp_path / "data"; data.mkdir()
+    settings = Settings(data_dir=data)
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+
+    out = tmp_path / "sharded"
+    counts = erb.export_byo(settings, gen, out, shard_records=2)
+    manifest = _json.loads((out / "manifest.json").read_text())
+
+    # every shard the manifest names exists, and its recorded size and digest match the file
+    seen = 0
+    for src, info in manifest["sources"].items():
+        assert info["documents"] == counts[src]
+        for shard in info["shards"]:
+            p = out / shard["path"]
+            assert p.exists() and p.stat().st_size == shard["bytes"]
+            assert erb._sha256(p) == shard["sha256"]
+            lines = [l for l in _gzip.open(p, "rt").read().split("\n") if l.strip()]
+            assert len(lines) == shard["records"] <= 2
+            assert all(_json.loads(l)["source_type"] == src for l in lines)
+            seen += len(lines)
+    assert seen == manifest["records"] > 0
+    assert manifest["roster"]["sha256"] == erb._sha256(out / "roster.yaml")
+    assert not (out / "corpus.jsonl").exists()      # sharded mode writes no single file
+
+    # a second conversion of the same input reproduces the same digests
+    again = erb.export_byo(settings, gen, tmp_path / "sharded2", shard_records=2)
+    assert again == counts
+    m2 = _json.loads((tmp_path / "sharded2" / "manifest.json").read_text())
+    assert [s["sha256"] for i in m2["sources"].values() for s in i["shards"]] == \
+           [s["sha256"] for i in manifest["sources"].values() for s in i["shards"]]
+
+
+def test_select_records_drops_a_document_with_no_content(tmp_path):
+    """The bench ships a slack thread whose `messages` is "". A direct import accepted it and the
+    converted artifact then failed its own BYO schema (`content: '' should be non-empty`), so both
+    paths have to make the same call — which they do only if the record source drops it."""
+    gen = _write_generated_data(tmp_path)
+    empty = gen / "sources" / "slack" / "general" / "empty-thread.json"
+    empty.parent.mkdir(parents=True, exist_ok=True)
+    empty.write_text(json.dumps({
+        "channel": "general", "messages": "", "participants": ["Ava Chen"],
+        "title_field_name": "channel", "content_field_names": ["messages"],
+        "dataset_doc_uuid": "dsid_empty_thread"}))
+    ids = {dsid for _src, dsid, _raw in erb.select_records(gen)}
+    assert "dsid_empty_thread" not in ids
+    # and a document that does carry content is still yielded from the same directory
+    assert any(dsid.startswith("dsid_sl") for dsid in ids)
+
+
+def _with_empty_thread(tmp_path, dsid="dsid_empty_thread"):
+    """A generated_data tree plus one slack thread whose `messages` is "", as the bench ships."""
+    gen = _write_generated_data(tmp_path)
+    empty = gen / "sources" / "slack" / "general" / "empty-thread.json"
+    empty.parent.mkdir(parents=True, exist_ok=True)
+    empty.write_text(json.dumps({
+        "channel": "general", "messages": "", "participants": ["Ava Chen"],
+        "title_field_name": "channel", "content_field_names": ["messages"],
+        "dataset_doc_uuid": dsid}))
+    return gen
+
+
+def _settings_for(tmp_path, gen):
+    from app.config import Settings
+    data = tmp_path / "data"; data.mkdir()
+    settings = Settings(data_dir=data)
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    return settings
+
+
+def test_an_undeclared_empty_document_stops_the_export(tmp_path, capsys):
+    """`generated_data` has had one commit ever, so the same bench has to yield the same exclusions.
+    One the code does not declare means the input changed, and the run stops naming it rather than
+    dropping a document behind a line on stderr."""
+    gen = _with_empty_thread(tmp_path)
+    settings = _settings_for(tmp_path, gen)
+    with pytest.raises(SystemExit):
+        erb.export_byo(settings, gen, tmp_path / "out", shard_records=2)
+    err = capsys.readouterr().err
+    assert "general/empty-thread.json" in err and "dsid_empty_thread" in err
+    assert "--allow-excluded 1" in err          # and says how to proceed once someone has looked
+
+
+def test_a_declared_exclusion_is_recorded_by_identity_and_the_layer_adds_up(tmp_path, monkeypatch):
+    """A count cannot be resolved back to a document without rescanning the raw bench, so the
+    manifest names what went — and states the total it came out of, because a consumer holding a
+    short count should not have to leave the artifact to learn whether anything is missing."""
+    gen = _with_empty_thread(tmp_path)
+    monkeypatch.setattr(erb, "KNOWN_EMPTY_DOCS", {"dsid_empty_thread"})
+    settings = _settings_for(tmp_path, gen)
+    out = tmp_path / "out"
+    erb.export_byo(settings, gen, out, shard_records=2)
+
+    layer = json.loads((out / "manifest.json").read_text())["layers"]["converted"]
+    assert layer["excluded"] == [{"source": "slack", "doc_id": "dsid_empty_thread",
+                                 "path": "general/empty-thread.json",
+                                 "reason": "content empty after strip"}]
+    assert layer["source_documents"] == (layer["documents"] + len(layer["excluded"])
+                                        + len(layer["failed"]))
+
+
+def test_the_snapshot_the_data_came_from_reaches_the_manifest(tmp_path):
+    """Neither ref nor tag pins this data — `main` moved past the commit that added generated_data
+    and the one tag predates it — so the artifact carries the tarball digest instead."""
+    gen = _with_empty_thread(tmp_path)
+    monkey = {"repo": "onyx-dot-app/EnterpriseRAG-Bench", "ref": "main",
+              "tarball_sha256": "0" * 64, "tarball_bytes": 1000142917}
+    assert erb.read_snapshot(gen) is None            # a hand-assembled tree records nothing
+    (gen / erb.SNAPSHOT_FILE).write_text(json.dumps(monkey))
+    assert erb.read_snapshot(gen) == monkey
+
+    settings = _settings_for(tmp_path, gen)
+    out = tmp_path / "out"
+    erb.export_byo(settings, gen, out, shard_records=2, allow_excluded=1)
+    assert json.loads((out / "manifest.json").read_text())["layers"]["converted"]["snapshot"] \
+        == monkey
+
+
+def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
+    """Four bench documents share a `dataset_doc_uuid` with another: three across sources (a drive
+    file that is also a confluence page, plus a hubspot and a jira one) and two jira issues sharing
+    one. Within a source the row is overwritten, so both importers must keep the LAST record; across
+    sources each has its own table, so both survive and BOTH containers' ACL groups must be granted.
+    Resolving either of those differently is enough to make the full-corpus round-trip diverge."""
+    gen = _write_generated_data(tmp_path)
+    jira_first = json.loads(sorted((gen / "sources" / "jira").glob("*.json"))[0].read_text())
+    dsid = jira_first["dataset_doc_uuid"]
+    # `zz-` so it sorts last: iter_records walks the source in path order. The title lives in
+    # whichever field `title_field_name` names, so that is the one to change.
+    (gen / "sources" / "jira" / "zz-repeat.json").write_text(json.dumps(
+        {**jira_first, jira_first["title_field_name"]: "Repeated id, later record",
+         "status": "Resolved"}))
+    conf_first = json.loads(sorted((gen / "sources" / "confluence").glob("*.json"))[0].read_text())
+    (gen / "sources" / "confluence" / "zz-shared.json").write_text(json.dumps(
+        {**conf_first, "dataset_doc_uuid": dsid,
+         conf_first["title_field_name"]: "Same id, under confluence"}))
+
+    direct = _import_erb_directly(gen, tmp_path / "direct")
+    viabyo = _import_via_byo(gen, tmp_path / "viabyo", tmp_path / "artifact")
+
+    for label, settings in (("direct", direct), ("via byo", viabyo)):
+        conn = sqlite3.connect(settings.db_path)
+        assert conn.execute("SELECT title FROM jira_issues WHERE doc_id=?", (dsid,)).fetchone() \
+            == ("Repeated id, later record",), f"{label} kept the earlier of the two jira records"
+        assert conn.execute("SELECT title FROM confluence_pages WHERE doc_id=?",
+                            (dsid,)).fetchone() == ("Same id, under confluence",), \
+            f"{label} lost the confluence document to the jira one that shares its id"
+        conn.close()
+
+    a, b = _dump_db(direct.db_path), _dump_db(viabyo.db_path)
+    for t in sorted(a):
+        assert a[t] == b[t], (
+            f"table {t} differs\n  only in direct: {[r for r in a[t] if r not in b[t]]}\n"
+            f"  only via byo:  {[r for r in b[t] if r not in a[t]]}")

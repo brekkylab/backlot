@@ -87,6 +87,8 @@ Schema (`schemas/`), then loaded.
 python -m app.importer.byo mycorpus.jsonl              # validate + load -> data/
 python -m app.importer.byo mycorpus.jsonl --dry-run    # validate only, no DB writes
 python -m app.importer.byo mycorpus.jsonl --roster roster.yaml   # state the principals, don't derive them
+python -m app.importer.byo corpus.jsonl.gz             # gzipped, read as a stream
+python -m app.importer.byo artifact-dir/               # a sharded corpus + its manifest (below)
 ```
 
 ```json
@@ -111,6 +113,24 @@ values, same `doc_acl`, same `tokens.yaml`, asserted as a table-by-table diff in
 `tests/test_importer_erb.py`. `roster.yaml` carries what the records cannot: display names (an
 address does not round-trip a name) and which people are real accounts rather than just document
 owners.
+
+At bench scale one file is unwieldy — the whole of ERB is 581,294 records — so the export can shard:
+
+```bash
+python -m app.importer.erb --export-byo out/ --shard-records 50000
+```
+
+Each source becomes `out/data/<source>/part-NNNNN.jsonl.gz` alongside `out/manifest.json`, which
+records every shard's path, record count, byte size, and SHA-256, plus the same for `roster.yaml`.
+`python -m app.importer.byo out/` loads the whole thing in one command and checks every digest before
+reading a record, so a damaged or swapped download fails up front instead of half-loading a database.
+The roster is checked with the shards, since importing a directory picks it up automatically and it
+decides who holds a token. Shards are gzipped with `mtime=0`, so the same input always produces the
+same checksums.
+
+A shard that is short but validly terminated — what a resumed or re-uploaded download looks like — is
+the case this catches that nothing else would: the gzip stream reads cleanly to its end, so only the
+digest tells you records are missing.
 
 ## Auth & tokens
 

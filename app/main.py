@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import openapi, store, synth
+from app import google_errors, openapi, store, synth
 from app.acl import Acl
 from app.config import get_settings
 from app.oauth import Oauth
@@ -170,10 +170,14 @@ def _atlassian_error_body(status_code: int, detail) -> dict:
 @app.exception_handler(StarletteHTTPException)
 async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
     headers = getattr(exc, "headers", None)
-    if request.url.path.startswith("/atlassian"):
+    path = request.url.path
+    if path.startswith("/atlassian"):
         return JSONResponse(status_code=exc.status_code,
                             content=_atlassian_error_body(exc.status_code, exc.detail),
                             headers=headers)
+    if google_errors.family(path) is not None:
+        return JSONResponse(status_code=exc.status_code,
+                            content=google_errors.body(path, exc), headers=headers)
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=headers)
 
 

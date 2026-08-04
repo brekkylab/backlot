@@ -172,6 +172,32 @@ def sheets():
         raise AssertionError("a Doc id was served as a spreadsheet")
     check("Sheets", "wrong doc type is not found")(_wrong_type)
 
+    # The envelope exists for THIS: googleapiclient parses `error.message` out of the body to build
+    # HttpError's reason. Against `{"detail": …}` it fell back to dumping raw bytes, so a client
+    # could not read the message it branches on. `error_details` carries the parsed `errors[]`.
+    def _error_message_is_readable():
+        try:
+            svc.spreadsheets().values().get(spreadsheetId=fid, range="Nope!A1").execute()
+        except HttpError as e:
+            if e.reason != "Unable to parse range: Nope!A1":
+                raise AssertionError(f"reason not parsed: {e.reason!r}")
+            return f"reason={e.reason[:28]!r}"
+        raise AssertionError("a bad range was accepted")
+    check("Sheets", "HttpError.reason from the body")(_error_message_is_readable)
+
+    def _drive_error_details():
+        """Drive's legacy `errors[]` reaches the SDK as `error_details`, which is where a client
+        finds the `reason` it branches on."""
+        try:
+            drive.files().list(fields="bogusField").execute()
+        except HttpError as e:
+            got = (e.error_details or [{}])[0]
+            if got.get("reason") != "invalidParameter" or got.get("location") != "fields":
+                raise AssertionError(f"error_details not parsed: {e.error_details!r}")
+            return f"reason={got['reason']}"
+        raise AssertionError("a bogus fields mask was accepted")
+    check("Drive", "HttpError.error_details reason")(_drive_error_details)
+
 
 # ------------------------------------------------------------------ GitHub
 def github():

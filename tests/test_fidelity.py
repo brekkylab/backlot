@@ -5,6 +5,7 @@ Each test loads a tiny corpus that exercises one service's new fields, then call
 router's object builders directly (they take a row/conn, no live socket needed)."""
 from __future__ import annotations
 
+import contextlib
 import json
 import urllib.request
 from datetime import datetime
@@ -13,7 +14,7 @@ from xml.etree import ElementTree as ET
 from starlette.requests import Request
 
 from app import store
-from app.config import Settings
+from tests._helpers import build_corpus, client_for, gql
 from tests.test_endpoints import _sign_get
 
 
@@ -21,13 +22,29 @@ def _epoch(iso):
     return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
 
 
-def _load(tmp_path, records) -> Settings:
-    from app.importer.byo import load
-    p = tmp_path / "corpus.jsonl"
-    p.write_text("\n".join(json.dumps(r) for r in records))
-    settings = Settings(data_dir=tmp_path)
-    load(p, settings)
-    return settings
+def _load(tmp_path, records):
+    """One tiny corpus in ``tmp_path``. Most tests here call a router's object builder against the
+    resulting rows rather than over HTTP, so they want the settings, not a client."""
+    return build_corpus(tmp_path, records, name="corpus.jsonl")
+
+
+@contextlib.contextmanager
+def _corpus_client(tmp_path, records):
+    """``records`` built and served, yielding ``(client, settings)`` — the GraphQL tests need the
+    admin token off the settings alongside the client."""
+    settings = _load(tmp_path, records)
+    with client_for(settings) as client:
+        yield client, settings
+
+
+def _linear_client(tmp_path):
+    """``with _linear_client(p) as (client, settings):`` over LINEAR_CORPUS."""
+    return _corpus_client(tmp_path, LINEAR_CORPUS)
+
+
+def _fireflies_client(tmp_path):
+    """Same, over FIREFLIES_CORPUS."""
+    return _corpus_client(tmp_path, FIREFLIES_CORPUS)
 
 
 def _req():
@@ -484,76 +501,39 @@ LINEAR_CORPUS = [
 ]
 
 
-def _linear_client(tmp_path):
-    import os
-
-    from starlette.testclient import TestClient
-
-    from app.config import get_settings
-    from app.main import app
-
-    settings = _load(tmp_path, LINEAR_CORPUS)
-    prev = os.environ.get("MOCK_DATA_DIR")
-    os.environ["MOCK_DATA_DIR"] = str(settings.data_dir)
-    get_settings.cache_clear()
-    client = TestClient(app)
-    client.__enter__()
-
-    def close():
-        client.__exit__(None, None, None)
-        get_settings.cache_clear()
-        if prev is None:
-            os.environ.pop("MOCK_DATA_DIR", None)
-        else:
-            os.environ["MOCK_DATA_DIR"] = prev
-
-    return client, settings, close
-
-
 def _linear_identifiers(client, authorization):
-    r = client.post("/linear/graphql", json={"query": "{ issues { nodes { identifier } } }"},
-                    headers={"Authorization": authorization})
+    r = gql(client, "/linear/graphql", "{ issues { nodes { identifier } } }", authorization)
     return r.status_code, r.json()
 
 
 def test_linear_accepts_a_bare_api_key_with_no_scheme(tmp_path):
     """What `LinearReader` and `@linear/sdk` both send: `Authorization: <key>`, no prefix."""
-    client, settings, close = _linear_client(tmp_path)
-    try:
+    with _linear_client(tmp_path) as (client, settings):
         status, body = _linear_identifiers(client, settings.admin_token)
         assert status == 200
         assert [n["identifier"] for n in body["data"]["issues"]["nodes"]] == ["ENG-9"]
-    finally:
-        close()
 
 
 def test_linear_accepts_a_bearer_oauth_token(tmp_path):
     """The OAuth shape, on the same header."""
-    client, settings, close = _linear_client(tmp_path)
-    try:
+    with _linear_client(tmp_path) as (client, settings):
         status, body = _linear_identifiers(client, f"Bearer {settings.admin_token}")
         assert status == 200
         assert [n["identifier"] for n in body["data"]["issues"]["nodes"]] == ["ENG-9"]
-    finally:
-        close()
 
 
 def test_linear_rejects_a_stray_scheme_rather_than_stripping_it(tmp_path):
     """To the real API the WHOLE header value is the key, so `Token <key>` is simply a wrong key —
     not a key with a scheme to discard. Stripping the first word would authenticate a credential
     the real API refuses."""
-    client, settings, close = _linear_client(tmp_path)
-    try:
+    with _linear_client(tmp_path) as (client, settings):
         assert _linear_identifiers(client, f"Token {settings.admin_token}")[0] == 401
-    finally:
-        close()
 
 
 def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
     """Real Linear splits these: a bad document never executed is a 400 with no `data` key, while
     an error raised mid-execution is a 200 carrying `data` alongside `errors`."""
-    client, settings, close = _linear_client(tmp_path)
-    try:
+    with _linear_client(tmp_path) as (client, settings):
         h = {"Authorization": settings.admin_token}
         bad = client.post("/linear/graphql", json={"query": "{ issues( }"}, headers=h)
         assert bad.status_code == 400 and "data" not in bad.json()
@@ -562,8 +542,6 @@ def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
                               json={"query": '{ issue(id: "NOPE-1") { identifier } }'}, headers=h)
         assert missing.status_code == 200
         assert "data" in missing.json() and missing.json()["errors"]
-    finally:
-        close()
 
 
 # --- fireflies -------------------------------------------------------------------
@@ -589,46 +567,16 @@ FIREFLIES_CORPUS = [
 ]
 
 
-def _fireflies_client(tmp_path):
-    import os
-
-    from starlette.testclient import TestClient
-
-    from app.config import get_settings
-    from app.main import app
-
-    settings = _load(tmp_path, FIREFLIES_CORPUS)
-    prev = os.environ.get("MOCK_DATA_DIR")
-    os.environ["MOCK_DATA_DIR"] = str(settings.data_dir)
-    get_settings.cache_clear()
-    client = TestClient(app)
-    client.__enter__()
-
-    def close():
-        client.__exit__(None, None, None)
-        get_settings.cache_clear()
-        if prev is None:
-            os.environ.pop("MOCK_DATA_DIR", None)
-        else:
-            os.environ["MOCK_DATA_DIR"] = prev
-
-    return client, settings, close
-
-
 def _ff(client, settings, query, **variables):
-    body = {"query": query}
-    if variables:
-        body["variables"] = variables
-    return client.post("/fireflies/graphql", json=body,
-                       headers={"Authorization": f"Bearer {settings.admin_token}"}).json()
+    return gql(client, "/fireflies/graphql", query,
+               f"Bearer {settings.admin_token}", **variables).json()
 
 
 def test_fireflies_accepts_the_vendors_documented_raw_http_post(tmp_path):
     """There is no Fireflies SDK: the vendor's quickstart is curl / requests.post / axios.post /
     Java HttpClient against one endpoint with a Bearer key. That IS the client story, so the exact
     shape those examples send has to work."""
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         r = client.post(
             "/fireflies/graphql",
             json={"query": "query Transcripts($limit: Int) "
@@ -638,28 +586,22 @@ def test_fireflies_accepts_the_vendors_documented_raw_http_post(tmp_path):
                      "Content-Type": "application/json"})
         assert r.status_code == 200
         assert r.json()["data"]["transcripts"][0]["title"] == "Fidelity discovery call"
-    finally:
-        close()
 
 
 def test_fireflies_transcripts_is_a_bare_list_not_a_relay_connection(tmp_path):
     """Fireflies pages with limit/skip. Wrapping it in `{ nodes, pageInfo }` — the shape every
     other GraphQL source here uses — would break every generated client."""
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         got = _ff(client, settings, "{ transcripts(limit: 5) { id } }")
         assert isinstance(got["data"]["transcripts"], list)
         # asking for a connection's fields must be a validation error, i.e. they do not exist
         bad = _ff(client, settings, "{ transcripts { nodes { id } pageInfo { hasNextPage } } }")
         assert "data" not in bad and bad["errors"]
-    finally:
-        close()
 
 
 def test_fireflies_field_names_are_snake_case(tmp_path):
     """Fireflies' own convention, not a translation — a camelCase spelling must NOT resolve."""
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         ok = _ff(client, settings, "{ transcripts(limit: 1) { host_email organizer_email "
                                    "audio_url video_url transcript_url meeting_link "
                                    "calendar_type meeting_attendees { displayName } "
@@ -671,25 +613,19 @@ def test_fireflies_field_names_are_snake_case(tmp_path):
         for camel in ("hostEmail", "audioUrl", "transcriptUrl", "meetingLink"):
             bad = _ff(client, settings, "{ transcripts(limit: 1) { %s } }" % camel)
             assert "data" not in bad and bad["errors"], camel
-    finally:
-        close()
 
 
 def test_fireflies_duration_is_minutes(tmp_path):
     """The API's unit. Serving seconds would make every meeting read as 60x too long."""
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         t = _ff(client, settings, "{ transcripts(limit: 1) { duration } }")["data"]["transcripts"][0]
         assert t["duration"] == 45.0
-    finally:
-        close()
 
 
 def test_fireflies_action_items_are_a_newline_joined_string(tmp_path):
     """Fireflies returns `summary.action_items` as ONE string, not a list — a client doing
     `.split("\\n")` on it must not get a JSON array."""
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         s = _ff(client, settings, "{ transcripts(limit: 1) { summary { action_items "
                                   "topics_discussed keywords overview meeting_type } } }"
                 )["data"]["transcripts"][0]["summary"]
@@ -698,43 +634,34 @@ def test_fireflies_action_items_are_a_newline_joined_string(tmp_path):
         assert s["topics_discussed"] == ["latency"]
         assert s["keywords"] == ["latency"]
         assert s["meeting_type"] == "discovery"
-    finally:
-        close()
 
 
 def test_fireflies_sentence_times_are_seconds_while_duration_is_minutes(tmp_path):
     """The two units really do differ in the real API; a mock that made them agree would look
     tidier and be wrong."""
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         t = _ff(client, settings, "{ transcripts(limit: 1) { duration "
                                   "sentences { start_time end_time } } }"
                 )["data"]["transcripts"][0]
         assert t["sentences"][1]["start_time"] == 20.0            # seconds
         assert t["duration"] == 45.0                              # minutes
         assert t["sentences"][-1]["end_time"] <= t["duration"] * 60
-    finally:
-        close()
 
 
 def test_fireflies_speaker_id_is_an_integer_scoped_to_the_meeting(tmp_path):
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         sents = _ff(client, settings, "{ transcripts(limit: 1) { sentences "
                                       "{ index speaker_id speaker_name } } }"
                     )["data"]["transcripts"][0]["sentences"]
         assert [s["speaker_id"] for s in sents] == [0, 1]
         assert all(isinstance(s["speaker_id"], int) for s in sents)
         assert [s["index"] for s in sents] == [0, 1]
-    finally:
-        close()
 
 
 def test_fireflies_stubbed_fields_are_null_not_invented(tmp_path):
     """The SDL declares more than a document corpus can back. Everything unbacked must be null —
     an invented sentiment or classifier flag is worse than an honest gap."""
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         t = _ff(client, settings, "{ transcripts(limit: 1) { apps_preview "
                                   "meeting_attendance { email joinedAt duration } "
                                   "summary { bullet_gist gist transcript_chapters } "
@@ -748,29 +675,23 @@ def test_fireflies_stubbed_fields_are_null_not_invented(tmp_path):
         assert t["analytics"]["categories"]["questions"] is None
         assert t["sentences"][0]["ai_filters"] is None
         assert t["user"]["minutes_consumed"] is None and t["user"]["is_admin"] is None
-    finally:
-        close()
 
 
 def test_fireflies_analytics_sentiments_sum_to_one_hundred(tmp_path):
     """Synthesized, never derived from the text — but it still has to be internally coherent, or a
     consumer charting it gets nonsense."""
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         s = _ff(client, settings, "{ transcripts(limit: 1) { analytics { sentiments "
                                   "{ positive_pct neutral_pct negative_pct } } } }"
                 )["data"]["transcripts"][0]["analytics"]["sentiments"]
         assert round(s["positive_pct"] + s["neutral_pct"] + s["negative_pct"]) == 100
         assert all(v >= 0 for v in s.values())
-    finally:
-        close()
 
 
 def test_fireflies_speaker_analytics_are_computed_from_the_sentences(tmp_path):
     """Talk time and word counts ARE derivable from the transcript, so unlike sentiment they are
     real rather than synthesized."""
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         t = _ff(client, settings, "{ transcripts(limit: 1) { analytics { speakers "
                                   "{ name duration word_count duration_pct } } "
                                   "sentences { speaker_name text start_time end_time } } }"
@@ -781,24 +702,19 @@ def test_fireflies_speaker_analytics_are_computed_from_the_sentences(tmp_path):
             spoken = len(sent["text"].split())
             assert by_name[sent["speaker_name"]]["word_count"] >= spoken
         assert by_name["Ava Chen"]["duration"] == 20.0     # 0 -> 20, its own window
-    finally:
-        close()
 
 
 def test_fireflies_speaker_shares_sum_to_one_hundred(tmp_path):
     """`duration_pct` shares out the TALK TIME, not the declared meeting length: a corpus
     transcript often does not span its whole meeting, and dividing by the declared length emits
     shares summing to ~4%, which reads as a bug in anything that charts them."""
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         speakers = _ff(client, settings, "{ transcripts(limit: 1) { duration analytics "
                                          "{ speakers { duration duration_pct } } } }"
                        )["data"]["transcripts"][0]["analytics"]["speakers"]
         assert round(sum(s["duration_pct"] for s in speakers)) == 100
         # and the talk time really is far short of the declared 45-minute meeting
         assert sum(s["duration"] for s in speakers) < 45 * 60
-    finally:
-        close()
 
 
 def test_fireflies_no_openapi_entry_for_the_graphql_route(tmp_path):
@@ -806,13 +722,10 @@ def test_fireflies_no_openapi_entry_for_the_graphql_route(tmp_path):
     so the route is deliberately absent from the document (and from SOURCE_PREFIXES)."""
     from app import openapi
 
-    client, settings, close = _fireflies_client(tmp_path)
-    try:
+    with _fireflies_client(tmp_path) as (client, settings):
         spec = client.get("/openapi.json").json()
         assert not [p for p in spec["paths"] if p.startswith("/fireflies")]
         assert "fireflies" not in openapi.SOURCE_PREFIXES
-    finally:
-        close()
 
 
 def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path):
@@ -829,8 +742,6 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
     from starlette.testclient import TestClient
 
     from app import store, synth
-    from app.config import get_settings
-    from app.main import app
 
     settings = _load(tmp_path, FIREFLIES_CORPUS)
     # A principal the corpus names but who has no token — what an ERB append creates. Inserted
@@ -843,21 +754,7 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
     conn.commit()
     conn.close()
 
-    prev = os.environ.get("MOCK_DATA_DIR")
-    os.environ["MOCK_DATA_DIR"] = str(settings.data_dir)
-    get_settings.cache_clear()
-    client = TestClient(app)
-    client.__enter__()
-
-    def close():
-        client.__exit__(None, None, None)
-        get_settings.cache_clear()
-        if prev is None:
-            os.environ.pop("MOCK_DATA_DIR", None)
-        else:
-            os.environ["MOCK_DATA_DIR"] = prev
-
-    try:
+    with client_for(settings) as client:
         emails = {u["email"] for u in _ff(client, settings, "{ users { email } }")["data"]["users"]}
         assert "ghost@acme.com" not in emails, "a tokenless principal is not a workspace member"
         assert "ava@acme.com" in emails                    # the corpus's real, tokened host
@@ -867,8 +764,6 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
         got = _ff(client, settings, 'query($i:String){ user(id:$i) { email name } }',
                   i=synth.fireflies_user_id("ghost@acme.com"))["data"]["user"]
         assert got["email"] == "ghost@acme.com" and got["name"] == "Ghost Person"
-    finally:
-        close()
 
 
 def _roster_emails(settings):

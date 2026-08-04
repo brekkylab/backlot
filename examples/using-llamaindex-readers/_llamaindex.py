@@ -1,40 +1,19 @@
 """Point official LlamaIndex readers at an enterprise-mock server.
 
-Each `llama-index-readers-*` package normally targets a real SaaS host. Four accept a custom
-host via constructor args (GitHub `base_url`, Jira `PATauth.server_url`, Confluence `base_url`,
-S3 `s3_endpoint_url`); four hardcode it and need a small shim, all isolated here:
+Each `llama-index-readers-*` package normally targets a real SaaS host. Four take a custom host
+via constructor args (GitHub `base_url`, Jira `PATauth.server_url`, Confluence `base_url`, S3
+`s3_endpoint_url`); four hardcode it and need a shim, all isolated here. Each shim's docstring
+says what seam it uses and why that one:
 
-  - Slack: `slack_reader_at` builds the reader with the underlying slack_sdk `WebClient` already
-    pointed at the mock. `SlackReader.__init__` doesn't just stash the client — it eagerly calls
-    `client.api_test()` *during construction*, before the caller has a `reader._client` to set
-    `base_url` on, so "construct, then set `_client.base_url`" alone isn't enough: that eager
-    call would hit the real `https://slack.com/api/` default first. `slack_reader_at` swaps the
-    `slack_sdk` module's `WebClient` for a subclass defaulting to the mock's base_url for the
-    duration of construction (restored after), so even that first call lands on the mock (which
-    now serves `api.test`, see `app/routers/slack.py`) — then sets `_client.base_url` again
-    explicitly, since slack_sdk builds request URLs as `base_url + method`.
-  - Gmail/Drive: `point_gmail_at` / `point_drive_at` wrap a `build` symbol to inject
-    `client_options(api_endpoint=...)` + `static_discovery=True` (as the SDK examples do).
-    `GmailReader.load_data()` does a *local* `from googleapiclient.discovery import build` on
-    every call rather than importing it at module scope (confirmed empirically —
-    `'build' in dir(llama_index.readers.google.gmail.base)` is `False`), so there is no
-    `gm.build` module attribute to wrap; `point_gmail_at` wraps `googleapiclient.discovery.build`
-    itself instead, one level up the chain (the local import re-reads whatever that symbol
-    currently is at call time, so this has the same effect). Credential wiring differs between
-    the two readers, though: `GoogleDriveReader` accepts `service_account_key=` directly, a real
-    injection hook, so the admin path needs no monkeypatch beyond `point_drive_at`; `GmailReader`
-    has no such hook — its `_get_credentials()` unconditionally runs a local disk-based OAuth
-    flow — so `gmail.py` additionally patches `GmailReader._get_credentials` to hand back the
-    mock-issued credential.
-  - Notion: `patch_notion_at` rebinds the module-level URL constants.
-  - Linear: `patch_linear_at` swaps the reader module's `requests` for a URL-rewriting
-    proxy. Its endpoint is a LOCAL VARIABLE inside `load_data`, not a module constant,
-    so there is nothing to rebind the way Notion's shim does — the `requests` import is
-    the only seam.
+  - Slack: `slack_reader_at` — the reader calls `api_test()` DURING construction, so the client
+    has to arrive already pointed at the mock.
+  - Gmail/Drive: `point_gmail_at` / `point_drive_at` — wrap `build` to inject
+    `client_options(api_endpoint=...)`.
+  - Notion: `patch_notion_at` — rebind the module-level URL constants.
+  - Linear: `patch_linear_at` — swap the module's `requests` for a URL-rewriting proxy.
 
-This module also re-exports the serve/credential helpers from the sibling
-`using-official-sdk/_mockserver.py`, so these scripts share the same `--url` / `--token` behavior
-and local-fallback mock.
+Also re-exports the serve/credential helpers from the sibling `using-official-sdk/_mockserver.py`,
+so these scripts share one `--url` / `--token` behaviour and local fallback.
 """
 from __future__ import annotations
 
@@ -134,29 +113,16 @@ def atlassian_base_url(base_url: str) -> str:
 
 
 def patch_s3fs_walk() -> None:
-    """Work around a multi-year fsspec/s3fs compatibility bug (present since at least the
-    2023.x releases and reproducing on every version installable today, including fsspec/s3fs
-    2026.6.0): `S3Reader.load_data()` in whole-bucket mode (no `key`) calls
-    `SimpleDirectoryReader._add_files`, which always does
-    `fs.walk(input_dir, topdown=True, maxdepth=...)`. The sync `AbstractFileSystem.walk` declares
-    `topdown` as an explicit parameter (so it never reaches `ls`), but `S3FileSystem` is async and
-    its `_walk` chain bottoms out in `_ls()`, which doesn't accept `topdown`, raising
-    ``TypeError: S3FileSystem._ls() got an unexpected keyword argument 'topdown'``. This is a
-    client-side bug independent of the mock (reproduces identically against real AWS S3 with the
-    same library versions), so no mock-side change can fix it.
+    """Work around a long-standing fsspec/s3fs bug, NOT anything mock-side (it reproduces
+    identically against real AWS S3): a whole-bucket `S3Reader.load_data()` reaches
+    `fs.walk(..., topdown=True)`, and `S3FileSystem` is async so its `_walk` chain bottoms out in
+    `_ls()`, which does not accept `topdown`.
 
-    Wraps the *original* `S3FileSystem._walk` (captured before patching) rather than delegating
-    to the shared `fsspec.asyn.AsyncFileSystem._walk` base implementation: `S3FileSystem` defines
-    its own `_walk` with S3-specific logic (e.g. a guard raising `ValueError("Cannot crawl all of
-    S3")` for bucket-less/root crawls) before calling up to the async base — bypassing it via
-    `AsyncFileSystem._walk` directly would silently drop that guard (and any other S3-specific
-    behavior) for every whole-bucket walk. Wrapping the original preserves all of it; the wrapper
-    only strips the offending `topdown` kwarg. Scoped to `S3FileSystem` only, so other async
-    fsspec backends (gcsfs, adlfs, ...) are unaffected. Self-verifies against `S3FileSystem._ls`'s
-    signature first and no-ops if a future s3fs release has fixed the signature to accept
-    `topdown` (directly or via a `**kwargs` catch-all), so we never silently drop a `topdown` a
-    fixed s3fs would legitimately honor. Idempotent; safe to call more than once or from multiple
-    scripts in the same process."""
+    Wraps the ORIGINAL `S3FileSystem._walk` rather than delegating to
+    `AsyncFileSystem._walk`: S3's own `_walk` carries S3-specific logic (a guard against crawling
+    all of S3) that going straight to the base class would silently drop. The wrapper only strips
+    the offending kwarg. Scoped to `S3FileSystem`, idempotent, and self-verifying — it no-ops if a
+    future s3fs accepts `topdown`, so a fixed library's kwarg is never dropped."""
     import inspect
 
     from s3fs.core import S3FileSystem

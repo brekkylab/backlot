@@ -13,6 +13,7 @@ so every example shares one ``--url`` / ``--user`` / ``--token`` behaviour and o
 from __future__ import annotations
 
 import asyncio
+import importlib
 import sys
 from pathlib import Path
 
@@ -43,7 +44,11 @@ __all__ = ["point_google_at", "point_github_at", "slack_base_url", "notion_base_
 
 
 def slack_base_url(base_url: str) -> str:
-    """The mock's Slack Web API base, for ``SlackConfig(base_url=...)``."""
+    """The mock's Slack Web API base, for ``SlackConfig(base_url=...)``.
+
+    NOT interchangeable with the same-named helper in ``using-llamaindex-readers``: that one ends in
+    a slash because slack_sdk builds URLs as ``base_url + method``. Each client's URL-joining rule
+    is its own, which is why these are per-example rather than shared."""
     return f"{base_url.rstrip('/')}/slack/api"
 
 
@@ -104,6 +109,22 @@ def run_mirage(coro):
     return asyncio.run(_run())
 
 
+def _rebind_mirage_constants(source_module: str, overrides: dict[str, str]) -> None:
+    """Rebind mirage's hardcoded API-host constants.
+
+    Patches the source module — imported first so it exists — AND every already-imported
+    ``mirage.core.*`` that copied a same-named constant by value, which is what makes the redirect
+    order-independent. Idempotent.
+    """
+    importlib.import_module(source_module)
+    for mod in list(sys.modules.values()):
+        if not getattr(mod, "__name__", "").startswith("mirage.core."):
+            continue
+        for const, value in overrides.items():
+            if hasattr(mod, const):
+                setattr(mod, const, value)
+
+
 def point_google_at(base_url: str) -> None:
     """Redirect mirage's Google connectors (Gmail/Drive/Docs/Sheets/Slides + OAuth) at the mock.
 
@@ -113,23 +134,14 @@ def point_google_at(base_url: str) -> None:
     Idempotent; call once, before constructing the Google resources.
     """
     base = base_url.rstrip("/")
-    overrides = {
+    _rebind_mirage_constants("mirage.core.google._client", {
         "TOKEN_URL": f"{base}/oauth2/token",
         "GMAIL_API_BASE": f"{base}/gmail/v1",
         "DRIVE_API_BASE": f"{base}/drive/v3",
         "DOCS_API_BASE": f"{base}/docs/v1",
         "SHEETS_API_BASE": f"{base}/sheets/v4",
         "SLIDES_API_BASE": f"{base}/slides/v1",
-    }
-
-    import mirage.core.google._client  # noqa: F401  (imported so the source constant exists)
-
-    for mod in list(sys.modules.values()):
-        if not getattr(mod, "__name__", "").startswith("mirage.core."):
-            continue
-        for const, value in overrides.items():
-            if hasattr(mod, const):
-                setattr(mod, const, value)
+    })
 
 
 def point_github_at(base_url: str) -> None:
@@ -141,13 +153,4 @@ def point_github_at(base_url: str) -> None:
     constructor already makes HTTP calls (default branch, tree).
     """
     base = base_url.rstrip("/")
-    overrides = {"API_BASE": f"{base}/github"}
-
-    import mirage.core.github._client  # noqa: F401
-
-    for mod in list(sys.modules.values()):
-        if not getattr(mod, "__name__", "").startswith("mirage.core."):
-            continue
-        for const, value in overrides.items():
-            if hasattr(mod, const):
-                setattr(mod, const, value)
+    _rebind_mirage_constants("mirage.core.github._client", {"API_BASE": f"{base}/github"})

@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
+from app.openapi import qp
 from app.acl import Caller
 from app.config import get_settings
 from app.pagination import decode_cursor, next_cursor
@@ -63,19 +64,15 @@ class SlackSearch(_SlackOk):
     messages: dict = {}
 
 
-def _qp(name: str, typ: str = "string", required: bool = False) -> dict:
-    return {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
-
-
-_P_LIST = [_qp("limit", "integer"), _qp("cursor")]
-_P_CHANNEL = [_qp("channel", required=True)]
-_P_HISTORY = [_qp("channel", required=True), _qp("limit", "integer"), _qp("cursor"),
-              _qp("oldest"), _qp("latest"), _qp("inclusive", "boolean")]
-_P_REPLIES = [_qp("channel", required=True), _qp("ts", required=True)]
-_P_USER = [_qp("user", required=True)]
-_P_SEARCH = [_qp("query", required=True), _qp("count", "integer"), _qp("page", "integer"),
-             _qp("sort"), _qp("sort_dir")]
-_P_SEARCH_FILES = [_qp("query", required=True), _qp("count", "integer")]
+_P_LIST = [qp("limit", "integer"), qp("cursor")]
+_P_CHANNEL = [qp("channel", required=True)]
+_P_HISTORY = [qp("channel", required=True), qp("limit", "integer"), qp("cursor"),
+              qp("oldest"), qp("latest"), qp("inclusive", "boolean")]
+_P_REPLIES = [qp("channel", required=True), qp("ts", required=True)]
+_P_USER = [qp("user", required=True)]
+_P_SEARCH = [qp("query", required=True), qp("count", "integer"), qp("page", "integer"),
+             qp("sort"), qp("sort_dir")]
+_P_SEARCH_FILES = [qp("query", required=True), qp("count", "integer")]
 
 # conversations.history page cap (thread roots). Slack recommends limit<=200; capping here bounds
 # how many authors a client resolves per call so history stays fast even with a small users.list.

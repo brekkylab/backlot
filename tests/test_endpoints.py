@@ -321,6 +321,33 @@ def test_hubspot_unauth_is_401(client):
     assert client.get("/hubspot/crm/v3/objects/companies").status_code == 401
 
 
+@pytest.mark.parametrize("path, detail", [
+    # Each vendor's real 401 message, verbatim. A client that string-matches its provider's error
+    # (and some do) has to keep matching, so these are part of the emulated surface rather than
+    # incidental text — and the shared auth guard takes the message as a parameter for that reason.
+    ("/github/orgs/acme", "Bad credentials"),
+    ("/gmail/v1/users/me/profile", "Invalid Credentials"),
+])
+def test_unauthenticated_request_reports_the_vendors_own_401_detail(client, path, detail):
+    r = client.get(path)
+    assert r.status_code == 401
+    assert r.json()["detail"] == detail
+
+
+def test_atlassian_401_keeps_the_atlassian_error_envelope(client):
+    """Atlassian clients parse the error body as Atlassian Cloud's envelope (Confluence's
+    raise_for_status reads ``response.json()["message"]``), so a 401 there is not FastAPI's
+    ``{"detail": ...}`` — see app.main._atlassian_error_body."""
+    # NOT serverInfo: the jira PyPI client probes that on connect, so it answers unauthenticated
+    # on purpose. project/search is the first call that actually needs a credential.
+    r = client.get("/atlassian/rest/api/3/project/search")
+    assert r.status_code == 401
+    body = r.json()
+    assert body["message"] == "Unauthorized"
+    assert body["errorMessages"] == ["Unauthorized"]
+    assert body["statusCode"] == 401
+
+
 def test_hubspot_acl_hides_restricted_record(client, tokens):
     """`hs-co-secret` is readable only by hana; another user's crawl must not contain it."""
     users = {u["email"]: u["token"] for u in tokens["users"]}

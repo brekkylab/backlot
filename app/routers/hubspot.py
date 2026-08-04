@@ -27,6 +27,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
+from app.routers import json_body
+from app.openapi import qp
 
 router = APIRouter(prefix="/hubspot", tags=["hubspot"])
 
@@ -54,18 +56,14 @@ class HubspotPage(_HLoose):
     results: list[dict] = []
 
 
-def _qp(name: str, typ: str = "string") -> dict:
-    return {"name": name, "in": "query", "schema": {"type": typ}}
-
-
 # Only parameters the mock actually honours are advertised: `propertiesWithHistory` and inline
 # `associations` expansion are not implemented, and declaring them would have clients ask for data
 # that silently never arrives (worse for `propertiesWithHistory`, which also makes the official
 # client drop its page size to 50).
-_P_LIST = [_qp("limit", "integer"), _qp("after"), _qp("properties"),
-           _qp("archived", "boolean")]
-_P_READ = [_qp("properties"), _qp("archived", "boolean")]
-_P_ASSOC = [_qp("limit", "integer"), _qp("after")]
+_P_LIST = [qp("limit", "integer"), qp("after"), qp("properties"),
+           qp("archived", "boolean")]
+_P_READ = [qp("properties"), qp("archived", "boolean")]
+_P_ASSOC = [qp("limit", "integer"), qp("after")]
 
 _FILTER_SCHEMA = {"type": "object", "properties": {
     "propertyName": {"type": "string"}, "operator": {"type": "string"},
@@ -92,14 +90,6 @@ _B_BATCH = {"requestBody": {"content": {"application/json": {"schema": {
 def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSONResponse:
     return JSONResponse(status_code=status,
                         content={"status": "error", "message": message, "category": category})
-
-
-def _caller(request: Request):
-    return auth.resolve_bearer(request)
-
-
-def _visible(request: Request, caller):
-    return auth.visible_ids(request, caller)
 
 
 def _doc_id_for(request: Request, record_id: str) -> str | None:
@@ -161,14 +151,6 @@ def _keep(raw) -> list[str] | None:
     if isinstance(raw, list):
         return [str(p) for p in raw]
     return [p for p in str(raw).split(",") if p]
-
-
-async def _json_body(request: Request) -> dict:
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001 — empty/invalid body → treat as no params
-        return {}
-    return body if isinstance(body, dict) else {}
 
 
 # HubSpot's standard CRM objects exist in every portal whether or not any records do, so an empty
@@ -389,7 +371,7 @@ def _matches(row, body: dict) -> bool:
 @router.get("/crm/v3/objects/{object_type}", response_model=HubspotPage,
             openapi_extra={"parameters": _P_LIST})
 async def list_objects(object_type: str, request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     if not _known_type(request, object_type):
@@ -401,7 +383,7 @@ async def list_objects(object_type: str, request: Request):
         return err
     rows = store.list_hubspot_objects(
         auth.conn(request), object_type, after_doc_id=after_doc,
-        visible_ids=_visible(request, caller), limit=limit + 1,
+        visible_ids=auth.visible_ids(request, caller), limit=limit + 1,
         archived=_flag(qp.get("archived")))
     return _page(rows, limit, _keep(qp.get("properties")))
 
@@ -409,12 +391,12 @@ async def list_objects(object_type: str, request: Request):
 @router.get("/crm/v3/objects/{object_type}/{record_id}", response_model=HubspotObject,
             openapi_extra={"parameters": _P_READ})
 async def get_object(object_type: str, record_id: str, request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     doc_id = _doc_id_for(request, record_id)
     row = (store.get_document(auth.conn(request), "hubspot", doc_id,
-                              _visible(request, caller)) if doc_id else None)
+                              auth.visible_ids(request, caller)) if doc_id else None)
     if row is None or row["object_type"] != object_type:
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")
     return _record(row, _keep(request.query_params.get("properties")))
@@ -423,14 +405,14 @@ async def get_object(object_type: str, record_id: str, request: Request):
 @router.post("/crm/v3/objects/{object_type}/search", response_model=HubspotPage,
              openapi_extra=_B_SEARCH)
 async def search_objects(object_type: str, request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     if not _known_type(request, object_type):
         return _error(404, f"Unable to infer object type from: {object_type}", "OBJECT_NOT_FOUND")
-    body = await _json_body(request)
+    body = await json_body(request)
     limit = _clamp(body.get("limit"), 10, _PAGE_MAX)
-    visible = _visible(request, caller)
+    visible = auth.visible_ids(request, caller)
     conn = auth.conn(request)
     after_doc, err = _resolve_cursor(request, body.get("after"))
     if err is not None:
@@ -473,13 +455,13 @@ async def search_objects(object_type: str, request: Request):
 @router.post("/crm/v3/objects/{object_type}/batch/read", response_model=HubspotPage,
              openapi_extra=_B_BATCH)
 async def batch_read(object_type: str, request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     if not _known_type(request, object_type):
         return _error(404, f"Unable to infer object type from: {object_type}", "OBJECT_NOT_FOUND")
-    body = await _json_body(request)
-    conn, visible = auth.conn(request), _visible(request, caller)
+    body = await json_body(request)
+    conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     keep = _keep(body.get("properties"))
     results, errors = [], []
     for item in body.get("inputs") or []:
@@ -508,11 +490,11 @@ async def batch_read(object_type: str, request: Request):
             response_model=HubspotPage, openapi_extra={"parameters": _P_ASSOC})
 async def list_associations(object_type: str, record_id: str, to_object_type: str,
                             request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     doc_id = _doc_id_for(request, record_id)
-    conn, visible = auth.conn(request), _visible(request, caller)
+    conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     row = store.get_document(conn, "hubspot", doc_id, visible) if doc_id else None
     if row is None or row["object_type"] != object_type:
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")

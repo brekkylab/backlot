@@ -13,7 +13,7 @@ import hmac
 import sqlite3
 from datetime import datetime, timezone
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from app import sigv4
 from app.acl import Acl, Caller
@@ -88,6 +88,29 @@ def slack_token(request: Request) -> str | None:
 
 def resolve_bearer(request: Request) -> Caller | None:
     return acl(request).resolve(bearer_token(request))
+
+
+def require_bearer(request: Request, detail: str) -> Caller:
+    """Resolve a bearer token or raise 401 with the VENDOR's own message.
+
+    ``detail`` is a parameter rather than something this function picks, because the message is
+    part of the emulated surface: GitHub says "Bad credentials", Google "Invalid Credentials",
+    Atlassian "Unauthorized", and a client that string-matches its provider's error has to keep
+    matching. Each router states its own once (see ``tests/test_endpoints.py``).
+    """
+    caller = resolve_bearer(request)
+    if caller is None:
+        raise HTTPException(status_code=401, detail=detail)
+    return caller
+
+
+def require_basic_or_bearer(request: Request, detail: str) -> Caller:
+    """Same, for Atlassian: it carries Basic ``email:api_token`` and also accepts a bearer OAuth
+    token, so both are tried before refusing."""
+    caller = resolve_basic(request) or resolve_bearer(request)
+    if caller is None:
+        raise HTTPException(status_code=401, detail=detail)
+    return caller
 
 
 def resolve_api_key(request: Request) -> Caller | None:

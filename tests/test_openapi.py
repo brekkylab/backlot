@@ -12,6 +12,30 @@ import pytest
 from app import openapi
 
 
+def test_qp_builds_an_openapi_query_parameter():
+    """Every router advertises its honoured query params through this one helper — there used to be
+    five copies of it (``_qp``/``_gqp``/``_aqp``/``_nqp``), two of which omitted ``required``."""
+    assert openapi.qp("limit", "integer") == {
+        "name": "limit", "in": "query", "required": False, "schema": {"type": "integer"}}
+    assert openapi.qp("channel", required=True)["required"] is True
+    assert openapi.qp("cursor")["schema"] == {"type": "string"}
+
+
+def test_every_query_param_in_the_served_spec_declares_required():
+    """A consequence of the single helper, and the reason it is worth having: the two routers that
+    had their own copy emitted no ``required`` key at all, so 15 of the spec's 123 query params
+    were shaped differently from the other 108 for no reason."""
+    warnings.filterwarnings("ignore")
+    from app.main import app
+
+    missing = [(path, method, q["name"])
+               for path, item in app.openapi()["paths"].items()
+               for method, op in item.items() if isinstance(op, dict)
+               for q in op.get("parameters", [])
+               if q.get("in") == "query" and "required" not in q]
+    assert missing == []
+
+
 def _doc():
     return {"paths": {
         "/github/repos/{owner}/{repo}/issues": {"get": {"operationId": "list_issues"}},

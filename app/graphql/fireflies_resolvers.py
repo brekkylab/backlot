@@ -32,7 +32,11 @@ def _ctx(info):
 
 def clamp_limit(value) -> int:
     """Fireflies documents `limit` as "max 50". It CLAMPS rather than erroring, so a client that
-    asks for 200 is served 50. A non-positive or unparseable value falls back to the default."""
+    asks for 200 is served 50. A non-positive or unparseable value falls back to the default.
+
+    Not ``pagination.clamp_limit``, which looks equivalent and is not: it compares the value
+    without coercing, so a non-numeric ``limit`` raises TypeError there instead of falling back.
+    That path is reachable and pinned (see tests/test_pagination.py)."""
     try:
         n = int(value)
     except (TypeError, ValueError):
@@ -85,10 +89,6 @@ def _iso(ts) -> str | None:
         "+00:00", "Z")
 
 
-def _jcol(row, key, default=None):
-    return store.jcol(row, key, default)
-
-
 def _display_name(email: str | None) -> str | None:
     if not email:
         return None
@@ -122,7 +122,7 @@ def _sentence(row, index: int) -> dict:
 
 def _summary(row) -> dict:
     """The stored `summary` JSON, filled out to the API's full Summary shape."""
-    s = _jcol(row, "summary") or {}
+    s = store.jcol(row, "summary") or {}
     action_items = s.get("action_items")
     if isinstance(action_items, list):
         # Fireflies returns action_items as ONE newline-joined string, not a list.
@@ -141,11 +141,11 @@ def _summary(row) -> dict:
 
 
 def _speakers(row) -> list[dict]:
-    return (_jcol(row, "analytics") or {}).get("speakers") or []
+    return (store.jcol(row, "analytics") or {}).get("speakers") or []
 
 
 def _analytics(row) -> dict:
-    a = _jcol(row, "analytics") or {}
+    a = store.jcol(row, "analytics") or {}
     return {"sentiments": a.get("sentiments"), "speakers": a.get("speakers") or [],
             # classifier buckets — see the SDL header
             "categories": a.get("categories")}
@@ -166,9 +166,9 @@ def _transcript(row, info) -> dict:
         # Fireflies falls back to the host when a meeting has no distinct organizer, which is the
         # common case; a NULL column must not surface as a null field the client then can't use.
         "organizer_email": row["organizer_email"] or host,
-        "participants": _jcol(row, "participants", []) or [],
+        "participants": store.jcol(row, "participants", []) or [],
         "user": _user(host, row["owner_display"]),
-        "fireflies_users": [e for e in (_jcol(row, "participants", []) or [])
+        "fireflies_users": [e for e in (store.jcol(row, "participants", []) or [])
                             if isinstance(e, str) and "@external." not in e],
         "meeting_link": row["meeting_link"],
         "calendar_id": row["calendar_id"],
@@ -180,7 +180,7 @@ def _transcript(row, info) -> dict:
         "video_url": row["video_url"],
         "summary": _summary(row),
         "analytics": _analytics(row),
-        "meeting_attendees": _jcol(row, "meeting_attendees", []) or [],
+        "meeting_attendees": store.jcol(row, "meeting_attendees", []) or [],
         # who was INVITED is in the corpus; who dialed in and for how long is not
         "meeting_attendance": None,
         "meeting_info": {"fred_joined": True, "silent_meeting": False,

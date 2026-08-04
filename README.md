@@ -327,9 +327,13 @@ each spin up their own server; they run when those are available and skip otherw
 
 ## Configuration
 
-Env vars (prefix `MOCK_`): `MOCK_DATA_DIR`, `MOCK_ADMIN_TOKEN`, `MOCK_ENFORCE_ACL`,
-`MOCK_EXPOSE_TOKENS`, `MOCK_ACL_PUBLIC_RATIO`, `MOCK_ACL_GROUP_RATIO`, `MOCK_DEFAULT_PAGE_SIZE`,
+Env vars (prefix `MOCK_`): `MOCK_DATA_DIR`, `MOCK_RAW_DIR`, `MOCK_ADMIN_TOKEN`,
+`MOCK_ENFORCE_ACL`, `MOCK_EXPOSE_TOKENS`, `MOCK_DEFAULT_PAGE_SIZE`, `MOCK_MAX_PAGE_SIZE`,
 `MOCK_ORG_NAME`, `MOCK_ORG_DOMAIN`, `MOCK_ATLASSIAN_SITE`. See `app/config.py`.
+
+Document visibility is **not** configurable: it comes from the corpus itself — each record's
+`visibility` / `readers` for a BYO corpus, or the bench's own ownership fields for an ERB import
+(see "Auth & tokens").
 For a BYO corpus the org name/domain are inferred from the dominant author email domain unless
 `MOCK_ORG_NAME` / `MOCK_ORG_DOMAIN` are set; the Atlassian site host and GitHub repo owner then
 follow the org (`<org>.atlassian.net`, and the owner echoed from the request path).

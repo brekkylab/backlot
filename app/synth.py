@@ -100,11 +100,6 @@ def gmail_id(doc_id: str, salt: str = "msg") -> str:
     return hnum(doc_id, salt=salt, length=16).__format__("016x")
 
 
-def drive_file_id(doc_id: str) -> str:
-    # Drive ids are opaque; reuse the doc_id so the id is reversible for get/export.
-    return doc_id
-
-
 def drive_folder_id(container: str) -> str:
     return "0A" + _digest("folder:" + container)[:26]
 

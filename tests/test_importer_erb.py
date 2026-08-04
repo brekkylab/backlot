@@ -111,7 +111,25 @@ def test_resolve_synthesizes_internal_user():
     email = p.resolve("Maya Chen", role="owner", group_hint="research-applied-ml")
     assert email == "maya.chen@redwoodinference.com"
     assert p.users[email]["group"] == "research-applied-ml"
-    assert p.users[email]["external"] is False
+
+
+def test_dump_tokens_returns_the_number_it_actually_wrote(tmp_path):
+    """`--tokens-only` prints this count, so it has to be the number of rows in tokens.yaml.
+    Only the employee directory gets a token (see Principals.write_tokens); counting every
+    resolved principal instead reported 679 for a file holding 167."""
+    import shutil
+
+    from app.config import Settings
+
+    gen = _write_generated_data(tmp_path)
+    data = tmp_path / "tok"
+    data.mkdir(parents=True, exist_ok=True)
+    settings = Settings(data_dir=data)
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+
+    n = erb.dump_tokens(settings, gen)
+    written = yaml.safe_load(settings.tokens_path.read_text())["users"]
+    assert n == len(written)
 
 
 def test_resolve_external_parses_email_and_is_not_registered():

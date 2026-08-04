@@ -1469,13 +1469,13 @@ def get_repo_file(conn, repo, path, visible_ids=None) -> sqlite3.Row | None:
 
 def list_containers(conn, source_type) -> list[sqlite3.Row]:
     """List a service's grouping units as rows with `name` + `group_id` (uniform API)."""
-    gtable, gcol = GROUPING[source_type]
+    gtable, gcol = grouping_table(source_type), grouping_col(source_type)
     return conn.execute(
         f"SELECT {gcol} AS name, group_id FROM {gtable} ORDER BY {gcol}").fetchall()
 
 
 def get_container(conn, source_type, name) -> sqlite3.Row | None:
-    gtable, gcol = GROUPING[source_type]
+    gtable, gcol = grouping_table(source_type), grouping_col(source_type)
     return conn.execute(
         f"SELECT {gcol} AS name, group_id FROM {gtable} WHERE {gcol} = ?", (name,)).fetchone()
 

@@ -128,11 +128,6 @@ def _slug(name: str) -> str:
     return ".".join(parts) or "user"
 
 
-def _is_bot(name: str) -> bool:
-    n = (name or "").lower()
-    return n.endswith("bot") or n.endswith("-bot") or "bot" in n.split()
-
-
 def _addr(header: str | None) -> str | None:
     if not header:
         return None
@@ -158,13 +153,13 @@ class Principals:
 
     def __init__(self, employees: list[dict], org_domain: str):
         self.org_domain = org_domain
-        self.users: dict[str, dict] = {}      # email -> {name, group, external, is_bot}
+        self.users: dict[str, dict] = {}      # email -> {name, group, directory?}
         self.groups: set[str] = set()
         self._by_canon: dict[str, str] = {}   # canonical name -> email
         for e in employees:
             self._by_canon[canonical(e["name"])] = e["email"]
             self.users[e["email"]] = {"name": e["name"], "group": e.get("dept_slug"),
-                                      "external": False, "is_bot": False, "directory": True}
+                                      "directory": True}
             if e.get("dept_slug"):
                 self.groups.add(e["dept_slug"])
 
@@ -207,8 +202,7 @@ class Principals:
                     if (c and _person_like(name) and email.endswith("@" + self.org_domain)
                             and c not in self._by_canon):
                         self._by_canon[c] = email
-                        self.users[email] = {"name": name, "group": None,
-                                             "external": False, "is_bot": False}
+                        self.users[email] = {"name": name, "group": None}
 
     def canonical_group(self, label: str | None) -> str | None:
         """Reconcile a doc's raw team/owner_team/squad label to the directory's dept_slug group.
@@ -253,8 +247,7 @@ class Principals:
         c = canonical(name)
         if c in self._by_canon:
             email = self._by_canon[c]
-            u = self.users.setdefault(email, {"name": name, "group": None,
-                                              "external": False, "is_bot": False})
+            u = self.users.setdefault(email, {"name": name, "group": None})
             if group_hint and role in ("owner", "author") and not u["group"]:
                 u["group"] = group_hint
                 self.groups.add(group_hint)
@@ -269,8 +262,7 @@ class Principals:
         # setdefault: if this slug email already exists (e.g. it collides with a directory
         # employee whose accented/titled name didn't canonical-match), keep that entry — never
         # clobber a directory=True user with a synthesized one.
-        self.users.setdefault(email, {"name": name, "group": group,
-                                      "external": False, "is_bot": False})
+        self.users.setdefault(email, {"name": name, "group": group})
         if group:
             self.groups.add(group)
         return self._by_canon[c]
@@ -286,10 +278,9 @@ class Principals:
             conn.execute("INSERT OR REPLACE INTO principals(id,type,display_name,email) VALUES (?,?,?,?)",
                          (g, "group", g, None))
         for email, u in self.users.items():
-            ptype = "external" if u["external"] else "user"
             conn.execute("INSERT OR REPLACE INTO principals(id,type,display_name,email) VALUES (?,?,?,?)",
-                         (email, ptype, u["name"], email))
-            if not u["external"] and u["group"]:
+                         (email, "user", u["name"], email))
+            if u["group"]:
                 conn.execute("INSERT OR REPLACE INTO group_members(group_id,user_id) VALUES (?,?)",
                              (u["group"], email))
 
@@ -1856,7 +1847,9 @@ def dump_tokens(settings, gen_dir, *, question_ids=None, allow_excluded=0) -> in
     _precompute_globals(records)
     _populate_principals(records, P, settings)
     P.write_tokens(settings)
-    return sum(1 for u in P.users.values() if not u["external"] and not u["is_bot"])
+    # The same filter write_tokens applies — only the employee directory gets a token, so counting
+    # every resolved principal reported four times the rows the file actually holds.
+    return sum(1 for u in P.users.values() if u.get("directory"))
 
 
 def import_structured(settings, gen_dir, *, question_ids=None, allow_excluded=0) -> dict:

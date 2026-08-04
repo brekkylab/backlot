@@ -44,14 +44,6 @@ class Settings(BaseSettings):
     # It hands out tokens in the clear — fine for a local test mock; set false to disable.
     expose_tokens: bool = True
 
-    # --- ACL visibility mix (must sum to <= 1.0; remainder -> public) ---
-    acl_public_ratio: float = 0.55
-    acl_group_ratio: float = 0.35
-    # private = 1 - public - group
-
-    # --- synthesis time window (unix seconds) ---
-    base_epoch: int = 1_672_531_200  # 2023-01-01T00:00:00Z
-    time_range_seconds: int = 63_072_000  # ~2 years
 
     # --- pagination defaults ---
     default_page_size: int = 100
@@ -68,17 +60,7 @@ class Settings(BaseSettings):
     sqlite_busy_ms: int = 30000
 
     # --- data build ---
-    # Slice zips to download by default (small per-source subset).
-    default_slices: tuple[str, ...] = (
-        "slack_slice_0004.zip",
-        "gmail_slice_0025.zip",
-        "google_drive_slice_0006.zip",
-        "github_slice_0002.zip",
-        "jira_slice_0002.zip",
-        "confluence_slice_0002.zip",
-    )
     dataset_repo: str = "onyx-dot-app/EnterpriseRAG-Bench"
-    dataset_tag: str = "v1.0.0"
 
     @property
     def db_path(self) -> Path:
@@ -95,14 +77,6 @@ class Settings(BaseSettings):
     @property
     def employee_yaml(self) -> Path:
         return self.data_dir / "employee_directory.yaml"
-
-    @property
-    def source_tree(self) -> Path:
-        return self.data_dir / "source_tree.txt"
-
-    @property
-    def acl_private_ratio(self) -> float:
-        return max(0.0, 1.0 - self.acl_public_ratio - self.acl_group_ratio)
 
 
 @lru_cache

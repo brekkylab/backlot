@@ -125,6 +125,13 @@ def invalid_argument(message: str) -> GoogleError:
     return GoogleError(400, message, reason="invalidArgument", status="INVALID_ARGUMENT")
 
 
+def invalid_id_value() -> GoogleError:
+    """Gmail's answer to an id it cannot parse — measured: 400 INVALID_ARGUMENT "Invalid id value"
+    for a non-hex id or one at/above 2**63, where a well-formed but unknown id is 404 instead."""
+    return GoogleError(400, "Invalid id value", reason="invalidArgument",
+                       status="INVALID_ARGUMENT")
+
+
 def failed_precondition(message: str) -> GoogleError:
     """The editor APIs' "right shape, wrong state" 400 — an Office file read as a native doc."""
     return GoogleError(400, message, reason="failedPrecondition", status="FAILED_PRECONDITION")

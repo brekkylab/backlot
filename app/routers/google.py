@@ -394,6 +394,43 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
     return [r for r in cand if _gmail_op_match(r, ops)]
 
 
+# --- Gmail ids ------------------------------------------------------------------------------
+# Served ids are 16-hex integers (`synth.gmail_message_id`), not the corpus's dsids, so every route
+# resolves an incoming id back to a row through the startup reverse index — the same shape the
+# github / jira / confluence / notion / s3 routes already use. Threads share the map, because a
+# thread key IS the root message's doc_id.
+
+_GMAIL_HEX = re.compile(r"[0-9a-fA-F]+\Z")
+
+
+def _gmail_resolve(request: Request, served_id: str) -> str | None:
+    """The ``doc_id`` behind a served Gmail id, or ``None`` if it names nothing.
+
+    An id that Gmail could not parse at all raises instead: measured, the real API answers 400
+    INVALID_ARGUMENT "Invalid id value" for a non-hex id or one >= 2**63, and 404 only for a
+    well-formed id it does not hold. `7fffffffffffffff` is well-formed; `8000000000000000` is
+    not."""
+    if not _GMAIL_HEX.fullmatch(served_id) or int(served_id, 16) >= synth.GMAIL_ID_MAX:
+        raise gerr.invalid_id_value()
+    return request.app.state.index["gmail"].get(served_id.lower())
+
+
+def _gmail_doc(request: Request, conn, ids, served_id: str):
+    """The visible row behind a served id. Resolution happens before the ACL read, so an id that
+    resolves to a document the caller cannot see is still not-found, never a different answer."""
+    doc_id = _gmail_resolve(request, served_id)
+    if doc_id is None:
+        return None
+    return store.get_document(conn, "gmail", doc_id, visible_ids=ids)
+
+
+def _gmail_ids(row) -> tuple[str, str]:
+    """``(id, threadId)`` for a row. A message that is its own thread root reports the same value
+    twice, as real Gmail does."""
+    return (synth.gmail_message_id(row["doc_id"]),
+            synth.gmail_message_id(row["thread_id"] or row["doc_id"]))
+
+
 @router.get("/gmail/v1/users/{user_id}/messages", response_model=GmailMessageList,
             openapi_extra={"parameters": _P_GMAIL_LIST})
 async def gmail_messages_list(user_id: str, request: Request):
@@ -414,7 +451,7 @@ async def gmail_messages_list(user_id: str, request: Request):
         total = store.count_documents(conn, "gmail", container=mailbox, visible_ids=ids)
         rows = store.list_gmail_in_range(conn, mailbox, None, None, ids, limit=limit, offset=offset)
     # threadId must agree with messages.get (a reply belongs to its root's thread)
-    messages = [{"id": r["doc_id"], "threadId": r["thread_id"] or r["doc_id"]} for r in rows]
+    messages = [dict(zip(("id", "threadId"), _gmail_ids(r))) for r in rows]
     body = {"messages": messages, "resultSizeEstimate": total}
     token = next_page_token(offset, len(rows), total)
     if token:
@@ -428,7 +465,7 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = store.get_document(conn, "gmail", msg_id, visible_ids=ids)
+    row = _gmail_doc(request, conn, ids, msg_id)
     if row is None:
         raise gerr.not_found_entity()
     return _gmail_message(row, request.query_params.get("format", "full"))
@@ -440,12 +477,13 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = store.get_document(conn, "gmail", msg_id, visible_ids=ids)
+    row = _gmail_doc(request, conn, ids, msg_id)
     if row is None:
         raise gerr.not_found_entity()
+    doc_id = row["doc_id"]
     found = next(((i, a) for i, a in enumerate(store.jcol(row, "attachments"))
-                  if _att_id(msg_id, i) == att_id), None)
-    body = _att_content(msg_id, found[0], found[1]) if found else f"attachment {att_id}"
+                  if _att_id(doc_id, i) == att_id), None)
+    body = _att_content(doc_id, found[0], found[1]) if found else f"attachment {att_id}"
     return {"attachmentId": att_id, "size": len(body), "data": _b64url(body)}
 
 
@@ -468,7 +506,7 @@ async def gmail_threads_list(user_id: str, request: Request):
         rows = store.list_documents(conn, "gmail", author_email=mailbox, visible_ids=ids,
                                     limit=limit, offset=offset)
     # a thread is keyed by its root; reply rows (thread_seq>0) aren't separate threads
-    threads = [{"id": r["thread_id"] or r["doc_id"], "snippet": r["content"][:200], "historyId": "1"}
+    threads = [{"id": _gmail_ids(r)[1], "snippet": r["content"][:200], "historyId": "1"}
                for r in rows if (r["thread_seq"] or 0) == 0]
     body = {"threads": threads, "resultSizeEstimate": total}
     token = next_page_token(offset, len(rows), total)
@@ -483,14 +521,15 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    msgs = store.gmail_thread(conn, thread_id, visible_ids=ids)
+    thread_key = _gmail_resolve(request, thread_id)
+    msgs = store.gmail_thread(conn, thread_key, visible_ids=ids) if thread_key else []
     if not msgs:
-        row = store.get_document(conn, "gmail", thread_id, visible_ids=ids)
+        row = _gmail_doc(request, conn, ids, thread_id)
         if row is None:
             raise gerr.not_found_entity()
         msgs = [row]
     fmt = request.query_params.get("format", "full")
-    return {"id": thread_id, "snippet": msgs[0]["content"][:200], "historyId": "1",
+    return {"id": thread_id.lower(), "snippet": msgs[0]["content"][:200], "historyId": "1",
             "messages": [_gmail_message(m, fmt) for m in msgs]}
 
 
@@ -548,7 +587,7 @@ def _gmail_message(row, fmt: str) -> dict:
     headers.append({"name": "Content-Type", "value": f'{top_mime}; boundary="{boundary}"'})
 
     msg = {
-        "id": row["doc_id"], "threadId": row["thread_id"] or row["doc_id"],
+        "id": _gmail_ids(row)[0], "threadId": _gmail_ids(row)[1],
         "labelIds": store.jcol(row, "label_ids") or ["INBOX"],
         "snippet": row["content"][:200], "historyId": "1",
         "internalDate": str(ts * 1000), "sizeEstimate": len(row["content"]) + 400,

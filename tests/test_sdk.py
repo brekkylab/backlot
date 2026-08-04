@@ -86,6 +86,23 @@ def gmail():
     check("Gmail", "threads.list")(lambda: f'{len(svc.users().threads().list(userId="me").execute().get("threads", []))} threads')
     check("Gmail", "threads.get")(
         lambda: f'{len(svc.users().threads().get(userId="me", id=msgs[0]["id"]).execute()["messages"])} msgs')
+    # Served ids must look like Gmail's own (#39): 16 lowercase hex under 2**63. A dsid would be
+    # refused by the real API as an invalid id value, so a client written against the mock would
+    # only discover that in production.
+    check("Gmail", "ids are Gmail-shaped")(
+        lambda: f'{len(msgs)} hex ids'
+        if all(len(m["id"]) == 16 and int(m["id"], 16) < 2 ** 63
+               and m["id"] == m["id"].lower() for m in msgs) else 1 / 0)
+
+    def _unparsable_id():
+        """The 400/404 split, through the SDK: a non-hex id is an invalid argument, not a 404."""
+        from googleapiclient.errors import HttpError
+        try:
+            svc.users().messages().get(userId="me", id="not-a-hex-id").execute()
+        except HttpError as e:
+            return f"{e.resp.status} on a non-hex id" if e.resp.status == 400 else 1 / 0
+        raise AssertionError("a non-hex id was accepted")
+    check("Gmail", "non-hex id is 400")(_unparsable_id)
 
 
 # ------------------------------------------------------------------ Drive

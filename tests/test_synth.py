@@ -100,3 +100,27 @@ def test_jira_project_key_unique_for_colliding_names():
     b = synth.jira_project_key("eng-sre/runbooks")
     assert a != b
     assert synth.jira_project_key("eng-serving-runtime") == a  # deterministic
+
+
+def test_gmail_message_id_matches_the_real_id_shape():
+    """Measured against the live API: Gmail hands out 16 lowercase hex digits, and it rejects an id
+    whose integer value is >= 2**63 with 400 "Invalid id value" (`7fffffffffffffff` resolves,
+    `8000000000000000` does not). So the derivation has to stay inside 63 bits — the pre-existing
+    `gmail_id` does not, and 50.0% of the bench corpus's 556,238 messages hash above the line."""
+    mid = synth.gmail_message_id(DOC)
+    assert len(mid) == 16
+    assert all(c in "0123456789abcdef" for c in mid)
+    assert int(mid, 16) < 2 ** 63
+
+
+def test_gmail_message_id_is_stable_and_distinct():
+    assert synth.gmail_message_id(DOC) == synth.gmail_message_id(DOC)
+    assert synth.gmail_message_id(DOC) != synth.gmail_message_id(DOC2)
+
+
+def test_gmail_message_id_stays_in_range_across_many_docs():
+    """The 63-bit ceiling is the whole point, so it is asserted over enough ids that a missing mask
+    could not slip through: unmasked, about half of these would be over."""
+    ids = [synth.gmail_message_id(f"dsid_{i:032x}") for i in range(2000)]
+    assert all(int(m, 16) < 2 ** 63 for m in ids)
+    assert len(set(ids)) == len(ids)

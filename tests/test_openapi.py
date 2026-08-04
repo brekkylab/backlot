@@ -12,6 +12,57 @@ import pytest
 from app import openapi
 
 
+def test_operation_id_picks_the_method_deterministically():
+    """``route.methods`` is a SET, so FastAPI's default ``list(route.methods)[0]`` gives a
+    multi-method route a suffix that depends on PYTHONHASHSEED. The method is chosen by
+    _METHOD_RANK instead — GET first, the same preference ``dedupe_operations`` applies, so the
+    operation that survives the collapse owns the id naming its own method."""
+    from types import SimpleNamespace
+
+    route = SimpleNamespace(name="conversations_history", path_format="/slack/api/conversations.history",
+                            methods={"POST", "GET"})
+    assert openapi.unique_operation_id(route) == \
+        "conversations_history_slack_api_conversations_history_get"
+
+    # single-method routes are unaffected
+    one = SimpleNamespace(name="search", path_format="/notion/v1/search", methods={"POST"})
+    assert openapi.unique_operation_id(one) == "search_notion_v1_search_post"
+
+    # a method _METHOD_RANK does not know still yields a stable answer
+    odd = SimpleNamespace(name="x", path_format="/x", methods={"TRACE", "OPTIONS"})
+    assert openapi.unique_operation_id(odd) == openapi.unique_operation_id(
+        SimpleNamespace(name="x", path_format="/x", methods={"OPTIONS", "TRACE"}))
+
+
+def test_served_operation_ids_are_stable_across_processes():
+    """The property that actually matters, and the one an in-process test cannot see: a set's
+    iteration order is fixed within a process, so this has to compare two interpreters started
+    with different PYTHONHASHSEED values. An OpenAPI->MCP bridge keys its tools by operationId, so
+    a bridge that caches tool names must not see them change when the server restarts."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    script = (
+        "import json, warnings; warnings.filterwarnings('ignore');"
+        "from app.main import app;"
+        "print(json.dumps(sorted("
+        "  op['operationId']"
+        "  for item in app.openapi()['paths'].values()"
+        "  for m, op in item.items() if isinstance(op, dict) and 'operationId' in op)))"
+    )
+    runs = []
+    for seed in ("0", "12345"):
+        out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                             env={**os.environ, "PYTHONHASHSEED": seed},
+                             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        assert out.returncode == 0, out.stderr[-2000:]
+        runs.append(json.loads(out.stdout))
+    assert runs[0] == runs[1], "operationIds differ between two PYTHONHASHSEED values"
+    assert runs[0], "no operationIds in the served spec"
+
+
 def test_qp_builds_an_openapi_query_parameter():
     """Every router advertises its honoured query params through this one helper — there used to be
     five copies of it (``_qp``/``_gqp``/``_aqp``/``_nqp``), two of which omitted ``required``."""
@@ -80,6 +131,24 @@ def test_dedupe_prefers_fewer_path_params():
 def test_build_mcp_spec_rejects_unknown_source():
     with pytest.raises(KeyError):
         openapi.build_mcp_spec(_doc(), "s3")  # SigV4 — intentionally no bridge
+
+
+def test_every_bridged_operation_id_names_its_own_method():
+    """The property a bridge actually consumes. ``dedupe_operations`` keeps the GET of a GET+POST
+    route, so the id it carries has to say ``_get`` — otherwise the tool a bridge exposes is a GET
+    called ``..._post``. With FastAPI's set-ordered default that was wrong for 14 operations on
+    roughly half of all boots."""
+    warnings.filterwarnings("ignore")
+    from app.main import app
+
+    spec = app.openapi()
+    wrong = [(source, path, method, item[method]["operationId"])
+             for source in openapi.SOURCE_PREFIXES
+             for path, item in openapi.build_mcp_spec(spec, source)["paths"].items()
+             for method in item
+             if method in ("get", "post", "put", "delete", "patch")
+             and not item[method]["operationId"].endswith("_" + method)]
+    assert wrong == []
 
 
 def test_build_mcp_spec_resolves_all_real_collisions():

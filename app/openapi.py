@@ -19,6 +19,7 @@ static bridge auth header can't produce.
 """
 from __future__ import annotations
 
+import re
 import warnings
 
 # Building the app's /openapi.json (FastAPI) warns "Duplicate Operation ID" once per multi-method
@@ -40,6 +41,27 @@ SOURCE_PREFIXES: dict[str, list[str]] = {
 
 _METHODS = ("get", "post", "put", "delete", "patch")
 _METHOD_RANK = {m: i for i, m in enumerate(_METHODS)}
+
+
+def unique_operation_id(route) -> str:
+    """A route's operationId — replaces FastAPI's default, which is not deterministic.
+
+    The default suffixes the id with ``list(route.methods)[0]``, and ``route.methods`` is a SET, so
+    every route declared with more than one method (each Slack method, Jira's ``search/jql`` on both
+    its v2 and v3 aliases, S3's object route) got a suffix that depended on ``PYTHONHASHSEED`` and
+    changed between restarts. That is not cosmetic here: an OpenAPI->MCP bridge keys its tools by
+    operationId (see :func:`build_mcp_spec`), so a bridge that caches tool names saw them move under
+    it whenever the server restarted.
+
+    The method is chosen by ``_METHOD_RANK`` — GET first, the same preference
+    :func:`dedupe_operations` applies — so the operation that survives the collapse is also the one
+    whose id names its own method. A method the rank does not know sorts after the known ones, by
+    name, so it is stable too.
+    """
+    ident = re.sub(r"\W", "_", f"{route.name}{route.path_format}")
+    method = min(route.methods,
+                 key=lambda m: (_METHOD_RANK.get(m.lower(), len(_METHODS)), m.lower()))
+    return f"{ident}_{method.lower()}"
 
 
 def qp(name: str, typ: str = "string", required: bool = False) -> dict:

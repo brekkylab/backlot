@@ -1,20 +1,15 @@
 """Bind ``linear.graphql`` to :mod:`app.store`.
 
-Every resolver returns plain dicts and lets graphql-core's default resolver pick the selected
-keys off them, so a field the client didn't ask for costs nothing to have built. The four that
-*are* bound explicitly (``Team.issues``, ``Issue.comments``, ``Issue.labels``, and the Query
-roots) are the ones that take arguments and hit the DB.
+Resolvers return plain dicts and let graphql-core's default resolver pick the selected keys off
+them, so an unasked-for field costs nothing to build. Only the ones taking arguments and hitting
+the DB are bound explicitly.
 
-Three things are worth knowing before reading further:
-
-- **Nulls are honest.** The SDL declares everything ``@linear/sdk``'s generated documents select,
-  which is far more than a document corpus can back. Anything the mock has no data for resolves
-  to ``null`` / ``[]`` / a documented default rather than to an invented value. See the SDL
-  header for the split.
-- **ACL comes from the context, not from here.** ``info.context["visible_ids"]`` is threaded into
-  every store call, so a resolver never makes an access decision of its own.
-- **Cursors are the repo's opaque offset cursor** (``app.pagination``), the same token every
-  other source's page uses; Linear's cursors are opaque to clients too.
+- **Nulls are honest.** The SDL declares everything ``@linear/sdk`` selects, which is more than a
+  document corpus can back; anything unbacked resolves to ``null`` / ``[]`` / a documented default
+  rather than an invented value.
+- **ACL comes from the context**: ``info.context["visible_ids"]`` is threaded into every store
+  call, so a resolver never makes an access decision of its own.
+- **Cursors are the repo's opaque offset cursor** (``app.pagination``) — Linear's are opaque too.
 """
 from __future__ import annotations
 
@@ -49,13 +44,12 @@ def _slice(first, after, last, before) -> tuple[int | None, int, int]:
 
     ``offset is None`` means "count back from the END of the result set" — the caller resolves it
     with :func:`_from_end` once it knows the total. That case is ``last:`` with no ``before:``,
-    and it is why this returns an optional offset rather than an int: treating an absent
-    ``before`` as offset 0 served the FIRST n rows to every client asking for the last n,
-    silently, with ``hasPreviousPage: false`` on what it believed was the final page.
+    and it is why this returns an OPTIONAL offset rather than an int: an absent ``before`` read as
+    offset 0 would serve the first n rows to a client asking for the last n.
 
     ``floor`` is the lower bound a from-the-end offset may not cross, so ``after`` still applies
-    when combined with ``last`` (Relay applies ``after`` first, then takes the last n of what
-    remains). Asking for both ``first`` and ``last`` is a client bug the spec says to reject."""
+    when combined with ``last`` (Relay applies ``after`` first, then takes the last n of the rest).
+    Asking for both ``first`` and ``last`` is a client bug the spec says to reject."""
     if first is not None and last is not None:
         raise GraphQLError("passing both `first` and `last` is not supported")
     start = pagination.decode_cursor(after) if after else 0
@@ -79,9 +73,8 @@ def _connection(nodes: list, offset: int, has_next: bool) -> dict:
 
     ``has_next`` comes from a limit+1 probe, NOT from a COUNT of the whole result set. The
     connection types this schema serves expose no ``totalCount`` — `@linear/sdk`'s fragments do
-    not select one — so a COUNT would be a full scan computed only to derive a boolean. On the
-    35k-issue bench corpus that doubled the cost of every filtered query (a `labels.some` filter
-    went 37ms -> 19ms when the count came out).
+    not select one — so a COUNT would be a full scan run only to derive a boolean, and on the bench
+    corpus that doubled the cost of every filtered query.
     """
     end = offset + len(nodes)
     return {
@@ -725,12 +718,10 @@ def resolve_issue_parent(issue, info):
 
     Reads the SAME column ``Issue.children`` does, which is the entire point of resolving the key
     once at import: the two directions are exact inverses because they consult one value, not
-    because two independent lookups happen to agree. It is also a primary-key lookup rather than
-    an identifier lookup — `@linear/sdk`'s Issue fragment selects ``parent { id }`` on every node,
-    so a 50-issue page did 50 indexed-identifier searches and cost ~45ms of the page.
-
-    Bound rather than precomputed in :func:`_issue`, so a page pays nothing unless ``parent`` is
-    actually selected."""
+    because two independent lookups happen to agree. A primary-key lookup, not an identifier one:
+    `@linear/sdk`'s Issue fragment selects ``parent { id }`` on every node, so a page would
+    otherwise do one indexed-identifier search per row. Bound rather than precomputed in
+    :func:`_issue`, so a page pays nothing unless ``parent`` is selected."""
     parent_doc_id = issue["_row"]["parent_doc_id"]
     if not parent_doc_id:
         return None

@@ -398,8 +398,8 @@ _SLACK_IN_RE = re.compile(r'\bin:(#|@)?([^\s"]+)')
 
 
 def _parse_slack_query(raw: str) -> tuple[str, str | None, bool]:
-    """Parse a Slack search query into (search_terms, channel_container, phrase), honoring the two
-    operators real Slack search supports that the mock previously searched as literal text:
+    """Parse a Slack search query into (search_terms, channel_container, phrase), honouring the two
+    operators real Slack search supports — without this they would be matched as literal text:
 
     - ``in:#channel`` (or ``in:channel``) scopes results to that channel — a container filter, not
       three stray search tokens (``in``, the ``#`` name...). ``in:@user`` (a DM) has no container in

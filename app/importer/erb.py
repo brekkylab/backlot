@@ -542,9 +542,9 @@ _ATT_MIME = {
 
 # The bench's Drive ``doc_type`` vocabulary -> the mock's Drive subtype vocabulary (the keys
 # ``app.routers.google._NATIVE`` recognises as Workspace types). The bench says "doc"/"sheet"/
-# "slides", none of which are native keys, so every imported row used to fall back to
-# ``application/octet-stream`` — and to the binary ``webViewLink`` shape — leaving nothing in the
-# corpus that exercises native-vs-binary handling, ``export`` vs ``alt=media``, or per-type links.
+# "slides", none of which are native keys — unmapped, every row falls back to
+# ``application/octet-stream`` and the binary ``webViewLink`` shape, leaving nothing in the corpus
+# that exercises native-vs-binary handling, ``export`` vs ``alt=media``, or per-type links.
 _DRIVE_SUBTYPE = {
     "doc": "document", "document": "document", "gdoc": "document", "notes": "document",
     "memo": "document",

@@ -486,12 +486,10 @@ def _att_id(doc_id: str, i: int) -> str:
 
 
 def _att_content(doc_id: str, i: int, att: dict) -> str:
-    """The exact bytes ``attachments.get`` serves for attachment ``i`` — and, so the two agree,
-    what ``messages.get`` reports as that part's ``body.size``. Real Gmail keeps the part metadata's
-    size equal to the downloaded attachment's byte length (a client can stat from metadata alone);
-    the corpus-declared ``size`` is aspirational and can't be honored with placeholder bytes, so the
-    served content's length is the single source of truth. Falls back to a stable placeholder
-    (keyed by the derived attachmentId) when the corpus carries no ``content``."""
+    """The exact bytes ``attachments.get`` serves for attachment ``i``, and therefore what
+    ``messages.get`` reports as that part's ``body.size`` — real Gmail keeps the two equal so a
+    client can stat from metadata alone. The corpus-declared ``size`` cannot be honoured with
+    placeholder bytes, so the served content's length is the single source of truth."""
     return att.get("content", f"attachment {_att_id(doc_id, i)}")
 
 
@@ -543,11 +541,10 @@ def _gmail_message(row, fmt: str) -> dict:
     html = row["body_html"] or f"<html><body><p>{row['content']}</p></body></html>"
     if fmt == "raw":
         # RFC 2822 message, base64url — a genuine boundary-delimited MIME body matching the
-        # declared multipart Content-Type above (previously this just appended the plain-text
-        # content under a `multipart/...` header with no boundary anywhere in the body: real
-        # Gmail never produces that — invalid MIME — and Python's `email` parser flags it with
-        # StartBoundaryNotFoundDefect/MultipartInvariantViolationDefect, which readers built on
-        # it, e.g. llama-index's GmailReader, choke on since `get_payload()` degrades to a bare
+        # declared multipart Content-Type above. It has to be real MIME: a plain-text body under a
+        # `multipart/...` header with no boundary makes Python's `email` parser raise
+        # StartBoundaryNotFoundDefect/MultipartInvariantViolationDefect, and readers built on it
+        # (llama-index's GmailReader) choke because `get_payload()` degrades to a bare
         # string instead of a list of sub-messages). Mirrors the same flat text/plain + text/html
         # (+ attachment) leaves the `full` format exposes via `parts` below.
         leaves = [
@@ -609,16 +606,13 @@ def _drive_owned_by(owner_email: str | None, me: str | None) -> bool:
 
 
 def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) -> dict:
-    """``sharedWithMeTime`` as a ``**``-mergeable fragment: real Drive populates it only on items
-    shared with the caller (and omits ``parents`` on them), so its presence is how a client tells a
-    shared item from its own — the same partition ``q: sharedWithMe`` filters on, which is why the
-    two have to agree.
+    """``sharedWithMeTime`` as a ``**``-mergeable fragment. Real Drive sets it only on items shared
+    WITH the caller, so its presence is how a client tells a shared item from its own — the same
+    partition ``q: sharedWithMe`` filters on, which is why the two must agree.
 
-    Empty when the caller is unknown (the admin/service token: nothing was shared *with* it, so
-    there is no time to report) or when the caller owns the item. The mock records no share event,
-    so the file's creation time stands in — stable, and never later than a real share would be.
-    ``modifiedTime`` would be wrong here: a share time that moved every time the document was
-    edited would reorder ``orderBy=sharedWithMeTime`` for an unrelated reason."""
+    Empty for an unknown caller (the admin token: nothing was shared with it) or an owned item. No
+    share event is recorded, so the creation time stands in; ``modifiedTime`` would reorder
+    ``orderBy=sharedWithMeTime`` every time the document was edited."""
     if not me or _drive_owned_by(owner_email, me):
         return {}
     return {"sharedWithMeTime": synth.rfc3339(created)}
@@ -869,9 +863,9 @@ _DRIVE_ORDER_UNMODELLED = ("viewedByMeTime", "modifiedByMeTime")
 
 def _drive_order_specs(order_by: str | None) -> list[tuple]:
     """Parse ``orderBy`` — comma-separated keys, each optionally suffixed ``desc`` — into
-    ``(key function, reverse)`` pairs. An unusable key is a 400, as on the real API; it used to be
-    accepted and never applied, so any client relying on server-side ordering appeared to work
-    against the mock and misbehaved in production."""
+    ``(key function, reverse)`` pairs. An unusable key is a 400, as on the real API — accepting one
+    and not applying it would let a client relying on server-side ordering pass here and misbehave
+    against the real thing."""
     specs = []
     for tok in (order_by or "").split(","):
         parts = tok.split()

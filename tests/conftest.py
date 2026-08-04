@@ -121,6 +121,13 @@ SAMPLE = [
      "title": "Security Whitepaper.pdf", "content": "%PDF-1.7 placeholder.", "author_email": "sec@acme.com",
      "author_groups": ["security-compliance"], "visibility": "public", "subtype": "pdf",
      "meta": {"mime_type": "application/pdf"}},
+    # A sheet whose content carries a BLANK line, which the real corpus is full of (its spreadsheets
+    # are prose). Real Sheets returns an interior blank row as `[]`, not `[""]`, and nothing else in
+    # SAMPLE has one — a values read of it used to raise IndexError only against real data.
+    {"source_type": "google_drive", "doc_id": "gd-blankline", "folder": "finance",
+     "group": "finance", "title": "Ledger With Gaps",
+     "content": "header\n\nrow after gap\n\n", "author_email": "cfo@acme.com",
+     "author_groups": ["finance"], "visibility": "public", "subtype": "spreadsheet"},
     # An Office upload, not a native Sheet. Real Google answers an Office file differently from
     # both a native type and a plain binary — only the API owning its family (Sheets, for .xlsx)
     # returns the "must not be an Office file" precondition — so the corpus needs one to test it.

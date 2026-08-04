@@ -282,11 +282,34 @@ def test_sheets_values_get_keeps_a_line_intact(base, admin_h, sheet_id):
 def test_sheets_values_round_trips_the_stored_text(base, admin_h, sheet_id):
     """The invariant that makes "serve it as-is" checkable: the cells of the whole sheet, joined
     by newlines, reproduce byte-for-byte what Drive's CSV export serves. If a future splitter
-    breaks that, it is inventing or dropping something."""
+    breaks that, it is inventing or dropping something.
+
+    A blank line comes back as ``[]`` rather than ``[""]`` — trailing-empty trimming empties the
+    row — which is also what real Sheets returns for an interior blank row. So reconstruction has
+    to read an empty row as an empty line. The SAMPLE sheet has no blank lines and a naive
+    ``cells[0]`` passed here while raising IndexError against a real corpus, so the reconstruction
+    is spelled out and a blank line is asserted below rather than assumed away."""
     export = httpx.get(f"{base}/drive/v3/files/{sheet_id}/export", headers=admin_h,
                        params={"mimeType": "text/csv"}).text
     rows = _values(base, admin_h, sheet_id, "Sheet1").json()["values"]
-    assert "\n".join(cells[0] for cells in rows) == export
+    assert "\n".join((cells[0] if cells else "") for cells in rows) == export
+
+
+def test_sheets_values_serve_a_blank_line_as_an_empty_row(base, admin_h):
+    """A blank line is an empty row ``[]``, not a row holding ``""`` — trailing-empty trimming
+    empties it, which is what real Sheets returns for an interior blank row (measured: a real
+    whole-sheet read came back with row widths {0, 4, 5, 6}).
+
+    ``gd-blankline`` stores "header\\n\\nrow after gap\\n\\n": a gap in the middle and two at the
+    end. The trailing ones trim away entirely; the middle one survives as ``[]``."""
+    j = _values(base, admin_h, "gd-blankline", "Sheet1").json()
+    assert j["values"] == [["header"], [], ["row after gap"]]
+    # and the round trip still holds, blank lines and all — trailing gaps included
+    export = httpx.get(f"{base}/drive/v3/files/gd-blankline/export", headers=admin_h,
+                       params={"mimeType": "text/csv"}).text
+    rebuilt = "\n".join((c[0] if c else "") for c in j["values"])
+    assert rebuilt == export.rstrip("\n")
+    assert export.endswith("\n\n"), "the stored trailing gap is still in the exported text"
 
 
 def test_sheets_values_get_accepts_an_unencoded_range(base, admin_h, sheet_id):

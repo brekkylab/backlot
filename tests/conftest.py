@@ -121,6 +121,14 @@ SAMPLE = [
      "title": "Security Whitepaper.pdf", "content": "%PDF-1.7 placeholder.", "author_email": "sec@acme.com",
      "author_groups": ["security-compliance"], "visibility": "public", "subtype": "pdf",
      "meta": {"mime_type": "application/pdf"}},
+    # An Office upload, not a native Sheet. Real Google answers an Office file differently from
+    # both a native type and a plain binary — only the API owning its family (Sheets, for .xlsx)
+    # returns the "must not be an Office file" precondition — so the corpus needs one to test it.
+    {"source_type": "google_drive", "folder": "finance", "group": "finance",
+     "title": "Budget Rollup.xlsx", "content": "binary xlsx placeholder",
+     "author_email": "cfo@acme.com", "author_groups": ["finance"], "visibility": "public",
+     "subtype": "xlsx",
+     "meta": {"mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}},
 
     {"source_type": "notion", "doc_id": "nt-runbook", "teamspace": "engineering",
      "group": "engineering", "title": "Notion On-call Runbook",

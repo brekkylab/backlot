@@ -85,7 +85,9 @@ def test_sheets_get_returns_grid(base, admin_h):
     rows = sh["sheets"][0]["data"][0]["rowData"]
     cells = [[c.get("formattedValue") for c in row["values"]] for row in rows]
     assert cells == [["month,revenue"], ["Jan,120000"], ["Feb,135000"]]
-    assert sh["sheets"][0]["properties"]["gridProperties"] == {"rowCount": 3, "columnCount": 1}
+    # the grid is Sheets' default for a new sheet, measured on a real spreadsheet; the DATA is
+    # 3x1 inside it, which is why the range echo and the values below disagree in size
+    assert sh["sheets"][0]["properties"]["gridProperties"] == {"rowCount": 1000, "columnCount": 26}
 
 
 def test_slides_get_returns_slides(base, admin_h):
@@ -98,43 +100,95 @@ def test_slides_get_returns_slides(base, admin_h):
     assert "Slide 1" in text
 
 
-def test_editor_apis_refuse_a_document_of_the_wrong_type(base, admin_h):
-    """Real Google refuses a Workspace editor read on a file of the wrong type — HTTP 400, status
-    FAILED_PRECONDITION, "This operation is not supported for this document" — rather than
-    reinterpreting the file. The mock used to reinterpret: a Doc's id read through the Sheets API
-    came back 200 as a "grid" of prose, which is plausible enough that a client would trust it."""
+# The three refusals below were MEASURED against the live Google APIs (docs.googleapis.com,
+# sheets.googleapis.com, slides.googleapis.com) with real OAuth credentials, one call per cell:
+#
+#   target passed to API X                     | result
+#   -------------------------------------------|----------------------------------------------
+#   a DIFFERENT native Workspace type          | 404 NOT_FOUND  "Requested entity was not found."
+#   an Office file of X's own family           | 400 FAILED_PRECONDITION  (Office message)
+#   any other non-native (pdf/txt/folder/…)    | 400 INVALID_ARGUMENT  "Request contains an
+#                                              |     invalid argument."
+#   a nonexistent id                           | 404 NOT_FOUND  (same as row 1)
+#
+# The first row is the surprise: a Doc id is not a "bad spreadsheet" to the Sheets API, it is
+# simply not an entity it knows, and it is indistinguishable from an id that does not exist.
+NOT_FOUND = "Requested entity was not found."
+INVALID_ARG = "Request contains an invalid argument."
+OFFICE_MSG = ("This operation is not supported for this document. "
+              "The document must not be an Office file.")
+
+
+def test_editor_apis_treat_another_native_type_as_not_found(base, admin_h):
+    """Measured: 404 "Requested entity was not found." — the SAME answer a nonexistent id gets.
+    The mock used to serve these 200, reinterpreting the file: a Doc read through the Sheets API
+    came back as a "grid" of prose, plausible enough that a client would trust it."""
     doc, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
     sheet, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
     deck, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.presentation")
-    wrong = [
+    for path, label in [
         (f"/sheets/v4/spreadsheets/{doc}", "a Doc through Sheets"),
         (f"/sheets/v4/spreadsheets/{deck}", "a Deck through Sheets"),
         (f"/docs/v1/documents/{sheet}", "a Sheet through Docs"),
         (f"/docs/v1/documents/{deck}", "a Deck through Docs"),
         (f"/slides/v1/presentations/{doc}", "a Doc through Slides"),
         (f"/slides/v1/presentations/{sheet}", "a Sheet through Slides"),
-    ]
-    for path, label in wrong:
+    ]:
         r = httpx.get(f"{base}{path}", headers=admin_h)
-        assert r.status_code == 400, f"{label}: {r.status_code}"
-        assert r.json()["detail"] == "This operation is not supported for this document", label
-    # each API still serves its OWN type — without this arm a blanket 400 would pass
+        assert r.status_code == 404, f"{label}: {r.status_code}"
+        assert r.json()["detail"] == NOT_FOUND, label
+    # and it is the same answer as an id that does not exist at all
+    assert httpx.get(f"{base}/sheets/v4/spreadsheets/no-such-id", headers=admin_h).json() == \
+        {"detail": NOT_FOUND}
+    # each API still serves its OWN type — without this arm a blanket 404 would pass
     assert httpx.get(f"{base}/docs/v1/documents/{doc}", headers=admin_h).status_code == 200
     assert httpx.get(f"{base}/sheets/v4/spreadsheets/{sheet}", headers=admin_h).status_code == 200
     assert httpx.get(f"{base}/slides/v1/presentations/{deck}", headers=admin_h).status_code == 200
 
 
-def test_sheets_values_refuse_a_document_of_the_wrong_type(base, admin_h):
+def test_sheets_values_treat_another_native_type_as_not_found(base, admin_h):
     """The values routes go through the same guard, so they cannot become the way around it."""
     doc, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
-    assert _values(base, admin_h, doc, "Sheet1").status_code == 400
-    assert _batch(base, admin_h, doc, ["Sheet1"]).status_code == 400
+    for r in (_values(base, admin_h, doc, "Sheet1"), _batch(base, admin_h, doc, ["Sheet1"])):
+        assert r.status_code == 404
+        assert r.json()["detail"] == NOT_FOUND
 
 
-def test_sheets_refuses_a_binary_file(base, admin_h):
-    """A PDF is not a Workspace document at all; the same precondition fails."""
+def test_editor_apis_reject_a_non_native_file(base, admin_h):
+    """A PDF is not a Workspace document in any family: measured 400 "Request contains an invalid
+    argument." on all three APIs — a different answer from another native type, which 404s."""
     pdf, _ = _drive_by_mime(base, admin_h, "application/pdf")
-    assert httpx.get(f"{base}/sheets/v4/spreadsheets/{pdf}", headers=admin_h).status_code == 400
+    for path in (f"/sheets/v4/spreadsheets/{pdf}", f"/docs/v1/documents/{pdf}",
+                 f"/slides/v1/presentations/{pdf}"):
+        r = httpx.get(f"{base}{path}", headers=admin_h)
+        assert r.status_code == 400, path
+        assert r.json()["detail"] == INVALID_ARG, path
+
+
+def test_editor_apis_reject_an_office_file_of_their_own_family(base, admin_h):
+    """The one case the third-party bug reports were actually about, and it is narrower than they
+    suggest: an Office file gets the Office-specific FAILED_PRECONDITION message ONLY from the API
+    that owns its family. Measured both ways round — xlsx to Sheets and docx to Docs give the
+    Office message, while xlsx to Docs and docx to Sheets give the plain invalid-argument one."""
+    xlsx, _ = _drive_by_mime(
+        base, admin_h,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    r = httpx.get(f"{base}/sheets/v4/spreadsheets/{xlsx}", headers=admin_h)
+    assert r.status_code == 400
+    assert r.json()["detail"] == OFFICE_MSG
+    # the same file through the other two APIs is just an invalid argument
+    for path in (f"/docs/v1/documents/{xlsx}", f"/slides/v1/presentations/{xlsx}"):
+        assert httpx.get(f"{base}{path}", headers=admin_h).json()["detail"] == INVALID_ARG
+
+
+def test_editor_apis_reject_a_folder(base, admin_h):
+    """A folder id is reachable — a client walking Drive holds them — and real Google answers 400
+    invalid-argument rather than pretending the folder is a document."""
+    folder = httpx.get(f"{base}/drive/v3/files", headers=admin_h,
+                       params={"q": "'root' in parents", "pageSize": 1}).json()["files"][0]["id"]
+    r = httpx.get(f"{base}/docs/v1/documents/{folder}", headers=admin_h)
+    assert r.status_code == 400
+    assert r.json()["detail"] == INVALID_ARG
 
 
 def test_wrong_type_is_refused_before_it_is_read(base, live_server):
@@ -247,7 +301,11 @@ def test_sheets_values_get_echoes_the_normalized_range(base, admin_h, sheet_id):
     """A client caches on `range`, so the response names the resolved range in full A1 form —
     sheet included — however the request spelled it."""
     assert _values(base, admin_h, sheet_id, "A1:A2").json()["range"] == "Sheet1!A1:A2"
-    assert _values(base, admin_h, sheet_id, "Sheet1").json()["range"] == "Sheet1!A1:A3"
+    # an unbounded edge resolves against the GRID, not the data — measured: a 14-row real sheet
+    # answers `values/<title>` with `A1:Z1000`, not `A1:D14`
+    assert _values(base, admin_h, sheet_id, "Sheet1").json()["range"] == "Sheet1!A1:Z1000"
+    assert _values(base, admin_h, sheet_id, "A:A").json()["range"] == "Sheet1!A1:A1000"
+    assert _values(base, admin_h, sheet_id, "1:1").json()["range"] == "Sheet1!A1:Z1"
 
 
 def test_sheets_values_get_defaults_to_rows(base, admin_h, sheet_id):
@@ -285,10 +343,18 @@ def test_sheets_values_get_rejects_an_unusable_range(base, admin_h, sheet_id, rn
     assert _values(base, admin_h, sheet_id, rng).status_code == 400
 
 
-@pytest.mark.parametrize("params", [{"majorDimension": "DIAGONAL"},
-                                    {"valueRenderOption": "NOPE"}])
-def test_sheets_values_get_rejects_a_bad_enum(base, admin_h, sheet_id, params):
-    assert _values(base, admin_h, sheet_id, "Sheet1!A1:A2", **params).status_code == 400
+@pytest.mark.parametrize("params, field, enum", [
+    ({"majorDimension": "DIAGONAL"}, "major_dimension", "Dimension"),
+    ({"valueRenderOption": "NOPE"}, "value_render_option", "ValueRenderOption"),
+])
+def test_sheets_values_get_rejects_a_bad_enum(base, admin_h, sheet_id, params, field, enum):
+    """Measured message shape, not an invented one: Google names the proto field and type."""
+    r = _values(base, admin_h, sheet_id, "Sheet1!A1:A2", **params)
+    assert r.status_code == 400
+    bad = next(iter(params.values()))
+    assert r.json()["detail"] == (
+        f"Invalid value at \'{field}\' "
+        f"(type.googleapis.com/google.apps.sheets.v4.{enum}), \"{bad}\"")
 
 
 def test_sheets_values_get_render_options_agree_on_this_corpus(base, admin_h, sheet_id):
@@ -329,10 +395,71 @@ def test_sheets_values_get_needs_auth(base, sheet_id):
     assert _values(base, {}, sheet_id, "Sheet1").status_code == 401
 
 
+def test_sheets_values_get_clamps_a_range_that_overflows_the_grid(base, admin_h, sheet_id):
+    """Measured: an END past the grid is CLAMPED, not refused — `A1:AA5` on a 26-column sheet comes
+    back as `A1:Z5`, and `A1:B1001` as `A1:B1000`."""
+    assert _values(base, admin_h, sheet_id, "A1:AA5").json()["range"] == "Sheet1!A1:Z5"
+    assert _values(base, admin_h, sheet_id, "A1:B1001").json()["range"] == "Sheet1!A1:B1000"
+    assert _values(base, admin_h, sheet_id, "Z1:AA5").json()["range"] == "Sheet1!Z1:Z5"
+
+
+@pytest.mark.parametrize("rng", ["AA1:AB5", "ZZ1:ZZ5", "A1001:B1002", "AA1001:AB1002"])
+def test_sheets_values_get_rejects_a_start_outside_the_grid(base, admin_h, sheet_id, rng):
+    """Measured: the START must sit inside the grid. Overflowing the end clamps; starting outside
+    is an error naming the limits."""
+    r = _values(base, admin_h, sheet_id, rng)
+    assert r.status_code == 400
+    assert r.json()["detail"].startswith("Range (Sheet1!")
+    assert r.json()["detail"].endswith("exceeds grid limits. Max rows: 1000, max columns: 26")
+
+
+def test_sheets_values_get_empty_inside_the_grid_is_not_an_error(base, admin_h, sheet_id):
+    """Measured: a range inside the grid but past the data answers 200 with the range echoed and no
+    `values` key — distinct from a range that starts outside the grid, which 400s."""
+    for rng in ("A100:B101", "A100", "Z1:Z5"):
+        j = _values(base, admin_h, sheet_id, rng).json()
+        assert "values" not in j, rng
+        assert j["range"].startswith("Sheet1!"), rng
+
+
+# Every (range -> echoed range) pair below was compared side by side against the live Sheets API on
+# a real spreadsheet, normalising only the sheet title. 19 of 21 cases came back byte-identical; the
+# other two (`A1`, `'Sheet1'!A1:A1`) differ only because that spreadsheet's A1 is blank while the
+# SAMPLE's is not — same status, same echo. Pinned here so the parser cannot drift back.
+MEASURED_ECHO = [
+    ("Sheet1", "Sheet1!A1:Z1000"),      ("Sheet1!A1:A2", "Sheet1!A1:A2"),
+    ("A1:A2", "Sheet1!A1:A2"),          ("A:A", "Sheet1!A1:A1000"),
+    ("1:1", "Sheet1!A1:Z1"),            ("Sheet1!A2:A", "Sheet1!A2:A1000"),
+    ("Sheet1!A1", "Sheet1!A1"),         ("'Sheet1'!A1:A1", "Sheet1!A1"),
+    ("A1:AA5", "Sheet1!A1:Z5"),         ("A1:B1001", "Sheet1!A1:B1000"),
+    ("Z1:AA5", "Sheet1!Z1:Z5"),         ("A100:B101", "Sheet1!A100:B101"),
+    ("A100", "Sheet1!A100"),            ("Sheet1!A1:D5", "Sheet1!A1:D5"),
+]
+
+
+@pytest.mark.parametrize("rng, echo", MEASURED_ECHO)
+def test_sheets_values_range_echo_matches_real_sheets(base, admin_h, sheet_id, rng, echo):
+    r = _values(base, admin_h, sheet_id, rng)
+    assert r.status_code == 200, r.text
+    assert r.json()["range"] == echo
+
+
+@pytest.mark.parametrize("rng, message", [
+    ("Other!A1:B2", "Unable to parse range: Other!A1:B2"),
+    ("not a range", "Unable to parse range: not a range"),
+    ("A1:", "Unable to parse range: A1:"),   # the WHOLE spec, not the offending half
+])
+def test_sheets_values_parse_error_matches_real_sheets(base, admin_h, sheet_id, rng, message):
+    r = _values(base, admin_h, sheet_id, rng)
+    assert r.status_code == 400
+    assert r.json()["detail"] == message
+
+
 def test_sheets_batch_get_returns_one_value_range_per_request_range(base, admin_h, sheet_id):
     j = _batch(base, admin_h, sheet_id, ["Sheet1!A1:A1", "Sheet1!A3:A3"]).json()
     assert j["spreadsheetId"] == sheet_id
-    assert [vr["range"] for vr in j["valueRanges"]] == ["Sheet1!A1:A1", "Sheet1!A3:A3"]
+    # a 1x1 range echoes as a bare cell even when the request spelled out `A1:A1` — measured
+    assert [vr["range"] for vr in j["valueRanges"]] == ["Sheet1!A1", "Sheet1!A3"]
     assert [vr["values"] for vr in j["valueRanges"]] == [[GRID[0]], [GRID[2]]]
 
 

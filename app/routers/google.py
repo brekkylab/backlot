@@ -1266,35 +1266,68 @@ async def drive_files_permissions(file_id: str, request: Request):
 # endpoints serve the corpus content shaped into each API's read response, keyed on the same
 # Drive file id (the doc_id), and enforce the same ACL as Drive.
 
-# Real Google refuses a Workspace editor read on a file of the wrong type rather than
-# reinterpreting it: HTTP 400, status FAILED_PRECONDITION, "This operation is not supported for
-# this document". Corroborated across tidyverse/googlesheets4#275 (a verbatim dump), the Holistics,
-# UiPath, n8n and Make writeups, and Google's own FAILED_PRECONDITION definition — all for the
-# analogous case, a non-native file in Drive read through the Sheets API. It was NOT reproduced
-# against a live Google call from here, and Slides is covered by analogy rather than by a report.
-EDITOR_WRONG_TYPE = "This operation is not supported for this document"
+# How the real Docs / Sheets / Slides APIs answer an id that is not their own kind of document.
+# MEASURED against docs.googleapis.com, sheets.googleapis.com and slides.googleapis.com with real
+# OAuth credentials, one call per case:
+#
+#   target passed to API X                  | response
+#   ----------------------------------------|-----------------------------------------------------
+#   a DIFFERENT native Workspace type       | 404 NOT_FOUND  "Requested entity was not found."
+#   an Office file of X's own family        | 400 FAILED_PRECONDITION  EDITOR_OFFICE
+#   any other non-native (pdf/txt/folder/…) | 400 INVALID_ARGUMENT  "Request contains an invalid…"
+#   an id that does not exist               | 404 NOT_FOUND  (identical to the first row)
+#
+# The first row is the counter-intuitive one, and it is why the earlier guess here was wrong: a Doc
+# id is not a malformed spreadsheet to the Sheets API, it is simply not an entity that API knows,
+# and the response is indistinguishable from an id that never existed.
+#
+# The Office row is narrower than the widely-cited bug reports (googlesheets4#275 and friends)
+# suggest — they only ever show the family that matches. Measured both ways: .xlsx -> Sheets and
+# .docx -> Docs give the Office message, while .xlsx -> Docs and .docx -> Sheets give the plain
+# invalid-argument one. `.pptx -> Slides` follows the confirmed pattern but was not itself
+# measured; no .pptx was available in the probed account.
+EDITOR_NOT_FOUND = "Requested entity was not found."
+EDITOR_INVALID_ARG = "Request contains an invalid argument."
+EDITOR_OFFICE = ("This operation is not supported for this document. "
+                 "The document must not be an Office file.")
+
+# The binary subtypes (importer `_ATT_MIME` keys) each editor API considers its own family.
+_EDITOR_OFFICE_FAMILY = {"document": {"doc", "docx"},
+                         "spreadsheet": {"xls", "xlsx"},
+                         "presentation": {"ppt", "pptx"}}
+_EDITOR_NATIVE = frozenset(_EDITOR_OFFICE_FAMILY)
 
 
 def _editor_doc(request: Request, file_id: str, *, expect: str):
-    """The Drive row behind an editor read, or the error real Google gives.
+    """The Drive row behind an editor read, or the error real Google gives for a mismatch.
 
-    ``expect`` is the native subtype this API serves, and every caller must name its own: reading
-    a Doc through the Sheets API used to answer 200 with prose sliced into a "grid", which is
+    ``expect`` is the native subtype this API serves and every caller must name its own: reading a
+    Doc through the Sheets API used to answer 200 with prose sliced into a "grid", which is
     plausible enough that a client would trust it rather than notice the id was wrong.
 
-    Visibility is resolved FIRST, so a caller who cannot see the file gets 404 and never 400 — the
-    type of a document you have no access to is not something the API should confirm."""
+    Visibility is resolved FIRST, so a caller who cannot see the file gets the not-found answer and
+    never a type error — the type of a document you have no access to is not something the API
+    should confirm."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     row = store.get_document(conn, "google_drive", file_id, visible_ids=ids)
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        # Folders are synthesized rather than stored, so they miss the lookup above. Real Google
+        # calls a folder an invalid argument, not a missing entity, so resolve it before giving up.
+        if _drive_folder_name_by_id(conn, file_id) is not None:
+            raise HTTPException(status_code=400, detail=EDITOR_INVALID_ARG)
+        raise HTTPException(status_code=404, detail=EDITOR_NOT_FOUND)
     # A row with no stored subtype is a document elsewhere in this module (`_native`), so it is one
     # here too — the fallback stays in one place rather than being decided per route.
-    if (row["subtype"] or "document") != expect:
-        raise HTTPException(status_code=400, detail=EDITOR_WRONG_TYPE)
-    return row
+    subtype = row["subtype"] or "document"
+    if subtype == expect:
+        return row
+    if subtype in _EDITOR_NATIVE:       # a different Workspace type: not this API's entity at all
+        raise HTTPException(status_code=404, detail=EDITOR_NOT_FOUND)
+    if subtype in _EDITOR_OFFICE_FAMILY[expect]:
+        raise HTTPException(status_code=400, detail=EDITOR_OFFICE)
+    raise HTTPException(status_code=400, detail=EDITOR_INVALID_ARG)
 
 
 @router.get("/docs/v1/documents/{document_id}")
@@ -1336,15 +1369,15 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
 async def sheets_get(spreadsheet_id: str, request: Request):
     row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
     rows = _sheets_grid(row["content"])
-    ncols = max((len(r) for r in rows), default=0)
     row_data = [{"values": [{"formattedValue": c,
                              "effectiveValue": {"stringValue": c}} for c in r]} for r in rows]
     return {"spreadsheetId": spreadsheet_id, "properties": {"title": row["title"], "locale": "en_US"},
             "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
-            "sheets": [{"properties": {"sheetId": 0, "title": "Sheet1", "index": 0,
+            "sheets": [{"properties": {"sheetId": 0, "title": SHEETS_SHEET_TITLE, "index": 0,
                                        "sheetType": "GRID",
-                                       "gridProperties": {"rowCount": len(rows) or 1,
-                                                          "columnCount": ncols or 1}},
+                                       # the grid, not the data extent — see SHEETS_GRID_ROWS
+                                       "gridProperties": {"rowCount": SHEETS_GRID_ROWS,
+                                                          "columnCount": SHEETS_GRID_COLS}},
                         "data": [{"startRow": 0, "startColumn": 0, "rowData": row_data}]}]}
 
 
@@ -1356,8 +1389,17 @@ async def sheets_get(spreadsheet_id: str, request: Request):
 
 SHEETS_SHEET_TITLE = "Sheet1"   # the mock shapes every spreadsheet as one sheet with this title
 
+# A real sheet's GRID is larger than its data — Sheets creates one at 1000x26 — and every range
+# behaviour below is defined against the grid rather than against the occupied cells. Measured on a
+# real spreadsheet holding 14 rows: `values/<title>` echoes `A1:Z1000`, `A:A` echoes `A1:A1000`.
+# So the mock declares the same grid. This is API scaffolding, like the synthesized `sheetId` and
+# sheet title beside it — not invented cell data, which `_sheets_grid` still refuses to manufacture.
+SHEETS_GRID_ROWS = 1000
+SHEETS_GRID_COLS = 26
+
 _A1_MAJOR = ("ROWS", "COLUMNS")
 _A1_RENDER = ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")
+_SHEETS_ENUM = "type.googleapis.com/google.apps.sheets.v4"
 # One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`).
 _A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\Z")
 
@@ -1371,15 +1413,21 @@ def _a1_col(letters: str) -> int:
     return n - 1
 
 
-def _a1_grid(rows: list[list[str]]) -> tuple[int, int]:
-    return len(rows), max((len(r) for r in rows), default=0)
+def _a1_enum_error(field: str, enum: str, value: str) -> str:
+    """Google's own wording for a bad read enum — it names the proto field and message type, e.g.
+    ``Invalid value at 'major_dimension' (…sheets.v4.Dimension), "DIAGONAL"``. Measured, because a
+    client that matches on the message needs the real one."""
+    return f"Invalid value at '{field}' ({_SHEETS_ENUM}.{enum}), \"{value}\""
 
 
-def _a1_endpoint(part: str) -> tuple[int | None, int | None]:
-    """``(row, col)`` 0-based for one side of a range; ``None`` means that axis is unbounded."""
+def _a1_endpoint(part: str, spec: str) -> tuple[int | None, int | None]:
+    """``(row, col)`` 0-based for one side of a range; ``None`` means that axis is unbounded.
+
+    ``spec`` is the whole requested range, because that — not the offending half — is what real
+    Sheets names back: `A1:` reports "Unable to parse range: A1:", never a bare "".."""
     m = _A1_END.fullmatch(part.strip())
     if not m:
-        raise HTTPException(status_code=400, detail=f"Unable to parse range: {part}")
+        raise HTTPException(status_code=400, detail=f"Unable to parse range: {spec}")
     if m.group("rowonly"):
         return int(m.group("rowonly")) - 1, None
     row = m.group("row")
@@ -1391,12 +1439,20 @@ def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
 
     Handles every form a client may send: ``Sheet1!A1:B2``, ``A1:B2`` (sheet omitted), ``Sheet1``
     (the whole sheet), ``B2`` (one cell), ``A:B`` / ``1:3`` (whole columns / rows), ``A2:B`` (one
-    edge unbounded) and ``'Sheet1'!A1`` (quoted title). An unbounded edge clamps to the grid, so a
-    range may resolve wider than the data — the caller trims. Anything unparseable, or naming a
-    sheet this spreadsheet does not have, 400s the way real Sheets does rather than quietly
-    resolving to an empty grid, which a client could not distinguish from a genuinely empty range.
+    edge unbounded) and ``'Sheet1'!A1`` (quoted title). Everything resolves against the GRID, so a
+    range may be wider than the data — the caller trims.
+
+    Two measured boundary rules, both against a real spreadsheet:
+
+    * the range's END may overflow the grid and is CLAMPED to it (``A1:AA5`` on a 26-column sheet
+      comes back as ``A1:Z5``, ``A1:B1001`` as ``A1:B1000``);
+    * its START may not — a range beginning outside the grid is refused, naming the limits.
+
+    Anything unparseable, or naming a sheet this spreadsheet does not have, 400s with Google's
+    ``Unable to parse range`` rather than resolving to an empty grid, which a client could not
+    distinguish from a genuinely empty range.
     """
-    nrows, ncols = _a1_grid(rows)
+    nrows, ncols = SHEETS_GRID_ROWS, SHEETS_GRID_COLS
     body = spec
     if "!" in spec:
         title, _, body = spec.partition("!")
@@ -1412,25 +1468,36 @@ def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
     if body == SHEETS_SHEET_TITLE:      # the whole sheet, named without a cell reference
         return 0, 0, nrows, ncols
     start, sep, end = body.partition(":")
-    r0, c0 = _a1_endpoint(start)
+    r0, c0 = _a1_endpoint(start, spec)
     if not sep:                         # a single reference: one cell, one whole row, one column
-        return (0 if r0 is None else r0, 0 if c0 is None else c0,
-                nrows if r0 is None else r0 + 1, ncols if c0 is None else c0 + 1)
-    r1x, c1x = _a1_endpoint(end)
-    r0f = 0 if r0 is None else r0
-    c0f = 0 if c0 is None else c0
-    r1 = nrows if r1x is None else r1x + 1
-    c1 = ncols if c1x is None else c1x + 1
-    # A1 ranges are inclusive and may be written in either order (`B2:A1` == `A1:B2`).
-    if r1 < r0f + 1:
-        r0f, r1 = r1 - 1, r0f + 1
-    if c1 < c0f + 1:
-        c0f, c1 = c1 - 1, c0f + 1
-    return r0f, c0f, r1, c1
+        r0f, c0f = (0 if r0 is None else r0), (0 if c0 is None else c0)
+        r1 = nrows if r0 is None else r0 + 1
+        c1 = ncols if c0 is None else c0 + 1
+    else:
+        r1x, c1x = _a1_endpoint(end, spec)
+        r0f = 0 if r0 is None else r0
+        c0f = 0 if c0 is None else c0
+        r1 = nrows if r1x is None else r1x + 1
+        c1 = ncols if c1x is None else c1x + 1
+        # A1 ranges are inclusive and may be written in either order (`B2:A1` == `A1:B2`).
+        if r1 < r0f + 1:
+            r0f, r1 = r1 - 1, r0f + 1
+        if c1 < c0f + 1:
+            c0f, c1 = c1 - 1, c0f + 1
+    if r0f >= nrows or c0f >= ncols or r0f < 0 or c0f < 0:
+        # The START is outside the grid — refused, with the range echoed back unclamped.
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Range ({_a1_name(r0f, c0f, r1, c1)}) exceeds grid limits. "
+                    f"Max rows: {nrows}, max columns: {ncols}"))
+    return r0f, c0f, min(r1, nrows), min(c1, ncols)
 
 
 def _a1_name(r0: int, c0: int, r1: int, c1: int) -> str:
-    """The resolved range in full A1 form, which is what the response echoes."""
+    """The resolved range in A1 form, which is what the response echoes.
+
+    A single cell echoes as a bare reference (``Sheet1!A1``), not as ``A1:A1`` — measured: real
+    Sheets collapses a 1x1 range even when the request spelled it out as ``A1:A1``."""
     def col(i: int) -> str:
         s = ""
         i += 1
@@ -1438,7 +1505,10 @@ def _a1_name(r0: int, c0: int, r1: int, c1: int) -> str:
             i, rem = divmod(i - 1, 26)
             s = chr(65 + rem) + s
         return s
-    return f"{SHEETS_SHEET_TITLE}!{col(c0)}{r0 + 1}:{col(c1 - 1)}{r1}"
+    start = f"{col(c0)}{r0 + 1}"
+    if r1 - r0 == 1 and c1 - c0 == 1:
+        return f"{SHEETS_SHEET_TITLE}!{start}"
+    return f"{SHEETS_SHEET_TITLE}!{start}:{col(c1 - 1)}{r1}"
 
 
 def _rstrip_empty(cells: list[str]) -> list[str]:
@@ -1484,12 +1554,16 @@ def _sheets_options(request: Request) -> str:
     major = request.query_params.get("majorDimension") or "ROWS"
     render = request.query_params.get("valueRenderOption") or "FORMATTED_VALUE"
     if major not in _A1_MAJOR:
-        raise HTTPException(status_code=400, detail=f"Invalid majorDimension: {major}")
-    # The corpus holds no formulas and no typed numbers — sheets_get declares every cell a
-    # stringValue — so the three render options coincide. The value is still validated, so a
-    # client's typo fails here exactly as it would against real Sheets.
+        raise HTTPException(status_code=400, detail=_a1_enum_error("major_dimension",
+                                                                  "Dimension", major))
+    # On a real spreadsheet these three genuinely differ — measured on one holding formulas and
+    # currency: FORMATTED_VALUE gives "₩4,000,000", UNFORMATTED_VALUE gives the JSON number
+    # 4000000, FORMULA gives "=B2/12". This corpus has none of that: a cell is one line of stored
+    # text, so all three return the same string. The value is still validated, so a client's typo
+    # fails here exactly as it would against real Sheets.
     if render not in _A1_RENDER:
-        raise HTTPException(status_code=400, detail=f"Invalid valueRenderOption: {render}")
+        raise HTTPException(status_code=400, detail=_a1_enum_error("value_render_option",
+                                                                  "ValueRenderOption", render))
     return major
 
 

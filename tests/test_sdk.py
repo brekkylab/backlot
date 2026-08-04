@@ -157,7 +157,8 @@ def sheets():
         if cols == [["month,revenue", "Jan,120000", "Feb,135000"]] else 1 / 0)
     check("Sheets", "spreadsheets.get")(
         lambda: svc.spreadsheets().get(spreadsheetId=fid).execute()["properties"]["title"])
-    # the wrong document type is refused, not reinterpreted — the SDK surfaces it as HttpError 400
+    # A Doc id is not an entity the Sheets API knows, so it 404s exactly like a nonexistent id —
+    # measured against sheets.googleapis.com, not assumed. The SDK surfaces it as HttpError 404.
     from googleapiclient.errors import HttpError
     doc = next(f["id"] for f in drive.files().list(
         pageSize=100, fields="files(id,mimeType)").execute()["files"]
@@ -167,9 +168,9 @@ def sheets():
         try:
             svc.spreadsheets().get(spreadsheetId=doc).execute()
         except HttpError as e:
-            return f"{e.resp.status} on a Doc id" if e.resp.status == 400 else 1 / 0
+            return f"{e.resp.status} on a Doc id" if e.resp.status == 404 else 1 / 0
         raise AssertionError("a Doc id was served as a spreadsheet")
-    check("Sheets", "wrong doc type refused")(_wrong_type)
+    check("Sheets", "wrong doc type is not found")(_wrong_type)
 
 
 # ------------------------------------------------------------------ GitHub

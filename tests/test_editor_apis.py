@@ -316,11 +316,10 @@ def test_sheets_values_round_trips_the_stored_text(base, admin_h, sheet_id):
     by newlines, reproduce byte-for-byte what Drive's CSV export serves. If a future splitter
     breaks that, it is inventing or dropping something.
 
-    A blank line comes back as ``[]`` rather than ``[""]`` — trailing-empty trimming empties the
-    row — which is also what real Sheets returns for an interior blank row. So reconstruction has
-    to read an empty row as an empty line. The SAMPLE sheet has no blank lines and a naive
-    ``cells[0]`` passed here while raising IndexError against a real corpus, so the reconstruction
-    is spelled out and a blank line is asserted below rather than assumed away."""
+    A blank line comes back as ``[]``, not ``[""]`` — trailing-empty trimming empties the row, which
+    is also what real Sheets returns for an interior blank row. So the reconstruction has to read an
+    empty row as an empty line: a naive ``cells[0]`` passes on the SAMPLE sheet (it has no blank
+    lines) and raises IndexError on a real corpus, which is why a blank line is asserted below."""
     export = httpx.get(f"{base}/drive/v3/files/{sheet_id}/export", headers=admin_h,
                        params={"mimeType": "text/csv"}).text
     rows = _values(base, admin_h, sheet_id, "Sheet1").json()["values"]

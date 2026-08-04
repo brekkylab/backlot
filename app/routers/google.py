@@ -1289,13 +1289,12 @@ _EDITOR_NATIVE = frozenset(_EDITOR_OFFICE_FAMILY)
 def _editor_doc(request: Request, file_id: str, *, expect: str):
     """The Drive row behind an editor read, or the error real Google gives for a mismatch.
 
-    ``expect`` is the native subtype this API serves and every caller must name its own: reading a
-    Doc through the Sheets API used to answer 200 with prose sliced into a "grid", which is
-    plausible enough that a client would trust it rather than notice the id was wrong.
+    ``expect`` is the native subtype this API serves, and every caller names its own — otherwise
+    reading a Doc through the Sheets API answers 200 with prose sliced into a "grid", plausible
+    enough that a client trusts it rather than noticing the id was wrong.
 
-    Visibility is resolved FIRST, so a caller who cannot see the file gets the not-found answer and
-    never a type error — the type of a document you have no access to is not something the API
-    should confirm."""
+    Visibility resolves FIRST, so a caller who cannot see the file gets not-found and never a type
+    error: the type of a document you cannot access is not something the API should confirm."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -1333,22 +1332,15 @@ async def docs_get(document_id: str, request: Request):
 
 def _sheets_grid(content: str | None) -> list[list[str]]:
     """The stored text as a grid: one row per line, each row a SINGLE cell holding that line
-    verbatim. Joining the cells back with ``\\n`` reproduces the stored content byte-for-byte,
-    which is also exactly what ``files.export`` serves — so the two cannot disagree.
+    verbatim. Joined back with ``\\n`` this reproduces the stored content byte-for-byte, which is
+    also what ``files.export`` serves — so the two cannot disagree.
 
-    This used to be ``line.split(",")``, which invented a table. Measured over the bench corpus's
-    1,875 ``doc_type: sheet`` records, NONE is delimiter-uniform CSV: 82.6% are prose and 17.4% are
-    prose wrapped around a PIPE-delimited table. So comma-splitting manufactured columns out of
-    sentence punctuation — "customer dates, ARR exposure, highest-risk deals" became three cells —
-    and the 94 documents where it disagreed with `csv.reader` turned out to be prose quoting, an
-    author's own quotes around a section labelled "Quick paste-friendly export (CSV-ish lines)",
-    not CSV field quoting.
-
-    A line break is the only structure the stored text actually carries, so it is the only
-    structure served. Picking a column delimiter is a data-cleansing decision that depends on the
-    corpus, and it belongs to whoever owns the corpus rather than to the mock: a caller who knows
-    its sheets are pipe-tabled splits on ``|``, one holding real CSV runs a CSV reader, and neither
-    has to undo a guess made here first.
+    NOT split on a delimiter. Measured over the bench's 1,875 ``doc_type: sheet`` records, none is
+    delimiter-uniform CSV: 82.6% are prose, 17.4% prose wrapped around a PIPE-delimited table. So
+    comma-splitting manufactures columns out of sentence punctuation. A line break is the only
+    structure the stored text carries, so it is the only structure served — and choosing a column
+    delimiter is a corpus-owner's decision, which a caller can still make without first undoing a
+    guess made here.
     """
     return [[line] for line in (content or "").split("\n")]
 
@@ -1442,15 +1434,11 @@ def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
     edge unbounded) and ``'Sheet1'!A1`` (quoted title). Everything resolves against the GRID, so a
     range may be wider than the data — the caller trims.
 
-    Two measured boundary rules, both against a real spreadsheet:
-
-    * the range's END may overflow the grid and is CLAMPED to it (``A1:AA5`` on a 26-column sheet
-      comes back as ``A1:Z5``, ``A1:B1001`` as ``A1:B1000``);
-    * its START may not — a range beginning outside the grid is refused, naming the limits.
-
-    Anything unparseable, or naming a sheet this spreadsheet does not have, 400s with Google's
-    ``Unable to parse range`` rather than resolving to an empty grid, which a client could not
-    distinguish from a genuinely empty range.
+    Two boundary rules, measured against a real spreadsheet: the range's END may overflow and is
+    CLAMPED (``A1:AA5`` on a 26-column sheet returns ``A1:Z5``), its START may not. Anything
+    unparseable, or naming a sheet this spreadsheet lacks, 400s with Google's ``Unable to parse
+    range`` — resolving to an empty grid instead would be indistinguishable from a genuinely empty
+    range.
     """
     nrows, ncols = SHEETS_GRID_ROWS, SHEETS_GRID_COLS
     whole = (0, 0, nrows, ncols)
@@ -1546,15 +1534,13 @@ def _sheets_block(rows: list[list[str]], spec: str):
 def _sheets_grid_data(rows: list[list[str]], spec: str) -> dict:
     """One ``GridData`` block for ``spreadsheets.get?includeGridData=true``.
 
-    Rows are padded out to the range's width — real Sheets returns a cell object per column of the
-    requested range, empty ones carrying no value — and ``startRow``/``startColumn`` are omitted
-    when zero, which is how the measured responses come back (proto3 drops defaults).
+    Rows are padded to the range's width (real Sheets returns a cell object per column, empty ones
+    carrying no value) and ``startRow``/``startColumn`` are omitted when zero, which is how the
+    measured responses come back — proto3 drops defaults.
 
-    Two divergences, stated rather than hidden. Real Sheets pads ``rowData`` to the WHOLE grid
-    (1000 rows of mostly-empty cells: the 5.7 MB this flag costs on a real workbook, and the reason
-    clients avoid it); this stops at the last row holding data, because a thousand empty cell
-    objects carry nothing a reader can act on. And real cells carry format objects plus
-    ``rowMetadata``/``columnMetadata`` siblings, none of which this mock models at all."""
+    Two divergences, stated rather than hidden: real Sheets pads ``rowData`` to the WHOLE 1000-row
+    grid and this stops at the last row holding data; and real cells carry format objects plus
+    ``rowMetadata``/``columnMetadata``, none of which this mock models."""
     r0, c0, _r1, c1, block = _sheets_block(rows, spec)
     width = c1 - c0
     out: dict = {}

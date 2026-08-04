@@ -11,13 +11,10 @@ resolver plumbing and the SQL are all covered by the same assertion.
 """
 from __future__ import annotations
 
-import json
-import os
-
 import pytest
-from starlette.testclient import TestClient
 
-from app.config import Settings, get_settings
+from tests._helpers import build_corpus, client_for
+
 
 # priority/estimate are chosen so `lte: 2` and `lt: 2` differ, and dates so `gte`/`gt` differ.
 CORPUS = [
@@ -43,27 +40,10 @@ CORPUS = [
 
 @pytest.fixture(scope="module")
 def fclient(tmp_path_factory):
-    data_dir = tmp_path_factory.mktemp("linear-filters")
-    settings = Settings(data_dir=data_dir)
-    corpus = data_dir / "c.jsonl"
-    corpus.write_text("\n".join(json.dumps(r) for r in CORPUS))
-    from app.importer.byo import load
-    load(corpus, settings)
-
-    from app.main import app
-    prev = os.environ.get("MOCK_DATA_DIR")
-    os.environ["MOCK_DATA_DIR"] = str(data_dir)
-    get_settings.cache_clear()
-    try:
-        with TestClient(app) as c:
-            c.__dict__["_admin"] = settings.admin_token
-            yield c
-    finally:
-        get_settings.cache_clear()
-        if prev is None:
-            os.environ.pop("MOCK_DATA_DIR", None)
-        else:
-            os.environ["MOCK_DATA_DIR"] = prev
+    settings = build_corpus(tmp_path_factory.mktemp("linear-filters"), CORPUS)
+    with client_for(settings) as c:
+        c.__dict__["_admin"] = settings.admin_token
+        yield c
 
 
 def ids(fclient, filter_literal, root="issues") -> list[str]:

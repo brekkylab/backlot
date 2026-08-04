@@ -139,21 +139,37 @@ def sheets():
     svc = build("sheets", "v4", credentials=Credentials(token=ADMIN),
                 client_options=ClientOptions(api_endpoint=f"{BASE}/sheets"), static_discovery=True)
     vals = svc.spreadsheets().values()
-    got = vals.get(spreadsheetId=fid, range="Sheet1!A1:B2").execute()
+    # a row is a stored line and holds it in ONE cell, commas included (see `_sheets_grid`)
+    got = vals.get(spreadsheetId=fid, range="Sheet1!A1:A2").execute()
     check("Sheets", "values.get")(
-        lambda: f'{len(got["values"])}x{len(got["values"][0])} {got["range"]}')
-    batch = vals.batchGet(spreadsheetId=fid, ranges=["Sheet1!A1:B1", "A:A"]).execute()
-    want = [[["month", "revenue"]], [["month"], ["Jan"], ["Feb"]]]
+        lambda: f'{len(got["values"])}x{len(got["values"][0])} {got["range"]}'
+        if got["values"] == [["month,revenue"], ["Jan,120000"]] else 1 / 0)
+    batch = vals.batchGet(spreadsheetId=fid, ranges=["Sheet1!A1:A1", "A:A"]).execute()
+    want = [[["month,revenue"]],
+            [["month,revenue"], ["Jan,120000"], ["Feb,135000"]]]
     check("Sheets", "values.batchGet")(
         lambda: f'{len(batch["valueRanges"])} ranges'
         if [vr["values"] for vr in batch["valueRanges"]] == want else 1 / 0)
-    cols = vals.get(spreadsheetId=fid, range="Sheet1!A1:B3",
+    cols = vals.get(spreadsheetId=fid, range="Sheet1!A1:A3",
                     majorDimension="COLUMNS").execute()["values"]
     check("Sheets", "values.get majorDimension")(
-        lambda: "transposed" if cols == [["month", "Jan", "Feb"],
-                                         ["revenue", "120000", "135000"]] else 1 / 0)
+        lambda: "transposed"
+        if cols == [["month,revenue", "Jan,120000", "Feb,135000"]] else 1 / 0)
     check("Sheets", "spreadsheets.get")(
         lambda: svc.spreadsheets().get(spreadsheetId=fid).execute()["properties"]["title"])
+    # the wrong document type is refused, not reinterpreted — the SDK surfaces it as HttpError 400
+    from googleapiclient.errors import HttpError
+    doc = next(f["id"] for f in drive.files().list(
+        pageSize=100, fields="files(id,mimeType)").execute()["files"]
+        if f["mimeType"].endswith("apps.document"))
+
+    def _wrong_type():
+        try:
+            svc.spreadsheets().get(spreadsheetId=doc).execute()
+        except HttpError as e:
+            return f"{e.resp.status} on a Doc id" if e.resp.status == 400 else 1 / 0
+        raise AssertionError("a Doc id was served as a spreadsheet")
+    check("Sheets", "wrong doc type refused")(_wrong_type)
 
 
 # ------------------------------------------------------------------ GitHub

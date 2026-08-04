@@ -1266,19 +1266,40 @@ async def drive_files_permissions(file_id: str, request: Request):
 # endpoints serve the corpus content shaped into each API's read response, keyed on the same
 # Drive file id (the doc_id), and enforce the same ACL as Drive.
 
-def _editor_doc(request: Request, file_id: str):
+# Real Google refuses a Workspace editor read on a file of the wrong type rather than
+# reinterpreting it: HTTP 400, status FAILED_PRECONDITION, "This operation is not supported for
+# this document". Corroborated across tidyverse/googlesheets4#275 (a verbatim dump), the Holistics,
+# UiPath, n8n and Make writeups, and Google's own FAILED_PRECONDITION definition — all for the
+# analogous case, a non-native file in Drive read through the Sheets API. It was NOT reproduced
+# against a live Google call from here, and Slides is covered by analogy rather than by a report.
+EDITOR_WRONG_TYPE = "This operation is not supported for this document"
+
+
+def _editor_doc(request: Request, file_id: str, *, expect: str):
+    """The Drive row behind an editor read, or the error real Google gives.
+
+    ``expect`` is the native subtype this API serves, and every caller must name its own: reading
+    a Doc through the Sheets API used to answer 200 with prose sliced into a "grid", which is
+    plausible enough that a client would trust it rather than notice the id was wrong.
+
+    Visibility is resolved FIRST, so a caller who cannot see the file gets 404 and never 400 — the
+    type of a document you have no access to is not something the API should confirm."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     row = store.get_document(conn, "google_drive", file_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="File not found")
+    # A row with no stored subtype is a document elsewhere in this module (`_native`), so it is one
+    # here too — the fallback stays in one place rather than being decided per route.
+    if (row["subtype"] or "document") != expect:
+        raise HTTPException(status_code=400, detail=EDITOR_WRONG_TYPE)
     return row
 
 
 @router.get("/docs/v1/documents/{document_id}")
 async def docs_get(document_id: str, request: Request):
-    row = _editor_doc(request, document_id)
+    row = _editor_doc(request, document_id, expect="document")
     # Docs body is an ordered list of structural elements; one paragraph per line.
     content = [{"sectionBreak": {"sectionStyle": {}}}]
     for line in (row["content"] or "").split("\n"):
@@ -1289,10 +1310,32 @@ async def docs_get(document_id: str, request: Request):
             "body": {"content": content}, "documentStyle": {}, "namedStyles": {"styles": []}}
 
 
+def _sheets_grid(content: str | None) -> list[list[str]]:
+    """The stored text as a grid: one row per line, each row a SINGLE cell holding that line
+    verbatim. Joining the cells back with ``\\n`` reproduces the stored content byte-for-byte,
+    which is also exactly what ``files.export`` serves — so the two cannot disagree.
+
+    This used to be ``line.split(",")``, which invented a table. Measured over the bench corpus's
+    1,875 ``doc_type: sheet`` records, NONE is delimiter-uniform CSV: 82.6% are prose and 17.4% are
+    prose wrapped around a PIPE-delimited table. So comma-splitting manufactured columns out of
+    sentence punctuation — "customer dates, ARR exposure, highest-risk deals" became three cells —
+    and the 94 documents where it disagreed with `csv.reader` turned out to be prose quoting, an
+    author's own quotes around a section labelled "Quick paste-friendly export (CSV-ish lines)",
+    not CSV field quoting.
+
+    A line break is the only structure the stored text actually carries, so it is the only
+    structure served. Picking a column delimiter is a data-cleansing decision that depends on the
+    corpus, and it belongs to whoever owns the corpus rather than to the mock: a caller who knows
+    its sheets are pipe-tabled splits on ``|``, one holding real CSV runs a CSV reader, and neither
+    has to undo a guess made here first.
+    """
+    return [[line] for line in (content or "").split("\n")]
+
+
 @router.get("/sheets/v4/spreadsheets/{spreadsheet_id}")
 async def sheets_get(spreadsheet_id: str, request: Request):
-    row = _editor_doc(request, spreadsheet_id)
-    rows = [line.split(",") for line in (row["content"] or "").split("\n")]
+    row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
+    rows = _sheets_grid(row["content"])
     ncols = max((len(r) for r in rows), default=0)
     row_data = [{"values": [{"formattedValue": c,
                              "effectiveValue": {"stringValue": c}} for c in r]} for r in rows]
@@ -1428,14 +1471,10 @@ def _sheets_value_range(rows: list[list[str]], spec: str, major: str) -> dict:
 
 
 def _sheets_rows(request: Request, spreadsheet_id: str) -> list[list[str]]:
-    """The grid, split exactly the way ``sheets_get`` splits it. Deliberately the same naive
-    ``split(",")`` rather than a CSV reader: the two must agree cell-for-cell, and switching the
-    splitter would change what ``spreadsheets.get`` has always served (measured: it differs from
-    `csv.reader` on 94 of the bench corpus's 1,875 spreadsheets, where a whole line is wrapped in
-    quotes). That divergence — which `files.export` inherits too, since it serves the raw text —
-    is tracked separately rather than fixed here."""
-    row = _editor_doc(request, spreadsheet_id)
-    return [line.split(",") for line in (row["content"] or "").split("\n")]
+    """The grid behind a values read — the same ``_sheets_grid`` ``spreadsheets.get`` serves, so a
+    cell reads the same whichever of the three calls asked for it."""
+    row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
+    return _sheets_grid(row["content"])
 
 
 def _sheets_options(request: Request) -> str:
@@ -1491,7 +1530,7 @@ async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request
 
 @router.get("/slides/v1/presentations/{presentation_id}")
 async def slides_get(presentation_id: str, request: Request):
-    row = _editor_doc(request, presentation_id)
+    row = _editor_doc(request, presentation_id, expect="presentation")
     chunks = [c for c in (row["content"] or "").split("\n\n") if c.strip()] or [row["content"] or ""]
     slides = []
     for i, chunk in enumerate(chunks):

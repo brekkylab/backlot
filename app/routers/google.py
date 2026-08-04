@@ -15,11 +15,11 @@ import re
 from email.parser import BytesParser
 from http import HTTPStatus
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from app import auth, store, synth
+from app import auth, google_errors as gerr, store, synth
 from app.acl import Caller
 from app.config import get_settings
 from app.pagination import decode_cursor, next_page_token
@@ -171,9 +171,15 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
 
 
 def _require(request: Request) -> Caller:
+    """The caller, or the error real Google gives. Measured: a present-but-invalid bearer is 401
+    UNAUTHENTICATED everywhere, while NO Authorization header at all is 403 PERMISSION_DENIED on
+    Drive and Sheets (they accept API keys, so an anonymous request is a caller with no established
+    identity) and 401 on the OAuth-only Gmail/Docs/Slides. The mock used to answer 401 for both."""
     caller = auth.resolve_bearer(request)
     if caller is None:
-        raise HTTPException(status_code=401, detail="Invalid Credentials")
+        if not request.headers.get("authorization"):
+            raise gerr.no_credentials(request.url.path)
+        raise gerr.bad_token()
     return caller
 
 
@@ -257,7 +263,7 @@ async def gmail_label_get(user_id: str, label_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     if label_id not in _SYSTEM_LABELS:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise gerr.not_found_entity()
     ids = auth.visible_ids(request, caller)
     total = store.count_documents(conn, "gmail", author_email=_mailbox_email(caller, user_id),
                                   visible_ids=ids)
@@ -424,7 +430,7 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     ids = auth.visible_ids(request, caller)
     row = store.get_document(conn, "gmail", msg_id, visible_ids=ids)
     if row is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise gerr.not_found_entity()
     return _gmail_message(row, request.query_params.get("format", "full"))
 
 
@@ -436,7 +442,7 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     ids = auth.visible_ids(request, caller)
     row = store.get_document(conn, "gmail", msg_id, visible_ids=ids)
     if row is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise gerr.not_found_entity()
     found = next(((i, a) for i, a in enumerate(store.jcol(row, "attachments"))
                   if _att_id(msg_id, i) == att_id), None)
     body = _att_content(msg_id, found[0], found[1]) if found else f"attachment {att_id}"
@@ -481,7 +487,7 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     if not msgs:
         row = store.get_document(conn, "gmail", thread_id, visible_ids=ids)
         if row is None:
-            raise HTTPException(status_code=404, detail="Not Found")
+            raise gerr.not_found_entity()
         msgs = [row]
     fmt = request.query_params.get("format", "full")
     return {"id": thread_id, "snippet": msgs[0]["content"][:200], "historyId": "1",
@@ -784,7 +790,7 @@ def _check_mask(names, allowed: frozenset) -> None:
     mock-backed test could catch a mask that 400s in production."""
     for n in sorted(names):
         if n != "*" and n not in allowed:
-            raise HTTPException(status_code=400, detail=f"Invalid field selection {n}")
+            raise gerr.invalid_parameter("fields", f"Invalid field selection {n}")
 
 
 def _drive_file_field_keys(fields: str | None) -> set[str] | None:
@@ -886,14 +892,14 @@ def _drive_order_specs(order_by: str | None) -> list[tuple]:
             continue
         key = parts[0]
         if len(parts) > 2 or (len(parts) == 2 and parts[1] != "desc"):
-            raise HTTPException(status_code=400, detail=f"Invalid sort key: {tok.strip()}")
+            raise gerr.invalid_value("orderBy", f"Invalid sort key: {tok.strip()}")
         if key in _DRIVE_ORDER_UNMODELLED:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Sorting by '{key}' is not supported by this mock (it models no per-caller "
+            raise gerr.invalid_value(
+                "orderBy",
+                f"Sorting by '{key}' is not supported by this mock (it models no per-caller "
                        f"view/share timestamps). Supported: {', '.join(sorted(_DRIVE_ORDER_KEYS))}.")
         if key not in _DRIVE_ORDER_KEYS:
-            raise HTTPException(status_code=400, detail=f"Invalid sort key: {tok.strip()}")
+            raise gerr.invalid_value("orderBy", f"Invalid sort key: {tok.strip()}")
         specs.append((_DRIVE_ORDER_KEYS[key], len(parts) == 2))
     return specs
 
@@ -997,12 +1003,12 @@ def _drive_about_field_keys(fields: str | None) -> set[str] | None:
     projection": on a resource where the mask is required, answering a request for nothing with
     everything is the one outcome the caller certainly did not ask for."""
     if not (fields or "").strip():
-        raise HTTPException(status_code=400,
-                            detail="The 'fields' parameter is required for this method.")
+        raise gerr.required("fields",
+                            "The 'fields' parameter is required for this method.")
     keys = _mask_names(fields)
     _check_mask(keys, _DRIVE_ABOUT_FIELDS)
     if not keys:
-        raise HTTPException(status_code=400, detail=f"Invalid field selection {fields}")
+        raise gerr.invalid_parameter("fields", f"Invalid field selection {fields}")
     return None if "*" in keys else keys
 
 
@@ -1205,12 +1211,11 @@ async def drive_files_get(file_id: str, request: Request):
         if name is not None:
             keys = _drive_get_field_keys(request.query_params.get("fields"))
             return _drive_project([_drive_folder_obj(conn, name, caller.email)], keys)[0]
-        raise HTTPException(status_code=404, detail="File not found")
+        raise gerr.not_found_file(file_id)
     if request.query_params.get("alt") == "media":
         # raw download — real API errors on native Docs-editors types (use export)
         if _native(row) is not None:
-            raise HTTPException(status_code=403,
-                                detail="Only files with binary content can be downloaded. Use Export with Docs Editors files.")
+            raise gerr.not_downloadable()
         mime = row["mime_type"] or "application/octet-stream"
         return Response(row["content"].encode("utf-8"), media_type=mime)
     # Same projection as files.list: a file resolved by id and the same file read out of a listing
@@ -1227,14 +1232,13 @@ async def drive_files_export(file_id: str, request: Request):
     ids = auth.visible_ids(request, caller)
     row = store.get_document(conn, "google_drive", file_id, visible_ids=ids)
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise gerr.not_found_file(file_id)
     native = _native(row)
     if native is None or native[2] is None:  # binary or folder — not exportable
-        raise HTTPException(status_code=403, detail="Export only supports Docs Editors files.")
+        raise gerr.not_exportable()
     requested = request.query_params.get("mimeType")
     if not requested:  # the real API requires an explicit target format
-        raise HTTPException(status_code=400,
-                            detail="The 'mimeType' parameter is required for files.export.")
+        raise gerr.required("mimeType")
     # honor the requested target format; CSV/TSV keep the raw content, others prefix the title
     plain = requested in ("text/csv", "text/tab-separated-values")
     body = row["content"] if plain else f"{row['title']}\n\n{row['content']}"
@@ -1253,7 +1257,7 @@ async def drive_files_permissions(file_id: str, request: Request):
         # from the grants on the files they hold.
         name = _drive_folder_name_by_id(conn, file_id)
         if name is None:
-            raise HTTPException(status_code=404, detail="File not found")
+            raise gerr.not_found_file(file_id)
         return {"kind": "drive#permissionList",
                 "permissions": _drive_permissions(conn, file_id, folder=name)}
     return {"kind": "drive#permissionList", "permissions": _drive_permissions(conn, file_id)}
@@ -1316,18 +1320,18 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
         # Folders are synthesized rather than stored, so they miss the lookup above. Real Google
         # calls a folder an invalid argument, not a missing entity, so resolve it before giving up.
         if _drive_folder_name_by_id(conn, file_id) is not None:
-            raise HTTPException(status_code=400, detail=EDITOR_INVALID_ARG)
-        raise HTTPException(status_code=404, detail=EDITOR_NOT_FOUND)
+            raise gerr.invalid_argument(EDITOR_INVALID_ARG)
+        raise gerr.not_found_entity()
     # A row with no stored subtype is a document elsewhere in this module (`_native`), so it is one
     # here too — the fallback stays in one place rather than being decided per route.
     subtype = row["subtype"] or "document"
     if subtype == expect:
         return row
     if subtype in _EDITOR_NATIVE:       # a different Workspace type: not this API's entity at all
-        raise HTTPException(status_code=404, detail=EDITOR_NOT_FOUND)
+        raise gerr.not_found_entity()
     if subtype in _EDITOR_OFFICE_FAMILY[expect]:
-        raise HTTPException(status_code=400, detail=EDITOR_OFFICE)
-    raise HTTPException(status_code=400, detail=EDITOR_INVALID_ARG)
+        raise gerr.failed_precondition(EDITOR_OFFICE)
+    raise gerr.invalid_argument(EDITOR_INVALID_ARG)
 
 
 @router.get("/docs/v1/documents/{document_id}")
@@ -1439,7 +1443,7 @@ def _a1_endpoint(part: str, spec: str) -> tuple[int | None, int | None]:
     Sheets names back: `A1:` reports "Unable to parse range: A1:", never a bare "".."""
     m = _A1_END.fullmatch(part.strip())
     if not m:
-        raise HTTPException(status_code=400, detail=f"Unable to parse range: {spec}")
+        raise gerr.invalid_argument(f"Unable to parse range: {spec}")
     if m.group("rowonly"):
         return int(m.group("rowonly")) - 1, None
     row = m.group("row")
@@ -1477,7 +1481,7 @@ def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
             # That is exactly why a client cannot drop the quotes — unquoted, a tab named like a
             # cell reference would silently read the wrong tab's cells.
             if bare[1:-1] != SHEETS_SHEET_TITLE:
-                raise HTTPException(status_code=400, detail=f"Unable to parse range: {spec}")
+                raise gerr.invalid_argument(f"Unable to parse range: {spec}")
             return whole
         if bare == SHEETS_SHEET_TITLE:
             return whole
@@ -1488,10 +1492,10 @@ def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
         if title[:1] == "'" and title[-1:] == "'":
             title = title[1:-1]
         if title != SHEETS_SHEET_TITLE:
-            raise HTTPException(status_code=400, detail=f"Unable to parse range: {spec}")
+            raise gerr.invalid_argument(f"Unable to parse range: {spec}")
         body = body.strip()
         if not body:        # `Sheet1!` with nothing after it is malformed
-            raise HTTPException(status_code=400, detail=f"Unable to parse range: {spec}")
+            raise gerr.invalid_argument(f"Unable to parse range: {spec}")
     start, sep, end = body.partition(":")
     r0, c0 = _a1_endpoint(start, spec)
     if not sep:                         # a single reference: one cell, one whole row, one column
@@ -1511,9 +1515,8 @@ def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
             c0f, c1 = c1 - 1, c0f + 1
     if r0f >= nrows or c0f >= ncols or r0f < 0 or c0f < 0:
         # The START is outside the grid — refused, with the range echoed back unclamped.
-        raise HTTPException(
-            status_code=400,
-            detail=(f"Range ({_a1_name(r0f, c0f, r1, c1)}) exceeds grid limits. "
+        raise gerr.invalid_argument(
+            (f"Range ({_a1_name(r0f, c0f, r1, c1)}) exceeds grid limits. "
                     f"Max rows: {nrows}, max columns: {ncols}"))
     return r0f, c0f, min(r1, nrows), min(c1, ncols)
 
@@ -1614,7 +1617,7 @@ def _sheets_options(request: Request) -> str:
     major = request.query_params.get("majorDimension") or "ROWS"
     render = request.query_params.get("valueRenderOption") or "FORMATTED_VALUE"
     if major not in _A1_MAJOR:
-        raise HTTPException(status_code=400, detail=_a1_enum_error("major_dimension",
+        raise gerr.invalid_argument(_a1_enum_error("major_dimension",
                                                                   "Dimension", major))
     # On a real spreadsheet these three genuinely differ — measured on one holding formulas and
     # currency: FORMATTED_VALUE gives "₩4,000,000", UNFORMATTED_VALUE gives the JSON number
@@ -1622,7 +1625,7 @@ def _sheets_options(request: Request) -> str:
     # text, so all three return the same string. The value is still validated, so a client's typo
     # fails here exactly as it would against real Sheets.
     if render not in _A1_RENDER:
-        raise HTTPException(status_code=400, detail=_a1_enum_error("value_render_option",
+        raise gerr.invalid_argument(_a1_enum_error("value_render_option",
                                                                   "ValueRenderOption", render))
     return major
 

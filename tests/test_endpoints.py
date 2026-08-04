@@ -1074,7 +1074,11 @@ def test_mock_users_can_be_disabled(client, monkeypatch):
 
 
 def test_unauthenticated_is_rejected(client):
-    assert client.get("/drive/v3/files").status_code == 401
+    # Drive accepts API keys, so an anonymous request is an "unregistered caller" -> 403, not 401.
+    # A present-but-invalid bearer IS 401. Both measured; see the Google-envelope tests below.
+    assert client.get("/drive/v3/files").status_code == 403
+    assert client.get("/drive/v3/files",
+                      headers={"Authorization": "Bearer nope"}).status_code == 401
     assert client.get("/atlassian/rest/api/3/search/jql").status_code == 401
     slack = client.post("/slack/api/conversations.list").json()
     assert slack == {"ok": False, "error": "not_authed"}
@@ -1677,6 +1681,165 @@ def test_s3_max_keys_zero_returns_empty_page_safely(big_bucket_client, big_bucke
     assert root.findtext(f"{{{S3NS}}}NextContinuationToken") is None
 
 
+# --- Google error envelope (#37) ------------------------------------------------------------
+#
+# Every case below was MEASURED against the live APIs with real OAuth credentials. The envelope is
+# per-family, not uniform:
+#
+#   family                       errors[]   status                 no Authorization header
+#   -----------------------------|----------|-----------------------|------------------------
+#   Drive v3                     | always   | auth failures only    | 403 PERMISSION_DENIED
+#   Gmail v1                     | always   | always                | 401 UNAUTHENTICATED
+#   Docs v1 / Sheets v4 / Slides | never    | always                | 401 UNAUTHENTICATED
+#
+# A bad bearer token is 401 UNAUTHENTICATED in every family.
+
+def _gerr(resp):
+    """The `error` object, or a clear failure naming what came back instead."""
+    body = resp.json()
+    assert "error" in body, f"expected a Google error envelope, got {body}"
+    return body["error"]
+
+
+def test_google_errors_use_googles_envelope(client, admin_h):
+    """`google-api-python-client` reads `error.message` to build HttpError, so `{"detail": …}` left
+    every error unreadable to the one client the mock exists to serve."""
+    r = client.get("/drive/v3/files", headers=admin_h, params={"fields": "totallyBogusField"})
+    assert r.status_code == 400
+    e = _gerr(r)
+    assert e["code"] == 400
+    assert e["message"] == "Invalid field selection totallyBogusField"
+    assert "detail" not in r.json()
+    # non-Google paths keep FastAPI's default envelope
+    assert "detail" in client.get("/no-such-route").json()
+
+
+def test_drive_errors_carry_the_legacy_errors_array(client, admin_h):
+    """Drive v3 always sends `errors[]` with a `reason` a client can branch on, and repeats the
+    message inside it. It does NOT send `status` for a parameter failure — measured."""
+    e = _gerr(client.get("/drive/v3/files", headers=admin_h, params={"fields": "nope"}))
+    assert e["errors"] == [{"message": "Invalid field selection nope", "domain": "global",
+                            "reason": "invalidParameter", "location": "fields",
+                            "locationType": "parameter"}]
+    assert "status" not in e, "Drive omits status on parameter failures"
+
+
+def test_editor_api_errors_carry_status_and_no_errors_array(client, admin_h):
+    """The editor APIs are the mirror image of Drive: `status`, never `errors[]` — measured."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    e = _gerr(client.get(f"/sheets/v4/spreadsheets/{doc}", headers=admin_h))
+    assert e["code"] == 404 and e["status"] == "NOT_FOUND"
+    assert e["message"] == "Requested entity was not found."
+    assert "errors" not in e
+
+
+def test_gmail_errors_carry_both(client, admin_h):
+    """Gmail sends `errors[]` AND `status` — measured, and the only family that does both."""
+    e = _gerr(client.get("/gmail/v1/users/me/messages/no-such-id", headers=admin_h))
+    assert e["code"] == 404 and e["status"] == "NOT_FOUND"
+    assert e["message"] == "Requested entity was not found."
+    assert e["errors"][0]["reason"] == "notFound"
+
+
+# (path, params, code, status, reason, location) — one row per measured case.
+GOOGLE_ERROR_CASES = [
+    ("/drive/v3/files", {"fields": "bogus"}, 400, None, "invalidParameter", "fields"),
+    ("/drive/v3/files", {"orderBy": "bogusKey"}, 400, None, "invalid", "orderBy"),
+    ("/drive/v3/files/no-such-file", {}, 404, None, "notFound", "fileId"),
+    ("/drive/v3/about", {}, 400, None, "required", "fields"),
+    ("/drive/v3/about", {"fields": "storageQuoat"}, 400, None, "invalidParameter", "fields"),
+    ("/gmail/v1/users/me/messages/no-such-id", {}, 404, "NOT_FOUND", "notFound", None),
+    ("/gmail/v1/users/me/labels/NO_SUCH", {}, 404, "NOT_FOUND", "notFound", None),
+]
+
+
+@pytest.mark.parametrize("path, params, code, status, reason, location", GOOGLE_ERROR_CASES)
+def test_google_error_reasons_match_the_real_api(client, admin_h, path, params, code, status,
+                                                 reason, location):
+    r = client.get(path, headers=admin_h, params=params)
+    assert r.status_code == code
+    e = _gerr(r)
+    assert e["code"] == code
+    assert e.get("status") == status
+    err0 = e["errors"][0]
+    assert err0["reason"] == reason
+    assert err0["domain"] == "global"
+    assert err0.get("location") == location
+    if location is not None:
+        assert err0["locationType"] == "parameter"
+
+
+def test_drive_not_found_names_the_file_id(client, admin_h):
+    """Measured: `File not found: {id}.` — the id is in the message, so a batch caller can tell
+    which of its requests failed."""
+    e = _gerr(client.get("/drive/v3/files/abc123xyz", headers=admin_h))
+    assert e["message"] == "File not found: abc123xyz."
+
+
+def test_drive_export_requires_mime_type_with_googles_wording(client, admin_h):
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    e = _gerr(client.get(f"/drive/v3/files/{doc}/export", headers=admin_h))
+    assert e["code"] == 400 and e["message"] == "Required parameter: mimeType"
+    assert e["errors"][0] == {"message": "Required parameter: mimeType", "domain": "global",
+                              "reason": "required", "location": "mimeType",
+                              "locationType": "parameter"}
+
+
+@pytest.mark.parametrize("path, reason, location", [
+    ("/drive/v3/files/{pdf}/export?mimeType=text/plain", "fileNotExportable", None),
+    ("/drive/v3/files/{doc}?alt=media", "fileNotDownloadable", "alt"),
+])
+def test_drive_403s_carry_their_own_reasons(client, admin_h, path, reason, location):
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
+    e = _gerr(client.get(path.format(doc=doc, pdf=pdf), headers=admin_h))
+    assert e["code"] == 403
+    assert e["errors"][0]["reason"] == reason
+    assert e["errors"][0].get("location") == location
+
+
+BAD_TOKEN = {"Authorization": "Bearer not-a-real-token"}
+
+
+@pytest.mark.parametrize("path", ["/drive/v3/files", "/gmail/v1/users/me/profile",
+                                  "/sheets/v4/spreadsheets/x", "/docs/v1/documents/x",
+                                  "/slides/v1/presentations/x"])
+def test_a_bad_token_is_unauthenticated_everywhere(client, path):
+    """Measured: every family answers a present-but-invalid bearer with 401 UNAUTHENTICATED, and
+    the short "Invalid Credentials" lives in `errors[0]` while the top message is the long form."""
+    r = client.get(path, headers=BAD_TOKEN)
+    assert r.status_code == 401
+    e = _gerr(r)
+    assert e["code"] == 401 and e["status"] == "UNAUTHENTICATED"
+    assert e["message"].startswith("Request had invalid authentication credentials.")
+    if "errors" in e:
+        assert e["errors"][0]["message"] == "Invalid Credentials"
+        assert e["errors"][0]["reason"] == "authError"
+        assert e["errors"][0]["location"] == "Authorization"
+        assert e["errors"][0]["locationType"] == "header"
+
+
+@pytest.mark.parametrize("path, code, status", [
+    ("/drive/v3/files", 403, "PERMISSION_DENIED"),        # Drive accepts API keys, so anonymous
+    ("/sheets/v4/spreadsheets/x", 403, "PERMISSION_DENIED"),  # ...is an "unregistered caller"
+    ("/gmail/v1/users/me/profile", 401, "UNAUTHENTICATED"),   # OAuth-only APIs say the
+    ("/docs/v1/documents/x", 401, "UNAUTHENTICATED"),         # ...credentials are missing
+    ("/slides/v1/presentations/x", 401, "UNAUTHENTICATED"),
+])
+def test_a_missing_header_differs_by_family(client, path, code, status):
+    """The surprise, measured: no `Authorization` header at all is NOT uniformly 401. Drive and
+    Sheets answer 403 PERMISSION_DENIED, Gmail and the Docs/Slides APIs answer 401. A bad token is
+    401 everywhere — so the two cases are genuinely distinct and the mock conflated them."""
+    r = client.get(path)
+    assert r.status_code == code
+    e = _gerr(r)
+    assert e["code"] == code and e["status"] == status
+    if code == 403:
+        assert "unregistered callers" in e["message"]
+    else:
+        assert "missing required authentication credential" in e["message"]
+
+
 def test_atlassian_errors_use_atlassian_envelope(client):
     # atlassian-python-api's Confluence client does response.json()["message"] on any error, so the
     # mock must shape /atlassian errors like Atlassian Cloud (message + statusCode), not {"detail"}.
@@ -2001,7 +2164,7 @@ def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
     r = client.get("/drive/v3/files", headers=admin_h,
                    params={"pageSize": 1, "fields": "files(totallyBogusField)"})
     assert r.status_code == 400
-    assert "totallyBogusField" in r.json()["detail"]
+    assert "totallyBogusField" in r.json()["error"]["message"]
     bad_top = client.get("/drive/v3/files", headers=admin_h,
                          params={"pageSize": 1, "fields": "bogusTop,files(id)"})
     assert bad_top.status_code == 400
@@ -2099,7 +2262,7 @@ def test_drive_about_requires_a_fields_mask(client, admin_h):
     Serving a full body instead would let a client ship a call that fails in production."""
     r = client.get(ABOUT, headers=admin_h)
     assert r.status_code == 400
-    assert "fields" in r.json()["detail"]
+    assert "fields" in r.json()["error"]["message"]
 
 
 def test_drive_about_rejects_an_unknown_field(client, admin_h):
@@ -2116,9 +2279,12 @@ def test_drive_about_rejects_a_mask_that_selects_nothing(client, admin_h):
 
 
 def test_drive_about_needs_auth(client):
-    assert client.get(ABOUT, params={"fields": "user"}).status_code == 401
-    # auth is resolved before the mask, as real Drive does — a bad mask on a bad token is still 401
-    assert client.get(ABOUT).status_code == 401
+    # no header at all -> 403 on Drive (an unregistered caller); a bad token -> 401
+    assert client.get(ABOUT, params={"fields": "user"}).status_code == 403
+    bad = {"Authorization": "Bearer nope"}
+    assert client.get(ABOUT, params={"fields": "user"}, headers=bad).status_code == 401
+    # auth is resolved before the mask, as real Drive does — a missing mask on a bad token is 401
+    assert client.get(ABOUT, headers=bad).status_code == 401
 
 
 def test_drive_about_serves_only_the_requested_fields(client, admin_h):

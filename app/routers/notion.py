@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
+from app.openapi import qp
 
 router = APIRouter(prefix="/notion/v1", tags=["notion"])
 
@@ -59,12 +60,8 @@ class NotionList(_NLoose):
     has_more: bool = False
 
 
-def _nqp(name: str, typ: str = "string") -> dict:
-    return {"name": name, "in": "query", "schema": {"type": typ}}
-
-
-_P_PAGINATE = [_nqp("start_cursor"), _nqp("page_size", "integer")]
-_P_COMMENTS = [_nqp("block_id"), *_P_PAGINATE]
+_P_PAGINATE = [qp("start_cursor"), qp("page_size", "integer")]
+_P_COMMENTS = [qp("block_id"), *_P_PAGINATE]
 
 
 def _body(props: dict) -> dict:

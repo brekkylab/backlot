@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
+from app.openapi import qp
 from app.acl import Caller
 from app.config import get_settings
 from app.pagination import confluence_next_link, decode_cursor, next_page_token
@@ -65,20 +66,16 @@ class ConfluencePage(_ALoose):
     pass
 
 
-def _aqp(name: str, typ: str = "string", required: bool = False) -> dict:
-    return {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
-
-
 _X_JIRA_SEARCH = {
-    "parameters": [_aqp("jql"), _aqp("maxResults", "integer"), _aqp("nextPageToken")],
+    "parameters": [qp("jql"), qp("maxResults", "integer"), qp("nextPageToken")],
     "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {
         "jql": {"type": "string"}, "maxResults": {"type": "integer"},
         "nextPageToken": {"type": "string"}}}}}},
 }
-_P_EXPAND = {"parameters": [_aqp("expand")]}
-_P_CQL = {"parameters": [_aqp("cql", required=True), _aqp("limit", "integer"), _aqp("start", "integer")]}
-_P_CONTENT = {"parameters": [_aqp("expand"), _aqp("spaceKey"),
-                             _aqp("limit", "integer"), _aqp("start", "integer")]}
+_P_EXPAND = {"parameters": [qp("expand")]}
+_P_CQL = {"parameters": [qp("cql", required=True), qp("limit", "integer"), qp("start", "integer")]}
+_P_CONTENT = {"parameters": [qp("expand"), qp("spaceKey"),
+                             qp("limit", "integer"), qp("start", "integer")]}
 
 
 def _require(request: Request) -> Caller:

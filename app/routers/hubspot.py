@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
+from app.openapi import qp
 
 router = APIRouter(prefix="/hubspot", tags=["hubspot"])
 
@@ -54,18 +55,14 @@ class HubspotPage(_HLoose):
     results: list[dict] = []
 
 
-def _qp(name: str, typ: str = "string") -> dict:
-    return {"name": name, "in": "query", "schema": {"type": typ}}
-
-
 # Only parameters the mock actually honours are advertised: `propertiesWithHistory` and inline
 # `associations` expansion are not implemented, and declaring them would have clients ask for data
 # that silently never arrives (worse for `propertiesWithHistory`, which also makes the official
 # client drop its page size to 50).
-_P_LIST = [_qp("limit", "integer"), _qp("after"), _qp("properties"),
-           _qp("archived", "boolean")]
-_P_READ = [_qp("properties"), _qp("archived", "boolean")]
-_P_ASSOC = [_qp("limit", "integer"), _qp("after")]
+_P_LIST = [qp("limit", "integer"), qp("after"), qp("properties"),
+           qp("archived", "boolean")]
+_P_READ = [qp("properties"), qp("archived", "boolean")]
+_P_ASSOC = [qp("limit", "integer"), qp("after")]
 
 _FILTER_SCHEMA = {"type": "object", "properties": {
     "propertyName": {"type": "string"}, "operator": {"type": "string"},

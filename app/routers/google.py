@@ -20,6 +20,7 @@ from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
+from app.openapi import qp
 from app.acl import Caller
 from app.config import get_settings
 from app.pagination import decode_cursor, next_page_token
@@ -61,12 +62,8 @@ class GmailAttachment(_GLoose):
     data: str
 
 
-def _gqp(name: str, typ: str = "string", required: bool = False) -> dict:
-    return {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
-
-
-_P_GMAIL_LIST = [_gqp("maxResults", "integer"), _gqp("pageToken"), _gqp("q")]
-_P_GMAIL_FORMAT = [_gqp("format")]
+_P_GMAIL_LIST = [qp("maxResults", "integer"), qp("pageToken"), qp("q")]
+_P_GMAIL_FORMAT = [qp("format")]
 
 
 class DriveFileList(_GLoose):
@@ -81,10 +78,10 @@ class DrivePermissionList(_GLoose):
 
 # drive_files_get / .export return raw Response/PlainTextResponse on some branches — they get
 # openapi_extra params only (no JSON response_model, which would mis-serialize the raw body).
-_P_DRIVE_LIST = [_gqp("pageSize", "integer"), _gqp("pageToken"), _gqp("q"), _gqp("fields"),
-                 _gqp("orderBy")]
-_P_DRIVE_ALT = [_gqp("alt"), _gqp("fields")]
-_P_DRIVE_EXPORT = [_gqp("mimeType", required=True)]
+_P_DRIVE_LIST = [qp("pageSize", "integer"), qp("pageToken"), qp("q"), qp("fields"),
+                 qp("orderBy")]
+_P_DRIVE_ALT = [qp("alt"), qp("fields")]
+_P_DRIVE_EXPORT = [qp("mimeType", required=True)]
 
 DRIVE_DOC_MIME = "application/vnd.google-apps.document"
 DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"

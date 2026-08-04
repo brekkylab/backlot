@@ -42,6 +42,18 @@ _METHODS = ("get", "post", "put", "delete", "patch")
 _METHOD_RANK = {m: i for i, m in enumerate(_METHODS)}
 
 
+def qp(name: str, typ: str = "string", required: bool = False) -> dict:
+    """One OpenAPI query parameter, for a router's ``openapi_extra``.
+
+    The routers read their query params off the raw request rather than through FastAPI signatures
+    (a vendor's parameter names are not always valid Python, and several are conditional), so each
+    one has to declare what it honours by hand. This is that declaration — and only for parameters
+    the mock actually honours: advertising one it ignores makes a client ask for data that never
+    arrives, which is worse than not offering it.
+    """
+    return {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
+
+
 def slice_spec(spec: dict, prefixes: list[str]) -> dict:
     """Copy ``spec`` keeping only paths under one of ``prefixes``."""
     paths = {p: item for p, item in spec.get("paths", {}).items()

@@ -1365,20 +1365,32 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
     return [[line] for line in (content or "").split("\n")]
 
 
-@router.get("/sheets/v4/spreadsheets/{spreadsheet_id}")
+_P_SHEETS_GET = [_gqp("includeGridData", "boolean"), _gqp("ranges")]
+
+
+@router.get("/sheets/v4/spreadsheets/{spreadsheet_id}",
+            openapi_extra={"parameters": _P_SHEETS_GET})
 async def sheets_get(spreadsheet_id: str, request: Request):
+    """The spreadsheet's structure, and its cells only if asked for.
+
+    ``data`` is withheld unless ``includeGridData=true`` — measured: a real workbook answers 4 KB by
+    default and 5.7 MB with the flag, and ``ranges`` alone does NOT unlock it. The mock used to
+    volunteer the whole grid on every call, so a reader received cells here that the real API would
+    never hand it, and the document it assembled had a different layout against the two backends.
+    With the flag, ``ranges`` scopes the returned rows (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
     row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
-    rows = _sheets_grid(row["content"])
-    row_data = [{"values": [{"formattedValue": c,
-                             "effectiveValue": {"stringValue": c}} for c in r]} for r in rows]
+    sheet = {"properties": {"sheetId": 0, "title": SHEETS_SHEET_TITLE, "index": 0,
+                            "sheetType": "GRID",
+                            # the grid, not the data extent — see SHEETS_GRID_ROWS
+                            "gridProperties": {"rowCount": SHEETS_GRID_ROWS,
+                                               "columnCount": SHEETS_GRID_COLS}}}
+    if (request.query_params.get("includeGridData") or "").lower() == "true":
+        rows = _sheets_grid(row["content"])
+        specs = request.query_params.getlist("ranges") or [SHEETS_SHEET_TITLE]
+        sheet["data"] = [_sheets_grid_data(rows, s) for s in specs]
     return {"spreadsheetId": spreadsheet_id, "properties": {"title": row["title"], "locale": "en_US"},
             "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
-            "sheets": [{"properties": {"sheetId": 0, "title": SHEETS_SHEET_TITLE, "index": 0,
-                                       "sheetType": "GRID",
-                                       # the grid, not the data extent — see SHEETS_GRID_ROWS
-                                       "gridProperties": {"rowCount": SHEETS_GRID_ROWS,
-                                                          "columnCount": SHEETS_GRID_COLS}},
-                        "data": [{"startRow": 0, "startColumn": 0, "rowData": row_data}]}]}
+            "sheets": [sheet]}
 
 
 # --- Sheets `values` reads ------------------------------------------------------------------
@@ -1453,20 +1465,33 @@ def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
     distinguish from a genuinely empty range.
     """
     nrows, ncols = SHEETS_GRID_ROWS, SHEETS_GRID_COLS
-    body = spec
-    if "!" in spec:
+    whole = (0, 0, nrows, ncols)
+    if "!" not in spec:
+        # A BARE name — no cell part at all — means every cell in that sheet. Measured: real Sheets
+        # takes it quoted or unquoted and answers the full grid, and this is the only form that says
+        # "the whole sheet" without naming bounds, so a client reading an unknown sheet sends it.
+        bare = spec.strip()
+        if bare[:1] == "'" and bare[-1:] == "'":
+            # Quoting makes it unambiguously a sheet NAME, so there is no cell-reference fallback:
+            # measured, `'A1'` 400s rather than resolving to cell A1, while bare `A1` IS cell A1.
+            # That is exactly why a client cannot drop the quotes — unquoted, a tab named like a
+            # cell reference would silently read the wrong tab's cells.
+            if bare[1:-1] != SHEETS_SHEET_TITLE:
+                raise HTTPException(status_code=400, detail=f"Unable to parse range: {spec}")
+            return whole
+        if bare == SHEETS_SHEET_TITLE:
+            return whole
+        body = bare
+    else:
         title, _, body = spec.partition("!")
         title = title.strip()
         if title[:1] == "'" and title[-1:] == "'":
             title = title[1:-1]
         if title != SHEETS_SHEET_TITLE:
             raise HTTPException(status_code=400, detail=f"Unable to parse range: {spec}")
-    body = body.strip()
-    if not body:
-        # `Sheet1!` with nothing after it is malformed; a bare `Sheet1` never reaches here.
-        raise HTTPException(status_code=400, detail=f"Unable to parse range: {spec}")
-    if body == SHEETS_SHEET_TITLE:      # the whole sheet, named without a cell reference
-        return 0, 0, nrows, ncols
+        body = body.strip()
+        if not body:        # `Sheet1!` with nothing after it is malformed
+            raise HTTPException(status_code=400, detail=f"Unable to parse range: {spec}")
     start, sep, end = body.partition(":")
     r0, c0 = _a1_endpoint(start, spec)
     if not sep:                         # a single reference: one cell, one whole row, one column
@@ -1517,17 +1542,52 @@ def _rstrip_empty(cells: list[str]) -> list[str]:
     return cells
 
 
-def _sheets_value_range(rows: list[list[str]], spec: str, major: str) -> dict:
-    """One ``ValueRange``. Trailing empty cells and trailing empty rows are dropped rather than
-    padded out to the requested bounds (real Sheets does the same), and a range holding nothing
-    omits ``values`` entirely — a client tests for the key's presence, so an empty list would
-    claim the range exists and is blank."""
+def _sheets_block(rows: list[list[str]], spec: str):
+    """``(r0, c0, r1, c1, cells)`` for an A1 range: the range as resolved against the grid, plus the
+    cells it covers with trailing empties trimmed off each row and off the block. The bounds are the
+    RANGE's, not the data's — callers echo them, so they must not shrink to the occupied cells."""
     r0, c0, r1, c1 = _a1_range(spec, rows)
     block = [[(rows[r][c] if c < len(rows[r]) else "") for c in range(c0, c1)]
              for r in range(r0, min(r1, len(rows)))]
     block = [_rstrip_empty(row) for row in block]
     while block and not block[-1]:
         block.pop()
+    return r0, c0, r1, c1, block
+
+
+def _sheets_grid_data(rows: list[list[str]], spec: str) -> dict:
+    """One ``GridData`` block for ``spreadsheets.get?includeGridData=true``.
+
+    Rows are padded out to the range's width — real Sheets returns a cell object per column of the
+    requested range, empty ones carrying no value — and ``startRow``/``startColumn`` are omitted
+    when zero, which is how the measured responses come back (proto3 drops defaults).
+
+    Two divergences, stated rather than hidden. Real Sheets pads ``rowData`` to the WHOLE grid
+    (1000 rows of mostly-empty cells: the 5.7 MB this flag costs on a real workbook, and the reason
+    clients avoid it); this stops at the last row holding data, because a thousand empty cell
+    objects carry nothing a reader can act on. And real cells carry format objects plus
+    ``rowMetadata``/``columnMetadata`` siblings, none of which this mock models at all."""
+    r0, c0, _r1, c1, block = _sheets_block(rows, spec)
+    width = c1 - c0
+    out: dict = {}
+    if r0:
+        out["startRow"] = r0
+    if c0:
+        out["startColumn"] = c0
+    out["rowData"] = [
+        {"values": [({"formattedValue": row[i], "effectiveValue": {"stringValue": row[i]}}
+                     if i < len(row) and row[i] != "" else {})
+                    for i in range(width)]}
+        for row in block]
+    return out
+
+
+def _sheets_value_range(rows: list[list[str]], spec: str, major: str) -> dict:
+    """One ``ValueRange``. Trailing empty cells and trailing empty rows are dropped rather than
+    padded out to the requested bounds (real Sheets does the same), and a range holding nothing
+    omits ``values`` entirely — a client tests for the key's presence, so an empty list would
+    claim the range exists and is blank."""
+    r0, c0, r1, c1, block = _sheets_block(rows, spec)
     out = {"range": _a1_name(r0, c0, r1, c1), "majorDimension": major}
     if major == "COLUMNS":
         width = max((len(r) for r in block), default=0)

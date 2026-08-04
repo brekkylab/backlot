@@ -75,19 +75,51 @@ def test_docs_get_returns_paragraph_text(base, admin_h):
     assert "Logo usage" in text  # SAMPLE "Brand guidelines v3"
 
 
-def test_sheets_get_returns_grid(base, admin_h):
+def test_sheets_get_withholds_grid_data_by_default(base, admin_h):
+    """Measured: a plain `spreadsheets.get` returns `sheets[i].properties` and NO `data` — on a real
+    workbook that is 4 KB against 5.7 MB with `includeGridData=true`. The mock used to volunteer the
+    full grid on every call, so a reader got cells here that it would never get from Google, and the
+    document it built had a different layout in the two environments.
+
+    `ranges` alone does not unlock it either — also measured."""
+    fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
+    for params in ({}, {"ranges": "Sheet1!A1:A2"}):
+        sh = httpx.get(f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h, params=params).json()
+        assert sh["spreadsheetId"] == fid
+        assert set(sh["sheets"][0]) == {"properties"}, params
+    props = sh["sheets"][0]["properties"]
+    # the measured key set of a real sheet's properties
+    assert set(props) == {"sheetId", "title", "index", "sheetType", "gridProperties"}
+    assert props["gridProperties"] == {"rowCount": 1000, "columnCount": 26}
+
+
+def test_sheets_get_returns_grid_when_asked(base, admin_h):
     """One row per stored line, one cell per row holding the line verbatim. This used to split on
     commas, which over the real corpus manufactured columns out of prose punctuation — see
     `_sheets_grid`; the corpus has no delimiter-uniform CSV at all."""
     fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
-    sh = httpx.get(f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h).json()
-    assert sh["spreadsheetId"] == fid
-    rows = sh["sheets"][0]["data"][0]["rowData"]
-    cells = [[c.get("formattedValue") for c in row["values"]] for row in rows]
-    assert cells == [["month,revenue"], ["Jan,120000"], ["Feb,135000"]]
-    # the grid is Sheets' default for a new sheet, measured on a real spreadsheet; the DATA is
-    # 3x1 inside it, which is why the range echo and the values below disagree in size
-    assert sh["sheets"][0]["properties"]["gridProperties"] == {"rowCount": 1000, "columnCount": 26}
+    sh = httpx.get(f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h,
+                   params={"includeGridData": "true"}).json()
+    data = sh["sheets"][0]["data"][0]
+    assert "startRow" not in data and "startColumn" not in data, "zeros are omitted, as proto3 does"
+    rows = data["rowData"]
+    # a cell object per column of the range (26), the empty ones carrying no value — measured shape
+    assert {len(r["values"]) for r in rows} == {26}
+    assert all(c == {} for r in rows for c in r["values"][1:])
+    assert [r["values"][0]["formattedValue"] for r in rows] == \
+        ["month,revenue", "Jan,120000", "Feb,135000"]
+
+
+def test_sheets_get_grid_data_honours_ranges(base, admin_h):
+    """Measured: `ranges` + `includeGridData` scopes the returned rowData to the range (a real
+    workbook went 5.7 MB -> 11 KB for `A1:B2`)."""
+    fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
+    sh = httpx.get(f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h,
+                   params={"includeGridData": "true", "ranges": "Sheet1!A2:A3"}).json()
+    data = sh["sheets"][0]["data"][0]
+    assert data["startRow"] == 1
+    cells = [[c.get("formattedValue") for c in row["values"]] for row in data["rowData"]]
+    assert cells == [["Jan,120000"], ["Feb,135000"]]
 
 
 def test_slides_get_returns_slides(base, admin_h):
@@ -393,8 +425,11 @@ def test_sheets_values_get_render_options_agree_on_this_corpus(base, admin_h, sh
 def test_sheets_values_get_agrees_with_spreadsheets_get(base, admin_h, sheet_id):
     """Two views of one document: the grid `values.get` serves must be the grid the structured
     read serves, or a client gets a different answer depending on which call it made."""
-    sh = httpx.get(f"{base}/sheets/v4/spreadsheets/{sheet_id}", headers=admin_h).json()
-    structured = [[c["formattedValue"] for c in row["values"]]
+    sh = httpx.get(f"{base}/sheets/v4/spreadsheets/{sheet_id}", headers=admin_h,
+                   params={"includeGridData": "true"}).json()
+    # the grid pads each row to the range width with empty cells; `values` trims them. Drop the
+    # padding and the two must name the same cells.
+    structured = [[c["formattedValue"] for c in row["values"] if c]
                   for row in sh["sheets"][0]["data"][0]["rowData"]]
     assert _values(base, admin_h, sheet_id, "Sheet1").json()["values"] == structured
 
@@ -458,6 +493,35 @@ MEASURED_ECHO = [
     ("Z1:AA5", "Sheet1!Z1:Z5"),         ("A100:B101", "Sheet1!A100:B101"),
     ("A100", "Sheet1!A100"),            ("Sheet1!A1:D5", "Sheet1!A1:D5"),
 ]
+
+
+def test_sheets_values_accept_a_bare_quoted_sheet_name(base, admin_h, sheet_id):
+    """`'Sheet1'` with no `!cellpart` means "every cell in that sheet" — measured on a real
+    spreadsheet, quoted and unquoted alike, on both `values.get` and `values:batchGet`.
+
+    The mock only un-quoted a title when a `!` followed, so the one form that means "the whole
+    sheet without naming bounds" 400d. A client cannot drop the quotes to work around it: quoting is
+    what disambiguates a sheet name from a cell reference, measured below."""
+    for rng in ("Sheet1", "'Sheet1'"):
+        r = _values(base, admin_h, sheet_id, rng)
+        assert r.status_code == 200, f"{rng}: {r.text}"
+        assert r.json()["range"] == "Sheet1!A1:Z1000", rng
+        b = _batch(base, admin_h, sheet_id, [rng])
+        assert b.status_code == 200, f"batch {rng}: {b.text}"
+        assert b.json()["valueRanges"][0]["range"] == "Sheet1!A1:Z1000", rng
+
+
+def test_sheets_values_quoting_distinguishes_a_sheet_from_a_cell(base, admin_h, sheet_id):
+    """Measured: bare `A1` is the CELL A1 of the first sheet, while `'A1'` is a request for a SHEET
+    named A1 and 400s when there is none. So the quotes carry meaning and cannot be stripped —
+    without them a client asking for a tab would silently read another tab's cells."""
+    assert _values(base, admin_h, sheet_id, "A1").json()["range"] == "Sheet1!A1"
+    r = _values(base, admin_h, sheet_id, "'A1'")
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Unable to parse range: 'A1'"
+    # a quoted name that is not this spreadsheet's sheet is refused the same way
+    assert _values(base, admin_h, sheet_id, "'Other'").status_code == 400
+    assert _batch(base, admin_h, sheet_id, ["'Other'"]).status_code == 400
 
 
 @pytest.mark.parametrize("rng, echo", MEASURED_ECHO)

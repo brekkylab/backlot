@@ -3,7 +3,7 @@
 Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corpus, which
 carries the +α surface) — the official SDKs make real HTTP calls, so they need a listening
 port rather than the in-process ``TestClient``. Exercises every service's SDK read methods — Slack (slack_sdk),
-Gmail+Drive (google-api-python-client), GitHub (PyGithub), Jira+Confluence
+Gmail+Drive+Sheets (google-api-python-client), GitHub (PyGithub), Jira+Confluence
 (atlassian-python-api) — asserting all return shape-correct data. Skipped unless the optional
 SDKs (``.[examples]``) are installed.
 """
@@ -119,6 +119,41 @@ def drive():
     check("Drive", "about.get")(
         lambda: f'{about["user"]["emailAddress"]} {about["storageQuota"]["usage"]}B'
         if about["user"]["me"] else 1 / 0)
+
+
+# ------------------------------------------------------------------ Sheets
+def sheets():
+    """The Sheets read surface through its own SDK. Worth its own check because the client
+    percent-encodes the A1 range into the path (`Sheet1%21A1%3AB2`) and builds the URL from the
+    discovery document — neither of which an httpx test exercises."""
+    from google.oauth2.credentials import Credentials
+    from google.api_core.client_options import ClientOptions
+    from googleapiclient.discovery import build
+    drive = build("drive", "v3", credentials=Credentials(token=ADMIN),
+                  client_options=ClientOptions(api_endpoint=f"{BASE}/drive/v3"),
+                  static_discovery=True)
+    fid = next(f["id"] for f in drive.files().list(
+        pageSize=100, fields="files(id,mimeType)").execute()["files"]
+        if f["mimeType"].endswith("spreadsheet"))
+    # the service path lives under /sheets here, so the discovery-built URL is /sheets/v4/...
+    svc = build("sheets", "v4", credentials=Credentials(token=ADMIN),
+                client_options=ClientOptions(api_endpoint=f"{BASE}/sheets"), static_discovery=True)
+    vals = svc.spreadsheets().values()
+    got = vals.get(spreadsheetId=fid, range="Sheet1!A1:B2").execute()
+    check("Sheets", "values.get")(
+        lambda: f'{len(got["values"])}x{len(got["values"][0])} {got["range"]}')
+    batch = vals.batchGet(spreadsheetId=fid, ranges=["Sheet1!A1:B1", "A:A"]).execute()
+    want = [[["month", "revenue"]], [["month"], ["Jan"], ["Feb"]]]
+    check("Sheets", "values.batchGet")(
+        lambda: f'{len(batch["valueRanges"])} ranges'
+        if [vr["values"] for vr in batch["valueRanges"]] == want else 1 / 0)
+    cols = vals.get(spreadsheetId=fid, range="Sheet1!A1:B3",
+                    majorDimension="COLUMNS").execute()["values"]
+    check("Sheets", "values.get majorDimension")(
+        lambda: "transposed" if cols == [["month", "Jan", "Feb"],
+                                         ["revenue", "120000", "135000"]] else 1 / 0)
+    check("Sheets", "spreadsheets.get")(
+        lambda: svc.spreadsheets().get(spreadsheetId=fid).execute()["properties"]["title"])
 
 
 # ------------------------------------------------------------------ GitHub
@@ -245,7 +280,7 @@ def test_sdk_read_coverage(live_server):
     global BASE, ADMIN
     base, settings = live_server
     BASE, ADMIN = base, settings.admin_token
-    fns = [slack, gmail, drive, github, jira, confluence, google_oauth]
+    fns = [slack, gmail, drive, sheets, github, jira, confluence, google_oauth]
     import importlib.util
     if importlib.util.find_spec("notion_client"):  # optional; only when .[examples] is installed
         fns.append(notion)

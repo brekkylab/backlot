@@ -1305,6 +1305,190 @@ async def sheets_get(spreadsheet_id: str, request: Request):
                         "data": [{"startRow": 0, "startColumn": 0, "rowData": row_data}]}]}
 
 
+# --- Sheets `values` reads ------------------------------------------------------------------
+# `spreadsheets.get` serves the whole structured grid; a client that wants a slice reads
+# `values.get`, and one that wants several slices reads `values:batchGet`. Both resolve an A1
+# range against the same grid `sheets_get` builds, so the three calls cannot disagree about what
+# a cell holds.
+
+SHEETS_SHEET_TITLE = "Sheet1"   # the mock shapes every spreadsheet as one sheet with this title
+
+_A1_MAJOR = ("ROWS", "COLUMNS")
+_A1_RENDER = ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")
+# One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`).
+_A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\Z")
+
+
+def _a1_col(letters: str) -> int:
+    """Column letters to a 0-based index, base-26 with no zero digit (``A``->0, ``Z``->25,
+    ``AA``->26)."""
+    n = 0
+    for ch in letters.upper():
+        n = n * 26 + (ord(ch) - 64)
+    return n - 1
+
+
+def _a1_grid(rows: list[list[str]]) -> tuple[int, int]:
+    return len(rows), max((len(r) for r in rows), default=0)
+
+
+def _a1_endpoint(part: str) -> tuple[int | None, int | None]:
+    """``(row, col)`` 0-based for one side of a range; ``None`` means that axis is unbounded."""
+    m = _A1_END.fullmatch(part.strip())
+    if not m:
+        raise HTTPException(status_code=400, detail=f"Unable to parse range: {part}")
+    if m.group("rowonly"):
+        return int(m.group("rowonly")) - 1, None
+    row = m.group("row")
+    return (int(row) - 1 if row else None), _a1_col(m.group("col"))
+
+
+def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
+    """Resolve an A1 range to half-open ``(r0, c0, r1, c1)`` against this grid.
+
+    Handles every form a client may send: ``Sheet1!A1:B2``, ``A1:B2`` (sheet omitted), ``Sheet1``
+    (the whole sheet), ``B2`` (one cell), ``A:B`` / ``1:3`` (whole columns / rows), ``A2:B`` (one
+    edge unbounded) and ``'Sheet1'!A1`` (quoted title). An unbounded edge clamps to the grid, so a
+    range may resolve wider than the data — the caller trims. Anything unparseable, or naming a
+    sheet this spreadsheet does not have, 400s the way real Sheets does rather than quietly
+    resolving to an empty grid, which a client could not distinguish from a genuinely empty range.
+    """
+    nrows, ncols = _a1_grid(rows)
+    body = spec
+    if "!" in spec:
+        title, _, body = spec.partition("!")
+        title = title.strip()
+        if title[:1] == "'" and title[-1:] == "'":
+            title = title[1:-1]
+        if title != SHEETS_SHEET_TITLE:
+            raise HTTPException(status_code=400, detail=f"Unable to parse range: {spec}")
+    body = body.strip()
+    if not body:
+        # `Sheet1!` with nothing after it is malformed; a bare `Sheet1` never reaches here.
+        raise HTTPException(status_code=400, detail=f"Unable to parse range: {spec}")
+    if body == SHEETS_SHEET_TITLE:      # the whole sheet, named without a cell reference
+        return 0, 0, nrows, ncols
+    start, sep, end = body.partition(":")
+    r0, c0 = _a1_endpoint(start)
+    if not sep:                         # a single reference: one cell, one whole row, one column
+        return (0 if r0 is None else r0, 0 if c0 is None else c0,
+                nrows if r0 is None else r0 + 1, ncols if c0 is None else c0 + 1)
+    r1x, c1x = _a1_endpoint(end)
+    r0f = 0 if r0 is None else r0
+    c0f = 0 if c0 is None else c0
+    r1 = nrows if r1x is None else r1x + 1
+    c1 = ncols if c1x is None else c1x + 1
+    # A1 ranges are inclusive and may be written in either order (`B2:A1` == `A1:B2`).
+    if r1 < r0f + 1:
+        r0f, r1 = r1 - 1, r0f + 1
+    if c1 < c0f + 1:
+        c0f, c1 = c1 - 1, c0f + 1
+    return r0f, c0f, r1, c1
+
+
+def _a1_name(r0: int, c0: int, r1: int, c1: int) -> str:
+    """The resolved range in full A1 form, which is what the response echoes."""
+    def col(i: int) -> str:
+        s = ""
+        i += 1
+        while i:
+            i, rem = divmod(i - 1, 26)
+            s = chr(65 + rem) + s
+        return s
+    return f"{SHEETS_SHEET_TITLE}!{col(c0)}{r0 + 1}:{col(c1 - 1)}{r1}"
+
+
+def _rstrip_empty(cells: list[str]) -> list[str]:
+    while cells and cells[-1] == "":
+        cells.pop()
+    return cells
+
+
+def _sheets_value_range(rows: list[list[str]], spec: str, major: str) -> dict:
+    """One ``ValueRange``. Trailing empty cells and trailing empty rows are dropped rather than
+    padded out to the requested bounds (real Sheets does the same), and a range holding nothing
+    omits ``values`` entirely — a client tests for the key's presence, so an empty list would
+    claim the range exists and is blank."""
+    r0, c0, r1, c1 = _a1_range(spec, rows)
+    block = [[(rows[r][c] if c < len(rows[r]) else "") for c in range(c0, c1)]
+             for r in range(r0, min(r1, len(rows)))]
+    block = [_rstrip_empty(row) for row in block]
+    while block and not block[-1]:
+        block.pop()
+    out = {"range": _a1_name(r0, c0, r1, c1), "majorDimension": major}
+    if major == "COLUMNS":
+        width = max((len(r) for r in block), default=0)
+        block = [_rstrip_empty([(r[i] if i < len(r) else "") for r in block])
+                 for i in range(width)]
+        while block and not block[-1]:
+            block.pop()
+    if block:
+        out["values"] = block
+    return out
+
+
+def _sheets_rows(request: Request, spreadsheet_id: str) -> list[list[str]]:
+    """The grid, split exactly the way ``sheets_get`` splits it. Deliberately the same naive
+    ``split(",")`` rather than a CSV reader: the two must agree cell-for-cell, and switching the
+    splitter would change what ``spreadsheets.get`` has always served (measured: it differs from
+    `csv.reader` on 94 of the bench corpus's 1,875 spreadsheets, where a whole line is wrapped in
+    quotes). That divergence — which `files.export` inherits too, since it serves the raw text —
+    is tracked separately rather than fixed here."""
+    row = _editor_doc(request, spreadsheet_id)
+    return [line.split(",") for line in (row["content"] or "").split("\n")]
+
+
+def _sheets_options(request: Request) -> str:
+    """Validate the read enums and return the major dimension. Real Sheets 400s on an unknown
+    value; accepting one silently would hand back ROWS-shaped data to a client that asked for
+    columns, and a silently unapplied option is worse than a refusal."""
+    major = request.query_params.get("majorDimension") or "ROWS"
+    render = request.query_params.get("valueRenderOption") or "FORMATTED_VALUE"
+    if major not in _A1_MAJOR:
+        raise HTTPException(status_code=400, detail=f"Invalid majorDimension: {major}")
+    # The corpus holds no formulas and no typed numbers — sheets_get declares every cell a
+    # stringValue — so the three render options coincide. The value is still validated, so a
+    # client's typo fails here exactly as it would against real Sheets.
+    if render not in _A1_RENDER:
+        raise HTTPException(status_code=400, detail=f"Invalid valueRenderOption: {render}")
+    return major
+
+
+_P_SHEETS_VALUES = [_gqp("majorDimension"), _gqp("valueRenderOption"),
+                    _gqp("dateTimeRenderOption")]
+_P_SHEETS_BATCH = [_gqp("ranges"), *_P_SHEETS_VALUES]
+
+
+@router.get("/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchGet",
+            openapi_extra={"parameters": _P_SHEETS_BATCH})
+async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
+    """Several ranges in one round trip. Declared before ``values/{range}`` for clarity only —
+    ``values:batchGet`` is a single path segment, so the two cannot collide.
+
+    One unusable range fails the whole call rather than yielding a short ``valueRanges`` list: a
+    partial batch leaves the caller unable to say which range it is missing.
+
+    With no ``ranges`` at all, nothing is selected and ``valueRanges`` is omitted. NOTE: that is
+    the natural reading of a parameter with no default, NOT a response diffed against real
+    Sheets — unlike the rest of this module's behaviour, it is unverified."""
+    rows = _sheets_rows(request, spreadsheet_id)
+    major = _sheets_options(request)
+    ranges = request.query_params.getlist("ranges")
+    body = {"spreadsheetId": spreadsheet_id}
+    if ranges:
+        body["valueRanges"] = [_sheets_value_range(rows, r, major) for r in ranges]
+    return body
+
+
+@router.get("/sheets/v4/spreadsheets/{spreadsheet_id}/values/{a1_range:path}",
+            openapi_extra={"parameters": _P_SHEETS_VALUES})
+async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request):
+    """One range of a spreadsheet, ACL-enforced through the same lookup as ``spreadsheets.get``."""
+    rows = _sheets_rows(request, spreadsheet_id)
+    major = _sheets_options(request)
+    return _sheets_value_range(rows, a1_range, major)
+
+
 @router.get("/slides/v1/presentations/{presentation_id}")
 async def slides_get(presentation_id: str, request: Request):
     row = _editor_doc(request, presentation_id)

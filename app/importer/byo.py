@@ -40,26 +40,20 @@ Each line is one document:
       ]
     }
 
-Child rows are per-source, because the child of a document means something different in each
-API: slack `replies` are threaded replies (reactions, files), gmail `messages` are further
-RFC822 messages in the thread (each with its own sender/recipients/Message-ID), fireflies
-`sentences` are utterances with a speaker and timing, and `comments` are a comment API's rows.
-In every case the record itself is the root — seq 0 — each child takes the next sequence
-number, and children inherit the root's container and ACL (slack: served via
-conversations.replies, with only the root in conversations.history).
+Child rows are per-source, because a document's child means something different in each API:
+slack `replies` are threaded replies, gmail `messages` are further RFC822 messages each with its
+own sender and Message-ID, fireflies `sentences` are utterances with a speaker and timing, and
+`comments` are a comment API's rows. The record is always the root (seq 0), each child takes the
+next sequence number, and children inherit the root's container and ACL.
 
-ACL rules per doc: `readers` (emails→users, else groups) win; else `private`→author only;
-`group`→the container's group; default→org-wide (everyone). Group membership is the union of
-each author's `author_groups` plus the group of every container they authored in — so a
-`group`-restricted doc is visible to authors in that container. Pass ``--roster`` to state the
-principals instead of deriving them from the records (see :func:`load_roster`), which is how a
-corpus converted from an existing dataset carries a roster it already knows. This one script is
-the BYO counterpart to `app.importer.erb` — it builds the DB + ACL + `data/tokens.yaml` from
-JSONL, and `erb.export_byo` writes an artifact this loads into an equivalent DB.
+ACL per doc: `readers` win (an address is a user, anything else a group); else `private` -> author
+only, `group` -> the container's group, default -> org-wide. Group membership is the union of each
+author's `author_groups` and the group of every container they authored in. Pass ``--roster`` to
+state the principals instead of deriving them from the records (:func:`load_roster`), which is how
+a converted corpus carries a roster it already knows.
 
-Every record is validated against its per-service JSON Schema before loading (a bad corpus
-never half-loads). ``--dry-run`` validates the whole file and reports problems without touching
-the DB — there's no separate validate command.
+Every record is validated against its per-service JSON Schema first, so a bad corpus never
+half-loads; ``--dry-run`` reports problems without touching the DB.
 
 Usage:  python -m app.importer.byo path/to/corpus.jsonl [--append | --dry-run] [--roster r.yaml]
 """
@@ -142,16 +136,14 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
                      created=None, updated=None, owner_display=None) -> dict:
     """Map generic BYO fields (+ meta) to the target service table's own columns.
 
-    ``created``/``updated`` are pre-parsed epoch seconds (or None). Services with a
-    distinct modified time carry ``updated_ts``; slack/gmail carry only ``created_ts``.
+    ``created``/``updated`` are pre-parsed epoch seconds (or None); slack/gmail carry only
+    ``created_ts``.
 
-    ``owner_display`` is the owner's name *as the corpus wrote it*, resolved by the caller from
-    whichever field the service names it in — ``author_name`` generally, gmail's ``mailbox_owner``
-    (a mailbox's owner is not the sender of any one message in it) and fireflies' ``host_name``.
-    Every service whose table has the column takes it; slack/notion/s3 have none, since none of
-    those APIs exposes an owner display name. It is a stored column and not derived from the email
-    because a display name is not recoverable from an address: an accented or initialled name
-    ("Tomás Rré", "Aisha K. Patel") does not survive the round trip through ``<slug>@<domain>``."""
+    ``owner_display`` is the owner's name AS THE CORPUS WROTE IT, which the caller reads from
+    whichever field the service names it in (``author_name``, gmail's ``mailbox_owner``, fireflies'
+    ``host_name``). Stored rather than derived from the address, because an accented or initialled
+    name ("Tomás Rré", "Aisha K. Patel") does not survive the round trip through
+    ``<slug>@<domain>``. slack/notion/s3 have no such column — those APIs expose no owner name."""
     if src == "slack":
         return {"thread_id": thread_id, "thread_seq": seq,
                 "subtype": subtype or ex.get("subtype"),
@@ -289,13 +281,10 @@ def _ff_minutes(value) -> float | None:
 
 
 def _emails(rec: dict):
-    """Yield every email that appears in a record (author, readers, child-row authors).
+    """Yield every email in a record (author, readers, child-row authors).
 
-    Drives org inference (`_infer_org`), so an author alias missing here makes a corpus that uses
-    only that alias fall back to the DEFAULT org — which then mis-grants every public doc, since
-    those are granted to the org principal. `host_email` is Fireflies' own name for the author and
-    `sentences[]` is its child-row array, so both belong here for the same reason
-    `comments[].author_email` does.
+    Drives org inference, so an alias missing here makes a corpus using only that alias fall back to
+    the DEFAULT org — which then mis-grants every public doc, since those go to the org principal.
     """
     for key in ("author_email", "host_email"):
         v = rec.get(key)
@@ -321,14 +310,13 @@ def _infer_org(records, settings: Settings) -> tuple[str, str]:
 def corpus_records(source) -> Iterator[tuple[int, str]]:
     """``(lineno, line)`` over a plain JSONL file, a ``.jsonl.gz``, or a sharded artifact directory.
 
-    A directory is read through its ``manifest.json``, shard by shard, because the whole point of
-    sharding is a corpus too large to hold at once: reading the 581k-record ERB conversion with
-    ``read_text()`` would materialize several gigabytes of ``str``. Line numbers run across the
-    whole artifact so an error message still names one place.
+    A directory is read through its ``manifest.json`` shard by shard, because the point of sharding
+    is a corpus too large to hold at once. Line numbers run across the whole artifact, so an error
+    message still names one place.
 
-    Records are split on ``\\n`` alone (``newline="\\n"``), for the reason ``jsonl_lines`` documents:
-    U+2028 and the vertical tab are ordinary characters inside a JSON string, and Python's universal
-    newlines would otherwise tear a valid record in half.
+    Split on ``\\n`` ALONE (``newline="\\n"``), for the reason ``jsonl_lines`` documents: U+2028 and
+    the vertical tab are ordinary characters inside a JSON string, and universal newlines would tear
+    a valid record in half.
     """
     source = Path(source)
     if source.is_dir():
@@ -433,14 +421,13 @@ def load_roster(path) -> dict:
           - {name: Zoe Newperson, email: zoe.newperson@redwoodinference.com, group: engineering}
 
     ``departments`` is exactly the shape of the bench's ``employee_directory.yaml``, so that file
-    is usable as a roster verbatim; a department name becomes its group id via ``slugify``.
-    ``contacts`` covers people a corpus names who are not accounts — they still own and read
-    documents, they just cannot authenticate, which is the distinction ``tokens.yaml`` draws.
+    works as a roster verbatim; a department name becomes its group id via ``slugify``.
+    ``contacts`` are people a corpus names who are not accounts — they own and read documents but
+    cannot authenticate, the distinction ``tokens.yaml`` draws.
 
-    With a roster supplied, `principals`, `group_members` and `tokens.yaml` come from it ALONE: a
-    record's `author_email` / `readers` are then references into it, and an address that isn't in
-    it (a Slack display handle, an outside sender) stays a plain address on the document instead of
-    silently becoming an org account with a working token.
+    With a roster, `principals`, `group_members` and `tokens.yaml` come from it ALONE: a record's
+    `author_email` / `readers` become references into it, and an address absent from it (a Slack
+    handle, an outside sender) stays a plain address instead of becoming an account with a token.
     """
     data = yaml.safe_load(Path(path).read_text()) or {}
     users: dict[str, dict] = {}
@@ -458,16 +445,13 @@ def load_roster(path) -> dict:
 
 
 class _Loader:
-    """Inserts BYO records into an open DB, accumulating the corpus-level state that the
-    principal, ACL and cross-reference passes need afterwards.
+    """Inserts BYO records into an open DB, accumulating the corpus-level state the principal, ACL
+    and cross-reference passes need afterwards.
 
-    A class rather than one long loop because the per-document mapping is ALSO what the ERB
-    importer drives one document at a time (``erb.load_one``). The two callers have to share one
-    implementation or they drift — which is exactly what the parallel ``load_*`` family in
-    ``erb.py`` used to do, kept in step only by a database-diff test.
-
-    Cross-record work (a HubSpot association's target, a Linear parent's identifier) is deferred
-    to :meth:`resolve_cross_references`: the target may arrive on a later record.
+    A class rather than one long loop because a whole corpus and a single document (the ERB
+    importer's unit) have to go through ONE implementation or they drift. Cross-record work — a
+    HubSpot association's target, a Linear parent's identifier — is deferred to
+    :meth:`resolve_cross_references`, since the target may arrive on a later record.
     """
 
     def __init__(self, conn, org: str, org_domain: str, *, closed: bool = False,
@@ -923,16 +907,12 @@ def load_records(records_factory, settings: Settings | None = None, reset: bool 
                  roster: Path | None = None, validate: bool = True) -> dict:
     """Load already-parsed BYO records into the DB. ``load`` is this over a JSONL file.
 
-    ``records_factory`` is called to get a FRESH iterator of ``(where, record)`` pairs, twice:
-    the org has to be inferred from every author's address before the first grant is written, so
-    the corpus is read in two passes rather than held in memory (a sharded ERB conversion is
-    581k records). ``where`` is whatever names the record in an error message — a line number
-    from a file, an index from a generator.
-
-    ``validate=False`` skips the per-record JSON Schema check. Only for records this repo
-    generated itself (``erb.to_byo``): they come from code the schemas describe, and jsonschema
-    over a million bench documents is pure cost on that path. A corpus from OUTSIDE always
-    validates, which is why ``load`` does not expose the flag.
+    ``records_factory`` returns a FRESH iterator of ``(where, record)`` pairs and may be called
+    twice — the org has to be inferred from every author's address before the first grant is
+    written, so a corpus is re-read rather than held in memory. ``where`` names the record in an
+    error message. ``validate=False`` skips the JSON Schema check, and is only for records this repo
+    generated itself (``erb.to_byo``); a corpus from OUTSIDE always validates, which is why
+    ``load`` does not expose the flag.
     """
     settings = settings or get_settings()
     if reset and settings.db_path.exists():

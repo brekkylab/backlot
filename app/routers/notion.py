@@ -29,7 +29,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
-from app import auth, store, synth
+from app import auth, pagination, store, synth
 from app.routers import json_body
 from app.openapi import qp
 
@@ -116,18 +116,8 @@ def _list_obj(results: list, offset: int, page_len: int, total: int, type_key: s
     nxt = offset + page_len
     has_more = nxt < total
     return {"object": "list", "results": results,
-            "next_cursor": synth_encode(nxt) if has_more else None,
+            "next_cursor": pagination.encode_cursor(nxt) if has_more else None,
             "has_more": has_more, "type": type_key, type_key: {}}
-
-
-def synth_encode(offset: int) -> str:
-    from app.pagination import encode_cursor
-    return encode_cursor(offset)
-
-
-def _offset(cursor) -> int:
-    from app.pagination import decode_cursor
-    return decode_cursor(cursor)
 
 
 def _user_obj(conn, email: str) -> dict:
@@ -274,7 +264,7 @@ async def get_block_children(block_id: str, request: Request):
     if row is None:
         return _error(404, "object_not_found", f"Could not find block with ID: {block_id}.")
     blocks = synth.notion_blocks(row["doc_id"], row["content"])
-    offset = _offset(request.query_params.get("start_cursor"))
+    offset = pagination.decode_cursor(request.query_params.get("start_cursor"))
     limit = _page_size(request.query_params.get("page_size"))
     page = blocks[offset:offset + limit]
     return _list_obj(page, offset, len(page), len(blocks), "block")
@@ -320,7 +310,7 @@ async def _query_rows(request: Request, db_doc_id: str | None):
     if db is None or db["subtype"] != "database":
         return _error(404, "object_not_found", "Could not find the requested database.")
     body = await json_body(request)
-    offset = _offset(body.get("start_cursor"))
+    offset = pagination.decode_cursor(body.get("start_cursor"))
     limit = _page_size(body.get("page_size"))
     rows = store.children(conn, "notion", db_doc_id, visible, limit=limit + 1, offset=offset)
     page = rows[:limit]
@@ -353,7 +343,7 @@ async def search(request: Request):
     body = await json_body(request)
     query = body.get("query") or ""
     want = (body.get("filter") or {}).get("value")  # 'page' | 'database' | None
-    offset = _offset(body.get("start_cursor"))
+    offset = pagination.decode_cursor(body.get("start_cursor"))
     limit = _page_size(body.get("page_size"))
     # Over-fetch so object-type filtering still fills a page; cap keeps it bounded. An empty query
     # means "everything the integration can see" (real Notion behavior), so list instead of FTS.
@@ -386,7 +376,7 @@ async def list_users(request: Request):
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
     users = store.list_users(conn)
-    offset = _offset(request.query_params.get("start_cursor"))
+    offset = pagination.decode_cursor(request.query_params.get("start_cursor"))
     limit = _page_size(request.query_params.get("page_size"))
     page = users[offset:offset + limit]
     results = [_user_obj(conn, u["email"]) for u in page]
@@ -438,7 +428,7 @@ async def list_comments(request: Request):
         return _list_obj([], 0, 0, 0, "comment")
     parent_id = synth.notion_id(row["doc_id"])
     comments = store.doc_comments(conn, "notion", doc_id)
-    offset = _offset(request.query_params.get("start_cursor"))
+    offset = pagination.decode_cursor(request.query_params.get("start_cursor"))
     limit = _page_size(request.query_params.get("page_size"))
     page = comments[offset:offset + limit]
     results = [{

@@ -695,8 +695,7 @@ class _Loader:
                 # and the app's reverse index is built from stored columns — so a serve-time-only
                 # identifier came back "Entity not found" from `issue(id: "ENG-749")` even though
                 # the API had just handed the caller that exact string. Deterministic, so the
-                # served value is unchanged; it is just written down now. (erb's load_linear
-                # already does this; only BYO could reach the gap.)
+                # served value is unchanged; it is just written down now.
                 cols["identifier"] = synth.linear_identifier(
                     did, synth.linear_team_key(container))
             names = list(cols)
@@ -759,7 +758,7 @@ class _Loader:
                 raise SystemExit(f"{where}: each comment needs 'content'")
             register(c.get("author_email"), c.get("author_name"))
             # A comment with no explicit time follows the PREVIOUS comment, not the doc's clock
-            # plus its position — the rule `erb.load_linear` already applies, and for its reason:
+            # plus its position. The reason:
             # in a thread that mixes dated and undated comments, `created + j` lands an undated one
             # back at the document's creation time and any consumer ordering by createdAt (Linear's
             # `Issue.comments` does) serves the thread inverted. Monotonic, so it cannot. For an
@@ -813,6 +812,15 @@ class _Loader:
                    ex={**msg, "thread": gmail_thread},
                    cts=_epoch(msg.get("created")) or (created + i * 3600))
 
+    def write_containers(self) -> None:
+        """The per-service grouping rows (``slack_channels``, ``linear_teams``, ``gdrive_folders``,
+        …). Deferred to the end of a load rather than written per record: a container's owning
+        group is whatever its records agreed on, and the last one wins."""
+        for (src, name), group_id in self.containers.items():
+            gtable, gcol = store.GROUPING[src]
+            self.conn.execute(f"INSERT OR REPLACE INTO {gtable}({gcol}, group_id) VALUES (?,?)",
+                              (name, group_id))
+
     def resolve_cross_references(self) -> None:
         """Resolve the links whose target may only have arrived on a later record."""
         conn, counts, seen = self.conn, self.counts, self.seen
@@ -848,8 +856,7 @@ class _Loader:
                      tid or synth.hubspot_assoc_type_id(f_type, t_type), label))
 
         # Linear parents: `parent` names the target by IDENTIFIER, so it can only be resolved once
-        # every issue is loaded — the same second pass `erb.resolve_linear_references` runs, and for
-        # the same reason: `Issue.children` reads `parent_doc_id`, so without this a BYO corpus would
+        # every issue is loaded. `Issue.children` reads `parent_doc_id`, so without this a corpus would
         # serve `parent` but an empty `children`, and the two directions would disagree.
         if counts.get("linear"):
             key_to_doc: dict[str, str] = {}
@@ -949,15 +956,21 @@ def load_records(records_factory, settings: Settings | None = None, reset: bool 
                        if isinstance(r, dict)]
                    for c in ("comments", "sentences", "messages", "replies") if c in _rec}}
 
-    org_name, org_domain = _infer_org(_scanned(), settings)
     roster_data = load_roster(roster) if roster else None
     closed = roster_data is not None
-    if closed:
-        # A roster states the org rather than leaving it to be guessed from the dominant author
-        # domain — which a converted corpus can get wrong, since its documents also carry outside
-        # senders and display-only handles.
-        org_name = roster_data.get("org") or org_name
-        org_domain = roster_data.get("org_domain") or org_domain
+    # A roster states the org rather than leaving it to be guessed from the dominant author domain
+    # — which a converted corpus can get wrong, since its documents also carry outside senders and
+    # display-only handles. When it states BOTH, the inference pass is pure cost: every value it
+    # would produce is about to be overwritten. Skipping it also halves the passes an in-memory
+    # caller makes over a corpus it generates on the fly (see erb.import_structured).
+    stated = bool(roster_data and roster_data.get("org") and roster_data.get("org_domain"))
+    if stated:
+        org_name, org_domain = roster_data["org"], roster_data["org_domain"]
+    else:
+        org_name, org_domain = _infer_org(_scanned(), settings)
+        if closed:
+            org_name = roster_data.get("org") or org_name
+            org_domain = roster_data.get("org_domain") or org_domain
     if not reset:
         row = conn.execute("SELECT id FROM principals WHERE type='org' LIMIT 1").fetchone()
         if row:
@@ -968,7 +981,7 @@ def load_records(records_factory, settings: Settings | None = None, reset: bool 
     for lineno, rec in records_factory():
         loader.add(rec, f"line {lineno}")
     loader.resolve_cross_references()
-    containers, users, groups = loader.containers, loader.users, loader.groups
+    users, groups = loader.users, loader.groups
     memberships, grants = loader.memberships, loader.grants
     counts, fts_ids = loader.counts, loader.fts_ids
 
@@ -985,10 +998,7 @@ def load_records(records_factory, settings: Settings | None = None, reset: bool 
         conn.execute("INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (g, "group", g, None))
     for email, name in users.items():
         conn.execute("INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (email, "user", name, email))
-    for src, name in {(s, n) for (s, n) in containers}:
-        gtable, gcol = store.GROUPING[src]
-        conn.execute(f"INSERT OR REPLACE INTO {gtable}({gcol}, group_id) VALUES (?,?)",
-                     (name, containers[(src, name)]))
+    loader.write_containers()
     for g, email in memberships:
         conn.execute("INSERT OR REPLACE INTO group_members VALUES (?,?)", (g, email))
     for doc_id, ptype, pid in grants:

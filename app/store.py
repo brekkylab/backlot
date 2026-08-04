@@ -245,7 +245,7 @@ CREATE INDEX IF NOT EXISTS idx_hubspot_assoc_from ON hubspot_associations(from_d
 -- (not status), `estimate` (not story points), `branch_name` (branchName), `identifier` — so the
 -- served payload can't drift toward the wrong vendor's model even though the two are close.
 -- `priority` is Linear's own 0-4 integer (0 none, 1 urgent … 4 low), NOT the corpus's "P1"
--- string: the importer maps onto the API's scale, the way load_hubspot maps onto real HubSpot
+-- string: the importer maps onto the API's scale, the way the ERB converter maps onto real HubSpot
 -- property names. `priorityLabel` is derived from it at serve time.
 CREATE TABLE IF NOT EXISTS linear_issues (
     doc_id TEXT PRIMARY KEY, team TEXT NOT NULL, author_email TEXT NOT NULL,

@@ -2080,6 +2080,148 @@ def test_drive_native_docs_report_size(client, admin_h):
     assert "size" not in folder              # ...but not for folders or shortcuts
 
 
+# --- Drive about.get -----------------------------------------------------------------------
+#
+# `about` answers "who am I and how much space do I use" — the call a Drive client makes first,
+# and the one the mock had no route for at all (404). Its contract is unusual: `fields` is
+# mandatory, and the response carries only what the mask asked for.
+
+ABOUT = "/drive/v3/about"
+SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+
+
+def _about(client, headers, fields):
+    return client.get(ABOUT, headers=headers, params={"fields": fields})
+
+
+def test_drive_about_requires_a_fields_mask(client, admin_h):
+    """Real Drive 400s `about.get` with no `fields` — this resource has no default projection.
+    Serving a full body instead would let a client ship a call that fails in production."""
+    r = client.get(ABOUT, headers=admin_h)
+    assert r.status_code == 400
+    assert "fields" in r.json()["detail"]
+
+
+def test_drive_about_rejects_an_unknown_field(client, admin_h):
+    """Same rule as the `files` masks: a typo 400s rather than quietly matching nothing."""
+    assert _about(client, admin_h, "storageQuoat").status_code == 400
+    assert _about(client, admin_h, "storageQuota").status_code == 200
+
+
+def test_drive_about_rejects_a_mask_that_selects_nothing(client, admin_h):
+    """`fields=,` clears the required-mask check but names no field. Falling through to "no
+    projection" would answer a request for nothing with the entire resource."""
+    r = client.get(ABOUT, headers=admin_h, params={"fields": ","})
+    assert r.status_code == 400
+
+
+def test_drive_about_needs_auth(client):
+    assert client.get(ABOUT, params={"fields": "user"}).status_code == 401
+    # auth is resolved before the mask, as real Drive does — a bad mask on a bad token is still 401
+    assert client.get(ABOUT).status_code == 401
+
+
+def test_drive_about_serves_only_the_requested_fields(client, admin_h):
+    """Unlike `files.list` — whose typed response model always carries `kind` — `about` projects
+    strictly, which is what real Drive does: ask for `user` and `user` is all you get."""
+    j = _about(client, admin_h, "user").json()
+    assert set(j) == {"user"}
+    assert set(_about(client, admin_h, "user,storageQuota").json()) == {"user", "storageQuota"}
+
+
+def test_drive_about_nested_mask_selects_its_parent(client, admin_h):
+    """`storageQuota/limit` selects `storageQuota`, the same rule every other mask in this mock
+    follows — one projection depth, applied consistently."""
+    j = _about(client, admin_h, "storageQuota/limit").json()
+    assert set(j) == {"storageQuota"}
+    assert "usage" in j["storageQuota"]
+
+
+def test_drive_about_user_is_the_caller(client, tokens):
+    """`about.user` is the authenticated user, so `me` is true — the opposite of the same object
+    read as a file's `owners` entry, where it describes someone else."""
+    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    u = _about(client, mia, "user").json()["user"]
+    assert u["kind"] == "drive#user"
+    assert u["emailAddress"] == "mia@acme.com"
+    assert u["me"] is True
+    # the file resource keeps its own answer: mia as an owner is not "me" to the object itself
+    assert _drive_find(client, mia, "Brand")["owners"][0]["me"] is False
+
+
+def test_drive_about_admin_token_reports_a_concrete_address(client, admin_h):
+    """The admin/service token is not a Drive person; real Drive still never reports a placeholder
+    here, so the service identity stands in — as `gmail.users.getProfile` already does."""
+    u = _about(client, admin_h, "user").json()["user"]
+    assert "@" in u["emailAddress"] and u["me"] is True
+
+
+def test_drive_about_usage_matches_the_sizes_files_list_serves(client, tokens):
+    """storageQuota and files.list are two views of one corpus. If they disagree, a client cannot
+    reconcile "how much space do I use" with "what is in my Drive"."""
+    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    quota = _about(client, mia, "storageQuota").json()["storageQuota"]
+    files = client.get("/drive/v3/files", headers=mia,
+                       params={"pageSize": 100, "fields": "files(size)"}).json()["files"]
+    listed = sum(int(f["size"]) for f in files if "size" in f)   # folders carry no size
+    assert listed > 0
+    assert int(quota["usageInDrive"]) == listed
+    assert quota["usage"] == quota["usageInDrive"]   # the mock stores nothing outside Drive
+    assert int(quota["limit"]) == 2199023255552     # 2 TiB
+    assert int(quota["usageInDriveTrash"]) == 0     # SAMPLE trashes nothing
+
+
+def test_drive_about_usage_is_scoped_to_the_caller(client, admin_h, tokens):
+    """A scoped token must not be told the weight of a corpus it cannot read."""
+    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    mine = int(_about(client, mia, "storageQuota").json()["storageQuota"]["usage"])
+    everything = int(_about(client, admin_h, "storageQuota").json()["storageQuota"]["usage"])
+    assert 0 < mine < everything
+
+
+def test_drive_about_export_formats_are_honoured_by_files_export(client, admin_h):
+    """Advertising a target that `files.export` refuses would be worse than advertising nothing:
+    a client reads this map to decide what to ask for."""
+    formats = _about(client, admin_h, "exportFormats").json()["exportFormats"]
+    doc = _drive_find(client, admin_h, "Brand")
+    assert doc["mimeType"] == DOC_MIME and formats[DOC_MIME]
+    for target in formats[DOC_MIME]:
+        r = client.get(f"/drive/v3/files/{doc['id']}/export", headers=admin_h,
+                       params={"mimeType": target})
+        assert r.status_code == 200, target
+    # every native type the mock serves is covered; the folder type is not exportable anywhere
+    assert set(formats) == {DOC_MIME, SHEET_MIME,
+                            "application/vnd.google-apps.presentation"}
+    assert "text/csv" in formats[SHEET_MIME]
+
+
+def test_drive_about_shared_drive_fields_agree_with_the_drives_listing(client, admin_h):
+    """The mock's corpus is all My Drive and `/drive/v3/drives` is empty, so every shared-drive
+    field has to say the same thing rather than hinting at a capability that isn't there."""
+    j = _about(client, admin_h, "*").json()
+    assert client.get("/drive/v3/drives", headers=admin_h).json()["drives"] == []
+    assert j["canCreateDrives"] is False and j["canCreateTeamDrives"] is False
+    assert j["driveThemes"] == [] and j["teamDriveThemes"] == []
+
+
+def test_drive_about_star_serves_the_whole_resource(client, admin_h):
+    j = _about(client, admin_h, "*").json()
+    assert j["kind"] == "drive#about"
+    assert j["appInstalled"] is False
+    assert {"user", "storageQuota", "importFormats", "exportFormats", "maxImportSizes",
+            "maxUploadSize", "folderColorPalette"} <= set(j)
+    # folderColorRgb is a documented file field, so the palette a client picks from must be real
+    assert all(re.fullmatch(r"#[0-9a-f]{6}", c) for c in j["folderColorPalette"])
+    assert DOC_MIME in j["importFormats"]["text/plain"]
+
+
+def test_drive_about_appears_in_the_openapi_spec(client):
+    """The OpenAPI→MCP bridge builds its tools from the spec, so a route the spec omits is a route
+    no generated client can reach."""
+    op = client.get("/openapi.json").json()["paths"][ABOUT]["get"]
+    assert {p["name"] for p in op["parameters"]} == {"fields"}
+
+
 # --- OpenAPI enrichment: notion -----------------------------------------------------------
 
 def test_notion_search_documents_body_param(client):

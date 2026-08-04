@@ -1,20 +1,14 @@
 """Read-only SQLite access layer.
 
-Each service has its **own** table with columns natural to that service — no single
-crammed `documents` table, so a column used by one service never lands on another's
-rows. Each service also has its **own** grouping-unit table under its natural name
-(``slack_channels``, ``gmail_mailboxes``, ``gdrive_folders``, ``github_repos``,
-``jira_projects``, ``confluence_spaces``) mapping that unit to its owning ACL group.
-Cross-cutting *relationship* tables (principals, group membership, ACL grants) stay
-shared and are keyed by the globally-unique ``doc_id``.
+One table per service, with that service's own columns and its own grouping-unit table
+(``slack_channels``, ``github_repos``, …) — never one crammed ``documents`` table, so a column
+one service needs never lands on another's rows. Only the *relationship* tables (principals,
+group membership, ACL grants) are shared, keyed by the globally-unique ``doc_id``.
 
-Every doc table shares four core columns — ``doc_id, author_email, title, content`` —
-plus a service-specific grouping column (``channel``/``mailbox``/``folder``/``repo``/
-``project``/``space``); listing / ACL / pagination stay uniform via the ``GROUPING``
-registry, and everything else is per-service.
-Every listing/get takes an optional ``visible_ids`` set: ``None`` = admin (sees all),
-otherwise results are filtered to docs whose ACL grants intersect that set. JSON-valued
-columns (reactions, labels, …) are stored as TEXT; read them with :func:`jcol`.
+Every doc table carries the same four core columns (``doc_id, author_email, title, content``)
+plus its grouping column, which is what keeps listing / ACL / pagination uniform via the
+``GROUPING`` registry. Every listing takes ``visible_ids``: ``None`` = admin, otherwise results
+are filtered to docs whose ACL grants intersect it. JSON columns are TEXT — read with :func:`jcol`.
 """
 from __future__ import annotations
 
@@ -214,21 +208,17 @@ CREATE INDEX IF NOT EXISTS idx_s3_bucket ON s3_objects(bucket);
 CREATE INDEX IF NOT EXISTS idx_s3_key ON s3_objects(bucket, key);
 
 -- ── HubSpot: ONE polymorphic table, because the CRM API is polymorphic ──
--- `{objectType}` is a path variable (/crm/v3/objects/{objectType}) and HubSpot supports custom
--- objects, so a table per type would make every new object type a schema migration and would put
--- a source's docs in more than one table, breaking `table()`'s one-table-per-source contract.
--- HubSpot's typed properties therefore live in a JSON column: search filters can name ANY
--- property, so they compile to json_extract() rather than to fixed columns.
+-- `{objectType}` is a path variable and custom object types exist, so a table per type would make
+-- each new type a migration and break table()'s one-table-per-source contract. Typed properties live
+-- in a JSON column because a search filter may name any property (-> json_extract).
 CREATE TABLE IF NOT EXISTS hubspot_objects (
     doc_id TEXT PRIMARY KEY, object_type TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     properties TEXT, archived INTEGER, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     owner_display TEXT
 );
--- (object_type, doc_id), not object_type alone: every read of this table is "one object type,
--- ordered by doc_id" — keyset paging and the search scan both are — and a single-column index
--- leaves ORDER BY to a temp b-tree that re-sorts every matching row on each page. Same lesson as
--- idx_s3_key(bucket, key): put the ordering column in the index so a page is a range seek.
+-- (object_type, doc_id), not object_type alone: every read is "one type, ordered by doc_id", so
+-- carrying the ordering column makes a page a range seek instead of a temp-b-tree re-sort.
 CREATE INDEX IF NOT EXISTS idx_hubspot_type_doc ON hubspot_objects(object_type, doc_id);
 
 -- Associations are bidirectional in real HubSpot, with a distinct type id per direction, so a row
@@ -241,12 +231,10 @@ CREATE TABLE IF NOT EXISTS hubspot_associations (
 );
 CREATE INDEX IF NOT EXISTS idx_hubspot_assoc_from ON hubspot_associations(from_doc_id, to_type);
 
--- ── Linear: issues + their comments. Columns keep LINEAR's vocabulary, not Jira's — `state`
--- (not status), `estimate` (not story points), `branch_name` (branchName), `identifier` — so the
--- served payload can't drift toward the wrong vendor's model even though the two are close.
--- `priority` is Linear's own 0-4 integer (0 none, 1 urgent … 4 low), NOT the corpus's "P1"
--- string: the importer maps onto the API's scale, the way the ERB converter maps onto real HubSpot
--- property names. `priorityLabel` is derived from it at serve time.
+-- ── Linear: issues + their comments. Columns keep LINEAR's vocabulary, not Jira's (`state` not
+-- status, `estimate` not story points, `branch_name`), so the payload cannot drift toward the wrong
+-- vendor's model. `priority` is Linear's own 0-4 integer (0 none, 1 urgent … 4 low), not the corpus's
+-- "P1"; `priorityLabel` is derived from it at serve time.
 CREATE TABLE IF NOT EXISTS linear_issues (
     doc_id TEXT PRIMARY KEY, team TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
@@ -256,51 +244,34 @@ CREATE TABLE IF NOT EXISTS linear_issues (
     archived_ts INTEGER, auto_archived_ts INTEGER, auto_closed_ts INTEGER,
     canceled_ts INTEGER, completed_ts INTEGER, started_ts INTEGER,
     assignee_email TEXT, assignee_display TEXT, owner_display TEXT,
-    -- The parent's human identifier (ENG-123), as the corpus wrote it, and the doc_id that key
-    -- was RESOLVED to at import. Both, because they answer different questions: `parent_key` is
-    -- the corpus's own value, `parent_doc_id` is what the API serves.
-    --
-    -- The resolution has to happen once, at import, because bench identifiers are not unique:
-    -- 45.4% of parent references point at a key that matches more than one issue, and `ENG-314159`
-    -- alone is claimed by 218 children while being the identifier of 107 issues — a serve-time
-    -- join on `identifier` would invent 23,326 edges from that key. Resolving once (first match by
-    -- doc_id, the same rule `linear_issue_by_identifier` applies) makes `Issue.parent` and
-    -- `Issue.children` EXACT inverses by construction rather than two lookups kept in step, and
-    -- drops the 24.8% dangling references at import instead of on every request.
+    -- The parent's identifier as the corpus wrote it, plus the doc_id it RESOLVED to at import. Both,
+    -- because bench identifiers are NOT unique (one key is the identifier of 107 issues), so a
+    -- serve-time join on `identifier` would invent edges. Resolving once — first match by doc_id, the
+    -- rule linear_issue_by_identifier applies — makes Issue.parent and Issue.children exact inverses.
     parent_key TEXT, parent_doc_id TEXT,
     -- Release name as the corpus writes it (`runtime-1.19`); served as `Issue.releases`.
     release TEXT
 );
--- (team, doc_id) rather than team alone: every read here is "one team, ordered by doc_id" —
--- the Relay connection pages that way — so putting the ordering column in the index makes a
--- page a range seek instead of a temp b-tree re-sort of the whole team (same lesson as
--- idx_hubspot_type_doc). ENG alone is ~23k rows.
+-- (team, doc_id): the Relay connection pages one team ordered by doc_id, so carrying the ordering
+-- column makes a page a range seek rather than a re-sort of the whole team.
 CREATE INDEX IF NOT EXISTS idx_linear_team_doc ON linear_issues(team, doc_id);
--- The ORDER BY is always TOTAL — the sort key plus `doc_id` — so an index on the sort key ALONE
--- does not satisfy it: SQLite reports "USE TEMP B-TREE FOR LAST TERM OF ORDER BY" and sorts the
--- whole table for every page. That is not academic. When the default ordering moved from `doc_id`
--- (the primary key, already an index) to Linear's documented `createdAt`, a page at offset 35,000
--- went from 5ms to 699ms on the deployed corpus. These carry the tiebreak, so the ORDER BY is
--- read straight off the index.
+-- The ORDER BY is always TOTAL (sort key + doc_id), so an index on the sort key alone does not
+-- satisfy it — SQLite falls back to a temp b-tree over the whole table for every page. These carry
+-- the tiebreak, so the ORDER BY is read straight off the index.
 CREATE INDEX IF NOT EXISTS idx_linear_created_doc ON linear_issues(created_ts, doc_id);
 CREATE INDEX IF NOT EXISTS idx_linear_team_created ON linear_issues(team, created_ts, doc_id);
 -- `orderBy: updatedAt` sorts on the same COALESCE the field is served with, so the index has to
 -- be on the expression, not the bare column.
 CREATE INDEX IF NOT EXISTS idx_linear_updated_doc
     ON linear_issues(COALESCE(updated_ts, created_ts), doc_id);
--- Superseded by idx_linear_created_doc, which has it as a prefix. Dropped explicitly because
--- `CREATE INDEX IF NOT EXISTS` matches on NAME — it would never replace a differently-defined
--- index of the same name on an already-built DB.
+-- Superseded by idx_linear_created_doc (which has it as a prefix). Dropped EXPLICITLY: `CREATE INDEX
+-- IF NOT EXISTS` matches on NAME, so it would never replace this on an already-built DB.
 DROP INDEX IF EXISTS idx_linear_created_ts;
 CREATE INDEX IF NOT EXISTS idx_linear_state ON linear_issues(state);
--- The by-id roots probe "can this caller see any issue carrying X" (linear_entity_has_visible).
--- Indexed so the probe seeks to that entity's issues instead of scanning all 35k until it finds
--- one the caller may read — the miss case (which is exactly the leak attempt) is the worst case.
--- Labels have no index: they live in a JSON column and json_each cannot be indexed. Measured on
--- the deployed 35k-issue corpus, that is the right trade rather than a gap — a legitimate HIT is
--- 3.7-7.6ms (it stops at the first visible carrier) and an absent id never reaches the probe at
--- all (4.1ms), while only a MISS, i.e. a caller probing a label they cannot see, pays the full
--- 81ms scan. The slow path is exactly the enumeration path.
+-- The by-id roots probe "can this caller see any issue carrying X" (linear_entity_has_visible), so
+-- these are indexed to seek rather than scan until the first readable row. Labels get no index (JSON
+-- column; json_each cannot be indexed) — only a MISS pays a full scan, and a miss is exactly the
+-- enumeration attempt.
 CREATE INDEX IF NOT EXISTS idx_linear_project ON linear_issues(project);
 CREATE INDEX IF NOT EXISTS idx_linear_cycle ON linear_issues(cycle);
 CREATE INDEX IF NOT EXISTS idx_linear_assignee ON linear_issues(assignee_email);
@@ -313,10 +284,8 @@ CREATE INDEX IF NOT EXISTS idx_linear_release ON linear_issues(release);
 -- unique (5,055 of them repeat), so this is a lookup index, never a unique constraint.
 CREATE INDEX IF NOT EXISTS idx_linear_identifier ON linear_issues(identifier);
 -- COVERING index for the startup reverse-index build (app.main._build_index), which reads
--- (doc_id, identifier) for every issue. Without it that query walks the doc_id primary-key index
--- and then fetches each wide row (the `content` column is a full issue description) from a
--- scattered table page: 5.6s for 35k rows on the 8GB bench DB, i.e. essentially the whole server
--- startup. As an index-only scan it is ~40ms.
+-- (doc_id, identifier) for every issue. Without it each wide row is fetched from a scattered page and
+-- the scan dominates server startup; as an index-only scan it is negligible.
 CREATE INDEX IF NOT EXISTS idx_linear_doc_ident ON linear_issues(doc_id, identifier);
 
 CREATE TABLE IF NOT EXISTS linear_comments (
@@ -328,11 +297,9 @@ CREATE INDEX IF NOT EXISTS idx_linear_comments_doc ON linear_comments(doc_id, se
 -- re-sorts all 165k bench comments in a temp b-tree on every page.
 CREATE INDEX IF NOT EXISTS idx_linear_comments_ts ON linear_comments(created_ts, id);
 
--- Linear models a dependency as an IssueRelation with a `type` (blocks | duplicate | related).
--- One row per DIRECTION is NOT stored: `Issue.relations` and `Issue.inverseRelations` are the two
--- ends of the same row, so the row is written once from the declaring issue and read from either
--- side. `to_doc_id` is resolved at import for the same reason `parent_doc_id` is — a dangling or
--- ambiguous key must never become a relation pointing at an issue that does not exist.
+-- Linear's IssueRelation, `type` in (blocks | duplicate | related). ONE row per relation, not per
+-- direction: Issue.relations and Issue.inverseRelations are the two ends of the same row.
+-- `to_doc_id` is resolved at import, so a dangling key never becomes a relation.
 CREATE TABLE IF NOT EXISTS linear_relations (
     id TEXT PRIMARY KEY, from_doc_id TEXT NOT NULL, to_doc_id TEXT NOT NULL,
     type TEXT NOT NULL, created_ts INTEGER NOT NULL
@@ -340,9 +307,8 @@ CREATE TABLE IF NOT EXISTS linear_relations (
 CREATE INDEX IF NOT EXISTS idx_linear_rel_from ON linear_relations(from_doc_id);
 CREATE INDEX IF NOT EXISTS idx_linear_rel_to ON linear_relations(to_doc_id);
 
--- An attachment is Linear's model for any external link on an issue, which is what the bench's
--- `links` and `attachments` both are. `title` is non-null in Linear, so a bare URL gets one
--- derived from its last path segment rather than an empty string.
+-- Linear's model for any external link on an issue (the bench's `links` and `attachments` both).
+-- `title` is non-null in Linear, so a bare URL gets one derived from its last path segment.
 CREATE TABLE IF NOT EXISTS linear_attachments (
     id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
     title TEXT NOT NULL, url TEXT NOT NULL, subtitle TEXT, source_type TEXT,
@@ -350,29 +316,21 @@ CREATE TABLE IF NOT EXISTS linear_attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_linear_attach_doc ON linear_attachments(doc_id, seq);
 
--- A Fireflies transcript: one root document per meeting, plus its ordered sentences below.
--- `content` is the sentences concatenated (see synth.fireflies_transcript_text), so full-text
--- search and any RAG consumer work against the meeting as one document — and the concatenation
--- is an EXACT inverse of fireflies_sentences, never a second copy that can drift.
---
--- `author_email` is the core column every doc table carries; for a transcript it is the HOST
--- (the API's `host_email`). `organizer_email` is separate because the real API exposes both and
--- they legitimately differ; it is NULL when the meeting's organizer is its host, which is what
--- the bench describes.
+-- One root document per meeting plus its ordered sentences below. `content` is the sentences
+-- concatenated (synth.fireflies_transcript_text) so search and any RAG consumer see one document; it
+-- is an EXACT inverse of fireflies_sentences, not a second copy that can drift. `author_email` is the
+-- HOST (the API's `host_email`); `organizer_email` is separate because the real API exposes both and
+-- they legitimately differ, and is NULL when they coincide.
 CREATE TABLE IF NOT EXISTS fireflies_transcripts (
     doc_id TEXT PRIMARY KEY, channel TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
-    -- The API-facing transcript id. Synthesized (synth.fireflies_id) rather than taken from the
-    -- bench's `meeting_id`, which is NOT unique — 10,147 distinct values across 10,173 documents,
-    -- one repeated 3 times — and `id` is the argument `transcript(id:)` looks a meeting up by, so
-    -- a duplicate would make that lookup ambiguous. The corpus's own value is kept as
-    -- `calendar_id`, which is where a real Fireflies transcript carries its calendar-side id.
+    -- The API-facing id, synthesized rather than taken from the bench's `meeting_id`, which is NOT
+    -- unique — and `transcript(id:)` looks a meeting up by it, so a duplicate would make that ambiguous.
+    -- The corpus's own value is kept as `calendar_id`, where a real transcript carries it.
     transcript_id TEXT, calendar_id TEXT, calendar_type TEXT,
     organizer_email TEXT, duration REAL,
     created_ts INTEGER NOT NULL,
     -- JSON: the API's nested objects, stored whole because that is the shape served.
-    -- `summary` carries overview/keywords/action_items/outline/topics_discussed/meeting_type;
-    -- `analytics` carries sentiments/speakers/categories.
     summary TEXT, analytics TEXT, participants TEXT, meeting_attendees TEXT,
     audio_url TEXT, video_url TEXT, transcript_url TEXT, meeting_link TEXT,
     owner_display TEXT
@@ -390,13 +348,10 @@ CREATE INDEX IF NOT EXISTS idx_fireflies_transcript_id
 -- `transcripts(host_email:)` / `organizers:` filter on these directly.
 CREATE INDEX IF NOT EXISTS idx_fireflies_host ON fireflies_transcripts(author_email);
 
--- The transcript's sentences: the child rows of a Fireflies doc. Carries the shared child-row
--- contract (id, doc_id, seq, author_email, body, created_ts, reactions) that doc_comments reads,
--- so it fits the COMMENT_TABLE slot, plus the per-sentence fields the Fireflies API serves.
--- `body` IS the sentence text and `author_email` is the speaker RESOLVED to an identity — NULL
--- for an anonymous label ("Speaker 3"), which the corpus deliberately contains and which the real
--- API also leaves unattributed. `speaker_name` is always the label as transcribed.
--- start_time/end_time are seconds (REAL), as the API returns them.
+-- The transcript's sentences. Carries the shared child-row contract that doc_comments reads, so it
+-- fits the COMMENT_TABLE slot, plus the per-sentence fields the API serves. `body` IS the sentence
+-- text; `author_email` is the speaker resolved to an identity, NULL for an anonymous label
+-- ("Speaker 3") which both the corpus and the real API leave unattributed.
 CREATE TABLE IF NOT EXISTS fireflies_sentences (
     id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
     author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT,
@@ -465,16 +420,13 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
 
 def connect_ro(path: Path, *, mmap_mb: int = 0, cache_mb: int = 0,
                temp_memory: bool = False, busy_ms: int = 0) -> sqlite3.Connection:
-    """Open a read-only connection. The tuning knobs default to off (so tests and small
-    corpora are unaffected); the serving path passes config values to keep the big DB warm:
+    """Open a read-only connection. The tuning knobs default to off, so tests and small corpora are
+    unaffected; the serving path passes config values to keep the big DB warm.
 
-    - ``mmap_mb``: memory-map up to this many MiB of the DB, so reads go through the OS page
-      cache without per-read syscalls or a duplicated pager buffer (set >= DB size to map it
-      fully; SQLite silently caps to its compile-time max). The main lever against cold reads.
-    - ``cache_mb``: SQLite's own page cache size (MiB).
-    - ``temp_memory``: keep transient sorts/temp b-trees in RAM (helps FTS ``ORDER BY rank``).
-    - ``busy_ms``: wait this long for a lock instead of erroring — lets reads ride through an
-      out-of-band writer's commit (e.g. an in-place ``build_fts`` rebuild) rather than 500ing.
+    ``mmap_mb`` memory-maps the DB (the main lever against cold reads; set >= DB size to map it
+    fully), ``cache_mb`` sizes SQLite's page cache, ``temp_memory`` keeps sorts in RAM (helps FTS
+    ``ORDER BY rank``), and ``busy_ms`` waits for a lock instead of erroring — so a read rides
+    through an out-of-band writer's commit (an in-place ``build_fts``) rather than 500ing.
     """
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -558,34 +510,25 @@ def list_documents(conn, source_type, container=None, visible_ids=None, limit=10
 
 
 def key_successor(s: str) -> str:
-    """The lexicographically-smallest string that is greater than every string with prefix
-    ``s`` (increments ``s``'s last character). Used both to turn an S3 prefix filter into a
-    half-open byte range (``key >= s AND key < key_successor(s)``) and, in the ListObjectsV2
-    router, to build a keyset cursor that skips an entire rolled-up CommonPrefixes group in one
-    bound. Undefined for an empty string — callers guard the empty-prefix case separately."""
+    """The smallest string greater than every string with prefix ``s`` (increments its last
+    character), so an S3 prefix becomes the half-open range ``key >= s AND key < key_successor(s)``.
+    The ListObjectsV2 router also uses it to skip a whole CommonPrefixes group in one bound.
+    Undefined for an empty string — callers guard that case."""
     return s[:-1] + chr(ord(s[-1]) + 1)
 
 
 def list_s3_objects(conn, bucket, *, prefix="", start_after=None, start_at=None, visible_ids=None,
                     limit=1000) -> list[sqlite3.Row]:
-    """S3 ListObjectsV2's data-access path: prefix filter, keyset pagination, and ACL scoping,
-    all pushed into SQL and ordered by key — so listing a big bucket costs one indexed range
-    scan per page, not a whole-bucket materialize + Python sort/filter.
+    """One page of ListObjectsV2: prefix filter, keyset pagination and ACL scoping, all in SQL.
 
-    The prefix filter is an explicit half-open byte range (``key >= prefix AND key <
-    key_successor(prefix)``), NOT a ``LIKE prefix||'%'``: SQLite only turns a LIKE's leading
-    literal into an index range when ``case_sensitive_like`` is ON, which this repo must not set
-    (``list_drive_by_name`` relies on the default case-insensitive LIKE) — so a plain LIKE here
-    would silently fall back to a full index/table scan regardless of match position. The byte
-    range hits ``idx_s3_key(bucket, key)`` directly (leading ``bucket = ?`` equality + an
-    ascending range on ``key``), giving both the WHERE and the ORDER BY a single indexed range
-    scan, no full scan and no separate sort step. It's also case-SENSITIVE (the column has the
-    default BINARY collation), matching real S3's byte-exact prefix matching — and needs no
-    wildcard escaping, since a byte range has no wildcards to escape.
+    The prefix is a half-open byte range (``key >= prefix AND key < key_successor(prefix)``), NOT a
+    ``LIKE prefix||'%'``: SQLite only turns a LIKE's leading literal into an index range when
+    ``case_sensitive_like`` is ON, which this repo must not set (``list_drive_by_name`` needs the
+    default case-insensitive LIKE). The byte range hits ``idx_s3_key(bucket, key)`` for both the
+    WHERE and the ORDER BY, and is byte-exact like real S3.
 
-    ``start_after`` (keyset lower bound, exclusive — the last key already returned) and
-    ``start_at`` (inclusive — used by the router to resume past an entire rolled-up
-    CommonPrefixes group) are independent bounds and can both be combined with the prefix range."""
+    ``start_after`` (exclusive) and ``start_at`` (inclusive — the router uses it to resume past a
+    whole rolled-up CommonPrefixes group) are independent bounds."""
     sql = "SELECT * FROM s3_objects WHERE bucket = ?"
     params: list = [bucket]
     if prefix:
@@ -607,20 +550,13 @@ def list_hubspot_objects(conn, object_type, *, after_doc_id=None, visible_ids=No
                          archived=False, columns="*", prefilter=None) -> list[sqlite3.Row]:
     """One page of a CRM object type, keyset-paginated by ``doc_id``.
 
-    HubSpot's ``after`` cursor is a *record id*, which the router maps back to a doc_id — so the
-    bound is a keyset (``doc_id > ?``) rather than an OFFSET, and a page costs one indexed range
-    scan regardless of how deep into the type it sits. ``archived`` splits the two views the API
-    exposes: archived records are hidden unless explicitly asked for.
+    HubSpot's ``after`` cursor is a record id, which the router maps back to a doc_id, so the bound
+    is a keyset rather than an OFFSET. ``archived`` splits the two views the API exposes.
 
-    ``prefilter`` is an optional ``(sql_fragment, params)`` the caller has established as a
-    *necessary* condition for a match, so pushing it down can only remove rows that would have been
-    rejected anyway. It exists because search must walk the whole object type to report an honest
-    total, and doing that row-by-row in Python is far slower than letting SQLite reject the bulk.
-
-    ``columns`` narrows the projection. Search has to walk the whole object type to report an
-    honest ``total``, and ``content`` is by far the widest column (a note's body), so reading it for
-    rows that are only being *filtered* dominates that scan — the caller passes just the columns it
-    will actually read."""
+    ``prefilter`` is a ``(sql_fragment, params)`` the caller has established as a *necessary*
+    condition, so pushing it down can only remove rows that would have been rejected anyway.
+    ``columns`` narrows the projection: search walks the whole object type to report an honest
+    ``total``, and ``content`` (a note's body) dominates that scan if it is read needlessly."""
     sql = f"SELECT {columns} FROM hubspot_objects WHERE object_type = ?"
     params: list = [object_type]
     if prefilter:
@@ -667,12 +603,9 @@ LINEAR_SORT_COLUMNS = {"title": "title", "priority": "priority", "estimate": "es
 
 
 def _linear_order(order_by: str | None, descending: bool, sort=None) -> str:
-    """The ORDER BY. Always TOTAL — the sort keys plus `doc_id` — because an offset page over a
-    non-total order can silently repeat or skip a row between pages.
-
-    `sort` (Linear's `IssueSortInput`) wins over `orderBy` when both are given, matching the real
-    API, where `sort` is the richer multi-key form. Accepting it and ignoring it, which an earlier
-    version did, answered every sorted query in insertion order."""
+    """The ORDER BY, always TOTAL (sort keys + ``doc_id``) — an offset page over a non-total order
+    can silently repeat or skip a row between pages. ``sort`` (Linear's ``IssueSortInput``) wins over
+    ``orderBy`` when both are given, matching the real API, where it is the richer multi-key form."""
     terms = []
     for entry in sort or []:
         for key, opts in (entry or {}).items():
@@ -704,13 +637,9 @@ def _linear_archived(archived: bool) -> str:
 def list_linear_issues(conn, team=None, *, visible_ids=None, limit=50, offset=0,
                        order_by=None, descending=False, prefilter=None, sort=None,
                        archived=False) -> list[sqlite3.Row]:
-    """One page of Linear issues, optionally scoped to a team.
-
-    ``prefilter`` is an optional ``(sql_fragment, params)`` the resolver has established as a
-    *necessary* condition for a match, so pushing it into SQL can only remove rows the caller
-    would have rejected anyway — it exists so an `issues(filter:)` query is an indexed scan
-    rather than a full materialize-then-filter in Python.
-    """
+    """One page of Linear issues, optionally scoped to a team. ``prefilter`` is a necessary
+    condition pushed into SQL, so an ``issues(filter:)`` query is an indexed scan rather than a
+    full materialize-then-filter in Python."""
     sql = "SELECT * FROM linear_issues WHERE 1=1"
     params: list = []
     if team is not None:
@@ -796,10 +725,9 @@ def linear_children(conn, parent_doc_id, *, visible_ids=None, limit=50, offset=0
                     prefilter=None) -> list[sqlite3.Row]:
     """Sub-issues of an issue — every row whose resolved ``parent_doc_id`` is this one.
 
-    An indexed equality on a doc_id, NOT a join on ``identifier``: bench identifiers repeat, and
-    joining on them would attach one issue's children to all 107 issues that happen to share its
-    key. Resolution happened once at import (see the ``parent_doc_id`` column), which is also what
-    makes this the exact inverse of ``Issue.parent``."""
+    An indexed equality on a doc_id, NOT a join on ``identifier``: bench identifiers repeat, so a
+    join would attach one issue's children to every issue sharing its key. Resolved once at import,
+    which is what makes this the exact inverse of ``Issue.parent``."""
     sql = "SELECT * FROM linear_issues WHERE parent_doc_id = ?"
     params: list = [parent_doc_id]
     if prefilter:
@@ -813,12 +741,11 @@ def linear_children(conn, parent_doc_id, *, visible_ids=None, limit=50, offset=0
 
 def linear_relations(conn, doc_id, *, inverse=False, visible_ids=None, limit=50,
                      offset=0) -> list[sqlite3.Row]:
-    """One page of an issue's relations. ``inverse=False`` is ``Issue.relations`` (rows this issue
-    declared), ``inverse=True`` is ``Issue.inverseRelations`` (rows pointing AT it) — the two ends
-    of the same stored row, which is why a relation is written once rather than per direction.
+    """One page of an issue's relations: ``Issue.relations`` (rows it declared) or, with
+    ``inverse``, ``Issue.inverseRelations`` (rows pointing at it) — two ends of one stored row.
 
     ACL-scoped on the OTHER end: a relation whose counterpart the caller cannot read is omitted
-    entirely rather than surfaced as an id, since its existence would disclose that issue."""
+    entirely, since surfacing its id would disclose that issue."""
     mine, other = ("to_doc_id", "from_doc_id") if inverse else ("from_doc_id", "to_doc_id")
     clause, cparams = _acl_clause("i", visible_ids)
     sql = (f"SELECT r.* FROM linear_relations r JOIN linear_issues i ON i.doc_id = r.{other} "
@@ -849,9 +776,8 @@ def linear_attachments(conn, doc_id, *, visible_ids=None, limit=50, offset=0,
 def linear_attachment_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
     """Resolve a SERVED attachment uuid back to its row, scoped on the parent issue's ACL.
 
-    Attachments have no app-level reverse index (they are only ever reached through their issue),
-    so the served id is matched by re-deriving it over the rows of issues the caller can see —
-    which also means an attachment on a hidden issue is simply not found."""
+    No reverse index (attachments are only reached through their issue), so the id is matched by
+    re-deriving it over visible rows — an attachment on a hidden issue is simply not found."""
     from app import synth
     join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = a.doc_id"
     clause, cparams = _acl_clause("i", visible_ids)
@@ -885,14 +811,11 @@ def linear_relation_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | No
 def linear_distinct_values(conn) -> dict[str, list]:
     """The distinct entity names Linear's by-id roots have to resolve back to.
 
-    ``@linear/sdk``'s relation accessors are lazy — ``await issue.state`` fires a fresh
-    ``workflowState(id: <uuid>)`` query — and those uuids are one-way hashes of a name, so the app
-    builds a reverse index at startup (see ``app.main._build_index``). Everything here is a
-    ``DISTINCT`` over one column of ``linear_issues``: a handful of states and teams, a few
-    thousand projects and people. Labels come out of the JSON column via ``json_each``.
-
-    Users are returned as ``(email, display_name)`` pairs so a user reached by id shows the same
-    name as one reached inline on an issue.
+    ``@linear/sdk`` resolves relations lazily (``await issue.state`` fires a fresh
+    ``workflowState(id:)``) and those uuids are one-way hashes of a name, so the app builds a reverse
+    index at startup — see ``app.main._build_index``. Each entry is a DISTINCT over one column.
+    Users come back as ``(email, display_name)`` so a user reached by id is named like one reached
+    inline on an issue.
     """
     def col(name):
         return [r[0] for r in conn.execute(
@@ -972,13 +895,9 @@ _LINEAR_ENTITY_PREDICATES = {
 def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
     """Whether the caller can see ANY issue carrying this project / cycle / state / person / label.
 
-    Without this the by-id roots are an existence oracle over the whole corpus: their reverse
-    index is an unfiltered ``DISTINCT`` built at startup, so a caller who cannot read an issue
-    could still resolve that issue's project name, label, cycle, workflow state, and assignee —
-    column values on a row they are denied. ``teams`` already hides a team the caller sees no
-    issue in; this applies the same rule to the other five roots.
-
-    A ``LIMIT 1`` probe, so it stops at the first visible carrier rather than counting."""
+    Without it the by-id roots are an existence oracle: the reverse index is an unfiltered DISTINCT
+    built at startup, so a caller denied an issue could still resolve that issue's project, label,
+    cycle, state and assignee. A ``LIMIT 1`` probe, so it stops at the first visible carrier."""
     build = _LINEAR_ENTITY_PREDICATES.get(kind)
     if build is None:
         raise ValueError(f"unknown linear entity kind {kind!r}")
@@ -1150,11 +1069,9 @@ def list_fireflies_transcripts(conn, *, channel=None, host_email=None, organizer
                                ) -> list[sqlite3.Row]:
     """One page of transcripts, newest first — the order the real API returns them in.
 
-    The ORDER BY carries its `doc_id` tiebreak so it is TOTAL, and the tiebreak runs DESC with the
-    sort key rather than ASC against it: both directions are equally valid for an arbitrary
-    tiebreak, but a uniform direction is a backwards scan of idx_fireflies_created_doc while a
-    mixed one is a temp b-tree over the whole table. Measured on the 10,173-transcript bench
-    corpus, `skip=9000` went from 86ms to under 1ms.
+    The ORDER BY carries its ``doc_id`` tiebreak so it is TOTAL, and the tiebreak runs DESC WITH the
+    sort key rather than against it: either direction is valid for an arbitrary tiebreak, but a
+    uniform one is a backwards index scan while a mixed one is a temp b-tree over the whole table.
     """
     where, params = _fireflies_where(
         channel=channel, host_email=host_email, organizers=organizers, participants=participants,
@@ -1215,13 +1132,12 @@ def _src_tag(source_type: str) -> str:
 
 
 def build_fts(conn) -> bool:
-    """(Re)build the docs_fts full-text index over all source tables. No-op (returns False) if
-    the SQLite build lacks FTS5 — search then uses the LIKE fallback.
+    """(Re)build the docs_fts index over all source tables. No-op (False) without FTS5 — search
+    then uses the LIKE fallback.
 
-    ``src`` is an **indexed** column holding a per-source tag token, so a search can intersect
-    the source's posting list with the term posting lists (``src:srcjira AND "latency"``)
-    instead of ranking every source's matches and post-filtering — the latter made a
-    minority-source search (e.g. Jira for a term common in Slack) scan far past other sources."""
+    ``src`` is an INDEXED column holding a per-source tag, so a search intersects that source's
+    posting list with the term's (``src:srcjira AND "latency"``) instead of ranking every source's
+    matches and post-filtering, which made a minority-source search scan past the others."""
     if not _fts5_ok(conn):
         return False
     conn.execute("DROP TABLE IF EXISTS docs_fts")
@@ -1272,13 +1188,10 @@ def _fts_has_src(conn) -> bool:
 
 
 def _fts_match(query: str, source_type: str | None, has_src: bool, phrase: bool = False) -> str:
-    """A safe FTS5 MATCH string: alnum tokens, each quoted and ANDed. When the index is
-    source-aware, prefix an indexed ``src:`` filter so only that source's postings are scanned
-    (the term tokens still match title/content — the src column holds only the tag token).
-
-    ``phrase=True`` requires the tokens ADJACENT (an FTS5 phrase) instead of ANDed anywhere — used
-    by grep-style callers where the pattern is a literal string: an AND over the tokens buries the
-    exact match under coincidental docs that merely contain all the words scattered."""
+    """A safe FTS5 MATCH string: alnum tokens, each quoted and ANDed, with an indexed ``src:``
+    filter when the index is source-aware. ``phrase=True`` requires the tokens ADJACENT, for
+    grep-style callers whose pattern is a literal — an AND would bury the exact match under docs
+    that merely contain all the words scattered."""
     toks = re.findall(r"\w+", (query or "").lower())
     if not toks:
         return ""
@@ -1291,13 +1204,11 @@ def _fts_match(query: str, source_type: str | None, has_src: bool, phrase: bool 
 
 def search_documents(conn, query, source_type=None, visible_ids=None, limit=25, offset=0,
                      container=None, phrase=False, order_by=None) -> list[sqlite3.Row]:
-    """Keyword search over title + content within one source (FTS5-ranked; LIKE fallback),
-    optionally scoped to one grouping unit (``container``, e.g. a Jira project / GitHub repo).
-    ``phrase=True`` matches the query tokens adjacently (for literal grep-style lookups) and ranks
-    docs that contain the query as a literal substring ABOVE coincidental token-adjacency hits.
-    ``order_by`` selects result ordering: ``None`` = relevance (bm25, the Slack ``sort=score``
-    default); ``"recency"`` / ``"recency_asc"`` = by the doc's own timestamp (Slack ``sort=timestamp``),
-    newest- or oldest-first — the query still filters, only the ORDER differs."""
+    """Keyword search over title + content within one source (FTS5-ranked; LIKE fallback), optionally
+    scoped to one grouping unit. ``phrase=True`` matches the tokens adjacently and ranks a literal
+    substring hit above a coincidental one. ``order_by``: ``None`` = relevance (bm25, Slack's
+    ``sort=score``), ``"recency"``/``"recency_asc"`` = the doc's own timestamp
+    (``sort=timestamp``)."""
     tbl = table(source_type)
     cont_sql, cont_p = "", []
     if container is not None:
@@ -1402,11 +1313,9 @@ def slack_created_bounds(conn, channel) -> sqlite3.Row:
 def list_slack_top_level(conn, channel, visible_ids=None, limit=100, offset=0,
                          ts_lo=None, ts_hi=None) -> list[sqlite3.Row]:
     """Top-level (thread-root/standalone) messages in a channel. ``ts_lo``/``ts_hi`` bound
-    ``created_ts`` (seconds) for a time-windowed conversations.history — the SQL date filter so a
-    day window doesn't materialize the whole channel (~17k rows) then filter in Python. Bounds
-    should be widened by ±1s (the public ts carries a sub-second fraction); the caller re-checks the
-    exact float window. created_ts is NOT NULL (guaranteed at import), so this is a plain indexed
-    range — no NULL branch, which keeps the idx_slack_channel_ts range-seek."""
+    ``created_ts`` for a time-windowed conversations.history, so a day window is an indexed range
+    rather than the whole channel filtered in Python. Widen the bounds by ±1s — the public ts
+    carries a sub-second fraction — and re-check the exact float window in the caller."""
     sql = "SELECT * FROM slack_messages WHERE channel = ? AND thread_seq = 0"
     params: list = [channel]
     if ts_lo is not None or ts_hi is not None:
@@ -1467,12 +1376,10 @@ def list_gmail_in_range(conn, mailbox, ts_lo, ts_hi, visible_ids=None,
 
 
 def slack_messages_at_created_ts(conn, channel, created_ts, visible_ids=None) -> list[sqlite3.Row]:
-    """Visible channel messages whose stored ``created_ts`` equals ``created_ts`` — the fast path for
-    conversations.replies resolving a ts. A message's public ts has ``created_ts`` as its integer
-    part (see the router's ``_msg_ts``), so a client-supplied ts narrows to the handful of rows at
-    that second instead of loading the whole channel (eng-ml alone is ~340k rows → seconds). Only
-    messages with a NULL ``created_ts`` (ts synthesized from the doc id) miss this; the caller falls
-    back to the full scan for those."""
+    """Visible channel messages at exactly this ``created_ts`` — the fast path for
+    conversations.replies resolving a ts, whose integer part IS ``created_ts`` (see the router's
+    ``_msg_ts``). Narrows to the handful of rows at that second instead of the whole channel. A row
+    with a NULL ``created_ts`` misses this; the caller falls back to a full scan for those."""
     sql = "SELECT * FROM slack_messages WHERE channel = ? AND created_ts = ?"
     params: list = [channel, created_ts]
     clause, cparams = _acl_clause("slack_messages", visible_ids)

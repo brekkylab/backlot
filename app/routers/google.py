@@ -85,6 +85,7 @@ _P_DRIVE_LIST = [_gqp("pageSize", "integer"), _gqp("pageToken"), _gqp("q"), _gqp
                  _gqp("orderBy")]
 _P_DRIVE_ALT = [_gqp("alt"), _gqp("fields")]
 _P_DRIVE_EXPORT = [_gqp("mimeType", required=True)]
+_P_DRIVE_ABOUT = [_gqp("fields", required=True)]
 
 DRIVE_DOC_MIME = "application/vnd.google-apps.document"
 DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -975,6 +976,142 @@ def _drive_q_rows(conn, q: str, container: str | None, ids, me: str | None) -> l
                                               visible_ids=ids, limit=100_000,
                                               author_email=owner, not_author_email=not_owner)
     return [r for r in candidates if _drive_q_match(r, q_rest, me)]
+
+
+# --- about ---------------------------------------------------------------------------------
+
+# Every field of the Drive v3 `about` resource, for the same reason `_DRIVE_FILE_FIELDS` is the
+# whole documented set: real Drive accepts a documented name it has no value for and rejects an
+# unknown one with 400, so validating against it is what lets a test catch a typo'd mask.
+_DRIVE_ABOUT_FIELDS = frozenset("""
+    appInstalled canCreateDrives canCreateTeamDrives driveThemes exportFormats folderColorPalette
+    importFormats kind maxImportSizes maxUploadSize storageQuota teamDriveThemes user
+""".split())
+
+
+def _drive_about_field_keys(fields: str | None) -> set[str] | None:
+    """``about.get`` is the one Drive read whose ``fields`` mask is MANDATORY — the resource has no
+    default projection, and real Drive 400s without one. ``None`` = serve everything (``*``).
+
+    A mask that parses to no names at all (``fields=,``) 400s rather than falling through to "no
+    projection": on a resource where the mask is required, answering a request for nothing with
+    everything is the one outcome the caller certainly did not ask for."""
+    if not (fields or "").strip():
+        raise HTTPException(status_code=400,
+                            detail="The 'fields' parameter is required for this method.")
+    keys = _mask_names(fields)
+    _check_mask(keys, _DRIVE_ABOUT_FIELDS)
+    if not keys:
+        raise HTTPException(status_code=400, detail=f"Invalid field selection {fields}")
+    return None if "*" in keys else keys
+
+
+# The conversion tables below describe the *API's* capabilities, not this account's, so they carry
+# Google's real values even though the mock is read-only: a client that reads them to decide what
+# to ask for must branch the same way it would against real Drive.
+
+# What `files.export` can turn each native type into. Kept to the three native types the mock
+# actually stores (`_NATIVE` minus the folder, which is not exportable anywhere).
+_DRIVE_EXPORT_FORMATS = {
+    DRIVE_DOC_MIME: [
+        "application/rtf", "application/vnd.oasis.opendocument.text", "text/html",
+        "application/pdf", "application/epub+zip", "application/zip",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"],
+    "application/vnd.google-apps.spreadsheet": [
+        "application/x-vnd.oasis.opendocument.spreadsheet", "text/tab-separated-values",
+        "application/pdf", "application/vnd.oasis.opendocument.spreadsheet", "text/csv",
+        "application/zip",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    "application/vnd.google-apps.presentation": [
+        "application/vnd.oasis.opendocument.presentation", "application/pdf",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "text/plain"],
+}
+
+# Source type -> the native types Drive can convert it into on upload. Google's map is longer;
+# this is the part that covers every format the mock's own corpus contains (native docs, Office
+# files, PDFs, delimited text, images), so a client's lookup for a real file resolves.
+_DRIVE_IMPORT_FORMATS = {
+    "application/pdf": [DRIVE_DOC_MIME],
+    "application/rtf": [DRIVE_DOC_MIME],
+    "text/html": [DRIVE_DOC_MIME],
+    "text/plain": [DRIVE_DOC_MIME],
+    "application/vnd.oasis.opendocument.text": [DRIVE_DOC_MIME],
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [DRIVE_DOC_MIME],
+    "application/msword": [DRIVE_DOC_MIME],
+    "image/jpeg": [DRIVE_DOC_MIME],
+    "image/png": [DRIVE_DOC_MIME],
+    "image/gif": [DRIVE_DOC_MIME],
+    "text/csv": ["application/vnd.google-apps.spreadsheet"],
+    "text/tab-separated-values": ["application/vnd.google-apps.spreadsheet"],
+    "application/vnd.ms-excel": ["application/vnd.google-apps.spreadsheet"],
+    "application/vnd.oasis.opendocument.spreadsheet": ["application/vnd.google-apps.spreadsheet"],
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        ["application/vnd.google-apps.spreadsheet"],
+    "application/vnd.ms-powerpoint": ["application/vnd.google-apps.presentation"],
+    "application/vnd.oasis.opendocument.presentation":
+        ["application/vnd.google-apps.presentation"],
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+        ["application/vnd.google-apps.presentation"],
+}
+
+_DRIVE_MAX_IMPORT_SIZES = {
+    DRIVE_DOC_MIME: "10485760",
+    "application/vnd.google-apps.spreadsheet": "104857600",
+    "application/vnd.google-apps.presentation": "104857600",
+    "application/vnd.google-apps.drawing": "2097152",
+}
+_DRIVE_MAX_UPLOAD_SIZE = "5242880000000"
+
+# The colors `files.folderColorRgb` may be set to — a documented file field, so the palette a
+# client picks from has to be the real one.
+_DRIVE_FOLDER_COLORS = [
+    "#ac725e", "#d06b64", "#f83a22", "#fa573c", "#ff7537", "#ffad46",
+    "#42d692", "#16a765", "#7bd148", "#b3dc6c", "#fbe983", "#fad165",
+    "#92e1c0", "#9fe1e7", "#9fc6e7", "#4986e7", "#9a9cff", "#b99aff",
+    "#c2c2c2", "#cabdbf", "#cca6ac", "#f691b2", "#cd74e6", "#a47ae2",
+]
+
+# 2 TiB — a fixed plan size. The usage beside it is measured from the corpus, so the pair reads
+# like a real account rather than a made-up ratio.
+_DRIVE_STORAGE_LIMIT = 2 * 1024 ** 4
+
+
+@router.get("/drive/v3/about", openapi_extra={"parameters": _P_DRIVE_ABOUT})
+async def drive_about(request: Request):
+    """Who the caller is and how much space they use — the first call most Drive clients make.
+
+    No ``response_model`` on purpose: real Drive returns strictly what the mask selected, down to
+    omitting ``kind``, and a typed model's defaults would put the unasked-for keys back."""
+    conn = auth.conn(request)
+    caller = _require(request)
+    keys = _drive_about_field_keys(request.query_params.get("fields"))  # 400s on absent/unknown
+    ids = auth.visible_ids(request, caller)
+    # A caller with no mailbox of their own is the admin/service token; real Drive reports a
+    # concrete address here either way, as gmail.users.getProfile already does.
+    email = caller.email or _service_email(request)
+    used, trashed = store.drive_usage_bytes(conn, ids)
+    about = {
+        "kind": "drive#about",
+        "user": _drive_user(email) | {"me": True},   # `about.user` IS the caller
+        "storageQuota": {
+            "limit": str(_DRIVE_STORAGE_LIMIT),
+            # `usage` spans every Google service; the mock stores nothing outside Drive, so the two
+            # are equal. Both include the trash, which is the subset `usageInDriveTrash` reports.
+            "usage": str(used), "usageInDrive": str(used), "usageInDriveTrash": str(trashed),
+        },
+        "importFormats": _DRIVE_IMPORT_FORMATS,
+        "exportFormats": _DRIVE_EXPORT_FORMATS,
+        "maxImportSizes": _DRIVE_MAX_IMPORT_SIZES,
+        "maxUploadSize": _DRIVE_MAX_UPLOAD_SIZE,
+        "appInstalled": False,
+        "folderColorPalette": _DRIVE_FOLDER_COLORS,
+        # The corpus is all My Drive and /drive/v3/drives is empty, so every shared-drive field
+        # says so rather than hinting at a capability that isn't there.
+        "canCreateDrives": False, "canCreateTeamDrives": False,
+        "driveThemes": [], "teamDriveThemes": [],
+    }
+    return _drive_project([about], keys)[0]
 
 
 @router.get("/drive/v3/drives")

@@ -243,6 +243,51 @@ def test_list_s3_objects_acl_scoped(tmp_path):
     assert none_visible == []
 
 
+# --- Drive: storage usage -------------------------------------------------------
+
+def _drive_usage_db(tmp_path):
+    """A hand-built Drive corpus whose byte count differs from its character count — the ASCII
+    SAMPLE cannot tell the two apart, and that difference is the whole point of the helper."""
+    conn = store.connect_rw(tmp_path / "gdrive.sqlite")
+    rows = [
+        # (doc_id, content, trashed) — "안녕" is 2 characters but 6 UTF-8 bytes
+        ("g1", "abc", 0),          # 3 bytes
+        ("g2", "안녕", 0),          # 6 bytes
+        ("g3", "trash", 1),        # 5 bytes, in the trash
+    ]
+    for doc_id, content, trashed in rows:
+        conn.execute(
+            "INSERT INTO gdrive_files(doc_id, folder, author_email, title, content, subtype, "
+            "created_ts, trashed) VALUES (?,?,?,?,?,?,1,?)",
+            (doc_id, "f", "a@x.com", doc_id, content, "document", trashed))
+    # Every doc gets a grant, as the importers write one: a `visible_ids` filter passes only rows
+    # that HAVE a matching doc_acl row, so a doc with no grant is invisible to any scoped caller.
+    for doc_id, pid in [("g1", "acme"), ("g2", "eng"), ("g3", "acme")]:
+        conn.execute("INSERT INTO doc_acl VALUES (?,?,?)", (doc_id, "group", pid))
+    conn.commit()
+    return conn
+
+
+def test_drive_usage_bytes_counts_utf8_bytes_not_characters(tmp_path):
+    """``about.get``'s storageQuota has to agree with the ``size`` files.list serves, which is
+    ``len(content.encode("utf-8"))``. SQLite's ``length()`` on a TEXT column counts CHARACTERS, so
+    a non-ASCII doc would under-report unless the sum casts to BLOB first."""
+    conn = _drive_usage_db(tmp_path)
+    total, trashed = store.drive_usage_bytes(conn)
+    assert total == 3 + 6 + 5          # not 3 + 2 + 5, which is what length(content) would give
+    assert trashed == 5
+
+
+def test_drive_usage_bytes_is_acl_scoped(tmp_path):
+    """Usage is per-caller: a token that cannot read a file must not be told its size, or the
+    quota number would leak the weight of a corpus the caller has no access to."""
+    conn = _drive_usage_db(tmp_path)
+    assert store.drive_usage_bytes(conn, visible_ids={"acme", "eng"}) == (3 + 6 + 5, 5)
+    assert store.drive_usage_bytes(conn, visible_ids={"acme"}) == (3 + 5, 5)   # g2 invisible
+    assert store.drive_usage_bytes(conn, visible_ids={"eng"}) == (6, 0)       # g2 only, untrashed
+    assert store.drive_usage_bytes(conn, visible_ids=set()) == (0, 0)          # sees nothing
+
+
 # --- HubSpot: polymorphic objects + associations --------------------------------
 
 def _hubspot_mini_db(tmp_path):

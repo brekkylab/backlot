@@ -1065,6 +1065,23 @@ def drive_folder_has_visible(conn, folder, visible_ids=None) -> bool:
     return conn.execute(sql, [folder, *params]).fetchone() is not None
 
 
+def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
+    """``(bytes stored, bytes in the trash)`` over the Drive files this caller can see — what
+    ``about.get`` serves as ``storageQuota``. One query, so the quota costs a single scan.
+
+    ``length(CAST(content AS BLOB))`` is deliberate: SQLite's ``length()`` on a TEXT column counts
+    CHARACTERS, while the ``size`` every file resource carries is ``len(content.encode("utf-8"))``.
+    Without the cast a corpus holding any non-ASCII text reports a quota smaller than the sum of
+    the sizes the same caller reads out of ``files.list`` — a divergence no client could explain."""
+    nbytes = "length(CAST(content AS BLOB))"
+    sql = (f"SELECT COALESCE(SUM({nbytes}), 0), "
+           f"COALESCE(SUM(CASE WHEN COALESCE(trashed, 0) = 1 THEN {nbytes} ELSE 0 END), 0) "
+           "FROM gdrive_files WHERE 1=1")
+    clause, params = _acl_clause("gdrive_files", visible_ids)
+    total, trashed = conn.execute(sql + clause, params).fetchone()
+    return int(total), int(trashed)
+
+
 def count_documents(conn, source_type, container=None, visible_ids=None, author_email=None,
                     state=None) -> int:
     # state: only valid for source_type="github" — it's the only items table with a `state`

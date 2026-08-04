@@ -113,6 +113,12 @@ def drive():
         lambda: f'{len(svc.permissions().list(fileId=files[0]["id"]).execute()["permissions"])} perms')
     ftxt = svc.files().list(q="fullText contains 'palette'", fields="files(id,name)").execute()["files"]
     check("Drive", "files.list fullText contains")(lambda: f"{len(ftxt)} match" if ftxt else 1 / 0)
+    # about.get is usually a client's first call; the SDK builds it from the discovery doc, so this
+    # proves the real request shape (fields + alt=json) reaches the route.
+    about = svc.about().get(fields="user,storageQuota").execute()
+    check("Drive", "about.get")(
+        lambda: f'{about["user"]["emailAddress"]} {about["storageQuota"]["usage"]}B'
+        if about["user"]["me"] else 1 / 0)
 
 
 # ------------------------------------------------------------------ GitHub

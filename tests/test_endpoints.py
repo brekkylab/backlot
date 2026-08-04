@@ -12,36 +12,22 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import re
 import xml.etree.ElementTree as ET
 
 import pytest
 import yaml
-from starlette.testclient import TestClient
 
 from app import store
-from app.config import Settings, get_settings
+from app.config import Settings
+from tests._helpers import build_corpus, client_for
 
 
 @pytest.fixture(scope="module")
 def client(sample_settings):
-    """A TestClient whose app is pointed at the SAMPLE DB (via MOCK_DATA_DIR), not the ambient
-    ``data/`` import. Env + settings cache are restored on teardown so other modules are unaffected."""
-    from app.main import app
-
-    prev = os.environ.get("MOCK_DATA_DIR")
-    os.environ["MOCK_DATA_DIR"] = str(sample_settings.data_dir)
-    get_settings.cache_clear()
-    try:
-        with TestClient(app) as c:  # lifespan opens sample_settings.db_path
-            yield c
-    finally:
-        get_settings.cache_clear()
-        if prev is None:
-            os.environ.pop("MOCK_DATA_DIR", None)
-        else:
-            os.environ["MOCK_DATA_DIR"] = prev
+    """A TestClient over the SAMPLE DB, not the ambient ``data/`` import."""
+    with client_for(sample_settings) as c:
+        yield c
 
 
 @pytest.fixture(scope="module")
@@ -738,28 +724,11 @@ _GH_FILE_DOCS = [
 
 @pytest.fixture(scope="module")
 def gh_client(tmp_path_factory):
-    from app.importer.byo import load
     from tests.conftest import SAMPLE
 
-    data_dir = tmp_path_factory.mktemp("gh_sample")
-    corpus = data_dir / "_corpus.jsonl"
-    corpus.write_text("\n".join(json.dumps(r) for r in SAMPLE + _GH_FILE_DOCS))
-    settings = Settings(data_dir=data_dir)
-    load(corpus, settings)
-
-    from app.main import app
-    prev = os.environ.get("MOCK_DATA_DIR")
-    os.environ["MOCK_DATA_DIR"] = str(data_dir)
-    get_settings.cache_clear()
-    try:
-        with TestClient(app) as c:
-            yield c, settings
-    finally:
-        get_settings.cache_clear()
-        if prev is None:
-            os.environ.pop("MOCK_DATA_DIR", None)
-        else:
-            os.environ["MOCK_DATA_DIR"] = prev
+    settings = build_corpus(tmp_path_factory.mktemp("gh_sample"), SAMPLE + _GH_FILE_DOCS)
+    with client_for(settings) as c:
+        yield c, settings
 
 
 @pytest.fixture(scope="module")
@@ -1524,30 +1493,11 @@ def big_bucket_tokens(big_bucket_settings):
 
 @pytest.fixture(scope="module")
 def big_bucket_client(big_bucket_settings):
-    """A TestClient pointed at the dedicated big-bucket DB — in-process (no live uvicorn
-    subprocess needed; SigV4 verification only cares that the Host it sees matches what was
-    signed, which holds for TestClient's own base_url just as much as a real listening port).
-
-    Reloads ``app.main`` into a *fresh* FastAPI instance rather than reusing the module-level
-    ``app`` singleton the ``client`` fixture above already wraps in its own still-open
-    TestClient: a second lifespan start on that SAME app object would overwrite its
-    app.state (db/acl/index) out from under the other, still-live client."""
-    import importlib
-    import app.main as main_module
-
-    prev = os.environ.get("MOCK_DATA_DIR")
-    os.environ["MOCK_DATA_DIR"] = str(big_bucket_settings.data_dir)
-    get_settings.cache_clear()
-    try:
-        importlib.reload(main_module)
-        with TestClient(main_module.app) as c:
-            yield c
-    finally:
-        get_settings.cache_clear()
-        if prev is None:
-            os.environ.pop("MOCK_DATA_DIR", None)
-        else:
-            os.environ["MOCK_DATA_DIR"] = prev
+    """The dedicated big-bucket DB, in-process: SigV4 only cares that the Host it sees matches what
+    was signed, which holds for TestClient's base_url as much as a real port. ``reload=True``
+    because the ``client`` fixture above still holds the module-level app — see ``client_for``."""
+    with client_for(big_bucket_settings, reload=True) as c:
+        yield c
 
 
 def _s3_get(client, path, token):

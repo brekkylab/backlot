@@ -15,8 +15,9 @@ import pytest
 import yaml
 
 from app import store, synth
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.importer import byo, erb
+from tests._helpers import client_for
 from app.importer.erb import Principals, canonical, grants_for
 
 C = erb
@@ -834,10 +835,7 @@ def test_qst_0001_owner_is_maya_chen(tmp_path):
     subprocess.run([sys.executable, "-m", "app.importer.erb", "--slice-questions", str(qfile)],
                    check=True, env=env)
     # dsid_fc36... is qst_0001's expected doc; owner must now be Maya Chen, not a hash pick
-    from starlette.testclient import TestClient
-    os.environ["MOCK_DATA_DIR"] = str(data_dir)
-    from app.main import app
-    with TestClient(app) as c:
+    with client_for(Settings(data_dir=data_dir)) as c:
         r = c.get("/drive/v3/files/dsid_fc36d1d60e7e4b4abc7db84629563b7a",
                   params={"fields": "owners(displayName)"},
                   headers={"Authorization": "Bearer admin-service-token"}).json()

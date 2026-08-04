@@ -167,10 +167,7 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
 
 
 def _require(request: Request) -> Caller:
-    caller = auth.resolve_bearer(request)
-    if caller is None:
-        raise HTTPException(status_code=401, detail="Invalid Credentials")
-    return caller
+    return auth.require_bearer(request, "Invalid Credentials")
 
 
 def _b64url(text: str) -> str:

@@ -79,10 +79,7 @@ _P_CONTENT = {"parameters": [qp("expand"), qp("spaceKey"),
 
 
 def _require(request: Request) -> Caller:
-    caller = auth.resolve_basic(request) or auth.resolve_bearer(request)
-    if caller is None:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return caller
+    return auth.require_basic_or_bearer(request, "Unauthorized")
 
 
 def _site(request: Request) -> str:

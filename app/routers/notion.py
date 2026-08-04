@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
+from app.routers import json_body
 from app.openapi import qp
 
 router = APIRouter(prefix="/notion/v1", tags=["notion"])
@@ -80,14 +81,6 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=status,
                         content={"object": "error", "status": status, "code": code,
                                  "message": message})
-
-
-def _caller(request: Request):
-    return auth.resolve_bearer(request)
-
-
-def _visible(request: Request, caller):
-    return auth.visible_ids(request, caller)
 
 
 def _version(request: Request) -> str:
@@ -238,12 +231,12 @@ def _data_source_obj(conn, row) -> dict:
 
 @router.get("/pages/{page_id}", response_model=NotionObject)
 async def get_page(page_id: str, request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
     doc_id = _doc_id_for(request, page_id)
-    row = store.get_document(conn, "notion", doc_id, _visible(request, caller)) if doc_id else None
+    row = store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller)) if doc_id else None
     if row is None or row["subtype"] == "database":
         return _error(404, "object_not_found",
                       f"Could not find page with ID: {page_id}.")
@@ -252,12 +245,12 @@ async def get_page(page_id: str, request: Request):
 
 @router.get("/blocks/{block_id}", response_model=NotionObject)
 async def get_block(block_id: str, request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
     doc_id = _doc_id_for(request, block_id)
-    row = store.get_document(conn, "notion", doc_id, _visible(request, caller)) if doc_id else None
+    row = store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller)) if doc_id else None
     if row is None:
         return _error(404, "object_not_found", f"Could not find block with ID: {block_id}.")
     bid = synth.notion_id(row["doc_id"])
@@ -272,12 +265,12 @@ async def get_block(block_id: str, request: Request):
 @router.get("/blocks/{block_id}/children", response_model=NotionList,
             openapi_extra={"parameters": _P_PAGINATE})
 async def get_block_children(block_id: str, request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
     doc_id = _doc_id_for(request, block_id)
-    row = store.get_document(conn, "notion", doc_id, _visible(request, caller)) if doc_id else None
+    row = store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller)) if doc_id else None
     if row is None:
         return _error(404, "object_not_found", f"Could not find block with ID: {block_id}.")
     blocks = synth.notion_blocks(row["doc_id"], row["content"])
@@ -291,12 +284,12 @@ async def get_block_children(block_id: str, request: Request):
 
 @router.get("/databases/{database_id}", response_model=NotionObject)
 async def get_database(database_id: str, request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
     doc_id = _doc_id_for(request, database_id)
-    row = store.get_document(conn, "notion", doc_id, _visible(request, caller)) if doc_id else None
+    row = store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller)) if doc_id else None
     if row is None or row["subtype"] != "database":
         return _error(404, "object_not_found",
                       f"Could not find database with ID: {database_id}.")
@@ -305,12 +298,12 @@ async def get_database(database_id: str, request: Request):
 
 @router.get("/data_sources/{data_source_id}", response_model=NotionObject)
 async def get_data_source(data_source_id: str, request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
     doc_id = _db_doc_for_data_source(request, data_source_id)
-    row = store.get_document(conn, "notion", doc_id, _visible(request, caller)) if doc_id else None
+    row = store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller)) if doc_id else None
     if row is None or row["subtype"] != "database":
         return _error(404, "object_not_found",
                       f"Could not find data source with ID: {data_source_id}.")
@@ -318,15 +311,15 @@ async def get_data_source(data_source_id: str, request: Request):
 
 
 async def _query_rows(request: Request, db_doc_id: str | None):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
-    visible = _visible(request, caller)
+    visible = auth.visible_ids(request, caller)
     db = store.get_document(conn, "notion", db_doc_id, visible) if db_doc_id else None
     if db is None or db["subtype"] != "database":
         return _error(404, "object_not_found", "Could not find the requested database.")
-    body = await _json_body(request)
+    body = await json_body(request)
     offset = _offset(body.get("start_cursor"))
     limit = _page_size(body.get("page_size"))
     rows = store.children(conn, "notion", db_doc_id, visible, limit=limit + 1, offset=offset)
@@ -352,12 +345,12 @@ async def query_database(database_id: str, request: Request):
 
 @router.post("/search", response_model=NotionList, openapi_extra=_B_SEARCH)
 async def search(request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
-    visible = _visible(request, caller)
-    body = await _json_body(request)
+    visible = auth.visible_ids(request, caller)
+    body = await json_body(request)
     query = body.get("query") or ""
     want = (body.get("filter") or {}).get("value")  # 'page' | 'database' | None
     offset = _offset(body.get("start_cursor"))
@@ -388,7 +381,7 @@ async def search(request: Request):
 @router.get("/users", response_model=NotionList,
             openapi_extra={"parameters": _P_PAGINATE})
 async def list_users(request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
@@ -402,7 +395,7 @@ async def list_users(request: Request):
 
 @router.get("/users/me", response_model=NotionObject)
 async def get_me(request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
@@ -417,7 +410,7 @@ async def get_me(request: Request):
 
 @router.get("/users/{user_id}", response_model=NotionObject)
 async def get_user(user_id: str, request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
@@ -433,14 +426,14 @@ async def get_user(user_id: str, request: Request):
 @router.get("/comments", response_model=NotionList,
             openapi_extra={"parameters": _P_COMMENTS})
 async def list_comments(request: Request):
-    caller = _caller(request)
+    caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
     block_id = request.query_params.get("block_id")
     doc_id = _doc_id_for(request, block_id) if block_id else None
     # the parent must itself be visible to the caller
-    row = store.get_document(conn, "notion", doc_id, _visible(request, caller)) if doc_id else None
+    row = store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller)) if doc_id else None
     if row is None:
         return _list_obj([], 0, 0, 0, "comment")
     parent_id = synth.notion_id(row["doc_id"])
@@ -462,9 +455,3 @@ async def list_comments(request: Request):
 
 # --------------------------------------------------------------------------- misc
 
-async def _json_body(request: Request) -> dict:
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001 — empty/invalid body → treat as no params
-        return {}
-    return body if isinstance(body, dict) else {}

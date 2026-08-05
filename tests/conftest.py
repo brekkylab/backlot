@@ -106,6 +106,16 @@ SAMPLE = [
     {"source_type": "gmail", "mailbox": "cfo", "title": "Confidential comp review",
      "content": "Q3 compensation adjustments — do not forward.", "author_email": "cfo@acme.com",
      "readers": ["cfo@acme.com"]},
+    # A threaded exchange. Every other gmail doc here is its own thread root, so the reply->root
+    # mapping — which `threadId` reports and which the served hex ids have to agree on — had no
+    # coverage at all, while the bench corpus is 121,390 threads.
+    {"source_type": "gmail", "doc_id": "gm-thread-root", "mailbox": "ava",
+     "title": "Gateway retry storm", "content": "Seeing repeated 502s from the gateway.",
+     "author_email": "ava@acme.com", "readers": ["ava@acme.com", "bob@acme.com"]},
+    {"source_type": "gmail", "doc_id": "gm-thread-reply", "thread": "gm-thread-root",
+     "mailbox": "ava", "title": "Re: Gateway retry storm",
+     "content": "Rolled back the rate limiter; 502s clearing.", "author_email": "bob@acme.com",
+     "readers": ["ava@acme.com", "bob@acme.com"]},
 
     {"source_type": "google_drive", "folder": "marketing", "group": "marketing",
      "title": "Brand guidelines v3", "content": "Logo usage, palette, typography.",

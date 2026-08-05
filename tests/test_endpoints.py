@@ -559,10 +559,141 @@ def _gmail_plain(payload):
     raise AssertionError("no text/plain part")
 
 
-def test_gmail_body_roundtrip(client, admin_h, ro_conn):
-    doc = ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
-    m = client.get(f"/gmail/v1/users/me/messages/{doc['doc_id']}", headers=admin_h,
+# --- Gmail hex message ids (#39) --------------------------------------------------------------
+#
+# Gmail ids are 16 lowercase hex digits parsed as a signed 64-bit integer. MEASURED against the live
+# API, which is what fixes the 400/404 boundary the mock previously got wrong:
+#
+#   id                        | real Gmail
+#   --------------------------|-----------------------------------------------
+#   0 / 1 / abc123 / DEADBEEF | 404 NOT_FOUND     (a valid shape, just unknown)
+#   7fffffffffffffff          | 404 NOT_FOUND     (2**63 - 1 is in range)
+#   8000000000000000          | 400 INVALID_ARGUMENT "Invalid id value"
+#   ffffffffffffffff          | 400               (>= 2**63)
+#   18c9a1b2c3d4e5f6a         | 400               (17 digits overflows)
+#   -1 / 1g / " 1"            | 400               (not hex)
+#
+# Threads share the id space: a single-message thread reports id == threadId.
+
+def _a_gmail_row(ro_conn):
+    return ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
+
+
+def test_gmail_messages_list_serves_hex_ids(client, admin_h):
+    """The ids a client receives must look like Gmail's, not like the corpus's dsids — that is the
+    whole point of #39. `dsid_…` is not hex, so real Gmail would call it an invalid id value."""
+    msgs = client.get("/gmail/v1/users/me/messages", headers=admin_h,
+                      params={"maxResults": 10}).json()["messages"]
+    assert msgs
+    for m in msgs:
+        for key in ("id", "threadId"):
+            assert len(m[key]) == 16, m
+            assert all(c in "0123456789abcdef" for c in m[key]), m
+            assert int(m[key], 16) < 2 ** 63, m
+        assert not m["id"].startswith("dsid_")
+
+
+def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
+    """The hex id maps back to its dsid, so the body a client reads by hex is the stored body. A
+    one-way id would make every message unreadable."""
+    from app import synth
+    row = _a_gmail_row(ro_conn)
+    hexid = synth.gmail_message_id(row["doc_id"])
+    m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h,
                    params={"format": "full"}).json()
+    assert m["id"] == hexid
+    assert base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode() == row["content"]
+
+
+def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin_h, ro_conn):
+    """Threads share the message id space in real Gmail, so a message that is its own thread root
+    reports the same value twice — and `threads.get` resolves it."""
+    from app import synth
+    row = ro_conn.execute(
+        "SELECT * FROM gmail_messages WHERE COALESCE(thread_id, '') = '' LIMIT 1").fetchone()
+    if row is None:
+        row = ro_conn.execute(
+            "SELECT * FROM gmail_messages WHERE thread_id = doc_id LIMIT 1").fetchone()
+    assert row is not None, "SAMPLE should hold a message that is its own thread"
+    hexid = synth.gmail_message_id(row["doc_id"])
+    m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h).json()
+    assert m["id"] == m["threadId"] == hexid
+    t = client.get(f"/gmail/v1/users/me/threads/{hexid}", headers=admin_h)
+    assert t.status_code == 200 and t.json()["id"] == hexid
+
+
+def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
+    from app import synth
+    row = ro_conn.execute("SELECT * FROM gmail_messages WHERE COALESCE(thread_id,'') != '' "
+                          "AND thread_id != doc_id LIMIT 1").fetchone()
+    assert row is not None, "SAMPLE should hold a threaded reply"
+    m = client.get(f"/gmail/v1/users/me/messages/{synth.gmail_message_id(row['doc_id'])}",
+                   headers=admin_h).json()
+    assert m["threadId"] == synth.gmail_message_id(row["thread_id"])
+    assert m["id"] != m["threadId"]
+
+
+def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_conn):
+    from app import synth
+    row = ro_conn.execute("SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN "
+                          "('', '[]') LIMIT 1").fetchone()
+    assert row is not None, "SAMPLE should hold a message with an attachment"
+    hexid = synth.gmail_message_id(row["doc_id"])
+    m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h,
+                   params={"format": "full"}).json()
+    att = next(p for p in m["payload"]["parts"] if p.get("filename"))
+    r = client.get(f"/gmail/v1/users/me/messages/{hexid}/attachments/"
+                   f"{att['body']['attachmentId']}", headers=admin_h)
+    assert r.status_code == 200 and r.json()["size"] > 0
+
+
+@pytest.mark.parametrize("mid", ["0", "1", "abc123", "DEADBEEF", "7fffffffffffffff",
+                                 "0000000000000001", "18c9a1b2c3d4e5f6"])
+def test_gmail_a_valid_but_unknown_id_is_not_found(client, admin_h, mid):
+    """A well-formed id the mailbox does not hold is 404, uppercase included — measured."""
+    for kind in ("messages", "threads"):
+        r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
+        assert r.status_code == 404, f"{kind}/{mid}: {r.status_code}"
+        assert r.json()["error"]["message"] == "Requested entity was not found."
+
+
+@pytest.mark.parametrize("mid", ["8000000000000000", "ffffffffffffffff", "18c9a1b2c3d4e5f6a",
+                                 "-1", "1g", "nosuchmessageid", "dsid_00908a2dda4b4d359194a09101"])
+def test_gmail_an_unparsable_id_is_an_invalid_argument(client, admin_h, mid):
+    """The gap #39 names: an id that is not a parsable in-range hex integer is 400
+    INVALID_ARGUMENT "Invalid id value", not 404. The last row is the mock's OWN former id format,
+    which is exactly why the served ids had to change first."""
+    for kind in ("messages", "threads"):
+        r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
+        assert r.status_code == 400, f"{kind}/{mid}: {r.status_code}"
+        e = r.json()["error"]
+        assert e["message"] == "Invalid id value"
+        assert e["status"] == "INVALID_ARGUMENT"
+        assert e["errors"][0]["reason"] == "invalidArgument"
+
+
+def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens, ro_conn):
+    """Resolving through the index must not become a way around the ACL. The index is global — it
+    maps every hex id, visible or not — so the ACL read after it is the only thing standing between
+    a scoped caller and someone else's mail. The CFO's comp review is granted to cfo alone."""
+    from app import synth
+    row = ro_conn.execute("SELECT * FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
+                          ).fetchone()
+    hexid = synth.gmail_message_id(row["doc_id"])
+    assert client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h).status_code == 200
+    cfo = {"Authorization": f"Bearer {_tok(tokens, 'cfo@acme.com')}"}
+    assert client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=cfo).status_code == 200
+    outsider = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    r = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=outsider)
+    assert r.status_code == 404
+    assert r.json()["error"]["message"] == "Requested entity was not found."
+
+
+def test_gmail_body_roundtrip(client, admin_h, ro_conn):
+    from app import synth
+    doc = ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
+    m = client.get(f"/gmail/v1/users/me/messages/{synth.gmail_message_id(doc['doc_id'])}",
+                   headers=admin_h, params={"format": "full"}).json()
     body = base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode()
     assert body == doc["content"]
     subj = next(h["value"] for h in m["payload"]["headers"] if h["name"] == "Subject")
@@ -576,7 +707,9 @@ def test_gmail_messages_list_ordered_by_internaldate_desc(client, admin_h, ro_co
                         params={"maxResults": 50}).json()["messages"]
     got = [m["id"] for m in listed]
     # the stable total order the endpoint must produce: created_ts DESC, doc_id ASC as tie-break
-    expected = [r["doc_id"] for r in ro_conn.execute(
+    # the served ids are hex (#39), so the expectation is the hex of that stable order
+    from app import synth
+    expected = [synth.gmail_message_id(r["doc_id"]) for r in ro_conn.execute(
         "SELECT doc_id FROM gmail_messages ORDER BY created_ts DESC, doc_id LIMIT 50").fetchall()]
     assert got == expected
     # ...and internalDate is monotonically non-increasing across the returned page
@@ -611,13 +744,15 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
         "AND attachments != '[]' LIMIT 1").fetchone()
     if row is None:
         pytest.skip("no gmail message with an attachment in this subset")
-    m = client.get(f"/gmail/v1/users/me/messages/{row['doc_id']}", headers=admin_h,
+    from app import synth
+    hexid = synth.gmail_message_id(row["doc_id"])
+    m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h,
                    params={"format": "full"}).json()
     parts = [p for p in m["payload"]["parts"] if p.get("body", {}).get("attachmentId")]
     assert parts, "message should expose at least one attachment part"
     for p in parts:
         got = client.get(
-            f"/gmail/v1/users/me/messages/{row['doc_id']}/attachments/{p['body']['attachmentId']}",
+            f"/gmail/v1/users/me/messages/{hexid}/attachments/{p['body']['attachmentId']}",
             headers=admin_h).json()
         assert got["size"] == p["body"]["size"]                       # the two agree
         assert len(base64.urlsafe_b64decode(got["data"])) == p["body"]["size"]  # ...and match the bytes
@@ -1257,10 +1392,12 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens, admin_h, ro_conn
     ).fetchone()
     if doc is None:
         pytest.skip("no gmail doc for user B in this subset")
+    from app import synth
+    hexid = synth.gmail_message_id(doc["doc_id"])   # served ids are hex, not dsids (#39)
     ah = {"Authorization": f"Bearer {user_a['token']}"}
-    r = client.get(f"/gmail/v1/users/me/messages/{doc['doc_id']}", headers=ah)
+    r = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=ah)
     # A may coincidentally be a recipient; assert admin can always read it
-    assert client.get(f"/gmail/v1/users/me/messages/{doc['doc_id']}", headers=admin_h).status_code == 200
+    assert client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h).status_code == 200
     assert r.status_code in (200, 404)
 
 
@@ -1735,7 +1872,8 @@ def test_editor_api_errors_carry_status_and_no_errors_array(client, admin_h):
 
 def test_gmail_errors_carry_both(client, admin_h):
     """Gmail sends `errors[]` AND `status` — measured, and the only family that does both."""
-    e = _gerr(client.get("/gmail/v1/users/me/messages/no-such-id", headers=admin_h))
+    # a well-formed but unknown id; a non-hex one is 400 "Invalid id value" (see #39)
+    e = _gerr(client.get("/gmail/v1/users/me/messages/00000000deadbeef", headers=admin_h))
     assert e["code"] == 404 and e["status"] == "NOT_FOUND"
     assert e["message"] == "Requested entity was not found."
     assert e["errors"][0]["reason"] == "notFound"
@@ -1748,7 +1886,7 @@ GOOGLE_ERROR_CASES = [
     ("/drive/v3/files/no-such-file", {}, 404, None, "notFound", "fileId"),
     ("/drive/v3/about", {}, 400, None, "required", "fields"),
     ("/drive/v3/about", {"fields": "storageQuoat"}, 400, None, "invalidParameter", "fields"),
-    ("/gmail/v1/users/me/messages/no-such-id", {}, 404, "NOT_FOUND", "notFound", None),
+    ("/gmail/v1/users/me/messages/00000000deadbeef", {}, 404, "NOT_FOUND", "notFound", None),
     ("/gmail/v1/users/me/labels/NO_SUCH", {}, 404, "NOT_FOUND", "notFound", None),
 ]
 

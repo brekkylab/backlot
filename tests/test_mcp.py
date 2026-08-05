@@ -295,7 +295,10 @@ def test_mcp_gmail_bridge_acl_enforced(live_server):
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "gmail")
     assert row is not None, f"no Gmail message is ACL-restricted from {email} in the sample corpus"
-    msg_id = row["doc_id"]
+    # Gmail serves hex ids, not dsids (#39) — the bridge forwards whatever the caller passes, so a
+    # dsid here would be refused as an invalid id value before the ACL was ever consulted.
+    from app import synth
+    msg_id = synth.gmail_message_id(row["doc_id"])
 
     def reads(token):
         return _bridge_call(base, "gmail", token,

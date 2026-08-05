@@ -97,7 +97,26 @@ def slack_thread_ts(root_doc_id: str, seq: int) -> str:
 
 
 def gmail_id(doc_id: str, salt: str = "msg") -> str:
+    """An opaque 16-hex token. Used for attachment ids and Slack's ``client_msg_id``, where the
+    value is never parsed — so it deliberately spans the full 64-bit range. A *message* id is
+    parsed by Gmail and must not; use ``gmail_message_id``."""
     return hnum(doc_id, salt=salt, length=16).__format__("016x")
+
+
+# Gmail parses a message id as a signed 64-bit integer, so 2**63 is the ceiling. Measured against
+# the live API: `7fffffffffffffff` resolves (404, a real id shape) while `8000000000000000` and
+# `ffffffffffffffff` are refused with 400 "Invalid id value". Unmasked, half of any digest-derived
+# id lands above the line — 278,278 of the bench corpus's 556,238 messages.
+GMAIL_ID_MAX = 2 ** 63
+
+
+def gmail_message_id(key: str) -> str:
+    """The served id for a Gmail message or thread: 16 lowercase hex digits below ``GMAIL_ID_MAX``.
+
+    Threads share this space, as they do in real Gmail — a thread key is the root message's
+    ``doc_id``, so a single-message thread reports the same value for ``id`` and ``threadId``, which
+    is exactly what the real API does. That is also why one reverse index resolves both."""
+    return f"{hnum(key, salt='msg', length=16) % GMAIL_ID_MAX:016x}"
 
 
 def drive_file_id(doc_id: str) -> str:

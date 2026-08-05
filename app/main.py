@@ -133,6 +133,9 @@ async def lifespan(app: FastAPI):
     # non-admin caller's visible channels by set-intersection (O(channels)) instead of a
     # per-request doc_acl⋈messages join that scales with the docs granted to the caller.
     app.state.channel_acl = None
+    # channel -> its member count (its distinct speakers). conversations.info/.list report it
+    # for every channel in a page, and a per-channel COUNT(DISTINCT) is far too slow for that.
+    app.state.channel_members = None
 
     def _warm_caches():
         c = store.connect_ro(settings.db_path, mmap_mb=settings.sqlite_mmap_mb,
@@ -146,6 +149,7 @@ async def lifespan(app: FastAPI):
             app.state.channel_acl = {k: frozenset(v) for k, v in cacl.items()}
             app.state.doc_counts = {src: c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
                                     for src, tbl in store.SOURCE_TABLE.items()}
+            app.state.channel_members = store.slack_channel_member_counts(c)
         finally:
             c.close()
 

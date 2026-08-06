@@ -72,7 +72,7 @@ import yaml
 
 from app import store, synth
 from app.config import Settings, get_settings, infer_org
-from app.validation import jsonl_lines, record_errors, validate_file
+from app.validation import record_errors
 
 
 def slugify(text: str) -> str:
@@ -753,7 +753,7 @@ class _Loader:
             conn.execute(
                 f"INSERT OR REPLACE INTO {ctable}"
                 "(id, doc_id, seq, author_email, body, created_ts, reactions) VALUES (?,?,?,?,?,?,?)",
-                (cid := c.get("id") or f"{doc_id}::c{j}", doc_id, j, c.get("author_email"), body,
+                (_cid := c.get("id") or f"{doc_id}::c{j}", doc_id, j, c.get("author_email"), body,
                  c_ts, _j(c.get("reactions"))),
             )
 

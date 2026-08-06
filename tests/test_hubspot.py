@@ -5,7 +5,7 @@ or call the response builder directly.
 """
 from __future__ import annotations
 
-from app import store, synth
+from app import store
 from tests._helpers import crawl_hubspot, db_count, tiny_corpus
 
 

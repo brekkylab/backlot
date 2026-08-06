@@ -12,7 +12,7 @@ import yaml
 
 import pytest
 
-from app import store, synth
+from app import store
 from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
 
 

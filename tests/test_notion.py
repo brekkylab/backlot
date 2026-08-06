@@ -10,7 +10,6 @@ from tests._helpers import tiny_corpus, tok
 
 
 def test_notion_page_retrieve_and_blocks(client, admin_h):
-    from app import synth
     pid = synth.notion_id("nt-runbook")
     r = client.get(f"/notion/v1/pages/{pid}", headers=admin_h)
     assert r.status_code == 200
@@ -24,13 +23,11 @@ def test_notion_page_retrieve_and_blocks(client, admin_h):
 
 
 def test_notion_dashless_id_resolves(client, admin_h):
-    from app import synth
     pid = synth.notion_id("nt-runbook").replace("-", "")
     assert client.get(f"/notion/v1/pages/{pid}", headers=admin_h).status_code == 200
 
 
 def test_notion_search_and_comments(client, admin_h):
-    from app import synth
     s = client.post("/notion/v1/search", json={"query": "on-call"}, headers=admin_h).json()
     assert any(r["id"] == synth.notion_id("nt-runbook") for r in s["results"])
     c = client.get("/notion/v1/comments", params={"block_id": synth.notion_id("nt-runbook")},
@@ -40,7 +37,6 @@ def test_notion_search_and_comments(client, admin_h):
 
 
 def test_notion_search_filter_database_only(client, admin_h):
-    from app import synth
     s = client.post("/notion/v1/search",
                     json={"query": "", "filter": {"property": "object", "value": "database"}},
                     headers=admin_h).json()
@@ -58,13 +54,11 @@ def test_notion_users(client, admin_h):
 
 
 def test_notion_unauth_is_401(client):
-    from app import synth
     r = client.get(f"/notion/v1/pages/{synth.notion_id('nt-runbook')}")
     assert r.status_code == 401 and r.json()["code"] == "unauthorized"
 
 
 def test_notion_acl_hides_group_doc_from_outsider(client, tokens_yaml):
-    from app import synth
     pid = synth.notion_id("nt-secret")
     outsider = tok(tokens_yaml, "ava@acme.com")  # ava is engineering, not people
     r = client.get(f"/notion/v1/pages/{pid}", headers={"Authorization": f"Bearer {outsider}"})
@@ -76,7 +70,6 @@ def test_notion_acl_hides_group_doc_from_outsider(client, tokens_yaml):
 
 
 def test_notion_database_new_vs_legacy_shape(client, admin_h):
-    from app import synth
     did = synth.notion_id("nt-tasks-db")
     new = client.get(f"/notion/v1/databases/{did}", headers=admin_h).json()
     assert new["object"] == "database"
@@ -89,7 +82,6 @@ def test_notion_database_new_vs_legacy_shape(client, admin_h):
 
 
 def test_notion_query_rows_both_paths(client, admin_h):
-    from app import synth
     did = synth.notion_id("nt-tasks-db")
     dsid = synth.notion_data_source_id("nt-tasks-db")
     rows_new = client.post(f"/notion/v1/data_sources/{dsid}/query", json={}, headers=admin_h).json()
@@ -100,7 +92,6 @@ def test_notion_query_rows_both_paths(client, admin_h):
 
 
 def test_notion_data_source_retrieve(client, admin_h):
-    from app import synth
     dsid = synth.notion_data_source_id("nt-tasks-db")
     ds = client.get(f"/notion/v1/data_sources/{dsid}", headers=admin_h).json()
     assert ds["object"] == "data_source" and "Status" in ds["properties"]
@@ -156,7 +147,6 @@ def _notion_conn(tmp_path):
 
 
 def test_notion_page_shape(tmp_path):
-    from app import synth
     from app.routers.notion import _page_obj
     conn = _notion_conn(tmp_path)
     obj = _page_obj(conn, store.get_document(conn, "notion", "nf-page"))
@@ -175,7 +165,6 @@ def test_notion_page_shape(tmp_path):
 
 
 def test_notion_database_and_data_source_shape(tmp_path):
-    from app import synth
     from app.routers.notion import _data_source_obj, _database_obj
     conn = _notion_conn(tmp_path)
     dbrow = store.get_document(conn, "notion", "nf-db")
@@ -191,7 +180,6 @@ def test_notion_database_and_data_source_shape(tmp_path):
 
 
 def test_notion_user_and_block_shape(tmp_path):
-    from app import synth
     from app.routers.notion import _user_obj
     conn = _notion_conn(tmp_path)
     u = _user_obj(conn, "ava@acme.com")

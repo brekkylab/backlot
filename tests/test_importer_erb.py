@@ -4,7 +4,6 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-import types
 import urllib.request
 from pathlib import Path
 
@@ -207,7 +206,8 @@ def test_canonical_group_unknown_team_is_its_own_group():
 
 
 def test_write_tokens_is_directory_only(tmp_path):
-    import types, yaml as _yaml
+    import types
+    import yaml as _yaml
     p = Principals([{"name": "Ava Chen", "email": "ava.chen@redwoodinference.com",
                      "dept_slug": "engineering"}], "redwoodinference.com")
     p.resolve("Maya Chen", role="owner", group_hint="engineering")   # synthesized, non-directory
@@ -228,7 +228,8 @@ def test_canonical_folds_accents():
 def test_mint_does_not_clobber_directory_user(tmp_path):
     # an accented/titled directory name whose doc-reference doesn't canonical-match must still
     # keep its directory flag (the colliding mint must not overwrite it) → stays tokened
-    import types, yaml as _yaml
+    import types
+    import yaml as _yaml
     p = Principals([{"name": "Tomáš Novák", "email": "tomas.novak@redwoodinference.com",
                      "dept_slug": "engineering"}], "redwoodinference.com")
     # a doc references the plain spelling; folded canonical now matches → resolves to the dir user

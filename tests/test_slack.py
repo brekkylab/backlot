@@ -39,7 +39,6 @@ def test_slack_accepts_form_field_token(client, tokens_yaml):
 def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
     # users.info must resolve a Slack message author's synthesized id (incl. display-only
     # speakers/bots, which aren't principals) — qst_0077's raw-ID bug.
-    from app import synth
     email = ro_conn.execute("SELECT DISTINCT author_email FROM slack_messages LIMIT 1").fetchone()[0]
     uid = synth.slack_user_id(email)
     j = client.post("/slack/api/users.info", headers=admin_h, data={"user": uid}).json()
@@ -249,7 +248,6 @@ def test_slack_api_test_has_typed_response_schema(client):
 
 def test_slack_reply_users_and_num_members(tmp_path):
     from app.routers.slack import _message, _full_channel
-    from app import synth
     s = tiny_corpus(tmp_path, [
         {"source_type": "slack", "doc_id": "s1", "channel": "inc", "content": "root",
          "author_email": "bob@x.com", "visibility": "public",

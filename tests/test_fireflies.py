@@ -5,7 +5,7 @@ or call the response builder directly.
 """
 from __future__ import annotations
 
-from app import store, synth
+from app import store
 from tests._helpers import client_for, corpus_client, gql, tiny_corpus
 
 
@@ -395,9 +395,7 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
     `user(id:)` must still resolve a display-only principal, or a transcript whose host never had
     an account would serve `user: null`.
     """
-    import os
 
-    from starlette.testclient import TestClient
 
     from app import store, synth
 

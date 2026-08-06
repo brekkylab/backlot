@@ -9,7 +9,7 @@ from starlette.requests import Request
 import re
 
 
-from app import store, synth
+from app import store
 from tests._helpers import bare_request, crawl_confluence, crawl_jira, db_count, tiny_corpus
 
 

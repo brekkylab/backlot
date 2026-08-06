@@ -18,7 +18,6 @@ omit it. :func:`_page` is the single place that decides this.
 """
 from __future__ import annotations
 
-import json
 import re
 from functools import lru_cache
 

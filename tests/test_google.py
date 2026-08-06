@@ -1653,7 +1653,8 @@ def test_gmail_raw_with_attachment_is_valid_mime(tmp_path):
     conn = store.connect_ro(s.db_path)
     row = store.get_document(conn, "gmail", "m2")
     raw = _gmail_message(row, "raw")
-    import base64, email
+    import base64
+    import email
     decoded_bytes = base64.urlsafe_b64decode(raw["raw"])
     assert b"Content-Type: multipart/mixed" in decoded_bytes  # top_mime switches with attachments
     mime_msg = email.message_from_bytes(decoded_bytes)

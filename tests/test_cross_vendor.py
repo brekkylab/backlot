@@ -72,7 +72,6 @@ def test_mock_users_directory(client, tokens_yaml, org):
 
 def test_mock_users_can_be_disabled(client, monkeypatch):
     from app import main
-    from app.config import Settings
     monkeypatch.setattr(main, "get_settings", lambda: Settings(expose_tokens=False))
     assert client.get("/_mock/users").status_code == 404
 

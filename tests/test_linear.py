@@ -176,7 +176,6 @@ def test_linear_by_id_relation_roots_answer(client, admin_h):
 def test_linear_workflow_states_are_per_team(client, admin_h):
     """Two teams' identically-named states are different objects in Linear, so their ids differ.
     The corpus has no shared state name, so assert the construction directly instead."""
-    from app import synth
     assert synth.linear_state_id("Done", "engineering") != synth.linear_state_id("Done", "design")
 
 
@@ -355,7 +354,6 @@ def test_linear_releases_and_the_by_id_root(client, admin_h):
 def test_linear_release_by_id_is_acl_scoped(client, tokens_yaml):
     """The release only appears on ENG-102, which ava CAN read — so she resolves it. Asserted to
     pin that the scoping is on visibility, not a blanket denial."""
-    from app import synth
     ava = {"Authorization": linear_user_token(tokens_yaml, "ava@acme.com")}
     got = gql(client, '{ release(id: %s) { name } }' % lit(synth.linear_release_id("runtime-1.19")),
               ava)

@@ -32,7 +32,7 @@ from pathlib import Path
 
 import yaml
 
-from app import store, synth
+from app import synth
 from app.config import get_settings, infer_org
 from app.importer import byo
 

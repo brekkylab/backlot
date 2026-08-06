@@ -1,20 +1,12 @@
-"""Re-export the shared example mock plumbing — see ``examples/_common/mockserver.py``.
+"""Puts ``examples/`` on ``sys.path`` and re-exports ``_common.mockserver``.
 
-A shim per directory rather than an extra import line in every script: the examples are run
-directly (``python examples/using-official-sdk/x.py``), so only their own directory lands on ``sys.path``.
+Only a shim, and only because the examples are run directly — ``sys.path[0]`` is the script's own
+directory, so ``_common`` is not importable without this. One file per directory beats the same
+four lines in each of its scripts.
 """
 import sys
 from pathlib import Path
 
-_EXAMPLES = Path(__file__).resolve().parent.parent
-if str(_EXAMPLES) not in sys.path:
-    sys.path.insert(0, str(_EXAMPLES))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from _common.mockserver import (  # noqa: E402,F401
-    ROOT,
-    TOKEN,
-    google_oauth_user,
-    google_service_account_info,
-    mock_server,
-    serve_or_connect,
-)
+from _common.mockserver import *  # noqa: E402,F401,F403

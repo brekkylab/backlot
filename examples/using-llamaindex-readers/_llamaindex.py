@@ -12,35 +12,23 @@ says what seam it uses and why that one:
   - Notion: `patch_notion_at` — rebind the module-level URL constants.
   - Linear: `patch_linear_at` — swap the module's `requests` for a URL-rewriting proxy.
 
-Also re-exports the serve/credential helpers from the sibling `using-official-sdk/_mockserver.py`,
-so these scripts share one `--url` / `--token` behaviour and local fallback.
+Also re-exports the serve/credential helpers from `examples/_common/mockserver.py`, so every
+example shares one `--url` / `--token` behaviour and one local fallback.
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-# Reuse the official-SDK examples' mock plumbing rather than duplicating it.
-_SDK_DIR = Path(__file__).resolve().parent.parent / "using-official-sdk"
-_inserted_sdk_dir = str(_SDK_DIR) not in sys.path
-if _inserted_sdk_dir:
-    sys.path.insert(0, str(_SDK_DIR))
+# examples/ on sys.path, for the shared mock plumbing in _common/.
+_EXAMPLES = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_EXAMPLES))
 
-from _mockserver import (  # noqa: E402
+from _common.mockserver import (  # noqa: E402
     google_oauth_user,
     google_service_account_info,
     serve_or_connect,
 )
-
-# `using-official-sdk/` holds same-named sibling scripts (jira.py, github.py, s3.py, ...). Leaving
-# that dir on sys.path after the import above would let a later `from jira import JIRA` inside a
-# llama-index reader's __init__ (e.g. JiraReader) resolve to `using-official-sdk/jira.py` instead
-# of the real PyPI `jira` package. Nothing here needs the dir past the `_mockserver` import above,
-# so drop it immediately rather than leaving a shadow trap for every subsequent import in the
-# process (mirrors `drop_self_from_syspath`, but for a directory this module — not the caller —
-# inserted).
-if _inserted_sdk_dir:
-    sys.path.remove(str(_SDK_DIR))
 
 __all__ = [
     "serve_or_connect", "google_oauth_user", "google_service_account_info",

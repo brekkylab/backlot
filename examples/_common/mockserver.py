@@ -5,7 +5,7 @@ and that server's ``/health`` responds, the example talks to it directly; otherw
 back to ``mock_server``, which builds a throwaway DB from ``records`` and runs ``uvicorn``
 against it — so the example stays self-contained with no separate process to launch.
 
-    from _mockserver import serve_or_connect
+    from _mockserver import serve_or_connect      # via the sibling shim
 
     CORPUS = [{"source_type": "slack", "content": "hi"}]
     with serve_or_connect(CORPUS) as mock:
@@ -29,6 +29,10 @@ ROOT = Path(__file__).resolve()
 while not (ROOT / "pyproject.toml").exists():
     ROOT = ROOT.parent
 TOKEN = "admin-service-token"  # Settings default; a per-user token is in <data>/tokens.yaml
+
+# What each directory's `_mockserver.py` shim re-exports.
+__all__ = ["ROOT", "TOKEN", "google_oauth_user", "google_service_account_info",
+           "mock_server", "serve_or_connect"]
 
 # When talking to an HTTPS `--url` (e.g. a real deployment behind an ACM cert), Python's
 # default SSL context may have no CA bundle on macOS (`ssl.get_default_verify_paths().cafile`

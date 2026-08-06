@@ -7,8 +7,8 @@ Slack, Notion and S3 take the host as a config field, so they just get pointed a
 and GitHub do not — they read it from module-level constants in ``mirage.core.*._client``, which is
 why this module monkeypatches (see ``point_google_at`` / ``point_github_at``).
 
-Also re-exports the serve/credential helpers from the sibling ``using-official-sdk/_mockserver.py``,
-so every example shares one ``--url`` / ``--user`` / ``--token`` behaviour and one local fallback.
+Also re-exports the serve/credential helpers from ``examples/_common/mockserver.py``, so every
+example shares one ``--url`` / ``--user`` / ``--token`` behaviour and one local fallback.
 """
 from __future__ import annotations
 
@@ -17,12 +17,9 @@ import importlib
 import sys
 from pathlib import Path
 
-# Reuse the official-SDK examples' mock plumbing rather than duplicating it.
-_SDK_DIR = Path(__file__).resolve().parent.parent / "using-official-sdk"
-if str(_SDK_DIR) not in sys.path:
-    sys.path.insert(0, str(_SDK_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from _mockserver import (  # noqa: E402
+from _common.mockserver import (  # noqa: E402
     google_oauth_user,
     serve_or_connect,
 )

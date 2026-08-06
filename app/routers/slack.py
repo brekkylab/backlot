@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
+from app.openapi import qp
 from app.acl import Caller
 from app.config import get_settings
 from app.pagination import decode_cursor_or_none, next_cursor
@@ -63,19 +64,15 @@ class SlackSearch(_SlackOk):
     messages: dict = {}
 
 
-def _qp(name: str, typ: str = "string", required: bool = False) -> dict:
-    return {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
-
-
-_P_LIST = [_qp("limit", "integer"), _qp("cursor")]
-_P_CHANNEL = [_qp("channel", required=True)]
-_P_HISTORY = [_qp("channel", required=True), _qp("limit", "integer"), _qp("cursor"),
-              _qp("oldest"), _qp("latest"), _qp("inclusive", "boolean")]
-_P_REPLIES = [_qp("channel", required=True), _qp("ts", required=True)]
-_P_USER = [_qp("user", required=True)]
-_P_SEARCH = [_qp("query", required=True), _qp("count", "integer"), _qp("page", "integer"),
-             _qp("sort"), _qp("sort_dir")]
-_P_SEARCH_FILES = [_qp("query", required=True), _qp("count", "integer")]
+_P_LIST = [qp("limit", "integer"), qp("cursor")]
+_P_CHANNEL = [qp("channel", required=True)]
+_P_HISTORY = [qp("channel", required=True), qp("limit", "integer"), qp("cursor"),
+              qp("oldest"), qp("latest"), qp("inclusive", "boolean")]
+_P_REPLIES = [qp("channel", required=True), qp("ts", required=True)]
+_P_USER = [qp("user", required=True)]
+_P_SEARCH = [qp("query", required=True), qp("count", "integer"), qp("page", "integer"),
+             qp("sort"), qp("sort_dir")]
+_P_SEARCH_FILES = [qp("query", required=True), qp("count", "integer")]
 
 # conversations.history page cap (thread roots). Slack recommends limit<=200; capping here bounds
 # how many authors a client resolves per call so history stays fast even with a small users.list.
@@ -380,8 +377,8 @@ async def conversations_members(request: Request):
         return _err("invalid_cursor")
     limit = _int(request, "limit", get_settings().default_page_size)
     # A channel's members are the people who have spoken in it — the only per-channel signal the
-    # corpus carries. This used to answer every public channel with the whole roster, which real
-    # Slack cannot produce: its membership differs per channel, and it paginates this method.
+    # corpus carries. Never the whole roster: real Slack's membership differs per channel, and it
+    # paginates this method.
     total = store.count_slack_channel_members(conn, name)
     emails = store.slack_channel_member_emails(conn, name, limit=limit, offset=offset)
     members = [synth.slack_user_id(e) for e in emails]
@@ -400,12 +397,11 @@ async def users_list(request: Request):
     # authors. Slack transcript speakers are NOT added, and that is a limitation of the upstream
     # dataset rather than a modelling choice, so it is stated plainly here and in the README (#33).
     #
-    # The note that used to sit here said the speakers are "mostly external (customers/companies/
-    # bots)". Measured on the bench corpus, that is false: of 74,138 distinct speakers only 3,971
-    # (5.4%) are principals, and ALL 70,167 of the rest are on the org's own domain. The two
-    # populations are generated independently upstream, and 74k speakers against an 11,913-person
-    # directory is not a headcount any real workspace has — so neither set can be made a subset of
-    # the other without inventing 70k colleagues or discarding the transcripts' own speakers.
+    # The speakers are NOT "mostly external": measured on the bench corpus, of 74,138 distinct
+    # speakers only 3,971 (5.4%) are principals and ALL 70,167 of the rest are on the org's own
+    # domain. The two populations are generated independently upstream, and 74k speakers against an
+    # 11,913-person directory is not a headcount any real workspace has — so neither set can be
+    # made a subset of the other without inventing 70k colleagues or discarding the speakers.
     #
     # What it costs a client: `message.user` for a speaker outside the directory resolves through
     # users.info but never appears in users.list. conversations.members does now page the channel's
@@ -454,8 +450,8 @@ _SLACK_IN_RE = re.compile(r'\bin:(#|@)?([^\s"]+)')
 
 
 def _parse_slack_query(raw: str) -> tuple[str, str | None, bool]:
-    """Parse a Slack search query into (search_terms, channel_container, phrase), honoring the two
-    operators real Slack search supports that the mock previously searched as literal text:
+    """Parse a Slack search query into (search_terms, channel_container, phrase), honouring the two
+    operators real Slack search supports — without this they would be matched as literal text:
 
     - ``in:#channel`` (or ``in:channel``) scopes results to that channel — a container filter, not
       three stray search tokens (``in``, the ``#`` name...). ``in:@user`` (a DM) has no container in

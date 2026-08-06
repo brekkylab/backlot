@@ -367,6 +367,48 @@ def tokens(sample_settings) -> dict[str, str]:
     return {u["email"]: u["token"] for u in data["users"]}
 
 
+@pytest.fixture(scope="module")
+def client(sample_settings):
+    """A TestClient over the SAMPLE DB, not the ambient ``data/`` import.
+
+    Module-scoped, so each vendor's test file gets its own — a lifespan over SAMPLE costs ~5ms once
+    the corpus is built, and sharing one session-wide would collide with the tests that reload
+    ``app.main`` to serve a different DB."""
+    from tests._helpers import client_for
+
+    with client_for(sample_settings) as c:
+        yield c
+
+
+@pytest.fixture(scope="module")
+def tokens_yaml(sample_settings) -> dict:
+    """``tokens.yaml`` verbatim — ``admin_token`` plus the ``users`` list.
+
+    NOT :func:`tokens`, which is the ``{email: token}`` map. Two shapes, two names: the same
+    fixture name meaning different things per file is how a test ends up asserting on the wrong
+    one."""
+    return yaml.safe_load(sample_settings.tokens_path.read_text())
+
+
+@pytest.fixture(scope="module")
+def admin_h(tokens_yaml) -> dict[str, str]:
+    return {"Authorization": f"Bearer {tokens_yaml['admin_token']}"}
+
+
+@pytest.fixture(scope="module")
+def org(client) -> str:
+    """The org the mock derived from the corpus (SAMPLE is @acme.com -> 'acme')."""
+    return client.get("/_mock/users").json()["org"]
+
+
+@pytest.fixture(scope="module")
+def ro_conn(sample_settings):
+    """A read-only connection to the SAMPLE DB, module-scoped (cf. the per-test ``db``)."""
+    conn = store.connect_ro(sample_settings.db_path)
+    yield conn
+    conn.close()
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

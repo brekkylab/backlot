@@ -40,26 +40,20 @@ Each line is one document:
       ]
     }
 
-Child rows are per-source, because the child of a document means something different in each
-API: slack `replies` are threaded replies (reactions, files), gmail `messages` are further
-RFC822 messages in the thread (each with its own sender/recipients/Message-ID), fireflies
-`sentences` are utterances with a speaker and timing, and `comments` are a comment API's rows.
-In every case the record itself is the root — seq 0 — each child takes the next sequence
-number, and children inherit the root's container and ACL (slack: served via
-conversations.replies, with only the root in conversations.history).
+Child rows are per-source, because a document's child means something different in each API:
+slack `replies` are threaded replies, gmail `messages` are further RFC822 messages each with its
+own sender and Message-ID, fireflies `sentences` are utterances with a speaker and timing, and
+`comments` are a comment API's rows. The record is always the root (seq 0), each child takes the
+next sequence number, and children inherit the root's container and ACL.
 
-ACL rules per doc: `readers` (emails→users, else groups) win; else `private`→author only;
-`group`→the container's group; default→org-wide (everyone). Group membership is the union of
-each author's `author_groups` plus the group of every container they authored in — so a
-`group`-restricted doc is visible to authors in that container. Pass ``--roster`` to state the
-principals instead of deriving them from the records (see :func:`load_roster`), which is how a
-corpus converted from an existing dataset carries a roster it already knows. This one script is
-the BYO counterpart to `app.importer.erb` — it builds the DB + ACL + `data/tokens.yaml` from
-JSONL, and `erb.export_byo` writes an artifact this loads into an equivalent DB.
+ACL per doc: `readers` win (an address is a user, anything else a group); else `private` -> author
+only, `group` -> the container's group, default -> org-wide. Group membership is the union of each
+author's `author_groups` and the group of every container they authored in. Pass ``--roster`` to
+state the principals instead of deriving them from the records (:func:`load_roster`), which is how
+a converted corpus carries a roster it already knows.
 
-Every record is validated against its per-service JSON Schema before loading (a bad corpus
-never half-loads). ``--dry-run`` validates the whole file and reports problems without touching
-the DB — there's no separate validate command.
+Every record is validated against its per-service JSON Schema first, so a bad corpus never
+half-loads; ``--dry-run`` reports problems without touching the DB.
 
 Usage:  python -m app.importer.byo path/to/corpus.jsonl [--append | --dry-run] [--roster r.yaml]
 """
@@ -142,16 +136,14 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
                      created=None, updated=None, owner_display=None) -> dict:
     """Map generic BYO fields (+ meta) to the target service table's own columns.
 
-    ``created``/``updated`` are pre-parsed epoch seconds (or None). Services with a
-    distinct modified time carry ``updated_ts``; slack/gmail carry only ``created_ts``.
+    ``created``/``updated`` are pre-parsed epoch seconds (or None); slack/gmail carry only
+    ``created_ts``.
 
-    ``owner_display`` is the owner's name *as the corpus wrote it*, resolved by the caller from
-    whichever field the service names it in — ``author_name`` generally, gmail's ``mailbox_owner``
-    (a mailbox's owner is not the sender of any one message in it) and fireflies' ``host_name``.
-    Every service whose table has the column takes it; slack/notion/s3 have none, since none of
-    those APIs exposes an owner display name. It is a stored column and not derived from the email
-    because a display name is not recoverable from an address: an accented or initialled name
-    ("Tomás Rré", "Aisha K. Patel") does not survive the round trip through ``<slug>@<domain>``."""
+    ``owner_display`` is the owner's name AS THE CORPUS WROTE IT, which the caller reads from
+    whichever field the service names it in (``author_name``, gmail's ``mailbox_owner``, fireflies'
+    ``host_name``). Stored rather than derived from the address, because an accented or initialled
+    name ("Tomás Rré", "Aisha K. Patel") does not survive the round trip through
+    ``<slug>@<domain>``. slack/notion/s3 have no such column — those APIs expose no owner name."""
     if src == "slack":
         return {"thread_id": thread_id, "thread_seq": seq,
                 "subtype": subtype or ex.get("subtype"),
@@ -289,13 +281,10 @@ def _ff_minutes(value) -> float | None:
 
 
 def _emails(rec: dict):
-    """Yield every email that appears in a record (author, readers, child-row authors).
+    """Yield every email in a record (author, readers, child-row authors).
 
-    Drives org inference (`_infer_org`), so an author alias missing here makes a corpus that uses
-    only that alias fall back to the DEFAULT org — which then mis-grants every public doc, since
-    those are granted to the org principal. `host_email` is Fireflies' own name for the author and
-    `sentences[]` is its child-row array, so both belong here for the same reason
-    `comments[].author_email` does.
+    Drives org inference, so an alias missing here makes a corpus using only that alias fall back to
+    the DEFAULT org — which then mis-grants every public doc, since those go to the org principal.
     """
     for key in ("author_email", "host_email"):
         v = rec.get(key)
@@ -321,14 +310,13 @@ def _infer_org(records, settings: Settings) -> tuple[str, str]:
 def corpus_records(source) -> Iterator[tuple[int, str]]:
     """``(lineno, line)`` over a plain JSONL file, a ``.jsonl.gz``, or a sharded artifact directory.
 
-    A directory is read through its ``manifest.json``, shard by shard, because the whole point of
-    sharding is a corpus too large to hold at once: reading the 581k-record ERB conversion with
-    ``read_text()`` would materialize several gigabytes of ``str``. Line numbers run across the
-    whole artifact so an error message still names one place.
+    A directory is read through its ``manifest.json`` shard by shard, because the point of sharding
+    is a corpus too large to hold at once. Line numbers run across the whole artifact, so an error
+    message still names one place.
 
-    Records are split on ``\\n`` alone (``newline="\\n"``), for the reason ``jsonl_lines`` documents:
-    U+2028 and the vertical tab are ordinary characters inside a JSON string, and Python's universal
-    newlines would otherwise tear a valid record in half.
+    Split on ``\\n`` ALONE (``newline="\\n"``), for the reason ``jsonl_lines`` documents: U+2028 and
+    the vertical tab are ordinary characters inside a JSON string, and universal newlines would tear
+    a valid record in half.
     """
     source = Path(source)
     if source.is_dir():
@@ -433,14 +421,13 @@ def load_roster(path) -> dict:
           - {name: Zoe Newperson, email: zoe.newperson@redwoodinference.com, group: engineering}
 
     ``departments`` is exactly the shape of the bench's ``employee_directory.yaml``, so that file
-    is usable as a roster verbatim; a department name becomes its group id via ``slugify``.
-    ``contacts`` covers people a corpus names who are not accounts — they still own and read
-    documents, they just cannot authenticate, which is the distinction ``tokens.yaml`` draws.
+    works as a roster verbatim; a department name becomes its group id via ``slugify``.
+    ``contacts`` are people a corpus names who are not accounts — they own and read documents but
+    cannot authenticate, the distinction ``tokens.yaml`` draws.
 
-    With a roster supplied, `principals`, `group_members` and `tokens.yaml` come from it ALONE: a
-    record's `author_email` / `readers` are then references into it, and an address that isn't in
-    it (a Slack display handle, an outside sender) stays a plain address on the document instead of
-    silently becoming an org account with a working token.
+    With a roster, `principals`, `group_members` and `tokens.yaml` come from it ALONE: a record's
+    `author_email` / `readers` become references into it, and an address absent from it (a Slack
+    handle, an outside sender) stays a plain address instead of becoming an account with a token.
     """
     data = yaml.safe_load(Path(path).read_text()) or {}
     users: dict[str, dict] = {}
@@ -457,82 +444,61 @@ def load_roster(path) -> dict:
     return {"org": data.get("org"), "org_domain": data.get("org_domain"), "users": users}
 
 
-def load(path: Path, settings: Settings | None = None, reset: bool = True,
-         roster: Path | None = None) -> dict:
-    settings = settings or get_settings()
-    if reset and settings.db_path.exists():
-        settings.db_path.unlink()
-    conn = store.connect_rw(settings.db_path)
+class _Loader:
+    """Inserts BYO records into an open DB, accumulating the corpus-level state the principal, ACL
+    and cross-reference passes need afterwards.
 
-    # infer the org from the corpus (dominant email domain) before building any grants,
-    # since public docs are granted to the org principal — see _infer_org. Read in its own pass,
-    # keeping only the emails: a sharded corpus is streamed rather than held in memory.
-    def _scanned():
-        """Just what `_emails` reads, one record at a time.
+    A class rather than one long loop because a whole corpus and a single document (the ERB
+    importer's unit) have to go through ONE implementation or they drift. Cross-record work — a
+    HubSpot association's target, a Linear parent's identifier — is deferred to
+    :meth:`resolve_cross_references`, since the target may arrive on a later record.
+    """
 
-        `infer_org` consumes the addresses exactly once (app/config.py), so nothing needs to be held:
-        yielding keeps the memory constant where a list would build one dict per document plus one
-        per child row — millions of them at bench scale, in a pass whose whole point is to stream.
+    def __init__(self, conn, org: str, org_domain: str, *, closed: bool = False,
+                 validate: bool = True):
+        self.conn = conn
+        self.org = org
+        self.org_domain = org_domain
+        # With a roster the principal set is CLOSED: a record's emails reference it rather than
+        # declaring new people (see load_roster).
+        self.closed = closed
+        # Skipped only for records this repo generated itself — see load_records.
+        self.validate = validate
+        self.containers = {}   # (source_type, name) -> group_id
+        self.users = {}                    # email -> display name
+        self.groups = set()
+        self.memberships = set()      # (group_id, email)
+        self.grants = []        # (doc_id, principal_type, principal_id)
+        self.counts = {}
+        self.seen = set()   # (source_type, doc_id)
+        self.fts_ids = {}
+        # HubSpot associations are resolved after the whole corpus is read: a link may name a target
+        # that appears on a later line, and an omitted `to_type` is filled in from the target's own
+        # object type. doc_id -> object_type, plus the declared links.
+        self.hs_types = {}
+        self.hs_links = []      # (from_doc_id, from_type, declaration)
+        # Linear relations name a target by doc_id and are resolved after the whole corpus is read,
+        # since a target may appear on a later line — the same second pass the ERB importer runs.
+        self.lin_links = []
+
+
+    def add(self, rec: dict, where: str = "record") -> None:
+        """Insert one BYO record's row(s). ``where`` names the record in an error message.
+
+        The accumulators are aliased into locals below and only ever mutated in place, so the
+        body stays the straight-line per-record mapping it reads as.
         """
-        for _no, _ln in corpus_records(path):
-            _ln = _ln.strip()
-            if not _ln:
-                continue
-            try:
-                _rec = json.loads(_ln)
-            except json.JSONDecodeError:
-                continue  # malformed lines are reported precisely in the main loop below
-            yield {
-                **{k: _rec[k] for k in ("author_email", "host_email", "readers") if k in _rec},
-                **{c: [{"author_email": r.get("author_email")} for r in (_rec.get(c) or [])
-                       if isinstance(r, dict)]
-                   for c in ("comments", "sentences", "messages", "replies") if c in _rec}}
-
-    org_name, org_domain = _infer_org(_scanned(), settings)
-    roster_data = load_roster(roster) if roster else None
-    closed = roster_data is not None
-    if closed:
-        # A roster states the org rather than leaving it to be guessed from the dominant author
-        # domain — which a converted corpus can get wrong, since its documents also carry outside
-        # senders and display-only handles.
-        org_name = roster_data.get("org") or org_name
-        org_domain = roster_data.get("org_domain") or org_domain
-    if not reset:
-        row = conn.execute("SELECT id FROM principals WHERE type='org' LIMIT 1").fetchone()
-        if row:
-            org_name = row[0]
-    org = org_name
-
-    containers: dict[tuple[str, str], str] = {}   # (source_type, name) -> group_id
-    users: dict[str, str] = {}                    # email -> display name
-    groups: set[str] = set()
-    memberships: set[tuple[str, str]] = set()      # (group_id, email)
-    grants: list[tuple[str, str, str]] = []        # (doc_id, principal_type, principal_id)
-    counts: dict[str, int] = {}
-    seen: set[tuple[str, str]] = set()   # (source_type, doc_id)
-    fts_ids: dict[str, list[str]] = {}
-    # HubSpot associations are resolved after the whole corpus is read: a link may name a target
-    # that appears on a later line, and an omitted `to_type` is filled in from the target's own
-    # object type. doc_id -> object_type, plus the declared links.
-    hs_types: dict[str, str] = {}
-    hs_links: list[tuple[str, str, dict]] = []      # (from_doc_id, from_type, declaration)
-    # Linear relations name a target by doc_id and are resolved after the whole corpus is read,
-    # since a target may appear on a later line — the same second pass the ERB importer runs.
-    lin_links: list[tuple[str, dict, int]] = []
-
-    for lineno, line in corpus_records(path):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError as e:
-            raise SystemExit(f"line {lineno}: invalid JSON: {e}")
+        conn, org, org_domain = self.conn, self.org, self.org_domain
+        closed, validate, containers = self.closed, self.validate, self.containers
+        users, groups, memberships = self.users, self.groups, self.memberships
+        grants, counts, seen = self.grants, self.counts, self.seen
+        fts_ids, hs_types, hs_links = self.fts_ids, self.hs_types, self.hs_links
+        lin_links = self.lin_links
         # Schema pre-validation: source_type/content/title, enums, comment/reply shapes,
         # and unknown-key rejection all come from schemas/ (see app.validation).
-        errors = record_errors(rec)
+        errors = record_errors(rec) if validate else []
         if errors:
-            raise SystemExit(f"line {lineno}: " + "; ".join(errors))
+            raise SystemExit(f"{where}: " + "; ".join(errors))
         src = rec["source_type"]
         # Slack messages have no title; the other five carry a natural one.
         title = rec.get("title") or ""
@@ -552,7 +518,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
             if not given and not (rec.get("content") or "").strip():
                 # Stated here rather than as a schema `anyOf`, whose error ("is not valid under
                 # any of the given schemas") names neither field and so tells the author nothing.
-                raise SystemExit(f"line {lineno}: a fireflies record needs 'sentences' or "
+                raise SystemExit(f"{where}: a fireflies record needs 'sentences' or "
                                  f"'content' — one of the two IS the transcript")
             if given:
                 sentences = [{"speaker_name": s.get("speaker_name") or s.get("speaker"),
@@ -713,8 +679,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
                 # and the app's reverse index is built from stored columns — so a serve-time-only
                 # identifier came back "Entity not found" from `issue(id: "ENG-749")` even though
                 # the API had just handed the caller that exact string. Deterministic, so the
-                # served value is unchanged; it is just written down now. (erb's load_linear
-                # already does this; only BYO could reach the gap.)
+                # served value is unchanged; it is just written down now.
                 cols["identifier"] = synth.linear_identifier(
                     did, synth.linear_team_key(container))
             names = list(cols)
@@ -769,15 +734,15 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
         rec_comments = rec.get("comments") or []
         ctable = store.comment_table(src)
         if rec_comments and ctable is None:
-            raise SystemExit(f"line {lineno}: comments are not supported for source_type {src!r}")
+            raise SystemExit(f"{where}: comments are not supported for source_type {src!r}")
         prev_c_ts = created
         for j, c in enumerate(rec_comments, start=1):
             body = c.get("body") or c.get("content")
             if not body:
-                raise SystemExit(f"line {lineno}: each comment needs 'content'")
+                raise SystemExit(f"{where}: each comment needs 'content'")
             register(c.get("author_email"), c.get("author_name"))
             # A comment with no explicit time follows the PREVIOUS comment, not the doc's clock
-            # plus its position — the rule `erb.load_linear` already applies, and for its reason:
+            # plus its position. The reason:
             # in a thread that mixes dated and undated comments, `created + j` lands an undated one
             # back at the document's creation time and any consumer ordering by createdAt (Linear's
             # `Issue.comments` does) serves the thread inverted. Monotonic, so it cannot. For an
@@ -794,7 +759,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
 
         for i, rep in enumerate(replies or [], start=1):
             if not rep.get("content"):
-                raise SystemExit(f"line {lineno}: each reply needs 'content'")
+                raise SystemExit(f"{where}: each reply needs 'content'")
             rep_author = rep.get("author_email") or author
             register(rep_author, rep.get("author_name"))
             rep_id = rep.get("doc_id") or (
@@ -815,7 +780,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
             # headers with no body (an auto-ack, a bare forward), and dropping those would drop
             # messages from the middle of a thread and renumber the rest.
             if "content" not in msg:
-                raise SystemExit(f"line {lineno}: each gmail message needs 'content'")
+                raise SystemExit(f"{where}: each gmail message needs 'content'")
             # No fallback to the ROOT's author, unlike a slack reply: a thread's messages have
             # different senders by definition, so attributing an unattributed one to whoever
             # opened the thread would invent a sender. It falls through to `unknown@<org_domain>`.
@@ -831,81 +796,174 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
                    ex={**msg, "thread": gmail_thread},
                    cts=_epoch(msg.get("created")) or (created + i * 3600))
 
-    # HubSpot associations: one declaration becomes two rows, because real HubSpot exposes a link
-    # from both records (with a distinct type id per direction) and a corpus author should not have
-    # to write it twice.
-    for from_doc, from_type, a in hs_links:
-        to_doc = a["to"]
-        to_type = a.get("to_type") or hs_types.get(to_doc)
-        if to_type is None:
-            # `--append` loads one file at a time, so a target already in the DB is not in
-            # `hs_types`. Fall back to the stored row before giving up, or appending a contact to a
-            # previously-loaded company would fail for a link that is perfectly resolvable.
-            row = conn.execute("SELECT object_type FROM hubspot_objects WHERE doc_id = ?",
-                               (to_doc,)).fetchone()
-            to_type = row["object_type"] if row else None
-        if to_type is None:
-            raise SystemExit(
-                f"hubspot association {from_doc} -> {to_doc}: target not found in this corpus or "
-                f"the existing DB; add the target record or set 'to_type' on the association")
-        category = a.get("category") or "HUBSPOT_DEFINED"
-        label = a.get("label")
-        # An explicit type_id applies only to the direction the author declared; the reverse gets
-        # its own synthesized id, since the two directions never share one in real HubSpot.
-        for f_doc, f_type, t_doc, t_type, tid in (
-                (from_doc, from_type, to_doc, to_type, a.get("type_id")),
-                (to_doc, to_type, from_doc, from_type, None)):
+    def write_containers(self) -> None:
+        """The per-service grouping rows (``slack_channels``, ``linear_teams``, ``gdrive_folders``,
+        …). Deferred to the end of a load rather than written per record: a container's owning
+        group is whatever its records agreed on, and the last one wins."""
+        for (src, name), group_id in self.containers.items():
+            gtable, gcol = store.GROUPING[src]
+            self.conn.execute(f"INSERT OR REPLACE INTO {gtable}({gcol}, group_id) VALUES (?,?)",
+                              (name, group_id))
+
+    def resolve_cross_references(self) -> None:
+        """Resolve the links whose target may only have arrived on a later record."""
+        conn, counts, seen = self.conn, self.counts, self.seen
+        hs_types, hs_links, lin_links = self.hs_types, self.hs_links, self.lin_links
+        # HubSpot associations: one declaration becomes two rows, because real HubSpot exposes a link
+        # from both records (with a distinct type id per direction) and a corpus author should not have
+        # to write it twice.
+        for from_doc, from_type, a in hs_links:
+            to_doc = a["to"]
+            to_type = a.get("to_type") or hs_types.get(to_doc)
+            if to_type is None:
+                # `--append` loads one file at a time, so a target already in the DB is not in
+                # `hs_types`. Fall back to the stored row before giving up, or appending a contact to a
+                # previously-loaded company would fail for a link that is perfectly resolvable.
+                row = conn.execute("SELECT object_type FROM hubspot_objects WHERE doc_id = ?",
+                                   (to_doc,)).fetchone()
+                to_type = row["object_type"] if row else None
+            if to_type is None:
+                raise SystemExit(
+                    f"hubspot association {from_doc} -> {to_doc}: target not found in this corpus or "
+                    f"the existing DB; add the target record or set 'to_type' on the association")
+            category = a.get("category") or "HUBSPOT_DEFINED"
+            label = a.get("label")
+            # An explicit type_id applies only to the direction the author declared; the reverse gets
+            # its own synthesized id, since the two directions never share one in real HubSpot.
+            for f_doc, f_type, t_doc, t_type, tid in (
+                    (from_doc, from_type, to_doc, to_type, a.get("type_id")),
+                    (to_doc, to_type, from_doc, from_type, None)):
+                conn.execute(
+                    "INSERT OR REPLACE INTO hubspot_associations(from_doc_id, from_type, to_doc_id, "
+                    "to_type, assoc_category, assoc_type_id, label) VALUES (?,?,?,?,?,?,?)",
+                    (f_doc, f_type, t_doc, t_type, category,
+                     tid or synth.hubspot_assoc_type_id(f_type, t_type), label))
+
+        # Linear parents: `parent` names the target by IDENTIFIER, so it can only be resolved once
+        # every issue is loaded. `Issue.children` reads `parent_doc_id`, so without this a corpus would
+        # serve `parent` but an empty `children`, and the two directions would disagree.
+        if counts.get("linear"):
+            key_to_doc: dict[str, str] = {}
+            for did, ident in conn.execute(
+                    "SELECT doc_id, identifier FROM linear_issues WHERE identifier IS NOT NULL "
+                    "ORDER BY doc_id"):
+                key_to_doc.setdefault(ident, did)
+            dangling = 0
+            for did, pkey in conn.execute(
+                    "SELECT doc_id, parent_key FROM linear_issues WHERE parent_key IS NOT NULL"
+            ).fetchall():
+                target = key_to_doc.get(pkey)
+                if target is None:
+                    # A parent names an IDENTIFIER, not a doc_id, and an identifier that is not in this
+                    # corpus is a normal property of a real dataset rather than a corpus error: a slice
+                    # of an issue tracker references issues outside it (24.8% of the bench's parent
+                    # references do). So keep `parent_key` — it is what the corpus said — and leave
+                    # `parent_doc_id` NULL, which is exactly what `Issue.parent` serving null means.
+                    # `relations` stay strict by contrast: those name a doc_id, so a miss is a typo.
+                    dangling += 1
+                    continue
+                if target != did:
+                    conn.execute("UPDATE linear_issues SET parent_doc_id = ? WHERE doc_id = ?",
+                                 (target, did))
+            if dangling:
+                print(f"  linear: {dangling} parent reference(s) match no issue in this corpus; "
+                      f"kept as `parent` with no resolved parent issue", file=sys.stderr)
+
+        # Linear relations: resolve declared targets now that every doc_id is known. A target that
+        # does not exist is an error rather than a dangling relation, matching the hubspot rule.
+        for from_doc, a, created_ts in lin_links:
+            to_doc = a["to"]
+            if ("linear", to_doc) not in seen and not conn.execute(
+                    "SELECT 1 FROM linear_issues WHERE doc_id = ?", (to_doc,)).fetchone():
+                raise SystemExit(
+                    f"linear relation {from_doc} -> {to_doc}: target not found in this corpus or the "
+                    f"existing DB; add the target issue or drop the relation")
             conn.execute(
-                "INSERT OR REPLACE INTO hubspot_associations(from_doc_id, from_type, to_doc_id, "
-                "to_type, assoc_category, assoc_type_id, label) VALUES (?,?,?,?,?,?,?)",
-                (f_doc, f_type, t_doc, t_type, category,
-                 tid or synth.hubspot_assoc_type_id(f_type, t_type), label))
+                "INSERT OR REPLACE INTO linear_relations(id, from_doc_id, to_doc_id, type, created_ts)"
+                " VALUES (?,?,?,?,?)",
+                (a.get("id") or f"{from_doc}::r{to_doc}", from_doc, to_doc,
+                 a.get("type") or "related", created_ts))
 
-    # Linear parents: `parent` names the target by IDENTIFIER, so it can only be resolved once
-    # every issue is loaded — the same second pass `erb.resolve_linear_references` runs, and for
-    # the same reason: `Issue.children` reads `parent_doc_id`, so without this a BYO corpus would
-    # serve `parent` but an empty `children`, and the two directions would disagree.
-    if counts.get("linear"):
-        key_to_doc: dict[str, str] = {}
-        for did, ident in conn.execute(
-                "SELECT doc_id, identifier FROM linear_issues WHERE identifier IS NOT NULL "
-                "ORDER BY doc_id"):
-            key_to_doc.setdefault(ident, did)
-        dangling = 0
-        for did, pkey in conn.execute(
-                "SELECT doc_id, parent_key FROM linear_issues WHERE parent_key IS NOT NULL"
-        ).fetchall():
-            target = key_to_doc.get(pkey)
-            if target is None:
-                # A parent names an IDENTIFIER, not a doc_id, and an identifier that is not in this
-                # corpus is a normal property of a real dataset rather than a corpus error: a slice
-                # of an issue tracker references issues outside it (24.8% of the bench's parent
-                # references do). So keep `parent_key` — it is what the corpus said — and leave
-                # `parent_doc_id` NULL, which is exactly what `Issue.parent` serving null means.
-                # `relations` stay strict by contrast: those name a doc_id, so a miss is a typo.
-                dangling += 1
+
+
+def load(path: Path, settings: Settings | None = None, reset: bool = True,
+         roster: Path | None = None) -> dict:
+    """Load a BYO-JSONL corpus — a file, a ``.jsonl.gz``, or a sharded directory — into the DB."""
+
+    def _from_file():
+        for lineno, line in corpus_records(path):
+            line = line.strip()
+            if not line:
                 continue
-            if target != did:
-                conn.execute("UPDATE linear_issues SET parent_doc_id = ? WHERE doc_id = ?",
-                             (target, did))
-        if dangling:
-            print(f"  linear: {dangling} parent reference(s) match no issue in this corpus; "
-                  f"kept as `parent` with no resolved parent issue", file=sys.stderr)
+            try:
+                yield lineno, json.loads(line)
+            except json.JSONDecodeError as e:
+                raise SystemExit(f"line {lineno}: invalid JSON: {e}")
 
-    # Linear relations: resolve declared targets now that every doc_id is known. A target that
-    # does not exist is an error rather than a dangling relation, matching the hubspot rule.
-    for from_doc, a, created_ts in lin_links:
-        to_doc = a["to"]
-        if ("linear", to_doc) not in seen and not conn.execute(
-                "SELECT 1 FROM linear_issues WHERE doc_id = ?", (to_doc,)).fetchone():
-            raise SystemExit(
-                f"linear relation {from_doc} -> {to_doc}: target not found in this corpus or the "
-                f"existing DB; add the target issue or drop the relation")
-        conn.execute(
-            "INSERT OR REPLACE INTO linear_relations(id, from_doc_id, to_doc_id, type, created_ts)"
-            " VALUES (?,?,?,?,?)",
-            (a.get("id") or f"{from_doc}::r{to_doc}", from_doc, to_doc,
-             a.get("type") or "related", created_ts))
+    return load_records(_from_file, settings, reset, roster)
+
+
+def load_records(records_factory, settings: Settings | None = None, reset: bool = True,
+                 roster: Path | None = None, validate: bool = True) -> dict:
+    """Load already-parsed BYO records into the DB. ``load`` is this over a JSONL file.
+
+    ``records_factory`` returns a FRESH iterator of ``(where, record)`` pairs and may be called
+    twice — the org has to be inferred from every author's address before the first grant is
+    written, so a corpus is re-read rather than held in memory. ``where`` names the record in an
+    error message. ``validate=False`` skips the JSON Schema check, and is only for records this repo
+    generated itself (``erb.to_byo``); a corpus from OUTSIDE always validates, which is why
+    ``load`` does not expose the flag.
+    """
+    settings = settings or get_settings()
+    if reset and settings.db_path.exists():
+        settings.db_path.unlink()
+    conn = store.connect_rw(settings.db_path)
+
+    # infer the org from the corpus (dominant email domain) before building any grants,
+    # since public docs are granted to the org principal — see _infer_org. Read in its own pass,
+    # keeping only the emails: a sharded corpus is streamed rather than held in memory.
+    def _scanned():
+        """Just what `_emails` reads, one record at a time.
+
+        `infer_org` consumes the addresses exactly once (app/config.py), so nothing needs to be held:
+        yielding keeps the memory constant where a list would build one dict per document plus one
+        per child row — millions of them at bench scale, in a pass whose whole point is to stream.
+        """
+        for _no, _rec in records_factory():
+            yield {
+                **{k: _rec[k] for k in ("author_email", "host_email", "readers") if k in _rec},
+                **{c: [{"author_email": r.get("author_email")} for r in (_rec.get(c) or [])
+                       if isinstance(r, dict)]
+                   for c in ("comments", "sentences", "messages", "replies") if c in _rec}}
+
+    roster_data = load_roster(roster) if roster else None
+    closed = roster_data is not None
+    # A roster states the org rather than leaving it to be guessed from the dominant author domain
+    # — which a converted corpus can get wrong, since its documents also carry outside senders and
+    # display-only handles. When it states BOTH, the inference pass is pure cost: every value it
+    # would produce is about to be overwritten. Skipping it also halves the passes an in-memory
+    # caller makes over a corpus it generates on the fly (see erb.import_structured).
+    stated = bool(roster_data and roster_data.get("org") and roster_data.get("org_domain"))
+    if stated:
+        org_name, org_domain = roster_data["org"], roster_data["org_domain"]
+    else:
+        org_name, org_domain = _infer_org(_scanned(), settings)
+        if closed:
+            org_name = roster_data.get("org") or org_name
+            org_domain = roster_data.get("org_domain") or org_domain
+    if not reset:
+        row = conn.execute("SELECT id FROM principals WHERE type='org' LIMIT 1").fetchone()
+        if row:
+            org_name = row[0]
+    org = org_name
+
+    loader = _Loader(conn, org, org_domain, closed=closed, validate=validate)
+    for lineno, rec in records_factory():
+        loader.add(rec, f"line {lineno}")
+    loader.resolve_cross_references()
+    users, groups = loader.users, loader.groups
+    memberships, grants = loader.memberships, loader.grants
+    counts, fts_ids = loader.counts, loader.fts_ids
 
     if closed:
         # The roster IS the principal set: users, the groups they belong to, and the memberships
@@ -920,10 +978,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
         conn.execute("INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (g, "group", g, None))
     for email, name in users.items():
         conn.execute("INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (email, "user", name, email))
-    for src, name in {(s, n) for (s, n) in containers}:
-        gtable, gcol = store.GROUPING[src]
-        conn.execute(f"INSERT OR REPLACE INTO {gtable}({gcol}, group_id) VALUES (?,?)",
-                     (name, containers[(src, name)]))
+    loader.write_containers()
     for g, email in memberships:
         conn.execute("INSERT OR REPLACE INTO group_members VALUES (?,?)", (g, email))
     for doc_id, ptype, pid in grants:

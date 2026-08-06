@@ -113,30 +113,19 @@ def test_slack(live_server):
 
 
 def _patch_s3fs_walk() -> None:
-    """Work around a multi-year fsspec/s3fs compatibility bug (present since at least the
-    2023.x releases and reproducing on every version installable today, including fsspec/s3fs
-    2026.6.0): `S3Reader.load_data()` in whole-bucket mode (no `key`) calls
-    `SimpleDirectoryReader._add_files`, which always does
-    `fs.walk(input_dir, topdown=True, maxdepth=...)`. The sync `AbstractFileSystem.walk` declares
-    `topdown` as an explicit parameter (so it never reaches `ls`), but `S3FileSystem` is async and
-    its `_walk` chain bottoms out in `_ls()`, which doesn't accept `topdown`, raising
-    ``TypeError: S3FileSystem._ls() got an unexpected keyword argument 'topdown'``. Client-side
-    bug independent of the mock (reproduces against real AWS S3 too), so no mock-side fix helps.
+    """Work around a long-standing fsspec/s3fs bug, NOT anything mock-side (it reproduces
+    identically against real AWS S3): a whole-bucket `S3Reader.load_data()` reaches
+    `fs.walk(..., topdown=True)`, and `S3FileSystem` is async so its `_walk` chain bottoms out in
+    `_ls()`, which does not accept `topdown`.
 
-    Wraps the *original* `S3FileSystem._walk` (captured before patching) rather than delegating
-    to the shared `fsspec.asyn.AsyncFileSystem._walk` base implementation: `S3FileSystem` defines
-    its own `_walk` with S3-specific logic (e.g. a guard raising `ValueError("Cannot crawl all of
-    S3")` for bucket-less/root crawls) before calling up to the async base — bypassing it via
-    `AsyncFileSystem._walk` directly would silently drop that guard (and any other S3-specific
-    behavior) for every whole-bucket walk. Wrapping the original preserves all of it; the wrapper
-    only strips the offending `topdown` kwarg. Scoped to `S3FileSystem` only, so other async
-    fsspec backends (gcsfs, adlfs, ...) are unaffected. Self-verifies against `S3FileSystem._ls`'s
-    signature first and no-ops if a future s3fs release has fixed the signature to accept
-    `topdown` (directly or via a `**kwargs` catch-all), so we never silently drop a `topdown` a
-    fixed s3fs would legitimately honor.
+    Wraps the ORIGINAL `S3FileSystem._walk` rather than delegating to `AsyncFileSystem._walk`:
+    S3's own `_walk` carries S3-specific logic (a guard against crawling all of S3) that going
+    straight to the base class would silently drop. The wrapper only strips the offending kwarg.
+    Scoped to `S3FileSystem`, idempotent, and self-verifying — it no-ops if a future s3fs accepts
+    `topdown`, so a fixed library's kwarg is never dropped.
 
     Duplicated from `examples/using-llamaindex-readers/_llamaindex.py:patch_s3fs_walk` (tests
-    don't import from examples). Idempotent."""
+    don't import from examples)."""
     import inspect
 
     from s3fs.core import S3FileSystem
@@ -227,16 +216,13 @@ def test_notion(live_server):
 def _point_hubspot_at(monkeypatch, base_url: str) -> None:
     """Redirect HubspotReader at the mock.
 
-    The reader takes only an access token and builds ``HubSpot(access_token=...)`` itself — but it
-    does ``from hubspot import HubSpot`` *inside* ``load_data()``, so rebinding the module attribute
-    is enough. ``host`` is a plain kwarg on the current SDK; on 8.x it is silently IGNORED and the
-    client talks to api.hubapi.com, so this fails loudly rather than letting the test hit production.
+    The reader builds ``HubSpot(access_token=...)`` itself but imports it INSIDE ``load_data()``, so
+    rebinding the module attribute is enough. ``host`` is a plain kwarg on the current SDK and is
+    silently IGNORED on 8.x — hence the loud failure, rather than a test that quietly hits
+    api.hubapi.com.
 
-    Patched through ``monkeypatch`` so it is undone at teardown: this rebinds a *global* on the
-    ``hubspot`` module, and ``live_server`` is module-scoped, so a leaked wrapper would still be in
-    place when a later module gets its own server on a different port. The guard also compares
-    against the host that was actually requested rather than the one captured here, so it stays
-    correct for a caller that passes its own ``host``.
+    Through ``monkeypatch`` so it is undone at teardown: this rebinds a GLOBAL, and ``live_server``
+    is module-scoped, so a leaked wrapper would outlive the port it was built for.
     """
     import hubspot
 
@@ -271,17 +257,13 @@ def test_hubspot(live_server, monkeypatch):
 def _point_gmail_at(base_url: str) -> None:
     """Redirect GmailReader at the mock.
 
-    GmailReader builds its Google service with googleapiclient's `build` and no host override.
-    Its `load_data()` does a *local* `from googleapiclient.discovery import build` on every call
-    rather than importing it at module scope, so there is no `gm.build` module attribute to wrap
-    (confirmed empirically: `'build' in dir(llama_index.readers.google.gmail.base)` is `False`).
-    Wrap `googleapiclient.discovery.build` itself instead — the local import re-reads whatever
-    that symbol currently is at call time, so patching it one level up the chain has the same
-    effect as patching `gm.build` would. Injects `client_options(api_endpoint=...)` +
-    `static_discovery=True`, same as `using-official-sdk/gmail.py` (for Gmail the api_endpoint is
-    the base itself, NOT `base + /gmail/v1` — the bundled discovery doc's rootUrl is replaced and
-    the client appends `/gmail/v1`). Idempotent; fails loudly if the target `build` symbol is
-    gone rather than silently letting the reader hit real googleapis.com.
+    GmailReader builds its service with googleapiclient's `build` and no host override, and its
+    `load_data()` imports `build` LOCALLY on every call — so there is no module attribute to wrap.
+    Wrap `googleapiclient.discovery.build` itself instead, one level up: the local import re-reads
+    that symbol at call time. Injects `client_options(api_endpoint=...)` + `static_discovery=True`,
+    where the api_endpoint is the base ITSELF, not `base + /gmail/v1` — the bundled discovery doc's
+    rootUrl is replaced and the client appends the version. Fails loudly if the symbol is gone
+    rather than letting the reader reach real googleapis.com.
 
     Duplicated from `examples/using-llamaindex-readers/_llamaindex.py:point_gmail_at` (tests
     don't import from examples)."""

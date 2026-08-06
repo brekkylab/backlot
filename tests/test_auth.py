@@ -6,8 +6,11 @@ scheme, whose whole point is that it must accept a header with *no* auth scheme 
 """
 from __future__ import annotations
 
+import base64
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 
 from app import auth
@@ -21,6 +24,39 @@ def _request(authorization: str | None = None, app=None) -> Request:
 
 def _app(acl) -> SimpleNamespace:
     return SimpleNamespace(state=SimpleNamespace(acl=acl))
+
+
+# --- require_bearer / require_basic_or_bearer ------------------------------------
+
+def test_require_bearer_raises_401_carrying_the_vendors_own_detail(acl):
+    """The detail string is the VENDOR's: GitHub says "Bad credentials", Google "Invalid
+    Credentials", Atlassian "Unauthorized". A client that string-matches its provider's error has
+    to keep matching, so the message is a parameter rather than something this helper invents."""
+    with pytest.raises(HTTPException) as e:
+        auth.require_bearer(_request(app=_app(acl)), "Bad credentials")
+    assert e.value.status_code == 401 and e.value.detail == "Bad credentials"
+
+
+def test_require_bearer_returns_the_caller_for_a_good_token(acl, tokens):
+    caller = auth.require_bearer(_request(f"Bearer {tokens['ava@acme.com']}", app=_app(acl)),
+                                "nope")
+    assert caller.email == "ava@acme.com"
+
+
+def test_require_basic_or_bearer_accepts_either_scheme(acl, tokens, sample_settings):
+    """Atlassian carries Basic email:api_token and also accepts a bearer OAuth token."""
+    token = tokens["ava@acme.com"]
+    basic = base64.b64encode(f"ava@acme.com:{token}".encode()).decode()
+    assert auth.require_basic_or_bearer(
+        _request(f"Basic {basic}", app=_app(acl)), "Unauthorized").email == "ava@acme.com"
+    assert auth.require_basic_or_bearer(
+        _request(f"Bearer {token}", app=_app(acl)), "Unauthorized").email == "ava@acme.com"
+
+
+def test_require_basic_or_bearer_raises_401_with_no_credential(acl):
+    with pytest.raises(HTTPException) as e:
+        auth.require_basic_or_bearer(_request(app=_app(acl)), "Unauthorized")
+    assert e.value.status_code == 401 and e.value.detail == "Unauthorized"
 
 
 # --- api_key_token --------------------------------------------------------------

@@ -4,7 +4,6 @@ services:
     image: enterprise-mock:latest
     ports:
       - "8000:8000"
-    # Override the admin/service token or ACL mix if desired:
+    # Override the admin/service token if desired:
     # environment:
     #   MOCK_ADMIN_TOKEN: my-service-token
-    #   MOCK_ACL_PUBLIC_RATIO: "0.5"

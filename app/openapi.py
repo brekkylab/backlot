@@ -19,6 +19,7 @@ static bridge auth header can't produce.
 """
 from __future__ import annotations
 
+import re
 import warnings
 
 # Building the app's /openapi.json (FastAPI) warns "Duplicate Operation ID" once per multi-method
@@ -40,6 +41,39 @@ SOURCE_PREFIXES: dict[str, list[str]] = {
 
 _METHODS = ("get", "post", "put", "delete", "patch")
 _METHOD_RANK = {m: i for i, m in enumerate(_METHODS)}
+
+
+def unique_operation_id(route) -> str:
+    """A route's operationId — replaces FastAPI's default, which is not deterministic.
+
+    The default suffixes the id with ``list(route.methods)[0]``, and ``route.methods`` is a SET, so
+    every route declared with more than one method (each Slack method, Jira's ``search/jql`` on both
+    its v2 and v3 aliases, S3's object route) got a suffix that depended on ``PYTHONHASHSEED`` and
+    changed between restarts. That is not cosmetic here: an OpenAPI->MCP bridge keys its tools by
+    operationId (see :func:`build_mcp_spec`), so a bridge that caches tool names saw them move under
+    it whenever the server restarted.
+
+    The method is chosen by ``_METHOD_RANK`` — GET first, the same preference
+    :func:`dedupe_operations` applies — so the operation that survives the collapse is also the one
+    whose id names its own method. A method the rank does not know sorts after the known ones, by
+    name, so it is stable too.
+    """
+    ident = re.sub(r"\W", "_", f"{route.name}{route.path_format}")
+    method = min(route.methods,
+                 key=lambda m: (_METHOD_RANK.get(m.lower(), len(_METHODS)), m.lower()))
+    return f"{ident}_{method.lower()}"
+
+
+def qp(name: str, typ: str = "string", required: bool = False) -> dict:
+    """One OpenAPI query parameter, for a router's ``openapi_extra``.
+
+    The routers read their query params off the raw request rather than through FastAPI signatures
+    (a vendor's parameter names are not always valid Python, and several are conditional), so each
+    one has to declare what it honours by hand. This is that declaration — and only for parameters
+    the mock actually honours: advertising one it ignores makes a client ask for data that never
+    arrives, which is worse than not offering it.
+    """
+    return {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
 
 
 def slice_spec(spec: dict, prefixes: list[str]) -> dict:

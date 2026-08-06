@@ -10,6 +10,17 @@ def test_cursor_roundtrip():
     assert pg.decode_cursor("garbage") == 0
 
 
+def test_decode_cursor_is_the_or_none_variant_with_a_zero_floor():
+    """The two differ only in what an undecodable token means — 0 for callers that restart the
+    crawl, None for Slack, which answers `invalid_cursor` instead. Same decoding either way."""
+    import base64
+    for tok in (None, "", "garbage", base64.urlsafe_b64encode(b"x:1").decode(),
+                base64.urlsafe_b64encode(b"o:nope").decode(),
+                pg.encode_cursor(0), pg.encode_cursor(7), pg.encode_cursor(250)):
+        strict = pg.decode_cursor_or_none(tok)
+        assert pg.decode_cursor(tok) == (0 if strict is None else strict), tok
+
+
 def test_next_cursor_terminates():
     # 25 items, page of 10
     assert pg.next_cursor(0, 10, 25) != ""

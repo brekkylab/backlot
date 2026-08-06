@@ -20,6 +20,7 @@ from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict
 
 from app import auth, google_errors as gerr, store, synth
+from app.openapi import qp
 from app.acl import Caller
 from app.config import get_settings
 from app.pagination import decode_cursor, next_page_token
@@ -61,12 +62,8 @@ class GmailAttachment(_GLoose):
     data: str
 
 
-def _gqp(name: str, typ: str = "string", required: bool = False) -> dict:
-    return {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
-
-
-_P_GMAIL_LIST = [_gqp("maxResults", "integer"), _gqp("pageToken"), _gqp("q")]
-_P_GMAIL_FORMAT = [_gqp("format")]
+_P_GMAIL_LIST = [qp("maxResults", "integer"), qp("pageToken"), qp("q")]
+_P_GMAIL_FORMAT = [qp("format")]
 
 
 class DriveFileList(_GLoose):
@@ -81,11 +78,11 @@ class DrivePermissionList(_GLoose):
 
 # drive_files_get / .export return raw Response/PlainTextResponse on some branches — they get
 # openapi_extra params only (no JSON response_model, which would mis-serialize the raw body).
-_P_DRIVE_LIST = [_gqp("pageSize", "integer"), _gqp("pageToken"), _gqp("q"), _gqp("fields"),
-                 _gqp("orderBy")]
-_P_DRIVE_ALT = [_gqp("alt"), _gqp("fields")]
-_P_DRIVE_EXPORT = [_gqp("mimeType", required=True)]
-_P_DRIVE_ABOUT = [_gqp("fields", required=True)]
+_P_DRIVE_LIST = [qp("pageSize", "integer"), qp("pageToken"), qp("q"), qp("fields"),
+                 qp("orderBy")]
+_P_DRIVE_ALT = [qp("alt"), qp("fields")]
+_P_DRIVE_EXPORT = [qp("mimeType", required=True)]
+_P_DRIVE_ABOUT = [qp("fields", required=True)]
 
 DRIVE_DOC_MIME = "application/vnd.google-apps.document"
 DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -171,10 +168,11 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
 
 
 def _require(request: Request) -> Caller:
-    """The caller, or the error real Google gives. Measured: a present-but-invalid bearer is 401
-    UNAUTHENTICATED everywhere, while NO Authorization header at all is 403 PERMISSION_DENIED on
-    Drive and Sheets (they accept API keys, so an anonymous request is a caller with no established
-    identity) and 401 on the OAuth-only Gmail/Docs/Slides. The mock used to answer 401 for both."""
+    """The caller, or the error real Google gives — NOT the shared ``auth.require_bearer``, because
+    Google's answer is not one status. Measured: a present-but-invalid bearer is 401 UNAUTHENTICATED
+    everywhere, while NO Authorization header at all is 403 PERMISSION_DENIED on Drive and Sheets
+    (they accept API keys, so an anonymous request is a caller with no established identity) and 401
+    on the OAuth-only Gmail/Docs/Slides."""
     caller = auth.resolve_bearer(request)
     if caller is None:
         if not request.headers.get("authorization"):
@@ -538,12 +536,10 @@ def _att_id(doc_id: str, i: int) -> str:
 
 
 def _att_content(doc_id: str, i: int, att: dict) -> str:
-    """The exact bytes ``attachments.get`` serves for attachment ``i`` — and, so the two agree,
-    what ``messages.get`` reports as that part's ``body.size``. Real Gmail keeps the part metadata's
-    size equal to the downloaded attachment's byte length (a client can stat from metadata alone);
-    the corpus-declared ``size`` is aspirational and can't be honored with placeholder bytes, so the
-    served content's length is the single source of truth. Falls back to a stable placeholder
-    (keyed by the derived attachmentId) when the corpus carries no ``content``."""
+    """The exact bytes ``attachments.get`` serves for attachment ``i``, and therefore what
+    ``messages.get`` reports as that part's ``body.size`` — real Gmail keeps the two equal so a
+    client can stat from metadata alone. The corpus-declared ``size`` cannot be honoured with
+    placeholder bytes, so the served content's length is the single source of truth."""
     return att.get("content", f"attachment {_att_id(doc_id, i)}")
 
 
@@ -595,11 +591,10 @@ def _gmail_message(row, fmt: str) -> dict:
     html = row["body_html"] or f"<html><body><p>{row['content']}</p></body></html>"
     if fmt == "raw":
         # RFC 2822 message, base64url — a genuine boundary-delimited MIME body matching the
-        # declared multipart Content-Type above (previously this just appended the plain-text
-        # content under a `multipart/...` header with no boundary anywhere in the body: real
-        # Gmail never produces that — invalid MIME — and Python's `email` parser flags it with
-        # StartBoundaryNotFoundDefect/MultipartInvariantViolationDefect, which readers built on
-        # it, e.g. llama-index's GmailReader, choke on since `get_payload()` degrades to a bare
+        # declared multipart Content-Type above. It has to be real MIME: a plain-text body under a
+        # `multipart/...` header with no boundary makes Python's `email` parser raise
+        # StartBoundaryNotFoundDefect/MultipartInvariantViolationDefect, and readers built on it
+        # (llama-index's GmailReader) choke because `get_payload()` degrades to a bare
         # string instead of a list of sub-messages). Mirrors the same flat text/plain + text/html
         # (+ attachment) leaves the `full` format exposes via `parts` below.
         leaves = [
@@ -661,16 +656,13 @@ def _drive_owned_by(owner_email: str | None, me: str | None) -> bool:
 
 
 def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) -> dict:
-    """``sharedWithMeTime`` as a ``**``-mergeable fragment: real Drive populates it only on items
-    shared with the caller (and omits ``parents`` on them), so its presence is how a client tells a
-    shared item from its own — the same partition ``q: sharedWithMe`` filters on, which is why the
-    two have to agree.
+    """``sharedWithMeTime`` as a ``**``-mergeable fragment. Real Drive sets it only on items shared
+    WITH the caller, so its presence is how a client tells a shared item from its own — the same
+    partition ``q: sharedWithMe`` filters on, which is why the two must agree.
 
-    Empty when the caller is unknown (the admin/service token: nothing was shared *with* it, so
-    there is no time to report) or when the caller owns the item. The mock records no share event,
-    so the file's creation time stands in — stable, and never later than a real share would be.
-    ``modifiedTime`` would be wrong here: a share time that moved every time the document was
-    edited would reorder ``orderBy=sharedWithMeTime`` for an unrelated reason."""
+    Empty for an unknown caller (the admin token: nothing was shared with it) or an owned item. No
+    share event is recorded, so the creation time stands in; ``modifiedTime`` would reorder
+    ``orderBy=sharedWithMeTime`` every time the document was edited."""
     if not me or _drive_owned_by(owner_email, me):
         return {}
     return {"sharedWithMeTime": synth.rfc3339(created)}
@@ -921,9 +913,9 @@ _DRIVE_ORDER_UNMODELLED = ("viewedByMeTime", "modifiedByMeTime")
 
 def _drive_order_specs(order_by: str | None) -> list[tuple]:
     """Parse ``orderBy`` — comma-separated keys, each optionally suffixed ``desc`` — into
-    ``(key function, reverse)`` pairs. An unusable key is a 400, as on the real API; it used to be
-    accepted and never applied, so any client relying on server-side ordering appeared to work
-    against the mock and misbehaved in production."""
+    ``(key function, reverse)`` pairs. An unusable key is a 400, as on the real API — accepting one
+    and not applying it would let a client relying on server-side ordering pass here and misbehave
+    against the real thing."""
     specs = []
     for tok in (order_by or "").split(","):
         parts = tok.split()
@@ -1344,13 +1336,12 @@ _EDITOR_NATIVE = frozenset(_EDITOR_OFFICE_FAMILY)
 def _editor_doc(request: Request, file_id: str, *, expect: str):
     """The Drive row behind an editor read, or the error real Google gives for a mismatch.
 
-    ``expect`` is the native subtype this API serves and every caller must name its own: reading a
-    Doc through the Sheets API used to answer 200 with prose sliced into a "grid", which is
-    plausible enough that a client would trust it rather than notice the id was wrong.
+    ``expect`` is the native subtype this API serves, and every caller names its own — otherwise
+    reading a Doc through the Sheets API answers 200 with prose sliced into a "grid", plausible
+    enough that a client trusts it rather than noticing the id was wrong.
 
-    Visibility is resolved FIRST, so a caller who cannot see the file gets the not-found answer and
-    never a type error — the type of a document you have no access to is not something the API
-    should confirm."""
+    Visibility resolves FIRST, so a caller who cannot see the file gets not-found and never a type
+    error: the type of a document you cannot access is not something the API should confirm."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -1388,27 +1379,20 @@ async def docs_get(document_id: str, request: Request):
 
 def _sheets_grid(content: str | None) -> list[list[str]]:
     """The stored text as a grid: one row per line, each row a SINGLE cell holding that line
-    verbatim. Joining the cells back with ``\\n`` reproduces the stored content byte-for-byte,
-    which is also exactly what ``files.export`` serves — so the two cannot disagree.
+    verbatim. Joined back with ``\\n`` this reproduces the stored content byte-for-byte, which is
+    also what ``files.export`` serves — so the two cannot disagree.
 
-    This used to be ``line.split(",")``, which invented a table. Measured over the bench corpus's
-    1,875 ``doc_type: sheet`` records, NONE is delimiter-uniform CSV: 82.6% are prose and 17.4% are
-    prose wrapped around a PIPE-delimited table. So comma-splitting manufactured columns out of
-    sentence punctuation — "customer dates, ARR exposure, highest-risk deals" became three cells —
-    and the 94 documents where it disagreed with `csv.reader` turned out to be prose quoting, an
-    author's own quotes around a section labelled "Quick paste-friendly export (CSV-ish lines)",
-    not CSV field quoting.
-
-    A line break is the only structure the stored text actually carries, so it is the only
-    structure served. Picking a column delimiter is a data-cleansing decision that depends on the
-    corpus, and it belongs to whoever owns the corpus rather than to the mock: a caller who knows
-    its sheets are pipe-tabled splits on ``|``, one holding real CSV runs a CSV reader, and neither
-    has to undo a guess made here first.
+    NOT split on a delimiter. Measured over the bench's 1,875 ``doc_type: sheet`` records, none is
+    delimiter-uniform CSV: 82.6% are prose, 17.4% prose wrapped around a PIPE-delimited table. So
+    comma-splitting manufactures columns out of sentence punctuation. A line break is the only
+    structure the stored text carries, so it is the only structure served — and choosing a column
+    delimiter is a corpus-owner's decision, which a caller can still make without first undoing a
+    guess made here.
     """
     return [[line] for line in (content or "").split("\n")]
 
 
-_P_SHEETS_GET = [_gqp("includeGridData", "boolean"), _gqp("ranges")]
+_P_SHEETS_GET = [qp("includeGridData", "boolean"), qp("ranges")]
 
 
 @router.get("/sheets/v4/spreadsheets/{spreadsheet_id}",
@@ -1497,15 +1481,11 @@ def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
     edge unbounded) and ``'Sheet1'!A1`` (quoted title). Everything resolves against the GRID, so a
     range may be wider than the data — the caller trims.
 
-    Two measured boundary rules, both against a real spreadsheet:
-
-    * the range's END may overflow the grid and is CLAMPED to it (``A1:AA5`` on a 26-column sheet
-      comes back as ``A1:Z5``, ``A1:B1001`` as ``A1:B1000``);
-    * its START may not — a range beginning outside the grid is refused, naming the limits.
-
-    Anything unparseable, or naming a sheet this spreadsheet does not have, 400s with Google's
-    ``Unable to parse range`` rather than resolving to an empty grid, which a client could not
-    distinguish from a genuinely empty range.
+    Two boundary rules, measured against a real spreadsheet: the range's END may overflow and is
+    CLAMPED (``A1:AA5`` on a 26-column sheet returns ``A1:Z5``), its START may not. Anything
+    unparseable, or naming a sheet this spreadsheet lacks, 400s with Google's ``Unable to parse
+    range`` — resolving to an empty grid instead would be indistinguishable from a genuinely empty
+    range.
     """
     nrows, ncols = SHEETS_GRID_ROWS, SHEETS_GRID_COLS
     whole = (0, 0, nrows, ncols)
@@ -1600,15 +1580,13 @@ def _sheets_block(rows: list[list[str]], spec: str):
 def _sheets_grid_data(rows: list[list[str]], spec: str) -> dict:
     """One ``GridData`` block for ``spreadsheets.get?includeGridData=true``.
 
-    Rows are padded out to the range's width — real Sheets returns a cell object per column of the
-    requested range, empty ones carrying no value — and ``startRow``/``startColumn`` are omitted
-    when zero, which is how the measured responses come back (proto3 drops defaults).
+    Rows are padded to the range's width (real Sheets returns a cell object per column, empty ones
+    carrying no value) and ``startRow``/``startColumn`` are omitted when zero, which is how the
+    measured responses come back — proto3 drops defaults.
 
-    Two divergences, stated rather than hidden. Real Sheets pads ``rowData`` to the WHOLE grid
-    (1000 rows of mostly-empty cells: the 5.7 MB this flag costs on a real workbook, and the reason
-    clients avoid it); this stops at the last row holding data, because a thousand empty cell
-    objects carry nothing a reader can act on. And real cells carry format objects plus
-    ``rowMetadata``/``columnMetadata`` siblings, none of which this mock models at all."""
+    Two divergences, stated rather than hidden: real Sheets pads ``rowData`` to the WHOLE 1000-row
+    grid and this stops at the last row holding data; and real cells carry format objects plus
+    ``rowMetadata``/``columnMetadata``, none of which this mock models."""
     r0, c0, _r1, c1, block = _sheets_block(rows, spec)
     width = c1 - c0
     out: dict = {}
@@ -1669,9 +1647,9 @@ def _sheets_options(request: Request) -> str:
     return major
 
 
-_P_SHEETS_VALUES = [_gqp("majorDimension"), _gqp("valueRenderOption"),
-                    _gqp("dateTimeRenderOption")]
-_P_SHEETS_BATCH = [_gqp("ranges"), *_P_SHEETS_VALUES]
+_P_SHEETS_VALUES = [qp("majorDimension"), qp("valueRenderOption"),
+                    qp("dateTimeRenderOption")]
+_P_SHEETS_BATCH = [qp("ranges"), *_P_SHEETS_VALUES]
 
 
 @router.get("/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchGet",

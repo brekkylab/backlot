@@ -119,11 +119,6 @@ def gmail_message_id(key: str) -> str:
     return f"{hnum(key, salt='msg', length=16) % GMAIL_ID_MAX:016x}"
 
 
-def drive_file_id(doc_id: str) -> str:
-    # Drive ids are opaque; reuse the doc_id so the id is reversible for get/export.
-    return doc_id
-
-
 def drive_folder_id(container: str) -> str:
     return "0A" + _digest("folder:" + container)[:26]
 
@@ -353,14 +348,11 @@ def linear_release_id(name: str) -> str:
 def linear_team_key(container: str) -> str:
     """A team's short key — the prefix its issue identifiers carry (``ENG-123``).
 
-    Deliberately the plain word-initials form with NO hash suffix, unlike
-    :func:`jira_project_key` / :func:`confluence_space_key`. Those add one because their keys
-    would otherwise collide across containers; here the readable form is worth more, because it
-    reproduces the corpus's own prefixes exactly (``engineering`` -> ``ENG``,
-    ``product-management`` -> ``PM``, ``design`` -> ``DES``) so a served identifier matches the
-    key written in the issue text and in every other source that cites it. Two containers CAN
-    collide on one key; the app index resolves a colliding key to the first team by name, and
-    the team's UUID always addresses it unambiguously."""
+    NO hash suffix, unlike :func:`jira_project_key` / :func:`confluence_space_key`: the readable
+    form reproduces the corpus's own prefixes exactly (``engineering`` -> ``ENG``,
+    ``product-management`` -> ``PM``), so a served identifier matches the key written in the issue
+    text and in every source that cites it. Two containers CAN collide on one key — the app index
+    resolves that to the first team by name, and the team UUID always addresses it exactly."""
     return _key(container, "TEAM")
 
 
@@ -444,9 +436,8 @@ def fireflies_transcript_text(sentences) -> str:
     the same sentences, so the pair is a fixed point (the ``notion_blocks`` /
     ``notion_blocks_to_text`` relationship, same problem, same solution).
 
-    A sentence whose speaker is unknown renders bare (no ``": "`` prefix), because the real API
-    leaves ``speaker_name`` null when diarization produced no label and an empty prefix must not
-    become part of the text.
+    A sentence with an unknown speaker renders bare — the real API leaves ``speaker_name`` null when
+    diarization produced no label, and an empty ``": "`` prefix must not become part of the text.
     """
     out = []
     for s in sentences:
@@ -505,16 +496,12 @@ def _fireflies_normalize_readings(sentences, duration_secs: float | None) -> Non
 def fireflies_fill_times(sentences, duration_secs: float | None = None) -> None:
     """Fill each sentence's ``start_time``/``end_time`` in place (seconds).
 
-    The transcript timestamps only the START of a line, and it timestamps periodically rather than
-    per line — ``agents.md`` says every 15-60 seconds — so several consecutive sentences routinely
-    carry the SAME clock reading, and the last one carries no end at all. The real API serves an
-    ordered, contiguous, non-overlapping timeline, so each run of sentences sharing a reading is
-    spread evenly across the window up to the next distinct reading. That keeps every real
-    timestamp as the anchor of its run while giving each sentence its own window, instead of
-    emitting several sentences that all claim the same instant.
-
-    The final window is a speaking-rate estimate, clamped to the meeting's own duration when known.
-    A sentence with no reading at all inherits the running clock rather than jumping back to 0.
+    The transcript timestamps only the START of a line, and only PERIODICALLY (every 15-60s), so
+    consecutive sentences routinely share one clock reading and the last has no end at all. The real
+    API serves a contiguous non-overlapping timeline, so each run sharing a reading is spread evenly
+    up to the next distinct one — every real timestamp stays the anchor of its run, and no two
+    sentences claim the same instant. The final window is a speaking-rate estimate clamped to the
+    meeting's duration; a sentence with no reading inherits the running clock.
     """
     if not sentences:
         return

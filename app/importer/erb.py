@@ -1,11 +1,9 @@
 """Import EnterpriseRAG-Bench (ERB) into the mock DB — the faithful, structured pipeline.
 
-Downloads the bench's structured ``generated_data/`` (real owners/authors/dates/participants/ACL
-signals), resolves display names to real emails via the ``Principals`` roster below, loads the six
-supported sources into their per-service tables via ``load_structured``, derives per-doc ACL grants
-from the real people/scope fields (``grants_for``), and writes ``tokens.yaml`` for the resolved
-roster. This is the single ERB importer script — everything it needs (source fetch/parse,
-principal resolution, conversation parsing, ACL derivation, and orchestration) lives here.
+Downloads the bench's ``generated_data/``, resolves display names to real emails via
+``Principals``, converts each document to BYO record(s) (``to_byo``) and loads those, deriving
+per-doc ACL grants from the real people/scope fields (``grants_for``). Everything the import needs
+— fetch, parse, principal resolution, ACL derivation, orchestration — lives in this one module.
 
     python -m app.importer.erb                                   # full corpus: download -> load -> ACL
     python -m app.importer.erb --slice-questions extra_questions.jsonl   # only the docs a slice needs
@@ -36,6 +34,10 @@ import yaml
 
 from app import store, synth
 from app.config import get_settings, infer_org
+from app.importer import byo
+
+# Safe at module level despite byo needing this module back: every one of byo's imports from
+# here is function-local, so neither module is half-built when the other is first touched.
 
 # ---------------------------------------------------------------- constants
 SUPPORTED = ("slack", "gmail", "google_drive", "github", "jira", "confluence", "hubspot",
@@ -126,11 +128,6 @@ def _slug(name: str) -> str:
     return ".".join(parts) or "user"
 
 
-def _is_bot(name: str) -> bool:
-    n = (name or "").lower()
-    return n.endswith("bot") or n.endswith("-bot") or "bot" in n.split()
-
-
 def _addr(header: str | None) -> str | None:
     if not header:
         return None
@@ -148,22 +145,21 @@ def _name(header: str | None) -> str:
 class Principals:
     """Resolve document principal references (display names) to the mock's email-keyed identities.
 
-    The bench names people by display string ("Maya Chen"), inconsistently across sources
-    ("Connor O'Brien" vs "Connor OBrien"), and only Gmail headers reveal real emails. This builds
-    one canonical identity per person: match the employee directory, harvest real emails from
-    Gmail, synthesize a user for unmatched internal references, and keep external participants as
-    non-org contacts. Slack first-names/bots are best-effort (documented limitation).
+    The bench names people by display string, inconsistently across sources ("Connor O'Brien" vs
+    "Connor OBrien"), and only Gmail headers reveal real addresses. Builds one canonical identity
+    per person: match the employee directory, harvest emails from Gmail, synthesize a user for an
+    unmatched internal reference. Slack first-names and bots are best-effort.
     """
 
     def __init__(self, employees: list[dict], org_domain: str):
         self.org_domain = org_domain
-        self.users: dict[str, dict] = {}      # email -> {name, group, external, is_bot}
+        self.users: dict[str, dict] = {}      # email -> {name, group, directory?}
         self.groups: set[str] = set()
         self._by_canon: dict[str, str] = {}   # canonical name -> email
         for e in employees:
             self._by_canon[canonical(e["name"])] = e["email"]
             self.users[e["email"]] = {"name": e["name"], "group": e.get("dept_slug"),
-                                      "external": False, "is_bot": False, "directory": True}
+                                      "directory": True}
             if e.get("dept_slug"):
                 self.groups.add(e["dept_slug"])
 
@@ -206,8 +202,7 @@ class Principals:
                     if (c and _person_like(name) and email.endswith("@" + self.org_domain)
                             and c not in self._by_canon):
                         self._by_canon[c] = email
-                        self.users[email] = {"name": name, "group": None,
-                                             "external": False, "is_bot": False}
+                        self.users[email] = {"name": name, "group": None}
 
     def canonical_group(self, label: str | None) -> str | None:
         """Reconcile a doc's raw team/owner_team/squad label to the directory's dept_slug group.
@@ -252,8 +247,7 @@ class Principals:
         c = canonical(name)
         if c in self._by_canon:
             email = self._by_canon[c]
-            u = self.users.setdefault(email, {"name": name, "group": None,
-                                              "external": False, "is_bot": False})
+            u = self.users.setdefault(email, {"name": name, "group": None})
             if group_hint and role in ("owner", "author") and not u["group"]:
                 u["group"] = group_hint
                 self.groups.add(group_hint)
@@ -268,8 +262,7 @@ class Principals:
         # setdefault: if this slug email already exists (e.g. it collides with a directory
         # employee whose accented/titled name didn't canonical-match), keep that entry — never
         # clobber a directory=True user with a synthesized one.
-        self.users.setdefault(email, {"name": name, "group": group,
-                                      "external": False, "is_bot": False})
+        self.users.setdefault(email, {"name": name, "group": group})
         if group:
             self.groups.add(group)
         return self._by_canon[c]
@@ -285,10 +278,9 @@ class Principals:
             conn.execute("INSERT OR REPLACE INTO principals(id,type,display_name,email) VALUES (?,?,?,?)",
                          (g, "group", g, None))
         for email, u in self.users.items():
-            ptype = "external" if u["external"] else "user"
             conn.execute("INSERT OR REPLACE INTO principals(id,type,display_name,email) VALUES (?,?,?,?)",
-                         (email, ptype, u["name"], email))
-            if not u["external"] and u["group"]:
+                         (email, "user", u["name"], email))
+            if u["group"]:
                 conn.execute("INSERT OR REPLACE INTO group_members(group_id,user_id) VALUES (?,?)",
                              (u["group"], email))
 
@@ -305,18 +297,11 @@ class Principals:
     def write_roster(self, path, settings) -> None:
         """Write the resolved roster as a BYO roster sidecar (see ``byo.load_roster``).
 
-        The directory has to ship WITH a converted corpus, because neither the records nor the
-        addresses in them can reconstruct it. Two things would be lost otherwise:
-
-        * display names — ``_slug`` is lossy ("Tomás Rré" -> ``tomas.rre``, "Aisha K. Patel" ->
-          ``aisha.k.patel``), so a name cannot be recovered from an email
-        * who may authenticate — only the employee directory gets a token (see ``write_tokens``),
-          while everyone else the corpus names owns and reads documents without being an account.
-          Derived from the corpus alone, every Slack display handle and outside sender would become
-          an org account with a working bearer token.
-
-        So ``departments`` carries the authenticating users keyed by their group, and ``contacts``
-        everyone else — the same split ``write_tokens`` and ``install`` already make.
+        Has to ship WITH a converted corpus, because the records cannot reconstruct it: ``_slug`` is
+        lossy so a display name is unrecoverable from an address, and only the employee directory
+        may authenticate — derived from the corpus alone, every Slack handle and outside sender
+        would become an org account with a working token. ``departments`` is the authenticating
+        users keyed by group, ``contacts`` everyone else, the same split ``install`` makes.
         """
         depts: dict[str, list] = {}
         contacts: list[dict] = []
@@ -393,13 +378,9 @@ def grants_for(source: str, meta: dict) -> list[tuple[str, str]]:
         add("group", group)
 
     if not grants and source not in _PARTICIPANTS_ONLY:
-        # Reaching here means the source's scope grant above was a NO-OP — its container has no
-        # group (a Drive file with no `team`). Fall back to the org rather than leave the document
-        # invisible to every non-admin caller.
-        #
-        # Written as if/else, not `add("group", group) or add("org", org)`: `add` returns None, so
-        # the `or` always evaluated its right-hand side and granted BOTH. That reads as a fallback
-        # and behaved as a conjunction.
+        # The scope grant above was a NO-OP — the container has no group (a Drive file with no `team`).
+        # Fall back to the org rather than leave the doc invisible to every non-admin.
+        # if/else, NOT `add(...) or add(...)`: `add` returns None, so the `or` grants both.
         if group:
             add("group", group)
         else:
@@ -552,9 +533,9 @@ _ATT_MIME = {
 
 # The bench's Drive ``doc_type`` vocabulary -> the mock's Drive subtype vocabulary (the keys
 # ``app.routers.google._NATIVE`` recognises as Workspace types). The bench says "doc"/"sheet"/
-# "slides", none of which are native keys, so every imported row used to fall back to
-# ``application/octet-stream`` — and to the binary ``webViewLink`` shape — leaving nothing in the
-# corpus that exercises native-vs-binary handling, ``export`` vs ``alt=media``, or per-type links.
+# "slides", none of which are native keys — unmapped, every row falls back to
+# ``application/octet-stream`` and the binary ``webViewLink`` shape, leaving nothing in the corpus
+# that exercises native-vs-binary handling, ``export`` vs ``alt=media``, or per-type links.
 _DRIVE_SUBTYPE = {
     "doc": "document", "document": "document", "gdoc": "document", "notes": "document",
     "memo": "document",
@@ -719,13 +700,10 @@ def _names(v):
 def _resolved(P, values, *, role: str) -> list[str]:
     """Resolve a list of name references, DROPPING the ones that resolve to nobody.
 
-    ``P.resolve`` returns None for a reference that is not a usable identity (a team label, a
-    prose fragment). Such a name must not hold a slot in a list of principals: the list is stored
-    as the document's collaborators / reviewers, and a null in it is not a person with an unknown
-    address — it is not a person. Kept, it also breaks serving outright: `requested_reviewers`
-    is rendered per entry into a GitHub Simple User, so a null 500s the pull-request endpoint
-    (8 documents in the bench do this). `grants_for` already ignores falsy people, so ACL is
-    unchanged either way."""
+    ``P.resolve`` returns None for a reference that is not a usable identity (a team label, a prose
+    fragment), and such a name must not hold a slot in a list of principals — a null there is not a
+    person with an unknown address. It also breaks serving: ``requested_reviewers`` is rendered per
+    entry into a GitHub Simple User, so a null 500s the pull-request endpoint."""
     return [e for e in (P.resolve(n, role=role) for n in _names(values)) if e]
 
 
@@ -737,104 +715,19 @@ def _slug_mailbox(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_")
 
 
-# ---------------------------------------------------------------- loaders
-def load_drive(conn, dsid, raw, P):
-    title, content = _title_content(raw)
-    group = P.canonical_group(raw.get("team"))
-    owner = raw.get("owner", "")
-    owner_email = P.resolve(owner, role="owner", group_hint=group) if owner else None
-    collabs = _resolved(P, raw.get("collaborators"), role="collaborator")
-    # The folder the file claims, and the folder row, are the SAME expression — a doc with no team
-    # used to get a folder no `gdrive_folders` row described (group_id is nullable; the row is not
-    # optional), so `files.get` on its parent 404'd for a folder holding real files.
-    folder = raw.get("drive_area") or group or "drive"
-    conn.execute("INSERT OR REPLACE INTO gdrive_folders(folder, group_id) VALUES (?,?)",
-                 (folder, group))
-    subtype, mime_type = _drive_type(raw, title)
-    conn.execute(
-        "INSERT OR REPLACE INTO gdrive_files(doc_id, folder, author_email, title, content, "
-        "subtype, mime_type, created_ts, updated_ts, collaborators, owner_display) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (dsid, folder, owner_email or f"unknown@{P.org_domain}",
-         title, content, subtype, mime_type, (to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
-         to_epoch(raw.get("last_modified")), json.dumps(collabs),
-         owner))
-    return {"owner": owner_email, "people": collabs, "group": group, "confidentiality": None}
 
 
-def load_github(conn, dsid, raw, P):
-    title, content = _title_content(raw)
-    author = raw.get("author", "")
-    author_email = P.resolve(author, role="author", group_hint=raw.get("repo")) if author else None
-    reviewers = _resolved(P, raw.get("reviewers"), role="reviewer")
-    repo = raw.get("repo") or "repo"
-    conn.execute("INSERT OR REPLACE INTO github_repos(repo, group_id) VALUES (?,?)", (repo, repo))
-    conn.execute(
-        "INSERT OR REPLACE INTO github_items(doc_id, repo, author_email, title, content, kind, "
-        "state, labels, created_ts, updated_ts, requested_reviewers, owner_display) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        (dsid, repo, author_email or f"unknown@{P.org_domain}", title, content,
-         "pull_request" if raw.get("pr_number") else "issue", raw.get("state"),
-         json.dumps(_names(raw.get("labels"))), (to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
-         to_epoch(raw.get("updated_at")), json.dumps(reviewers), author))
-    return {"owner": author_email, "people": reviewers, "group": repo, "confidentiality": None}
 
 
-def load_confluence(conn, dsid, raw, P):
-    title, content = _title_content(raw)
-    space = raw.get("space") or "SPACE"
-    group = P.canonical_group(raw.get("owner_team")) or space
-    author = raw.get("author", "")
-    author_email = P.resolve(author, role="author", group_hint=group) if author else None
-    reviewers = _resolved(P, raw.get("reviewers"), role="reviewer")
-    conn.execute("INSERT OR REPLACE INTO confluence_spaces(space, group_id) VALUES (?,?)", (space, group))
-    conn.execute(
-        "INSERT OR REPLACE INTO confluence_pages(doc_id, space, author_email, title, content, "
-        "subtype, labels, created_ts, updated_ts, reviewers, confidentiality, owner_team, owner_display) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (dsid, space, author_email or f"unknown@{P.org_domain}", title, content, "page",
-         json.dumps(_names(raw.get("labels"))), (to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
-         to_epoch(raw.get("last_updated")), json.dumps(reviewers), raw.get("confidentiality"),
-         raw.get("owner_team"), author))
-    return {"owner": author_email, "people": reviewers, "group": group,
-            "confidentiality": raw.get("confidentiality")}
 
 
-def load_jira(conn, dsid, raw, P):
-    title, content = _title_content(raw)
-    reporter = raw.get("reporter", "")
-    assignee = raw.get("assignee", "")
-    group = P.canonical_group(raw.get("squad")) or (raw.get("project") or "JIRA")
-    reporter_email = P.resolve(reporter, role="reporter", group_hint=group) if reporter else None
-    assignee_email = P.resolve(assignee, role="assignee", group_hint=group) if assignee else None
-    project = raw.get("project") or "JIRA"
-    conn.execute("INSERT OR REPLACE INTO jira_projects(project, group_id) VALUES (?,?)", (project, group))
-    conn.execute(
-        "INSERT OR REPLACE INTO jira_issues(doc_id, project, author_email, title, content, status, "
-        "issuetype, priority, labels, components, created_ts, updated_ts, assignee_email, "
-        "reporter_email, severity, squad, duedate, owner_display) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (dsid, project, reporter_email or f"unknown@{P.org_domain}", title, content,
-         raw.get("status"), raw.get("issue_type"), raw.get("priority"),
-         json.dumps(_names(raw.get("labels"))), json.dumps(_names(raw.get("components"))),
-         (to_epoch(raw.get("created_at")) or synth.epoch(dsid)), to_epoch(raw.get("updated_at")), assignee_email,
-         reporter_email, raw.get("severity"), raw.get("squad"), raw.get("due_date"), reporter))
-    # comments
-    for seq, c in enumerate(parse_jira_comments(raw.get("comments", [])), start=1):
-        conn.execute("INSERT OR REPLACE INTO jira_comments(id, doc_id, seq, author_email, body, created_ts)"
-                     " VALUES (?,?,?,?,?,?)",
-                     (f"{dsid}::c{seq}", dsid, seq, P.resolve(c["name"], role="author"),
-                      c["body"], to_epoch(c["date"])))
-    people = [assignee_email, reporter_email]
-    return {"owner": reporter_email, "people": [p for p in people if p], "group": group,
-            "confidentiality": None}
 
 
 # The bench's HubSpot docs are denormalized company (account) records — there are no contact/deal
 # objects in the corpus. These are the fields with a real HubSpot company property to map onto;
 # everything else becomes a custom property, which is what an actual portal looks like (a mix of
 # HubSpot defaults and portal-specific fields). We map the bench onto the mock's API-shaped schema
-# rather than storing ERB's shape, exactly as load_drive/load_github do for their sources.
+# rather than storing ERB's shape, exactly as the drive/github converters do for their sources.
 _HS_PROPERTY = {
     "company_name": "name",
     "company_domain": "domain",
@@ -865,130 +758,20 @@ def _hs_notes(raw) -> list[str]:
     return []
 
 
-def _hs_insert(conn, doc_id, object_type, author_email, title, content, properties,
-               created_ts, updated_ts=None, owner_display=None) -> None:
-    conn.execute(
-        "INSERT OR REPLACE INTO hubspot_objects(doc_id, object_type, author_email, title, content, "
-        "properties, archived, created_ts, updated_ts, owner_display) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        # sort_keys: the stored JSON is CANONICAL, so the same record always yields the same text —
-        # otherwise the column depends on the source file's key order, and two importers (or two
-        # re-imports of a rewritten file) disagree byte for byte over identical data.
-        (doc_id, object_type, author_email, title, content, json.dumps(properties, sort_keys=True),
-         None, created_ts, updated_ts, owner_display))
 
 
-def _hs_associate(conn, a_doc, a_type, b_doc, b_type, label=None) -> None:
-    """Link two records in both directions — real HubSpot exposes an association from either end,
-    with a distinct type id per direction."""
-    for f_doc, f_type, t_doc, t_type in ((a_doc, a_type, b_doc, b_type),
-                                         (b_doc, b_type, a_doc, a_type)):
-        conn.execute(
-            "INSERT OR REPLACE INTO hubspot_associations(from_doc_id, from_type, to_doc_id, "
-            "to_type, assoc_category, assoc_type_id, label) VALUES (?,?,?,?,?,?,?)",
-            (f_doc, f_type, t_doc, t_type, "HUBSPOT_DEFINED",
-             synth.hubspot_assoc_type_id(f_type, t_type), label))
 
 
-def load_hubspot(conn, dsid, raw, P):
-    title, content = _title_content(raw)
-    object_type = "companies"
-    group = object_type
-    owner = raw.get("owner", "")
-    owner_email = P.resolve(owner, role="owner", group_hint=group) if owner else None
-    # The AE owns the account; the SE and CSM are the other real people on it, so they enter the
-    # ACL bundle the way reviewers/collaborators do elsewhere.
-    people = [P.resolve(n, role="collaborator")
-              for n in (raw.get("se_assigned"), raw.get("csm_assigned")) if n]
-    for otype in (object_type, "notes"):
-        conn.execute("INSERT OR REPLACE INTO hubspot_object_types(object_type, group_id) "
-                     "VALUES (?,?)", (otype, group))
-
-    # The linked_* arrays stay here as free-text stubs: the dataset documents them as
-    # "references to linked artifacts as stubs/links", so they name no resolvable doc_id and must
-    # never become associations pointing at documents that do not exist.
-    props = {_HS_PROPERTY.get(k, k): v for k, v in raw.items() if k not in _HS_NOT_A_PROPERTY}
-    created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
-    author = owner_email or f"unknown@{P.org_domain}"
-    _hs_insert(conn, dsid, object_type, author, title, content, props, created,
-               to_epoch(raw.get("updated_at")), owner)
-
-    # A HubSpot note is its own object associated with the company, and this repo already parses
-    # embedded conversations into first-class rows on import (Slack transcripts -> threads, Jira
-    # comments -> comment rows). Notes carry no date in the bench, so their time is the company's
-    # clock plus position: deterministic, ordered, and never NULL.
-    children: list[str] = []
-    for i, body in enumerate(_hs_notes(raw), start=1):
-        note_id = f"{dsid}::n{i}"
-        children.append(note_id)
-        # A note has no title in HubSpot; its body lives in hs_note_body, mirrored into `content`
-        # so full-text search and any RAG consumer see it.
-        _hs_insert(conn, note_id, "notes", author, "", body,
-                   {"hs_note_body": body, "hs_timestamp": synth.rfc3339(created + i)}, created + i)
-        _hs_associate(conn, dsid, object_type, note_id, "notes")
-
-    return {"owner": owner_email, "people": [p for p in people if p], "group": group,
-            "confidentiality": None, "_children": children}
 
 
-def load_gmail(conn, dsid, raw, P):
-    title, content = _title_content(raw)
-    # 'messages' is a list of RFC822 emails (a thread); some docs instead carry a single email
-    # in 'body'/'content' (content_field_names points there). Parse the list when present, else
-    # fall back to the derived single-email content so those docs aren't left empty.
-    raw_msgs = raw.get("messages")
-    msgs = parse_gmail_thread(raw_msgs) if isinstance(raw_msgs, list) and raw_msgs else []
-    owner_name = raw.get("mailbox_owner", "")
-    mailbox = _slug_mailbox(owner_name) or "inbox"
-    owner_email = P.resolve(owner_name, role="mailbox_owner") if owner_name else None
-    internal = _resolved(P, raw.get("participants_internal"), role="participant_internal")
-    # external participants stay as recipient addresses on the thread's To/Cc headers (parsed
-    # above); they are not org principals, so they never enter the ACL `people` set.
-    conn.execute("INSERT OR REPLACE INTO gmail_mailboxes(mailbox, group_id) VALUES (?,?)",
-                 (mailbox, None))
-    root = msgs[0] if msgs else {}
-    # The bench carries a thread-level `attachments` list (filenames); the Gmail router already
-    # renders these as payload parts + a download endpoint + `has:attachment` search once the
-    # column is populated. Attach them to the thread root (thread_seq 0).
-    attachments = _gmail_attachments(raw)
-    # Root time: its own Date, then the doc-level first_email_at, then a deterministic synthesized
-    # base (synth.epoch — the same value the server already synthesizes for a NULL, so no served
-    # date changes) so created_ts is never NULL. Two SEPARATE to_epoch calls, not
-    # `to_epoch(A or B)`, which would pass an unparseable-but-truthy A and never reach B.
-    root_ts = to_epoch(root.get("date")) or to_epoch(raw.get("first_email_at")) or synth.epoch(dsid)
-    conn.execute(
-        "INSERT OR REPLACE INTO gmail_messages(doc_id, mailbox, author_email, title, content, "
-        "thread_id, thread_seq, to_addr, cc, message_id, attachments, created_ts, owner_display) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        # Prefer the doc-level thread subject (title_field_name -> `subject`, the bench's canonical
-        # thread subject) over the first message's RFC822 Subject header, which is often a "Re: ..."
-        # reply subject and loses the thread's distinctive title (e.g. "[P0] Acme Health — ...").
-        (dsid, mailbox, root.get("from_email") or owner_email or f"unknown@{P.org_domain}",
-         title or root.get("subject") or "", root.get("body") or (content if not msgs else ""),
-         dsid, 0, root.get("to"), root.get("cc"), root.get("message_id"),
-         json.dumps(attachments, sort_keys=True) if attachments else None, root_ts, owner_name))
-    for seq, m in enumerate(msgs[1:], start=1):
-        # a reply's own Date when present, else the root's clock + an hour per position (matches the
-        # server's historical hour-spread) so a date-less reply is thread-coherent and never NULL.
-        conn.execute(
-            "INSERT OR REPLACE INTO gmail_messages(doc_id, mailbox, author_email, title, content, "
-            "thread_id, thread_seq, to_addr, cc, message_id, created_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (f"{dsid}::m{seq}", mailbox, m.get("from_email") or f"unknown@{P.org_domain}",
-             m.get("subject") or title, m.get("body", ""), dsid, seq, m.get("to"), m.get("cc"),
-             m.get("message_id"), to_epoch(m.get("date")) or (root_ts + seq * 3600)))
-    people = [owner_email, *internal]
-    return {"owner": owner_email, "people": [p for p in people if p], "group": None,
-            "confidentiality": None, "_extra_rows": len(msgs) - 1 if msgs else 0,
-            "_children": [f"{dsid}::m{seq}" for seq in range(1, len(msgs))]}
 
 
-# Slack source `first_message_ts`: ~35% are the bench's opaque far-future "ordering keys" (valid
-# 10-digit ts up to year 2286, plus one corrupt 12-digit record at year 8632) — NOT real calendar
-# dates. Served verbatim they render as absurd dates AND blow up mirage's per-day FS layout (a
-# channel's 90-day window lands in the far future). Remap ONLY the out-of-range roots (year > 2035),
-# order-preserving, into a compact window that continues the real timeline just after the newest
-# in-range thread; in-range ts stay untouched so the realistic majority keeps its cross-source
-# temporal coherence (a Slack thread and the Jira ticket it cites stay aligned). Slack-only: every
-# other source already sits in 2022-2035.
+# ~35% of Slack `first_message_ts` values are the bench's opaque far-future "ordering keys", not
+# calendar dates — valid ts up to year 2286. Served verbatim they render absurdly and blow up
+# mirage's per-day FS layout. Remap ONLY the out-of-range roots (year > 2035), order-preserving,
+# into a compact window continuing the real timeline just after the newest in-range thread;
+# in-range values stay untouched so the realistic majority keeps its cross-source coherence (a
+# Slack thread and the Jira ticket it cites stay aligned). Slack-only.
 _SLACK_TS_CUTOFF = int(_dt.datetime(2035, 1, 1, tzinfo=_dt.timezone.utc).timestamp())
 _SLACK_TS_REMAP_SPAN = 8 * 365 * 86400
 _SLACK_TS_REMAP: dict[str, int] = {}
@@ -1018,68 +801,19 @@ def build_slack_ts_remap(records) -> dict[str, int]:
             for rank, (ts, dsid) in enumerate(future)}
 
 
-def load_slack(conn, dsid, raw, P):
-    channel = raw.get("channel") or "general"
-    # The transcript lives in whatever field content_field_names points at — 'messages' for
-    # threaded docs, 'text' for single-post docs (whose title_field_name is 'file_name'!). Use
-    # the derived content, never raw['messages'] (which is null for the 'text' variant) and never
-    # the derived title (which can be a filename). This is the fix for docs that were rendering
-    # as "*<channel/filename>*" with empty bodies.
-    _title, content = _title_content(raw)
-    participants = _names(raw.get("participants"))
-    # gate speaker-splitting on the declared participants so message-body lines like
-    # "A couple followups: ..." aren't mis-parsed as new speakers (fake authors).
-    turns = parse_slack_transcript(content, participants)
-    conn.execute("INSERT OR REPLACE INTO slack_channels(channel, group_id) VALUES (?,?)",
-                 (channel, channel))
-    root_author = P.resolve(turns[0][0], role="slack_participant") if turns else None
-    root_content = turns[0][1] if turns else content  # keep the raw text if it isn't a transcript
-    # Real first_message_ts (a unix-epoch string) when present, else a deterministic synthesized
-    # base (synth.epoch — the same value the server already synthesizes for a NULL, so no served
-    # date changes) so the column is never NULL. The bench leaves ~0.1% of slack docs date-less.
-    root_ts = _SLACK_TS_REMAP.get(dsid) or to_epoch(raw.get("first_message_ts")) or synth.epoch(dsid)
-    # A thread_id ONLY when the transcript actually has more than one turn. Real Slack puts
-    # `thread_ts` on a message that is part of a thread and leaves it off a standalone post, and the
-    # router reads exactly this column to decide (`if not hit["thread_id"]`) — so setting it
-    # unconditionally advertised a thread on every single-message doc, and `conversations.replies`
-    # answered for a thread with no replies.
-    thread_id = dsid if len(turns) > 1 else None
-    conn.execute(
-        "INSERT OR REPLACE INTO slack_messages(doc_id, channel, author_email, title, content, "
-        "thread_id, thread_seq, created_ts, participants) VALUES (?,?,?,?,?,?,?,?,?)",
-        (dsid, channel, root_author or f"unknown@{P.org_domain}", "", root_content,
-         thread_id, 0, root_ts, json.dumps(participants)))
-    for seq, (spk, text) in enumerate(turns[1:], start=1):
-        # Each reply sits on the SAME clock as its root (root_ts + seq), so a thread is temporally
-        # coherent and never NULL.
-        conn.execute(
-            "INSERT OR REPLACE INTO slack_messages(doc_id, channel, author_email, title, content, "
-            "thread_id, thread_seq, created_ts) VALUES (?,?,?,?,?,?,?,?)",
-            (f"{dsid}::m{seq}", channel, P.resolve(spk, role="slack_participant") or f"unknown@{P.org_domain}",
-             "", text, dsid, seq, root_ts + seq))
-    # Slack speakers are display labels, not org identities; the doc is org-visible (see
-    # grants_for), so no per-user ACL grants — `people` stays empty.
-    return {"owner": root_author, "people": [], "group": channel, "confidentiality": None,
-            "_children": [f"{dsid}::m{seq}" for seq in range(1, len(turns))]}
 
 
 # ---------------------------------------------------------------- linear
-# The bench's Linear docs are one ticket per file, with a standard ERB envelope
-# (`title_field_name`/`content_field_names`/`dataset_doc_uuid`) plus the metadata its
-# `sources/linear/agents.md` documents: key, team, status, priority, created_at, updated_at,
-# creator, assignee, and optional project/cycle/estimate/due_date/labels.
-#
-# Two properties of the real data drive the mapping:
-#   * `key` is NOT unique — 22,729 distinct keys across 35,308 docs, one repeated 107 times — so
-#     the doc_id stays the dataset uuid and the key becomes `identifier`, which Linear does not
-#     require to be globally unique in *our* corpus even though its own product does.
-#   * the directory a file sits in disagrees with its own `team` field for ~2,750 docs (and two
-#     directories, business-ops/misc-chores, name no team at all). The `team` FIELD is the
-#     authority: its three values line up with the ENG/PM/DES identifier prefixes and each maps
-#     onto a real directory department, so the ACL group actually has members.
+# One ticket per file. Two properties of the real data drive the mapping:
+#   * `key` is NOT unique (one repeats 107 times), so the doc_id stays the dataset uuid and the
+#     key becomes `identifier` — which our corpus therefore does not treat as unique.
+#   * the directory a file sits in disagrees with its own `team` field for ~2,750 docs, and two
+#     directories name no team at all. The `team` FIELD is the authority: its values line up with
+#     the ENG/PM/DES identifier prefixes and each maps onto a real directory department, so the
+#     ACL group actually has members.
 
 # The bench writes P0-P3; Linear's API has a 0-4 integer scale with 1 the most urgent. Map onto
-# the API's scale (as load_hubspot maps onto real HubSpot property names) rather than serving a
+# the API's scale (as the hubspot converter maps onto real HubSpot property names) rather than serving a
 # vocabulary no Linear client understands. Labels are accepted too, for a BYO corpus that already
 # speaks Linear.
 _LINEAR_PRIORITY = {"p0": 1, "p1": 2, "p2": 3, "p3": 4,
@@ -1193,19 +927,16 @@ def _linear_date(value) -> str | None:
     return s if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s) else None
 
 
-# A Linear comment in the bench is a plain string. Measured across all 165,243 of them, the date
-# and the author are carried in a handful of interchangeable shapes:
-#     2025-02-18 - Maya Patel: filed the PRD      (dash + name — 60,282, the single most common)
+# A bench Linear comment is a plain string, and the date and author come in interchangeable shapes:
+#     2025-02-18 - Maya Patel: filed the PRD      (dash + name — the most common)
 #     2025-02-18 - Created: initial hypothesis    (dash + a LABEL, not a person)
 #     2026-03-05 Anjali Rao: updated the criteria (no dash, name)
 #     2025-12-18 (Naomi Feldman): include audit   (parenthesised name)
 #     2025-02-18 09:15: rolled back               (no name at all — that is a clock)
 #     Implementation notes: use heuristics        (undated)
-# So the parse is two independent steps rather than a list of whole-line alternatives: peel off
-# the date (with an optional dash separator), then try to peel a `Name:` off what remains. Trying
-# whole-line patterns in order is what an earlier version did, and because the dash pattern had no
-# name group and was tried first, it swallowed the author of 60,282 comments into the body —
-# serving `body` as "Maya Patel: filed the PRD" and attributing it to nobody.
+# Hence two independent steps, NOT a list of whole-line alternatives: peel the date (with its
+# optional dash), then try to peel a `Name:` off the remainder. Ordered whole-line patterns
+# silently swallow the author into the body whenever an earlier one lacks a name group.
 _LINEAR_C_DATE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s*(?:[-–—]\s*)?(?P<rest>.*)$", re.DOTALL)
 # The name must START WITH A LETTER. Without that, "2025-02-18 09:15: rolled back" parses as
 # author "09" with the body truncated to "15: rolled back" — inventing a person and losing text.
@@ -1216,11 +947,10 @@ _LINEAR_C_NAME = re.compile(r"^\(?(?P<name>[A-Za-zÀ-ÿ][^:\n()]{0,39}?)\)?:\s*(
 def parse_linear_comments(comments) -> list[dict]:
     """Bench comment strings -> ``{date, name, body, body_with_name}``.
 
-    ``body`` has the ``Name:`` prefix removed; ``body_with_name`` keeps it. Both are returned
-    because only the caller knows whether the name is a person: the prefix is just as often a
-    LABEL ("Created:", "Design review with PM and Accessibility:"), and stripping one of those
-    would delete text from the comment. :func:`load_linear` uses ``body`` when the name resolves
-    to somebody real and ``body_with_name`` when it doesn't, so nothing is ever lost.
+    Both bodies, because only the caller knows whether the ``Name:`` prefix is a person or a LABEL
+    ("Created:", "Design review with PM and Accessibility:") whose removal would delete text.
+    :func:`_byo_linear` takes ``body`` when the name resolves to somebody and ``body_with_name``
+    when it does not.
     """
     if isinstance(comments, str):          # 29 docs carry a single string instead of a list
         comments = [comments]
@@ -1241,162 +971,21 @@ def parse_linear_comments(comments) -> list[dict]:
     return out
 
 
-def load_linear(conn, dsid, raw, P):
-    title, content = _title_content(raw)
-    team = str(raw.get("team") or "engineering")
-    group = P.canonical_group(team) or team
-    creator = raw.get("creator", "")
-    assignee = raw.get("assignee", "")
-    creator_email = P.resolve(creator, role="author", group_hint=group) if creator else None
-    # "unassigned" is a real value in the bench (11 docs); it is not a person, so it must not
-    # become one — leave the assignee null, which is what Linear stores for an unassigned issue.
-    assignee_name = assignee if str(assignee).strip().lower() != "unassigned" else ""
-    assignee_email = (P.resolve(assignee_name, role="assignee", group_hint=group)
-                      if assignee_name else None)
-    conn.execute("INSERT OR REPLACE INTO linear_teams(team, group_id) VALUES (?,?)", (team, group))
-
-    identifier = str(raw.get("key") or "").strip() or synth.linear_identifier(
-        dsid, synth.linear_team_key(team))
-    state = raw.get("status")
-    created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
-    updated = to_epoch(raw.get("updated_at"))
-    # The bench records no lifecycle timestamps, but a state IS one: Linear sets completedAt the
-    # moment an issue enters a completed state and canceledAt when it is canceled, so derive them
-    # from the state category + the last-updated clock. Everything else stays NULL rather than
-    # being invented.
-    state_type = synth.linear_state_type(state)
-    ended = updated or created
-    conn.execute(
-        "INSERT OR REPLACE INTO linear_issues(doc_id, team, author_email, title, content, "
-        "identifier, state, priority, estimate, labels, project, cycle, branch_name, due_date, "
-        "created_ts, updated_ts, completed_ts, canceled_ts, started_ts, "
-        "assignee_email, assignee_display, owner_display, parent_key, release) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (dsid, team, creator_email or f"unknown@{P.org_domain}", title, content,
-         identifier, state, linear_priority(raw.get("priority")),
-         _linear_int(raw.get("estimate")), json.dumps(_names(raw.get("labels"))),
-         raw.get("project"), raw.get("cycle"),
-         synth.linear_branch_name(identifier, title, assignee_email),
-         _linear_date(raw.get("due_date")), created, updated,
-         ended if state_type == "completed" else None,
-         ended if state_type == "canceled" else None,
-         created if state_type in ("started", "completed") else None,
-         assignee_email, assignee_name or None, creator,
-         _linear_parent(raw.get("parent_issue")), _linear_release(raw.get("release"))))
-
-    for seq, att in enumerate(parse_linear_attachments(raw.get("links"),
-                                                       raw.get("attachments")), start=1):
-        conn.execute(
-            "INSERT OR REPLACE INTO linear_attachments(id, doc_id, seq, title, url, subtitle, "
-            "source_type, created_ts) VALUES (?,?,?,?,?,?,?,?)",
-            (f"{dsid}::a{seq}", dsid, seq, att["title"], att["url"], None, None, created))
-
-    prev_ts = created
-    for seq, c in enumerate(parse_linear_comments(raw.get("comments")), start=1):
-        # A comment author is matched against the EXISTING roster (`display_email`), never
-        # minted with `P.resolve` the way an issue's creator/assignee is. The `Name:` segment in
-        # a Linear comment is far noisier than Jira's — thousands of distinct strings, many of
-        # them labels like "Design review" or "QA sign-off" that `_person_like` happily accepts
-        # as a two-token name. Minting those would add people who don't exist to `principals`.
-        # An unmatched name leaves the comment unattributed, which is both honest and a legal
-        # Linear response (`Comment.user` is nullable) — and its body keeps the prefix, because
-        # an unresolved "Created:" is part of the text, not an attribution.
-        author = P.display_email(c["name"])[0] if c["name"] else None
-        body = c["body"] if author else c["body_with_name"]
-        # Comment time, in order of preference: its own date; else one second after the previous
-        # comment. MONOTONIC, not `created + seq`: a date-less comment at the end of a dated
-        # thread would otherwise land back at the issue's creation date and be served FIRST
-        # (`Issue.comments` orders by createdAt, as Linear does). Also never NULL — the column
-        # is NOT NULL.
-        ts = to_epoch(c["date"]) or (prev_ts + 1)
-        prev_ts = max(prev_ts, ts)
-        conn.execute(
-            "INSERT OR REPLACE INTO linear_comments(id, doc_id, seq, author_email, body, created_ts)"
-            " VALUES (?,?,?,?,?,?)",
-            (f"{dsid}::c{seq}", dsid, seq, author, body, ts))
-
-    people = [creator_email, assignee_email]
-    return {"owner": creator_email, "people": [p for p in people if p], "group": group,
-            "confidentiality": None,
-            # Consumed by the second pass below, which needs every issue loaded before it can
-            # resolve a key to a doc_id.
-            "_linear_parent_key": _linear_parent(raw.get("parent_issue")),
-            "_linear_relations": parse_linear_relations(raw.get("dependencies"))}
 
 
-def resolve_linear_references(conn, bundles) -> dict:
-    """SECOND PASS: turn the issue KEYS the bench references into doc_ids.
-
-    Has to be a second pass because a parent or a dependency target may be loaded after the issue
-    that names it. Has to happen at IMPORT rather than per request because bench identifiers are
-    not unique — 45.4% of parent references match more than one issue, and `ENG-314159` alone is
-    claimed by 218 children while being the identifier of 107 issues, so a serve-time join on
-    `identifier` would invent 23,326 edges from that one key.
-
-    Resolution picks the FIRST match by doc_id, the same rule `store.linear_issue_by_identifier`
-    applies, so `Issue.parent` and `Issue.children` are exact inverses rather than two independent
-    lookups. A key matching nothing resolves to nothing: a dangling reference must never become a
-    relation pointing at an issue that does not exist (the rule `load_hubspot` already applies to
-    its `linked_*` stubs).
-    """
-    key_to_doc: dict[str, str] = {}
-    for doc_id, identifier in conn.execute(
-            "SELECT doc_id, identifier FROM linear_issues WHERE identifier IS NOT NULL "
-            "ORDER BY doc_id"):
-        key_to_doc.setdefault(identifier, doc_id)
-
-    stats = {"parents": 0, "parents_dangling": 0, "relations": 0, "relations_dangling": 0}
-    for dsid, bundle in bundles.items():
-        if bundle.get("_source") != "linear":
-            continue
-        key = bundle.get("_linear_parent_key")
-        if key:
-            target = key_to_doc.get(key)
-            # An issue is not its own parent; the bench's repeated keys make that reachable.
-            if target and target != dsid:
-                conn.execute("UPDATE linear_issues SET parent_doc_id = ? WHERE doc_id = ?",
-                             (target, dsid))
-                stats["parents"] += 1
-            else:
-                stats["parents_dangling"] += 1
-        seen = set()
-        for seq, (rel_type, rel_key) in enumerate(bundle.get("_linear_relations") or [], start=1):
-            target = key_to_doc.get(rel_key)
-            if not target or target == dsid or (rel_type, target) in seen:
-                stats["relations_dangling"] += 1
-                continue
-            seen.add((rel_type, target))
-            conn.execute(
-                "INSERT OR REPLACE INTO linear_relations(id, from_doc_id, to_doc_id, type, "
-                "created_ts) VALUES (?,?,?,?,?)",
-                (f"{dsid}::r{seq}", dsid, target, rel_type,
-                 conn.execute("SELECT created_ts FROM linear_issues WHERE doc_id = ?",
-                              (dsid,)).fetchone()[0]))
-            stats["relations"] += 1
-    conn.commit()
-    return stats
 
 
 # ---------------------------------------------------------------- fireflies
-# The bench's Fireflies docs are meeting transcripts, one per file, with a standard ERB envelope
-# plus the metadata its `sources/fireflies/agents.md` documents: meeting_id, recorded_at,
-# duration_minutes, call_type, title, redwood_owner/redwood_attendees, customer_company/
-# customer_attendees, and optional summary/topics/action_items/next_steps/competitors_mentioned/
-# crm_deal_id/transcription_quality.
-#
-# Four properties of the real data drive the mapping:
-#   * the transcript is ONE FLAT TEXT BLOB, not structured per-sentence records. So the sentence
-#     rows the API serves are PARSED from it here (620k sentences over 10,173 docs), and
-#     `synth.fireflies_transcript_text` is the exact inverse. Only start times are in the data
-#     (99.91% of lines); end times are derived (synth.fireflies_fill_times).
-#   * the blob is written in six interchangeable line formats — "[00:00] Name:", "00:00 - Name:",
-#     "00:00 [Name]:", "(00:00) Name:", "[S00:12] Name (Role):", and un-timestamped "Name:" — and
-#     ~7.7% of docs open with an auto-notes preamble whose "Date:"/"Duration:" lines look exactly
-#     like speaker lines. Hence one recognizer for all six plus participant gating (below).
-#   * NO email addresses appear anywhere in the corpus, so host/organizer/attendee identities are
-#     resolved through `Principals` exactly as every other loader does.
-#   * `meeting_id` is not unique (10,147 distinct over 10,173 docs), so it becomes `calendar_id`
-#     and the API's `id` is synthesized — see the fireflies_transcripts schema.
+# One meeting transcript per file. Four properties of the real data drive the mapping:
+#   * the transcript is ONE FLAT TEXT BLOB, so the per-sentence rows the API serves are PARSED
+#     from it here and `synth.fireflies_transcript_text` is the exact inverse. Only start times
+#     are in the data; end times are derived (synth.fireflies_fill_times).
+#   * the blob uses six interchangeable line formats ("[00:00] Name:", "00:00 - Name:",
+#     "00:00 [Name]:", "(00:00) Name:", "[S00:12] Name (Role):", bare "Name:") and some docs open
+#     with an auto-notes preamble whose "Date:"/"Duration:" lines look exactly like speaker lines.
+#     Hence one recognizer for all six, plus participant gating.
+#   * NO email addresses appear anywhere, so identities resolve through `Principals`.
+#   * `meeting_id` is not unique, so it becomes `calendar_id` and the API's `id` is synthesized.
 
 _FF_CLOCK = r"\d{1,2}:\d{2}(?::\d{2})?"
 # A leading timestamp in any form the bench writes, optionally followed by a "-"/"–" separator.
@@ -1463,12 +1052,10 @@ def _ff_secs(clock: str) -> float:
 def parse_fireflies_transcript(text, attendees: list | None = None) -> list[dict]:
     """A flat Fireflies transcript blob -> ``[{speaker_name, text, start_time}]``.
 
-    Mirrors :func:`parse_slack_transcript`: a line only starts a NEW sentence when its speaker is
-    a declared attendee, so the auto-notes preamble ("Date: …", "Duration: …") and mid-transcript
-    prose (numbered action-item recaps) stay continuation text of the current sentence instead of
-    minting fake speakers. When gating recognizes nobody at all — the corpus deliberately contains
-    transcripts labeled only "Speaker 1"/"Speaker 2", which ``agents.md`` calls for — it falls back
-    to ungated splitting so those meetings still get sentences.
+    Mirrors :func:`parse_slack_transcript`: a line starts a NEW sentence only when its speaker is a
+    declared attendee, so the auto-notes preamble and mid-transcript prose stay continuation text
+    instead of minting fake speakers. Falls back to ungated splitting when it recognizes nobody at
+    all — the corpus deliberately contains transcripts labelled only "Speaker 1"/"Speaker 2".
     """
     pmap = fireflies_speaker_map(attendees)
     lines = _unescape(_stringify(text)).split("\n")
@@ -1615,130 +1202,45 @@ def _ff_meeting_attendees(raw, internal: list[str], external: list[str], P) -> l
     return out
 
 
-def load_fireflies(conn, dsid, raw, P):
-    # The bench's subdirectory is the workspace its agents.md describes -> the Fireflies channel.
-    # A doc at the source root (11 of them, which agents.md says should not exist) lands in
-    # "uncategorized", the label the Fireflies UI itself uses for an ungrouped meeting.
-    path = raw.get("_erb_path") or ""
-    channel = path.split("/")[0] if "/" in path else "uncategorized"
-    title = str(raw.get(raw.get("title_field_name", "title"), "")).strip()
-
-    internal, external = _ff_attendee_names(raw)
-    # The channel IS the ACL group, as it is for slack: a Fireflies channel is a workspace
-    # grouping, not a department, so it must not be reconciled against the directory's dept slugs
-    # (and `call_type` is a meeting kind, not an org unit — it is served as `summary.meeting_type`).
-    group = channel
-    owner_display = _ff_role_stripped(raw.get("redwood_owner") or "")
-    host_email = P.resolve(owner_display, role="owner") if owner_display else None
-    # Everyone named on the meeting, resolved the way each kind of reference can be: Redwood
-    # attendees are internal identities, customer attendees are external contacts (never
-    # principals). Only the internal ones can authenticate, so only they become ACL grants.
-    internal_emails = [e for e in (P.resolve(n, role="participant_internal") for n in internal) if e]
-    external_emails = [e for e in (P.resolve(n, role="participant_external") for n in external) if e]
-
-    sentences = parse_fireflies_transcript(_ff_transcript_text(raw), internal + external)
-    duration = _ff_duration(raw.get("duration_minutes"))
-    synth.fireflies_fill_times(sentences, (duration * 60) if duration else None)
-    # content is DEFINED as the sentence concatenation, so it and the sentence rows can never drift.
-    content = synth.fireflies_transcript_text(sentences)
-    created_ts = to_epoch(raw.get("recorded_at")) or synth.epoch(dsid)
-    tid = synth.fireflies_id(dsid)
-
-    # speaker_id is a per-MEETING ordinal in Fireflies, assigned by first appearance.
-    ordinals: dict[str, int] = {}
-    for s in sentences:
-        ordinals.setdefault(s["speaker_name"] or "", len(ordinals))
-
-    conn.execute("INSERT OR REPLACE INTO fireflies_channels(channel, group_id) VALUES (?,?)",
-                 (channel, group))
-    conn.execute(
-        "INSERT OR REPLACE INTO fireflies_transcripts(doc_id, channel, author_email, title, "
-        "content, transcript_id, calendar_id, calendar_type, organizer_email, duration, "
-        "created_ts, summary, analytics, participants, meeting_attendees, audio_url, video_url, "
-        "transcript_url, meeting_link, owner_display) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        # sort_keys on every JSON column, for the reason `_hs_insert` gives: the stored text must
-        # not depend on the source file's key order, or the same data yields two different values.
-        (dsid, channel, host_email or f"unknown@{P.org_domain}", title, content, tid,
-         raw.get("meeting_id"), "google_calendar", None, duration, created_ts,
-         json.dumps(_ff_summary(raw), sort_keys=True),
-         json.dumps(synth.fireflies_analytics(
-             dsid, _ff_speaker_stats(sentences), (duration * 60) if duration else None),
-             sort_keys=True),
-         json.dumps(internal_emails + external_emails),
-         json.dumps(_ff_meeting_attendees(raw, internal, external, P), sort_keys=True),
-         synth.fireflies_media_url(tid, "audio"), synth.fireflies_media_url(tid, "video"),
-         synth.fireflies_transcript_url(tid), synth.fireflies_meeting_link(dsid),
-         # NULL, not "", when the meeting names no host: an absent owner is absent, and "" would
-         # be served as a display name that is the empty string.
-         owner_display or None))
-
-    for seq, s in enumerate(sentences, start=1):
-        name = s["speaker_name"] or ""
-        conn.execute(
-            "INSERT OR REPLACE INTO fireflies_sentences(id, doc_id, seq, author_email, body, "
-            "created_ts, reactions, speaker_name, speaker_id, start_time, end_time) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            # A sentence sits on the meeting's own clock (start + its offset), so ordering by time
-            # never shuffles a transcript. The speaker resolves to an identity only when the label
-            # names a declared attendee — an anonymous "Speaker 3" stays unattributed, as it is.
-            (f"{dsid}::s{seq}", dsid, seq,
-             P.resolve(name, role="participant_internal") if name in internal else None,
-             s["text"], int(created_ts + (s["start_time"] or 0)), None,
-             name or None, ordinals.get(name), s["start_time"], s["end_time"]))
-
-    # Like slack/hubspot, the corpus names far more people than can authenticate — only 938 of
-    # 10,173 hosts and 3,184 of 27,786 attendee references are in the employee directory — so an
-    # owner-or-group scope would leave ~91% of the meetings readable by admin and nobody else.
-    # Org-visible, plus a real per-user grant for everyone who does resolve (see grants_for).
-    # No `_children`: that list exists so a materialized row which is ACL-filtered BY ITS OWN
-    # doc_id carries the parent's grants (a slack reply, a gmail message, a hubspot note — all rows
-    # in an ACL-filtered document table). A sentence is not one. `fireflies_sentences` is only ever
-    # read through its parent (`store.fireflies_sentences`, and `scope: sentences` searches the
-    # transcript's own `content` column with the ACL clause on `fireflies_transcripts`), so a grant
-    # naming a sentence id is a row no query looks at — 620k of them over the bench corpus.
-    return {"owner": host_email, "people": internal_emails, "group": group,
-            "confidentiality": None}
 
 
-_LOADERS = {"google_drive": load_drive, "github": load_github, "confluence": load_confluence,
-            "jira": load_jira, "gmail": load_gmail, "slack": load_slack,
-            "hubspot": load_hubspot, "linear": load_linear, "fireflies": load_fireflies}
 
 
-# ---------------------------------------------------------------- ERB -> BYO-JSONL
-# The other half of every ``load_*`` above: the same mapping, written as a BYO record instead of as
-# an INSERT. The unified dataset redistributes ERB pre-converted into BYO-JSONL, so there is one
-# schema and one importer; this is what converts it.
+# ---------------------------------------------------------------- ERB -> BYO records
+# THE mapping, one function per source. Both consumers go through here — `import_structured`
+# hands the records to the loader, `export_byo` writes the same ones to JSONL — so a mapping
+# decision is made exactly once and a direct import cannot disagree with the artifact.
 #
-# It lives in this module rather than its own because it must mirror the loaders' decisions
-# exactly — mapping choices (a bench `doc_type` onto a Workspace type, a "P1" onto Linear's scale,
-# which fields become columns) are made once, in the function right above its converter, and the
-# two are edited together. ``tests/test_importer_erb.py`` then diffs the two databases, so a drift
-# between them fails a test rather than silently producing a lossy artifact.
-#
-# Three things this file computes at IMPORT time, which a single record cannot recompute on its
-# own, therefore have to be baked into the converted values:
-#   * resolved principal emails — a display name becomes a real address via the employee directory,
-#     which ships alongside the corpus as a roster (see ``Principals.write_roster``)
-#   * the Slack far-future timestamp remap — rank-based over every thread, so it is not a function
-#     of one record
-#   * identifier -> doc_id resolution for a Linear parent/relation, since bench keys repeat
+# Three things a single record cannot recompute for itself, so they are baked into its values
+# (see `_precompute_globals` for the two that need a view of the whole corpus):
+#   * resolved principal emails, which ship beside the corpus as a roster
+#   * the Slack far-future timestamp remap, which is rank-based over every thread
+#   * identifier -> doc_id for a Linear parent/relation, since bench keys repeat
 _LINEAR_KEY_TO_DOC: dict[str, str] = {}
 
 
 def build_linear_key_index(records) -> dict[str, str]:
-    """identifier -> doc_id, FIRST match by doc_id — the same rule
-    :func:`resolve_linear_references` applies (and ``store.linear_issue_by_identifier`` after it),
-    so a converted artifact resolves a parent or a relation to the same issue a direct import does.
-    Bench keys are not unique (5,055 repeat), which is why this is resolved once here and not by a
-    serve-time join."""
+    """identifier -> doc_id, FIRST match by doc_id — the rule
+    ``byo._Loader.resolve_cross_references`` and ``store.linear_issue_by_identifier`` also apply.
+    Bench keys are not unique, which is why this is resolved once here and never by a serve-time
+    join."""
     out: dict[str, str] = {}
     for _src, dsid, raw in sorted((r for r in records if r[0] == "linear"), key=lambda r: r[1]):
         identifier = str(raw.get("key") or "").strip() or synth.linear_identifier(
             dsid, synth.linear_team_key(str(raw.get("team") or "engineering")))
         out.setdefault(identifier, dsid)
     return out
+
+
+def _precompute_globals(records) -> None:
+    """The two things a single record cannot compute for itself, both needed before the first
+    conversion: the Slack far-future timestamp remap (rank-based over every thread) and the
+    Linear identifier -> doc_id index (bench keys repeat, so a parent or relation has to be
+    resolved once, here, rather than by a serve-time join)."""
+    _SLACK_TS_REMAP.clear()
+    _SLACK_TS_REMAP.update(build_slack_ts_remap(records))
+    _LINEAR_KEY_TO_DOC.clear()
+    _LINEAR_KEY_TO_DOC.update(build_linear_key_index(records))
 
 
 def _rec(**kw) -> dict:
@@ -1961,8 +1463,8 @@ def _byo_linear(dsid, raw, P):
                              content=(c["body"] if author else c["body_with_name"]),
                              author_email=author, created_ts=ts))
     # A relation names its target by doc_id in BYO, so the bench's issue KEY is resolved here —
-    # dropping a dangling, self- or duplicate reference exactly as `resolve_linear_references`
-    # does, and keeping the original position in the id so the two agree row for row.
+    # dropping a dangling, self- or duplicate reference, and keeping the original position in the
+    # id so a re-conversion of the same corpus agrees row for row.
     relations, seen = [], set()
     for seq, (rel_type, rel_key) in enumerate(
             parse_linear_relations(raw.get("dependencies")), start=1):
@@ -2008,15 +1510,12 @@ def _byo_fireflies(dsid, raw, P):
     internal_emails = [e for e in (P.resolve(n, role="participant_internal") for n in internal) if e]
     external_emails = [e for e in (P.resolve(n, role="participant_external") for n in external) if e]
 
-    # The transcript is parsed HERE — that parse needs the attendee list to gate speakers, and
-    # gets it from bench fields the record does not carry — but it is deliberately NOT timed here.
-    # `synth.fireflies_fill_times` REWRITES start_time (it spreads a run of sentences sharing one
-    # periodic clock reading across its window), so feeding its output back in changes the run
-    # structure and the timeline comes out different: the record carries the READINGS as
-    # transcribed, and the loader derives the timeline from them exactly as the loader here does.
-    # `content` is left out for the same reason — it is *defined* as the sentence concatenation and
-    # is rebuilt by the same `synth.fireflies_transcript_text`, so emitting it would double the
-    # artifact's largest field and create a second copy that could drift.
+    # Parsed HERE (the parse needs attendee fields the record does not carry) but deliberately NOT
+    # timed here: `synth.fireflies_fill_times` REWRITES start_time, spreading a run of sentences that
+    # share one clock reading across its window, so feeding its output back in would change the run
+    # structure and produce a different timeline. The record carries the readings as transcribed.
+    # `content` is omitted for the same reason — it is DEFINED as the sentence concatenation, so
+    # emitting it would double the artifact's largest field and could drift.
     sentences = parse_fireflies_transcript(_ff_transcript_text(raw), internal + external)
     ordinals: dict[str, int] = {}
     for s in sentences:
@@ -2058,14 +1557,11 @@ _BYO_CONVERTERS = {"google_drive": _byo_drive, "github": _byo_github,
 
 
 def to_byo(src: str, dsid: str, raw: dict, P: "Principals", org: str) -> list[dict]:
-    """One ERB document -> the BYO record(s) that load to the same rows ``_LOADERS[src]`` writes.
+    """One ERB document -> the BYO record(s) it maps to.
 
-    More than one record when the loader materializes children as first-class documents (a HubSpot
-    company plus its notes); a Slack thread's replies and a Gmail thread's later messages instead
-    ride along inside the root record, because that is how BYO models a thread.
-
-    Resolves principals through ``P`` in the same order the loader does, so the roster this leaves
-    behind — and therefore ``tokens.yaml`` — is the roster a direct import produces.
+    More than one when a child is a first-class document (a HubSpot company plus its notes); a Slack
+    thread's replies and a Gmail thread's later messages ride along inside the root record instead,
+    because that is how BYO models a thread.
     """
     records, bundle = _BYO_CONVERTERS[src](dsid, raw, P)
     readers = _byo_readers(src, bundle, org)
@@ -2166,24 +1662,23 @@ class _ByoWriter:
 
 def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=None,
                allow_excluded=0) -> dict:
-    """Convert ERB to a BYO-JSONL artifact: ``corpus.jsonl`` + ``roster.yaml``, or per-source shards
-    plus ``manifest.json`` when ``shard_records`` is set.
+    """Convert ERB to a BYO-JSONL artifact: ``corpus.jsonl`` + ``roster.yaml``, or per-source gzip
+    shards plus ``manifest.json`` when ``shard_records`` is set (what the full 512k-document corpus
+    needs to be distributable).
 
-    The counterpart of :func:`import_structured` — same records, same principal resolution, same
-    global precomputation, but written as a corpus ``app.importer.byo`` imports rather than
-    straight into a DB. ``tests/test_importer_erb.py`` requires the two to produce equivalent
-    databases. With ``shard_records`` set it writes per-source gzip shards plus a ``manifest.json``
-    instead of one plain file — what the full 512k-document corpus needs to be distributable.
+    The counterpart of :func:`import_structured`: the same records and the same principal
+    resolution, written out instead of loaded. ``tests/test_importer_erb.py`` holds the two to
+    producing equivalent databases.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     P, records, excluded = _resolve_roster(settings, gen_dir, question_ids=question_ids,
                                            allow_excluded=allow_excluded)
-    # Both global precomputations, before any record is converted — same as load_structured.
-    _SLACK_TS_REMAP.clear()
-    _SLACK_TS_REMAP.update(build_slack_ts_remap(records))
-    _LINEAR_KEY_TO_DOC.clear()
-    _LINEAR_KEY_TO_DOC.update(build_linear_key_index(records))
+    _precompute_globals(records)
+    # The same resolve-then-convert order import_structured uses, and for the same reason: without
+    # it the artifact's content depends on which document was read first, and it stops matching a
+    # direct import of the same tree.
+    _populate_principals(records, P, settings)
     counts: dict[str, int] = {s: 0 for s in SUPPORTED}
     failures: list[tuple[str, str, str]] = []
     writer = _ByoWriter(out_dir, shard_records)
@@ -2192,7 +1687,7 @@ def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=N
             for rec in to_byo(src, dsid, raw, P, settings.org_name):
                 writer.write(src, rec)
             counts[src] += 1
-        except Exception as e:  # one bad doc must not sink the conversion (as in load_structured)
+        except Exception as e:  # one bad doc must not sink the conversion
             failures.append((dsid, src, repr(e)))
         if i % 25000 == 0:
             print(f"  converted {i}/{len(records)} ({len(failures)} skipped)",
@@ -2201,14 +1696,10 @@ def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=N
         print(f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
               file=sys.stderr, flush=True)
     P.write_roster(out_dir / "roster.yaml", settings)
-    # Successes, not attempts: per-source `documents` counts what was written, so a top-level
-    # `len(records)` would contradict its own sum the moment one document is skipped — and that field
-    # is what a consumer reads to decide whether it got everything.
-    #
-    # `source_documents` is what the bench offered for this selection, so the layer states its own
-    # arithmetic: source_documents == documents + excluded + failed. Without it a consumer holding a
-    # short count has to leave the artifact to find out whether anything is missing, which is the
-    # whole reason the losses are recorded by name.
+    # Successes, not attempts — `documents` is what was written, so it cannot contradict its own
+    # per-source sum when a document is skipped. `source_documents` is what the bench offered, so the
+    # layer states its own arithmetic: source_documents == documents + excluded + failed, and a
+    # consumer holding a short count can see what is missing without leaving the artifact.
     layer = {
         "description": "EnterpriseRAG-Bench, redistributed as BYO-JSONL (MIT, onyx-dot-app)",
         "source_documents": len(records) + len(excluded),
@@ -2221,61 +1712,6 @@ def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=N
         layer["snapshot"] = snapshot
     writer.close(counts=counts, documents=sum(counts.values()), layer=layer)
     return counts
-
-
-def load_structured(conn, records, P, settings) -> dict:
-    """Insert every record's doc row(s); return {dsid: people_bundle} for the ACL step + counts.
-
-    Resilient per-doc: a single malformed record (e.g. an unexpected field shape) is logged and
-    skipped rather than aborting the whole import. Commits in batches so a crash can't roll back
-    the entire corpus and the write transaction/journal stays bounded."""
-    bundles = {}
-    counts = {s: 0 for s in SUPPORTED}
-    failures: list[tuple[str, str, str]] = []
-    # Precompute the slack future-date remap (needs a global view of all slack roots) before the
-    # per-doc loop; load_slack reads it via the _SLACK_TS_REMAP module global.
-    _SLACK_TS_REMAP.clear()
-    _SLACK_TS_REMAP.update(build_slack_ts_remap(records))
-    if _SLACK_TS_REMAP:
-        print(f"  slack: remapped {len(_SLACK_TS_REMAP)} future-dated threads into a realistic "
-              f"window (order-preserving)", file=sys.stderr, flush=True)
-    total = len(records)
-    for i, (src, dsid, raw) in enumerate(records, 1):
-        try:
-            bundle = _LOADERS[src](conn, dsid, raw, P)
-            bundle["_source"] = src
-            bundles[dsid] = bundle
-            counts[src] += 1
-            # A loader may materialize child rows from one bench doc — a Slack transcript's turns, a
-            # Gmail thread's messages, a HubSpot company's notes. Those rows are reached through the
-            # same per-row ACL filter as any other doc (store._acl_clause matches on each row's
-            # doc_id), so they must carry the parent's grants: without them a non-admin caller sees
-            # a silently truncated thread or an empty note list, while admin sees everything.
-            #
-            # Written here rather than from `bundles` afterwards: four bench documents share a
-            # doc_id with another (a drive/confluence pair, a hubspot/confluence pair, a
-            # jira/confluence pair, and two jira issues), and a dict keyed by doc_id keeps only the
-            # last of each — so the earlier document's container group was never granted.
-            for ptype, pid in grants_for(src, {**bundle, "org": settings.org_name}):
-                for doc in (dsid, *bundle.get("_children", [])):
-                    conn.execute("INSERT OR REPLACE INTO doc_acl(doc_id, principal_type,"
-                                 " principal_id) VALUES (?,?,?)", (doc, ptype, pid))
-        except Exception as e:  # one bad doc must not sink the import
-            failures.append((dsid, src, repr(e)))
-        if i % 5000 == 0:
-            conn.commit()
-            print(f"  loaded {i}/{total} ({len(failures)} skipped)", file=sys.stderr, flush=True)
-    conn.commit()
-    if failures:
-        print(f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
-              file=sys.stderr, flush=True)
-    if counts.get("linear"):
-        # Needs every issue present, so it cannot run inside the per-doc loop above.
-        rstats = resolve_linear_references(conn, bundles)
-        print(f"  linear: resolved {rstats['parents']} parents "
-              f"({rstats['parents_dangling']} dangling) and {rstats['relations']} relations "
-              f"({rstats['relations_dangling']} dangling)", file=sys.stderr, flush=True)
-    return {"bundles": bundles, "counts": counts, "failures": failures}
 
 
 def parse_employees(path: Path) -> list[dict]:
@@ -2304,20 +1740,14 @@ KNOWN_EMPTY_DOCS = {
 
 def select_records(gen_dir: Path, question_ids: set[str] | None = None,
                    excluded: list | None = None):
-    """Yield ``(source_type, dsid, raw_json)`` records under ``gen_dir/sources``.
+    """Yield ``(source_type, dsid, raw_json)`` records under ``gen_dir/sources``, or only those
+    whose ``dsid`` is in ``question_ids``. A selected doc's container is NOT expanded to its
+    siblings, so a sliced corpus can leave a container sparse.
 
-    If ``question_ids`` is None, every record is yielded. Otherwise only records whose ``dsid``
-    is in ``question_ids`` are yielded. This is a deliberate simplification of the plan's fuller
-    interface (which also pulls in every other record sharing a selected doc's container/thread,
-    so containers aren't left empty) — that container-expansion is NOT needed for validation, so
-    it is skipped here.
-
-    A document with no content is dropped, here rather than in any one consumer: dropping it in
-    only one of them is what made a converted artifact fail the BYO schema (``content: '' should be
-    non-empty``) while a direct import accepted it. Pass a list as ``excluded`` to collect what
-    went. Each entry names the record, because a count cannot be resolved back to a document
-    without rescanning the raw bench — 3.65 GB to answer "which one?" — and ``_erb_path`` is what
-    makes it a lookup instead of a scan.
+    An empty-content document is dropped HERE rather than in any one consumer — dropping it in only
+    one is what let a direct import accept a document the converted artifact then rejected against
+    the BYO schema. Pass a list as ``excluded`` to collect them; each entry names the record via
+    ``_erb_path``, so "which one?" is a lookup rather than a rescan of the raw bench.
     """
     for src, dsid, raw in iter_records(gen_dir / "sources"):
         if question_ids is not None and dsid not in question_ids:
@@ -2331,16 +1761,6 @@ def select_records(gen_dir: Path, question_ids: set[str] | None = None,
                                  "reason": "content empty after strip"})
             continue
         yield src, dsid, raw
-
-
-class _NullConn:
-    """A no-op DB connection: lets ``load_structured`` drive the loaders (whose ``P.resolve``
-    calls build the roster) without paying for any inserts — used by the fast tokens-only path."""
-    def execute(self, *a, **k):
-        return None
-
-    def commit(self, *a, **k):
-        return None
 
 
 def _resolve_roster(settings, gen_dir, *, question_ids=None, allow_excluded=0):
@@ -2380,36 +1800,93 @@ def _resolve_roster(settings, gen_dir, *, question_ids=None, allow_excluded=0):
     return P, records, excluded
 
 
+def _convert_all(records, P, settings, counts: dict, failures: list):
+    """Every ERB document as the BYO record(s) it maps to, as ``(where, record)`` pairs.
+
+    A generator function rather than a list: at bench scale this is 788k records, and the loader
+    streams them. ``counts`` (documents per source) and ``failures`` are RESET on each call —
+    ``byo.load_records`` iterates twice (org inference, then the load), so accumulating would
+    double every tally.
+    """
+    counts.clear()
+    counts.update({s: 0 for s in SUPPORTED})
+    failures.clear()
+    for i, (src, dsid, raw) in enumerate(records, 1):
+        try:
+            converted = to_byo(src, dsid, raw, P, settings.org_name)
+        except Exception as e:  # one bad doc must not sink the import
+            failures.append((dsid, src, repr(e)))
+            continue
+        for rec in converted:
+            yield f"{src}/{dsid}", rec
+        counts[src] += 1
+        if i % 25000 == 0:
+            print(f"  converted {i}/{len(records)} ({len(failures)} skipped)",
+                  file=sys.stderr, flush=True)
+
+
+def _populate_principals(records, P, settings) -> None:
+    """Run every document through the converter once and throw the records away.
+
+    ``P.resolve`` LEARNS — it harvests real addresses out of Gmail headers and dedupes people by
+    canonical name — so converting in a single pass made the output depend on document ORDER: a name
+    unresolvable when its own document was converted resolved once a later one introduced it, giving
+    a different ``doc_acl``. Resolving everything first means every conversion sees the finished
+    directory, which is also what lets a direct import and the exported artifact agree.
+    """
+    for _ in _convert_all(records, P, settings, {}, []):
+        pass
+
+
 def dump_tokens(settings, gen_dir, *, question_ids=None, allow_excluded=0) -> int:
-    """Resolve principals over the corpus and write ``tokens.yaml`` WITHOUT building the DB — a
-    fast roster preview (skips the row inserts + FTS build). Returns the tokened-user count.
-    Uses the real loaders via a no-op connection, so the roster matches a full import exactly."""
+    """Resolve principals and write ``tokens.yaml`` WITHOUT building the DB — a fast roster preview.
+    Returns the tokened-user count. Runs the real converter and discards its records, so the roster
+    matches a full import exactly."""
     P, records, _ = _resolve_roster(settings, gen_dir, question_ids=question_ids,
                                     allow_excluded=allow_excluded)
-    load_structured(_NullConn(), records, P, settings)  # resolve-only; inserts are no-ops
+    _precompute_globals(records)
+    _populate_principals(records, P, settings)
     P.write_tokens(settings)
-    return sum(1 for u in P.users.values() if not u["external"] and not u["is_bot"])
+    # The same filter write_tokens applies — only the employee directory gets a token, so counting
+    # every resolved principal reported four times the rows the file actually holds.
+    return sum(1 for u in P.users.values() if u.get("directory"))
 
 
 def import_structured(settings, gen_dir, *, question_ids=None, allow_excluded=0) -> dict:
+    """Build the DB from an ERB ``generated_data`` tree.
+
+    Each document is converted to BYO record(s) and those are loaded — the same path the
+    redistributed artifact takes, where ``export_byo`` writes the identical records to JSONL. One
+    mapping per source, so a direct import and the artifact cannot disagree.
+    """
     P, records, _ = _resolve_roster(settings, gen_dir, question_ids=question_ids,
                                     allow_excluded=allow_excluded)
+    _precompute_globals(records)
+    if _SLACK_TS_REMAP:
+        print(f"  slack: remapped {len(_SLACK_TS_REMAP)} future-dated threads into a realistic "
+              f"window (order-preserving)", file=sys.stderr, flush=True)
+    counts: dict[str, int] = {}
+    failures: list[tuple[str, str, str]] = []
 
-    if settings.db_path.exists():
-        settings.db_path.unlink()
-    conn = store.connect_rw(settings.db_path)
-    result = load_structured(conn, records, P, settings)
-    # Install principals AFTER load: the loaders synthesize users via P.resolve() during load, so
-    # installing earlier would omit every synthesized user (and their group membership) from the
-    # principals/group_members tables while they still get tokens — breaking group-scoped ACL.
-    P.install(conn, settings)
-    conn.commit()
-    P.write_tokens(settings)
-    store.build_fts(conn)
-    conn.close()
-    from app import oauth
-    oauth.generate(settings)
-    return result["counts"]
+    # Resolve first, load second (see _populate_principals): the roster can only be written once
+    # every document has been through P, and the load pass then converts against the finished
+    # directory. `byo.load_records` reads the roster as the CLOSED principal set, which is what
+    # keeps a Slack display handle or an outside sender from becoming an org account with a working
+    # token. It is the same sidecar a converted artifact ships, so a direct import leaves the same
+    # file behind.
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    roster_path = settings.data_dir / "roster.yaml"
+    _populate_principals(records, P, settings)
+    P.write_roster(roster_path, settings)
+
+    # validate=False: these records come from `to_byo`, i.e. from code the schemas describe, and
+    # `test_erb_to_byo_output_validates_against_the_byo_schemas` already holds it to them.
+    byo.load_records(lambda: _convert_all(records, P, settings, counts, failures),
+                     settings, reset=True, roster=roster_path, validate=False)
+    if failures:
+        print(f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
+              file=sys.stderr, flush=True)
+    return counts
 
 
 def main(argv: list[str]) -> int:

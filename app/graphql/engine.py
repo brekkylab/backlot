@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from graphql import (GraphQLError, GraphQLSchema, assert_valid_schema, build_schema,
@@ -44,6 +45,14 @@ def _request_error(errors: list[GraphQLError]) -> Result:
 
 def _client_error(message: str) -> Result:
     return _request_error([GraphQLError(message)])
+
+
+def from_sdl(module_file: str, name: str, resolvers) -> "Engine":
+    """An :class:`Engine` over the ``<name>.graphql`` sitting beside ``module_file``.
+
+    Each vendor's resolver module keeps its SDL as a sibling file, so this is the one place that
+    knows how the two are paired."""
+    return Engine((Path(module_file).parent / f"{name}.graphql").read_text(), resolvers)
 
 
 class Engine:

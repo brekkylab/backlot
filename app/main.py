@@ -160,7 +160,10 @@ async def lifespan(app: FastAPI):
         conn.close()
 
 
-app = FastAPI(title="EnterpriseRAG-Bench Mock Server", lifespan=lifespan)
+app = FastAPI(title="EnterpriseRAG-Bench Mock Server", lifespan=lifespan,
+              # NOT FastAPI's default, which derives the id's method suffix from a set and so
+              # changes between restarts — see openapi.unique_operation_id.
+              generate_unique_id_function=openapi.unique_operation_id)
 
 
 # Atlassian clients (atlassian-python-api, used by mcp-atlassian) parse error bodies as Atlassian

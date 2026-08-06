@@ -179,10 +179,9 @@ def _matches(value: str, spec: dict) -> bool:
 
 def _label_predicate(spec: dict) -> tuple[str, list]:
     """One ``IssueLabelFilter`` against the ``value`` column of a ``json_each`` row, INCLUDING its
-    ``and`` / ``or``. Reading only ``name`` (as an earlier version did) made a nested and/or
-    compile to nothing — and an empty fragment drops the WHOLE filter, so
-    ``labels:{some:{and:[{name:{eq:"nonexistent"}}]}}`` returned the unfiltered corpus. That is
-    precisely the silent-wrong-answer this module exists to prevent."""
+    ``and`` / ``or``. Reading only ``name`` makes a nested and/or compile to nothing, and an empty
+    fragment drops the WHOLE filter — ``labels:{some:{and:[{name:{eq:"nonexistent"}}]}}`` would
+    return the unfiltered corpus, the silent wrong answer this module exists to prevent."""
     parts: list[str] = []
     params: list = []
     for key, sub in (spec or {}).items():

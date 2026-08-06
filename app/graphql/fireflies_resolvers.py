@@ -292,13 +292,10 @@ RESOLVERS = {
 
 
 def build_engine():
-    """Construct the Fireflies engine from the SDL next to this module."""
-    from pathlib import Path
-
+    """The Fireflies engine, over the SDL beside this module."""
     from app.graphql import engine
 
-    sdl = (Path(__file__).parent / "fireflies.graphql").read_text()
-    return engine.Engine(sdl, RESOLVERS)
+    return engine.from_sdl(__file__, "fireflies", RESOLVERS)
 
 
 __all__ = ["RESOLVERS", "build_engine", "PAGE_DEFAULT", "PAGE_MAX", "clamp_limit", "clamp_skip",

@@ -2123,13 +2123,28 @@ def test_confluence_single_space_get(client, admin_h):
     assert r2.status_code == 404 and "message" in r2.json()
 
 
-# --- OpenAPI enrichment: github query params + response fidelity (issue #4 bridge) --------
+# --- OpenAPI enrichment: the params each router advertises ---------------------------------
+# The routers read query params off the raw request rather than through FastAPI signatures, so
+# each has to declare what it honours by hand (openapi.qp). One table rather than a test per
+# vendor: the assertion is identical and only the path and the expected names differ.
 
-def test_github_search_issues_documents_q_param(client):
-    op = client.get("/openapi.json").json()["paths"]["/github/search/issues"]["get"]
-    names = {p["name"] for p in op.get("parameters", [])}
-    assert {"q", "page", "per_page"} <= names
+@pytest.mark.parametrize("path, expected", [
+    ("/github/search/issues",                 {"q", "page", "per_page"}),
+    ("/slack/api/search.messages",            {"query", "count", "page"}),
+    ("/slack/api/conversations.history",      {"channel", "limit", "cursor"}),
+    # `user_id` is the path param, asserted here so enrichment cannot drop it
+    ("/gmail/v1/users/{user_id}/messages",    {"q", "maxResults", "pageToken", "user_id"}),
+    ("/drive/v3/files",                       {"q", "pageSize", "pageToken", "fields"}),
+    ("/notion/v1/users",                      {"start_cursor", "page_size"}),
+    ("/atlassian/rest/api/3/search/jql",      {"jql", "maxResults", "nextPageToken"}),
+    ("/atlassian/wiki/rest/api/search",       {"cql"}),
+])
+def test_router_advertises_the_params_it_honours(client, path, expected):
+    op = client.get("/openapi.json").json()["paths"][path]["get"]
+    assert expected <= {p["name"] for p in op.get("parameters", [])}
 
+
+# --- OpenAPI enrichment: github response fidelity ------------------------------------------
 
 def test_github_list_issues_documents_state_param(client):
     op = client.get("/openapi.json").json()["paths"]["/github/repos/{owner}/{repo}/issues"]["get"]
@@ -2169,19 +2184,7 @@ def test_github_operation_ids_unique(client):
     assert len(ids) == len(set(ids))
 
 
-# --- OpenAPI enrichment: slack (query-or-form params via openapi_extra) -------------------
-
-def test_slack_search_documents_query_param(client):
-    op = client.get("/openapi.json").json()["paths"]["/slack/api/search.messages"]["get"]
-    names = {p["name"] for p in op.get("parameters", [])}
-    assert {"query", "count", "page"} <= names
-
-
-def test_slack_history_documents_channel_param(client):
-    op = client.get("/openapi.json").json()["paths"]["/slack/api/conversations.history"]["get"]
-    names = {p["name"] for p in op.get("parameters", [])}
-    assert {"channel", "limit", "cursor"} <= names
-
+# --- Slack: enrichment did not change the responses ---------------------------------------
 
 def test_slack_responses_unchanged_by_enrichment(client, admin_h):
     lst = client.get("/slack/api/conversations.list", headers=admin_h).json()
@@ -2203,14 +2206,7 @@ def test_slack_api_test_has_typed_response_schema(client):
     assert "$ref" in schema or schema.get("type") in ("object", "array")
 
 
-# --- OpenAPI enrichment: gmail ------------------------------------------------------------
-
-def test_gmail_messages_documents_q_param(client):
-    op = client.get("/openapi.json").json()["paths"]["/gmail/v1/users/{user_id}/messages"]["get"]
-    names = {p["name"] for p in op.get("parameters", [])}
-    assert {"q", "maxResults", "pageToken"} <= names
-    assert "user_id" in names  # path param preserved
-
+# --- Gmail: typed response schema, unchanged responses ------------------------------------
 
 def test_gmail_messages_has_typed_response_schema(client):
     op = client.get("/openapi.json").json()["paths"]["/gmail/v1/users/{user_id}/messages"]["get"]
@@ -2230,12 +2226,6 @@ def test_gmail_responses_unchanged_by_enrichment(client, admin_h):
 
 
 # --- OpenAPI enrichment: drive ------------------------------------------------------------
-
-def test_drive_files_documents_q_param(client):
-    op = client.get("/openapi.json").json()["paths"]["/drive/v3/files"]["get"]
-    names = {p["name"] for p in op.get("parameters", [])}
-    assert {"q", "pageSize", "pageToken", "fields"} <= names
-
 
 def test_drive_files_has_typed_response_schema(client):
     op = client.get("/openapi.json").json()["paths"]["/drive/v3/files"]["get"]
@@ -2647,18 +2637,12 @@ def test_drive_about_appears_in_the_openapi_spec(client):
     assert {p["name"] for p in op["parameters"]} == {"fields"}
 
 
-# --- OpenAPI enrichment: notion -----------------------------------------------------------
+# --- Notion: typed response schema ---------------------------------------------------------
 
 def test_notion_search_documents_body_param(client):
     op = client.get("/openapi.json").json()["paths"]["/notion/v1/search"]["post"]
     props = op["requestBody"]["content"]["application/json"]["schema"]["properties"]
     assert "query" in props and "filter" in props
-
-
-def test_notion_users_documents_pagination(client):
-    op = client.get("/openapi.json").json()["paths"]["/notion/v1/users"]["get"]
-    names = {p["name"] for p in op.get("parameters", [])}
-    assert {"start_cursor", "page_size"} <= names
 
 
 def test_notion_page_has_typed_response_schema(client):
@@ -2685,17 +2669,6 @@ def test_notion_responses_unchanged_by_enrichment(client, admin_h):
 
 
 # --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------
-
-def test_atlassian_jira_search_documents_params(client):
-    op = client.get("/openapi.json").json()["paths"]["/atlassian/rest/api/3/search/jql"]["get"]
-    names = {p["name"] for p in op.get("parameters", [])}
-    assert {"jql", "maxResults", "nextPageToken"} <= names
-
-
-def test_atlassian_confluence_search_documents_cql(client):
-    op = client.get("/openapi.json").json()["paths"]["/atlassian/wiki/rest/api/search"]["get"]
-    assert "cql" in {p["name"] for p in op.get("parameters", [])}
-
 
 def test_atlassian_issue_has_typed_response_schema(client):
     op = client.get("/openapi.json").json()["paths"]["/atlassian/rest/api/3/issue/{key}"]["get"]

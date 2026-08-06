@@ -862,12 +862,9 @@ RESOLVERS = {
 
 
 def build_engine():
-    """Construct the Linear engine from the SDL next to this module."""
-    from pathlib import Path
-
+    """The Linear engine, over the SDL beside this module."""
     from app.graphql import engine
 
-    sdl = (Path(__file__).parent / "linear.graphql").read_text()
-    return engine.Engine(sdl, RESOLVERS)
+    return engine.from_sdl(__file__, "linear", RESOLVERS)
 
 __all__ = ["RESOLVERS", "build_engine", "PAGE_DEFAULT", "PAGE_MAX"]

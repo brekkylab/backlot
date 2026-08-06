@@ -377,8 +377,8 @@ async def conversations_members(request: Request):
         return _err("invalid_cursor")
     limit = _int(request, "limit", get_settings().default_page_size)
     # A channel's members are the people who have spoken in it — the only per-channel signal the
-    # corpus carries. This used to answer every public channel with the whole roster, which real
-    # Slack cannot produce: its membership differs per channel, and it paginates this method.
+    # corpus carries. Never the whole roster: real Slack's membership differs per channel, and it
+    # paginates this method.
     total = store.count_slack_channel_members(conn, name)
     emails = store.slack_channel_member_emails(conn, name, limit=limit, offset=offset)
     members = [synth.slack_user_id(e) for e in emails]
@@ -397,12 +397,11 @@ async def users_list(request: Request):
     # authors. Slack transcript speakers are NOT added, and that is a limitation of the upstream
     # dataset rather than a modelling choice, so it is stated plainly here and in the README (#33).
     #
-    # The note that used to sit here said the speakers are "mostly external (customers/companies/
-    # bots)". Measured on the bench corpus, that is false: of 74,138 distinct speakers only 3,971
-    # (5.4%) are principals, and ALL 70,167 of the rest are on the org's own domain. The two
-    # populations are generated independently upstream, and 74k speakers against an 11,913-person
-    # directory is not a headcount any real workspace has — so neither set can be made a subset of
-    # the other without inventing 70k colleagues or discarding the transcripts' own speakers.
+    # The speakers are NOT "mostly external": measured on the bench corpus, of 74,138 distinct
+    # speakers only 3,971 (5.4%) are principals and ALL 70,167 of the rest are on the org's own
+    # domain. The two populations are generated independently upstream, and 74k speakers against an
+    # 11,913-person directory is not a headcount any real workspace has — so neither set can be
+    # made a subset of the other without inventing 70k colleagues or discarding the speakers.
     #
     # What it costs a client: `message.user` for a speaker outside the directory resolves through
     # users.info but never appears in users.list. conversations.members does now page the channel's

@@ -573,8 +573,8 @@ def _gmail_plain(payload):
 
 # --- Gmail hex message ids (#39) --------------------------------------------------------------
 #
-# Gmail ids are 16 lowercase hex digits parsed as a signed 64-bit integer. MEASURED against the live
-# API, which is what fixes the 400/404 boundary the mock previously got wrong:
+# Gmail ids are 16 lowercase hex digits parsed as a signed 64-bit integer. The 400/404 boundary,
+# MEASURED against the live API:
 #
 #   id                        | real Gmail
 #   --------------------------|-----------------------------------------------

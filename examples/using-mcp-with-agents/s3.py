@@ -24,6 +24,7 @@ or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
     ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/s3.py \
         --url https://host --access-key <AKIA…> --secret-key <secret> [--agent openai]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,20 +37,30 @@ from _agent import run_agent
 from _mockserver import serve_or_connect
 
 CORPUS = [
-    {"source_type": "s3", "bucket": "payments", "key": "incidents/sev2.md",
-     "title": "SEV2: checkout latency spike",
-     "content": "p95 checkout latency jumped to 2.1s after the payments migration; rolling back."},
-    {"source_type": "s3", "bucket": "runbooks", "key": "oncall/checkout.md",
-     "title": "On-call Runbook: checkout latency & bad deploys",
-     "content": "When a deploy or migration spikes checkout latency: check the payments "
-                "dashboards, roll back the last change, and page the on-call engineer."},
+    {
+        "source_type": "s3",
+        "bucket": "payments",
+        "key": "incidents/sev2.md",
+        "title": "SEV2: checkout latency spike",
+        "content": "p95 checkout latency jumped to 2.1s after the payments migration; rolling back.",
+    },
+    {
+        "source_type": "s3",
+        "bucket": "runbooks",
+        "key": "oncall/checkout.md",
+        "title": "On-call Runbook: checkout latency & bad deploys",
+        "content": "When a deploy or migration spikes checkout latency: check the payments "
+        "dashboards, roll back the last change, and page the on-call engineer.",
+    },
 ]
-QUESTION = ("The company's knowledge base is stored as objects in S3 buckets — use the S3 API only "
-            "(no other AWS services). List the buckets, list a bucket's objects, and read an "
-            "object's contents with `aws s3 cp s3://<bucket>/<key> -` (the trailing dash streams "
-            "the body to stdout; `s3api get-object` only writes to a file and won't return the "
-            "body). Find the incident about checkout latency and summarize it, then find the "
-            "on-call runbook. Cite the object keys.")
+QUESTION = (
+    "The company's knowledge base is stored as objects in S3 buckets — use the S3 API only "
+    "(no other AWS services). List the buckets, list a bucket's objects, and read an "
+    "object's contents with `aws s3 cp s3://<bucket>/<key> -` (the trailing dash streams "
+    "the body to stdout; `s3api get-object` only writes to a file and won't return the "
+    "body). Find the incident about checkout latency and summarize it, then find the "
+    "on-call runbook. Cite the object keys."
+)
 
 
 def build_params(base_url: str, access_key: str, secret_key: str) -> StdioServerParameters:
@@ -61,24 +72,40 @@ def build_params(base_url: str, access_key: str, secret_key: str) -> StdioServer
     list objects but never read them). The mock has no write endpoints, so dropping the read-only
     guard is safe here; against real AWS you'd weigh read-only vs. being able to read object bodies."""
     return StdioServerParameters(
-        command="uvx", args=["awslabs.aws-api-mcp-server@latest"],
-        env={"AWS_ENDPOINT_URL": f"{base_url.rstrip('/')}/s3",
-             "AWS_ACCESS_KEY_ID": access_key, "AWS_SECRET_ACCESS_KEY": secret_key,
-             "AWS_REGION": "us-east-1"})
+        command="uvx",
+        args=["awslabs.aws-api-mcp-server@latest"],
+        env={
+            "AWS_ENDPOINT_URL": f"{base_url.rstrip('/')}/s3",
+            "AWS_ACCESS_KEY_ID": access_key,
+            "AWS_SECRET_ACCESS_KEY": secret_key,
+            "AWS_REGION": "us-east-1",
+        },
+    )
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Drive awslabs aws-api-mcp-server over MCP against the mock's S3.")
+    p = argparse.ArgumentParser(
+        description="Drive awslabs aws-api-mcp-server over MCP against the mock's S3."
+    )
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-    p.add_argument("--access-key", help="AWS access key id (S3 uses a keypair, not a token); "
-                                        "required with --url — from GET <url>/_mock/users, or real AWS")
+    p.add_argument(
+        "--access-key",
+        help="AWS access key id (S3 uses a keypair, not a token); "
+        "required with --url — from GET <url>/_mock/users, or real AWS",
+    )
     p.add_argument("--secret-key", help="AWS secret access key (required with --url)")
-    p.add_argument("--agent", choices=("anthropic", "openai"), default="anthropic",
-                   help="which LLM agent to run (default: anthropic)")
+    p.add_argument(
+        "--agent",
+        choices=("anthropic", "openai"),
+        default="anthropic",
+        help="which LLM agent to run (default: anthropic)",
+    )
     args = p.parse_args()
     if args.url and not (args.access_key and args.secret_key):
-        p.error("--access-key and --secret-key are required with --url "
-                "(grab a pair from GET <url>/_mock/users)")
+        p.error(
+            "--access-key and --secret-key are required with --url "
+            "(grab a pair from GET <url>/_mock/users)"
+        )
     return args
 
 

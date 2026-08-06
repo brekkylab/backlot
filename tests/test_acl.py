@@ -1,4 +1,5 @@
 """ACL resolution + visibility, asserted against the SAMPLE corpus's generated ACL."""
+
 from app import store
 from tests._helpers import client_for, gql
 
@@ -10,7 +11,11 @@ def _visible(db, acl, token, source):
 
 def test_admin_sees_all_confluence(db, acl):
     assert acl.resolve("admin-service-token").is_admin
-    assert _visible(db, acl, "admin-service-token", "confluence") == {"cf-handbook", "cf-oncall", "cf-comp"}
+    assert _visible(db, acl, "admin-service-token", "confluence") == {
+        "cf-handbook",
+        "cf-oncall",
+        "cf-comp",
+    }
 
 
 def test_public_visible_to_everyone(db, acl, tokens):
@@ -41,9 +46,13 @@ def test_unknown_token_resolves_to_none(acl):
 
 def test_forbidden_direct_fetch_is_hidden(db, acl, tokens):
     ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
-    assert store.get_document(db, "jira", "jira-private", visible_ids=ids) is None      # hidden
-    assert store.get_document(db, "confluence", "cf-handbook", visible_ids=ids) is not None  # public
-    assert store.get_document(db, "jira", "jira-private", visible_ids=None) is not None  # admin bypass
+    assert store.get_document(db, "jira", "jira-private", visible_ids=ids) is None  # hidden
+    assert (
+        store.get_document(db, "confluence", "cf-handbook", visible_ids=ids) is not None
+    )  # public
+    assert (
+        store.get_document(db, "jira", "jira-private", visible_ids=None) is not None
+    )  # admin bypass
 
 
 def test_admin_visible_ids_is_none(db, acl):
@@ -55,6 +64,7 @@ def test_admin_visible_ids_is_none(db, acl):
 # needs asserting is that the GraphQL layer honours the same filter — including on the comment
 # rows, which carry no grant of their own and inherit the parent issue's.
 
+
 def test_linear_restricted_issue_hidden_from_nonreader(db, acl, tokens):
     assert _visible(db, acl, tokens["ava@acme.com"], "linear") == {"lin-rl", "lin-batch", "lin-des"}
 
@@ -65,13 +75,19 @@ def test_linear_restricted_issue_visible_to_its_reader(db, acl, tokens):
 
 def test_linear_admin_sees_every_issue(db, acl):
     assert _visible(db, acl, "admin-service-token", "linear") == {
-        "lin-rl", "lin-batch", "lin-des", "lin-secret", "lin-blackops"}
+        "lin-rl",
+        "lin-batch",
+        "lin-des",
+        "lin-secret",
+        "lin-blackops",
+    }
 
 
 def test_linear_comments_inherit_the_parent_issues_acl(db, acl, tokens):
     """A comment row has no ACL grant of its own — visibility is the issue's. Without the join in
     `list_linear_comments` a hidden issue's comments would leak through `Query.comments`."""
     from app import store as st
+
     ids = acl.visible_ids(db, acl.resolve(tokens["mia@acme.com"]))
     # mia sees the public issues, so she sees their comments...
     assert st.count_linear_comments(db, doc_id="lin-rl", visible_ids=ids) == 2
@@ -81,10 +97,14 @@ def test_linear_comments_inherit_the_parent_issues_acl(db, acl, tokens):
 
 def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
     from app import store as st
+
     ava = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
     assert st.linear_team_issue_counts(db, visible_ids=ava) == {"engineering": 2, "design": 1}
     assert st.linear_team_issue_counts(db, visible_ids=None) == {
-        "engineering": 3, "design": 1, "blackops": 1}
+        "engineering": 3,
+        "design": 1,
+        "blackops": 1,
+    }
 
 
 # --- Linear: the by-id relation roots ---------------------------------------------
@@ -94,6 +114,7 @@ def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
 # column value on some issue. Left unscoped they hand a caller field values off rows they are
 # denied, and because the ids are pure functions of the name (app/synth.py), they are computable
 # offline: an enumerable oracle, not merely a confirmable one.
+
 
 def _gql(client, query, token):
     return gql(client, "/linear/graphql", query, token).json()
@@ -115,11 +136,16 @@ def test_linear_by_id_roots_do_not_leak_entities_off_hidden_issues(sample_settin
         assert granted["data"]["workflowState"]["name"] == "Backlog"
 
         # ...and indistinguishable from an id that genuinely does not exist.
-        absent = _gql(client, '{ workflowState(id: "%s") { name } }'
-                      % synth.linear_state_id("No Such State", "engineering"),
-                      tokens["ava@acme.com"])
-        assert absent["errors"][0]["message"].split("id=")[0] == \
-            hidden["errors"][0]["message"].split("id=")[0]
+        absent = _gql(
+            client,
+            '{ workflowState(id: "%s") { name } }'
+            % synth.linear_state_id("No Such State", "engineering"),
+            tokens["ava@acme.com"],
+        )
+        assert (
+            absent["errors"][0]["message"].split("id=")[0]
+            == hidden["errors"][0]["message"].split("id=")[0]
+        )
 
 
 def test_linear_by_id_roots_still_answer_for_visible_entities(sample_settings, tokens):
@@ -128,20 +154,44 @@ def test_linear_by_id_roots_still_answer_for_visible_entities(sample_settings, t
     from app import synth
 
     with client_for(sample_settings) as client:
-        ava = tokens["ava@acme.com"]        # can read lin-rl (public)
-        assert _gql(client, '{ project(id: "%s") { name } }'
-                    % synth.linear_project_id("runtime-stability"),
-                    ava)["data"]["project"]["name"] == "runtime-stability"
-        assert _gql(client, '{ issueLabel(id: "%s") { name } }' % synth.linear_label_id("gateway"),
-                    ava)["data"]["issueLabel"]["name"] == "gateway"
-        assert _gql(client, '{ cycle(id: "%s") { name } }'
-                    % synth.linear_cycle_id("2025-W08", "engineering"),
-                    ava)["data"]["cycle"]["name"] == "2025-W08"
-        assert _gql(client, '{ workflowState(id: "%s") { name } }'
-                    % synth.linear_state_id("In Progress", "engineering"),
-                    ava)["data"]["workflowState"]["name"] == "In Progress"
-        assert _gql(client, '{ user(id: "%s") { email } }' % synth.linear_user_id("bob@acme.com"),
-                    ava)["data"]["user"]["email"] == "bob@acme.com"
+        ava = tokens["ava@acme.com"]  # can read lin-rl (public)
+        assert (
+            _gql(
+                client,
+                '{ project(id: "%s") { name } }' % synth.linear_project_id("runtime-stability"),
+                ava,
+            )["data"]["project"]["name"]
+            == "runtime-stability"
+        )
+        assert (
+            _gql(
+                client, '{ issueLabel(id: "%s") { name } }' % synth.linear_label_id("gateway"), ava
+            )["data"]["issueLabel"]["name"]
+            == "gateway"
+        )
+        assert (
+            _gql(
+                client,
+                '{ cycle(id: "%s") { name } }' % synth.linear_cycle_id("2025-W08", "engineering"),
+                ava,
+            )["data"]["cycle"]["name"]
+            == "2025-W08"
+        )
+        assert (
+            _gql(
+                client,
+                '{ workflowState(id: "%s") { name } }'
+                % synth.linear_state_id("In Progress", "engineering"),
+                ava,
+            )["data"]["workflowState"]["name"]
+            == "In Progress"
+        )
+        assert (
+            _gql(
+                client, '{ user(id: "%s") { email } }' % synth.linear_user_id("bob@acme.com"), ava
+            )["data"]["user"]["email"]
+            == "bob@acme.com"
+        )
         assert _gql(client, '{ team(id: "ENG") { key } }', ava)["data"]["team"]["key"] == "ENG"
 
 
@@ -153,20 +203,28 @@ def test_linear_team_by_id_agrees_with_the_teams_listing(sample_settings, tokens
     saw every team the assertion never executed. Deleting `resolve_team`'s visibility check left
     it green."""
     with client_for(sample_settings) as client:
-        ava = tokens["ava@acme.com"]        # engineering; `blackops` is granted to hana only
-        listed = {t["key"] for t in _gql(client, "{ teams { nodes { key } } }",
-                                         ava)["data"]["teams"]["nodes"]}
+        ava = tokens["ava@acme.com"]  # engineering; `blackops` is granted to hana only
+        listed = {
+            t["key"]
+            for t in _gql(client, "{ teams { nodes { key } } }", ava)["data"]["teams"]["nodes"]
+        }
         assert "BLA" not in listed, "precondition: blackops must be hidden from ava"
         assert "ENG" in listed
         hidden = _gql(client, '{ team(id: "BLA") { key name } }', ava)
         assert hidden.get("data") is None
         assert "Entity not found" in hidden["errors"][0]["message"]
         # ...and hana, who is granted it, still gets it — so the above is the ACL, not a break.
-        assert _gql(client, '{ team(id: "BLA") { key } }',
-                    tokens["hana@acme.com"])["data"]["team"]["key"] == "BLA"
+        assert (
+            _gql(client, '{ team(id: "BLA") { key } }', tokens["hana@acme.com"])["data"]["team"][
+                "key"
+            ]
+            == "BLA"
+        )
         # the container-name and UUID spellings are scoped too, not just the key
-        assert "Entity not found" in _gql(client, '{ team(id: "blackops") { key } }',
-                                          ava)["errors"][0]["message"]
+        assert (
+            "Entity not found"
+            in _gql(client, '{ team(id: "blackops") { key } }', ava)["errors"][0]["message"]
+        )
 
 
 def test_linear_every_by_id_predicate_is_scoped_not_just_the_dispatch(sample_settings, tokens):
@@ -180,16 +238,28 @@ def test_linear_every_by_id_predicate_is_scoped_not_just_the_dispatch(sample_set
     with client_for(sample_settings) as client:
         ava, hana = tokens["ava@acme.com"], tokens["hana@acme.com"]
         cases = [
-            ("project", '{ project(id: "%s") { name } }'
-             % synth.linear_project_id("vault-rotation")),
-            ("cycle", '{ cycle(id: "%s") { name } }'
-             % synth.linear_cycle_id("2026-W40-embargo", "engineering")),
-            ("label", '{ issueLabel(id: "%s") { name } }'
-             % synth.linear_label_id("restricted-only")),
-            ("assignee", '{ user(id: "%s") { email } }'
-             % synth.linear_user_id("vault.keeper@acme.com")),
-            ("state", '{ workflowState(id: "%s") { name } }'
-             % synth.linear_state_id("Backlog", "engineering")),
+            (
+                "project",
+                '{ project(id: "%s") { name } }' % synth.linear_project_id("vault-rotation"),
+            ),
+            (
+                "cycle",
+                '{ cycle(id: "%s") { name } }'
+                % synth.linear_cycle_id("2026-W40-embargo", "engineering"),
+            ),
+            (
+                "label",
+                '{ issueLabel(id: "%s") { name } }' % synth.linear_label_id("restricted-only"),
+            ),
+            (
+                "assignee",
+                '{ user(id: "%s") { email } }' % synth.linear_user_id("vault.keeper@acme.com"),
+            ),
+            (
+                "state",
+                '{ workflowState(id: "%s") { name } }'
+                % synth.linear_state_id("Backlog", "engineering"),
+            ),
         ]
         for kind, query in cases:
             denied, granted = _gql(client, query, ava), _gql(client, query, hana)
@@ -204,14 +274,23 @@ def test_linear_hidden_assignee_is_not_nameable_by_id(sample_settings, tokens):
 
     with client_for(sample_settings) as client:
         ava = tokens["ava@acme.com"]
-        directory = {u["email"] for u in _gql(client, "{ users(first: 100) { nodes { email } } }",
-                                              ava)["data"]["users"]["nodes"]}
+        directory = {
+            u["email"]
+            for u in _gql(client, "{ users(first: 100) { nodes { email } } }", ava)["data"][
+                "users"
+            ]["nodes"]
+        }
         # hana authors only lin-secret, which ava cannot read.
-        visible = {n["identifier"] for n in _gql(client, "{ issues { nodes { identifier } } }",
-                                                 ava)["data"]["issues"]["nodes"]}
-        assert visible == {"ENG-101", "ENG-102", "DES-77"}   # ENG-103 (lin-secret) is hidden
-        got = _gql(client, '{ user(id: "%s") { email } }' % synth.linear_user_id("hana@acme.com"),
-                   ava)
+        visible = {
+            n["identifier"]
+            for n in _gql(client, "{ issues { nodes { identifier } } }", ava)["data"]["issues"][
+                "nodes"
+            ]
+        }
+        assert visible == {"ENG-101", "ENG-102", "DES-77"}  # ENG-103 (lin-secret) is hidden
+        got = _gql(
+            client, '{ user(id: "%s") { email } }' % synth.linear_user_id("hana@acme.com"), ava
+        )
         # `users` is the corpus-wide principal directory (as in real Linear and the Notion
         # router), so hana IS listed there — the point is that the by-id root must not become a
         # SECOND, unscoped way to reach someone, so it agrees with the issue-level ACL instead.
@@ -223,12 +302,13 @@ def test_linear_hidden_assignee_is_not_nameable_by_id(sample_settings, tokens):
 # `ff-secret` is granted to hana only, and it is the sole transcript in the `board` channel, so
 # both the unfiltered list and every filter have to agree about hiding it.
 
+
 def _ff_gql(client, query, token, **variables):
     return gql(client, "/fireflies/graphql", query, f"Bearer {token}", **variables).json()
 
 
 def test_fireflies_store_reads_are_acl_scoped(db, acl, tokens):
-    assert "ff-secret" in _visible(db, acl, "admin-service-token", "fireflies")    # admin
+    assert "ff-secret" in _visible(db, acl, "admin-service-token", "fireflies")  # admin
     assert "ff-secret" in _visible(db, acl, tokens["hana@acme.com"], "fireflies")  # granted
     assert "ff-secret" not in _visible(db, acl, tokens["ava@acme.com"], "fireflies")
     # the org-visible transcripts are readable by both
@@ -252,24 +332,30 @@ def test_fireflies_transcript_by_id_denies_rather_than_reveals(sample_settings, 
     from app import synth
 
     with client_for(sample_settings) as client:
-        q = 'query($i:String!){ transcript(id:$i) { title } }'
+        q = "query($i:String!){ transcript(id:$i) { title } }"
         tid = synth.fireflies_id("ff-secret")
         assert _ff_gql(client, q, tokens["ava@acme.com"], i=tid)["data"]["transcript"] is None
         granted = _ff_gql(client, q, tokens["hana@acme.com"], i=tid)["data"]["transcript"]
-        assert granted["title"] == "Board pre-read walkthrough"      # the id IS real
+        assert granted["title"] == "Board pre-read walkthrough"  # the id IS real
         # an absent id looks exactly the same to the denied caller
-        assert _ff_gql(client, q, tokens["ava@acme.com"],
-                       i="deadbeefdeadbeefdeadbeef")["data"]["transcript"] is None
+        assert (
+            _ff_gql(client, q, tokens["ava@acme.com"], i="deadbeefdeadbeefdeadbeef")["data"][
+                "transcript"
+            ]
+            is None
+        )
 
 
 def test_fireflies_filters_do_not_leak_a_denied_meeting(sample_settings, tokens):
     """Every narrowing argument goes through the same ACL clause: a filter that a hidden
     transcript is the ONLY match for must return nothing, not the hidden row."""
     with client_for(sample_settings) as client:
-        for args in ('channel_id: "board"',                       # its channel alone
-                     'host_email: "hana@acme.com"',               # its host
-                     'keyword: "stays in the room", scope: "sentences"',   # its own sentence
-                     'keyword: "Board pre-read", scope: "title"'):
+        for args in (
+            'channel_id: "board"',  # its channel alone
+            'host_email: "hana@acme.com"',  # its host
+            'keyword: "stays in the room", scope: "sentences"',  # its own sentence
+            'keyword: "Board pre-read", scope: "title"',
+        ):
             q = "{ transcripts(%s, limit: 50) { title } }" % args
             ava = _ff_gql(client, q, tokens["ava@acme.com"])["data"]["transcripts"]
             assert "Board pre-read walkthrough" not in [t["title"] for t in ava], args
@@ -301,6 +387,7 @@ def test_fireflies_mine_is_scoped_to_the_calling_user(sample_settings, tokens):
 def test_fireflies_mine_returns_nothing_for_a_token_that_is_not_a_person(sample_settings):
     """An admin/service token has no user, so "my meetings" is empty rather than all of them."""
     with client_for(sample_settings) as client:
-        got = _ff_gql(client, "{ transcripts(mine: true, limit: 50) { title } }",
-                      sample_settings.admin_token)
+        got = _ff_gql(
+            client, "{ transcripts(mine: true, limit: 50) { title } }", sample_settings.admin_token
+        )
         assert got["data"]["transcripts"] == []

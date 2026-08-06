@@ -14,6 +14,7 @@ client and pointing it at the mock takes a real shim.)
 
 ``httpx`` is already a dependency, so that is what this uses; ``requests`` would be identical.
 """
+
 import argparse
 import json
 
@@ -24,37 +25,72 @@ from _mockserver import serve_or_connect
 # "Speaker: text" transcript — to show that the loader parses sentences back out of it, so a BYO
 # corpus does not have to be written in the structured form.
 CORPUS = [
-    {"source_type": "fireflies", "channel": "sales-calls", "doc_id": "ff-ex-discovery",
-     "title": "Acme Health — latency discovery",
-     "host_email": "rep@acme.com", "host_name": "Dana Rep",
-     "duration": 34.0, "created": "2026-04-02T15:00:00Z",
-     "summary": {"overview": "Acme Health needs sub-300ms p95 before they will pilot.",
-                 "topics_discussed": ["latency budget", "batching", "EU residency"],
-                 "action_items": ["Dana: send the batching benchmark",
-                                  "Ivan: confirm EU data residency"],
-                 "keywords": ["latency", "batching", "residency"],
-                 "meeting_type": "discovery"},
-     "meeting_attendees": [
-         {"displayName": "Dana Rep", "email": "rep@acme.com", "location": None},
-         {"displayName": "Ivan Ortiz", "email": "ivan@acme-health.example",
-          "location": "Acme Health"}],
-     "sentences": [
-         {"speaker_name": "Dana Rep", "author_email": "rep@acme.com", "start_time": 0,
-          "text": "Thanks for making time — let's start with the latency budget."},
-         {"speaker_name": "Ivan Ortiz", "start_time": 18,
-          "text": "Our p95 sits around 300 milliseconds and batching is the suspect."},
-         {"speaker_name": "Dana Rep", "author_email": "rep@acme.com", "start_time": 41,
-          "text": "Understood. I'll send the batching benchmark right after this."},
-         {"speaker_name": "Ivan Ortiz", "start_time": 63,
-          "text": "One more thing — we need EU data residency confirmed in writing."},
-         {"speaker_name": None, "start_time": 79, "text": "(crosstalk)"}]},
-    {"source_type": "fireflies", "channel": "sales-calls", "doc_id": "ff-ex-checkin",
-     "title": "Acme Health — pilot check-in",
-     "host_email": "rep@acme.com", "duration": 21.0, "created": "2026-04-16T15:00:00Z",
-     "content": "[00:00] Dana: quick check-in on the pilot numbers.\n"
-                "[00:24] Ivan: p95 is down to 240 milliseconds with batching on.\n"
-                "We're comfortable moving to the security review.\n"
-                "[01:02] Dana: great — I'll get the questionnaire over today."},
+    {
+        "source_type": "fireflies",
+        "channel": "sales-calls",
+        "doc_id": "ff-ex-discovery",
+        "title": "Acme Health — latency discovery",
+        "host_email": "rep@acme.com",
+        "host_name": "Dana Rep",
+        "duration": 34.0,
+        "created": "2026-04-02T15:00:00Z",
+        "summary": {
+            "overview": "Acme Health needs sub-300ms p95 before they will pilot.",
+            "topics_discussed": ["latency budget", "batching", "EU residency"],
+            "action_items": [
+                "Dana: send the batching benchmark",
+                "Ivan: confirm EU data residency",
+            ],
+            "keywords": ["latency", "batching", "residency"],
+            "meeting_type": "discovery",
+        },
+        "meeting_attendees": [
+            {"displayName": "Dana Rep", "email": "rep@acme.com", "location": None},
+            {
+                "displayName": "Ivan Ortiz",
+                "email": "ivan@acme-health.example",
+                "location": "Acme Health",
+            },
+        ],
+        "sentences": [
+            {
+                "speaker_name": "Dana Rep",
+                "author_email": "rep@acme.com",
+                "start_time": 0,
+                "text": "Thanks for making time — let's start with the latency budget.",
+            },
+            {
+                "speaker_name": "Ivan Ortiz",
+                "start_time": 18,
+                "text": "Our p95 sits around 300 milliseconds and batching is the suspect.",
+            },
+            {
+                "speaker_name": "Dana Rep",
+                "author_email": "rep@acme.com",
+                "start_time": 41,
+                "text": "Understood. I'll send the batching benchmark right after this.",
+            },
+            {
+                "speaker_name": "Ivan Ortiz",
+                "start_time": 63,
+                "text": "One more thing — we need EU data residency confirmed in writing.",
+            },
+            {"speaker_name": None, "start_time": 79, "text": "(crosstalk)"},
+        ],
+    },
+    {
+        "source_type": "fireflies",
+        "channel": "sales-calls",
+        "doc_id": "ff-ex-checkin",
+        "title": "Acme Health — pilot check-in",
+        "host_email": "rep@acme.com",
+        "duration": 21.0,
+        "created": "2026-04-16T15:00:00Z",
+        "content": "[00:00] Dana: quick check-in on the pilot numbers.\n"
+        "[00:24] Ivan: p95 is down to 240 milliseconds with batching on.\n"
+        "We're comfortable moving to the security review.\n"
+        "[01:02] Dana: great — I'll get the questionnaire over today.",
+    },
 ]
 
 # The vendor quickstart's own shape: one POST, a `query` (plus `variables`), a Bearer key.
@@ -100,9 +136,11 @@ args = parser.parse_args()
 
 def gql(client, endpoint, token, query, **variables):
     """One raw POST, exactly as the vendor's quickstart does it."""
-    r = client.post(endpoint, json={"query": query, "variables": variables},
-                    headers={"Authorization": f"Bearer {token}",
-                             "Content-Type": "application/json"})
+    r = client.post(
+        endpoint,
+        json={"query": query, "variables": variables},
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
     r.raise_for_status()
     body = r.json()
     # A GraphQL 200 can still carry `errors` alongside partial data — always check.
@@ -133,11 +171,15 @@ with serve_or_connect(CORPUS, url=args.url) as mock:
                 for item in s["action_items"].split("\n"):
                     print(f"      [ ] {item}")
             sent = t["analytics"]["sentiments"]
-            print(f"    sentiment: +{sent['positive_pct']}% /{sent['neutral_pct']}% "
-                  f"-{sent['negative_pct']}%")
+            print(
+                f"    sentiment: +{sent['positive_pct']}% /{sent['neutral_pct']}% "
+                f"-{sent['negative_pct']}%"
+            )
             for spk in t["analytics"]["speakers"]:
-                print(f"      {spk['name'] or '(unattributed)'}: {spk['duration']}s "
-                      f"({spk['duration_pct']}%), {spk['word_count']} words")
+                print(
+                    f"      {spk['name'] or '(unattributed)'}: {spk['duration']}s "
+                    f"({spk['duration_pct']}%), {spk['word_count']} words"
+                )
             for a in t["meeting_attendees"]:
                 where = f" @ {a['location']}" if a["location"] else ""
                 print(f"      attendee: {a['displayName']} <{a['email']}>{where}")
@@ -153,10 +195,12 @@ with serve_or_connect(CORPUS, url=args.url) as mock:
 
         # `keyword` is scoped by `scope`: title | sentences | all.
         for scope in ("title", "sentences", "all"):
-            hits = gql(client, endpoint, token, TRANSCRIPTS,
-                       limit=50, keyword="batching", scope=scope)["transcripts"]
-            print(f"keyword='batching' scope={scope:<10} → {len(hits)} "
-                  f"{[h['title'] for h in hits]}")
+            hits = gql(
+                client, endpoint, token, TRANSCRIPTS, limit=50, keyword="batching", scope=scope
+            )["transcripts"]
+            print(
+                f"keyword='batching' scope={scope:<10} → {len(hits)} {[h['title'] for h in hits]}"
+            )
 
         # Sentences: the transcript's utterances, with per-speaker timings in SECONDS
         # (`duration` above is in MINUTES — the two units really do differ in this API).
@@ -165,13 +209,16 @@ with serve_or_connect(CORPUS, url=args.url) as mock:
         print(f"\ntranscript({first}) → {one['title']}")
         for s in one["sentences"]:
             who = s["speaker_name"] or "(unattributed)"
-            print(f"  [{s['start_time']:6.1f}s-{s['end_time']:6.1f}s] "
-                  f"#{s['speaker_id']} {who}: {s['text']}")
+            print(
+                f"  [{s['start_time']:6.1f}s-{s['end_time']:6.1f}s] "
+                f"#{s['speaker_id']} {who}: {s['text']}"
+            )
 
         # The concatenated sentence text IS the document the mock indexes for search, so the
         # transcript round-trips: joining the sentences back up recovers it exactly.
         rebuilt = "\n".join(
             f"{s['speaker_name']}: {s['text']}" if s["speaker_name"] else s["text"]
-            for s in one["sentences"])
+            for s in one["sentences"]
+        )
         print(f"\nrebuilt transcript ({len(rebuilt)} chars) — this is what full-text search sees:")
         print("  " + rebuilt.replace("\n", "\n  "))

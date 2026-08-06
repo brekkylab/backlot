@@ -8,6 +8,7 @@ encoding, and the ``/_mock/*`` affordances behave.
 Each vendor's own endpoints live in ``test_<router>.py`` — the per-router crawlers those tests and
 these share are in ``tests/_helpers.py``.
 """
+
 from __future__ import annotations
 
 
@@ -31,6 +32,7 @@ def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
 
 # --- ACL enforcement over HTTP --------------------------------------------------
 
+
 def test_user_sees_subset_of_admin(client, admin_h, tokens_yaml, ro_conn, sample_settings):
     user = tokens_yaml["users"][0]
     uh = {"Authorization": f"Bearer {user['token']}"}
@@ -39,7 +41,10 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens_yaml, ro_conn, sample
     assert user_conf < admin_conf  # some confluence docs are group/private-restricted
     # matches exactly the ACL-computed visible count
     from app.acl import Acl
-    acl = Acl.load(sample_settings.tokens_path, sample_settings.admin_token, sample_settings.org_name)
+
+    acl = Acl.load(
+        sample_settings.tokens_path, sample_settings.admin_token, sample_settings.org_name
+    )
     vids = acl.visible_ids(ro_conn, acl.resolve(user["token"]))
     assert user_conf == db_count(ro_conn, "confluence", visible_ids=vids)
 
@@ -47,6 +52,7 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens_yaml, ro_conn, sample
 def test_mock_users_directory(client, tokens_yaml, org):
     # the /_mock/users directory lists every user + token (for testing per-user ACL)
     from app import synth
+
     body = client.get("/_mock/users").json()
     assert body["admin_token"] == tokens_yaml["admin_token"]
     # S3 uses an AWS keypair, not a token — the directory exposes an admin pair (derived from the
@@ -63,15 +69,18 @@ def test_mock_users_directory(client, tokens_yaml, org):
         assert u["s3_secret_access_key"] == synth.s3_secret_access_key(u["token"])
     # a listed token really is ACL-scoped: it resolves and sees <= what admin sees
     u = body["users"][0]
-    admin_repos = client.get(f"/github/orgs/{org}/repos",
-                             headers={"Authorization": f"Bearer {body['admin_token']}"}).json()
-    user_repos = client.get(f"/github/orgs/{org}/repos",
-                            headers={"Authorization": f"Bearer {u['token']}"}).json()
+    admin_repos = client.get(
+        f"/github/orgs/{org}/repos", headers={"Authorization": f"Bearer {body['admin_token']}"}
+    ).json()
+    user_repos = client.get(
+        f"/github/orgs/{org}/repos", headers={"Authorization": f"Bearer {u['token']}"}
+    ).json()
     assert 0 < len(user_repos) <= len(admin_repos)
 
 
 def test_mock_users_can_be_disabled(client, monkeypatch):
     from app import main
+
     monkeypatch.setattr(main, "get_settings", lambda: Settings(expose_tokens=False))
     assert client.get("/_mock/users").status_code == 404
 
@@ -80,8 +89,9 @@ def test_unauthenticated_is_rejected(client):
     # Drive accepts API keys, so an anonymous request is an "unregistered caller" -> 403, not 401.
     # A present-but-invalid bearer IS 401. Both measured; see the Google-envelope tests below.
     assert client.get("/drive/v3/files").status_code == 403
-    assert client.get("/drive/v3/files",
-                      headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert (
+        client.get("/drive/v3/files", headers={"Authorization": "Bearer nope"}).status_code == 401
+    )
     assert client.get("/atlassian/rest/api/3/search/jql").status_code == 401
     slack = client.post("/slack/api/conversations.list").json()
     assert slack == {"ok": False, "error": "not_authed"}
@@ -92,17 +102,21 @@ def test_unauthenticated_is_rejected(client):
 # each has to declare what it honours by hand (openapi.qp). One table rather than a test per
 # vendor: the assertion is identical and only the path and the expected names differ.
 
-@pytest.mark.parametrize("path, expected", [
-    ("/github/search/issues",                 {"q", "page", "per_page"}),
-    ("/slack/api/search.messages",            {"query", "count", "page"}),
-    ("/slack/api/conversations.history",      {"channel", "limit", "cursor"}),
-    # `user_id` is the path param, asserted here so enrichment cannot drop it
-    ("/gmail/v1/users/{user_id}/messages",    {"q", "maxResults", "pageToken", "user_id"}),
-    ("/drive/v3/files",                       {"q", "pageSize", "pageToken", "fields"}),
-    ("/notion/v1/users",                      {"start_cursor", "page_size"}),
-    ("/atlassian/rest/api/3/search/jql",      {"jql", "maxResults", "nextPageToken"}),
-    ("/atlassian/wiki/rest/api/search",       {"cql"}),
-])
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("/github/search/issues", {"q", "page", "per_page"}),
+        ("/slack/api/search.messages", {"query", "count", "page"}),
+        ("/slack/api/conversations.history", {"channel", "limit", "cursor"}),
+        # `user_id` is the path param, asserted here so enrichment cannot drop it
+        ("/gmail/v1/users/{user_id}/messages", {"q", "maxResults", "pageToken", "user_id"}),
+        ("/drive/v3/files", {"q", "pageSize", "pageToken", "fields"}),
+        ("/notion/v1/users", {"start_cursor", "page_size"}),
+        ("/atlassian/rest/api/3/search/jql", {"jql", "maxResults", "nextPageToken"}),
+        ("/atlassian/wiki/rest/api/search", {"cql"}),
+    ],
+)
 def test_router_advertises_the_params_it_honours(client, path, expected):
     op = client.get("/openapi.json").json()["paths"][path]["get"]
     assert expected <= {p["name"] for p in op.get("parameters", [])}
@@ -110,12 +124,18 @@ def test_router_advertises_the_params_it_honours(client, path, expected):
 
 # --- /_mock/openapi/{source}: the MCP-ready spec endpoint (issue #4 bridge) ---------------
 
+
 def test_mock_openapi_spec_endpoint(client):
     gh = client.get("/_mock/openapi/github")
     assert gh.status_code == 200
-    ids = [op["operationId"]
-           for item in gh.json()["paths"].values()
-           for m, op in item.items() if isinstance(op, dict) and "operationId" in op]
-    assert ids and len(ids) == len(set(ids)), "served spec must have unique operationIds (bridge-ready)"
+    ids = [
+        op["operationId"]
+        for item in gh.json()["paths"].values()
+        for m, op in item.items()
+        if isinstance(op, dict) and "operationId" in op
+    ]
+    assert ids and len(ids) == len(set(ids)), (
+        "served spec must have unique operationIds (bridge-ready)"
+    )
     assert client.get("/_mock/openapi/s3").status_code == 404  # SigV4 — intentionally no bridge
     assert client.get("/_mock/openapi/nope").status_code == 404

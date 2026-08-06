@@ -9,6 +9,7 @@ gdrive.py.)
     python examples/using-official-sdk/gmail.py --user ceo@acme.com    # a specific user (ACL)
     python examples/using-official-sdk/gmail.py --url http://localhost:8000 --user <email>
 """
+
 import argparse
 
 from google.api_core.client_options import ClientOptions
@@ -18,14 +19,23 @@ from googleapiclient.discovery import build
 from _mockserver import google_oauth_user, serve_or_connect
 
 CORPUS = [
-    {"source_type": "gmail", "mailbox": "ceo", "title": "Q1 board deck draft",
-     "content": "Draft narrative for the Q1 board meeting. Please review before Thursday.",
-     "author_email": "ceo@acme.com"},
+    {
+        "source_type": "gmail",
+        "mailbox": "ceo",
+        "title": "Q1 board deck draft",
+        "content": "Draft narrative for the Q1 board meeting. Please review before Thursday.",
+        "author_email": "ceo@acme.com",
+    },
 ]
 
-_p = argparse.ArgumentParser(description="Read Gmail through google-api-python-client against the mock.")
+_p = argparse.ArgumentParser(
+    description="Read Gmail through google-api-python-client against the mock."
+)
 _p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-_p.add_argument("--user", help="which user's OAuth token to use, from GET /_mock/users (default: the first user)")
+_p.add_argument(
+    "--user",
+    help="which user's OAuth token to use, from GET /_mock/users (default: the first user)",
+)
 args = _p.parse_args()
 
 with serve_or_connect(CORPUS, url=args.url) as mock:
@@ -33,10 +43,20 @@ with serve_or_connect(CORPUS, url=args.url) as mock:
     # api_endpoint changes. The mock provides the client_id/secret + refresh token, and the
     # library refreshes against token_uri (the mock's /oauth2/token) to get an access token.
     client_id, client_secret, refresh_token, token_uri = google_oauth_user(mock.base_url, args.user)
-    creds = Credentials(None, refresh_token=refresh_token, token_uri=token_uri,
-                        client_id=client_id, client_secret=client_secret)
-    gmail = build("gmail", "v1", credentials=creds, static_discovery=True,
-                  client_options=ClientOptions(api_endpoint=mock.base_url))
+    creds = Credentials(
+        None,
+        refresh_token=refresh_token,
+        token_uri=token_uri,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+    gmail = build(
+        "gmail",
+        "v1",
+        credentials=creds,
+        static_discovery=True,
+        client_options=ClientOptions(api_endpoint=mock.base_url),
+    )
 
     ids = gmail.users().messages().list(userId="me", maxResults=5).execute().get("messages", [])
     if not ids:

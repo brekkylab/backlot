@@ -8,6 +8,7 @@ the mock before the reader runs.
     python examples/using-llamaindex-readers/notion.py            # or: --url http://localhost:8000
     python examples/using-llamaindex-readers/notion.py --url http://localhost:8000 --token <usr-token>
 """
+
 import argparse
 
 from llama_index.readers.notion import NotionPageReader
@@ -15,10 +16,20 @@ from llama_index.readers.notion import NotionPageReader
 from _llamaindex import notion_base_url, patch_notion_at, serve_or_connect
 
 CORPUS = [
-    {"source_type": "notion", "teamspace": "engineering", "doc_id": "runbook", "title": "On-call Runbook",
-     "content": "# On-call\n\nCheck dashboards, roll back, page on-call."},
-    {"source_type": "notion", "teamspace": "engineering", "doc_id": "howto", "title": "Deploy How-to",
-     "content": "Merge to main, wait for CI, promote the build."},
+    {
+        "source_type": "notion",
+        "teamspace": "engineering",
+        "doc_id": "runbook",
+        "title": "On-call Runbook",
+        "content": "# On-call\n\nCheck dashboards, roll back, page on-call.",
+    },
+    {
+        "source_type": "notion",
+        "teamspace": "engineering",
+        "doc_id": "howto",
+        "title": "Deploy How-to",
+        "content": "Merge to main, wait for CI, promote the build.",
+    },
 ]
 
 

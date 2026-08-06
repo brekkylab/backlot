@@ -6,6 +6,7 @@ extract the raw token, resolve it to a :class:`~app.acl.Caller` via the app's AC
 compute the caller's visible principal set. Error *shaping* (Slack's ``ok:false`` vs a
 real 401) stays in the routers.
 """
+
 from __future__ import annotations
 
 import base64
@@ -127,6 +128,7 @@ def resolve_basic(request: Request) -> Caller | None:
     # allow username=email as an identity shortcut (mock convenience)
     if user and "@" in user:
         from app import store
+
         if store.get_user(conn(request), user):
             return Caller(email=user, is_admin=False)
     return None
@@ -191,8 +193,17 @@ def resolve_sigv4(request: Request) -> tuple[Caller | None, str | None]:
     raw = request.scope.get("raw_path")
     path = raw.decode("ascii") if raw else request.url.path
     expected = sigv4.expected_signature(
-        secret, request.method, path, request.url.query, hdrs, signed_headers,
-        payload_hash, amz_date, date_stamp, region)
+        secret,
+        request.method,
+        path,
+        request.url.query,
+        hdrs,
+        signed_headers,
+        payload_hash,
+        amz_date,
+        date_stamp,
+        region,
+    )
     if not hmac.compare_digest(expected, signature):
         return None, "SignatureDoesNotMatch"
     return caller, None

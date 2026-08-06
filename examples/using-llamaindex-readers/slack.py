@@ -11,14 +11,19 @@ just that one construction, so even the eager call lands on the mock.
     python examples/using-llamaindex-readers/slack.py            # or: --url http://localhost:8000
     python examples/using-llamaindex-readers/slack.py --url http://localhost:8000 --token <usr-token>
 """
+
 import argparse
 
 from _llamaindex import serve_or_connect, slack_reader_at
 
 CORPUS = [
     {"source_type": "slack", "channel": "eng", "content": "Deploy freeze starts Friday 5pm."},
-    {"source_type": "slack", "channel": "incidents", "content": "Anyone seeing 502s from the gateway?",
-     "replies": [{"content": "Looking now."}, {"content": "Rolled back — clearing up."}]},
+    {
+        "source_type": "slack",
+        "channel": "incidents",
+        "content": "Anyone seeing 502s from the gateway?",
+        "replies": [{"content": "Looking now."}, {"content": "Rolled back — clearing up."}],
+    },
 ]
 
 

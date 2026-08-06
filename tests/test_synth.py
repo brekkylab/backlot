@@ -67,8 +67,8 @@ def test_notion_blocks_roundtrip_content_verbatim():
 def test_s3_access_key_id_is_stable_and_shaped():
     ak = synth.s3_access_key_id("usr-abc")
     assert ak.startswith("AKIA") and len(ak) == 20 and ak.isalnum() and ak.upper() == ak
-    assert synth.s3_access_key_id("usr-abc") == ak            # stable
-    assert synth.s3_access_key_id("usr-xyz") != ak            # per-token
+    assert synth.s3_access_key_id("usr-abc") == ak  # stable
+    assert synth.s3_access_key_id("usr-xyz") != ak  # per-token
 
 
 def test_s3_secret_access_key_is_stable_and_shaped():
@@ -110,7 +110,7 @@ def test_gmail_message_id_matches_the_real_id_shape():
     mid = synth.gmail_message_id(DOC)
     assert len(mid) == 16
     assert all(c in "0123456789abcdef" for c in mid)
-    assert int(mid, 16) < 2 ** 63
+    assert int(mid, 16) < 2**63
 
 
 def test_gmail_message_id_is_stable_and_distinct():
@@ -122,5 +122,5 @@ def test_gmail_message_id_stays_in_range_across_many_docs():
     """The 63-bit ceiling is the whole point, so it is asserted over enough ids that a missing mask
     could not slip through: unmasked, about half of these would be over."""
     ids = [synth.gmail_message_id(f"dsid_{i:032x}") for i in range(2000)]
-    assert all(int(m, 16) < 2 ** 63 for m in ids)
+    assert all(int(m, 16) < 2**63 for m in ids)
     assert len(set(ids)) == len(ids)

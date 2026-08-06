@@ -10,6 +10,7 @@ value: many backends, one set of bash commands. Self-contained: run it directly.
 Slack is ACL-filtered by ``--token``; Gmail/Drive by ``--user`` (they share one Google
 authorized-user credential). Point them all at the same mock.
 """
+
 import argparse
 import os
 import subprocess
@@ -19,18 +20,39 @@ from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
 from mirage.resource.gmail import GmailConfig, GmailResource
 from mirage.resource.slack import SlackConfig, SlackResource
 
-from _mirage import (FUSE_HELP, google_oauth_user, lines, point_google_at,
-                     run_mirage, serve_or_connect, slack_base_url)
+from _mirage import (
+    FUSE_HELP,
+    google_oauth_user,
+    lines,
+    point_google_at,
+    run_mirage,
+    serve_or_connect,
+    slack_base_url,
+)
 
 # One term — "Q1" — deliberately threads through all three sources.
 CORPUS = [
-    {"source_type": "slack", "channel": "finance", "created": "2024-08-01T10:00:00Z",
-     "content": "Q1 revenue landed 12% over plan — great work team."},
-    {"source_type": "gmail", "mailbox": "ceo", "title": "Q1 board deck draft",
-     "content": "Draft narrative for the Q1 board meeting.", "author_email": "ceo@acme.com"},
-    {"source_type": "google_drive", "folder": "finance", "title": "Q1 Revenue Model",
-     "content": "quarter,revenue\nQ1,1200000", "subtype": "spreadsheet",
-     "author_email": "ceo@acme.com"},
+    {
+        "source_type": "slack",
+        "channel": "finance",
+        "created": "2024-08-01T10:00:00Z",
+        "content": "Q1 revenue landed 12% over plan — great work team.",
+    },
+    {
+        "source_type": "gmail",
+        "mailbox": "ceo",
+        "title": "Q1 board deck draft",
+        "content": "Draft narrative for the Q1 board meeting.",
+        "author_email": "ceo@acme.com",
+    },
+    {
+        "source_type": "google_drive",
+        "folder": "finance",
+        "title": "Q1 Revenue Model",
+        "content": "quarter,revenue\nQ1,1200000",
+        "subtype": "spreadsheet",
+        "author_email": "ceo@acme.com",
+    },
 ]
 
 
@@ -88,9 +110,11 @@ async def main(resources: dict) -> None:
 
     # Read one file from each backend with the SAME commands — the point of mirage. We navigate
     # top-down (bounded) instead of grepping whole mounts, so this stays fast on a big corpus.
-    for backend, path in (("slack", await _first_slack_chat(ws)),
-                          ("gmail", await _first_gmail_msg(ws)),
-                          ("gdrive", await _first_drive_file(ws))):
+    for backend, path in (
+        ("slack", await _first_slack_chat(ws)),
+        ("gmail", await _first_gmail_msg(ws)),
+        ("gdrive", await _first_drive_file(ws)),
+    ):
         print(f"\n=== [{backend}] cat {path or '(nothing visible)'} ===")
         if not path:
             continue
@@ -112,8 +136,11 @@ def main_fuse(resources: dict) -> None:
             backends = [p.strip("/") for p in resources]
             print(f"=== mounted at {mnt}: {', '.join(backends)} — one filesystem ===")
             print(f"\n$ grep -rl Q1 {' '.join(backends)}   # one command, all three backends")
-            hits = subprocess.run(["grep", "-rl", "Q1", *(f"{mnt}/{b}" for b in backends)],
-                                  capture_output=True, text=True)
+            hits = subprocess.run(
+                ["grep", "-rl", "Q1", *(f"{mnt}/{b}" for b in backends)],
+                capture_output=True,
+                text=True,
+            )
             seen = set()  # one hit per backend (a message can appear under many labels)
             for h in hits.stdout.splitlines():
                 rel = os.path.relpath(h, mnt)
@@ -126,11 +153,20 @@ def main_fuse(resources: dict) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Read Slack + Gmail + Drive through mirage against the mock.")
+    p = argparse.ArgumentParser(
+        description="Read Slack + Gmail + Drive through mirage against the mock."
+    )
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-    p.add_argument("--token", help="Slack: mock bearer token from GET /_mock/users (default: admin)")
-    p.add_argument("--user", help="Gmail/Drive: which user's Google OAuth token to use (default: the first user)")
-    p.add_argument("--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)")
+    p.add_argument(
+        "--token", help="Slack: mock bearer token from GET /_mock/users (default: admin)"
+    )
+    p.add_argument(
+        "--user",
+        help="Gmail/Drive: which user's Google OAuth token to use (default: the first user)",
+    )
+    p.add_argument(
+        "--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)"
+    )
     return p.parse_args()
 
 

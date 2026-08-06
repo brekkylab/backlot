@@ -12,6 +12,7 @@ Status codes follow the GraphQL-over-HTTP split the engine already draws: a **re
 (unparseable document, failed validation, uncoercible variables) is a 400 with no ``data`` key,
 while a **field** error mid-execution is a 200 carrying partial ``data`` alongside ``errors``.
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
@@ -39,9 +40,16 @@ async def graphql(request: Request):
         # Real Fireflies answers a bad credential with a GraphQL error envelope and a 401, not a
         # framework 403 — clients parse `errors[0].message`.
         return JSONResponse(
-            {"errors": [{"message": "Please provide a valid API key",
-                         "extensions": {"code": "unauthorized"}}]},
-            status_code=401)
+            {
+                "errors": [
+                    {
+                        "message": "Please provide a valid API key",
+                        "extensions": {"code": "unauthorized"},
+                    }
+                ]
+            },
+            status_code=401,
+        )
     state = request.app.state
     context = {
         "conn": auth.conn(request),

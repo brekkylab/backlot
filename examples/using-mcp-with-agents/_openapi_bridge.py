@@ -13,6 +13,7 @@ stdio only: FastMCP's streamable-HTTP mode has a known Authorization-forwarding 
     python _openapi_bridge.py --source github --base-url http://127.0.0.1:8000 --token <mock-token>
     python _openapi_bridge.py --source atlassian --base-url https://host --token <t> --username svc@example.com
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,6 +29,7 @@ import urllib.request
 # surfacing to the client as an opaque "Connection closed". certifi ships with the [mcp] extra.
 try:
     import certifi
+
     os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 except ImportError:
     pass
@@ -69,7 +71,8 @@ def main() -> None:
     # validate_output=False: the mock's responses are the source of truth; a passthrough bridge
     # must never reject a real mock response for not matching a loose schema.
     mcp = FastMCP.from_openapi(
-        openapi_spec=spec, client=client, name=f"{args.source}-bridge", validate_output=False)
+        openapi_spec=spec, client=client, name=f"{args.source}-bridge", validate_output=False
+    )
     mcp.run(transport="stdio")
 
 

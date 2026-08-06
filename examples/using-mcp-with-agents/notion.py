@@ -11,6 +11,7 @@ Prereqs: Node/npx; `pip install -e ".[mcp]"`; an LLM key for `--agent` (`ANTHROP
 `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
     ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/notion.py [--url … --token … --agent openai]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,33 +22,54 @@ from _agent import run_agent
 from _mockserver import serve_or_connect
 
 CORPUS = [
-    {"source_type": "notion", "teamspace": "payments", "title": "SEV2: checkout latency spike",
-     "content": "# SEV2\n\np95 checkout latency jumped to 2.1s after the payments migration; "
-                "rolling back."},
-    {"source_type": "notion", "teamspace": "runbooks",
-     "title": "On-call Runbook: checkout latency & bad deploys",
-     "content": "# On-call\n\nWhen a deploy or migration spikes checkout latency: check the "
-                "payments dashboards, roll back the last change, and page the on-call engineer."},
+    {
+        "source_type": "notion",
+        "teamspace": "payments",
+        "title": "SEV2: checkout latency spike",
+        "content": "# SEV2\n\np95 checkout latency jumped to 2.1s after the payments migration; "
+        "rolling back.",
+    },
+    {
+        "source_type": "notion",
+        "teamspace": "runbooks",
+        "title": "On-call Runbook: checkout latency & bad deploys",
+        "content": "# On-call\n\nWhen a deploy or migration spikes checkout latency: check the "
+        "payments dashboards, roll back the last change, and page the on-call engineer.",
+    },
 ]
-QUESTION = ("Find the incident about checkout latency and summarize it, then find the on-call "
-            "runbook. Cite the titles.")
+QUESTION = (
+    "Find the incident about checkout latency and summarize it, then find the on-call "
+    "runbook. Cite the titles."
+)
 
 
 def build_params(base_url: str, token: str) -> StdioServerParameters:
     """`npx` args pointing the official notion-mcp-server at the mock via BASE_URL."""
     return StdioServerParameters(
-        command="npx", args=["-y", "@notionhq/notion-mcp-server"],
-        env={"BASE_URL": f"{base_url.rstrip('/')}/notion", "NOTION_TOKEN": token,
-             "NOTION_VERSION": "2025-09-03"})
+        command="npx",
+        args=["-y", "@notionhq/notion-mcp-server"],
+        env={
+            "BASE_URL": f"{base_url.rstrip('/')}/notion",
+            "NOTION_TOKEN": token,
+            "NOTION_VERSION": "2025-09-03",
+        },
+    )
 
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Drive notion-mcp-server over MCP against the mock.")
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-    p.add_argument("--token", help="mock bearer token from GET /_mock/users "
-                                   "(default: the admin token, which sees everything)")
-    p.add_argument("--agent", choices=("anthropic", "openai"), default="anthropic",
-                   help="which LLM agent to run (default: anthropic)")
+    p.add_argument(
+        "--token",
+        help="mock bearer token from GET /_mock/users "
+        "(default: the admin token, which sees everything)",
+    )
+    p.add_argument(
+        "--agent",
+        choices=("anthropic", "openai"),
+        default="anthropic",
+        help="which LLM agent to run (default: anthropic)",
+    )
     return p.parse_args()
 
 

@@ -3,6 +3,7 @@
 All settings are overridable via environment variables (prefix ``MOCK_``) so the
 server and the offline build scripts read the same values.
 """
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -44,7 +45,6 @@ class Settings(BaseSettings):
     # It hands out tokens in the clear — fine for a local test mock; set false to disable.
     expose_tokens: bool = True
 
-
     # --- pagination defaults ---
     default_page_size: int = 100
     max_page_size: int = 1000
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # syscalls — the main lever against the "slow first request after idle" cold-read hit on a
     # large DB. Set >= the DB size to map it fully (SQLite caps to its compile-time max).
     sqlite_mmap_mb: int = 12288  # ~12 GiB, covers the full augmented corpus
-    sqlite_cache_mb: int = 256   # SQLite's own page cache
+    sqlite_cache_mb: int = 256  # SQLite's own page cache
     # Wait (ms) for a lock instead of erroring, so reads ride through an in-place FTS rebuild's
     # commit rather than 500ing; only ever engages during such an out-of-band write.
     sqlite_busy_ms: int = 30000

@@ -16,6 +16,7 @@ hand back the mock-issued credential instead of touching disk.
     python examples/using-llamaindex-readers/gmail.py                     # first user
     python examples/using-llamaindex-readers/gmail.py --url http://localhost:8000 --user ceo@acme.com
 """
+
 import argparse
 
 from google.oauth2.credentials import Credentials
@@ -24,21 +25,32 @@ from llama_index.readers.google import GmailReader
 from _llamaindex import google_oauth_user, point_gmail_at, serve_or_connect
 
 CORPUS = [
-    {"source_type": "gmail", "mailbox": "ceo", "title": "Q1 board deck draft",
-     "content": "Draft narrative for the Q1 board meeting. Please review before Thursday.",
-     "author_email": "ceo@acme.com"},
+    {
+        "source_type": "gmail",
+        "mailbox": "ceo",
+        "title": "Q1 board deck draft",
+        "content": "Draft narrative for the Q1 board meeting. Please review before Thursday.",
+        "author_email": "ceo@acme.com",
+    },
 ]
 
 
 def build(mock, user):
     point_gmail_at(mock.base_url)
     client_id, client_secret, refresh_token, token_uri = google_oauth_user(mock.base_url, user)
-    creds = Credentials(None, refresh_token=refresh_token, token_uri=token_uri,
-                        client_id=client_id, client_secret=client_secret)
+    creds = Credentials(
+        None,
+        refresh_token=refresh_token,
+        token_uri=token_uri,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
     import llama_index.readers.google.gmail.base as gm
+
     gm.GmailReader._get_credentials = lambda self: creds
-    reader = GmailReader(query="", service=None, use_iterative_parser=True, max_results=10,
-                          results_per_page=None)
+    reader = GmailReader(
+        query="", service=None, use_iterative_parser=True, max_results=10, results_per_page=None
+    )
     return reader
 
 

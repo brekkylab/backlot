@@ -14,6 +14,7 @@ Google connectors have no host config, so we patch the module constants at the m
 With ``--fuse`` the Drive tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read
 with plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
 """
+
 import argparse
 import os
 import subprocess
@@ -21,24 +22,43 @@ import subprocess
 from mirage import MountMode, Workspace
 from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
 
-from _mirage import (FUSE_HELP, google_oauth_user, lines, point_google_at, run_mirage,
-                     serve_or_connect)
+from _mirage import (
+    FUSE_HELP,
+    google_oauth_user,
+    lines,
+    point_google_at,
+    run_mirage,
+    serve_or_connect,
+)
 
 CORPUS = [
-    {"source_type": "google_drive", "folder": "marketing", "title": "Brand guidelines v3",
-     "content": "Logo usage, color palette, typography.", "subtype": "document",
-     "author_email": "mia@acme.com"},
-    {"source_type": "google_drive", "folder": "finance", "title": "Q1 Revenue Model",
-     "content": "month,revenue\nJan,120000\nFeb,135000", "subtype": "spreadsheet",
-     "author_email": "cfo@acme.com"},
+    {
+        "source_type": "google_drive",
+        "folder": "marketing",
+        "title": "Brand guidelines v3",
+        "content": "Logo usage, color palette, typography.",
+        "subtype": "document",
+        "author_email": "mia@acme.com",
+    },
+    {
+        "source_type": "google_drive",
+        "folder": "finance",
+        "title": "Q1 Revenue Model",
+        "content": "month,revenue\nJan,120000\nFeb,135000",
+        "subtype": "spreadsheet",
+        "author_email": "cfo@acme.com",
+    },
 ]
 
 
 def build(mock, user):
     point_google_at(mock.base_url)
     client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url, user)
-    return GoogleDriveResource(GoogleDriveConfig(
-        client_id=client_id, client_secret=client_secret, refresh_token=refresh_token))
+    return GoogleDriveResource(
+        GoogleDriveConfig(
+            client_id=client_id, client_secret=client_secret, refresh_token=refresh_token
+        )
+    )
 
 
 async def main(resource) -> None:
@@ -76,13 +96,18 @@ def main_fuse(resource) -> None:
             mnt = ws.add_fuse_mount("/gdrive")  # "/gdrive" is now a real directory on disk
             print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
             folder = next(e for e in sorted(os.listdir(mnt)) if not e.startswith("."))
-            name = next(e for e in sorted(os.listdir(f"{mnt}/{folder}"))
-                        if os.path.isfile(f"{mnt}/{folder}/{e}"))
+            name = next(
+                e
+                for e in sorted(os.listdir(f"{mnt}/{folder}"))
+                if os.path.isfile(f"{mnt}/{folder}/{e}")
+            )
             path = f"{mnt}/{folder}/{name}"
             print(f"\n$ head -c 200 {folder}/{name}")
             print("  " + open(path).read(200).replace("\n", " "))  # a genuine open() via FUSE
             count = subprocess.run(["grep", "-c", ".", path], capture_output=True, text=True)
-            print(f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}")
+            print(
+                f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"
+            )
             print(f"\nexplore it live in another terminal:  ls {mnt}/{folder}")
     except (ImportError, RuntimeError, OSError) as e:
         raise SystemExit(FUSE_HELP.format(err=e))
@@ -91,8 +116,13 @@ def main_fuse(resource) -> None:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Read Google Drive through mirage against the mock.")
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-    p.add_argument("--user", help="which user's OAuth token to use, from GET /_mock/users (default: the first user)")
-    p.add_argument("--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)")
+    p.add_argument(
+        "--user",
+        help="which user's OAuth token to use, from GET /_mock/users (default: the first user)",
+    )
+    p.add_argument(
+        "--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)"
+    )
     return p.parse_args()
 
 

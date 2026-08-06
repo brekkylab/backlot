@@ -9,6 +9,7 @@ keeps serving until you press Ctrl+C. Extra flags are forwarded to the importer:
     python examples/import-enterpriserag-bench/run.py --slice-questions extra_questions.jsonl  # only the docs a slice needs
     python examples/import-enterpriserag-bench/run.py --no-download                     # reuse whatever is already in data/raw
 """
+
 import json
 import os
 import socket
@@ -31,14 +32,26 @@ def _free_port():
 env = {**os.environ, "MOCK_DATA_DIR": str(DATA)}
 
 # 1. import the bench (download -> load -> ACL) into examples/import-enterpriserag-bench/data
-subprocess.run([sys.executable, "-m", "app.importer.erb", *sys.argv[1:]],
-               cwd=ROOT, env=env, check=True)
+subprocess.run(
+    [sys.executable, "-m", "app.importer.erb", *sys.argv[1:]], cwd=ROOT, env=env, check=True
+)
 
 # 2. serve it and read it back over HTTP
 port = _free_port()
 proc = subprocess.Popen(
-    [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port), "--log-level", "warning"],
-    cwd=ROOT, env=env)
+    [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--port",
+        str(port),
+        "--log-level",
+        "warning",
+    ],
+    cwd=ROOT,
+    env=env,
+)
 base = f"http://127.0.0.1:{port}"
 try:
     for _ in range(100):

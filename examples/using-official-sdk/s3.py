@@ -14,6 +14,7 @@ server) ``--access-key`` / ``--secret-key`` are **required** — pass real AWS k
 ``s3_secret_access_key`` there). Without ``--url`` the local throwaway mock uses its own admin
 keypair.
 """
+
 import argparse
 import json
 import urllib.request
@@ -24,25 +25,40 @@ from botocore.config import Config
 from _mockserver import serve_or_connect
 
 CORPUS = [
-    {"source_type": "s3", "bucket": "eng-artifacts", "key": "runbooks/oncall.md",
-     "title": "On-call Runbook", "content": "# On-call\nCheck dashboards, roll back, page on-call.",
-     "content_type": "text/markdown"},
-    {"source_type": "s3", "bucket": "eng-artifacts", "key": "design/architecture.md",
-     "title": "Architecture", "content": "Gateway, workers, and the token bucket.",
-     "content_type": "text/markdown"},
+    {
+        "source_type": "s3",
+        "bucket": "eng-artifacts",
+        "key": "runbooks/oncall.md",
+        "title": "On-call Runbook",
+        "content": "# On-call\nCheck dashboards, roll back, page on-call.",
+        "content_type": "text/markdown",
+    },
+    {
+        "source_type": "s3",
+        "bucket": "eng-artifacts",
+        "key": "design/architecture.md",
+        "title": "Architecture",
+        "content": "Gateway, workers, and the token bucket.",
+        "content_type": "text/markdown",
+    },
 ]
 
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Read S3 through boto3 against the mock's S3.")
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-    p.add_argument("--access-key", help="AWS access key id (S3 uses a keypair, not a token); "
-                                        "required with --url — from GET <url>/_mock/users, or real AWS")
+    p.add_argument(
+        "--access-key",
+        help="AWS access key id (S3 uses a keypair, not a token); "
+        "required with --url — from GET <url>/_mock/users, or real AWS",
+    )
     p.add_argument("--secret-key", help="AWS secret access key (required with --url)")
     args = p.parse_args()
     if args.url and not (args.access_key and args.secret_key):
-        p.error("--access-key and --secret-key are required with --url "
-                "(grab a pair from GET <url>/_mock/users)")
+        p.error(
+            "--access-key and --secret-key are required with --url "
+            "(grab a pair from GET <url>/_mock/users)"
+        )
     return args
 
 
@@ -58,9 +74,14 @@ if __name__ == "__main__":
     with serve_or_connect(CORPUS, url=args.url) as mock:
         # with --url you pass your own AWS keys; the local throwaway mock uses its admin keypair
         ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(mock.base_url)
-        s3 = boto3.client("s3", endpoint_url=f"{mock.base_url}/s3",
-                          aws_access_key_id=ak, aws_secret_access_key=sk, region_name="us-east-1",
-                          config=Config(s3={"addressing_style": "path"}))
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=f"{mock.base_url}/s3",
+            aws_access_key_id=ak,
+            aws_secret_access_key=sk,
+            region_name="us-east-1",
+            config=Config(s3={"addressing_style": "path"}),
+        )
 
         buckets = [b["Name"] for b in s3.list_buckets()["Buckets"]]
         print(f"buckets → {buckets}")

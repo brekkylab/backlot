@@ -4,6 +4,7 @@ One file because they are one router (``app/routers/google.py``) and one error e
 (``app/google_errors.py``) — Drive and Gmail share ``_gerr`` and the per-family status table, so
 splitting them would put two halves of the same contract in two places.
 """
+
 from __future__ import annotations
 
 import base64
@@ -22,6 +23,7 @@ from tests._helpers import crawl_drive, crawl_gmail, db_count, tiny_corpus, tok
 
 # --- admin full-crawl completeness ---------------------------------------------
 
+
 def test_admin_gmail_crawls_all(client, admin_h, ro_conn):
     assert len(crawl_gmail(client, admin_h)) == db_count(ro_conn, "gmail")
 
@@ -34,6 +36,7 @@ def test_admin_drive_crawls_all(client, admin_h, ro_conn):
 
 
 # --- content round-trips through each vendor's encoding -------------------------
+
 
 def _gmail_plain(payload):
     """Extract the text/plain body data from a Gmail payload (top-level or a part)."""
@@ -61,6 +64,7 @@ def _gmail_plain(payload):
 #
 # Threads share the id space: a single-message thread reports id == threadId.
 
+
 def _a_gmail_row(ro_conn):
     return ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
 
@@ -68,14 +72,15 @@ def _a_gmail_row(ro_conn):
 def test_gmail_messages_list_serves_hex_ids(client, admin_h):
     """The ids a client receives must look like Gmail's, not like the corpus's dsids — that is the
     whole point of #39. `dsid_…` is not hex, so real Gmail would call it an invalid id value."""
-    msgs = client.get("/gmail/v1/users/me/messages", headers=admin_h,
-                      params={"maxResults": 10}).json()["messages"]
+    msgs = client.get(
+        "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 10}
+    ).json()["messages"]
     assert msgs
     for m in msgs:
         for key in ("id", "threadId"):
             assert len(m[key]) == 16, m
             assert all(c in "0123456789abcdef" for c in m[key]), m
-            assert int(m[key], 16) < 2 ** 63, m
+            assert int(m[key], 16) < 2**63, m
         assert not m["id"].startswith("dsid_")
 
 
@@ -83,10 +88,12 @@ def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     """The hex id maps back to its dsid, so the body a client reads by hex is the stored body. A
     one-way id would make every message unreadable."""
     from app import synth
+
     row = _a_gmail_row(ro_conn)
     hexid = synth.gmail_message_id(row["doc_id"])
-    m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h,
-                   params={"format": "full"}).json()
+    m = client.get(
+        f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h, params={"format": "full"}
+    ).json()
     assert m["id"] == hexid
     assert base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode() == row["content"]
 
@@ -95,11 +102,14 @@ def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin
     """Threads share the message id space in real Gmail, so a message that is its own thread root
     reports the same value twice — and `threads.get` resolves it."""
     from app import synth
+
     row = ro_conn.execute(
-        "SELECT * FROM gmail_messages WHERE COALESCE(thread_id, '') = '' LIMIT 1").fetchone()
+        "SELECT * FROM gmail_messages WHERE COALESCE(thread_id, '') = '' LIMIT 1"
+    ).fetchone()
     if row is None:
         row = ro_conn.execute(
-            "SELECT * FROM gmail_messages WHERE thread_id = doc_id LIMIT 1").fetchone()
+            "SELECT * FROM gmail_messages WHERE thread_id = doc_id LIMIT 1"
+        ).fetchone()
     assert row is not None, "SAMPLE should hold a message that is its own thread"
     hexid = synth.gmail_message_id(row["doc_id"])
     m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h).json()
@@ -110,31 +120,42 @@ def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin
 
 def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
     from app import synth
-    row = ro_conn.execute("SELECT * FROM gmail_messages WHERE COALESCE(thread_id,'') != '' "
-                          "AND thread_id != doc_id LIMIT 1").fetchone()
+
+    row = ro_conn.execute(
+        "SELECT * FROM gmail_messages WHERE COALESCE(thread_id,'') != '' "
+        "AND thread_id != doc_id LIMIT 1"
+    ).fetchone()
     assert row is not None, "SAMPLE should hold a threaded reply"
-    m = client.get(f"/gmail/v1/users/me/messages/{synth.gmail_message_id(row['doc_id'])}",
-                   headers=admin_h).json()
+    m = client.get(
+        f"/gmail/v1/users/me/messages/{synth.gmail_message_id(row['doc_id'])}", headers=admin_h
+    ).json()
     assert m["threadId"] == synth.gmail_message_id(row["thread_id"])
     assert m["id"] != m["threadId"]
 
 
 def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_conn):
     from app import synth
-    row = ro_conn.execute("SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN "
-                          "('', '[]') LIMIT 1").fetchone()
+
+    row = ro_conn.execute(
+        "SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
+    ).fetchone()
     assert row is not None, "SAMPLE should hold a message with an attachment"
     hexid = synth.gmail_message_id(row["doc_id"])
-    m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h,
-                   params={"format": "full"}).json()
+    m = client.get(
+        f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h, params={"format": "full"}
+    ).json()
     att = next(p for p in m["payload"]["parts"] if p.get("filename"))
-    r = client.get(f"/gmail/v1/users/me/messages/{hexid}/attachments/"
-                   f"{att['body']['attachmentId']}", headers=admin_h)
+    r = client.get(
+        f"/gmail/v1/users/me/messages/{hexid}/attachments/{att['body']['attachmentId']}",
+        headers=admin_h,
+    )
     assert r.status_code == 200 and r.json()["size"] > 0
 
 
-@pytest.mark.parametrize("mid", ["0", "1", "abc123", "DEADBEEF", "7fffffffffffffff",
-                                 "0000000000000001", "18c9a1b2c3d4e5f6"])
+@pytest.mark.parametrize(
+    "mid",
+    ["0", "1", "abc123", "DEADBEEF", "7fffffffffffffff", "0000000000000001", "18c9a1b2c3d4e5f6"],
+)
 def test_gmail_a_valid_but_unknown_id_is_not_found(client, admin_h, mid):
     """A well-formed id the mailbox does not hold is 404, uppercase included — measured."""
     for kind in ("messages", "threads"):
@@ -143,8 +164,18 @@ def test_gmail_a_valid_but_unknown_id_is_not_found(client, admin_h, mid):
         assert r.json()["error"]["message"] == "Requested entity was not found."
 
 
-@pytest.mark.parametrize("mid", ["8000000000000000", "ffffffffffffffff", "18c9a1b2c3d4e5f6a",
-                                 "-1", "1g", "nosuchmessageid", "dsid_00908a2dda4b4d359194a09101"])
+@pytest.mark.parametrize(
+    "mid",
+    [
+        "8000000000000000",
+        "ffffffffffffffff",
+        "18c9a1b2c3d4e5f6a",
+        "-1",
+        "1g",
+        "nosuchmessageid",
+        "dsid_00908a2dda4b4d359194a09101",
+    ],
+)
 def test_gmail_an_unparsable_id_is_an_invalid_argument(client, admin_h, mid):
     """The gap #39 names: an id that is not a parsable in-range hex integer is 400
     INVALID_ARGUMENT "Invalid id value", not 404. The last row is the mock's OWN former id format,
@@ -163,8 +194,10 @@ def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_co
     maps every hex id, visible or not — so the ACL read after it is the only thing standing between
     a scoped caller and someone else's mail. The CFO's comp review is granted to cfo alone."""
     from app import synth
-    row = ro_conn.execute("SELECT * FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
-                          ).fetchone()
+
+    row = ro_conn.execute(
+        "SELECT * FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
+    ).fetchone()
     hexid = synth.gmail_message_id(row["doc_id"])
     assert client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h).status_code == 200
     cfo = {"Authorization": f"Bearer {tok(tokens_yaml, 'cfo@acme.com')}"}
@@ -177,9 +210,13 @@ def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_co
 
 def test_gmail_body_roundtrip(client, admin_h, ro_conn):
     from app import synth
+
     doc = ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
-    m = client.get(f"/gmail/v1/users/me/messages/{synth.gmail_message_id(doc['doc_id'])}",
-                   headers=admin_h, params={"format": "full"}).json()
+    m = client.get(
+        f"/gmail/v1/users/me/messages/{synth.gmail_message_id(doc['doc_id'])}",
+        headers=admin_h,
+        params={"format": "full"},
+    ).json()
     body = base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode()
     assert body == doc["content"]
     subj = next(h["value"] for h in m["payload"]["headers"] if h["name"] == "Subject")
@@ -189,36 +226,53 @@ def test_gmail_body_roundtrip(client, admin_h, ro_conn):
 def test_gmail_messages_list_ordered_by_internaldate_desc(client, admin_h, ro_conn):
     # Real Gmail returns messages.list newest-first by internalDate. Regression (#11): the mock
     # listed by doc_id (hash order), so a capped "newest N" was effectively random by date.
-    listed = client.get("/gmail/v1/users/me/messages", headers=admin_h,
-                        params={"maxResults": 50}).json()["messages"]
+    listed = client.get(
+        "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 50}
+    ).json()["messages"]
     got = [m["id"] for m in listed]
     # the stable total order the endpoint must produce: created_ts DESC, doc_id ASC as tie-break
     # the served ids are hex (#39), so the expectation is the hex of that stable order
     from app import synth
-    expected = [synth.gmail_message_id(r["doc_id"]) for r in ro_conn.execute(
-        "SELECT doc_id FROM gmail_messages ORDER BY created_ts DESC, doc_id LIMIT 50").fetchall()]
+
+    expected = [
+        synth.gmail_message_id(r["doc_id"])
+        for r in ro_conn.execute(
+            "SELECT doc_id FROM gmail_messages ORDER BY created_ts DESC, doc_id LIMIT 50"
+        ).fetchall()
+    ]
     assert got == expected
     # ...and internalDate is monotonically non-increasing across the returned page
-    dates = [int(client.get(f"/gmail/v1/users/me/messages/{i}", headers=admin_h,
-                            params={"format": "minimal"}).json()["internalDate"]) for i in got]
+    dates = [
+        int(
+            client.get(
+                f"/gmail/v1/users/me/messages/{i}", headers=admin_h, params={"format": "minimal"}
+            ).json()["internalDate"]
+        )
+        for i in got
+    ]
     assert dates == sorted(dates, reverse=True)
 
 
 def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_conn):
     # Paging must be a stable partition of the same date-desc order — no dupes, no skips, and page 2
     # continues strictly at/under page 1's tail. (Regression guard for the tie-break in ORDER BY.)
-    total = client.get("/gmail/v1/users/me/messages", headers=admin_h,
-                       params={"maxResults": 1}).json()["resultSizeEstimate"]
+    total = client.get(
+        "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 1}
+    ).json()["resultSizeEstimate"]
     if total < 2:
         pytest.skip("need >= 2 gmail messages to exercise paging")
     p1 = client.get("/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 1}).json()
-    p2 = client.get("/gmail/v1/users/me/messages", headers=admin_h,
-                    params={"maxResults": 1, "pageToken": p1["nextPageToken"]}).json()
+    p2 = client.get(
+        "/gmail/v1/users/me/messages",
+        headers=admin_h,
+        params={"maxResults": 1, "pageToken": p1["nextPageToken"]},
+    ).json()
     a, b = p1["messages"][0]["id"], p2["messages"][0]["id"]
-    assert a != b                                                     # distinct rows, no repeat
-    both = client.get("/gmail/v1/users/me/messages", headers=admin_h,
-                      params={"maxResults": 2}).json()["messages"]
-    assert [m["id"] for m in both] == [a, b]                          # pages concatenate in order
+    assert a != b  # distinct rows, no repeat
+    both = client.get(
+        "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 2}
+    ).json()["messages"]
+    assert [m["id"] for m in both] == [a, b]  # pages concatenate in order
 
 
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
@@ -227,27 +281,36 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
     # corpus-declared `size` (e.g. 2048) while attachments.get returned len(content) — a mismatch.
     row = ro_conn.execute(
         "SELECT doc_id FROM gmail_messages WHERE attachments IS NOT NULL "
-        "AND attachments != '[]' LIMIT 1").fetchone()
+        "AND attachments != '[]' LIMIT 1"
+    ).fetchone()
     if row is None:
         pytest.skip("no gmail message with an attachment in this subset")
     from app import synth
+
     hexid = synth.gmail_message_id(row["doc_id"])
-    m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h,
-                   params={"format": "full"}).json()
+    m = client.get(
+        f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h, params={"format": "full"}
+    ).json()
     parts = [p for p in m["payload"]["parts"] if p.get("body", {}).get("attachmentId")]
     assert parts, "message should expose at least one attachment part"
     for p in parts:
         got = client.get(
             f"/gmail/v1/users/me/messages/{hexid}/attachments/{p['body']['attachmentId']}",
-            headers=admin_h).json()
-        assert got["size"] == p["body"]["size"]                       # the two agree
-        assert len(base64.urlsafe_b64decode(got["data"])) == p["body"]["size"]  # ...and match the bytes
+            headers=admin_h,
+        ).json()
+        assert got["size"] == p["body"]["size"]  # the two agree
+        assert (
+            len(base64.urlsafe_b64decode(got["data"])) == p["body"]["size"]
+        )  # ...and match the bytes
 
 
 def test_drive_export_roundtrip(client, admin_h, ro_conn):
     doc = ro_conn.execute("SELECT * FROM gdrive_files LIMIT 1").fetchone()
-    text = client.get(f"/drive/v3/files/{doc['doc_id']}/export", headers=admin_h,
-                      params={"mimeType": "text/plain"}).text
+    text = client.get(
+        f"/drive/v3/files/{doc['doc_id']}/export",
+        headers=admin_h,
+        params={"mimeType": "text/plain"},
+    ).text
     assert doc["content"] in text and text.startswith(doc["title"])
 
 
@@ -255,15 +318,23 @@ def test_drive_in_owners_query(client, admin_h, ro_conn):
     # real Drive supports `'<owner>' in owners`; the mock must filter by owner (email or name),
     # not ignore the clause. (qst_0031's broken owner-lookup path.)
     total = db_count(ro_conn, "google_drive")
-    owner = ro_conn.execute("SELECT author_email FROM gdrive_files LIMIT 1").fetchone()["author_email"]
-    expected = ro_conn.execute("SELECT count(*) FROM gdrive_files WHERE author_email=?", (owner,)).fetchone()[0]
-    j = client.get("/drive/v3/files", headers=admin_h,
-                   params={"q": f"'{owner}' in owners", "pageSize": 1000}).json()
+    owner = ro_conn.execute("SELECT author_email FROM gdrive_files LIMIT 1").fetchone()[
+        "author_email"
+    ]
+    expected = ro_conn.execute(
+        "SELECT count(*) FROM gdrive_files WHERE author_email=?", (owner,)
+    ).fetchone()[0]
+    j = client.get(
+        "/drive/v3/files", headers=admin_h, params={"q": f"'{owner}' in owners", "pageSize": 1000}
+    ).json()
     n = len(j.get("files", []))
     assert 0 < n < total and n == expected  # filtered to exactly this owner's files
     # a non-owner returns nothing (clause honored, not ignored)
-    none = client.get("/drive/v3/files", headers=admin_h,
-                      params={"q": "'nobody-xyz@acme.com' in owners", "pageSize": 100}).json()
+    none = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"q": "'nobody-xyz@acme.com' in owners", "pageSize": 100},
+    ).json()
     assert none.get("files", []) == []
 
 
@@ -278,8 +349,11 @@ def test_google_batch_dispatches_subrequests(client, admin_h, ro_conn):
     from email.parser import BytesParser
     from io import StringIO
 
-    listed = client.get("/gmail/v1/users/me/messages", headers=admin_h,
-                        params={"maxResults": 2}).json().get("messages", [])
+    listed = (
+        client.get("/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 2})
+        .json()
+        .get("messages", [])
+    )
     ids = [m["id"] for m in listed]
     assert ids, "need at least one gmail message in the sample"
 
@@ -298,19 +372,23 @@ def test_google_batch_dispatches_subrequests(client, admin_h, ro_conn):
     Generator(fp, mangle_from_=False).flatten(msg, unixfrom=False)
     body, boundary = fp.getvalue(), msg.get_boundary()
 
-    r = client.post("/batch", headers={**admin_h, "Content-Type": f'multipart/mixed; boundary="{boundary}"'},
-                    content=body)
+    r = client.post(
+        "/batch",
+        headers={**admin_h, "Content-Type": f'multipart/mixed; boundary="{boundary}"'},
+        content=body,
+    )
     assert r.status_code == 200, r.text
     assert "multipart/mixed" in r.headers["content-type"]
     parsed = BytesParser().parsebytes(
-        b"Content-Type: " + r.headers["content-type"].encode() + b"\r\n\r\n" + r.content)
+        b"Content-Type: " + r.headers["content-type"].encode() + b"\r\n\r\n" + r.content
+    )
     parts = parsed.get_payload()
     assert len(parts) == len(ids)
     for i, (mid, part) in enumerate(zip(ids, parts)):
-        assert part["Content-ID"] == f"<base + {i}>"          # echoed so the client can pair them
+        assert part["Content-ID"] == f"<base + {i}>"  # echoed so the client can pair them
         sub = part.get_payload(decode=False)
-        assert sub.startswith("HTTP/1.1 200")                  # dispatched with the admin token, not 401
-        assert mid in sub                                      # the message JSON came back
+        assert sub.startswith("HTTP/1.1 200")  # dispatched with the admin token, not 401
+        assert mid in sub  # the message JSON came back
 
 
 def _batch_one(client, headers, mid, fmt, uri="/batch"):
@@ -332,11 +410,15 @@ def _batch_one(client, headers, mid, fmt, uri="/batch"):
     msg.attach(part)
     fp = StringIO()
     Generator(fp, mangle_from_=False).flatten(msg, unixfrom=False)
-    r = client.post(uri, headers={**headers, "Content-Type": f'multipart/mixed; boundary="{msg.get_boundary()}"'},
-                    content=fp.getvalue())
+    r = client.post(
+        uri,
+        headers={**headers, "Content-Type": f'multipart/mixed; boundary="{msg.get_boundary()}"'},
+        content=fp.getvalue(),
+    )
     assert r.status_code == 200, r.text
     parsed = BytesParser().parsebytes(
-        b"Content-Type: " + r.headers["content-type"].encode() + b"\r\n\r\n" + r.content)
+        b"Content-Type: " + r.headers["content-type"].encode() + b"\r\n\r\n" + r.content
+    )
     sub = parsed.get_payload()[0].get_payload(decode=False)
     return json.loads(sub.split("\r\n\r\n", 1)[1])
 
@@ -346,10 +428,13 @@ def test_google_batch_honors_subrequest_query_params(client, admin_h, uri):
     # The sub-request's query string must reach the dispatched handler. `format` is the tell: a
     # dropped query defaults to full, so if the mock ignored it, `format=minimal` would still carry a
     # payload. A batch-trusting client that caches these would cache bodyless messages otherwise.
-    mid = client.get("/gmail/v1/users/me/messages", headers=admin_h,
-                     params={"maxResults": 1}).json()["messages"][0]["id"]
-    assert "payload" in _batch_one(client, admin_h, mid, "full", uri)     # format=full honored
-    assert "payload" not in _batch_one(client, admin_h, mid, "minimal", uri)  # format=minimal honored
+    mid = client.get(
+        "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 1}
+    ).json()["messages"][0]["id"]
+    assert "payload" in _batch_one(client, admin_h, mid, "full", uri)  # format=full honored
+    assert "payload" not in _batch_one(
+        client, admin_h, mid, "minimal", uri
+    )  # format=minimal honored
 
 
 def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro_conn):
@@ -362,7 +447,8 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
     if doc is None:
         pytest.skip("no gmail doc for user B in this subset")
     from app import synth
-    hexid = synth.gmail_message_id(doc["doc_id"])   # served ids are hex, not dsids (#39)
+
+    hexid = synth.gmail_message_id(doc["doc_id"])  # served ids are hex, not dsids (#39)
     ah = {"Authorization": f"Bearer {user_a['token']}"}
     r = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=ah)
     # A may coincidentally be a recipient; assert admin can always read it
@@ -382,6 +468,7 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
 #   Docs v1 / Sheets v4 / Slides | never    | always                | 401 UNAUTHENTICATED
 #
 # A bad bearer token is 401 UNAUTHENTICATED in every family.
+
 
 def _gerr(resp):
     """The `error` object, or a clear failure naming what came back instead."""
@@ -407,9 +494,15 @@ def test_drive_errors_carry_the_legacy_errors_array(client, admin_h):
     """Drive v3 always sends `errors[]` with a `reason` a client can branch on, and repeats the
     message inside it. It does NOT send `status` for a parameter failure — measured."""
     e = _gerr(client.get("/drive/v3/files", headers=admin_h, params={"fields": "nope"}))
-    assert e["errors"] == [{"message": "Invalid field selection nope", "domain": "global",
-                            "reason": "invalidParameter", "location": "fields",
-                            "locationType": "parameter"}]
+    assert e["errors"] == [
+        {
+            "message": "Invalid field selection nope",
+            "domain": "global",
+            "reason": "invalidParameter",
+            "location": "fields",
+            "locationType": "parameter",
+        }
+    ]
     assert "status" not in e, "Drive omits status on parameter failures"
 
 
@@ -444,8 +537,9 @@ GOOGLE_ERROR_CASES = [
 
 
 @pytest.mark.parametrize("path, params, code, status, reason, location", GOOGLE_ERROR_CASES)
-def test_google_error_reasons_match_the_real_api(client, admin_h, path, params, code, status,
-                                                 reason, location):
+def test_google_error_reasons_match_the_real_api(
+    client, admin_h, path, params, code, status, reason, location
+):
     r = client.get(path, headers=admin_h, params=params)
     assert r.status_code == code
     e = _gerr(r)
@@ -470,15 +564,22 @@ def test_drive_export_requires_mime_type_with_googles_wording(client, admin_h):
     doc = _drive_find(client, admin_h, "Brand")["id"]
     e = _gerr(client.get(f"/drive/v3/files/{doc}/export", headers=admin_h))
     assert e["code"] == 400 and e["message"] == "Required parameter: mimeType"
-    assert e["errors"][0] == {"message": "Required parameter: mimeType", "domain": "global",
-                              "reason": "required", "location": "mimeType",
-                              "locationType": "parameter"}
+    assert e["errors"][0] == {
+        "message": "Required parameter: mimeType",
+        "domain": "global",
+        "reason": "required",
+        "location": "mimeType",
+        "locationType": "parameter",
+    }
 
 
-@pytest.mark.parametrize("path, reason, location", [
-    ("/drive/v3/files/{pdf}/export?mimeType=text/plain", "fileNotExportable", None),
-    ("/drive/v3/files/{doc}?alt=media", "fileNotDownloadable", "alt"),
-])
+@pytest.mark.parametrize(
+    "path, reason, location",
+    [
+        ("/drive/v3/files/{pdf}/export?mimeType=text/plain", "fileNotExportable", None),
+        ("/drive/v3/files/{doc}?alt=media", "fileNotDownloadable", "alt"),
+    ],
+)
 def test_drive_403s_carry_their_own_reasons(client, admin_h, path, reason, location):
     doc = _drive_find(client, admin_h, "Brand")["id"]
     pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
@@ -491,9 +592,16 @@ def test_drive_403s_carry_their_own_reasons(client, admin_h, path, reason, locat
 BAD_TOKEN = {"Authorization": "Bearer not-a-real-token"}
 
 
-@pytest.mark.parametrize("path", ["/drive/v3/files", "/gmail/v1/users/me/profile",
-                                  "/sheets/v4/spreadsheets/x", "/docs/v1/documents/x",
-                                  "/slides/v1/presentations/x"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/drive/v3/files",
+        "/gmail/v1/users/me/profile",
+        "/sheets/v4/spreadsheets/x",
+        "/docs/v1/documents/x",
+        "/slides/v1/presentations/x",
+    ],
+)
 def test_a_bad_token_is_unauthenticated_everywhere(client, path):
     """Measured: every family answers a present-but-invalid bearer with 401 UNAUTHENTICATED, and
     the short "Invalid Credentials" lives in `errors[0]` while the top message is the long form."""
@@ -509,13 +617,16 @@ def test_a_bad_token_is_unauthenticated_everywhere(client, path):
         assert e["errors"][0]["locationType"] == "header"
 
 
-@pytest.mark.parametrize("path, code, status", [
-    ("/drive/v3/files", 403, "PERMISSION_DENIED"),        # Drive accepts API keys, so anonymous
-    ("/sheets/v4/spreadsheets/x", 403, "PERMISSION_DENIED"),  # ...is an "unregistered caller"
-    ("/gmail/v1/users/me/profile", 401, "UNAUTHENTICATED"),   # OAuth-only APIs say the
-    ("/docs/v1/documents/x", 401, "UNAUTHENTICATED"),         # ...credentials are missing
-    ("/slides/v1/presentations/x", 401, "UNAUTHENTICATED"),
-])
+@pytest.mark.parametrize(
+    "path, code, status",
+    [
+        ("/drive/v3/files", 403, "PERMISSION_DENIED"),  # Drive accepts API keys, so anonymous
+        ("/sheets/v4/spreadsheets/x", 403, "PERMISSION_DENIED"),  # ...is an "unregistered caller"
+        ("/gmail/v1/users/me/profile", 401, "UNAUTHENTICATED"),  # OAuth-only APIs say the
+        ("/docs/v1/documents/x", 401, "UNAUTHENTICATED"),  # ...credentials are missing
+        ("/slides/v1/presentations/x", 401, "UNAUTHENTICATED"),
+    ],
+)
 def test_a_missing_header_differs_by_family(client, path, code, status):
     """The surprise, measured: no `Authorization` header at all is NOT uniformly 401. Drive and
     Sheets answer 403 PERMISSION_DENIED, Gmail and the Docs/Slides APIs answer 401. A bad token is
@@ -532,6 +643,7 @@ def test_a_missing_header_differs_by_family(client, path, code, status):
 
 # --- Gmail: typed response schema, unchanged responses ------------------------------------
 
+
 def test_gmail_messages_has_typed_response_schema(client):
     op = client.get("/openapi.json").json()["paths"]["/gmail/v1/users/{user_id}/messages"]["get"]
     schema = op["responses"]["200"]["content"]["application/json"]["schema"]
@@ -543,13 +655,23 @@ def test_gmail_responses_unchanged_by_enrichment(client, admin_h):
     assert "messages" in lst and "resultSizeEstimate" in lst
     if lst["messages"]:
         mid = lst["messages"][0]["id"]
-        msg = client.get(f"/gmail/v1/users/me/messages/{mid}", params={"format": "full"},
-                         headers=admin_h).json()
-        for k in ("id", "threadId", "labelIds", "snippet", "internalDate", "sizeEstimate", "payload"):
+        msg = client.get(
+            f"/gmail/v1/users/me/messages/{mid}", params={"format": "full"}, headers=admin_h
+        ).json()
+        for k in (
+            "id",
+            "threadId",
+            "labelIds",
+            "snippet",
+            "internalDate",
+            "sizeEstimate",
+            "payload",
+        ):
             assert k in msg, f"gmail message missing {k} (fidelity regression)"
 
 
 # --- OpenAPI enrichment: drive ------------------------------------------------------------
+
 
 def test_drive_files_has_typed_response_schema(client):
     op = client.get("/openapi.json").json()["paths"]["/drive/v3/files"]["get"]
@@ -558,8 +680,9 @@ def test_drive_files_has_typed_response_schema(client):
 
 
 def _drive_find(client, admin_h, name_substr):
-    j = client.get("/drive/v3/files", params={"q": f"name contains '{name_substr}'"},
-                   headers=admin_h).json()
+    j = client.get(
+        "/drive/v3/files", params={"q": f"name contains '{name_substr}'"}, headers=admin_h
+    ).json()
     return j["files"][0] if j.get("files") else None
 
 
@@ -569,16 +692,26 @@ def test_drive_responses_unchanged_by_enrichment(client, admin_h):
     doc = _drive_find(client, admin_h, "Brand")
     assert doc is not None
     full = client.get(f"/drive/v3/files/{doc['id']}", headers=admin_h).json()
-    for k in ("kind", "id", "name", "mimeType", "createdTime", "modifiedTime", "owners",
-              "webViewLink", "capabilities"):
+    for k in (
+        "kind",
+        "id",
+        "name",
+        "mimeType",
+        "createdTime",
+        "modifiedTime",
+        "owners",
+        "webViewLink",
+        "capabilities",
+    ):
         assert k in full, f"drive file missing {k} (fidelity regression)"
 
 
 def test_drive_export_and_media_stay_non_json(client, admin_h):
     # A native doc exports as PlainTextResponse; response_model must NOT be attached to these.
     doc = _drive_find(client, admin_h, "Brand")
-    exp = client.get(f"/drive/v3/files/{doc['id']}/export",
-                     params={"mimeType": "text/plain"}, headers=admin_h)
+    exp = client.get(
+        f"/drive/v3/files/{doc['id']}/export", params={"mimeType": "text/plain"}, headers=admin_h
+    )
     assert exp.status_code == 200 and "application/json" not in exp.headers["content-type"]
     # A binary (pdf) downloads raw via alt=media.
     pdf = _drive_find(client, admin_h, "Whitepaper")
@@ -609,9 +742,9 @@ def test_drive_shared_with_me_partitions_by_owner(client, tokens_yaml):
     all_ids = set(_drive_ids(client, mia, q="trashed=false", pageSize=100))
     shared = set(_drive_ids(client, mia, q="sharedWithMe=true and trashed=false", pageSize=100))
     own = set(_drive_ids(client, mia, q="sharedWithMe=false and trashed=false", pageSize=100))
-    assert shared and own                      # SAMPLE gives mia both her own and others' files
+    assert shared and own  # SAMPLE gives mia both her own and others' files
     assert shared != own and not (shared & own)
-    assert shared | own == all_ids             # together they partition the visible corpus
+    assert shared | own == all_ids  # together they partition the visible corpus
     # mia authored "Brand guidelines v3"; it is hers, not shared with her
     brand = _drive_find(client, mia, "Brand")["id"]
     assert brand in own and brand not in shared
@@ -623,15 +756,21 @@ def test_drive_shared_items_carry_shared_with_me_time(client, tokens_yaml):
     `sharedWithMe` while never emitting the field left a row that the filter calls shared unable to
     say so itself."""
     mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
-    shared = client.get("/drive/v3/files", headers=mia,
-                        params={"q": "sharedWithMe=true and trashed=false",
-                                "pageSize": 100}).json()["files"]
-    own = client.get("/drive/v3/files", headers=mia,
-                     params={"q": "sharedWithMe=false and trashed=false",
-                             "pageSize": 100}).json()["files"]
+    shared = client.get(
+        "/drive/v3/files",
+        headers=mia,
+        params={"q": "sharedWithMe=true and trashed=false", "pageSize": 100},
+    ).json()["files"]
+    own = client.get(
+        "/drive/v3/files",
+        headers=mia,
+        params={"q": "sharedWithMe=false and trashed=false", "pageSize": 100},
+    ).json()["files"]
     assert shared and own
     assert all(f["sharedWithMeTime"] for f in shared), "every shared item needs the timestamp"
-    assert all("sharedWithMeTime" not in f for f in own), "an item you own was never shared with you"
+    assert all("sharedWithMeTime" not in f for f in own), (
+        "an item you own was never shared with you"
+    )
     # folders come out of the same filter, so they must answer the same way
     assert any(f["mimeType"] == FOLDER_MIME for f in shared)
     # and files.get agrees with the listing
@@ -644,17 +783,25 @@ def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
     to invent. `orderBy` on the field still answers (all-equal keys), as real Drive does for nulls."""
     files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 20}).json()["files"]
     assert files and all("sharedWithMeTime" not in f for f in files)
-    assert client.get("/drive/v3/files", headers=admin_h,
-                      params={"pageSize": 5, "orderBy": "sharedWithMeTime"}).status_code == 200
+    assert (
+        client.get(
+            "/drive/v3/files",
+            headers=admin_h,
+            params={"pageSize": 5, "orderBy": "sharedWithMeTime"},
+        ).status_code
+        == 200
+    )
 
 
 def test_drive_order_by_shared_with_me_time(client, tokens_yaml):
     """The mock models the relation this key sorts on (owner vs caller), so it sorts rather than
     400s — unlike the view/modify-by-me timestamps, which have no counterpart here at all."""
     mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
-    r = client.get("/drive/v3/files", headers=mia,
-                   params={"q": "sharedWithMe=true", "pageSize": 100,
-                           "orderBy": "sharedWithMeTime desc"})
+    r = client.get(
+        "/drive/v3/files",
+        headers=mia,
+        params={"q": "sharedWithMe=true", "pageSize": 100, "orderBy": "sharedWithMeTime desc"},
+    )
     assert r.status_code == 200
     times = [f["sharedWithMeTime"] for f in r.json()["files"]]
     assert times == sorted(times, reverse=True)
@@ -670,30 +817,62 @@ def test_drive_owned_by_me_reflects_the_caller(client, tokens_yaml):
 def test_drive_order_by_sorts_the_result(client, admin_h):
     """`orderBy` was accepted and never applied — silent, so a client that relies on server-side
     ordering appears to work against the mock and misbehaves against production."""
-    names = [f["name"] for f in client.get(
-        "/drive/v3/files", headers=admin_h,
-        params={"q": "trashed=false", "pageSize": 100, "orderBy": "name",
-                "fields": "files(name)"}).json()["files"]]
+    names = [
+        f["name"]
+        for f in client.get(
+            "/drive/v3/files",
+            headers=admin_h,
+            params={
+                "q": "trashed=false",
+                "pageSize": 100,
+                "orderBy": "name",
+                "fields": "files(name)",
+            },
+        ).json()["files"]
+    ]
     # Drive collates names case-insensitively (folder names in the SAMPLE are lowercase, file
     # names are not, so a case-sensitive sort would put every folder last)
     assert names == sorted(names, key=str.casefold)
-    desc = [f["name"] for f in client.get(
-        "/drive/v3/files", headers=admin_h,
-        params={"q": "trashed=false", "pageSize": 100, "orderBy": "name desc",
-                "fields": "files(name)"}).json()["files"]]
+    desc = [
+        f["name"]
+        for f in client.get(
+            "/drive/v3/files",
+            headers=admin_h,
+            params={
+                "q": "trashed=false",
+                "pageSize": 100,
+                "orderBy": "name desc",
+                "fields": "files(name)",
+            },
+        ).json()["files"]
+    ]
     assert desc == sorted(names, key=str.casefold, reverse=True)
-    mods = [f["modifiedTime"] for f in client.get(
-        "/drive/v3/files", headers=admin_h,
-        params={"q": "trashed=false", "pageSize": 100, "orderBy": "modifiedTime desc",
-                "fields": "files(modifiedTime)"}).json()["files"]]
+    mods = [
+        f["modifiedTime"]
+        for f in client.get(
+            "/drive/v3/files",
+            headers=admin_h,
+            params={
+                "q": "trashed=false",
+                "pageSize": 100,
+                "orderBy": "modifiedTime desc",
+                "fields": "files(modifiedTime)",
+            },
+        ).json()["files"]
+    ]
     assert mods == sorted(mods, reverse=True)
 
 
 def test_drive_order_by_paginates_in_sorted_order(client, admin_h):
     """A sort must span the whole result set, not sort each page in isolation."""
-    everything = [f["name"] for f in client.get(
-        "/drive/v3/files", headers=admin_h,
-        params={"pageSize": 100, "orderBy": "name", "fields": "files(name)"}).json()["files"]]
+    everything = [
+        f["name"]
+        for f in client.get(
+            "/drive/v3/files",
+            headers=admin_h,
+            params={"pageSize": 100, "orderBy": "name", "fields": "files(name)"},
+        ).json()["files"]
+    ]
     paged, token = [], None
     while True:
         p = {"pageSize": 2, "orderBy": "name", "fields": "files(name),nextPageToken"}
@@ -710,13 +889,22 @@ def test_drive_order_by_paginates_in_sorted_order(client, admin_h):
 def test_drive_order_by_does_not_change_the_rows_themselves(client, admin_h):
     """Sorting builds the whole result set to order it, and defers the per-page `shared` lookup —
     so the served objects must still be identical to the unsorted ones, field for field."""
-    plain = {f["id"]: f for f in client.get(
-        "/drive/v3/files", headers=admin_h, params={"pageSize": 100}).json()["files"]}
-    sorted_ = {f["id"]: f for f in client.get(
-        "/drive/v3/files", headers=admin_h,
-        params={"pageSize": 100, "orderBy": "modifiedTime desc"}).json()["files"]}
+    plain = {
+        f["id"]: f
+        for f in client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 100}).json()[
+            "files"
+        ]
+    }
+    sorted_ = {
+        f["id"]: f
+        for f in client.get(
+            "/drive/v3/files",
+            headers=admin_h,
+            params={"pageSize": 100, "orderBy": "modifiedTime desc"},
+        ).json()["files"]
+    }
     assert plain and plain == sorted_
-    assert any(f["shared"] for f in plain.values())   # ...and `shared` is really resolved
+    assert any(f["shared"] for f in plain.values())  # ...and `shared` is really resolved
 
 
 def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
@@ -725,8 +913,9 @@ def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
     for bad in ("bogusKey", "name descending", "viewedByMeTime"):
         r = client.get("/drive/v3/files", headers=admin_h, params={"orderBy": bad})
         assert r.status_code == 400, f"orderBy={bad!r} should 400, got {r.status_code}"
-    ok = client.get("/drive/v3/files", headers=admin_h,
-                    params={"orderBy": "folder,name desc", "pageSize": 5})
+    ok = client.get(
+        "/drive/v3/files", headers=admin_h, params={"orderBy": "folder,name desc", "pageSize": 5}
+    )
     assert ok.status_code == 200
 
 
@@ -734,16 +923,23 @@ def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
     """An unknown field name used to be accepted and yield empty file objects (200 {}), so a typo
     or a stale field name in a consumer's mask passed every mock-backed test and 400d in
     production."""
-    r = client.get("/drive/v3/files", headers=admin_h,
-                   params={"pageSize": 1, "fields": "files(totallyBogusField)"})
+    r = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"pageSize": 1, "fields": "files(totallyBogusField)"},
+    )
     assert r.status_code == 400
     assert "totallyBogusField" in r.json()["error"]["message"]
-    bad_top = client.get("/drive/v3/files", headers=admin_h,
-                         params={"pageSize": 1, "fields": "bogusTop,files(id)"})
+    bad_top = client.get(
+        "/drive/v3/files", headers=admin_h, params={"pageSize": 1, "fields": "bogusTop,files(id)"}
+    )
     assert bad_top.status_code == 400
     # a documented field the mock does not synthesize is still valid (real Drive omits it, 200)
-    ok = client.get("/drive/v3/files", headers=admin_h,
-                    params={"pageSize": 1, "fields": "files(id,thumbnailLink,capabilities/canEdit)"})
+    ok = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"pageSize": 1, "fields": "files(id,thumbnailLink,capabilities/canEdit)"},
+    )
     assert ok.status_code == 200 and "thumbnailLink" not in ok.json()["files"][0]
 
 
@@ -751,14 +947,18 @@ def test_drive_get_honors_the_fields_mask(client, admin_h):
     """The same projection requested two ways must give the same object; files.get ignored the
     mask entirely and added keys nobody asked for."""
     mask = "id,name,mimeType,size,modifiedTime,webViewLink"
-    row = client.get("/drive/v3/files", headers=admin_h,
-                     params={"q": "name contains 'Brand'", "pageSize": 1,
-                             "fields": f"files({mask})"}).json()["files"][0]
-    got = client.get(f"/drive/v3/files/{row['id']}", headers=admin_h,
-                     params={"fields": mask}).json()
+    row = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"q": "name contains 'Brand'", "pageSize": 1, "fields": f"files({mask})"},
+    ).json()["files"][0]
+    got = client.get(
+        f"/drive/v3/files/{row['id']}", headers=admin_h, params={"fields": mask}
+    ).json()
     assert got == row
-    r = client.get(f"/drive/v3/files/{row['id']}", headers=admin_h,
-                   params={"fields": "totallyBogusField"})
+    r = client.get(
+        f"/drive/v3/files/{row['id']}", headers=admin_h, params={"fields": "totallyBogusField"}
+    )
     assert r.status_code == 400
 
 
@@ -776,28 +976,38 @@ def test_drive_folders_are_found_by_mime_type(client, admin_h):
 def test_drive_folders_honor_the_fields_projection(client, admin_h):
     """Synthesized folder rows bypassed the projection: `files(id,name)` returned 18 keys."""
     for q in ("'root' in parents", f"mimeType='{FOLDER_MIME}'"):
-        files = client.get("/drive/v3/files", headers=admin_h,
-                           params={"q": q, "pageSize": 5, "fields": "files(id,name)"}).json()["files"]
+        files = client.get(
+            "/drive/v3/files",
+            headers=admin_h,
+            params={"q": q, "pageSize": 5, "fields": "files(id,name)"},
+        ).json()["files"]
         assert files and all(set(f) == {"id", "name"} for f in files), q
 
 
 def test_drive_folders_match_the_same_q_clauses_as_files(client, admin_h):
     """Folders now flow through `_drive_q_match`, so every clause that should match one does."""
-    folders = client.get("/drive/v3/files", headers=admin_h,
-                         params={"q": "'root' in parents", "pageSize": 100,
-                                 "fields": "files(id,name)"}).json()["files"]
+    folders = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"q": "'root' in parents", "pageSize": 100, "fields": "files(id,name)"},
+    ).json()["files"]
     one = folders[0]
-    hit = _drive_ids(client, admin_h, q=f"name contains '{one['name']}' and mimeType='{FOLDER_MIME}'")
+    hit = _drive_ids(
+        client, admin_h, q=f"name contains '{one['name']}' and mimeType='{FOLDER_MIME}'"
+    )
     assert one["id"] in hit
     # a folder is not trashed, so trashed=true excludes it
-    assert one["id"] not in _drive_ids(client, admin_h, q=f"mimeType='{FOLDER_MIME}' and trashed=true")
+    assert one["id"] not in _drive_ids(
+        client, admin_h, q=f"mimeType='{FOLDER_MIME}' and trashed=true"
+    )
 
 
 def test_drive_folder_permissions_resolve(client, admin_h):
     """A folder id is a first-class file id in real Drive: files.get and permissions.list both
     answer for it. permissions.list 404d because folders are not stored as rows."""
-    folder = client.get("/drive/v3/files", headers=admin_h,
-                        params={"q": "'root' in parents", "pageSize": 1}).json()["files"][0]
+    folder = client.get(
+        "/drive/v3/files", headers=admin_h, params={"q": "'root' in parents", "pageSize": 1}
+    ).json()["files"][0]
     got = client.get(f"/drive/v3/files/{folder['id']}", headers=admin_h)
     assert got.status_code == 200 and got.json()["mimeType"] == FOLDER_MIME
     perms = client.get(f"/drive/v3/files/{folder['id']}/permissions", headers=admin_h)
@@ -810,10 +1020,11 @@ def test_drive_native_docs_report_size(client, admin_h):
     doc = _drive_find(client, admin_h, "Brand")
     assert doc["mimeType"] == DOC_MIME
     assert int(doc["size"]) > 0
-    assert "md5Checksum" not in doc          # real Drive omits checksums on native files
-    folder = client.get("/drive/v3/files", headers=admin_h,
-                        params={"q": "'root' in parents", "pageSize": 1}).json()["files"][0]
-    assert "size" not in folder              # ...but not for folders or shortcuts
+    assert "md5Checksum" not in doc  # real Drive omits checksums on native files
+    folder = client.get(
+        "/drive/v3/files", headers=admin_h, params={"q": "'root' in parents", "pageSize": 1}
+    ).json()["files"][0]
+    assert "size" not in folder  # ...but not for folders or shortcuts
 
 
 # --- Drive about.get -----------------------------------------------------------------------
@@ -900,14 +1111,15 @@ def test_drive_about_usage_matches_the_sizes_files_list_serves(client, tokens_ya
     reconcile "how much space do I use" with "what is in my Drive"."""
     mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
     quota = _about(client, mia, "storageQuota").json()["storageQuota"]
-    files = client.get("/drive/v3/files", headers=mia,
-                       params={"pageSize": 100, "fields": "files(size)"}).json()["files"]
-    listed = sum(int(f["size"]) for f in files if "size" in f)   # folders carry no size
+    files = client.get(
+        "/drive/v3/files", headers=mia, params={"pageSize": 100, "fields": "files(size)"}
+    ).json()["files"]
+    listed = sum(int(f["size"]) for f in files if "size" in f)  # folders carry no size
     assert listed > 0
     assert int(quota["usageInDrive"]) == listed
-    assert quota["usage"] == quota["usageInDrive"]   # the mock stores nothing outside Drive
-    assert int(quota["limit"]) == 2199023255552     # 2 TiB
-    assert int(quota["usageInDriveTrash"]) == 0     # SAMPLE trashes nothing
+    assert quota["usage"] == quota["usageInDrive"]  # the mock stores nothing outside Drive
+    assert int(quota["limit"]) == 2199023255552  # 2 TiB
+    assert int(quota["usageInDriveTrash"]) == 0  # SAMPLE trashes nothing
 
 
 def test_drive_about_usage_is_scoped_to_the_caller(client, admin_h, tokens_yaml):
@@ -925,12 +1137,12 @@ def test_drive_about_export_formats_are_honoured_by_files_export(client, admin_h
     doc = _drive_find(client, admin_h, "Brand")
     assert doc["mimeType"] == DOC_MIME and formats[DOC_MIME]
     for target in formats[DOC_MIME]:
-        r = client.get(f"/drive/v3/files/{doc['id']}/export", headers=admin_h,
-                       params={"mimeType": target})
+        r = client.get(
+            f"/drive/v3/files/{doc['id']}/export", headers=admin_h, params={"mimeType": target}
+        )
         assert r.status_code == 200, target
     # every native type the mock serves is covered; the folder type is not exportable anywhere
-    assert set(formats) == {DOC_MIME, SHEET_MIME,
-                            "application/vnd.google-apps.presentation"}
+    assert set(formats) == {DOC_MIME, SHEET_MIME, "application/vnd.google-apps.presentation"}
     assert "text/csv" in formats[SHEET_MIME]
 
 
@@ -947,8 +1159,15 @@ def test_drive_about_star_serves_the_whole_resource(client, admin_h):
     j = _about(client, admin_h, "*").json()
     assert j["kind"] == "drive#about"
     assert j["appInstalled"] is False
-    assert {"user", "storageQuota", "importFormats", "exportFormats", "maxImportSizes",
-            "maxUploadSize", "folderColorPalette"} <= set(j)
+    assert {
+        "user",
+        "storageQuota",
+        "importFormats",
+        "exportFormats",
+        "maxImportSizes",
+        "maxUploadSize",
+        "folderColorPalette",
+    } <= set(j)
     # folderColorRgb is a documented file field, so the palette a client picks from must be real
     assert all(re.fullmatch(r"#[0-9a-f]{6}", c) for c in j["folderColorPalette"])
     assert DOC_MIME in j["importFormats"]["text/plain"]
@@ -959,7 +1178,6 @@ def test_drive_about_appears_in_the_openapi_spec(client):
     no generated client can reach."""
     op = client.get("/openapi.json").json()["paths"][ABOUT]["get"]
     assert {p["name"] for p in op["parameters"]} == {"fields"}
-
 
 
 @pytest.fixture(scope="module")
@@ -974,8 +1192,9 @@ def admin_h(live_server):
 
 def _drive_by_mime(base, admin_h, mime):
     """A visible Drive file id + name for the given native mimeType."""
-    r = httpx.get(f"{base}/drive/v3/files", headers=admin_h,
-                  params={"q": "trashed=false", "pageSize": 1000}).json()
+    r = httpx.get(
+        f"{base}/drive/v3/files", headers=admin_h, params={"q": "trashed=false", "pageSize": 1000}
+    ).json()
     for f in r["files"]:
         if f["mimeType"] == mime:
             return f["id"], f["name"]
@@ -984,6 +1203,7 @@ def _drive_by_mime(base, admin_h, mime):
 
 # --- Drive navigability ---------------------------------------------------------
 
+
 def test_shared_drives_empty(base, admin_h):
     r = httpx.get(f"{base}/drive/v3/drives", headers=admin_h, params={"fields": "drives(id,name)"})
     assert r.status_code == 200
@@ -991,8 +1211,11 @@ def test_shared_drives_empty(base, admin_h):
 
 
 def test_root_lists_folders_with_matching_ids(base, admin_h):
-    r = httpx.get(f"{base}/drive/v3/files", headers=admin_h,
-                  params={"q": "'root' in parents and trashed=false", "pageSize": 1000}).json()
+    r = httpx.get(
+        f"{base}/drive/v3/files",
+        headers=admin_h,
+        params={"q": "'root' in parents and trashed=false", "pageSize": 1000},
+    ).json()
     folders = r["files"]
     assert folders, "root should expose folder objects"
     assert all(f["mimeType"] == "application/vnd.google-apps.folder" for f in folders)
@@ -1001,8 +1224,11 @@ def test_root_lists_folders_with_matching_ids(base, admin_h):
 
     # a folder's id must equal what its children report as their parent, so a client can descend
     finance = next(f for f in folders if f["name"] == "finance")
-    kids = httpx.get(f"{base}/drive/v3/files", headers=admin_h,
-                     params={"q": f"'{finance['id']}' in parents and trashed=false"}).json()["files"]
+    kids = httpx.get(
+        f"{base}/drive/v3/files",
+        headers=admin_h,
+        params={"q": f"'{finance['id']}' in parents and trashed=false"},
+    ).json()["files"]
     assert kids and all(finance["id"] in k["parents"] for k in kids)
     # and GET on the folder id resolves to the folder object
     got = httpx.get(f"{base}/drive/v3/files/{finance['id']}", headers=admin_h).json()
@@ -1011,13 +1237,17 @@ def test_root_lists_folders_with_matching_ids(base, admin_h):
 
 # --- Workspace editor read APIs -------------------------------------------------
 
+
 def test_docs_get_returns_paragraph_text(base, admin_h):
     fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
     doc = httpx.get(f"{base}/docs/v1/documents/{fid}", headers=admin_h).json()
     assert doc["documentId"] == fid
-    text = "".join(e["textRun"]["content"]
-                   for el in doc["body"]["content"] if "paragraph" in el
-                   for e in el["paragraph"]["elements"])
+    text = "".join(
+        e["textRun"]["content"]
+        for el in doc["body"]["content"]
+        if "paragraph" in el
+        for e in el["paragraph"]["elements"]
+    )
     assert "Logo usage" in text  # SAMPLE "Brand guidelines v3"
 
 
@@ -1030,7 +1260,9 @@ def test_sheets_get_withholds_grid_data_by_default(base, admin_h):
     `ranges` alone does not unlock it either — also measured."""
     fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
     for params in ({}, {"ranges": "Sheet1!A1:A2"}):
-        sh = httpx.get(f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h, params=params).json()
+        sh = httpx.get(
+            f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h, params=params
+        ).json()
         assert sh["spreadsheetId"] == fid
         assert set(sh["sheets"][0]) == {"properties"}, params
     props = sh["sheets"][0]["properties"]
@@ -1044,24 +1276,31 @@ def test_sheets_get_returns_grid_when_asked(base, admin_h):
     commas, which over the real corpus manufactured columns out of prose punctuation — see
     `_sheets_grid`; the corpus has no delimiter-uniform CSV at all."""
     fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
-    sh = httpx.get(f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h,
-                   params={"includeGridData": "true"}).json()
+    sh = httpx.get(
+        f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h, params={"includeGridData": "true"}
+    ).json()
     data = sh["sheets"][0]["data"][0]
     assert "startRow" not in data and "startColumn" not in data, "zeros are omitted, as proto3 does"
     rows = data["rowData"]
     # a cell object per column of the range (26), the empty ones carrying no value — measured shape
     assert {len(r["values"]) for r in rows} == {26}
     assert all(c == {} for r in rows for c in r["values"][1:])
-    assert [r["values"][0]["formattedValue"] for r in rows] == \
-        ["month,revenue", "Jan,120000", "Feb,135000"]
+    assert [r["values"][0]["formattedValue"] for r in rows] == [
+        "month,revenue",
+        "Jan,120000",
+        "Feb,135000",
+    ]
 
 
 def test_sheets_get_grid_data_honours_ranges(base, admin_h):
     """Measured: `ranges` + `includeGridData` scopes the returned rowData to the range (a real
     workbook went 5.7 MB -> 11 KB for `A1:B2`)."""
     fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
-    sh = httpx.get(f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h,
-                   params={"includeGridData": "true", "ranges": "Sheet1!A2:A3"}).json()
+    sh = httpx.get(
+        f"{base}/sheets/v4/spreadsheets/{fid}",
+        headers=admin_h,
+        params={"includeGridData": "true", "ranges": "Sheet1!A2:A3"},
+    ).json()
     data = sh["sheets"][0]["data"][0]
     assert data["startRow"] == 1
     cells = [[c.get("formattedValue") for c in row["values"]] for row in data["rowData"]]
@@ -1072,9 +1311,12 @@ def test_slides_get_returns_slides(base, admin_h):
     fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.presentation")
     pr = httpx.get(f"{base}/slides/v1/presentations/{fid}", headers=admin_h).json()
     assert pr["presentationId"] == fid and len(pr["slides"]) >= 1
-    text = "".join(t["textRun"]["content"]
-                   for s in pr["slides"] for pe in s["pageElements"]
-                   for t in pe["shape"]["text"]["textElements"])
+    text = "".join(
+        t["textRun"]["content"]
+        for s in pr["slides"]
+        for pe in s["pageElements"]
+        for t in pe["shape"]["text"]["textElements"]
+    )
     assert "Slide 1" in text
 
 
@@ -1093,8 +1335,9 @@ def test_slides_get_returns_slides(base, admin_h):
 # simply not an entity it knows, and it is indistinguishable from an id that does not exist.
 NOT_FOUND = "Requested entity was not found."
 INVALID_ARG = "Request contains an invalid argument."
-OFFICE_MSG = ("This operation is not supported for this document. "
-              "The document must not be an Office file.")
+OFFICE_MSG = (
+    "This operation is not supported for this document. The document must not be an Office file."
+)
 
 
 def test_editor_apis_treat_another_native_type_as_not_found(base, admin_h):
@@ -1116,8 +1359,9 @@ def test_editor_apis_treat_another_native_type_as_not_found(base, admin_h):
         assert r.status_code == 404, f"{label}: {r.status_code}"
         assert r.json()["error"]["message"] == NOT_FOUND, label
     # and it is the same answer as an id that does not exist at all — body and all
-    assert httpx.get(f"{base}/sheets/v4/spreadsheets/no-such-id", headers=admin_h).json() == \
-        {"error": {"code": 404, "message": NOT_FOUND, "status": "NOT_FOUND"}}
+    assert httpx.get(f"{base}/sheets/v4/spreadsheets/no-such-id", headers=admin_h).json() == {
+        "error": {"code": 404, "message": NOT_FOUND, "status": "NOT_FOUND"}
+    }
     # each API still serves its OWN type — without this arm a blanket 404 would pass
     assert httpx.get(f"{base}/docs/v1/documents/{doc}", headers=admin_h).status_code == 200
     assert httpx.get(f"{base}/sheets/v4/spreadsheets/{sheet}", headers=admin_h).status_code == 200
@@ -1136,8 +1380,11 @@ def test_editor_apis_reject_a_non_native_file(base, admin_h):
     """A PDF is not a Workspace document in any family: measured 400 "Request contains an invalid
     argument." on all three APIs — a different answer from another native type, which 404s."""
     pdf, _ = _drive_by_mime(base, admin_h, "application/pdf")
-    for path in (f"/sheets/v4/spreadsheets/{pdf}", f"/docs/v1/documents/{pdf}",
-                 f"/slides/v1/presentations/{pdf}"):
+    for path in (
+        f"/sheets/v4/spreadsheets/{pdf}",
+        f"/docs/v1/documents/{pdf}",
+        f"/slides/v1/presentations/{pdf}",
+    ):
         r = httpx.get(f"{base}{path}", headers=admin_h)
         assert r.status_code == 400, path
         assert r.json()["error"]["message"] == INVALID_ARG, path
@@ -1149,8 +1396,8 @@ def test_editor_apis_reject_an_office_file_of_their_own_family(base, admin_h):
     that owns its family. Measured both ways round — xlsx to Sheets and docx to Docs give the
     Office message, while xlsx to Docs and docx to Sheets give the plain invalid-argument one."""
     xlsx, _ = _drive_by_mime(
-        base, admin_h,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        base, admin_h, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
     r = httpx.get(f"{base}/sheets/v4/spreadsheets/{xlsx}", headers=admin_h)
     assert r.status_code == 400
     assert r.json()["error"]["message"] == OFFICE_MSG
@@ -1162,8 +1409,9 @@ def test_editor_apis_reject_an_office_file_of_their_own_family(base, admin_h):
 def test_editor_apis_reject_a_folder(base, admin_h):
     """A folder id is reachable — a client walking Drive holds them — and real Google answers 400
     invalid-argument rather than pretending the folder is a document."""
-    folder = httpx.get(f"{base}/drive/v3/files", headers=admin_h,
-                       params={"q": "'root' in parents", "pageSize": 1}).json()["files"][0]["id"]
+    folder = httpx.get(
+        f"{base}/drive/v3/files", headers=admin_h, params={"q": "'root' in parents", "pageSize": 1}
+    ).json()["files"][0]["id"]
     r = httpx.get(f"{base}/docs/v1/documents/{folder}", headers=admin_h)
     assert r.status_code == 400
     assert r.json()["error"]["message"] == INVALID_ARG
@@ -1173,8 +1421,11 @@ def test_wrong_type_is_refused_before_it_is_read(base, live_server):
     """A caller who cannot see the file still gets 404, not 400: the type of a document you have
     no access to is not something the API should confirm."""
     import yaml
-    tokens = {u["email"]: u["token"]
-              for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]}
+
+    tokens = {
+        u["email"]: u["token"]
+        for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
+    }
     admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
     sheet, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
     outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # cannot see the finance sheet
@@ -1184,8 +1435,11 @@ def test_wrong_type_is_refused_before_it_is_read(base, live_server):
 def test_editor_apis_enforce_acl(base, live_server):
     """The finance spreadsheet is group-restricted; a non-member gets 404, not the content."""
     import yaml
-    tokens = {u["email"]: u["token"]
-              for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]}
+
+    tokens = {
+        u["email"]: u["token"]
+        for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
+    }
     admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
     fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
     outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # marketing, not finance
@@ -1217,27 +1471,36 @@ def sheet_id(base, admin_h):
 
 
 def _values(base, headers, sheet_id, rng, **params):
-    return httpx.get(f"{base}/sheets/v4/spreadsheets/{sheet_id}/values/{quote(rng, safe='')}",
-                     headers=headers, params=params)
+    return httpx.get(
+        f"{base}/sheets/v4/spreadsheets/{sheet_id}/values/{quote(rng, safe='')}",
+        headers=headers,
+        params=params,
+    )
 
 
 def _batch(base, headers, sheet_id, ranges, **params):
-    return httpx.get(f"{base}/sheets/v4/spreadsheets/{sheet_id}/values:batchGet",
-                     headers=headers, params=[("ranges", r) for r in ranges] + list(params.items()))
+    return httpx.get(
+        f"{base}/sheets/v4/spreadsheets/{sheet_id}/values:batchGet",
+        headers=headers,
+        params=[("ranges", r) for r in ranges] + list(params.items()),
+    )
 
 
-@pytest.mark.parametrize("rng, expected", [
-    ("Sheet1", GRID),                                   # whole sheet
-    ("Sheet1!A1:A3", GRID),                             # explicit bounds
-    ("A1:A3", GRID),                                    # sheet name omitted
-    ("Sheet1!A1:B3", GRID),                             # column B is empty, so it trims away
-    ("Sheet1!A1:A2", GRID[:2]),                         # sub-range
-    ("Sheet1!A2", [["Jan,120000"]]),                    # single cell keeps its commas
-    ("A:A", GRID),                                      # whole column
-    ("1:1", [GRID[0]]),                                 # whole row
-    ("Sheet1!A2:A", GRID[1:]),                          # unbounded lower edge
-    ("'Sheet1'!A1:A1", [GRID[0]]),                      # quoted sheet name
-])
+@pytest.mark.parametrize(
+    "rng, expected",
+    [
+        ("Sheet1", GRID),  # whole sheet
+        ("Sheet1!A1:A3", GRID),  # explicit bounds
+        ("A1:A3", GRID),  # sheet name omitted
+        ("Sheet1!A1:B3", GRID),  # column B is empty, so it trims away
+        ("Sheet1!A1:A2", GRID[:2]),  # sub-range
+        ("Sheet1!A2", [["Jan,120000"]]),  # single cell keeps its commas
+        ("A:A", GRID),  # whole column
+        ("1:1", [GRID[0]]),  # whole row
+        ("Sheet1!A2:A", GRID[1:]),  # unbounded lower edge
+        ("'Sheet1'!A1:A1", [GRID[0]]),  # quoted sheet name
+    ],
+)
 def test_sheets_values_get_range_forms(base, admin_h, sheet_id, rng, expected):
     """Every A1 form a client may send has to resolve against the same grid. Without the parser
     each of these is a 404 on a route that does not exist."""
@@ -1266,8 +1529,9 @@ def test_sheets_values_round_trips_the_stored_text(base, admin_h, sheet_id):
     is also what real Sheets returns for an interior blank row. So the reconstruction has to read an
     empty row as an empty line: a naive ``cells[0]`` passes on the SAMPLE sheet (it has no blank
     lines) and raises IndexError on a real corpus, which is why a blank line is asserted below."""
-    export = httpx.get(f"{base}/drive/v3/files/{sheet_id}/export", headers=admin_h,
-                       params={"mimeType": "text/csv"}).text
+    export = httpx.get(
+        f"{base}/drive/v3/files/{sheet_id}/export", headers=admin_h, params={"mimeType": "text/csv"}
+    ).text
     rows = _values(base, admin_h, sheet_id, "Sheet1").json()["values"]
     assert "\n".join((cells[0] if cells else "") for cells in rows) == export
 
@@ -1282,8 +1546,11 @@ def test_sheets_values_serve_a_blank_line_as_an_empty_row(base, admin_h):
     j = _values(base, admin_h, "gd-blankline", "Sheet1").json()
     assert j["values"] == [["header"], [], ["row after gap"]]
     # and the round trip still holds, blank lines and all — trailing gaps included
-    export = httpx.get(f"{base}/drive/v3/files/gd-blankline/export", headers=admin_h,
-                       params={"mimeType": "text/csv"}).text
+    export = httpx.get(
+        f"{base}/drive/v3/files/gd-blankline/export",
+        headers=admin_h,
+        params={"mimeType": "text/csv"},
+    ).text
     rebuilt = "\n".join((c[0] if c else "") for c in j["values"])
     assert rebuilt == export.rstrip("\n")
     assert export.endswith("\n\n"), "the stored trailing gap is still in the exported text"
@@ -1324,7 +1591,7 @@ def test_sheets_values_get_trims_trailing_empties(base, admin_h, sheet_id):
     and the block stops at its last non-empty row. Padding would make a client read phantom
     columns that the grid does not have."""
     j = _values(base, admin_h, sheet_id, "Sheet1!A1:D5").json()
-    assert j["values"] == GRID          # not 5 rows, not 4 columns
+    assert j["values"] == GRID  # not 5 rows, not 4 columns
 
 
 def test_sheets_values_get_omits_values_when_the_range_is_empty(base, admin_h, sheet_id):
@@ -1343,39 +1610,50 @@ def test_sheets_values_get_rejects_an_unusable_range(base, admin_h, sheet_id, rn
     assert _values(base, admin_h, sheet_id, rng).status_code == 400
 
 
-@pytest.mark.parametrize("params, field, enum", [
-    ({"majorDimension": "DIAGONAL"}, "major_dimension", "Dimension"),
-    ({"valueRenderOption": "NOPE"}, "value_render_option", "ValueRenderOption"),
-])
+@pytest.mark.parametrize(
+    "params, field, enum",
+    [
+        ({"majorDimension": "DIAGONAL"}, "major_dimension", "Dimension"),
+        ({"valueRenderOption": "NOPE"}, "value_render_option", "ValueRenderOption"),
+    ],
+)
 def test_sheets_values_get_rejects_a_bad_enum(base, admin_h, sheet_id, params, field, enum):
     """Measured message shape, not an invented one: Google names the proto field and type."""
     r = _values(base, admin_h, sheet_id, "Sheet1!A1:A2", **params)
     assert r.status_code == 400
     bad = next(iter(params.values()))
     assert r.json()["error"]["message"] == (
-        f"Invalid value at \'{field}\' "
-        f"(type.googleapis.com/google.apps.sheets.v4.{enum}), \"{bad}\"")
+        f"Invalid value at '{field}' (type.googleapis.com/google.apps.sheets.v4.{enum}), \"{bad}\""
+    )
 
 
 def test_sheets_values_get_render_options_agree_on_this_corpus(base, admin_h, sheet_id):
     """The corpus stores no formulas and no typed numbers — `spreadsheets.get` already declares
     every cell a `stringValue` — so the three render options coincide here. Asserted so that a
     future change which makes them diverge has to say so."""
-    out = {opt: _values(base, admin_h, sheet_id, "Sheet1!A1:A3",
-                        valueRenderOption=opt).json()["values"]
-           for opt in ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")}
+    out = {
+        opt: _values(base, admin_h, sheet_id, "Sheet1!A1:A3", valueRenderOption=opt).json()[
+            "values"
+        ]
+        for opt in ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")
+    }
     assert out["FORMATTED_VALUE"] == out["UNFORMATTED_VALUE"] == out["FORMULA"] == GRID
 
 
 def test_sheets_values_get_agrees_with_spreadsheets_get(base, admin_h, sheet_id):
     """Two views of one document: the grid `values.get` serves must be the grid the structured
     read serves, or a client gets a different answer depending on which call it made."""
-    sh = httpx.get(f"{base}/sheets/v4/spreadsheets/{sheet_id}", headers=admin_h,
-                   params={"includeGridData": "true"}).json()
+    sh = httpx.get(
+        f"{base}/sheets/v4/spreadsheets/{sheet_id}",
+        headers=admin_h,
+        params={"includeGridData": "true"},
+    ).json()
     # the grid pads each row to the range width with empty cells; `values` trims them. Drop the
     # padding and the two must name the same cells.
-    structured = [[c["formattedValue"] for c in row["values"] if c]
-                  for row in sh["sheets"][0]["data"][0]["rowData"]]
+    structured = [
+        [c["formattedValue"] for c in row["values"] if c]
+        for row in sh["sheets"][0]["data"][0]["rowData"]
+    ]
     assert _values(base, admin_h, sheet_id, "Sheet1").json()["values"] == structured
 
 
@@ -1383,8 +1661,11 @@ def test_sheets_values_get_enforces_the_acl(base, live_server, sheet_id):
     """The finance spreadsheet is group-restricted; the values route must not be a way around the
     ACL that `spreadsheets.get` enforces."""
     import yaml
-    tokens = {u["email"]: u["token"]
-              for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]}
+
+    tokens = {
+        u["email"]: u["token"]
+        for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
+    }
     outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # marketing, not finance
     admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
     # the admin arm is what keeps this honest: without it a missing route 404s and the test passes
@@ -1398,8 +1679,7 @@ def test_sheets_values_get_needs_auth(base, sheet_id):
     # Sheets accepts API keys, so no header at all is 403 PERMISSION_DENIED; a bad bearer is 401.
     # Both measured against the live API.
     assert _values(base, {}, sheet_id, "Sheet1").status_code == 403
-    assert _values(base, {"Authorization": "Bearer nope"}, sheet_id,
-                   "Sheet1").status_code == 401
+    assert _values(base, {"Authorization": "Bearer nope"}, sheet_id, "Sheet1").status_code == 401
 
 
 def test_sheets_values_get_clamps_a_range_that_overflows_the_grid(base, admin_h, sheet_id):
@@ -1418,7 +1698,8 @@ def test_sheets_values_get_rejects_a_start_outside_the_grid(base, admin_h, sheet
     assert r.status_code == 400
     assert r.json()["error"]["message"].startswith("Range (Sheet1!")
     assert r.json()["error"]["message"].endswith(
-        "exceeds grid limits. Max rows: 1000, max columns: 26")
+        "exceeds grid limits. Max rows: 1000, max columns: 26"
+    )
 
 
 def test_sheets_values_get_empty_inside_the_grid_is_not_an_error(base, admin_h, sheet_id):
@@ -1435,13 +1716,20 @@ def test_sheets_values_get_empty_inside_the_grid_is_not_an_error(base, admin_h, 
 # other two (`A1`, `'Sheet1'!A1:A1`) differ only because that spreadsheet's A1 is blank while the
 # SAMPLE's is not — same status, same echo. Pinned here so the parser cannot drift back.
 MEASURED_ECHO = [
-    ("Sheet1", "Sheet1!A1:Z1000"),      ("Sheet1!A1:A2", "Sheet1!A1:A2"),
-    ("A1:A2", "Sheet1!A1:A2"),          ("A:A", "Sheet1!A1:A1000"),
-    ("1:1", "Sheet1!A1:Z1"),            ("Sheet1!A2:A", "Sheet1!A2:A1000"),
-    ("Sheet1!A1", "Sheet1!A1"),         ("'Sheet1'!A1:A1", "Sheet1!A1"),
-    ("A1:AA5", "Sheet1!A1:Z5"),         ("A1:B1001", "Sheet1!A1:B1000"),
-    ("Z1:AA5", "Sheet1!Z1:Z5"),         ("A100:B101", "Sheet1!A100:B101"),
-    ("A100", "Sheet1!A100"),            ("Sheet1!A1:D5", "Sheet1!A1:D5"),
+    ("Sheet1", "Sheet1!A1:Z1000"),
+    ("Sheet1!A1:A2", "Sheet1!A1:A2"),
+    ("A1:A2", "Sheet1!A1:A2"),
+    ("A:A", "Sheet1!A1:A1000"),
+    ("1:1", "Sheet1!A1:Z1"),
+    ("Sheet1!A2:A", "Sheet1!A2:A1000"),
+    ("Sheet1!A1", "Sheet1!A1"),
+    ("'Sheet1'!A1:A1", "Sheet1!A1"),
+    ("A1:AA5", "Sheet1!A1:Z5"),
+    ("A1:B1001", "Sheet1!A1:B1000"),
+    ("Z1:AA5", "Sheet1!Z1:Z5"),
+    ("A100:B101", "Sheet1!A100:B101"),
+    ("A100", "Sheet1!A100"),
+    ("Sheet1!A1:D5", "Sheet1!A1:D5"),
 ]
 
 
@@ -1481,11 +1769,14 @@ def test_sheets_values_range_echo_matches_real_sheets(base, admin_h, sheet_id, r
     assert r.json()["range"] == echo
 
 
-@pytest.mark.parametrize("rng, message", [
-    ("Other!A1:B2", "Unable to parse range: Other!A1:B2"),
-    ("not a range", "Unable to parse range: not a range"),
-    ("A1:", "Unable to parse range: A1:"),   # the WHOLE spec, not the offending half
-])
+@pytest.mark.parametrize(
+    "rng, message",
+    [
+        ("Other!A1:B2", "Unable to parse range: Other!A1:B2"),
+        ("not a range", "Unable to parse range: not a range"),
+        ("A1:", "Unable to parse range: A1:"),  # the WHOLE spec, not the offending half
+    ],
+)
 def test_sheets_values_parse_error_matches_real_sheets(base, admin_h, sheet_id, rng, message):
     r = _values(base, admin_h, sheet_id, rng)
     assert r.status_code == 400
@@ -1531,12 +1822,16 @@ def test_sheets_batch_get_with_no_ranges_selects_nothing(base, admin_h, sheet_id
 
 # --- Slack timestamp consistency ------------------------------------------------
 
+
 def test_channel_created_not_after_messages(base, admin_h):
     channels = httpx.get(f"{base}/slack/api/conversations.list", headers=admin_h).json()["channels"]
     assert channels
     for ch in channels:
-        hist = httpx.get(f"{base}/slack/api/conversations.history", headers=admin_h,
-                         params={"channel": ch["id"], "limit": 1}).json()
+        hist = httpx.get(
+            f"{base}/slack/api/conversations.history",
+            headers=admin_h,
+            params={"channel": ch["id"], "limit": 1},
+        ).json()
         msgs = hist.get("messages", [])
         if msgs:
             assert ch["created"] <= float(msgs[0]["ts"]), f"#{ch['name']} created after its message"
@@ -1545,18 +1840,35 @@ def test_channel_created_not_after_messages(base, admin_h):
 def test_history_honors_oldest_latest(base, admin_h):
     """A time-bounded fetch (as a filesystem client makes per day) is filtered by ts — a tight
     window keeps the message, a window entirely after it drops the message."""
-    cid = httpx.get(f"{base}/slack/api/conversations.list", headers=admin_h).json()["channels"][0]["id"]
-    ts = float(httpx.get(f"{base}/slack/api/conversations.history", headers=admin_h,
-                         params={"channel": cid, "limit": 1}).json()["messages"][0]["ts"])
+    cid = httpx.get(f"{base}/slack/api/conversations.list", headers=admin_h).json()["channels"][0][
+        "id"
+    ]
+    ts = float(
+        httpx.get(
+            f"{base}/slack/api/conversations.history",
+            headers=admin_h,
+            params={"channel": cid, "limit": 1},
+        ).json()["messages"][0]["ts"]
+    )
 
-    tight = httpx.get(f"{base}/slack/api/conversations.history", headers=admin_h,
-                      params={"channel": cid, "oldest": ts - 5, "latest": ts + 5,
-                              "inclusive": "true", "limit": 1000}).json()["messages"]
+    tight = httpx.get(
+        f"{base}/slack/api/conversations.history",
+        headers=admin_h,
+        params={
+            "channel": cid,
+            "oldest": ts - 5,
+            "latest": ts + 5,
+            "inclusive": "true",
+            "limit": 1000,
+        },
+    ).json()["messages"]
     assert any(abs(float(m["ts"]) - ts) < 1e-6 for m in tight)
 
-    after = httpx.get(f"{base}/slack/api/conversations.history", headers=admin_h,
-                      params={"channel": cid, "oldest": ts + 1, "latest": ts + 100,
-                              "limit": 1000}).json()["messages"]
+    after = httpx.get(
+        f"{base}/slack/api/conversations.history",
+        headers=admin_h,
+        params={"channel": cid, "oldest": ts + 1, "latest": ts + 100, "limit": 1000},
+    ).json()["messages"]
     assert all(float(m["ts"]) > ts for m in after)  # the sampled message is excluded
 
 
@@ -1565,15 +1877,35 @@ def test_history_honors_oldest_latest(base, admin_h):
 
 # --- Drive -----------------------------------------------------------------------
 
+
 def test_drive_permissions_and_trashed(tmp_path):
     from app.routers.google import _drive_permissions, _drive_q_match
-    s = tiny_corpus(tmp_path, [
-        {"source_type": "google_drive", "doc_id": "d1", "folder": "mk", "title": "Deck",
-         "content": "x", "author_email": "a@x.com", "visibility": "public"},
-        {"source_type": "google_drive", "doc_id": "d2", "folder": "mk", "title": "Old",
-         "content": "y", "author_email": "a@x.com", "visibility": "group", "group": "mkt",
-         "trashed": True},
-    ])
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": "d1",
+                "folder": "mk",
+                "title": "Deck",
+                "content": "x",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "google_drive",
+                "doc_id": "d2",
+                "folder": "mk",
+                "title": "Old",
+                "content": "y",
+                "author_email": "a@x.com",
+                "visibility": "group",
+                "group": "mkt",
+                "trashed": True,
+            },
+        ],
+    )
     conn = store.connect_ro(s.db_path)
     perms = _drive_permissions(conn, "d1")
     # public share is type "anyone" (not "domain"), and an owner permission exists
@@ -1593,13 +1925,31 @@ def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
     Docs Editors files; it is not populated for shortcuts or folders." The mock set it only in the
     binary branch, so it taught implementors that native Docs have no byte size (issue #23)."""
     from app.routers.google import _drive_file
-    s = tiny_corpus(tmp_path, [
-        {"source_type": "google_drive", "doc_id": "n1", "folder": "mk", "title": "Doc",
-         "content": "hello there", "author_email": "a@x.com", "subtype": "document"},
-        {"source_type": "google_drive", "doc_id": "b1", "folder": "mk", "title": "Scan.pdf",
-         "content": "%PDF-1.7", "author_email": "a@x.com", "subtype": "pdf",
-         "meta": {"mime_type": "application/pdf"}},
-    ])
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": "n1",
+                "folder": "mk",
+                "title": "Doc",
+                "content": "hello there",
+                "author_email": "a@x.com",
+                "subtype": "document",
+            },
+            {
+                "source_type": "google_drive",
+                "doc_id": "b1",
+                "folder": "mk",
+                "title": "Scan.pdf",
+                "content": "%PDF-1.7",
+                "author_email": "a@x.com",
+                "subtype": "pdf",
+                "meta": {"mime_type": "application/pdf"},
+            },
+        ],
+    )
     conn = store.connect_ro(s.db_path)
     native = _drive_file(conn, store.get_document(conn, "google_drive", "n1"))
     assert native["size"] == str(len("hello there"))
@@ -1611,18 +1961,31 @@ def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
 
 # --- Gmail -----------------------------------------------------------------------
 
+
 def test_gmail_raw_and_headers(tmp_path):
     from app.routers.google import _gmail_message
-    s = tiny_corpus(tmp_path, [
-        {"source_type": "gmail", "doc_id": "m1", "mailbox": "ceo", "title": "Hi",
-         "content": "body text", "author_email": "ceo@x.com", "bcc": "secret@x.com"},
-    ])
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": "m1",
+                "mailbox": "ceo",
+                "title": "Hi",
+                "content": "body text",
+                "author_email": "ceo@x.com",
+                "bcc": "secret@x.com",
+            },
+        ],
+    )
     conn = store.connect_ro(s.db_path)
     row = store.get_document(conn, "gmail", "m1")
     # raw format returns the base64url RFC822 message, no parsed payload
     raw = _gmail_message(row, "raw")
     assert "raw" in raw and "payload" not in raw
     import base64
+
     decoded = base64.urlsafe_b64decode(raw["raw"]).decode()
     assert "Subject: Hi" in decoded and "MIME-Version: 1.0" in decoded
     # Bcc must NOT appear in a fetched message's headers (stripped in transit)
@@ -1636,6 +1999,7 @@ def test_gmail_raw_and_headers(tmp_path):
     # formed message parses with no defects, `is_multipart()` True, and yields the plain-text
     # body back out, matching what a real reader (e.g. llama-index's GmailReader) needs.
     import email
+
     mime_msg = email.message_from_bytes(base64.urlsafe_b64decode(raw["raw"]))
     assert not mime_msg.defects, f"raw Gmail message is not valid MIME: {mime_msg.defects}"
     assert mime_msg.is_multipart()
@@ -1645,16 +2009,29 @@ def test_gmail_raw_and_headers(tmp_path):
 
 def test_gmail_raw_with_attachment_is_valid_mime(tmp_path):
     from app.routers.google import _gmail_message
-    s = tiny_corpus(tmp_path, [
-        {"source_type": "gmail", "doc_id": "m2", "mailbox": "ceo", "title": "With attachment",
-         "content": "see attached", "author_email": "ceo@x.com",
-         "attachments": [{"filename": "notes.txt", "mime": "text/plain", "content": "hello"}]},
-    ])
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": "m2",
+                "mailbox": "ceo",
+                "title": "With attachment",
+                "content": "see attached",
+                "author_email": "ceo@x.com",
+                "attachments": [
+                    {"filename": "notes.txt", "mime": "text/plain", "content": "hello"}
+                ],
+            },
+        ],
+    )
     conn = store.connect_ro(s.db_path)
     row = store.get_document(conn, "gmail", "m2")
     raw = _gmail_message(row, "raw")
     import base64
     import email
+
     decoded_bytes = base64.urlsafe_b64decode(raw["raw"])
     assert b"Content-Type: multipart/mixed" in decoded_bytes  # top_mime switches with attachments
     mime_msg = email.message_from_bytes(decoded_bytes)
@@ -1665,6 +2042,7 @@ def test_gmail_raw_with_attachment_is_valid_mime(tmp_path):
 
 
 # --- OAuth credentials (app/oauth.py) — the /oauth2/token exchange Google's SDKs refresh against -----
+
 
 @pytest.fixture
 def creds(tmp_path):
@@ -1685,8 +2063,17 @@ def test_generate_writes_credentials(creds):
 
 def _assertion(o, claims):
     sa = o.service_account_json("http://x/oauth2/token")
-    return jwt.encode({"iss": sa["client_email"], "aud": sa["token_uri"],
-                       "iat": 0, "exp": 9_999_999_999, **claims}, sa["private_key"], algorithm="RS256")
+    return jwt.encode(
+        {
+            "iss": sa["client_email"],
+            "aud": sa["token_uri"],
+            "iat": 0,
+            "exp": 9_999_999_999,
+            **claims,
+        },
+        sa["private_key"],
+        algorithm="RS256",
+    )
 
 
 def test_service_account_assertion(creds):

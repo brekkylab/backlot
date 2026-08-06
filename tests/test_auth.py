@@ -4,6 +4,7 @@ The bearer/basic resolvers are covered end-to-end by the per-source endpoint tes
 file covers the ones with a contract worth pinning on their own — currently the API-key
 scheme, whose whole point is that it must accept a header with *no* auth scheme on it.
 """
+
 from __future__ import annotations
 
 import base64
@@ -18,8 +19,16 @@ from app import auth
 
 def _request(authorization: str | None = None, app=None) -> Request:
     headers = [(b"authorization", authorization.encode())] if authorization is not None else []
-    return Request({"type": "http", "method": "POST", "path": "/x", "query_string": b"",
-                    "headers": headers, "app": app})
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/x",
+            "query_string": b"",
+            "headers": headers,
+            "app": app,
+        }
+    )
 
 
 def _app(acl) -> SimpleNamespace:
@@ -27,6 +36,7 @@ def _app(acl) -> SimpleNamespace:
 
 
 # --- require_bearer / require_basic_or_bearer ------------------------------------
+
 
 def test_require_bearer_raises_401_carrying_the_vendors_own_detail(acl):
     """The detail string is the VENDOR's: GitHub says "Bad credentials", Google "Invalid
@@ -38,8 +48,9 @@ def test_require_bearer_raises_401_carrying_the_vendors_own_detail(acl):
 
 
 def test_require_bearer_returns_the_caller_for_a_good_token(acl, tokens):
-    caller = auth.require_bearer(_request(f"Bearer {tokens['ava@acme.com']}", app=_app(acl)),
-                                "nope")
+    caller = auth.require_bearer(
+        _request(f"Bearer {tokens['ava@acme.com']}", app=_app(acl)), "nope"
+    )
     assert caller.email == "ava@acme.com"
 
 
@@ -47,10 +58,18 @@ def test_require_basic_or_bearer_accepts_either_scheme(acl, tokens, sample_setti
     """Atlassian carries Basic email:api_token and also accepts a bearer OAuth token."""
     token = tokens["ava@acme.com"]
     basic = base64.b64encode(f"ava@acme.com:{token}".encode()).decode()
-    assert auth.require_basic_or_bearer(
-        _request(f"Basic {basic}", app=_app(acl)), "Unauthorized").email == "ava@acme.com"
-    assert auth.require_basic_or_bearer(
-        _request(f"Bearer {token}", app=_app(acl)), "Unauthorized").email == "ava@acme.com"
+    assert (
+        auth.require_basic_or_bearer(
+            _request(f"Basic {basic}", app=_app(acl)), "Unauthorized"
+        ).email
+        == "ava@acme.com"
+    )
+    assert (
+        auth.require_basic_or_bearer(
+            _request(f"Bearer {token}", app=_app(acl)), "Unauthorized"
+        ).email
+        == "ava@acme.com"
+    )
 
 
 def test_require_basic_or_bearer_raises_401_with_no_credential(acl):
@@ -60,6 +79,7 @@ def test_require_basic_or_bearer_raises_401_with_no_credential(acl):
 
 
 # --- api_key_token --------------------------------------------------------------
+
 
 def test_api_key_accepts_a_bare_key():
     assert auth.api_key_token(_request("lin_api_deadbeef")) == "lin_api_deadbeef"
@@ -93,6 +113,7 @@ def test_api_key_is_none_for_a_bare_bearer_header():
 
 # --- resolve_api_key ------------------------------------------------------------
 
+
 def test_resolve_api_key_resolves_a_bare_user_token(acl, tokens):
     caller = auth.resolve_api_key(_request(tokens["ava@acme.com"], app=_app(acl)))
     assert caller is not None
@@ -101,8 +122,7 @@ def test_resolve_api_key_resolves_a_bare_user_token(acl, tokens):
 
 
 def test_resolve_api_key_resolves_a_bearer_admin_token(acl, sample_settings):
-    caller = auth.resolve_api_key(
-        _request(f"Bearer {sample_settings.admin_token}", app=_app(acl)))
+    caller = auth.resolve_api_key(_request(f"Bearer {sample_settings.admin_token}", app=_app(acl)))
     assert caller is not None
     assert caller.is_admin is True
 

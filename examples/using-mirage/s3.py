@@ -18,6 +18,7 @@ keypair.
 With ``--fuse`` the tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read with
 plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
 """
+
 import argparse
 import json
 import os
@@ -31,17 +32,36 @@ from _mirage import FUSE_HELP, lines, run_mirage, s3_base_url, serve_or_connect
 
 BUCKET = "eng-artifacts"
 CORPUS = [
-    {"source_type": "s3", "bucket": BUCKET, "key": "runbooks/oncall.md", "title": "On-call Runbook",
-     "content": "# On-call\nCheck dashboards, roll back, page on-call.", "content_type": "text/markdown"},
-    {"source_type": "s3", "bucket": BUCKET, "key": "design/architecture.md", "title": "Architecture",
-     "content": "Gateway, workers, and the token bucket.", "content_type": "text/markdown"},
+    {
+        "source_type": "s3",
+        "bucket": BUCKET,
+        "key": "runbooks/oncall.md",
+        "title": "On-call Runbook",
+        "content": "# On-call\nCheck dashboards, roll back, page on-call.",
+        "content_type": "text/markdown",
+    },
+    {
+        "source_type": "s3",
+        "bucket": BUCKET,
+        "key": "design/architecture.md",
+        "title": "Architecture",
+        "content": "Gateway, workers, and the token bucket.",
+        "content_type": "text/markdown",
+    },
 ]
 
 
 def build(mock, access_key, secret_key):
-    return S3Resource(S3Config(bucket=BUCKET, endpoint_url=s3_base_url(mock.base_url),
-                               path_style=True, region="us-east-1",
-                               aws_access_key_id=access_key, aws_secret_access_key=secret_key))
+    return S3Resource(
+        S3Config(
+            bucket=BUCKET,
+            endpoint_url=s3_base_url(mock.base_url),
+            path_style=True,
+            region="us-east-1",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+        )
+    )
 
 
 async def main(resource) -> None:
@@ -67,9 +87,13 @@ def main_fuse(resource) -> None:
                 print("  " + p.replace(mnt, "/s3"))
             if objs:
                 # a genuinely separate process reads the FUSE mount like any real directory
-                hit = subprocess.run(["grep", "-rc", "dashboards", mnt], capture_output=True, text=True)
-                print(f"\n$ grep -rc dashboards {mnt}   # a separate process reads the mount → "
-                      f"{hit.stdout.strip()}")
+                hit = subprocess.run(
+                    ["grep", "-rc", "dashboards", mnt], capture_output=True, text=True
+                )
+                print(
+                    f"\n$ grep -rc dashboards {mnt}   # a separate process reads the mount → "
+                    f"{hit.stdout.strip()}"
+                )
             print(f"\nexplore it live in another terminal:  ls -R {mnt}")
     except (ImportError, RuntimeError, OSError) as e:
         raise SystemExit(FUSE_HELP.format(err=e))
@@ -78,13 +102,20 @@ def main_fuse(resource) -> None:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Read S3 through mirage against the mock's S3.")
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-    p.add_argument("--access-key", help="AWS access key id (S3 uses a keypair, not a token); "
-                                        "required with --url — from GET <url>/_mock/users, or real AWS")
+    p.add_argument(
+        "--access-key",
+        help="AWS access key id (S3 uses a keypair, not a token); "
+        "required with --url — from GET <url>/_mock/users, or real AWS",
+    )
     p.add_argument("--secret-key", help="AWS secret access key (required with --url)")
-    p.add_argument("--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)")
+    p.add_argument(
+        "--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)"
+    )
     args = p.parse_args()
     if args.url and not (args.access_key and args.secret_key):
-        p.error("--access-key and --secret-key are required with --url (grab a pair from GET <url>/_mock/users)")
+        p.error(
+            "--access-key and --secret-key are required with --url (grab a pair from GET <url>/_mock/users)"
+        )
     return args
 
 

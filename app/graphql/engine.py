@@ -13,6 +13,7 @@ detected before execution begins and the response carries no ``data`` entry at a
 servers make that distinction and clients key off it, so the mock does too —
 ``ExecutionResult.formatted`` alone would emit ``"data": null`` for every request error.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,8 +21,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from graphql import (GraphQLError, GraphQLSchema, assert_valid_schema, build_schema,
-                     execute_sync, parse, validate)
+from graphql import (
+    GraphQLError,
+    GraphQLSchema,
+    assert_valid_schema,
+    build_schema,
+    execute_sync,
+    parse,
+    validate,
+)
 
 Resolver = Callable[..., Any]
 
@@ -78,12 +86,19 @@ class Engine:
             for field_name, fn in fields.items():
                 field = gql_type.fields.get(field_name)
                 if field is None:
-                    raise ValueError(f"resolver map references unknown field "
-                                     f"{type_name}.{field_name}")
+                    raise ValueError(
+                        f"resolver map references unknown field {type_name}.{field_name}"
+                    )
                 field.resolve = fn
 
-    def execute(self, document: str, *, variables: dict | None = None,
-                operation_name: str | None = None, context: Any = None) -> Result:
+    def execute(
+        self,
+        document: str,
+        *,
+        variables: dict | None = None,
+        operation_name: str | None = None,
+        context: Any = None,
+    ) -> Result:
         try:
             doc = parse(document)
         except GraphQLError as exc:  # GraphQLSyntaxError
@@ -91,8 +106,13 @@ class Engine:
         errors = validate(self.schema, doc)
         if errors:
             return _request_error(list(errors))
-        result = execute_sync(self.schema, doc, context_value=context,
-                              variable_values=variables, operation_name=operation_name)
+        result = execute_sync(
+            self.schema,
+            doc,
+            context_value=context,
+            variable_values=variables,
+            operation_name=operation_name,
+        )
         # Variable coercion and operation selection fail *inside* execute_sync but still
         # before any field runs. Those errors carry no ``path`` (nothing was resolved), which
         # is what separates them from a non-null field error that propagated up to the root.
@@ -122,5 +142,6 @@ class Engine:
         operation_name = payload.get("operationName")
         if operation_name is not None and not isinstance(operation_name, str):
             return _client_error("Must provide operation name as a string.")
-        return self.execute(query, variables=variables, operation_name=operation_name,
-                            context=context)
+        return self.execute(
+            query, variables=variables, operation_name=operation_name, context=context
+        )

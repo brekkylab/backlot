@@ -8,6 +8,7 @@ recursive=True)`), a file read via `get_contents`, and the README via `get_readm
     python examples/using-official-sdk/github.py            # or: --url http://localhost:8000
     python examples/using-official-sdk/github.py --url http://localhost:8000 --token <usr-token>
 """
+
 import argparse
 import sys
 from pathlib import Path
@@ -22,31 +23,61 @@ sys.path[:] = [p for p in sys.path if p and Path(p).resolve() != Path(_here)]
 from github import Auth, Github  # noqa: E402
 
 CORPUS = [
-    {"source_type": "github", "repo": "gateway", "title": "Rate limiter drops bursts under 50ms",
-     "content": "The token-bucket refill is off by one tick.", "subtype": "issue"},
-    {"source_type": "github", "repo": "gateway", "title": "Fix token-bucket refill off-by-one",
-     "content": "Corrects the refill tick; adds a regression test.", "subtype": "pull_request"},
-    {"source_type": "github", "repo": "gateway", "subtype": "file", "path": "README.md",
-     "title": "README.md", "content": "# gateway\n\nToken-bucket rate limiter for inbound requests.\n"},
-    {"source_type": "github", "repo": "gateway", "subtype": "file", "path": "src/ratelimiter.py",
-     "title": "ratelimiter.py",
-     "content": "class TokenBucket:\n"
-                "    def __init__(self, rate, burst):\n"
-                "        self.rate = rate\n"
-                "        self.tokens = burst\n\n"
-                "    def refill(self, elapsed):\n"
-                "        # BUG: off-by-one tick drops the last burst token\n"
-                "        self.tokens = min(self.tokens + elapsed * self.rate, self.tokens)\n"},
-    {"source_type": "github", "repo": "gateway", "subtype": "file", "path": "src/utils/tokens.py",
-     "title": "tokens.py",
-     "content": "def clamp(value, low, high):\n"
-                "    return max(low, min(value, high))\n"},
+    {
+        "source_type": "github",
+        "repo": "gateway",
+        "title": "Rate limiter drops bursts under 50ms",
+        "content": "The token-bucket refill is off by one tick.",
+        "subtype": "issue",
+    },
+    {
+        "source_type": "github",
+        "repo": "gateway",
+        "title": "Fix token-bucket refill off-by-one",
+        "content": "Corrects the refill tick; adds a regression test.",
+        "subtype": "pull_request",
+    },
+    {
+        "source_type": "github",
+        "repo": "gateway",
+        "subtype": "file",
+        "path": "README.md",
+        "title": "README.md",
+        "content": "# gateway\n\nToken-bucket rate limiter for inbound requests.\n",
+    },
+    {
+        "source_type": "github",
+        "repo": "gateway",
+        "subtype": "file",
+        "path": "src/ratelimiter.py",
+        "title": "ratelimiter.py",
+        "content": "class TokenBucket:\n"
+        "    def __init__(self, rate, burst):\n"
+        "        self.rate = rate\n"
+        "        self.tokens = burst\n\n"
+        "    def refill(self, elapsed):\n"
+        "        # BUG: off-by-one tick drops the last burst token\n"
+        "        self.tokens = min(self.tokens + elapsed * self.rate, self.tokens)\n",
+    },
+    {
+        "source_type": "github",
+        "repo": "gateway",
+        "subtype": "file",
+        "path": "src/utils/tokens.py",
+        "title": "tokens.py",
+        "content": "def clamp(value, low, high):\n    return max(low, min(value, high))\n",
+    },
 ]
 
-_p = argparse.ArgumentParser(description="Read GitHub through the official PyGithub against the mock.")
+_p = argparse.ArgumentParser(
+    description="Read GitHub through the official PyGithub against the mock."
+)
 _p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-_p.add_argument("--token", help="mock bearer token from GET /_mock/users "
-                                "(default: the admin token, which sees everything)")
+_p.add_argument(
+    "--token",
+    help="mock bearer token from GET /_mock/users "
+    "(default: the admin token, which sees everything)",
+)
 args = _p.parse_args()
 
 with serve_or_connect(CORPUS, url=args.url) as mock:

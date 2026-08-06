@@ -5,6 +5,7 @@ Everything here runs against a throwaway SDL that no vendor uses, so these asser
 error envelope, context plumbing) and never a vendor's schema. Per-source endpoint /
 search tests belong to the Fireflies and Linear test files.
 """
+
 from __future__ import annotations
 
 import json
@@ -66,6 +67,7 @@ def gql() -> engine.Engine:
 
 # --- field selection ------------------------------------------------------------
 
+
 def test_selection_returns_only_the_requested_fields(gql):
     r = gql.execute('{ widget(id: "w1") { name } }')
     assert r.payload == {"data": {"widget": {"name": "Gateway"}}}
@@ -89,6 +91,7 @@ def test_null_result_for_a_nullable_field(gql):
 
 # --- aliases / fragments --------------------------------------------------------
 
+
 def test_aliases_name_each_selection_independently(gql):
     r = gql.execute('{ a: widget(id: "w1") { name } b: widget(id: "w2") { name } }')
     assert r.payload["data"] == {"a": {"name": "Gateway"}, "b": {"name": "Worker"}}
@@ -106,19 +109,21 @@ def test_inline_fragment_is_spread_into_the_selection(gql):
 
 # --- variables ------------------------------------------------------------------
 
+
 def test_variables_are_coerced_and_passed_to_resolvers(gql):
-    r = gql.execute('query W($id: ID!) { widget(id: $id) { name } }', variables={"id": "w2"})
+    r = gql.execute("query W($id: ID!) { widget(id: $id) { name } }", variables={"id": "w2"})
     assert r.payload["data"] == {"widget": {"name": "Worker"}}
 
 
 def test_uncoercible_variable_is_a_request_error(gql):
-    r = gql.execute('query W($id: ID!) { widget(id: $id) { name } }', variables={"id": {"x": 1}})
+    r = gql.execute("query W($id: ID!) { widget(id: $id) { name } }", variables={"id": {"x": 1}})
     assert r.request_error is True
     assert "data" not in r.payload
     assert "$id" in r.payload["errors"][0]["message"]
 
 
 # --- directives -----------------------------------------------------------------
+
 
 def test_include_directive_drops_the_field_when_false(gql):
     q = 'query W($show: Boolean!) { widget(id: "w1") { name size @include(if: $show) } }'
@@ -134,6 +139,7 @@ def test_skip_directive_drops_the_field_when_true(gql):
 
 # --- introspection --------------------------------------------------------------
 
+
 def test_introspection_reports_the_query_root(gql):
     r = gql.execute("{ __schema { queryType { name } } }")
     assert r.payload["data"]["__schema"]["queryType"]["name"] == "Query"
@@ -146,6 +152,7 @@ def test_introspection_reports_a_types_fields(gql):
 
 
 # --- error envelope -------------------------------------------------------------
+
 
 def test_malformed_document_returns_a_graphql_error_envelope(gql):
     r = gql.execute("{ widget(id: }")
@@ -185,6 +192,7 @@ def test_partial_data_survives_alongside_an_error(gql):
 
 # --- operation selection --------------------------------------------------------
 
+
 def test_operation_name_picks_the_operation_to_run(gql):
     q = 'query A { widget(id: "w1") { name } } query B { widget(id: "w2") { name } }'
     r = gql.execute(q, operation_name="B")
@@ -200,12 +208,14 @@ def test_ambiguous_operation_without_a_name_is_a_request_error(gql):
 
 # --- context --------------------------------------------------------------------
 
+
 def test_context_is_visible_to_resolvers(gql):
     r = gql.execute("{ caller }", context={"caller": "ava@acme.com"})
     assert r.payload["data"] == {"caller": "ava@acme.com"}
 
 
 # --- request body (GraphQL over HTTP) -------------------------------------------
+
 
 def test_execute_request_runs_the_body_query(gql):
     body = json.dumps({"query": '{ widget(id: "w1") { name } }'}).encode()
@@ -214,12 +224,14 @@ def test_execute_request_runs_the_body_query(gql):
 
 
 def test_execute_request_honours_variables_and_operation_name(gql):
-    body = json.dumps({
-        "query": 'query A { widget(id: "w1") { name } } '
-                 'query B($id: ID!) { widget(id: $id) { name } }',
-        "variables": {"id": "w2"},
-        "operationName": "B",
-    }).encode()
+    body = json.dumps(
+        {
+            "query": 'query A { widget(id: "w1") { name } } '
+            "query B($id: ID!) { widget(id: $id) { name } }",
+            "variables": {"id": "w2"},
+            "operationName": "B",
+        }
+    ).encode()
     r = gql.execute_request(body)
     assert r.payload["data"] == {"widget": {"name": "Worker"}}
 
@@ -245,6 +257,7 @@ def test_execute_request_rejects_non_object_variables(gql):
 
 
 # --- resolver binding -----------------------------------------------------------
+
 
 def test_binding_a_resolver_to_an_unknown_field_fails_loudly():
     with pytest.raises(ValueError, match="Query.nosuchfield"):
@@ -284,8 +297,12 @@ type Document {
 
 def _resolve_documents(_root, info, source, limit=None):
     ctx = info.context
-    rows = store.list_documents(ctx["conn"], source, visible_ids=ctx["visible_ids"],
-                                limit=pagination.clamp_limit(limit, 10, 50))
+    rows = store.list_documents(
+        ctx["conn"],
+        source,
+        visible_ids=ctx["visible_ids"],
+        limit=pagination.clamp_limit(limit, 10, 50),
+    )
     return [{"id": r["doc_id"], "title": r["title"]} for r in rows]
 
 
@@ -303,10 +320,10 @@ def acme_client(db, acl):
     async def graphql_endpoint(request: Request):
         caller = auth.resolve_api_key(request)
         if caller is None:
-            return JSONResponse({"errors": [{"message": "Authentication required"}]},
-                                status_code=401)
-        context = {"conn": auth.conn(request),
-                   "visible_ids": auth.visible_ids(request, caller)}
+            return JSONResponse(
+                {"errors": [{"message": "Authentication required"}]}, status_code=401
+            )
+        context = {"conn": auth.conn(request), "visible_ids": auth.visible_ids(request, caller)}
         result = ACME.execute_request(await request.body(), context=context)
         return JSONResponse(result.payload, status_code=400 if result.request_error else 200)
 
@@ -322,8 +339,11 @@ QUERY = '{ documents(source: "confluence") { id title } }'
 
 
 def test_mounted_endpoint_answers_a_post(acme_client, sample_settings):
-    r = acme_client.post("/acme/graphql", json={"query": QUERY},
-                         headers={"Authorization": sample_settings.admin_token})
+    r = acme_client.post(
+        "/acme/graphql",
+        json={"query": QUERY},
+        headers={"Authorization": sample_settings.admin_token},
+    )
     assert r.status_code == 200
     assert _titles(r) == {"Engineering Handbook", "On-call Runbook", "Compensation Bands 2026"}
 
@@ -334,9 +354,13 @@ def test_mounted_endpoint_rejects_a_missing_credential(acme_client):
 
 
 def test_mounted_endpoint_returns_a_graphql_envelope_for_a_malformed_document(
-        acme_client, sample_settings):
-    r = acme_client.post("/acme/graphql", json={"query": "{ documents(source: }"},
-                         headers={"Authorization": sample_settings.admin_token})
+    acme_client, sample_settings
+):
+    r = acme_client.post(
+        "/acme/graphql",
+        json={"query": "{ documents(source: }"},
+        headers={"Authorization": sample_settings.admin_token},
+    )
     assert r.status_code == 400
     body = r.json()
     # The failure mode this guards against: FastAPI answering with its own
@@ -347,20 +371,25 @@ def test_mounted_endpoint_returns_a_graphql_envelope_for_a_malformed_document(
 
 
 def test_mounted_endpoint_returns_a_graphql_envelope_for_a_non_json_body(
-        acme_client, sample_settings):
-    r = acme_client.post("/acme/graphql", content=b"not json",
-                         headers={"Authorization": sample_settings.admin_token,
-                                  "Content-Type": "application/json"})
+    acme_client, sample_settings
+):
+    r = acme_client.post(
+        "/acme/graphql",
+        content=b"not json",
+        headers={"Authorization": sample_settings.admin_token, "Content-Type": "application/json"},
+    )
     assert r.status_code == 400
     assert r.json()["errors"][0]["message"] == "POST body sent invalid JSON."
 
 
 def test_acl_filters_results_through_the_resolver_context(acme_client, tokens):
     """Same query, two callers: each sees only what the ACL grants them."""
-    ava = acme_client.post("/acme/graphql", json={"query": QUERY},
-                           headers={"Authorization": tokens["ava@acme.com"]})
-    hana = acme_client.post("/acme/graphql", json={"query": QUERY},
-                            headers={"Authorization": tokens["hana@acme.com"]})
+    ava = acme_client.post(
+        "/acme/graphql", json={"query": QUERY}, headers={"Authorization": tokens["ava@acme.com"]}
+    )
+    hana = acme_client.post(
+        "/acme/graphql", json={"query": QUERY}, headers={"Authorization": tokens["hana@acme.com"]}
+    )
     # cf-comp is visibility=group on `people`; ava is engineering, hana is people.
     assert _titles(ava) == {"Engineering Handbook", "On-call Runbook"}
     assert "Compensation Bands 2026" in _titles(hana)

@@ -9,6 +9,7 @@ The only change from talking to real Notion is ``base_url`` — point it at the 
 prefix (the SDK appends ``/v1/`` itself). The mock defaults to the ``2025-09-03`` API version, so
 a database exposes a *data source* you query for its rows.
 """
+
 import argparse
 
 from notion_client import Client
@@ -16,23 +17,43 @@ from notion_client import Client
 from _mockserver import serve_or_connect
 
 CORPUS = [
-    {"source_type": "notion", "teamspace": "engineering", "title": "On-call Runbook",
-     "content": "# On-call\n\nCheck dashboards, roll back, page on-call.",
-     "comments": [{"content": "add the rate-limiter rollback step"}]},
-    {"source_type": "notion", "teamspace": "engineering", "subtype": "database",
-     "title": "Eng Tasks", "content": "Team task tracker.",
-     "properties": {"Status": {"type": "select"}, "Priority": {"type": "select"}}},
-    {"source_type": "notion", "teamspace": "engineering", "title": "Fix gateway 502s",
-     "content": "Investigate token-bucket refill.", "parent": "eng-tasks-db",
-     "doc_id": "eng-task-1", "properties": {"Status": "In Progress", "Priority": "High"}},
+    {
+        "source_type": "notion",
+        "teamspace": "engineering",
+        "title": "On-call Runbook",
+        "content": "# On-call\n\nCheck dashboards, roll back, page on-call.",
+        "comments": [{"content": "add the rate-limiter rollback step"}],
+    },
+    {
+        "source_type": "notion",
+        "teamspace": "engineering",
+        "subtype": "database",
+        "title": "Eng Tasks",
+        "content": "Team task tracker.",
+        "properties": {"Status": {"type": "select"}, "Priority": {"type": "select"}},
+    },
+    {
+        "source_type": "notion",
+        "teamspace": "engineering",
+        "title": "Fix gateway 502s",
+        "content": "Investigate token-bucket refill.",
+        "parent": "eng-tasks-db",
+        "doc_id": "eng-task-1",
+        "properties": {"Status": "In Progress", "Priority": "High"},
+    },
 ]
 # give the database a stable doc_id so the row above can parent to it
 CORPUS[1]["doc_id"] = "eng-tasks-db"
 
-_p = argparse.ArgumentParser(description="Read Notion through the official notion-client SDK against the mock.")
+_p = argparse.ArgumentParser(
+    description="Read Notion through the official notion-client SDK against the mock."
+)
 _p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-_p.add_argument("--token", help="mock bearer token from GET /_mock/users "
-                                "(default: the admin token, which sees everything)")
+_p.add_argument(
+    "--token",
+    help="mock bearer token from GET /_mock/users "
+    "(default: the admin token, which sees everything)",
+)
 args = _p.parse_args()
 
 with serve_or_connect(CORPUS, url=args.url) as mock:
@@ -43,8 +64,7 @@ with serve_or_connect(CORPUS, url=args.url) as mock:
     results = notion.search(query="on-call")["results"]
     print(f"search 'on-call' → {len(results)} result(s)")
     for r in results:
-        title_prop = (r.get("properties", {}).get("title", {}).get("title")
-                      or r.get("title") or [])
+        title_prop = r.get("properties", {}).get("title", {}).get("title") or r.get("title") or []
         title = title_prop[0]["plain_text"] if title_prop else "(untitled)"
         print(f"  - {r['object']}: {title}")
 

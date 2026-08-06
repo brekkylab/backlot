@@ -16,6 +16,7 @@ it straight at the mock — no monkeypatch (unlike Google). mirage sends ``Notio
 With ``--fuse`` the tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read with
 plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
 """
+
 import argparse
 import os
 import subprocess
@@ -26,15 +27,30 @@ from mirage.resource.notion import NotionConfig, NotionResource
 from _mirage import FUSE_HELP, lines, notion_base_url, run_mirage, serve_or_connect
 
 CORPUS = [
-    {"source_type": "notion", "teamspace": "engineering", "title": "On-call Runbook",
-     "content": "# On-call\n\nCheck dashboards, roll back, page on-call.",
-     "comments": [{"content": "add the rate-limiter rollback step"}]},
-    {"source_type": "notion", "teamspace": "engineering", "subtype": "database",
-     "title": "Eng Tasks", "content": "Team task tracker.", "doc_id": "eng-tasks-db",
-     "properties": {"Status": {"type": "select"}, "Priority": {"type": "select"}}},
-    {"source_type": "notion", "teamspace": "engineering", "title": "Fix gateway 502s",
-     "content": "Investigate token-bucket refill.", "parent": "eng-tasks-db",
-     "properties": {"Status": "In Progress", "Priority": "High"}},
+    {
+        "source_type": "notion",
+        "teamspace": "engineering",
+        "title": "On-call Runbook",
+        "content": "# On-call\n\nCheck dashboards, roll back, page on-call.",
+        "comments": [{"content": "add the rate-limiter rollback step"}],
+    },
+    {
+        "source_type": "notion",
+        "teamspace": "engineering",
+        "subtype": "database",
+        "title": "Eng Tasks",
+        "content": "Team task tracker.",
+        "doc_id": "eng-tasks-db",
+        "properties": {"Status": {"type": "select"}, "Priority": {"type": "select"}},
+    },
+    {
+        "source_type": "notion",
+        "teamspace": "engineering",
+        "title": "Fix gateway 502s",
+        "content": "Investigate token-bucket refill.",
+        "parent": "eng-tasks-db",
+        "properties": {"Status": "In Progress", "Priority": "High"},
+    },
 ]
 
 
@@ -79,9 +95,15 @@ def main_fuse(resource) -> None:
             if pages:
                 page_json = f"{mnt}/pages/{pages[0]}/page.json"
                 print(f"\n$ head -c 200 pages/{pages[0]}/page.json")
-                print("  " + open(page_json).read(200).replace("\n", " "))  # a genuine open() via FUSE
-                count = subprocess.run(["grep", "-c", ".", page_json], capture_output=True, text=True)
-                print(f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}")
+                print(
+                    "  " + open(page_json).read(200).replace("\n", " ")
+                )  # a genuine open() via FUSE
+                count = subprocess.run(
+                    ["grep", "-c", ".", page_json], capture_output=True, text=True
+                )
+                print(
+                    f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"
+                )
             print(f"\nexplore it live in another terminal:  ls {mnt}/pages {mnt}/databases")
     except (ImportError, RuntimeError, OSError) as e:
         raise SystemExit(FUSE_HELP.format(err=e))
@@ -90,9 +112,14 @@ def main_fuse(resource) -> None:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Read Notion through mirage against the mock.")
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-    p.add_argument("--token", help="mock bearer token from GET /_mock/users "
-                                   "(default: the admin token, which sees everything)")
-    p.add_argument("--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)")
+    p.add_argument(
+        "--token",
+        help="mock bearer token from GET /_mock/users "
+        "(default: the admin token, which sees everything)",
+    )
+    p.add_argument(
+        "--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)"
+    )
     return p.parse_args()
 
 

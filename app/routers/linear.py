@@ -14,6 +14,7 @@ Status codes follow the GraphQL-over-HTTP split the engine already draws: a **re
 while a **field** error mid-execution is a 200 carrying partial ``data`` alongside ``errors``.
 Real Linear draws the line in the same place, and generated clients branch on it.
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
@@ -41,10 +42,19 @@ async def graphql(request: Request):
         # Real Linear answers a bad credential with a GraphQL error envelope and a 401, not a
         # framework 403 — clients parse `errors[0].message`.
         return JSONResponse(
-            {"errors": [{"message": "Authentication required",
-                         "extensions": {"type": "authentication error",
-                                        "userPresentableMessage": "Invalid API key"}}]},
-            status_code=401)
+            {
+                "errors": [
+                    {
+                        "message": "Authentication required",
+                        "extensions": {
+                            "type": "authentication error",
+                            "userPresentableMessage": "Invalid API key",
+                        },
+                    }
+                ]
+            },
+            status_code=401,
+        )
     state = request.app.state
     context = {
         "conn": auth.conn(request),

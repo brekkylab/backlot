@@ -16,6 +16,7 @@ One contract deserves calling out because getting it wrong hangs clients rather 
 official client's ``fetch_all`` loops until a page has **no** ``paging.next``, so the last page must
 omit it. :func:`_page` is the single place that decides this.
 """
+
 from __future__ import annotations
 
 import re
@@ -42,6 +43,7 @@ _ASSOC_PAGE_MAX = 500
 # Query params are documented with openapi_extra (merges with path params, no signature change);
 # POST bodies are read via _json_body, so they are declared as a requestBody the same way.
 
+
 class _HLoose(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -59,36 +61,75 @@ class HubspotPage(_HLoose):
 # `associations` expansion are not implemented, and declaring them would have clients ask for data
 # that silently never arrives (worse for `propertiesWithHistory`, which also makes the official
 # client drop its page size to 50).
-_P_LIST = [qp("limit", "integer"), qp("after"), qp("properties"),
-           qp("archived", "boolean")]
+_P_LIST = [qp("limit", "integer"), qp("after"), qp("properties"), qp("archived", "boolean")]
 _P_READ = [qp("properties"), qp("archived", "boolean")]
 _P_ASSOC = [qp("limit", "integer"), qp("after")]
 
-_FILTER_SCHEMA = {"type": "object", "properties": {
-    "propertyName": {"type": "string"}, "operator": {"type": "string"},
-    "value": {"type": "string"}, "values": {"type": "array", "items": {"type": "string"}},
-    "highValue": {"type": "string"}}}
-_B_SEARCH = {"requestBody": {"content": {"application/json": {"schema": {
-    "type": "object", "properties": {
-        "filterGroups": {"type": "array", "items": {"type": "object", "properties": {
-            "filters": {"type": "array", "items": _FILTER_SCHEMA}}}},
-        "sorts": {"type": "array", "items": {"type": "object"}},
-        "query": {"type": "string"},
-        "properties": {"type": "array", "items": {"type": "string"}},
-        "limit": {"type": "integer"}, "after": {"type": "string"}}}}}}}
-_B_BATCH = {"requestBody": {"content": {"application/json": {"schema": {
-    "type": "object", "properties": {
-        "inputs": {"type": "array", "items": {"type": "object",
-                                              "properties": {"id": {"type": "string"}}}},
-        "properties": {"type": "array", "items": {"type": "string"}},
-        "idProperty": {"type": "string"}}}}}}}
+_FILTER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "propertyName": {"type": "string"},
+        "operator": {"type": "string"},
+        "value": {"type": "string"},
+        "values": {"type": "array", "items": {"type": "string"}},
+        "highValue": {"type": "string"},
+    },
+}
+_B_SEARCH = {
+    "requestBody": {
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "filterGroups": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "filters": {"type": "array", "items": _FILTER_SCHEMA}
+                                },
+                            },
+                        },
+                        "sorts": {"type": "array", "items": {"type": "object"}},
+                        "query": {"type": "string"},
+                        "properties": {"type": "array", "items": {"type": "string"}},
+                        "limit": {"type": "integer"},
+                        "after": {"type": "string"},
+                    },
+                }
+            }
+        }
+    }
+}
+_B_BATCH = {
+    "requestBody": {
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "inputs": {
+                            "type": "array",
+                            "items": {"type": "object", "properties": {"id": {"type": "string"}}},
+                        },
+                        "properties": {"type": "array", "items": {"type": "string"}},
+                        "idProperty": {"type": "string"},
+                    },
+                }
+            }
+        }
+    }
+}
 
 
 # --------------------------------------------------------------------------- helpers
 
+
 def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSONResponse:
-    return JSONResponse(status_code=status,
-                        content={"status": "error", "message": message, "category": category})
+    return JSONResponse(
+        status_code=status, content={"status": "error", "message": message, "category": category}
+    )
 
 
 def _doc_id_for(request: Request, record_id: str) -> str | None:
@@ -155,18 +196,33 @@ def _keep(raw) -> list[str] | None:
 # HubSpot's standard CRM objects exist in every portal whether or not any records do, so an empty
 # `deals` is an empty listing rather than an unknown type. Custom objects exist only where defined,
 # which for this mock means present in the corpus.
-_STANDARD_OBJECT_TYPES = frozenset({
-    "contacts", "companies", "deals", "tickets", "line_items", "products", "quotes",
-    "notes", "emails", "meetings", "calls", "tasks", "feedback_submissions",
-})
+_STANDARD_OBJECT_TYPES = frozenset(
+    {
+        "contacts",
+        "companies",
+        "deals",
+        "tickets",
+        "line_items",
+        "products",
+        "quotes",
+        "notes",
+        "emails",
+        "meetings",
+        "calls",
+        "tasks",
+        "feedback_submissions",
+    }
+)
 
 
 def _known_type(request: Request, object_type: str) -> bool:
     """Whether this object type exists at all — a standard CRM object, or a custom one the corpus
     defines. Deliberately independent of the caller's ACL and of whether any record is visible: a
     type whose every record the caller cannot read still exists and still returns an empty page."""
-    return (object_type in _STANDARD_OBJECT_TYPES
-            or store.get_container(auth.conn(request), "hubspot", object_type) is not None)
+    return (
+        object_type in _STANDARD_OBJECT_TYPES
+        or store.get_container(auth.conn(request), "hubspot", object_type) is not None
+    )
 
 
 def _resolve_cursor(request: Request, after: str | None):
@@ -182,6 +238,7 @@ def _resolve_cursor(request: Request, after: str | None):
 
 
 # --------------------------------------------------------------------------- search filters
+
 
 def _num(v):
     try:
@@ -217,8 +274,7 @@ def _token_patterns(target: str) -> tuple:
     whole haystack to test a couple of needle tokens: both are wasted. Compiling per needle (cached)
     and searching the haystack lets a miss bail on the first absent token instead of building a full
     token set for every row."""
-    return tuple(re.compile(f"(?<!{_TOK}){re.escape(t)}(?!{_TOK})")
-                 for t in _tokens(target))
+    return tuple(re.compile(f"(?<!{_TOK}){re.escape(t)}(?!{_TOK})") for t in _tokens(target))
 
 
 def _match_one(prop, f: dict) -> bool:
@@ -264,10 +320,13 @@ def _match_one(prop, f: dict) -> bool:
         t_num = _num(target)
         for c in cands:
             c_num = _num(c)
-            a, b = ((c_num, t_num) if c_num is not None and t_num is not None
-                    else (c, str(target)))
-            if (op == "LT" and a < b) or (op == "LTE" and a <= b) \
-                    or (op == "GT" and a > b) or (op == "GTE" and a >= b):
+            a, b = (c_num, t_num) if c_num is not None and t_num is not None else (c, str(target))
+            if (
+                (op == "LT" and a < b)
+                or (op == "LTE" and a <= b)
+                or (op == "GT" and a > b)
+                or (op == "GTE" and a >= b)
+            ):
                 return True
         return False
     return False
@@ -287,16 +346,16 @@ def _sorted(rows, sorts):
     decorated = [(_props(r).get(name), r) for r in rows]
     vals = [v for v, _ in decorated]
     numeric = any(v is not None for v in vals) and all(
-        _num(v) is not None for v in vals if v is not None)
+        _num(v) is not None for v in vals if v is not None
+    )
 
     def key(pair):
         v = pair[0]
-        if v is None:                       # absent sorts last in both directions
+        if v is None:  # absent sorts last in both directions
             return (1, 0.0 if numeric else "")
         return (0, _num(v) if numeric else str(v))
 
-    decorated.sort(key=key,
-                   reverse=str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING")
+    decorated.sort(key=key, reverse=str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING")
     return [r for _, r in decorated]
 
 
@@ -320,12 +379,12 @@ def _sql_prefilter(body: dict):
     if len(groups) != 1 or (body.get("query") or "").strip():
         return None
     frags, params = [], []
-    for f in (groups[0].get("filters") or []):
+    for f in groups[0].get("filters") or []:
         if not isinstance(f, dict) or not f.get("propertyName"):
             return None
         name, op = f["propertyName"], (f.get("operator") or "EQ").upper()
         if not name.isascii() or not name.replace("_", "").isalnum():
-            return None                      # keep the JSON path a literal we can trust
+            return None  # keep the JSON path a literal we can trust
         path = f"$.{name}"
         if op == "HAS_PROPERTY":
             frags.append("json_extract(properties, ?) IS NOT NULL")
@@ -334,15 +393,16 @@ def _sql_prefilter(body: dict):
             # The value (or every needle token) must appear somewhere in the properties text. True
             # whether the property holds a scalar or a list, which is why this is a substring test
             # rather than an equality one.
-            needles = ([f.get("value")] if op != "IN" else list(f.get("values") or []))
+            needles = [f.get("value")] if op != "IN" else list(f.get("values") or [])
             if op == "CONTAINS_TOKEN":
                 needles = list(_tokens(str(f.get("value") or "")))
             vals = [_ascii_scalar(v) for v in needles]
             if not vals or any(v is None for v in vals):
                 return None
             if op == "IN":
-                frags.append("(" + " OR ".join(["instr(lower(properties), lower(?)) > 0"] * len(vals))
-                             + ")")
+                frags.append(
+                    "(" + " OR ".join(["instr(lower(properties), lower(?)) > 0"] * len(vals)) + ")"
+                )
             else:
                 frags += ["instr(lower(properties), lower(?)) > 0"] * len(vals)
             params += vals
@@ -360,15 +420,20 @@ def _matches(row, body: dict) -> bool:
     if not groups:
         return True
     props = _props(row)
-    return any(all(_match_one(props.get(f.get("propertyName")), f)
-                   for f in (g.get("filters") or []))
-               for g in groups)
+    return any(
+        all(_match_one(props.get(f.get("propertyName")), f) for f in (g.get("filters") or []))
+        for g in groups
+    )
 
 
 # --------------------------------------------------------------------------- routes
 
-@router.get("/crm/v3/objects/{object_type}", response_model=HubspotPage,
-            openapi_extra={"parameters": _P_LIST})
+
+@router.get(
+    "/crm/v3/objects/{object_type}",
+    response_model=HubspotPage,
+    openapi_extra={"parameters": _P_LIST},
+)
 async def list_objects(object_type: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
@@ -381,28 +446,39 @@ async def list_objects(object_type: str, request: Request):
     if err is not None:
         return err
     rows = store.list_hubspot_objects(
-        auth.conn(request), object_type, after_doc_id=after_doc,
-        visible_ids=auth.visible_ids(request, caller), limit=limit + 1,
-        archived=_flag(qp.get("archived")))
+        auth.conn(request),
+        object_type,
+        after_doc_id=after_doc,
+        visible_ids=auth.visible_ids(request, caller),
+        limit=limit + 1,
+        archived=_flag(qp.get("archived")),
+    )
     return _page(rows, limit, _keep(qp.get("properties")))
 
 
-@router.get("/crm/v3/objects/{object_type}/{record_id}", response_model=HubspotObject,
-            openapi_extra={"parameters": _P_READ})
+@router.get(
+    "/crm/v3/objects/{object_type}/{record_id}",
+    response_model=HubspotObject,
+    openapi_extra={"parameters": _P_READ},
+)
 async def get_object(object_type: str, record_id: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     doc_id = _doc_id_for(request, record_id)
-    row = (store.get_document(auth.conn(request), "hubspot", doc_id,
-                              auth.visible_ids(request, caller)) if doc_id else None)
+    row = (
+        store.get_document(auth.conn(request), "hubspot", doc_id, auth.visible_ids(request, caller))
+        if doc_id
+        else None
+    )
     if row is None or row["object_type"] != object_type:
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")
     return _record(row, _keep(request.query_params.get("properties")))
 
 
-@router.post("/crm/v3/objects/{object_type}/search", response_model=HubspotPage,
-             openapi_extra=_B_SEARCH)
+@router.post(
+    "/crm/v3/objects/{object_type}/search", response_model=HubspotPage, openapi_extra=_B_SEARCH
+)
 async def search_objects(object_type: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
@@ -425,15 +501,22 @@ async def search_objects(object_type: str, request: Request):
     # Read only the columns the scan will actually use. `title`/`content` are needed solely to match
     # a free-text `query`, and `content` is the widest column there is (a note's whole body), so
     # pulling it for every row of a 69k-row object type dwarfs the filtering itself.
-    cols = ("doc_id, object_type, properties, archived, created_ts, updated_ts, owner_display"
-            + (", title, content" if (body.get("query") or "").strip() else ""))
+    cols = "doc_id, object_type, properties, archived, created_ts, updated_ts, owner_display" + (
+        ", title, content" if (body.get("query") or "").strip() else ""
+    )
     pre = _sql_prefilter(body)
     hits: list = []
     cursor = None
     while True:
-        batch = store.list_hubspot_objects(conn, object_type, after_doc_id=cursor,
-                                           visible_ids=visible, limit=2000, columns=cols,
-                                           prefilter=pre)
+        batch = store.list_hubspot_objects(
+            conn,
+            object_type,
+            after_doc_id=cursor,
+            visible_ids=visible,
+            limit=2000,
+            columns=cols,
+            prefilter=pre,
+        )
         if not batch:
             break
         cursor = batch[-1]["doc_id"]
@@ -445,14 +528,15 @@ async def search_objects(object_type: str, request: Request):
         ids = [r["doc_id"] for r in hits]
         if after_doc not in ids:
             return _error(400, f"Invalid 'after' cursor: {body.get('after')}")
-        hits = hits[ids.index(after_doc) + 1:]
+        hits = hits[ids.index(after_doc) + 1 :]
     out = _page(hits, limit, _keep(body.get("properties")))
     out["total"] = total
     return out
 
 
-@router.post("/crm/v3/objects/{object_type}/batch/read", response_model=HubspotPage,
-             openapi_extra=_B_BATCH)
+@router.post(
+    "/crm/v3/objects/{object_type}/batch/read", response_model=HubspotPage, openapi_extra=_B_BATCH
+)
 async def batch_read(object_type: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
@@ -468,10 +552,15 @@ async def batch_read(object_type: str, request: Request):
         doc_id = _doc_id_for(request, rid)
         row = store.get_document(conn, "hubspot", doc_id, visible) if doc_id else None
         if row is None or row["object_type"] != object_type:
-            errors.append({"status": "error", "category": "OBJECT_NOT_FOUND",
-                           "message": f"Could not get some {object_type}. Some of the ids provided "
-                                      f"were not found.",
-                           "context": {"id": [rid]}})
+            errors.append(
+                {
+                    "status": "error",
+                    "category": "OBJECT_NOT_FOUND",
+                    "message": f"Could not get some {object_type}. Some of the ids provided "
+                    f"were not found.",
+                    "context": {"id": [rid]},
+                }
+            )
             continue
         results.append(_record(row, keep))
     # A partial batch is **207** with `numErrors` + `errors`, and `status` stays COMPLETE — its
@@ -485,10 +574,14 @@ async def batch_read(object_type: str, request: Request):
     return JSONResponse(status_code=207, content=out)
 
 
-@router.get("/crm/v4/objects/{object_type}/{record_id}/associations/{to_object_type}",
-            response_model=HubspotPage, openapi_extra={"parameters": _P_ASSOC})
-async def list_associations(object_type: str, record_id: str, to_object_type: str,
-                            request: Request):
+@router.get(
+    "/crm/v4/objects/{object_type}/{record_id}/associations/{to_object_type}",
+    response_model=HubspotPage,
+    openapi_extra={"parameters": _P_ASSOC},
+)
+async def list_associations(
+    object_type: str, record_id: str, to_object_type: str, request: Request
+):
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
@@ -503,15 +596,26 @@ async def list_associations(object_type: str, record_id: str, to_object_type: st
         return err
     # limit+1 for the same reason listings do it: the extra row is the only evidence of a further
     # page, and without paging here every association past the first page would be unreachable.
-    rows = store.hubspot_associations(conn, doc_id, to_object_type, after_to_doc_id=after_to,
-                                      visible_ids=visible, limit=limit + 1)
+    rows = store.hubspot_associations(
+        conn, doc_id, to_object_type, after_to_doc_id=after_to, visible_ids=visible, limit=limit + 1
+    )
     has_more = len(rows) > limit
     rows = rows[:limit]
-    out: dict = {"results": [{
-        "toObjectId": synth.hubspot_record_id(r["to_doc_id"]),
-        "associationTypes": [{"category": r["assoc_category"], "typeId": r["assoc_type_id"],
-                              "label": r["label"]}],
-    } for r in rows]}
+    out: dict = {
+        "results": [
+            {
+                "toObjectId": synth.hubspot_record_id(r["to_doc_id"]),
+                "associationTypes": [
+                    {
+                        "category": r["assoc_category"],
+                        "typeId": r["assoc_type_id"],
+                        "label": r["label"],
+                    }
+                ],
+            }
+            for r in rows
+        ]
+    }
     if has_more:
         after = out["results"][-1]["toObjectId"]
         out["paging"] = {"next": {"after": after, "link": f"?after={after}"}}

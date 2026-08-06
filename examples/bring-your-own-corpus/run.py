@@ -9,6 +9,7 @@ serving until you press Ctrl+C.
 
 Swap CORPUS for your own JSONL to serve your own documents.
 """
+
 import json
 import subprocess
 import sys
@@ -26,7 +27,9 @@ from _common.mockserver import ROOT, mock_server  # noqa: E402
 CORPUS = Path(__file__).resolve().parent / "sample_corpus.jsonl"
 
 # 1. Validate the corpus against schemas/ before serving anything (the same CLI you'd run by hand).
-if subprocess.run([sys.executable, "-m", "app.importer.byo", str(CORPUS), "--dry-run"], cwd=ROOT).returncode:
+if subprocess.run(
+    [sys.executable, "-m", "app.importer.byo", str(CORPUS), "--dry-run"], cwd=ROOT
+).returncode:
     raise SystemExit("corpus is invalid")
 
 # 2. Serve it with a real mock server and keep it running until Ctrl+C.

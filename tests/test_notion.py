@@ -3,6 +3,7 @@
 One file per router, so a provider's shape assertions live in one place whether they go over HTTP
 or call the response builder directly.
 """
+
 from __future__ import annotations
 
 from app import store, synth
@@ -30,16 +31,19 @@ def test_notion_dashless_id_resolves(client, admin_h):
 def test_notion_search_and_comments(client, admin_h):
     s = client.post("/notion/v1/search", json={"query": "on-call"}, headers=admin_h).json()
     assert any(r["id"] == synth.notion_id("nt-runbook") for r in s["results"])
-    c = client.get("/notion/v1/comments", params={"block_id": synth.notion_id("nt-runbook")},
-                   headers=admin_h).json()
+    c = client.get(
+        "/notion/v1/comments", params={"block_id": synth.notion_id("nt-runbook")}, headers=admin_h
+    ).json()
     assert c["results"][0]["rich_text"][0]["plain_text"] == "add rate-limiter step"
     assert c["results"][0]["object"] == "comment"
 
 
 def test_notion_search_filter_database_only(client, admin_h):
-    s = client.post("/notion/v1/search",
-                    json={"query": "", "filter": {"property": "object", "value": "database"}},
-                    headers=admin_h).json()
+    s = client.post(
+        "/notion/v1/search",
+        json={"query": "", "filter": {"property": "object", "value": "database"}},
+        headers=admin_h,
+    ).json()
     assert s["results"] and all(r["object"] == "database" for r in s["results"])
     assert any(r["id"] == synth.notion_id("nt-tasks-db") for r in s["results"])
 
@@ -65,8 +69,12 @@ def test_notion_acl_hides_group_doc_from_outsider(client, tokens_yaml):
     assert r.status_code == 404 and r.json()["code"] == "object_not_found"
     # the owner (hana, in people) can see it
     owner = tok(tokens_yaml, "hana@acme.com")
-    assert client.get(f"/notion/v1/pages/{pid}",
-                      headers={"Authorization": f"Bearer {owner}"}).status_code == 200
+    assert (
+        client.get(
+            f"/notion/v1/pages/{pid}", headers={"Authorization": f"Bearer {owner}"}
+        ).status_code
+        == 200
+    )
 
 
 def test_notion_database_new_vs_legacy_shape(client, admin_h):
@@ -75,8 +83,9 @@ def test_notion_database_new_vs_legacy_shape(client, admin_h):
     assert new["object"] == "database"
     assert new["data_sources"][0]["id"] == synth.notion_data_source_id("nt-tasks-db")
     assert "properties" not in new
-    legacy = client.get(f"/notion/v1/databases/{did}",
-                        headers={**admin_h, "Notion-Version": "2022-06-28"}).json()
+    legacy = client.get(
+        f"/notion/v1/databases/{did}", headers={**admin_h, "Notion-Version": "2022-06-28"}
+    ).json()
     assert "properties" in legacy and "Status" in legacy["properties"]
     assert "data_sources" not in legacy
 
@@ -86,8 +95,11 @@ def test_notion_query_rows_both_paths(client, admin_h):
     dsid = synth.notion_data_source_id("nt-tasks-db")
     rows_new = client.post(f"/notion/v1/data_sources/{dsid}/query", json={}, headers=admin_h).json()
     assert any(r["id"] == synth.notion_id("nt-task-1") for r in rows_new["results"])
-    rows_legacy = client.post(f"/notion/v1/databases/{did}/query", json={},
-                              headers={**admin_h, "Notion-Version": "2022-06-28"}).json()
+    rows_legacy = client.post(
+        f"/notion/v1/databases/{did}/query",
+        json={},
+        headers={**admin_h, "Notion-Version": "2022-06-28"},
+    ).json()
     assert any(r["id"] == synth.notion_id("nt-task-1") for r in rows_legacy["results"])
 
 
@@ -98,6 +110,7 @@ def test_notion_data_source_retrieve(client, admin_h):
 
 
 # --- Notion: typed response schema ---------------------------------------------------------
+
 
 def test_notion_search_documents_body_param(client):
     op = client.get("/openapi.json").json()["paths"]["/notion/v1/search"]["post"]
@@ -121,33 +134,63 @@ def test_notion_responses_unchanged_by_enrichment(client, admin_h):
     dbs = [r for r in res["results"] if r.get("object") == "database"]
     if dbs:  # version-dependent database shape must survive both header values
         did = dbs[0]["id"]
-        legacy = client.get(f"/notion/v1/databases/{did}",
-                            headers={**admin_h, "Notion-Version": "2022-06-28"}).json()
-        default = client.get(f"/notion/v1/databases/{did}",
-                             headers={**admin_h, "Notion-Version": "2025-09-03"}).json()
+        legacy = client.get(
+            f"/notion/v1/databases/{did}", headers={**admin_h, "Notion-Version": "2022-06-28"}
+        ).json()
+        default = client.get(
+            f"/notion/v1/databases/{did}", headers={**admin_h, "Notion-Version": "2025-09-03"}
+        ).json()
         assert "properties" in legacy and "data_sources" in default
 
 
 # --- Notion ---------------------------------------------------------------------
 
+
 def _notion_conn(tmp_path):
-    s = tiny_corpus(tmp_path, [
-        {"source_type": "notion", "doc_id": "nf-page", "teamspace": "eng", "title": "Runbook",
-         "content": "# On-call\n\nRoll back and page.", "author_email": "ava@acme.com",
-         "visibility": "public", "icon": "📟",
-         "comments": [{"content": "add rate-limiter step", "author_email": "bob@acme.com"}]},
-        {"source_type": "notion", "doc_id": "nf-db", "subtype": "database", "teamspace": "eng",
-         "title": "Tasks", "content": "Tracker", "author_email": "ava@acme.com",
-         "visibility": "public", "properties": {"Status": {"type": "select"}}},
-        {"source_type": "notion", "doc_id": "nf-row", "parent": "nf-db", "teamspace": "eng",
-         "title": "Fix bug", "content": "body", "author_email": "bob@acme.com",
-         "visibility": "public", "properties": {"Status": "In Progress"}},
-    ])
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "notion",
+                "doc_id": "nf-page",
+                "teamspace": "eng",
+                "title": "Runbook",
+                "content": "# On-call\n\nRoll back and page.",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "icon": "📟",
+                "comments": [{"content": "add rate-limiter step", "author_email": "bob@acme.com"}],
+            },
+            {
+                "source_type": "notion",
+                "doc_id": "nf-db",
+                "subtype": "database",
+                "teamspace": "eng",
+                "title": "Tasks",
+                "content": "Tracker",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "properties": {"Status": {"type": "select"}},
+            },
+            {
+                "source_type": "notion",
+                "doc_id": "nf-row",
+                "parent": "nf-db",
+                "teamspace": "eng",
+                "title": "Fix bug",
+                "content": "body",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+                "properties": {"Status": "In Progress"},
+            },
+        ],
+    )
     return store.connect_ro(s.db_path)
 
 
 def test_notion_page_shape(tmp_path):
     from app.routers.notion import _page_obj
+
     conn = _notion_conn(tmp_path)
     obj = _page_obj(conn, store.get_document(conn, "notion", "nf-page"))
     assert obj["object"] == "page"
@@ -166,6 +209,7 @@ def test_notion_page_shape(tmp_path):
 
 def test_notion_database_and_data_source_shape(tmp_path):
     from app.routers.notion import _data_source_obj, _database_obj
+
     conn = _notion_conn(tmp_path)
     dbrow = store.get_document(conn, "notion", "nf-db")
     new = _database_obj(conn, dbrow, "2025-09-03")
@@ -181,6 +225,7 @@ def test_notion_database_and_data_source_shape(tmp_path):
 
 def test_notion_user_and_block_shape(tmp_path):
     from app.routers.notion import _user_obj
+
     conn = _notion_conn(tmp_path)
     u = _user_obj(conn, "ava@acme.com")
     assert u["object"] == "user" and u["type"] == "person"

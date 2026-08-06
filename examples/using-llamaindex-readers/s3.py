@@ -9,6 +9,7 @@ S3 uses an AWS access-key/secret pair (not a bearer token). With `--url` (a runn
     python examples/using-llamaindex-readers/s3.py
     python examples/using-llamaindex-readers/s3.py --url http://localhost:8000 --access-key <AK> --secret-key <sk>
 """
+
 import argparse
 import json
 import urllib.request
@@ -19,18 +20,34 @@ from _llamaindex import patch_s3fs_walk, s3_base_url, serve_or_connect
 
 BUCKET = "eng-artifacts"
 CORPUS = [
-    {"source_type": "s3", "bucket": BUCKET, "key": "runbooks/oncall.md", "title": "On-call Runbook",
-     "content": "# On-call\nCheck dashboards, roll back, page on-call.", "content_type": "text/markdown"},
-    {"source_type": "s3", "bucket": BUCKET, "key": "design/architecture.md", "title": "Architecture",
-     "content": "Gateway, workers, and the token bucket.", "content_type": "text/markdown"},
+    {
+        "source_type": "s3",
+        "bucket": BUCKET,
+        "key": "runbooks/oncall.md",
+        "title": "On-call Runbook",
+        "content": "# On-call\nCheck dashboards, roll back, page on-call.",
+        "content_type": "text/markdown",
+    },
+    {
+        "source_type": "s3",
+        "bucket": BUCKET,
+        "key": "design/architecture.md",
+        "title": "Architecture",
+        "content": "Gateway, workers, and the token bucket.",
+        "content_type": "text/markdown",
+    },
 ]
 
 
 def build(mock, access_key, secret_key):
     patch_s3fs_walk()  # fsspec/s3fs compat bug workaround; see _llamaindex.py docstring
-    return S3Reader(bucket=BUCKET, s3_endpoint_url=s3_base_url(mock.base_url),
-                    aws_access_id=access_key, aws_access_secret=secret_key,
-                    region_name="us-east-1")
+    return S3Reader(
+        bucket=BUCKET,
+        s3_endpoint_url=s3_base_url(mock.base_url),
+        aws_access_id=access_key,
+        aws_access_secret=secret_key,
+        region_name="us-east-1",
+    )
 
 
 def main(reader):
@@ -53,7 +70,9 @@ def _parse_args():
     p.add_argument("--secret-key", help="AWS secret access key (required with --url)")
     args = p.parse_args()
     if args.url and not (args.access_key and args.secret_key):
-        p.error("--access-key and --secret-key are required with --url (from GET <url>/_mock/users)")
+        p.error(
+            "--access-key and --secret-key are required with --url (from GET <url>/_mock/users)"
+        )
     return args
 
 

@@ -3,6 +3,7 @@
 The `db` fixture is built via app.importer.byo.load, which now builds the docs_fts index, so
 these exercise the real FTS path (search.messages / confluence CQL both sit on search_documents).
 """
+
 from app import store
 
 
@@ -36,7 +37,10 @@ def test_fts_acl_scoped(db, acl, tokens):
 def test_fts_source_aware_index(db):
     # the importer rebuilds docs_fts with the indexed `src` column → fast source-intersection
     assert store._fts_has_src(db)
-    assert store._fts_match("latency spike", "jira", has_src=True) == 'src:srcjira AND ("latency" AND "spike")'
+    assert (
+        store._fts_match("latency spike", "jira", has_src=True)
+        == 'src:srcjira AND ("latency" AND "spike")'
+    )
     # 'gateway' is in slack + confluence (SAMPLE); each source-scoped search returns only its
     # own rows, and a source whose title/content lacks the term returns nothing
     sl = store.search_documents(db, "gateway", "slack")
@@ -65,10 +69,14 @@ def test_fts_container_scoped(db):
 def test_fts_phrase_match_is_adjacent():
     # phrase=True requires the tokens ADJACENT (an FTS5 phrase); the default ANDs them anywhere.
     # This is what a grep push-down needs so a literal pattern isn't buried under scattered hits.
-    assert store._fts_match("upload csv", "slack", has_src=True) \
+    assert (
+        store._fts_match("upload csv", "slack", has_src=True)
         == 'src:srcslack AND ("upload" AND "csv")'
-    assert store._fts_match("upload csv", "slack", has_src=True, phrase=True) \
+    )
+    assert (
+        store._fts_match("upload csv", "slack", has_src=True, phrase=True)
         == 'src:srcslack AND ("upload csv")'
+    )
 
 
 def test_fts_phrase_boosts_literal_substring():
@@ -76,21 +84,25 @@ def test_fts_phrase_boosts_literal_substring():
     # bm25 can't tell them apart. A phrase search for "upload.csv" must still rank the doc that
     # LITERALLY contains "upload.csv" above the coincidental "upload csv" mentions.
     import sqlite3
+
     con = sqlite3.connect(":memory:")
     con.row_factory = sqlite3.Row
     con.executescript(store.SCHEMA)
     rows = [
-        ("d_space", "please upload csv " + "filler " * 20),   # tokens adjacent, no literal dot
-        ("d_literal", "the export is upload.csv exactly"),     # literal "upload.csv"
+        ("d_space", "please upload csv " + "filler " * 20),  # tokens adjacent, no literal dot
+        ("d_literal", "the export is upload.csv exactly"),  # literal "upload.csv"
     ]
     for doc_id, content in rows:
         con.execute(
             "INSERT INTO slack_messages(doc_id, channel, author_email, title, content, thread_seq, "
-            "created_ts) VALUES (?, 'eng', 'a@x.com', '', ?, 0, 1000)", (doc_id, content))
+            "created_ts) VALUES (?, 'eng', 'a@x.com', '', ?, 0, 1000)",
+            (doc_id, content),
+        )
     store.build_fts(con)
     hits = store.search_documents(con, "upload.csv", "slack", phrase=True)
-    assert [h["doc_id"] for h in hits][:2] == ["d_literal", "d_space"], \
+    assert [h["doc_id"] for h in hits][:2] == ["d_literal", "d_space"], (
         "the doc literally containing 'upload.csv' must rank first"
+    )
     # a plain (non-phrase) search does not reorder — it only ANDs the tokens
     plain = store.search_documents(con, "upload.csv", "slack")
     assert {h["doc_id"] for h in plain} == {"d_literal", "d_space"}
@@ -99,6 +111,7 @@ def test_fts_phrase_boosts_literal_substring():
 def test_search_order_by_recency():
     # Slack sort=timestamp -> results ordered by the message's own ts (newest first), NOT relevance.
     import sqlite3
+
     con = sqlite3.connect(":memory:")
     con.row_factory = sqlite3.Row
     con.executescript(store.SCHEMA)
@@ -106,7 +119,8 @@ def test_search_order_by_recency():
         con.execute(
             "INSERT INTO slack_messages(doc_id, channel, author_email, title, content, thread_seq, "
             "created_ts) VALUES (?, 'eng', 'a@x.com', '', 'quarterly planning notes', 0, ?)",
-            (doc_id, ts))
+            (doc_id, ts),
+        )
     store.build_fts(con)
     recency = store.search_documents(con, "planning", "slack", order_by="recency")
     assert [r["doc_id"] for r in recency] == ["new", "mid", "old"], "recency = newest ts first"
@@ -116,6 +130,7 @@ def test_search_order_by_recency():
 
 def test_parse_slack_query():
     from app.routers.slack import _parse_slack_query
+
     # bare terms: no scope, AND semantics
     assert _parse_slack_query("upload csv") == ("upload csv", None, False)
     # a fully quoted query -> phrase
@@ -131,6 +146,7 @@ def test_parse_slack_query():
 def test_search_channel_scope_and_phrase(db):
     # in:#<channel> narrows to that channel exactly like the container arg; a foreign channel drops it
     from app.routers.slack import _parse_slack_query
+
     terms, container, phrase = _parse_slack_query("in:#general gateway")
     assert container == "general" and not phrase
     scoped = store.search_documents(db, terms, "slack", container=container)
@@ -141,6 +157,7 @@ def test_search_channel_scope_and_phrase(db):
 
 def test_jira_text_from_jql():
     from app.routers.atlassian import _text_from_jql
+
     assert _text_from_jql('project = PAY AND text ~ "latency spike"') == "latency spike"
     assert _text_from_jql("summary ~ 'postmortem'") == "postmortem"
     assert _text_from_jql("description ~ refill") == "refill"
@@ -149,7 +166,8 @@ def test_jira_text_from_jql():
 
 def test_gmail_q_parse_and_match():
     from app.routers.google import _parse_gmail_q
-    free, ops = _parse_gmail_q('from:ceo@acme.com subject:board has:attachment quarterly')
+
+    free, ops = _parse_gmail_q("from:ceo@acme.com subject:board has:attachment quarterly")
     assert free == "quarterly"
     assert ops["from"] == ["ceo@acme.com"] and ops["subject"] == ["board"]
     assert ops["has"] == ["attachment"]
@@ -159,6 +177,7 @@ def test_gmail_relative_date_parse():
     # newer_than:/older_than: are operators (relative age), NOT free text — so they neither leak
     # into the FTS term nor drop the real free-text term beside them.
     from app.routers.google import _parse_gmail_q, _gmail_rel_secs
+
     free, ops = _parse_gmail_q("quarterly newer_than:5d older_than:1y")
     assert free == "quarterly"
     assert ops["newer_than"] == ["5d"] and ops["older_than"] == ["1y"]
@@ -172,6 +191,7 @@ def test_gmail_relative_date_query_not_zeroed(db):
     # Regression: newer_than:/older_than: used to fall through as free text, FTS-match nothing, and
     # zero out ANY relative-date query. They must filter by age (anchored to now) like real Gmail.
     from app.routers.google import _gmail_query
+
     total = len(_gmail_query(db, None, None, ""))  # whole (admin-visible) mailbox
     assert total > 0
     # a window wide enough to contain every message == the full set (parsed + honored, not zeroed)
@@ -182,7 +202,8 @@ def test_gmail_relative_date_query_not_zeroed(db):
 
 def test_github_issue_q_parse():
     from app.routers.github import _parse_issue_q
-    free, quals = _parse_issue_q('repo:acme/gateway is:pr state:closed refill bug')
+
+    free, quals = _parse_issue_q("repo:acme/gateway is:pr state:closed refill bug")
     assert free == "refill bug"
     assert quals["repo"] == ["acme/gateway"] and quals["is"] == ["pr"]
     assert quals["state"] == ["closed"]
@@ -218,6 +239,7 @@ def test_fts_s3_acl_scoped(db, acl, tokens):
 
 # --- Linear ----------------------------------------------------------------------
 
+
 def test_fts_linear_search(db):
     rows = store.search_documents(db, "token-bucket", "linear")
     assert rows and any(r["doc_id"] == "lin-rl" for r in rows)
@@ -244,6 +266,7 @@ def test_fts_linear_scoped_to_one_team(db):
 # values really do search different text. `content` is the sentences concatenated, which is what
 # makes "sentences" a column match and keeps FTS (title+content) meaningful for this source too.
 
+
 def test_fireflies_transcripts_are_in_the_shared_fts_index(db):
     rows = store.search_documents(db, "batching", "fireflies")
     assert {r["doc_id"] for r in rows} == {"ff-discovery"}
@@ -260,32 +283,40 @@ def test_fireflies_fts_indexes_the_sentence_text(db):
 def test_fireflies_scope_title_ignores_the_transcript_body(db):
     # "selects" is spoken in ff-allhands but appears in no title
     assert store.list_fireflies_transcripts(db, keyword="selects", scope="title") == []
-    assert [r["doc_id"] for r in store.list_fireflies_transcripts(
-        db, keyword="selects", scope="sentences")] == ["ff-allhands"]
+    assert [
+        r["doc_id"]
+        for r in store.list_fireflies_transcripts(db, keyword="selects", scope="sentences")
+    ] == ["ff-allhands"]
 
 
 def test_fireflies_scope_sentences_ignores_the_title(db):
     # "all-hands" is the title of ff-allhands and is never spoken in it
     assert store.list_fireflies_transcripts(db, keyword="all-hands", scope="sentences") == []
-    assert [r["doc_id"] for r in store.list_fireflies_transcripts(
-        db, keyword="all-hands", scope="title")] == ["ff-allhands"]
+    assert [
+        r["doc_id"]
+        for r in store.list_fireflies_transcripts(db, keyword="all-hands", scope="title")
+    ] == ["ff-allhands"]
 
 
 def test_fireflies_scope_all_is_the_union(db):
-    title_hits = {r["doc_id"] for r in store.list_fireflies_transcripts(
-        db, keyword="latency", scope="title")}
-    sent_hits = {r["doc_id"] for r in store.list_fireflies_transcripts(
-        db, keyword="latency", scope="sentences")}
-    all_hits = {r["doc_id"] for r in store.list_fireflies_transcripts(
-        db, keyword="latency", scope="all")}
+    title_hits = {
+        r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="title")
+    }
+    sent_hits = {
+        r["doc_id"]
+        for r in store.list_fireflies_transcripts(db, keyword="latency", scope="sentences")
+    }
+    all_hits = {
+        r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="all")
+    }
     assert all_hits == title_hits | sent_hits
-    assert title_hits and sent_hits          # both sides actually contribute
+    assert title_hits and sent_hits  # both sides actually contribute
 
 
 def test_fireflies_scope_defaults_to_all(db):
-    assert ({r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency")}
-            == {r["doc_id"] for r in store.list_fireflies_transcripts(
-                db, keyword="latency", scope="all")})
+    assert {r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency")} == {
+        r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="all")
+    }
 
 
 def test_fireflies_summary_prose_is_not_keyword_searchable_as_a_sentence(db):

@@ -14,9 +14,17 @@ def test_decode_cursor_is_the_or_none_variant_with_a_zero_floor():
     """The two differ only in what an undecodable token means — 0 for callers that restart the
     crawl, None for Slack, which answers `invalid_cursor` instead. Same decoding either way."""
     import base64
-    for tok in (None, "", "garbage", base64.urlsafe_b64encode(b"x:1").decode(),
-                base64.urlsafe_b64encode(b"o:nope").decode(),
-                pg.encode_cursor(0), pg.encode_cursor(7), pg.encode_cursor(250)):
+
+    for tok in (
+        None,
+        "",
+        "garbage",
+        base64.urlsafe_b64encode(b"x:1").decode(),
+        base64.urlsafe_b64encode(b"o:nope").decode(),
+        pg.encode_cursor(0),
+        pg.encode_cursor(7),
+        pg.encode_cursor(250),
+    ):
         strict = pg.decode_cursor_or_none(tok)
         assert pg.decode_cursor(tok) == (0 if strict is None else strict), tok
 
@@ -69,7 +77,10 @@ def test_github_link_header():
 
 
 def test_confluence_next_link():
-    assert pg.confluence_next_link("/wiki/rest/api/content", {"type": "page"}, 0, 25, 25, 60) is not None
+    assert (
+        pg.confluence_next_link("/wiki/rest/api/content", {"type": "page"}, 0, 25, 25, 60)
+        is not None
+    )
     assert pg.confluence_next_link("/wiki/rest/api/content", {}, 50, 25, 10, 60) is None
 
 
@@ -81,7 +92,13 @@ def test_confluence_next_link():
 from graphql import GraphQLError  # noqa: E402
 
 from app.graphql.linear_resolvers import (  # noqa: E402
-    PAGE_DEFAULT, PAGE_MAX, _connection, _from_end, _page, _slice)
+    PAGE_DEFAULT,
+    PAGE_MAX,
+    _connection,
+    _from_end,
+    _page,
+    _slice,
+)
 
 
 def test_linear_forward_slice_defaults_to_linears_page_size():
@@ -113,9 +130,9 @@ def test_linear_last_without_before_defers_to_the_total():
     did) served the FIRST n rows to every client asking for the last n."""
     offset, limit, floor = _slice(None, None, 5, None)
     assert offset is None and limit == 5 and floor == 0
-    assert _from_end(None, 5, 0, total=21) == 16      # the last 5 of 21
-    assert _from_end(None, 5, 0, total=3) == 0        # fewer rows than asked for
-    assert _from_end(7, 5, 0, total=21) == 7          # an explicit offset is left alone
+    assert _from_end(None, 5, 0, total=21) == 16  # the last 5 of 21
+    assert _from_end(None, 5, 0, total=3) == 0  # fewer rows than asked for
+    assert _from_end(7, 5, 0, total=21) == 7  # an explicit offset is left alone
 
 
 def test_linear_after_still_applies_when_combined_with_last():
@@ -123,7 +140,7 @@ def test_linear_after_still_applies_when_combined_with_last():
     reach back past the cursor."""
     offset, limit, floor = _slice(None, pg.encode_cursor(18), 5, None)
     assert (offset, limit, floor) == (None, 5, 18)
-    assert _from_end(None, 5, 18, total=21) == 18     # floor wins over total-limit (=16)
+    assert _from_end(None, 5, 18, total=21) == 18  # floor wins over total-limit (=16)
 
 
 def test_linear_both_directions_at_once_is_rejected():
@@ -149,20 +166,25 @@ def test_linear_page_info_terminates_on_the_last_page():
 def test_linear_limit_plus_one_probe_decides_has_next():
     """`hasNextPage` comes from reading ONE row past the page, not from a COUNT — the schema has
     no `totalCount`, so a count would be a full scan computed only to derive a boolean."""
-    assert _page([1, 2, 3], 2) == ([1, 2], True)     # the extra row is dropped, never served
+    assert _page([1, 2, 3], 2) == ([1, 2], True)  # the extra row is dropped, never served
     assert _page([1, 2], 2) == ([1, 2], False)
     assert _page([], 2) == ([], False)
 
 
 def test_linear_empty_page_has_no_cursors():
     page = _connection([], offset=0, has_next=False)
-    assert page["pageInfo"] == {"hasNextPage": False, "hasPreviousPage": False,
-                                "startCursor": None, "endCursor": None}
+    assert page["pageInfo"] == {
+        "hasNextPage": False,
+        "hasPreviousPage": False,
+        "startCursor": None,
+        "endCursor": None,
+    }
 
 
 # --- fireflies: offset pagination, not a Relay connection ------------------------
 # Fireflies pages with `limit`/`skip` and documents `limit` as "max 50". It CLAMPS rather than
 # erroring, so these pin the clamp and the offset walk (the cursor helpers above do not apply).
+
 
 def test_fireflies_limit_clamps_at_fifty():
     from app.graphql.fireflies_resolvers import PAGE_DEFAULT, PAGE_MAX, clamp_limit
@@ -170,7 +192,7 @@ def test_fireflies_limit_clamps_at_fifty():
     assert PAGE_MAX == 50
     assert clamp_limit(1) == 1
     assert clamp_limit(50) == 50
-    assert clamp_limit(51) == 50          # clamped, not rejected
+    assert clamp_limit(51) == 50  # clamped, not rejected
     assert clamp_limit(10_000) == 50
     assert clamp_limit(None) == PAGE_DEFAULT
     # a value that cannot be a page size falls back to the default rather than returning nothing
@@ -183,7 +205,7 @@ def test_fireflies_skip_is_never_negative():
 
     assert clamp_skip(0) == 0
     assert clamp_skip(7) == 7
-    assert clamp_skip(-5) == 0            # a negative offset would be a SQL error
+    assert clamp_skip(-5) == 0  # a negative offset would be a SQL error
     assert clamp_skip(None) == 0
     assert clamp_skip("nope") == 0
 
@@ -195,8 +217,8 @@ def test_fireflies_datetime_arguments_accept_iso_and_epoch():
 
     assert to_epoch_seconds("2026-04-02T15:00:00Z") == 1775142000
     assert to_epoch_seconds("2026-04-02T15:00:00+00:00") == 1775142000
-    assert to_epoch_seconds(1775142000) == 1775142000              # seconds
-    assert to_epoch_seconds(1775142000000) == 1775142000           # milliseconds
+    assert to_epoch_seconds(1775142000) == 1775142000  # seconds
+    assert to_epoch_seconds(1775142000000) == 1775142000  # milliseconds
     assert to_epoch_seconds("1775142000") == 1775142000
     assert to_epoch_seconds(None) is None
     assert to_epoch_seconds("not a date") is None

@@ -3,6 +3,7 @@
 One file per router, so a provider's shape assertions live in one place whether they go over HTTP
 or call the response builder directly.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -39,7 +40,9 @@ def test_slack_accepts_form_field_token(client, tokens_yaml):
 def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
     # users.info must resolve a Slack message author's synthesized id (incl. display-only
     # speakers/bots, which aren't principals) — qst_0077's raw-ID bug.
-    email = ro_conn.execute("SELECT DISTINCT author_email FROM slack_messages LIMIT 1").fetchone()[0]
+    email = ro_conn.execute("SELECT DISTINCT author_email FROM slack_messages LIMIT 1").fetchone()[
+        0
+    ]
     uid = synth.slack_user_id(email)
     j = client.post("/slack/api/users.info", headers=admin_h, data={"user": uid}).json()
     assert j["ok"] is True
@@ -59,26 +62,32 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
 # rather than from probing the live API — there are no Slack credentials in this environment. Each
 # one cites the documented behaviour it encodes.
 
+
 def _a_channel_id(client, admin_h):
-    return client.get("/slack/api/conversations.list", headers=admin_h,
-                      params={"limit": 1}).json()["channels"][0]["id"]
+    return client.get("/slack/api/conversations.list", headers=admin_h, params={"limit": 1}).json()[
+        "channels"
+    ][0]["id"]
 
 
-@pytest.mark.parametrize("types, expect_channels", [
-    ("public_channel", True),
-    ("private_channel", True),
-    ("public_channel,private_channel", True),
-    ("im", False),
-    ("mpim", False),
-    ("im,mpim", False),
-])
+@pytest.mark.parametrize(
+    "types, expect_channels",
+    [
+        ("public_channel", True),
+        ("private_channel", True),
+        ("public_channel,private_channel", True),
+        ("im", False),
+        ("mpim", False),
+        ("im,mpim", False),
+    ],
+)
 def test_slack_conversations_list_honours_types(client, admin_h, types, expect_channels):
     """`types` was ignored, so `im` returned every public channel and a client presenting
     `channels/` and `dms/` separately got each channel under both. This corpus has no DMs, so `im`
     must come back empty — which is exactly what real Slack answers for a DM-less workspace, making
     "no DMs here" indistinguishable from production instead of indistinguishable from a bug."""
-    j = client.get("/slack/api/conversations.list", headers=admin_h,
-                   params={"types": types, "limit": 5}).json()
+    j = client.get(
+        "/slack/api/conversations.list", headers=admin_h, params={"types": types, "limit": 5}
+    ).json()
     assert j["ok"] is True
     assert bool(j["channels"]) is expect_channels, j["channels"][:1]
     assert all(c["is_im"] is False and c["is_mpim"] is False for c in j["channels"])
@@ -86,10 +95,14 @@ def test_slack_conversations_list_honours_types(client, admin_h, types, expect_c
 
 def test_slack_conversations_list_defaults_to_public_channels(client, admin_h):
     """Slack's documented default when `types` is omitted is `public_channel`."""
-    omitted = client.get("/slack/api/conversations.list", headers=admin_h,
-                         params={"limit": 5}).json()
-    explicit = client.get("/slack/api/conversations.list", headers=admin_h,
-                          params={"limit": 5, "types": "public_channel"}).json()
+    omitted = client.get(
+        "/slack/api/conversations.list", headers=admin_h, params={"limit": 5}
+    ).json()
+    explicit = client.get(
+        "/slack/api/conversations.list",
+        headers=admin_h,
+        params={"limit": 5, "types": "public_channel"},
+    ).json()
     assert omitted["channels"] == explicit["channels"]
     assert omitted["channels"]
 
@@ -97,22 +110,30 @@ def test_slack_conversations_list_defaults_to_public_channels(client, admin_h):
 def test_slack_conversations_list_rejects_an_unknown_type(client, admin_h):
     """Real Slack answers `invalid_types`; the mock accepted anything, so a typo'd filter silently
     returned the unfiltered list."""
-    j = client.get("/slack/api/conversations.list", headers=admin_h,
-                   params={"types": "bogus_type"}).json()
+    j = client.get(
+        "/slack/api/conversations.list", headers=admin_h, params={"types": "bogus_type"}
+    ).json()
     assert j == {"ok": False, "error": "invalid_types"}
-    mixed = client.get("/slack/api/conversations.list", headers=admin_h,
-                       params={"types": "public_channel,bogus_type"}).json()
+    mixed = client.get(
+        "/slack/api/conversations.list",
+        headers=admin_h,
+        params={"types": "public_channel,bogus_type"},
+    ).json()
     assert mixed == {"ok": False, "error": "invalid_types"}
 
 
-@pytest.mark.parametrize("param, error", [("latest", "invalid_ts_latest"),
-                                          ("oldest", "invalid_ts_oldest")])
+@pytest.mark.parametrize(
+    "param, error", [("latest", "invalid_ts_latest"), ("oldest", "invalid_ts_oldest")]
+)
 def test_slack_history_rejects_a_malformed_timestamp(client, admin_h, param, error):
     """`float(oldest)` was unguarded, so a bad argument was a 500 — which clients that back off on
     5xx will retry, burning the whole budget on a request that can never succeed. Real Slack
     answers 200 with the named error."""
-    r = client.get("/slack/api/conversations.history", headers=admin_h,
-                   params={"channel": _a_channel_id(client, admin_h), param: "not-a-ts"})
+    r = client.get(
+        "/slack/api/conversations.history",
+        headers=admin_h,
+        params={"channel": _a_channel_id(client, admin_h), param: "not-a-ts"},
+    )
     assert r.status_code == 200
     assert r.json() == {"ok": False, "error": error}
 
@@ -127,8 +148,11 @@ def test_slack_rejects_an_invalid_cursor(client, admin_h, path):
 
 
 def test_slack_history_rejects_an_invalid_cursor(client, admin_h):
-    j = client.get("/slack/api/conversations.history", headers=admin_h,
-                   params={"channel": _a_channel_id(client, admin_h), "cursor": "bogus"}).json()
+    j = client.get(
+        "/slack/api/conversations.history",
+        headers=admin_h,
+        params={"channel": _a_channel_id(client, admin_h), "cursor": "bogus"},
+    ).json()
     assert j == {"ok": False, "error": "invalid_cursor"}
 
 
@@ -138,35 +162,49 @@ def test_slack_members_are_the_channels_own_speakers(client, admin_h, ro_conn):
     workspace where every channel holds everybody is not a shape it produces.
 
     Membership is now the channel's own participants, which is what the corpus actually knows."""
-    chans = client.get("/slack/api/conversations.list", headers=admin_h,
-                       params={"limit": 100}).json()["channels"]
+    chans = client.get(
+        "/slack/api/conversations.list", headers=admin_h, params={"limit": 100}
+    ).json()["channels"]
     seen = {}
     for c in chans[:4]:
-        m = client.get("/slack/api/conversations.members", headers=admin_h,
-                       params={"channel": c["id"], "limit": 1000}).json()
+        m = client.get(
+            "/slack/api/conversations.members",
+            headers=admin_h,
+            params={"channel": c["id"], "limit": 1000},
+        ).json()
         assert m["ok"] is True
         seen[c["name"]] = set(m["members"])
-        expected = {r[0] for r in ro_conn.execute(
-            "SELECT DISTINCT author_email FROM slack_messages WHERE channel = ?", (c["name"],))}
+        expected = {
+            r[0]
+            for r in ro_conn.execute(
+                "SELECT DISTINCT author_email FROM slack_messages WHERE channel = ?", (c["name"],)
+            )
+        }
         assert len(seen[c["name"]]) == len(expected), c["name"]
-    assert len(set(map(frozenset, seen.values()))) > 1, \
+    assert len(set(map(frozenset, seen.values()))) > 1, (
         "different channels must not all report identical membership"
+    )
 
 
 def test_slack_members_paginate(client, admin_h):
     """`limit` and `cursor` were never read, so `limit=5` returned 16,034 members with an empty
     cursor. Real Slack paginates this method (default 100, cursor-based)."""
     cid = _a_channel_id(client, admin_h)
-    first = client.get("/slack/api/conversations.members", headers=admin_h,
-                       params={"channel": cid, "limit": 2}).json()
+    first = client.get(
+        "/slack/api/conversations.members", headers=admin_h, params={"channel": cid, "limit": 2}
+    ).json()
     assert len(first["members"]) <= 2
     cursor = first["response_metadata"]["next_cursor"]
-    everyone = client.get("/slack/api/conversations.members", headers=admin_h,
-                          params={"channel": cid, "limit": 1000}).json()["members"]
+    everyone = client.get(
+        "/slack/api/conversations.members", headers=admin_h, params={"channel": cid, "limit": 1000}
+    ).json()["members"]
     if len(everyone) > 2:
         assert cursor, "a truncated page must hand back a cursor"
-        second = client.get("/slack/api/conversations.members", headers=admin_h,
-                            params={"channel": cid, "limit": 2, "cursor": cursor}).json()
+        second = client.get(
+            "/slack/api/conversations.members",
+            headers=admin_h,
+            params={"channel": cid, "limit": 2, "cursor": cursor},
+        ).json()
         assert not set(first["members"]) & set(second["members"]), "pages must not overlap"
         assert set(first["members"]) | set(second["members"]) <= set(everyone)
     else:
@@ -177,20 +215,26 @@ def test_slack_num_members_agrees_with_the_member_list(client, admin_h):
     """`conversations.info.num_members` counted the roster while `conversations.members` now pages
     the channel's own speakers. A client that stats a channel and then walks it must not get two
     different answers for the same question."""
-    chans = client.get("/slack/api/conversations.list", headers=admin_h,
-                       params={"limit": 100}).json()["channels"]
+    chans = client.get(
+        "/slack/api/conversations.list", headers=admin_h, params={"limit": 100}
+    ).json()["channels"]
     for c in chans[:4]:
-        listed = client.get("/slack/api/conversations.members", headers=admin_h,
-                            params={"channel": c["id"], "limit": 1000}).json()["members"]
+        listed = client.get(
+            "/slack/api/conversations.members",
+            headers=admin_h,
+            params={"channel": c["id"], "limit": 1000},
+        ).json()["members"]
         assert c["num_members"] == len(listed), c["name"]
-        info = client.get("/slack/api/conversations.info", headers=admin_h,
-                          params={"channel": c["id"]}).json()["channel"]
+        info = client.get(
+            "/slack/api/conversations.info", headers=admin_h, params={"channel": c["id"]}
+        ).json()["channel"]
         assert info["num_members"] == len(listed), c["name"]
 
 
 def test_slack_members_channel_not_found(client, admin_h):
-    j = client.get("/slack/api/conversations.members", headers=admin_h,
-                   params={"channel": "C_NOPE"}).json()
+    j = client.get(
+        "/slack/api/conversations.members", headers=admin_h, params={"channel": "C_NOPE"}
+    ).json()
     assert j == {"ok": False, "error": "channel_not_found"}
 
 
@@ -208,31 +252,47 @@ def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
     # 'incidents' 502 thread's replies include "Rolled back; 502s clearing." Regression: previously
     # replies resolved only thread ROOTS, so a search->replies chain broke whenever the hit was a
     # reply (the common case — real MCP clients pass the hit's own ts).
-    sr = client.post("/slack/api/search.messages", headers=admin_h,
-                     data={"query": "Rolled back"}).json()
+    sr = client.post(
+        "/slack/api/search.messages", headers=admin_h, data={"query": "Rolled back"}
+    ).json()
     matches = sr["messages"]["matches"]
     assert matches, "expected a slack search hit for the reply text"
     hit = next(m for m in matches if "Rolled back" in m["text"])
     assert "thread_ts" in hit, "a threaded search hit must carry its root thread_ts"
-    rep = client.post("/slack/api/conversations.replies", headers=admin_h,
-                      data={"channel": hit["channel"]["id"], "ts": hit["ts"]}).json()
+    rep = client.post(
+        "/slack/api/conversations.replies",
+        headers=admin_h,
+        data={"channel": hit["channel"]["id"], "ts": hit["ts"]},
+    ).json()
     assert rep.get("ok"), rep
     texts = " ".join(m["text"] for m in rep["messages"])
-    assert "Anyone else seeing 502s" in texts   # thread root is returned
-    assert "Rolled back" in texts               # the reply we searched for is in the same thread
+    assert "Anyone else seeing 502s" in texts  # thread root is returned
+    assert "Rolled back" in texts  # the reply we searched for is in the same thread
 
 
 # --- Slack: enrichment did not change the responses ---------------------------------------
+
 
 def test_slack_responses_unchanged_by_enrichment(client, admin_h):
     lst = client.get("/slack/api/conversations.list", headers=admin_h).json()
     assert lst["ok"] and "channels" in lst and "response_metadata" in lst
     if lst["channels"]:
         ch = lst["channels"][0]
-        for k in ("id", "name", "is_private", "is_member", "num_members", "topic",
-                  "purpose", "created", "creator"):
+        for k in (
+            "id",
+            "name",
+            "is_private",
+            "is_member",
+            "num_members",
+            "topic",
+            "purpose",
+            "created",
+            "creator",
+        ):
             assert k in ch, f"slack channel missing {k} (fidelity regression)"
-    srch = client.get("/slack/api/search.messages", params={"query": "gateway"}, headers=admin_h).json()
+    srch = client.get(
+        "/slack/api/search.messages", params={"query": "gateway"}, headers=admin_h
+    ).json()
     assert srch["ok"] and "messages" in srch and "matches" in srch["messages"]
 
 
@@ -246,15 +306,28 @@ def test_slack_api_test_has_typed_response_schema(client):
 
 # --- Slack -----------------------------------------------------------------------
 
+
 def test_slack_reply_users_and_num_members(tmp_path):
     from app.routers.slack import _message, _full_channel
-    s = tiny_corpus(tmp_path, [
-        {"source_type": "slack", "doc_id": "s1", "channel": "inc", "content": "root",
-         "author_email": "bob@x.com", "visibility": "public",
-         "replies": [{"content": "a", "author_email": "ava@x.com"},
-                     {"content": "b", "author_email": "cid@x.com"},
-                     {"content": "c", "author_email": "ava@x.com"}]},
-    ])
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "doc_id": "s1",
+                "channel": "inc",
+                "content": "root",
+                "author_email": "bob@x.com",
+                "visibility": "public",
+                "replies": [
+                    {"content": "a", "author_email": "ava@x.com"},
+                    {"content": "b", "author_email": "cid@x.com"},
+                    {"content": "c", "author_email": "ava@x.com"},
+                ],
+            },
+        ],
+    )
     conn = store.connect_ro(s.db_path)
     thread = store.slack_thread(conn, "s1")
     root, first_reply = thread[0], thread[1]
@@ -269,6 +342,7 @@ def test_slack_reply_users_and_num_members(tmp_path):
     assert rep["parent_user_id"] == synth.slack_user_id("bob@x.com")
     # conversations.list channel object reports a real member count (was hardcoded 0)
     import types
+
     req = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
     ch = _full_channel(req, conn, "inc")
     assert ch["num_members"] > 0 and ch["creator"] == "USERVICE0"

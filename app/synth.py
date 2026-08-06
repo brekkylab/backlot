@@ -7,6 +7,7 @@ and across paginated fetches.
 
 All functions are pure and depend only on their arguments.
 """
+
 from __future__ import annotations
 
 import base64
@@ -39,6 +40,7 @@ def pick(doc_id: str, seq, salt: str = ""):
 
 # --- timestamps -----------------------------------------------------------------
 
+
 def epoch(doc_id: str, base: int = BASE_EPOCH, span: int = TIME_RANGE) -> int:
     """Stable unix-second timestamp within [base, base+span)."""
     return base + (hnum(doc_id, 0, 8) % span)
@@ -65,6 +67,7 @@ def rfc2822(ts: int) -> str:
 
 
 # --- per-vendor identifiers -----------------------------------------------------
+
 
 def slack_channel_id(channel_name: str) -> str:
     """Stable ``C…`` id keyed on the channel name (shared by all docs in it)."""
@@ -107,7 +110,7 @@ def gmail_id(doc_id: str, salt: str = "msg") -> str:
 # the live API: `7fffffffffffffff` resolves (404, a real id shape) while `8000000000000000` and
 # `ffffffffffffffff` are refused with 400 "Invalid id value". Unmasked, half of any digest-derived
 # id lands above the line — 278,278 of the bench corpus's 556,238 messages.
-GMAIL_ID_MAX = 2 ** 63
+GMAIL_ID_MAX = 2**63
 
 
 def gmail_message_id(key: str) -> str:
@@ -217,6 +220,7 @@ def confluence_space_key(container: str) -> str:
 # deterministic UUID derived from a namespaced seed. Content is materialized into the
 # Notion block tree by notion_blocks() and losslessly recovered by notion_blocks_to_text().
 
+
 def _uuid_from(seed: str) -> str:
     h = _digest(seed)
     return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
@@ -242,15 +246,33 @@ def notion_data_source_id(db_doc_id: str) -> str:
 
 def notion_rich_text(text: str) -> list[dict]:
     """A single-run Notion rich_text array carrying ``text`` verbatim as its plain_text."""
-    return [{"type": "text", "text": {"content": text, "link": None},
-             "annotations": {"bold": False, "italic": False, "strikethrough": False,
-                             "underline": False, "code": False, "color": "default"},
-             "plain_text": text, "href": None}]
+    return [
+        {
+            "type": "text",
+            "text": {"content": text, "link": None},
+            "annotations": {
+                "bold": False,
+                "italic": False,
+                "strikethrough": False,
+                "underline": False,
+                "code": False,
+                "color": "default",
+            },
+            "plain_text": text,
+            "href": None,
+        }
+    ]
 
 
 # Line prefix each block type carries, so notion_blocks_to_text inverts notion_blocks exactly.
-_NOTION_PREFIX = {"heading_1": "# ", "heading_2": "## ", "heading_3": "### ",
-                  "bulleted_list_item": "- ", "numbered_list_item": "1. ", "paragraph": ""}
+_NOTION_PREFIX = {
+    "heading_1": "# ",
+    "heading_2": "## ",
+    "heading_3": "### ",
+    "bulleted_list_item": "- ",
+    "numbered_list_item": "1. ",
+    "paragraph": "",
+}
 
 
 def notion_blocks(doc_id: str, content: str) -> list[dict]:
@@ -273,11 +295,17 @@ def notion_blocks(doc_id: str, content: str) -> list[dict]:
             btype, payload = "bulleted_list_item", line[2:]
         elif re.match(r"^\d+\. ", line):
             btype, payload = "numbered_list_item", re.sub(r"^\d+\. ", "", line)
-        blocks.append({
-            "object": "block", "id": notion_block_id(doc_id, i),
-            "type": btype, "has_children": False, "archived": False, "in_trash": False,
-            btype: {"rich_text": notion_rich_text(payload), "color": "default"},
-        })
+        blocks.append(
+            {
+                "object": "block",
+                "id": notion_block_id(doc_id, i),
+                "type": btype,
+                "has_children": False,
+                "archived": False,
+                "in_trash": False,
+                btype: {"rich_text": notion_rich_text(payload), "color": "default"},
+            }
+        )
     return blocks
 
 
@@ -296,6 +324,7 @@ def notion_blocks_to_text(blocks: list[dict]) -> str:
 # cycles), so every one is a deterministic UUID derived from a namespaced seed — the same
 # construction Notion uses above. Human-facing values (the team key, the issue identifier,
 # the suggested branch name) follow Linear's own derivation rules instead.
+
 
 def linear_id(doc_id: str) -> str:
     """Stable dashed-UUID issue id (reversible via the app index)."""
@@ -397,8 +426,14 @@ def linear_state_type(name: str) -> str:
     return "unstarted"
 
 
-_LINEAR_STATE_COLORS = {"triage": "#f2994a", "backlog": "#bec2c8", "unstarted": "#e2e2e2",
-                        "started": "#f2c94c", "completed": "#5e6ad2", "canceled": "#95a2b3"}
+_LINEAR_STATE_COLORS = {
+    "triage": "#f2994a",
+    "backlog": "#bec2c8",
+    "unstarted": "#e2e2e2",
+    "started": "#f2c94c",
+    "completed": "#5e6ad2",
+    "canceled": "#95a2b3",
+}
 
 
 def linear_state_color(name: str) -> str:
@@ -428,6 +463,7 @@ def linear_url(identifier: str, title: str, org: str = "org") -> str:
 # EXACT inverse: `content` is DEFINED as fireflies_transcript_text(sentences), so full-text search
 # and any RAG consumer read the meeting as one document while the sentence rows stay the single
 # source of truth. Verified round-trip-exact over all 10,173 bench transcripts.
+
 
 def fireflies_transcript_text(sentences) -> str:
     """The stored ``content`` for a transcript: its sentences, one per line, ``Speaker: text``.
@@ -519,7 +555,7 @@ def fireflies_fill_times(sentences, duration_secs: float | None = None) -> None:
         start = sentences[i]["start_time"]
         j = i + 1
         while j < n and sentences[j]["start_time"] <= start:
-            j += 1          # the run of sentences anchored at this same reading
+            j += 1  # the run of sentences anchored at this same reading
         if j < n:
             window_end = sentences[j]["start_time"]
         else:
@@ -553,6 +589,7 @@ def fireflies_user_id(email: str) -> str:
 # ordinal assigned by first appearance (which both importers do) is the whole definition. A hash of
 # the name would be stable but would not be an ordinal, and nothing needs one.
 
+
 def fireflies_transcript_url(transcript_id: str) -> str:
     """The meeting's page in the Fireflies web app — what the API returns as `transcript_url`."""
     return f"https://app.fireflies.ai/view/{transcript_id}"
@@ -577,8 +614,9 @@ def fireflies_meeting_link(doc_id: str) -> str:
 # (the issue is explicit: analytics is served from stored or synthesized values, never derived
 # from the text), so a transcript with no stored analytics gets a deterministic, self-consistent
 # one: the three sentiment shares sum to 100 and the per-speaker durations sum to the meeting.
-def fireflies_analytics(doc_id: str, speakers: list[dict] | None = None,
-                        duration_secs: float | None = None) -> dict:
+def fireflies_analytics(
+    doc_id: str, speakers: list[dict] | None = None, duration_secs: float | None = None
+) -> dict:
     """The `analytics` object: sentiments, per-speaker talk time, and categories.
 
     ``duration_pct`` is each speaker's share of the TALK TIME, not of the meeting's declared
@@ -588,22 +626,27 @@ def fireflies_analytics(doc_id: str, speakers: list[dict] | None = None,
     would emit a set of shares summing to 4%, which reads as a bug in every consumer that charts
     it. Sharing out the talk time keeps the field's meaning and its arithmetic.
     """
-    pos = 20 + hnum(doc_id, salt="ff-pos") % 51           # 20-70
+    pos = 20 + hnum(doc_id, salt="ff-pos") % 51  # 20-70
     neg = hnum(doc_id, salt="ff-neg") % max(1, 101 - pos - 10)
     neutral = 100 - pos - neg
     total = float(sum(s.get("duration_secs") or 0.0 for s in speakers or []))
     spk = []
     for s in speakers or []:
         share = s.get("duration_secs")
-        spk.append({"name": s.get("name"),
-                    "duration": round(float(share), 2) if share is not None else None,
-                    "word_count": s.get("word_count"),
-                    "longest_monologue": s.get("longest_monologue"),
-                    "monologues_count": s.get("monologues_count"),
-                    "filler_words": s.get("filler_words"),
-                    "questions": s.get("questions"),
-                    "duration_pct": (round(float(share) / total * 100, 2)
-                                     if share is not None and total else None)})
+        spk.append(
+            {
+                "name": s.get("name"),
+                "duration": round(float(share), 2) if share is not None else None,
+                "word_count": s.get("word_count"),
+                "longest_monologue": s.get("longest_monologue"),
+                "monologues_count": s.get("monologues_count"),
+                "filler_words": s.get("filler_words"),
+                "questions": s.get("questions"),
+                "duration_pct": (
+                    round(float(share) / total * 100, 2) if share is not None and total else None
+                ),
+            }
+        )
     return {
         "sentiments": {"positive_pct": pos, "neutral_pct": neutral, "negative_pct": neg},
         "speakers": spk,
@@ -616,8 +659,8 @@ def fireflies_analytics(doc_id: str, speakers: list[dict] | None = None,
 # router (app.auth.resolve_sigv4) and the signing clients (examples/tests) agree on the
 # access-key/secret pair without any stored keypair. ETag is the real single-part MD5.
 
-_B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"      # RFC 4648 base32 alphabet (AK is [A-Z2-7])
-_SK_ALPHABET = ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+_B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"  # RFC 4648 base32 alphabet (AK is [A-Z2-7])
+_SK_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 
 def _base_n(hex_digest: str, alphabet: str, length: int) -> str:
@@ -655,4 +698,3 @@ def s3_iso(ts: int) -> str:
 def s3_http_date(ts: int) -> str:
     """The Last-Modified response header, RFC 1123: Fri, 05 Apr 2024 17:00:00 GMT."""
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
-

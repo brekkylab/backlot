@@ -5,6 +5,7 @@ HTTP calls, so they need a listening port. One test per source; each self-skips 
 package is absent (installed via the `[llamaindex]` extra). Does not import from `examples/`
 (repo rule) — the small point-at-the-mock setup is duplicated here.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -22,8 +23,7 @@ def test_github(live_server):
     base, admin = _base_token(live_server)
     client = GitHubIssuesClient(github_token=admin, base_url=f"{base}/github", verbose=False)
     reader = GitHubRepositoryIssuesReader(client, owner="acme", repo="gateway", verbose=False)
-    docs = reader.load_data(
-        state=GitHubRepositoryIssuesReader.IssueState.OPEN)
+    docs = reader.load_data(state=GitHubRepositoryIssuesReader.IssueState.OPEN)
     assert docs, "expected at least one issue Document"
     assert any("refill is off by one tick" in d.text for d in docs)  # SAMPLE gh-issue-1 body (open)
     assert all("Corrects the refill tick" not in d.text for d in docs)  # gh-pr-1 (closed) excluded
@@ -96,7 +96,9 @@ def _slack_reader_at(base: str, token: str):
         reader = SlackReader(slack_token=token)
     finally:
         slack_sdk.WebClient = real_web_client
-    reader._client.base_url = mocked_url  # already set via the patched default; explicit for clarity
+    reader._client.base_url = (
+        mocked_url  # already set via the patched default; explicit for clarity
+    )
     return reader
 
 
@@ -159,10 +161,12 @@ def test_s3(live_server):
     _patch_s3fs_walk()
     base, admin = _base_token(live_server)
     reader = S3Reader(
-        bucket="eng-artifacts", s3_endpoint_url=f"{base}/s3",
+        bucket="eng-artifacts",
+        s3_endpoint_url=f"{base}/s3",
         aws_access_id=synth.s3_access_key_id(admin),
         aws_access_secret=synth.s3_secret_access_key(admin),
-        region_name="us-east-1")
+        region_name="us-east-1",
+    )
     docs = reader.load_data()
     assert docs, "expected at least one object Document"
     assert any("dashboards" in d.text for d in docs)  # SAMPLE s3-runbook body
@@ -196,8 +200,10 @@ def _patch_notion_at(base_url: str) -> None:
             setattr(nb, name, val.replace("https://api.notion.com", base))
             patched += 1
     if patched == 0:
-        raise RuntimeError("patch_notion_at found no Notion URL constants to rebind — reader layout "
-                           "changed; update the shim before it silently hits api.notion.com")
+        raise RuntimeError(
+            "patch_notion_at found no Notion URL constants to rebind — reader layout "
+            "changed; update the shim before it silently hits api.notion.com"
+        )
 
 
 def test_notion(live_server):
@@ -234,7 +240,8 @@ def _point_hubspot_at(monkeypatch, base_url: str) -> None:
         client = real(*a, **kw)
         host = client.crm.companies.basic_api.api_client.configuration.host
         assert kw["host"] in host, (
-            f"SDK configured for {host!r}, not {kw['host']!r} — the `host` kwarg was ignored")
+            f"SDK configured for {host!r}, not {kw['host']!r} — the `host` kwarg was ignored"
+        )
         return client
 
     monkeypatch.setattr(hubspot, "HubSpot", _at_mock)
@@ -250,8 +257,8 @@ def test_hubspot(live_server, monkeypatch):
     # str() of a list of SDK objects — its own design, not one Document per record.
     docs = {d.metadata.get("type"): d for d in HubspotReader(access_token=admin).load_data()}
     assert set(docs) == {"deals", "contacts", "companies"}
-    assert "Acme Health" in docs["companies"].text          # SAMPLE hs-co-acme
-    assert "ava@acme-health.com" in docs["contacts"].text    # SAMPLE hs-c-ava
+    assert "Acme Health" in docs["companies"].text  # SAMPLE hs-co-acme
+    assert "ava@acme-health.com" in docs["contacts"].text  # SAMPLE hs-c-ava
 
 
 def _point_gmail_at(base_url: str) -> None:
@@ -272,7 +279,9 @@ def _point_gmail_at(base_url: str) -> None:
 
     base = base_url.rstrip("/")
     if not hasattr(discovery, "build"):
-        raise RuntimeError("point_gmail_at: googleapiclient.discovery.build is gone — update the shim")
+        raise RuntimeError(
+            "point_gmail_at: googleapiclient.discovery.build is gone — update the shim"
+        )
     if getattr(discovery.build, "_points_at_mock", False):
         return
 
@@ -316,8 +325,9 @@ def test_gmail(live_server):
         # left falsy), landing on the mock.
         gm.GmailReader._get_credentials = lambda self: Credentials(token=admin)
 
-        reader = GmailReader(query="", service=None, use_iterative_parser=True, max_results=10,
-                              results_per_page=None)
+        reader = GmailReader(
+            query="", service=None, use_iterative_parser=True, max_results=10, results_per_page=None
+        )
         docs = reader.load_data()
         assert docs, "expected at least one Gmail Document"
         assert any("board" in d.text.lower() for d in docs)  # SAMPLE ceo mailbox
@@ -362,7 +372,9 @@ def _point_drive_at(base_url: str) -> None:
 
     base = base_url.rstrip("/")
     if not hasattr(discovery, "build"):
-        raise RuntimeError("point_drive_at: googleapiclient.discovery.build is gone — update the shim")
+        raise RuntimeError(
+            "point_drive_at: googleapiclient.discovery.build is gone — update the shim"
+        )
     if getattr(discovery.build, "_points_at_mock", False):
         return
 
@@ -471,15 +483,31 @@ def test_linear(live_server):
 
     assert docs, "expected at least one issue Document"
     # Every key the reader writes into extra_info must be present — no KeyError anywhere above.
-    expected = {"id", "title", "created_at", "archived_at", "auto_archived_at", "auto_closed_at",
-                "branch_name", "canceled_at", "completed_at", "creator", "due_date", "estimate",
-                "labels", "project", "state", "updated_at", "assignee"}
+    expected = {
+        "id",
+        "title",
+        "created_at",
+        "archived_at",
+        "auto_archived_at",
+        "auto_closed_at",
+        "branch_name",
+        "canceled_at",
+        "completed_at",
+        "creator",
+        "due_date",
+        "estimate",
+        "labels",
+        "project",
+        "state",
+        "updated_at",
+        "assignee",
+    }
     for d in docs:
         assert expected <= set(d.metadata)
 
     by_title = {d.metadata["title"]: d for d in docs}
     rl = by_title["Rate limiter drops bursts under 50ms"]
-    assert "Token-bucket refill" in rl.text          # text is f"{title} \n {description}"
+    assert "Token-bucket refill" in rl.text  # text is f"{title} \n {description}"
     assert rl.metadata["state"] == "In Progress"
     assert rl.metadata["assignee"] == "Bob Stone"
     assert rl.metadata["project"] == "runtime-stability"
@@ -499,8 +527,9 @@ def test_linear_acl_scoped_by_token(live_server):
     from llama_index.readers.linear import LinearReader
 
     base, settings = live_server
-    tokens = {u["email"]: u["token"]
-              for u in yaml.safe_load(settings.tokens_path.read_text())["users"]}
+    tokens = {
+        u["email"]: u["token"] for u in yaml.safe_load(settings.tokens_path.read_text())["users"]
+    }
     real_requests = lb.requests
 
     class _RequestsAtMock:
@@ -512,16 +541,19 @@ def test_linear_acl_scoped_by_token(live_server):
                 url = url.replace("https://api.linear.app", f"{base}/linear")
             return real_requests.post(url, *args, **kwargs)
 
-    query = '{ team(id: "ENG") { issues(filter: {assignee: {null: false}}) ' \
-            '{ nodes { id title description createdAt updatedAt ' \
-            'archivedAt autoArchivedAt autoClosedAt branchName canceledAt completedAt dueDate ' \
-            'estimate creator { name } assignee { name } state { name } project { name } ' \
-            'labels { nodes { name } } } } } }'
+    query = (
+        '{ team(id: "ENG") { issues(filter: {assignee: {null: false}}) '
+        "{ nodes { id title description createdAt updatedAt "
+        "archivedAt autoArchivedAt autoClosedAt branchName canceledAt completedAt dueDate "
+        "estimate creator { name } assignee { name } state { name } project { name } "
+        "labels { nodes { name } } } } } }"
+    )
     lb.requests = _RequestsAtMock()
     try:
-        titles = {t: {d.metadata["title"] for d in LinearReader(api_key=tok).load_data(query)}
-                  for t, tok in (("ava", tokens["ava@acme.com"]),
-                                 ("hana", tokens["hana@acme.com"]))}
+        titles = {
+            t: {d.metadata["title"] for d in LinearReader(api_key=tok).load_data(query)}
+            for t, tok in (("ava", tokens["ava@acme.com"]), ("hana", tokens["hana@acme.com"]))
+        }
     finally:
         lb.requests = real_requests
     # lin-rl is public and assigned, so both see it; the restricted issue is unassigned, so it
@@ -561,8 +593,9 @@ def test_linear_reader_crashes_on_a_null_relation(live_server):
         with pytest.raises(AttributeError, match="NoneType"):
             LinearReader(api_key=admin).load_data(
                 '{ team(id: "ENG") { issues { nodes { id title description createdAt updatedAt '
-                'archivedAt autoArchivedAt autoClosedAt branchName canceledAt completedAt '
-                'dueDate estimate creator { name } assignee { name } state { name } '
-                'project { name } labels { nodes { name } } } } } }')
+                "archivedAt autoArchivedAt autoClosedAt branchName canceledAt completedAt "
+                "dueDate estimate creator { name } assignee { name } state { name } "
+                "project { name } labels { nodes { name } } } } } }"
+            )
     finally:
         lb.requests = real_requests

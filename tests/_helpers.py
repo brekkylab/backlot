@@ -9,6 +9,7 @@ env-restore half is exactly the part that is easy to get subtly wrong.
 Deliberately NOT fixtures: most call sites need a client per corpus *inside* one test, not one
 injected per test. ``tests/conftest.py`` still owns the fixtures over the shared ``SAMPLE`` corpus.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -107,8 +108,16 @@ def bare_request():
     """A minimal Starlette Request, for response builders that only read the URL."""
     from starlette.requests import Request
 
-    return Request({"type": "http", "headers": [], "query_string": b"", "scheme": "http",
-                    "server": ("mock", 80), "path": "/"})
+    return Request(
+        {
+            "type": "http",
+            "headers": [],
+            "query_string": b"",
+            "scheme": "http",
+            "server": ("mock", 80),
+            "path": "/",
+        }
+    )
 
 
 def epoch_of(iso: str) -> int:
@@ -122,7 +131,6 @@ def epoch_of(iso: str) -> int:
 # Small page sizes on purpose, so each one exercises its vendor's pagination. Shared because two
 # kinds of test need them: each provider's "an admin crawl reaches every stored document", and the
 # cross-cutting check that a non-admin's crawl is a strict subset of the admin's.
-
 
 
 def crawl_slack(client, headers):
@@ -146,9 +154,14 @@ def crawl_slack(client, headers):
             h = client.post("/slack/api/conversations.history", headers=headers, data=d).json()
             for m in h["messages"]:
                 total += 1
-                if m.get("reply_count"):  # a thread root — its replies come from conversations.replies
-                    r = client.post("/slack/api/conversations.replies", headers=headers,
-                                    data={"channel": ch["id"], "ts": m["ts"]}).json()
+                if m.get(
+                    "reply_count"
+                ):  # a thread root — its replies come from conversations.replies
+                    r = client.post(
+                        "/slack/api/conversations.replies",
+                        headers=headers,
+                        data={"channel": ch["id"], "ts": m["ts"]},
+                    ).json()
                     total += len(r["messages"]) - 1  # thread includes the root we already counted
             ccur = h["response_metadata"]["next_cursor"]
             if not ccur:
@@ -167,8 +180,9 @@ def crawl_hubspot(client, headers, object_type, limit=2, archived=False):
             params["archived"] = "true"
         if after:
             params["after"] = after
-        j = client.get(f"/hubspot/crm/v3/objects/{object_type}", headers=headers,
-                       params=params).json()
+        j = client.get(
+            f"/hubspot/crm/v3/objects/{object_type}", headers=headers, params=params
+        ).json()
         out += j["results"]
         nxt = (j.get("paging") or {}).get("next")
         if not nxt:
@@ -177,8 +191,8 @@ def crawl_hubspot(client, headers, object_type, limit=2, archived=False):
     return out
 
 
-
 # --- crawlers (small page sizes to exercise pagination) -------------------------
+
 
 def crawl_gmail(client, headers, user="me"):
     ids, token = [], None
@@ -208,19 +222,20 @@ def crawl_drive(client, headers):
     return ids
 
 
-
 def crawl_github_repo(client, headers, org, repo):
     out, page = [], 1
     while True:
-        r = client.get(f"/github/repos/{org}/{repo}/issues", headers=headers,
-                       params={"per_page": 5, "page": page, "state": "all"})
+        r = client.get(
+            f"/github/repos/{org}/{repo}/issues",
+            headers=headers,
+            params={"per_page": 5, "page": page, "state": "all"},
+        )
         body = r.json()
         out += body
         if 'rel="next"' not in r.headers.get("Link", ""):
             break
         page += 1
     return out
-
 
 
 def crawl_jira(client, headers):
@@ -240,8 +255,11 @@ def crawl_jira(client, headers):
 def crawl_confluence(client, headers):
     out, start, limit = [], 0, 7
     while True:
-        j = client.get("/atlassian/wiki/rest/api/content", headers=headers,
-                       params={"start": start, "limit": limit, "expand": "body.storage"}).json()
+        j = client.get(
+            "/atlassian/wiki/rest/api/content",
+            headers=headers,
+            params={"start": start, "limit": limit, "expand": "body.storage"},
+        ).json()
         out += j["results"]
         if "next" not in j.get("_links", {}):
             break

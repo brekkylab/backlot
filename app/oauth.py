@@ -16,6 +16,7 @@ The mock token endpoint (``POST /oauth2/token``) turns either grant into that us
 token, so the rest of auth/ACL is unchanged. ``token_uri`` in every bundle points back at the
 mock, so the client's refresh / JWT-bearer call lands here rather than at Google.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -51,10 +52,13 @@ def generate(settings, org: str | None = None) -> dict:
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_pem = key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption()).decode()
-    public_pem = key.public_key().public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    ).decode()
+    public_pem = (
+        key.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
 
     creds = {
         "org": org,
@@ -105,11 +109,17 @@ class Oauth:
             return None
         try:
             import jwt
-        except ImportError:  # pyjwt[crypto] not installed — SA flow unavailable, refresh still works
+        except (
+            ImportError
+        ):  # pyjwt[crypto] not installed — SA flow unavailable, refresh still works
             return None
         try:
-            claims = jwt.decode(assertion, self._sa["public_key_pem"], algorithms=["RS256"],
-                                options={"verify_aud": False})
+            claims = jwt.decode(
+                assertion,
+                self._sa["public_key_pem"],
+                algorithms=["RS256"],
+                options={"verify_aud": False},
+            )
         except jwt.PyJWTError:
             return None
         if claims.get("iss") != self._sa.get("client_email"):
@@ -121,12 +131,17 @@ class Oauth:
         """The service_account.json a client would download (private key included; the public
         key kept server-side for verification is never exposed)."""
         sa = self._sa
-        return {"type": "service_account", "project_id": self._data["org"],
-                "private_key_id": sa["private_key_id"], "private_key": sa["private_key"],
-                "client_email": sa["client_email"], "client_id": sa["client_id"],
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": token_uri,
-                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs"}
+        return {
+            "type": "service_account",
+            "project_id": self._data["org"],
+            "private_key_id": sa["private_key_id"],
+            "private_key": sa["private_key"],
+            "client_email": sa["client_email"],
+            "client_id": sa["client_id"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": token_uri,
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        }
 
 
 if __name__ == "__main__":
@@ -136,6 +151,10 @@ if __name__ == "__main__":
     from app.config import get_settings
 
     s = get_settings()
-    org = (yaml.safe_load(s.tokens_path.read_text()) or {}).get("org") if s.tokens_path.exists() else None
+    org = (
+        (yaml.safe_load(s.tokens_path.read_text()) or {}).get("org")
+        if s.tokens_path.exists()
+        else None
+    )
     generate(s, org=org)
     print(f"wrote {s.credentials_path} (org={org or s.org_name})")

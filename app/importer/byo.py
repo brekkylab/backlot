@@ -57,6 +57,7 @@ half-loads; ``--dry-run`` reports problems without touching the DB.
 
 Usage:  python -m app.importer.byo path/to/corpus.jsonl [--append | --dry-run] [--roster r.yaml]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -109,7 +110,7 @@ def _principal(pid: str) -> tuple[str, str]:
     spelling: `readers` replaced the org grant instead of adding to it."""
     for t in ("user", "group", "org"):
         if pid.startswith(t + ":"):
-            return t, pid[len(t) + 1:]
+            return t, pid[len(t) + 1 :]
     return ("user", pid) if "@" in pid else ("group", pid)
 
 
@@ -125,6 +126,7 @@ def _epoch(v):
     if isinstance(v, (int, float)):
         return int(v)
     from datetime import datetime
+
     s = str(v).strip().replace("Z", "+00:00")
     try:
         return int(datetime.fromisoformat(s).timestamp())
@@ -132,8 +134,19 @@ def _epoch(v):
         return None
 
 
-def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_domain,
-                     created=None, updated=None, owner_display=None) -> dict:
+def _service_columns(
+    src,
+    ex,
+    subtype,
+    parent_id,
+    doc_id,
+    thread_id,
+    seq,
+    org_domain,
+    created=None,
+    updated=None,
+    owner_display=None,
+) -> dict:
     """Map generic BYO fields (+ meta) to the target service table's own columns.
 
     ``created``/``updated`` are pre-parsed epoch seconds (or None); slack/gmail carry only
@@ -145,104 +158,177 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
     name ("Tomás Rré", "Aisha K. Patel") does not survive the round trip through
     ``<slug>@<domain>``. slack/notion/s3 have no such column — those APIs expose no owner name."""
     if src == "slack":
-        return {"thread_id": thread_id, "thread_seq": seq,
-                "subtype": subtype or ex.get("subtype"),
-                "reactions": _j(ex.get("reactions")), "files": _j(ex.get("files")),
-                "edited": _j(ex.get("edited")), "created_ts": created,
-                # Who spoke in this conversation. Slack-only and root-only: it is the thread's
-                # cast, not a per-message field, so a reply leaves it NULL.
-                "participants": _j(ex.get("participants"))}
+        return {
+            "thread_id": thread_id,
+            "thread_seq": seq,
+            "subtype": subtype or ex.get("subtype"),
+            "reactions": _j(ex.get("reactions")),
+            "files": _j(ex.get("files")),
+            "edited": _j(ex.get("edited")),
+            "created_ts": created,
+            # Who spoke in this conversation. Slack-only and root-only: it is the thread's
+            # cast, not a per-message field, so a reply leaves it NULL.
+            "participants": _j(ex.get("participants")),
+        }
     if src == "gmail":
         # `thread` names the thread this message belongs to (default: the doc's own id), so every
         # message of a multi-message thread shares one thread_id while carrying its own position
         # in `thread_seq`.
-        return {"thread_id": ex.get("thread") or doc_id, "thread_seq": seq,
-                "label_ids": _j(ex.get("label_ids")),
-                "to_addr": ex.get("to"), "cc": ex.get("cc"), "bcc": ex.get("bcc"),
-                "reply_to": ex.get("reply_to"), "message_id": ex.get("message_id"),
-                "in_reply_to": ex.get("in_reply_to"), "refs": _j(ex.get("references")),
-                "attachments": _j(ex.get("attachments")), "created_ts": created,
-                "body_html": ex.get("html"), "owner_display": owner_display}
+        return {
+            "thread_id": ex.get("thread") or doc_id,
+            "thread_seq": seq,
+            "label_ids": _j(ex.get("label_ids")),
+            "to_addr": ex.get("to"),
+            "cc": ex.get("cc"),
+            "bcc": ex.get("bcc"),
+            "reply_to": ex.get("reply_to"),
+            "message_id": ex.get("message_id"),
+            "in_reply_to": ex.get("in_reply_to"),
+            "refs": _j(ex.get("references")),
+            "attachments": _j(ex.get("attachments")),
+            "created_ts": created,
+            "body_html": ex.get("html"),
+            "owner_display": owner_display,
+        }
     if src == "google_drive":
-        return {"subtype": subtype, "mime_type": ex.get("mime_type"), "parents": _j(ex.get("parents")),
-                "created_ts": created, "updated_ts": updated,
-                "trashed": (1 if ex.get("trashed") else None),
-                "collaborators": _j(ex.get("collaborators")), "owner_display": owner_display}
+        return {
+            "subtype": subtype,
+            "mime_type": ex.get("mime_type"),
+            "parents": _j(ex.get("parents")),
+            "created_ts": created,
+            "updated_ts": updated,
+            "trashed": (1 if ex.get("trashed") else None),
+            "collaborators": _j(ex.get("collaborators")),
+            "owner_display": owner_display,
+        }
     if src == "github":
-        return {"kind": subtype or "issue", "path": ex.get("path"), "state": ex.get("state"),
-                "labels": _j(ex.get("labels")), "assignees": _j(ex.get("assignees")),
-                "merged_at": ex.get("merged_at"), "head_ref": ex.get("head"),
-                "base_ref": ex.get("base"), "reviews": _j(ex.get("reviews")),
-                "reactions": _j(ex.get("reactions")), "created_ts": created, "updated_ts": updated,
-                "closed_ts": _epoch(ex.get("closed_at")), "closed_by": ex.get("closed_by"),
-                "merged_by": ex.get("merged_by"), "milestone": ex.get("milestone"),
-                "requested_reviewers": _j(ex.get("requested_reviewers")),
-                "owner_display": owner_display}
+        return {
+            "kind": subtype or "issue",
+            "path": ex.get("path"),
+            "state": ex.get("state"),
+            "labels": _j(ex.get("labels")),
+            "assignees": _j(ex.get("assignees")),
+            "merged_at": ex.get("merged_at"),
+            "head_ref": ex.get("head"),
+            "base_ref": ex.get("base"),
+            "reviews": _j(ex.get("reviews")),
+            "reactions": _j(ex.get("reactions")),
+            "created_ts": created,
+            "updated_ts": updated,
+            "closed_ts": _epoch(ex.get("closed_at")),
+            "closed_by": ex.get("closed_by"),
+            "merged_by": ex.get("merged_by"),
+            "milestone": ex.get("milestone"),
+            "requested_reviewers": _j(ex.get("requested_reviewers")),
+            "owner_display": owner_display,
+        }
     if src == "jira":
-        return {"status": ex.get("status"), "issuetype": ex.get("issuetype"),
-                "priority": ex.get("priority"), "labels": _j(ex.get("labels")),
-                "components": _j(ex.get("components")), "issuelinks": _j(ex.get("issuelinks")),
-                "parent_id": parent_id, "changelog": _j(ex.get("changelog")),
-                "created_ts": created, "updated_ts": updated,
-                "assignee_email": ex.get("assignee"), "reporter_email": ex.get("reporter"),
-                "resolution": ex.get("resolution"), "resolution_ts": _epoch(ex.get("resolutiondate")),
-                "duedate": ex.get("duedate"), "fix_versions": _j(ex.get("fix_versions")),
-                # `severity` is a separate axis from `priority` (how bad vs. when to fix) and
-                # `squad` is the owning team, which need not be the project's ACL group.
-                "severity": ex.get("severity"), "squad": ex.get("squad"),
-                "owner_display": owner_display}
+        return {
+            "status": ex.get("status"),
+            "issuetype": ex.get("issuetype"),
+            "priority": ex.get("priority"),
+            "labels": _j(ex.get("labels")),
+            "components": _j(ex.get("components")),
+            "issuelinks": _j(ex.get("issuelinks")),
+            "parent_id": parent_id,
+            "changelog": _j(ex.get("changelog")),
+            "created_ts": created,
+            "updated_ts": updated,
+            "assignee_email": ex.get("assignee"),
+            "reporter_email": ex.get("reporter"),
+            "resolution": ex.get("resolution"),
+            "resolution_ts": _epoch(ex.get("resolutiondate")),
+            "duedate": ex.get("duedate"),
+            "fix_versions": _j(ex.get("fix_versions")),
+            # `severity` is a separate axis from `priority` (how bad vs. when to fix) and
+            # `squad` is the owning team, which need not be the project's ACL group.
+            "severity": ex.get("severity"),
+            "squad": ex.get("squad"),
+            "owner_display": owner_display,
+        }
     if src == "confluence":
-        return {"subtype": subtype or "page", "parent_id": parent_id, "labels": _j(ex.get("labels")),
-                "created_ts": created, "updated_ts": updated,
-                "version_number": ex.get("version_number"), "version_message": ex.get("version_message"),
-                "minor_edit": (1 if ex.get("minor_edit") else None),
-                # Confluence's own confidentiality label, free text and stored verbatim rather
-                # than forced into an enum: the bench writes "restricted (customer-sensitive)" and
-                # "restricted (finance/customer-sensitive)" alongside plain "internal". It is a
-                # served label only — ACL still comes from `visibility`/`readers`, so a corpus that
-                # wants a restricted page group-scoped says so there too.
-                "reviewers": _j(ex.get("reviewers")), "confidentiality": ex.get("confidentiality"),
-                "owner_team": ex.get("owner_team"), "owner_display": owner_display}
+        return {
+            "subtype": subtype or "page",
+            "parent_id": parent_id,
+            "labels": _j(ex.get("labels")),
+            "created_ts": created,
+            "updated_ts": updated,
+            "version_number": ex.get("version_number"),
+            "version_message": ex.get("version_message"),
+            "minor_edit": (1 if ex.get("minor_edit") else None),
+            # Confluence's own confidentiality label, free text and stored verbatim rather
+            # than forced into an enum: the bench writes "restricted (customer-sensitive)" and
+            # "restricted (finance/customer-sensitive)" alongside plain "internal". It is a
+            # served label only — ACL still comes from `visibility`/`readers`, so a corpus that
+            # wants a restricted page group-scoped says so there too.
+            "reviewers": _j(ex.get("reviewers")),
+            "confidentiality": ex.get("confidentiality"),
+            "owner_team": ex.get("owner_team"),
+            "owner_display": owner_display,
+        }
     if src == "notion":
-        return {"subtype": subtype or "page", "parent_id": parent_id,
-                "properties": _j(ex.get("properties")), "icon": ex.get("icon"),
-                "cover": ex.get("cover"), "created_ts": created, "updated_ts": updated}
+        return {
+            "subtype": subtype or "page",
+            "parent_id": parent_id,
+            "properties": _j(ex.get("properties")),
+            "icon": ex.get("icon"),
+            "cover": ex.get("cover"),
+            "created_ts": created,
+            "updated_ts": updated,
+        }
     if src == "s3":
-        return {"key": ex.get("key"), "subtype": subtype or "STANDARD",
-                "content_type": ex.get("content_type") or "text/plain",
-                "size": ex.get("size"), "created_ts": created, "updated_ts": updated}
+        return {
+            "key": ex.get("key"),
+            "subtype": subtype or "STANDARD",
+            "content_type": ex.get("content_type") or "text/plain",
+            "size": ex.get("size"),
+            "created_ts": created,
+            "updated_ts": updated,
+        }
     if src == "hubspot":
         # The object type is the grouping column, so it is set by the caller like every other
         # container. HubSpot's typed fields stay in one JSON column because search filters may
         # name any property (see schemas/hubspot.schema.json).
-        return {"properties": _j(ex.get("properties")),
-                "archived": (1 if ex.get("archived") else None),
-                "created_ts": created, "updated_ts": updated,
-                "owner_display": owner_display}
+        return {
+            "properties": _j(ex.get("properties")),
+            "archived": (1 if ex.get("archived") else None),
+            "created_ts": created,
+            "updated_ts": updated,
+            "owner_display": owner_display,
+        }
     if src == "linear":
         # Keys are Linear's own (camelCase `branchName`/`dueDate`, `state` not status), so a
         # corpus written against the Linear API needs no renaming. `identifier` and `branchName`
         # are both derivable, so an omitted one is synthesized at serve time rather than stored.
         from app.importer.erb import linear_priority
-        return {"identifier": ex.get("identifier"), "state": ex.get("state"),
-                "priority": linear_priority(ex.get("priority")),
-                "estimate": ex.get("estimate"), "labels": _j(ex.get("labels")),
-                "project": ex.get("project"), "cycle": ex.get("cycle"),
-                "branch_name": ex.get("branchName"), "due_date": ex.get("dueDate"),
-                "created_ts": created, "updated_ts": updated,
-                "archived_ts": _epoch(ex.get("archivedAt")),
-                "auto_archived_ts": _epoch(ex.get("autoArchivedAt")),
-                "auto_closed_ts": _epoch(ex.get("autoClosedAt")),
-                "canceled_ts": _epoch(ex.get("canceledAt")),
-                "completed_ts": _epoch(ex.get("completedAt")),
-                "started_ts": _epoch(ex.get("startedAt")),
-                "assignee_email": ex.get("assignee"),
-                "assignee_display": ex.get("assigneeName"),
-                "owner_display": owner_display,
-                # `parent` is the generic hierarchy field; for Linear it holds the parent's
-                # human identifier (ENG-123), not a doc_id, because that is how Linear and the
-                # bench both name a parent.
-                "parent_key": parent_id, "release": ex.get("release")}
+
+        return {
+            "identifier": ex.get("identifier"),
+            "state": ex.get("state"),
+            "priority": linear_priority(ex.get("priority")),
+            "estimate": ex.get("estimate"),
+            "labels": _j(ex.get("labels")),
+            "project": ex.get("project"),
+            "cycle": ex.get("cycle"),
+            "branch_name": ex.get("branchName"),
+            "due_date": ex.get("dueDate"),
+            "created_ts": created,
+            "updated_ts": updated,
+            "archived_ts": _epoch(ex.get("archivedAt")),
+            "auto_archived_ts": _epoch(ex.get("autoArchivedAt")),
+            "auto_closed_ts": _epoch(ex.get("autoClosedAt")),
+            "canceled_ts": _epoch(ex.get("canceledAt")),
+            "completed_ts": _epoch(ex.get("completedAt")),
+            "started_ts": _epoch(ex.get("startedAt")),
+            "assignee_email": ex.get("assignee"),
+            "assignee_display": ex.get("assigneeName"),
+            "owner_display": owner_display,
+            # `parent` is the generic hierarchy field; for Linear it holds the parent's
+            # human identifier (ENG-123), not a doc_id, because that is how Linear and the
+            # bench both name a parent.
+            "parent_key": parent_id,
+            "release": ex.get("release"),
+        }
     if src == "fireflies":
         # Keys are the Fireflies API's own, so a corpus written against it needs no renaming.
         # `transcript_id` and the three media/web URLs are derived from the doc_id when omitted,
@@ -250,23 +336,25 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
         # `identifier` is: `transcript(id:)` has to resolve the id the API just handed the caller,
         # and the app's reverse index is built from stored columns.
         tid = ex.get("transcript_id") or synth.fireflies_id(doc_id)
-        return {"transcript_id": tid,
-                "calendar_id": ex.get("calendar_id"),
-                "calendar_type": ex.get("calendar_type") or "google_calendar",
-                "organizer_email": ex.get("organizer_email"),
-                "duration": _ff_minutes(ex.get("duration")),
-                "created_ts": created,
-                "summary": _j(ex.get("summary")), "analytics": _j(ex.get("analytics")),
-                "participants": _j(ex.get("participants")),
-                "meeting_attendees": _j(ex.get("meeting_attendees")),
-                "audio_url": ex.get("audio_url") or synth.fireflies_media_url(tid, "audio"),
-                "video_url": ex.get("video_url") or synth.fireflies_media_url(tid, "video"),
-                "transcript_url": (ex.get("transcript_url")
-                                   or synth.fireflies_transcript_url(tid)),
-                "meeting_link": ex.get("meeting_link") or synth.fireflies_meeting_link(doc_id),
-                # `host_name` is where a Fireflies record names its owner; the caller resolves
-                # which field that is per service, so this branch just takes the value.
-                "owner_display": owner_display}
+        return {
+            "transcript_id": tid,
+            "calendar_id": ex.get("calendar_id"),
+            "calendar_type": ex.get("calendar_type") or "google_calendar",
+            "organizer_email": ex.get("organizer_email"),
+            "duration": _ff_minutes(ex.get("duration")),
+            "created_ts": created,
+            "summary": _j(ex.get("summary")),
+            "analytics": _j(ex.get("analytics")),
+            "participants": _j(ex.get("participants")),
+            "meeting_attendees": _j(ex.get("meeting_attendees")),
+            "audio_url": ex.get("audio_url") or synth.fireflies_media_url(tid, "audio"),
+            "video_url": ex.get("video_url") or synth.fireflies_media_url(tid, "video"),
+            "transcript_url": (ex.get("transcript_url") or synth.fireflies_transcript_url(tid)),
+            "meeting_link": ex.get("meeting_link") or synth.fireflies_meeting_link(doc_id),
+            # `host_name` is where a Fireflies record names its owner; the caller resolves
+            # which field that is per service, so this branch just takes the value.
+            "owner_display": owner_display,
+        }
     return {}
 
 
@@ -295,8 +383,12 @@ def _emails(rec: dict):
             yield r
     # Every child-row array: `messages[]` is gmail's, and a thread's later messages carry senders
     # the root does not — for a converted mail corpus that is most of the addresses in it.
-    for child in ((rec.get("comments") or []) + (rec.get("sentences") or [])
-                  + (rec.get("messages") or []) + (rec.get("replies") or [])):
+    for child in (
+        (rec.get("comments") or [])
+        + (rec.get("sentences") or [])
+        + (rec.get("messages") or [])
+        + (rec.get("replies") or [])
+    ):
         cv = child.get("author_email") if isinstance(child, dict) else None
         if isinstance(cv, str) and "@" in cv:
             yield cv
@@ -322,8 +414,9 @@ def corpus_records(source) -> Iterator[tuple[int, str]]:
     if source.is_dir():
         mf = source / "manifest.json"
         if not mf.exists():
-            raise SystemExit(f"{mf} not found — pass a JSONL file, a .jsonl.gz, or a sharded "
-                             f"artifact directory")
+            raise SystemExit(
+                f"{mf} not found — pass a JSONL file, a .jsonl.gz, or a sharded artifact directory"
+            )
         manifest = json.loads(mf.read_text())
         # The artifact is downloaded, which makes its manifest untrusted input: a shard path has to
         # stay inside the directory it came with.
@@ -364,8 +457,9 @@ def verify_manifest(source) -> list[str]:
                 problems.append(f"{shard['path']}: missing")
                 continue
             if p.stat().st_size != shard["bytes"]:
-                problems.append(f"{shard['path']}: {p.stat().st_size} bytes, manifest says "
-                                f"{shard['bytes']}")
+                problems.append(
+                    f"{shard['path']}: {p.stat().st_size} bytes, manifest says {shard['bytes']}"
+                )
                 continue
             h = hashlib.sha256()
             with open(p, "rb") as fh:
@@ -433,14 +527,22 @@ def load_roster(path) -> dict:
     users: dict[str, dict] = {}
     for dept, people in (data.get("departments") or {}).items():
         for p in people or []:
-            users[p["email"]] = {"name": p.get("name") or _display_name(p["email"]),
-                                 "group": slugify(dept) or None, "token": True}
+            users[p["email"]] = {
+                "name": p.get("name") or _display_name(p["email"]),
+                "group": slugify(dept) or None,
+                "token": True,
+            }
     for p in data.get("contacts") or []:
         # A contact never upgrades an account: `departments` is the authenticating roster, so a
         # duplicated email keeps its token rather than losing it to listing order.
-        users.setdefault(p["email"], {"name": p.get("name") or _display_name(p["email"]),
-                                      "group": (slugify(p["group"]) if p.get("group") else None),
-                                      "token": False})
+        users.setdefault(
+            p["email"],
+            {
+                "name": p.get("name") or _display_name(p["email"]),
+                "group": (slugify(p["group"]) if p.get("group") else None),
+                "token": False,
+            },
+        )
     return {"org": data.get("org"), "org_domain": data.get("org_domain"), "users": users}
 
 
@@ -454,8 +556,9 @@ class _Loader:
     :meth:`resolve_cross_references`, since the target may arrive on a later record.
     """
 
-    def __init__(self, conn, org: str, org_domain: str, *, closed: bool = False,
-                 validate: bool = True):
+    def __init__(
+        self, conn, org: str, org_domain: str, *, closed: bool = False, validate: bool = True
+    ):
         self.conn = conn
         self.org = org
         self.org_domain = org_domain
@@ -464,23 +567,22 @@ class _Loader:
         self.closed = closed
         # Skipped only for records this repo generated itself — see load_records.
         self.validate = validate
-        self.containers = {}   # (source_type, name) -> group_id
-        self.users = {}                    # email -> display name
+        self.containers = {}  # (source_type, name) -> group_id
+        self.users = {}  # email -> display name
         self.groups = set()
-        self.memberships = set()      # (group_id, email)
-        self.grants = []        # (doc_id, principal_type, principal_id)
+        self.memberships = set()  # (group_id, email)
+        self.grants = []  # (doc_id, principal_type, principal_id)
         self.counts = {}
-        self.seen = set()   # (source_type, doc_id)
+        self.seen = set()  # (source_type, doc_id)
         self.fts_ids = {}
         # HubSpot associations are resolved after the whole corpus is read: a link may name a target
         # that appears on a later line, and an omitted `to_type` is filled in from the target's own
         # object type. doc_id -> object_type, plus the declared links.
         self.hs_types = {}
-        self.hs_links = []      # (from_doc_id, from_type, declaration)
+        self.hs_links = []  # (from_doc_id, from_type, declaration)
         # Linear relations name a target by doc_id and are resolved after the whole corpus is read,
         # since a target may appear on a later line — the same second pass the ERB importer runs.
         self.lin_links = []
-
 
     def add(self, rec: dict, where: str = "record") -> None:
         """Insert one BYO record's row(s). ``where`` names the record in an error message.
@@ -514,18 +616,27 @@ class _Loader:
             # The same parser the ERB loader uses, so a BYO transcript and a bench transcript are
             # stored identically.
             from app.importer.erb import parse_fireflies_transcript
+
             given = rec.get("sentences")
             if not given and not (rec.get("content") or "").strip():
                 # Stated here rather than as a schema `anyOf`, whose error ("is not valid under
                 # any of the given schemas") names neither field and so tells the author nothing.
-                raise SystemExit(f"{where}: a fireflies record needs 'sentences' or "
-                                 f"'content' — one of the two IS the transcript")
+                raise SystemExit(
+                    f"{where}: a fireflies record needs 'sentences' or "
+                    f"'content' — one of the two IS the transcript"
+                )
             if given:
-                sentences = [{"speaker_name": s.get("speaker_name") or s.get("speaker"),
-                              "text": s.get("text") or s.get("content") or "",
-                              "start_time": s.get("start_time"), "end_time": s.get("end_time"),
-                              "speaker_id": s.get("speaker_id"),
-                              "author_email": s.get("author_email")} for s in given]
+                sentences = [
+                    {
+                        "speaker_name": s.get("speaker_name") or s.get("speaker"),
+                        "text": s.get("text") or s.get("content") or "",
+                        "start_time": s.get("start_time"),
+                        "end_time": s.get("end_time"),
+                        "speaker_id": s.get("speaker_id"),
+                        "author_email": s.get("author_email"),
+                    }
+                    for s in given
+                ]
             else:
                 sentences = parse_fireflies_transcript(rec.get("content") or "")
             ff_minutes = _ff_minutes(rec.get("duration"))
@@ -546,7 +657,7 @@ class _Loader:
         # document and diverge.
         seen.add((src, doc_id))
         gcol = store.grouping_col(src)
-        container = str(rec.get(gcol) or src)   # channel / mailbox / folder / repo / project / space
+        container = str(rec.get(gcol) or src)  # channel / mailbox / folder / repo / project / space
         # An explicit `"group": null` means the container owns NO ACL group — which is a real
         # state, not a missing value: a Gmail mailbox has no group scope (a thread is private to
         # its participants), so inferring one from the mailbox name would invent a grantable
@@ -602,27 +713,100 @@ class _Loader:
 
         # structured extras: rec.meta merged with convenience top-level keys
         extras = dict(rec.get("meta") or {})
-        for k in ("labels", "reactions", "files", "edited", "to", "cc", "bcc", "reply_to",
-                  "message_id", "in_reply_to", "references", "attachments", "mime_type",
-                  "parents", "trashed", "state", "assignees", "merged_at", "head", "base", "reviews",
-                  "status", "issuetype", "priority", "components", "issuelinks",
-                  "label_ids", "thread", "html", "closed_at", "closed_by", "merged_by", "milestone",
-                  "requested_reviewers", "resolution", "resolutiondate", "duedate",
-                  "fix_versions", "versions", "assignee", "reporter", "minor_edit",
-                  "version_message", "version_number", "properties", "icon", "cover",
-                  "key", "content_type", "size", "path", "archived",
-                  # confluence confidentiality/ownership, drive collaborators, jira severity/squad,
-                  # slack participants — the per-service people-and-scope fields
-                  "reviewers", "confidentiality", "owner_team", "collaborators",
-                  "severity", "squad", "participants",
-                  # Linear (its own field names: `state` not status, camelCase timestamps)
-                  "identifier", "estimate", "project", "cycle", "branchName", "dueDate",
-                  "assigneeName", "archivedAt", "autoArchivedAt", "autoClosedAt", "canceledAt",
-                  "completedAt", "startedAt", "release", "relations", "attachments",
-                  # Fireflies (its own field names, as the GraphQL API returns them)
-                  "host_email", "organizer_email", "duration", "summary", "analytics",
-                  "participants", "meeting_attendees", "audio_url", "video_url",
-                  "transcript_url", "meeting_link", "calendar_id", "calendar_type"):
+        for k in (
+            "labels",
+            "reactions",
+            "files",
+            "edited",
+            "to",
+            "cc",
+            "bcc",
+            "reply_to",
+            "message_id",
+            "in_reply_to",
+            "references",
+            "attachments",
+            "mime_type",
+            "parents",
+            "trashed",
+            "state",
+            "assignees",
+            "merged_at",
+            "head",
+            "base",
+            "reviews",
+            "status",
+            "issuetype",
+            "priority",
+            "components",
+            "issuelinks",
+            "label_ids",
+            "thread",
+            "html",
+            "closed_at",
+            "closed_by",
+            "merged_by",
+            "milestone",
+            "requested_reviewers",
+            "resolution",
+            "resolutiondate",
+            "duedate",
+            "fix_versions",
+            "versions",
+            "assignee",
+            "reporter",
+            "minor_edit",
+            "version_message",
+            "version_number",
+            "properties",
+            "icon",
+            "cover",
+            "key",
+            "content_type",
+            "size",
+            "path",
+            "archived",
+            # confluence confidentiality/ownership, drive collaborators, jira severity/squad,
+            # slack participants — the per-service people-and-scope fields
+            "reviewers",
+            "confidentiality",
+            "owner_team",
+            "collaborators",
+            "severity",
+            "squad",
+            "participants",
+            # Linear (its own field names: `state` not status, camelCase timestamps)
+            "identifier",
+            "estimate",
+            "project",
+            "cycle",
+            "branchName",
+            "dueDate",
+            "assigneeName",
+            "archivedAt",
+            "autoArchivedAt",
+            "autoClosedAt",
+            "canceledAt",
+            "completedAt",
+            "startedAt",
+            "release",
+            "relations",
+            "attachments",
+            # Fireflies (its own field names, as the GraphQL API returns them)
+            "host_email",
+            "organizer_email",
+            "duration",
+            "summary",
+            "analytics",
+            "participants",
+            "meeting_attendees",
+            "audio_url",
+            "video_url",
+            "transcript_url",
+            "meeting_link",
+            "calendar_id",
+            "calendar_type",
+        ):
             if k in rec:
                 extras[k] = rec[k]
         subtype = rec.get("subtype")
@@ -650,26 +834,43 @@ class _Loader:
         # The owner's display name as the corpus wrote it, under each service's own name for it:
         # gmail's owner is the MAILBOX's owner (often not the sender of any one message in the
         # thread) and fireflies' is the meeting HOST, where every other source's is the author's.
-        owner_display = {"gmail": rec.get("mailbox_owner"),
-                         "fireflies": rec.get("host_name") or rec.get("author_name")
-                         }.get(src, rec.get("author_name"))
+        owner_display = {
+            "gmail": rec.get("mailbox_owner"),
+            "fireflies": rec.get("host_name") or rec.get("author_name"),
+        }.get(src, rec.get("author_name"))
 
         if src == "fireflies":
             # Needs the doc_id (analytics is seeded from it), so it can only run here — the
             # sentences themselves were built before `_doc_id`, above.
             from app.importer.erb import _ff_speaker_stats
+
             secs = (_ff_minutes(rec.get("duration")) or 0) * 60 or None
             extras["analytics"] = extras.get("analytics") or synth.fireflies_analytics(
-                doc_id, _ff_speaker_stats(sentences), secs)
+                doc_id, _ff_speaker_stats(sentences), secs
+            )
             extras["participants"] = extras.get("participants") or [
-                e for e in dict.fromkeys(s.get("author_email") for s in sentences) if e]
+                e for e in dict.fromkeys(s.get("author_email") for s in sentences) if e
+            ]
 
-        def insert(did, email, ttl, body, seq=0, sub=None, par=None, ex=None, cts=None, uts=None,
-                   odisp=None):
-            cols = _service_columns(src, ex or {}, sub, par, did, thread_id, seq,
-                                    org_domain, cts, uts, odisp)
-            cols.update(doc_id=did, author_email=email or f"unknown@{org_domain}",
-                        title=ttl, content=body)
+        def insert(
+            did,
+            email,
+            ttl,
+            body,
+            seq=0,
+            sub=None,
+            par=None,
+            ex=None,
+            cts=None,
+            uts=None,
+            odisp=None,
+        ):
+            cols = _service_columns(
+                src, ex or {}, sub, par, did, thread_id, seq, org_domain, cts, uts, odisp
+            )
+            cols.update(
+                doc_id=did, author_email=email or f"unknown@{org_domain}", title=ttl, content=body
+            )
             if src == "s3" and cols.get("size") is None:
                 cols["size"] = len((body or "").encode("utf-8"))
             cols[gcol] = container
@@ -680,8 +881,7 @@ class _Loader:
                 # identifier came back "Entity not found" from `issue(id: "ENG-749")` even though
                 # the API had just handed the caller that exact string. Deterministic, so the
                 # served value is unchanged; it is just written down now.
-                cols["identifier"] = synth.linear_identifier(
-                    did, synth.linear_team_key(container))
+                cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
             names = list(cols)
             conn.execute(
                 f"INSERT OR REPLACE INTO {store.table(src)} ({', '.join(names)}) "
@@ -693,22 +893,44 @@ class _Loader:
             for pt, pid in grant_types:
                 grants.append((did, pt, pid))
 
-        insert(doc_id, author, title, rec["content"], 0, subtype, parent_id, extras, created,
-               updated, owner_display)
+        insert(
+            doc_id,
+            author,
+            title,
+            rec["content"],
+            0,
+            subtype,
+            parent_id,
+            extras,
+            created,
+            updated,
+            owner_display,
+        )
 
         if src == "linear":
             for j, att in enumerate(rec.get("attachments") or [], start=1):
                 url = att.get("url") if isinstance(att, dict) else str(att)
                 if not url:
                     continue
-                title = (att.get("title") if isinstance(att, dict) else None) or \
-                    url.rstrip("/").rsplit("/", 1)[-1] or url
+                title = (
+                    (att.get("title") if isinstance(att, dict) else None)
+                    or url.rstrip("/").rsplit("/", 1)[-1]
+                    or url
+                )
                 conn.execute(
                     "INSERT OR REPLACE INTO linear_attachments(id, doc_id, seq, title, url, "
                     "subtitle, source_type, created_ts) VALUES (?,?,?,?,?,?,?,?)",
-                    (f"{doc_id}::a{j}", doc_id, j, title, url,
-                     (att.get("subtitle") if isinstance(att, dict) else None),
-                     (att.get("sourceType") if isinstance(att, dict) else None), created))
+                    (
+                        f"{doc_id}::a{j}",
+                        doc_id,
+                        j,
+                        title,
+                        url,
+                        (att.get("subtitle") if isinstance(att, dict) else None),
+                        (att.get("sourceType") if isinstance(att, dict) else None),
+                        created,
+                    ),
+                )
             for a in rec.get("relations") or []:
                 lin_links.append((doc_id, a, created))
 
@@ -725,10 +947,20 @@ class _Loader:
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 # A sentence sits on the MEETING's clock plus its own offset, so ordering by time
                 # never shuffles a transcript (same reasoning as a comment's created + j above).
-                (f"{doc_id}::s{j}", doc_id, j, s.get("author_email"), s["text"],
-                 int(created + (s.get("start_time") or 0)), None,
-                 s.get("speaker_name") or None, s.get("speaker_id"),
-                 s.get("start_time"), s.get("end_time")))
+                (
+                    f"{doc_id}::s{j}",
+                    doc_id,
+                    j,
+                    s.get("author_email"),
+                    s["text"],
+                    int(created + (s.get("start_time") or 0)),
+                    None,
+                    s.get("speaker_name") or None,
+                    s.get("speaker_id"),
+                    s.get("start_time"),
+                    s.get("end_time"),
+                ),
+            )
 
         # comments on the document — only jira/confluence/github expose them (slack uses replies)
         rec_comments = rec.get("comments") or []
@@ -753,8 +985,15 @@ class _Loader:
             conn.execute(
                 f"INSERT OR REPLACE INTO {ctable}"
                 "(id, doc_id, seq, author_email, body, created_ts, reactions) VALUES (?,?,?,?,?,?,?)",
-                (_cid := c.get("id") or f"{doc_id}::c{j}", doc_id, j, c.get("author_email"), body,
-                 c_ts, _j(c.get("reactions"))),
+                (
+                    _cid := c.get("id") or f"{doc_id}::c{j}",
+                    doc_id,
+                    j,
+                    c.get("author_email"),
+                    body,
+                    c_ts,
+                    _j(c.get("reactions")),
+                ),
             )
 
         for i, rep in enumerate(replies or [], start=1):
@@ -763,14 +1002,24 @@ class _Loader:
             rep_author = rep.get("author_email") or author
             register(rep_author, rep.get("author_name"))
             rep_id = rep.get("doc_id") or (
-                "dsid_" + hashlib.sha256((doc_id + str(i) + rep["content"]).encode()).hexdigest()[:32])
+                "dsid_"
+                + hashlib.sha256((doc_id + str(i) + rep["content"]).encode()).hexdigest()[:32]
+            )
             seen.add((src, rep_id))
             # A reply is a full message (reactions/files/subtype/edited carry through);
             # its time is the root's + its position so the thread stays ordered (created is now
             # always set, so a reply ts is never NULL).
             rep_cts = created + i
-            insert(rep_id, rep_author, rep.get("title") or "", rep["content"], i,
-                   sub=rep.get("subtype"), ex=rep, cts=rep_cts)
+            insert(
+                rep_id,
+                rep_author,
+                rep.get("title") or "",
+                rep["content"],
+                i,
+                sub=rep.get("subtype"),
+                ex=rep,
+                cts=rep_cts,
+            )
 
         # A gmail thread's later messages. Each is a full message in its own right — sender,
         # To/Cc, Message-ID, body — sharing the root's thread_id and ACL and carrying its position
@@ -790,11 +1039,17 @@ class _Loader:
             seen.add((src, msg_id))
             # Its own `created` when given, else the root's clock + an hour per position — the
             # spread a real reply chain has, and never NULL.
-            insert(msg_id, m_author, msg.get("title") or title, msg["content"], i,
-                   # `thread` is forced to the ROOT's thread: a child must never open a thread of
-                   # its own, or `users.threads.get` would return a one-message thread.
-                   ex={**msg, "thread": gmail_thread},
-                   cts=_epoch(msg.get("created")) or (created + i * 3600))
+            insert(
+                msg_id,
+                m_author,
+                msg.get("title") or title,
+                msg["content"],
+                i,
+                # `thread` is forced to the ROOT's thread: a child must never open a thread of
+                # its own, or `users.threads.get` would return a one-message thread.
+                ex={**msg, "thread": gmail_thread},
+                cts=_epoch(msg.get("created")) or (created + i * 3600),
+            )
 
     def write_containers(self) -> None:
         """The per-service grouping rows (``slack_channels``, ``linear_teams``, ``gdrive_folders``,
@@ -802,8 +1057,9 @@ class _Loader:
         group is whatever its records agreed on, and the last one wins."""
         for (src, name), group_id in self.containers.items():
             gtable, gcol = store.GROUPING[src]
-            self.conn.execute(f"INSERT OR REPLACE INTO {gtable}({gcol}, group_id) VALUES (?,?)",
-                              (name, group_id))
+            self.conn.execute(
+                f"INSERT OR REPLACE INTO {gtable}({gcol}, group_id) VALUES (?,?)", (name, group_id)
+            )
 
     def resolve_cross_references(self) -> None:
         """Resolve the links whose target may only have arrived on a later record."""
@@ -819,25 +1075,36 @@ class _Loader:
                 # `--append` loads one file at a time, so a target already in the DB is not in
                 # `hs_types`. Fall back to the stored row before giving up, or appending a contact to a
                 # previously-loaded company would fail for a link that is perfectly resolvable.
-                row = conn.execute("SELECT object_type FROM hubspot_objects WHERE doc_id = ?",
-                                   (to_doc,)).fetchone()
+                row = conn.execute(
+                    "SELECT object_type FROM hubspot_objects WHERE doc_id = ?", (to_doc,)
+                ).fetchone()
                 to_type = row["object_type"] if row else None
             if to_type is None:
                 raise SystemExit(
                     f"hubspot association {from_doc} -> {to_doc}: target not found in this corpus or "
-                    f"the existing DB; add the target record or set 'to_type' on the association")
+                    f"the existing DB; add the target record or set 'to_type' on the association"
+                )
             category = a.get("category") or "HUBSPOT_DEFINED"
             label = a.get("label")
             # An explicit type_id applies only to the direction the author declared; the reverse gets
             # its own synthesized id, since the two directions never share one in real HubSpot.
             for f_doc, f_type, t_doc, t_type, tid in (
-                    (from_doc, from_type, to_doc, to_type, a.get("type_id")),
-                    (to_doc, to_type, from_doc, from_type, None)):
+                (from_doc, from_type, to_doc, to_type, a.get("type_id")),
+                (to_doc, to_type, from_doc, from_type, None),
+            ):
                 conn.execute(
                     "INSERT OR REPLACE INTO hubspot_associations(from_doc_id, from_type, to_doc_id, "
                     "to_type, assoc_category, assoc_type_id, label) VALUES (?,?,?,?,?,?,?)",
-                    (f_doc, f_type, t_doc, t_type, category,
-                     tid or synth.hubspot_assoc_type_id(f_type, t_type), label))
+                    (
+                        f_doc,
+                        f_type,
+                        t_doc,
+                        t_type,
+                        category,
+                        tid or synth.hubspot_assoc_type_id(f_type, t_type),
+                        label,
+                    ),
+                )
 
         # Linear parents: `parent` names the target by IDENTIFIER, so it can only be resolved once
         # every issue is loaded. `Issue.children` reads `parent_doc_id`, so without this a corpus would
@@ -845,12 +1112,13 @@ class _Loader:
         if counts.get("linear"):
             key_to_doc: dict[str, str] = {}
             for did, ident in conn.execute(
-                    "SELECT doc_id, identifier FROM linear_issues WHERE identifier IS NOT NULL "
-                    "ORDER BY doc_id"):
+                "SELECT doc_id, identifier FROM linear_issues WHERE identifier IS NOT NULL "
+                "ORDER BY doc_id"
+            ):
                 key_to_doc.setdefault(ident, did)
             dangling = 0
             for did, pkey in conn.execute(
-                    "SELECT doc_id, parent_key FROM linear_issues WHERE parent_key IS NOT NULL"
+                "SELECT doc_id, parent_key FROM linear_issues WHERE parent_key IS NOT NULL"
             ).fetchall():
                 target = key_to_doc.get(pkey)
                 if target is None:
@@ -863,31 +1131,43 @@ class _Loader:
                     dangling += 1
                     continue
                 if target != did:
-                    conn.execute("UPDATE linear_issues SET parent_doc_id = ? WHERE doc_id = ?",
-                                 (target, did))
+                    conn.execute(
+                        "UPDATE linear_issues SET parent_doc_id = ? WHERE doc_id = ?", (target, did)
+                    )
             if dangling:
-                print(f"  linear: {dangling} parent reference(s) match no issue in this corpus; "
-                      f"kept as `parent` with no resolved parent issue", file=sys.stderr)
+                print(
+                    f"  linear: {dangling} parent reference(s) match no issue in this corpus; "
+                    f"kept as `parent` with no resolved parent issue",
+                    file=sys.stderr,
+                )
 
         # Linear relations: resolve declared targets now that every doc_id is known. A target that
         # does not exist is an error rather than a dangling relation, matching the hubspot rule.
         for from_doc, a, created_ts in lin_links:
             to_doc = a["to"]
             if ("linear", to_doc) not in seen and not conn.execute(
-                    "SELECT 1 FROM linear_issues WHERE doc_id = ?", (to_doc,)).fetchone():
+                "SELECT 1 FROM linear_issues WHERE doc_id = ?", (to_doc,)
+            ).fetchone():
                 raise SystemExit(
                     f"linear relation {from_doc} -> {to_doc}: target not found in this corpus or the "
-                    f"existing DB; add the target issue or drop the relation")
+                    f"existing DB; add the target issue or drop the relation"
+                )
             conn.execute(
                 "INSERT OR REPLACE INTO linear_relations(id, from_doc_id, to_doc_id, type, created_ts)"
                 " VALUES (?,?,?,?,?)",
-                (a.get("id") or f"{from_doc}::r{to_doc}", from_doc, to_doc,
-                 a.get("type") or "related", created_ts))
+                (
+                    a.get("id") or f"{from_doc}::r{to_doc}",
+                    from_doc,
+                    to_doc,
+                    a.get("type") or "related",
+                    created_ts,
+                ),
+            )
 
 
-
-def load(path: Path, settings: Settings | None = None, reset: bool = True,
-         roster: Path | None = None) -> dict:
+def load(
+    path: Path, settings: Settings | None = None, reset: bool = True, roster: Path | None = None
+) -> dict:
     """Load a BYO-JSONL corpus — a file, a ``.jsonl.gz``, or a sharded directory — into the DB."""
 
     def _from_file():
@@ -903,8 +1183,13 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True,
     return load_records(_from_file, settings, reset, roster)
 
 
-def load_records(records_factory, settings: Settings | None = None, reset: bool = True,
-                 roster: Path | None = None, validate: bool = True) -> dict:
+def load_records(
+    records_factory,
+    settings: Settings | None = None,
+    reset: bool = True,
+    roster: Path | None = None,
+    validate: bool = True,
+) -> dict:
     """Load already-parsed BYO records into the DB. ``load`` is this over a JSONL file.
 
     ``records_factory`` returns a FRESH iterator of ``(where, record)`` pairs and may be called
@@ -932,9 +1217,16 @@ def load_records(records_factory, settings: Settings | None = None, reset: bool 
         for _no, _rec in records_factory():
             yield {
                 **{k: _rec[k] for k in ("author_email", "host_email", "readers") if k in _rec},
-                **{c: [{"author_email": r.get("author_email")} for r in (_rec.get(c) or [])
-                       if isinstance(r, dict)]
-                   for c in ("comments", "sentences", "messages", "replies") if c in _rec}}
+                **{
+                    c: [
+                        {"author_email": r.get("author_email")}
+                        for r in (_rec.get(c) or [])
+                        if isinstance(r, dict)
+                    ]
+                    for c in ("comments", "sentences", "messages", "replies")
+                    if c in _rec
+                },
+            }
 
     roster_data = load_roster(roster) if roster else None
     closed = roster_data is not None
@@ -977,7 +1269,9 @@ def load_records(records_factory, settings: Settings | None = None, reset: bool 
     for g in groups:
         conn.execute("INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (g, "group", g, None))
     for email, name in users.items():
-        conn.execute("INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (email, "user", name, email))
+        conn.execute(
+            "INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (email, "user", name, email)
+        )
     loader.write_containers()
     for g, email in memberships:
         conn.execute("INSERT OR REPLACE INTO group_members VALUES (?,?)", (g, email))
@@ -993,8 +1287,11 @@ def load_records(records_factory, settings: Settings | None = None, reset: bool 
     # Every principal is a document owner/reader; only some are ACCOUNTS. Without a roster the two
     # sets coincide (a corpus's authors are its users); with one, `contacts` are principals with no
     # token, so they show as owners and grantees but never authenticate.
-    tokened = users if not closed else {
-        e: u["name"] for e, u in roster_data["users"].items() if u["token"]}
+    tokened = (
+        users
+        if not closed
+        else {e: u["name"] for e, u in roster_data["users"].items() if u["token"]}
+    )
     users_rows = {e: {"email": e, "name": n, "token": _user_token(e)} for e, n in tokened.items()}
     token_org, token_domain = org_name, org_domain
     token_admin = settings.admin_token
@@ -1007,26 +1304,47 @@ def load_records(records_factory, settings: Settings | None = None, reset: bool 
         for e, row in users_rows.items():
             merged.setdefault(e, row)
         users_rows = merged
-    tokens = {"org": token_org, "org_domain": token_domain,
-              "admin_token": token_admin,
-              "users": [users_rows[k] for k in sorted(users_rows)]}
+    tokens = {
+        "org": token_org,
+        "org_domain": token_domain,
+        "admin_token": token_admin,
+        "users": [users_rows[k] for k in sorted(users_rows)],
+    }
     settings.tokens_path.write_text(yaml.safe_dump(tokens, sort_keys=False))
     from app import oauth
+
     oauth.generate(settings, org=org_name)
     conn.close()
-    return {"counts": counts, "users": len(users), "groups": len(groups),
-            "org": org_name, "org_domain": org_domain, "total": sum(counts.values())}
+    return {
+        "counts": counts,
+        "users": len(users),
+        "groups": len(groups),
+        "org": org_name,
+        "org_domain": org_domain,
+        "total": sum(counts.values()),
+    }
 
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Import (load) a BYO JSONL corpus into the mock DB.")
-    ap.add_argument("corpus", help="a JSONL corpus file, a .jsonl.gz, or a directory holding "
-                                   "manifest.json + data/<source>/part-*.jsonl.gz shards")
-    ap.add_argument("--append", action="store_true", help="add to the existing DB instead of resetting")
-    ap.add_argument("--dry-run", action="store_true", help="validate the corpus only; don't touch the DB")
-    ap.add_argument("--roster", type=Path, default=None,
-                    help="roster YAML naming the corpus's principals (see load_roster); with it, "
-                         "principals/groups/tokens come from the file instead of from the records")
+    ap.add_argument(
+        "corpus",
+        help="a JSONL corpus file, a .jsonl.gz, or a directory holding "
+        "manifest.json + data/<source>/part-*.jsonl.gz shards",
+    )
+    ap.add_argument(
+        "--append", action="store_true", help="add to the existing DB instead of resetting"
+    )
+    ap.add_argument(
+        "--dry-run", action="store_true", help="validate the corpus only; don't touch the DB"
+    )
+    ap.add_argument(
+        "--roster",
+        type=Path,
+        default=None,
+        help="roster YAML naming the corpus's principals (see load_roster); with it, "
+        "principals/groups/tokens come from the file instead of from the records",
+    )
     args = ap.parse_args(argv)
     corpus = Path(args.corpus)
 

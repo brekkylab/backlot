@@ -23,6 +23,7 @@ never leaks into another reader or another test, unlike a class-level patch.
     python examples/using-llamaindex-readers/gdrive.py                    # bare SA → admin
     python examples/using-llamaindex-readers/gdrive.py --url http://localhost:8000 --user mia@acme.com
 """
+
 import argparse
 
 from google.oauth2 import service_account
@@ -31,15 +32,30 @@ from llama_index.readers.google import GoogleDriveReader
 from _llamaindex import google_service_account_info, point_drive_at, serve_or_connect
 
 CORPUS = [
-    {"source_type": "google_drive", "folder": "marketing", "title": "Brand guidelines v3",
-     "content": "Logo usage, color palette, typography.", "subtype": "document",
-     "author_email": "mia@acme.com"},
-    {"source_type": "google_drive", "folder": "finance", "title": "Q1 Revenue Model",
-     "content": "month,revenue\nJan,120000\nFeb,135000", "subtype": "spreadsheet",
-     "author_email": "cfo@acme.com"},
-    {"source_type": "google_drive", "folder": "marketing", "title": "All-hands Q1 Deck",
-     "content": "Slide 1: Welcome\n\nSlide 2: Roadmap", "subtype": "presentation",
-     "author_email": "mia@acme.com"},
+    {
+        "source_type": "google_drive",
+        "folder": "marketing",
+        "title": "Brand guidelines v3",
+        "content": "Logo usage, color palette, typography.",
+        "subtype": "document",
+        "author_email": "mia@acme.com",
+    },
+    {
+        "source_type": "google_drive",
+        "folder": "finance",
+        "title": "Q1 Revenue Model",
+        "content": "month,revenue\nJan,120000\nFeb,135000",
+        "subtype": "spreadsheet",
+        "author_email": "cfo@acme.com",
+    },
+    {
+        "source_type": "google_drive",
+        "folder": "marketing",
+        "title": "All-hands Q1 Deck",
+        "content": "Slide 1: Welcome\n\nSlide 2: Roadmap",
+        "subtype": "presentation",
+        "author_email": "mia@acme.com",
+    },
 ]
 
 
@@ -52,7 +68,8 @@ def build(mock, user):
         # `_get_credentials()` — build the delegated credential ourselves and hand it back via an
         # instance-only override (see module docstring).
         creds = service_account.Credentials.from_service_account_info(
-            sa_info, scopes=["https://www.googleapis.com/auth/drive.readonly"], subject=subject)
+            sa_info, scopes=["https://www.googleapis.com/auth/drive.readonly"], subject=subject
+        )
         reader._get_credentials = lambda: creds
     return reader
 

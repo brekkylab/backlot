@@ -112,6 +112,9 @@ CREATE INDEX IF NOT EXISTS idx_slack_thread ON slack_messages(thread_id);
 -- conversations.replies resolves a ts by (channel, created_ts); the composite index turns that from
 -- a per-channel row scan (~340k rows in a big channel) into a direct lookup.
 CREATE INDEX IF NOT EXISTS idx_slack_channel_ts ON slack_messages(channel, created_ts);
+-- conversations.members pages a channel's distinct speakers; without this the DISTINCT
+-- is a per-channel row scan (768k rows in the biggest channel) on every request.
+CREATE INDEX IF NOT EXISTS idx_slack_channel_author ON slack_messages(channel, author_email);
 
 CREATE TABLE IF NOT EXISTS gmail_messages (
     doc_id TEXT PRIMARY KEY, mailbox TEXT NOT NULL, author_email TEXT NOT NULL,
@@ -1611,6 +1614,31 @@ def group_members(conn, group_id) -> list[sqlite3.Row]:
         "SELECT p.id, p.display_name, p.email FROM group_members gm "
         "JOIN principals p ON p.id = gm.user_id WHERE gm.group_id = ? ORDER BY p.id",
         (group_id,)).fetchall()
+
+
+def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]:
+    """One page of a channel's members, in email order.
+
+    Membership is the set of people who have spoken in the channel — the only per-channel signal
+    the corpus carries. It replaces answering every public channel with the whole roster, which is
+    a shape real Slack cannot produce (its membership differs per channel). Index-only on
+    idx_slack_channel_author, so a page costs a seek rather than a scan of the channel."""
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT author_email FROM slack_messages WHERE channel = ? "
+        "ORDER BY author_email LIMIT ? OFFSET ?", (channel, limit, offset))]
+
+
+def slack_channel_member_counts(conn) -> dict[str, int]:
+    """Every channel's member count in one pass. Per-channel COUNT(DISTINCT) is ~1.9s on the bench
+    corpus's biggest channel, and conversations.list shapes every channel in the page, so counting
+    them one at a time would be minutes per request; this is 12.2s once."""
+    return {r[0]: r[1] for r in conn.execute(
+        "SELECT channel, COUNT(DISTINCT author_email) FROM slack_messages GROUP BY channel")}
+
+
+def count_slack_channel_members(conn, channel) -> int:
+    return conn.execute("SELECT COUNT(DISTINCT author_email) FROM slack_messages WHERE channel = ?",
+                        (channel,)).fetchone()[0]
 
 
 def all_user_emails(conn) -> list[str]:

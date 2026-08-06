@@ -1270,6 +1270,151 @@ def test_drive_in_owners_query(client, admin_h, ro_conn):
     assert none.get("files", []) == []
 
 
+# --- Slack fidelity (#33) ---------------------------------------------------------------------
+#
+# Reported from building a filesystem-style Slack client against the mock. Slack answers an
+# application error as HTTP 200 with {"ok": false, "error": …}, which the mock already does — these
+# are about the cases where it answered something real Slack never would.
+#
+# NOTE: unlike the Google work in #37/#39, these expectations come from Slack's published reference
+# rather than from probing the live API — there are no Slack credentials in this environment. Each
+# one cites the documented behaviour it encodes.
+
+def _a_channel_id(client, admin_h):
+    return client.get("/slack/api/conversations.list", headers=admin_h,
+                      params={"limit": 1}).json()["channels"][0]["id"]
+
+
+@pytest.mark.parametrize("types, expect_channels", [
+    ("public_channel", True),
+    ("private_channel", True),
+    ("public_channel,private_channel", True),
+    ("im", False),
+    ("mpim", False),
+    ("im,mpim", False),
+])
+def test_slack_conversations_list_honours_types(client, admin_h, types, expect_channels):
+    """`types` was ignored, so `im` returned every public channel and a client presenting
+    `channels/` and `dms/` separately got each channel under both. This corpus has no DMs, so `im`
+    must come back empty — which is exactly what real Slack answers for a DM-less workspace, making
+    "no DMs here" indistinguishable from production instead of indistinguishable from a bug."""
+    j = client.get("/slack/api/conversations.list", headers=admin_h,
+                   params={"types": types, "limit": 5}).json()
+    assert j["ok"] is True
+    assert bool(j["channels"]) is expect_channels, j["channels"][:1]
+    assert all(c["is_im"] is False and c["is_mpim"] is False for c in j["channels"])
+
+
+def test_slack_conversations_list_defaults_to_public_channels(client, admin_h):
+    """Slack's documented default when `types` is omitted is `public_channel`."""
+    omitted = client.get("/slack/api/conversations.list", headers=admin_h,
+                         params={"limit": 5}).json()
+    explicit = client.get("/slack/api/conversations.list", headers=admin_h,
+                          params={"limit": 5, "types": "public_channel"}).json()
+    assert omitted["channels"] == explicit["channels"]
+    assert omitted["channels"]
+
+
+def test_slack_conversations_list_rejects_an_unknown_type(client, admin_h):
+    """Real Slack answers `invalid_types`; the mock accepted anything, so a typo'd filter silently
+    returned the unfiltered list."""
+    j = client.get("/slack/api/conversations.list", headers=admin_h,
+                   params={"types": "bogus_type"}).json()
+    assert j == {"ok": False, "error": "invalid_types"}
+    mixed = client.get("/slack/api/conversations.list", headers=admin_h,
+                       params={"types": "public_channel,bogus_type"}).json()
+    assert mixed == {"ok": False, "error": "invalid_types"}
+
+
+@pytest.mark.parametrize("param, error", [("latest", "invalid_ts_latest"),
+                                          ("oldest", "invalid_ts_oldest")])
+def test_slack_history_rejects_a_malformed_timestamp(client, admin_h, param, error):
+    """`float(oldest)` was unguarded, so a bad argument was a 500 — which clients that back off on
+    5xx will retry, burning the whole budget on a request that can never succeed. Real Slack
+    answers 200 with the named error."""
+    r = client.get("/slack/api/conversations.history", headers=admin_h,
+                   params={"channel": _a_channel_id(client, admin_h), param: "not-a-ts"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": error}
+
+
+@pytest.mark.parametrize("path", ["conversations.list", "users.list"])
+def test_slack_rejects_an_invalid_cursor(client, admin_h, path):
+    """An undecodable cursor was treated as offset 0, so a client paginating with a corrupted
+    cursor looped on page 1 forever instead of failing. Real Slack answers `invalid_cursor`."""
+    for bad in ("bogus", "###"):
+        j = client.get(f"/slack/api/{path}", headers=admin_h, params={"cursor": bad}).json()
+        assert j == {"ok": False, "error": "invalid_cursor"}, (path, bad)
+
+
+def test_slack_history_rejects_an_invalid_cursor(client, admin_h):
+    j = client.get("/slack/api/conversations.history", headers=admin_h,
+                   params={"channel": _a_channel_id(client, admin_h), "cursor": "bogus"}).json()
+    assert j == {"ok": False, "error": "invalid_cursor"}
+
+
+def test_slack_members_are_the_channels_own_speakers(client, admin_h, ro_conn):
+    """Every public channel reported the same membership — the entire roster — because the handler
+    skipped membership for a public channel. Real Slack's membership differs per channel, and a
+    workspace where every channel holds everybody is not a shape it produces.
+
+    Membership is now the channel's own participants, which is what the corpus actually knows."""
+    chans = client.get("/slack/api/conversations.list", headers=admin_h,
+                       params={"limit": 100}).json()["channels"]
+    seen = {}
+    for c in chans[:4]:
+        m = client.get("/slack/api/conversations.members", headers=admin_h,
+                       params={"channel": c["id"], "limit": 1000}).json()
+        assert m["ok"] is True
+        seen[c["name"]] = set(m["members"])
+        expected = {r[0] for r in ro_conn.execute(
+            "SELECT DISTINCT author_email FROM slack_messages WHERE channel = ?", (c["name"],))}
+        assert len(seen[c["name"]]) == len(expected), c["name"]
+    assert len(set(map(frozenset, seen.values()))) > 1, \
+        "different channels must not all report identical membership"
+
+
+def test_slack_members_paginate(client, admin_h):
+    """`limit` and `cursor` were never read, so `limit=5` returned 16,034 members with an empty
+    cursor. Real Slack paginates this method (default 100, cursor-based)."""
+    cid = _a_channel_id(client, admin_h)
+    first = client.get("/slack/api/conversations.members", headers=admin_h,
+                       params={"channel": cid, "limit": 2}).json()
+    assert len(first["members"]) <= 2
+    cursor = first["response_metadata"]["next_cursor"]
+    everyone = client.get("/slack/api/conversations.members", headers=admin_h,
+                          params={"channel": cid, "limit": 1000}).json()["members"]
+    if len(everyone) > 2:
+        assert cursor, "a truncated page must hand back a cursor"
+        second = client.get("/slack/api/conversations.members", headers=admin_h,
+                            params={"channel": cid, "limit": 2, "cursor": cursor}).json()
+        assert not set(first["members"]) & set(second["members"]), "pages must not overlap"
+        assert set(first["members"]) | set(second["members"]) <= set(everyone)
+    else:
+        assert cursor == ""
+
+
+def test_slack_num_members_agrees_with_the_member_list(client, admin_h):
+    """`conversations.info.num_members` counted the roster while `conversations.members` now pages
+    the channel's own speakers. A client that stats a channel and then walks it must not get two
+    different answers for the same question."""
+    chans = client.get("/slack/api/conversations.list", headers=admin_h,
+                       params={"limit": 100}).json()["channels"]
+    for c in chans[:4]:
+        listed = client.get("/slack/api/conversations.members", headers=admin_h,
+                            params={"channel": c["id"], "limit": 1000}).json()["members"]
+        assert c["num_members"] == len(listed), c["name"]
+        info = client.get("/slack/api/conversations.info", headers=admin_h,
+                          params={"channel": c["id"]}).json()["channel"]
+        assert info["num_members"] == len(listed), c["name"]
+
+
+def test_slack_members_channel_not_found(client, admin_h):
+    j = client.get("/slack/api/conversations.members", headers=admin_h,
+                   params={"channel": "C_NOPE"}).json()
+    assert j == {"ok": False, "error": "channel_not_found"}
+
+
 def test_slack_search_all(client, admin_h):
     # slack-go's Search()/SearchContext() hits search.all; it must return both messages + files.
     j = client.post("/slack/api/search.all", headers=admin_h, data={"query": "the"}).json()

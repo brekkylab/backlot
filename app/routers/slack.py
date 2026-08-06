@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict
 from app import auth, store, synth
 from app.acl import Caller
 from app.config import get_settings
-from app.pagination import decode_cursor, next_cursor
+from app.pagination import decode_cursor_or_none, next_cursor
 
 router = APIRouter(prefix="/slack/api", tags=["slack"])
 
@@ -86,6 +86,36 @@ def _err(error: str) -> JSONResponse:
     return JSONResponse({"ok": False, "error": error})
 
 
+# Slack's conversation types. This corpus models channels only, so `im`/`mpim` select nothing —
+# which is exactly what real Slack answers for a workspace with no DMs, so a client cannot tell the
+# mock's "no DMs" from production's. An unknown value is `invalid_types`, as documented; accepting
+# it silently returned the unfiltered list to a caller who had typo'd their filter.
+_SLACK_TYPES = {"public_channel", "private_channel", "im", "mpim"}
+_CHANNEL_TYPES = {"public_channel", "private_channel"}
+
+
+def _slack_types(request: Request):
+    """The requested conversation types, or ``None`` if the value is not a Slack type. Omitted
+    defaults to ``public_channel``, which is Slack's documented default."""
+    raw = _param(request, "types")
+    if raw is None or not raw.strip():
+        return {"public_channel"}
+    want = {t.strip() for t in raw.split(",") if t.strip()}
+    return want if want <= _SLACK_TYPES else None
+
+
+def _slack_ts(value: str | None) -> float | None | bool:
+    """A Slack timestamp argument as a float; ``False`` marks one that does not parse. Unguarded
+    ``float()`` made a bad argument a 500, and a 5xx is retried by clients that back off on it —
+    so a request that can never succeed burned the whole retry budget."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return False
+
+
 def _caller(request: Request) -> Caller | None:
     return auth.acl(request).resolve(auth.slack_token(request))
 
@@ -93,13 +123,7 @@ def _caller(request: Request) -> Caller | None:
 def _full_channel(request: Request, conn, name: str) -> dict:
     """A full conversation object (shared by conversations.list and .info)."""
     is_private = not store.container_has_public(conn, "slack", name)
-    # A public channel is org-wide, so skip the expensive DISTINCT doc_acl⋈messages join (it would
-    # just resolve to "all users" anyway) and only run it for the few group/private channels.
-    if not is_private:
-        num = _public_member_count(request, conn)
-    else:
-        emails = store.container_member_emails(conn, "slack", name)
-        num = len(emails) if emails else 0
+    num = _member_count(request, conn, name)
     created = _channel_created(request, conn, name)
     return {
         "id": synth.slack_channel_id(name), "name": name, "name_normalized": name,
@@ -177,9 +201,16 @@ async def conversations_list(request: Request):
     caller = _caller(request)
     if caller is None:
         return _err("not_authed")
+    types = _slack_types(request)
+    if types is None:
+        return _err("invalid_types")
+    offset = decode_cursor_or_none(_param(request, "cursor"))
+    if offset is None:
+        return _err("invalid_cursor")
     ids = auth.visible_ids(request, caller)
 
-    names = _channel_names(conn)
+    # No conversation in this corpus is a DM, so a DM-only request selects nothing.
+    names = _channel_names(conn) if types & _CHANNEL_TYPES else []
     if ids is not None:  # non-admin: only channels the caller can see a message in
         cache = getattr(request.app.state, "channel_acl", None)
         if cache is not None:  # O(channels): intersect each channel's grantees with the caller's
@@ -192,7 +223,6 @@ async def conversations_list(request: Request):
                      if store.container_has_public(conn, "slack", n) or n in granted]
 
     limit = _int(request, "limit", get_settings().default_page_size)
-    offset = decode_cursor(_param(request, "cursor"))
     page = [_full_channel(request, conn, n) for n in names[offset:offset + limit]]
     cursor = next_cursor(offset, len(page), len(names))
     return {"ok": True, "channels": page, "response_metadata": {"next_cursor": cursor}}
@@ -231,14 +261,18 @@ async def conversations_history(request: Request):
     # ~1000 roots x their authors/reply_users via users.info — slow. has_more/next_cursor still let
     # it paginate for more.
     limit = min(_int(request, "limit", get_settings().default_page_size), _HISTORY_MAX_ROOTS)
-    offset = decode_cursor(_param(request, "cursor"))
+    offset = decode_cursor_or_none(_param(request, "cursor"))
+    if offset is None:
+        return _err("invalid_cursor")
     # Slack history returns only top-level messages (thread roots + standalone);
     # replies live under conversations.replies.
-    oldest, latest = _param(request, "oldest"), _param(request, "latest")
-    if oldest or latest:  # time-bounded (e.g. a single day): filter by ts, then paginate
+    lo, hi = _slack_ts(_param(request, "oldest")), _slack_ts(_param(request, "latest"))
+    if lo is False:
+        return _err("invalid_ts_oldest")
+    if hi is False:
+        return _err("invalid_ts_latest")
+    if lo is not None or hi is not None:  # time-bounded (e.g. a single day): filter, then paginate
         inclusive = _param(request, "inclusive") in ("1", "true", "True")
-        lo = float(oldest) if oldest else None
-        hi = float(latest) if latest else None
 
         def _in_window(r) -> bool:
             ts = float(_msg_ts(r))
@@ -341,12 +375,18 @@ async def conversations_members(request: Request):
     name = _channel_name(conn, _param(request, "channel") or "")
     if name is None:
         return _err("channel_not_found")
-    if store.container_has_public(conn, "slack", name):  # public/org-wide: skip the ACL join
-        emails = store.all_user_emails(conn)
-    else:
-        emails = store.container_member_emails(conn, "slack", name) or []
-    members = [synth.slack_user_id(e) for e in sorted(emails)]
-    return {"ok": True, "members": members, "response_metadata": {"next_cursor": ""}}
+    offset = decode_cursor_or_none(_param(request, "cursor"))
+    if offset is None:
+        return _err("invalid_cursor")
+    limit = _int(request, "limit", get_settings().default_page_size)
+    # A channel's members are the people who have spoken in it — the only per-channel signal the
+    # corpus carries. This used to answer every public channel with the whole roster, which real
+    # Slack cannot produce: its membership differs per channel, and it paginates this method.
+    total = store.count_slack_channel_members(conn, name)
+    emails = store.slack_channel_member_emails(conn, name, limit=limit, offset=offset)
+    members = [synth.slack_user_id(e) for e in emails]
+    cursor = next_cursor(offset, len(members), total)
+    return {"ok": True, "members": members, "response_metadata": {"next_cursor": cursor}}
 
 
 @router.api_route("/users.list", methods=["GET", "POST"],
@@ -356,12 +396,25 @@ async def users_list(request: Request):
     caller = _caller(request)
     if caller is None:
         return _err("not_authed")
-    # Workspace members = registered user principals (employees + internal mail/doc authors). We do
-    # NOT add slack transcript participants here: they're mostly external (customers/companies/bots)
-    # — not workspace members — and adding ~70k of them made korotovsky's startup cache take ~96s.
+    # The roster is the registered user principals — the employee directory plus internal mail/doc
+    # authors. Slack transcript speakers are NOT added, and that is a limitation of the upstream
+    # dataset rather than a modelling choice, so it is stated plainly here and in the README (#33).
+    #
+    # The note that used to sit here said the speakers are "mostly external (customers/companies/
+    # bots)". Measured on the bench corpus, that is false: of 74,138 distinct speakers only 3,971
+    # (5.4%) are principals, and ALL 70,167 of the rest are on the org's own domain. The two
+    # populations are generated independently upstream, and 74k speakers against an 11,913-person
+    # directory is not a headcount any real workspace has — so neither set can be made a subset of
+    # the other without inventing 70k colleagues or discarding the transcripts' own speakers.
+    #
+    # What it costs a client: `message.user` for a speaker outside the directory resolves through
+    # users.info but never appears in users.list. conversations.members does now page the channel's
+    # own speakers, so such an author is at least discoverable per channel.
+    offset = decode_cursor_or_none(_param(request, "cursor"))
+    if offset is None:
+        return _err("invalid_cursor")
     emails = store.all_user_emails(conn)
     limit = _int(request, "limit", get_settings().default_page_size)
-    offset = decode_cursor(_param(request, "cursor"))
     page = emails[offset:offset + limit]
     members = [_user_obj(conn, e) for e in page]
     cursor = next_cursor(offset, len(page), len(emails))
@@ -571,13 +624,14 @@ def _channel_created(request: Request, conn, name: str) -> int:
     return cache[name]
 
 
-def _public_member_count(request: Request, conn) -> int:
-    """Memoized org user count — the member count of every public channel, otherwise recomputed
-    once per channel on each conversations.list."""
-    n = getattr(request.app.state, "public_member_count", None)
-    if n is None:
-        n = request.app.state.public_member_count = len(store.all_user_emails(conn))
-    return n
+def _member_count(request: Request, conn, name: str) -> int:
+    """A channel's member count — the same set conversations.members pages, so `num_members` and
+    walking the members cannot disagree. Read from the warm cache; if the background thread has not
+    finished, count this one channel directly rather than blocking on all of them."""
+    cache = getattr(request.app.state, "channel_members", None)
+    if cache is not None:
+        return cache.get(name, 0)
+    return store.count_slack_channel_members(conn, name)
 
 
 def _msg_ts(row) -> str:

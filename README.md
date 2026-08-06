@@ -302,7 +302,7 @@ URL-rewriting proxy.
 
 | Prefix | Service | Endpoints |
 |---|---|---|
-| `/slack/api` | Slack | `conversations.list`, `conversations.history` (+`oldest`/`latest`/`inclusive`), `conversations.replies`, `conversations.members`, `users.list`, `users.info`, `auth.test`, `api.test` (auth-free connectivity check), `search.messages` |
+| `/slack/api` | Slack | `conversations.list` (+`types`; this corpus has no DMs, so `im`/`mpim` select nothing, and an unknown value is `invalid_types`), `conversations.history` (+`oldest`/`latest`/`inclusive`), `conversations.replies`, `conversations.members` (per-channel, paginated), `users.list`, `users.info`, `auth.test`, `api.test` (auth-free connectivity check), `search.messages`. A channel's members are the people who have spoken in it — see the roster caveat below |
 | `/gmail/v1` | Gmail | `users/{u}/messages` (+`q`: free text / `from:` `to:` `subject:` `after:` `before:` `newer_than:` `older_than:` `label:` `has:attachment`), `messages/{id}` (`format=full\|metadata\|minimal`), `messages/{id}/attachments/{id}`, `threads` (+`q`), `threads/{id}`, `labels`, `profile`. Message and thread ids are Gmail-shaped — 16 lowercase hex under 2^63, sharing one id space as the real API does — and map back to the corpus document; an id the real API could not parse is refused the same way |
 | `/drive/v3` | Drive | `files` (`q`: `fullText contains`, `name contains`, `mimeType`, `… in parents` incl. `'root'`, `trashed`, `modifiedTime`, `sharedWithMe`, `… in owners`; `orderBy`: `name`/`name_natural`/`createdTime`/`modifiedTime`/`recency`/`folder`/`starred`/`quotaBytesUsed`/`sharedWithMeTime` (+` desc`); `fields` projection, validated), `files/{id}` (+`fields`), `files/{id}/export`, `files/{id}/permissions`, `drives`, `about` (`fields` **required**, as in real Drive; `storageQuota` is measured from the caller's visible corpus). Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like stored rows |
 | `/docs/v1`, `/sheets/v4`, `/slides/v1` | Docs/Sheets/Slides | `documents/{id}`, `spreadsheets/{id}`, `presentations/{id}` — native-doc content for editor-aware clients (read structurally instead of via Drive export). `spreadsheets/{id}` returns structure only — cells need `includeGridData=true` (+ optional `ranges`), as in real Sheets. Sheets also serves `spreadsheets/{id}/values/{range}` and `spreadsheets/{id}/values:batchGet` (A1 ranges incl. `Sheet1!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not; `majorDimension`, `valueRenderOption`). A spreadsheet row is one stored **line**, held in a single cell verbatim — the mock picks no column delimiter, so splitting (CSV, pipes, …) stays the corpus owner's decision. Reading a file of the wrong type through any of the three APIs is refused, as real Google does, not reinterpreted |
@@ -314,6 +314,25 @@ URL-rewriting proxy.
 | `/s3` | Amazon S3 | `ListBuckets`, `HeadBucket`, `GetBucketLocation`, `ListObjectsV2` (`prefix`/`delimiter`/`continuation-token`), `GetObject` (+`Range`), `HeadObject` |
 | `/linear/graphql` | Linear | **GraphQL only** (one `POST`): `issues`, `issue(id:)` (UUID *or* `ENG-123`), `team(id:)` (UUID, key, or name), `teams`, `comments`, `users`, `viewer`, plus the `Team.issues` / `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}` connections and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`, `release`, `attachment`, `issueRelation`) the official SDK's lazy relation accessors call. Relay pagination (`first`/`after`, `last`/`before` → `{nodes, pageInfo}`), server-side `filter` compiled into SQL, and full introspection |
 | `/fireflies/graphql` | Fireflies | **GraphQL only** (one `POST`): `transcripts`, `transcript(id:)`, `user[(id:)]`, `users`. Offset pagination — `limit` (**max 50**, clamped) / `skip`, returning a **bare list**, not a Relay connection — plus the documented filters: `keyword` × `scope` (`title`\|`sentences`\|`all`), `fromDate`/`toDate`, `host_email`, `organizers`, `participants`, `user_id`, `mine`, `channel_id`. Field names are snake_case, as Fireflies' own schema has them. Full introspection |
+
+### Known corpus limitation: Slack speakers are not in `users.list`
+
+The bench corpus generates Slack transcript speakers independently of the employee directory, so the
+two are largely disjoint: of **74,138** distinct message authors only **3,971 (5.4%)** are
+registered
+user principals, and all **70,167** of the rest are on the org's own domain. 74k speakers against an
+11,913-person directory is not a headcount any real workspace has.
+
+The mock does not paper over this. `users.list` serves the directory, so **an author outside it
+resolves through `users.info` but never appears in `users.list`** — a combination real Slack cannot
+produce, and the one place a client written against the mock will behave differently in production.
+
+What is available instead: `conversations.members` pages the channel's own speakers, so every author
+of a channel is discoverable there even when the roster omits them.
+
+Reconciling the two sets means either inventing ~70k colleagues or discarding the transcripts' own
+speakers, so it is a decision about the dataset rather than about this server.
+
 
 ## Tests
 

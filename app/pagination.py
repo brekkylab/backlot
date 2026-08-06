@@ -16,15 +16,11 @@ def encode_cursor(offset: int) -> str:
 
 
 def decode_cursor(token: str | None) -> int:
-    if not token:
-        return 0
-    try:
-        raw = base64.urlsafe_b64decode(token.encode()).decode()
-        if raw.startswith("o:"):
-            return max(0, int(raw[2:]))
-    except (ValueError, UnicodeDecodeError):
-        pass
-    return 0
+    """The offset a page token names, or 0 for anything that does not decode — for the sources
+    whose API restarts the crawl rather than reporting a bad cursor. Slack does report one, hence
+    :func:`decode_cursor_or_none`; the decoding itself is shared."""
+    offset = decode_cursor_or_none(token)
+    return 0 if offset is None else offset
 
 
 def decode_cursor_or_none(token: str | None) -> int | None:

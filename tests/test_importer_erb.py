@@ -694,7 +694,7 @@ def test_flat_path_removed():
 
 def test_synthesized_users_installed_after_load(tmp_path, monkeypatch):
     """Regression: users synthesized DURING load (owner/collaborator not in the directory) must
-    land in principals AND their team group_members — i.e. P.install() runs after load_structured,
+    land in principals AND their team group_members — i.e. P.install() runs after the load,
     not before (else they'd get tokens but no principal/group, breaking group-scoped ACL)."""
     data = tmp_path / "data"; data.mkdir()
     gen = tmp_path / "gen"; (gen / "sources" / "google_drive").mkdir(parents=True)

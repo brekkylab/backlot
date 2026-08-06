@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import openapi, store, synth
+from app import google_errors, openapi, store, synth
 from app.acl import Acl
 from app.config import get_settings
 from app.oauth import Oauth
@@ -26,9 +26,17 @@ from app.routers import (atlassian, fireflies, github, google, hubspot, linear, 
 
 def _build_index(conn) -> dict:
     idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}, "s3": {}, "hubspot": {},
+           "gmail": {},
            "linear": {}, "linear_teams": {}, "linear_users": {}, "linear_states": {},
            "linear_projects": {}, "linear_cycles": {}, "linear_labels": {},
            "linear_releases": {}, "fireflies_users": {}}
+    # Gmail ids are 16-hex integers, not dsids, so the served id has to be reversed back to a row.
+    # ONE map covers messages AND threads: a thread key is the root message's doc_id (verified on
+    # the bench corpus -- 0 of 121,390 thread keys is anything else), which is also why real Gmail
+    # reports id == threadId for a lone message. Measured cost on the 556,238-message bench corpus:
+    # +2.2s and +88 MiB, taking this whole function from 6.4s to ~8.6s, with 0 collisions.
+    for r in conn.execute(f"SELECT doc_id FROM {store.table('gmail')}"):
+        idx["gmail"][synth.gmail_message_id(r["doc_id"])] = r["doc_id"]
     # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
     # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container "
@@ -125,6 +133,9 @@ async def lifespan(app: FastAPI):
     # non-admin caller's visible channels by set-intersection (O(channels)) instead of a
     # per-request doc_acl⋈messages join that scales with the docs granted to the caller.
     app.state.channel_acl = None
+    # channel -> its member count (its distinct speakers). conversations.info/.list report it
+    # for every channel in a page, and a per-channel COUNT(DISTINCT) is far too slow for that.
+    app.state.channel_members = None
 
     def _warm_caches():
         c = store.connect_ro(settings.db_path, mmap_mb=settings.sqlite_mmap_mb,
@@ -138,6 +149,7 @@ async def lifespan(app: FastAPI):
             app.state.channel_acl = {k: frozenset(v) for k, v in cacl.items()}
             app.state.doc_counts = {src: c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
                                     for src, tbl in store.SOURCE_TABLE.items()}
+            app.state.channel_members = store.slack_channel_member_counts(c)
         finally:
             c.close()
 
@@ -173,10 +185,14 @@ def _atlassian_error_body(status_code: int, detail) -> dict:
 @app.exception_handler(StarletteHTTPException)
 async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
     headers = getattr(exc, "headers", None)
-    if request.url.path.startswith("/atlassian"):
+    path = request.url.path
+    if path.startswith("/atlassian"):
         return JSONResponse(status_code=exc.status_code,
                             content=_atlassian_error_body(exc.status_code, exc.detail),
                             headers=headers)
+    if google_errors.family(path) is not None:
+        return JSONResponse(status_code=exc.status_code,
+                            content=google_errors.body(path, exc), headers=headers)
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=headers)
 
 

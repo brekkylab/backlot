@@ -27,6 +27,24 @@ def decode_cursor(token: str | None) -> int:
     return 0
 
 
+def decode_cursor_or_none(token: str | None) -> int | None:
+    """Like ``decode_cursor``, but ``None`` for a token that does not decode. Slack answers
+    ``invalid_cursor``; silently restarting at page 0 makes a client with a corrupted cursor loop
+    on the first page instead of failing."""
+    if not token:
+        return 0
+    try:
+        raw = base64.urlsafe_b64decode(token.encode()).decode()
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not raw.startswith("o:"):
+        return None
+    try:
+        return max(0, int(raw[2:]))
+    except ValueError:
+        return None
+
+
 def next_cursor(offset: int, page_len: int, total: int) -> str:
     """Slack-style next_cursor: empty string when there are no more results."""
     nxt = offset + page_len

@@ -307,17 +307,16 @@ def test_hubspot_unauth_is_401(client):
     assert client.get("/hubspot/crm/v3/objects/companies").status_code == 401
 
 
-@pytest.mark.parametrize("path, detail", [
-    # Each vendor's real 401 message, verbatim. A client that string-matches its provider's error
-    # (and some do) has to keep matching, so these are part of the emulated surface rather than
-    # incidental text — and the shared auth guard takes the message as a parameter for that reason.
-    ("/github/orgs/acme", "Bad credentials"),
-    ("/gmail/v1/users/me/profile", "Invalid Credentials"),
-])
-def test_unauthenticated_request_reports_the_vendors_own_401_detail(client, path, detail):
-    r = client.get(path)
+def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
+    """The message is part of the emulated surface — a client that string-matches its provider's
+    error has to keep matching — which is why the shared guard takes it as a parameter.
+
+    GitHub only: Google no longer goes through `auth.require_bearer`, because its answer is not one
+    status (403 on Drive/Sheets, 401 on the OAuth-only families) and it carries Google's own error
+    envelope, not `detail`. That surface is covered by the tests below."""
+    r = client.get("/github/orgs/acme")
     assert r.status_code == 401
-    assert r.json()["detail"] == detail
+    assert r.json()["detail"] == "Bad credentials"
 
 
 def test_atlassian_401_keeps_the_atlassian_error_envelope(client):
@@ -572,10 +571,141 @@ def _gmail_plain(payload):
     raise AssertionError("no text/plain part")
 
 
-def test_gmail_body_roundtrip(client, admin_h, ro_conn):
-    doc = ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
-    m = client.get(f"/gmail/v1/users/me/messages/{doc['doc_id']}", headers=admin_h,
+# --- Gmail hex message ids (#39) --------------------------------------------------------------
+#
+# Gmail ids are 16 lowercase hex digits parsed as a signed 64-bit integer. MEASURED against the live
+# API, which is what fixes the 400/404 boundary the mock previously got wrong:
+#
+#   id                        | real Gmail
+#   --------------------------|-----------------------------------------------
+#   0 / 1 / abc123 / DEADBEEF | 404 NOT_FOUND     (a valid shape, just unknown)
+#   7fffffffffffffff          | 404 NOT_FOUND     (2**63 - 1 is in range)
+#   8000000000000000          | 400 INVALID_ARGUMENT "Invalid id value"
+#   ffffffffffffffff          | 400               (>= 2**63)
+#   18c9a1b2c3d4e5f6a         | 400               (17 digits overflows)
+#   -1 / 1g / " 1"            | 400               (not hex)
+#
+# Threads share the id space: a single-message thread reports id == threadId.
+
+def _a_gmail_row(ro_conn):
+    return ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
+
+
+def test_gmail_messages_list_serves_hex_ids(client, admin_h):
+    """The ids a client receives must look like Gmail's, not like the corpus's dsids — that is the
+    whole point of #39. `dsid_…` is not hex, so real Gmail would call it an invalid id value."""
+    msgs = client.get("/gmail/v1/users/me/messages", headers=admin_h,
+                      params={"maxResults": 10}).json()["messages"]
+    assert msgs
+    for m in msgs:
+        for key in ("id", "threadId"):
+            assert len(m[key]) == 16, m
+            assert all(c in "0123456789abcdef" for c in m[key]), m
+            assert int(m[key], 16) < 2 ** 63, m
+        assert not m["id"].startswith("dsid_")
+
+
+def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
+    """The hex id maps back to its dsid, so the body a client reads by hex is the stored body. A
+    one-way id would make every message unreadable."""
+    from app import synth
+    row = _a_gmail_row(ro_conn)
+    hexid = synth.gmail_message_id(row["doc_id"])
+    m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h,
                    params={"format": "full"}).json()
+    assert m["id"] == hexid
+    assert base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode() == row["content"]
+
+
+def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin_h, ro_conn):
+    """Threads share the message id space in real Gmail, so a message that is its own thread root
+    reports the same value twice — and `threads.get` resolves it."""
+    from app import synth
+    row = ro_conn.execute(
+        "SELECT * FROM gmail_messages WHERE COALESCE(thread_id, '') = '' LIMIT 1").fetchone()
+    if row is None:
+        row = ro_conn.execute(
+            "SELECT * FROM gmail_messages WHERE thread_id = doc_id LIMIT 1").fetchone()
+    assert row is not None, "SAMPLE should hold a message that is its own thread"
+    hexid = synth.gmail_message_id(row["doc_id"])
+    m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h).json()
+    assert m["id"] == m["threadId"] == hexid
+    t = client.get(f"/gmail/v1/users/me/threads/{hexid}", headers=admin_h)
+    assert t.status_code == 200 and t.json()["id"] == hexid
+
+
+def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
+    from app import synth
+    row = ro_conn.execute("SELECT * FROM gmail_messages WHERE COALESCE(thread_id,'') != '' "
+                          "AND thread_id != doc_id LIMIT 1").fetchone()
+    assert row is not None, "SAMPLE should hold a threaded reply"
+    m = client.get(f"/gmail/v1/users/me/messages/{synth.gmail_message_id(row['doc_id'])}",
+                   headers=admin_h).json()
+    assert m["threadId"] == synth.gmail_message_id(row["thread_id"])
+    assert m["id"] != m["threadId"]
+
+
+def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_conn):
+    from app import synth
+    row = ro_conn.execute("SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN "
+                          "('', '[]') LIMIT 1").fetchone()
+    assert row is not None, "SAMPLE should hold a message with an attachment"
+    hexid = synth.gmail_message_id(row["doc_id"])
+    m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h,
+                   params={"format": "full"}).json()
+    att = next(p for p in m["payload"]["parts"] if p.get("filename"))
+    r = client.get(f"/gmail/v1/users/me/messages/{hexid}/attachments/"
+                   f"{att['body']['attachmentId']}", headers=admin_h)
+    assert r.status_code == 200 and r.json()["size"] > 0
+
+
+@pytest.mark.parametrize("mid", ["0", "1", "abc123", "DEADBEEF", "7fffffffffffffff",
+                                 "0000000000000001", "18c9a1b2c3d4e5f6"])
+def test_gmail_a_valid_but_unknown_id_is_not_found(client, admin_h, mid):
+    """A well-formed id the mailbox does not hold is 404, uppercase included — measured."""
+    for kind in ("messages", "threads"):
+        r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
+        assert r.status_code == 404, f"{kind}/{mid}: {r.status_code}"
+        assert r.json()["error"]["message"] == "Requested entity was not found."
+
+
+@pytest.mark.parametrize("mid", ["8000000000000000", "ffffffffffffffff", "18c9a1b2c3d4e5f6a",
+                                 "-1", "1g", "nosuchmessageid", "dsid_00908a2dda4b4d359194a09101"])
+def test_gmail_an_unparsable_id_is_an_invalid_argument(client, admin_h, mid):
+    """The gap #39 names: an id that is not a parsable in-range hex integer is 400
+    INVALID_ARGUMENT "Invalid id value", not 404. The last row is the mock's OWN former id format,
+    which is exactly why the served ids had to change first."""
+    for kind in ("messages", "threads"):
+        r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
+        assert r.status_code == 400, f"{kind}/{mid}: {r.status_code}"
+        e = r.json()["error"]
+        assert e["message"] == "Invalid id value"
+        assert e["status"] == "INVALID_ARGUMENT"
+        assert e["errors"][0]["reason"] == "invalidArgument"
+
+
+def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens, ro_conn):
+    """Resolving through the index must not become a way around the ACL. The index is global — it
+    maps every hex id, visible or not — so the ACL read after it is the only thing standing between
+    a scoped caller and someone else's mail. The CFO's comp review is granted to cfo alone."""
+    from app import synth
+    row = ro_conn.execute("SELECT * FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
+                          ).fetchone()
+    hexid = synth.gmail_message_id(row["doc_id"])
+    assert client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h).status_code == 200
+    cfo = {"Authorization": f"Bearer {_tok(tokens, 'cfo@acme.com')}"}
+    assert client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=cfo).status_code == 200
+    outsider = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    r = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=outsider)
+    assert r.status_code == 404
+    assert r.json()["error"]["message"] == "Requested entity was not found."
+
+
+def test_gmail_body_roundtrip(client, admin_h, ro_conn):
+    from app import synth
+    doc = ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
+    m = client.get(f"/gmail/v1/users/me/messages/{synth.gmail_message_id(doc['doc_id'])}",
+                   headers=admin_h, params={"format": "full"}).json()
     body = base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode()
     assert body == doc["content"]
     subj = next(h["value"] for h in m["payload"]["headers"] if h["name"] == "Subject")
@@ -589,7 +719,9 @@ def test_gmail_messages_list_ordered_by_internaldate_desc(client, admin_h, ro_co
                         params={"maxResults": 50}).json()["messages"]
     got = [m["id"] for m in listed]
     # the stable total order the endpoint must produce: created_ts DESC, doc_id ASC as tie-break
-    expected = [r["doc_id"] for r in ro_conn.execute(
+    # the served ids are hex (#39), so the expectation is the hex of that stable order
+    from app import synth
+    expected = [synth.gmail_message_id(r["doc_id"]) for r in ro_conn.execute(
         "SELECT doc_id FROM gmail_messages ORDER BY created_ts DESC, doc_id LIMIT 50").fetchall()]
     assert got == expected
     # ...and internalDate is monotonically non-increasing across the returned page
@@ -624,13 +756,15 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
         "AND attachments != '[]' LIMIT 1").fetchone()
     if row is None:
         pytest.skip("no gmail message with an attachment in this subset")
-    m = client.get(f"/gmail/v1/users/me/messages/{row['doc_id']}", headers=admin_h,
+    from app import synth
+    hexid = synth.gmail_message_id(row["doc_id"])
+    m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h,
                    params={"format": "full"}).json()
     parts = [p for p in m["payload"]["parts"] if p.get("body", {}).get("attachmentId")]
     assert parts, "message should expose at least one attachment part"
     for p in parts:
         got = client.get(
-            f"/gmail/v1/users/me/messages/{row['doc_id']}/attachments/{p['body']['attachmentId']}",
+            f"/gmail/v1/users/me/messages/{hexid}/attachments/{p['body']['attachmentId']}",
             headers=admin_h).json()
         assert got["size"] == p["body"]["size"]                       # the two agree
         assert len(base64.urlsafe_b64decode(got["data"])) == p["body"]["size"]  # ...and match the bytes
@@ -1070,7 +1204,11 @@ def test_mock_users_can_be_disabled(client, monkeypatch):
 
 
 def test_unauthenticated_is_rejected(client):
-    assert client.get("/drive/v3/files").status_code == 401
+    # Drive accepts API keys, so an anonymous request is an "unregistered caller" -> 403, not 401.
+    # A present-but-invalid bearer IS 401. Both measured; see the Google-envelope tests below.
+    assert client.get("/drive/v3/files").status_code == 403
+    assert client.get("/drive/v3/files",
+                      headers={"Authorization": "Bearer nope"}).status_code == 401
     assert client.get("/atlassian/rest/api/3/search/jql").status_code == 401
     slack = client.post("/slack/api/conversations.list").json()
     assert slack == {"ok": False, "error": "not_authed"}
@@ -1125,6 +1263,151 @@ def test_drive_in_owners_query(client, admin_h, ro_conn):
     none = client.get("/drive/v3/files", headers=admin_h,
                       params={"q": "'nobody-xyz@acme.com' in owners", "pageSize": 100}).json()
     assert none.get("files", []) == []
+
+
+# --- Slack fidelity (#33) ---------------------------------------------------------------------
+#
+# Reported from building a filesystem-style Slack client against the mock. Slack answers an
+# application error as HTTP 200 with {"ok": false, "error": …}, which the mock already does — these
+# are about the cases where it answered something real Slack never would.
+#
+# NOTE: unlike the Google work in #37/#39, these expectations come from Slack's published reference
+# rather than from probing the live API — there are no Slack credentials in this environment. Each
+# one cites the documented behaviour it encodes.
+
+def _a_channel_id(client, admin_h):
+    return client.get("/slack/api/conversations.list", headers=admin_h,
+                      params={"limit": 1}).json()["channels"][0]["id"]
+
+
+@pytest.mark.parametrize("types, expect_channels", [
+    ("public_channel", True),
+    ("private_channel", True),
+    ("public_channel,private_channel", True),
+    ("im", False),
+    ("mpim", False),
+    ("im,mpim", False),
+])
+def test_slack_conversations_list_honours_types(client, admin_h, types, expect_channels):
+    """`types` was ignored, so `im` returned every public channel and a client presenting
+    `channels/` and `dms/` separately got each channel under both. This corpus has no DMs, so `im`
+    must come back empty — which is exactly what real Slack answers for a DM-less workspace, making
+    "no DMs here" indistinguishable from production instead of indistinguishable from a bug."""
+    j = client.get("/slack/api/conversations.list", headers=admin_h,
+                   params={"types": types, "limit": 5}).json()
+    assert j["ok"] is True
+    assert bool(j["channels"]) is expect_channels, j["channels"][:1]
+    assert all(c["is_im"] is False and c["is_mpim"] is False for c in j["channels"])
+
+
+def test_slack_conversations_list_defaults_to_public_channels(client, admin_h):
+    """Slack's documented default when `types` is omitted is `public_channel`."""
+    omitted = client.get("/slack/api/conversations.list", headers=admin_h,
+                         params={"limit": 5}).json()
+    explicit = client.get("/slack/api/conversations.list", headers=admin_h,
+                          params={"limit": 5, "types": "public_channel"}).json()
+    assert omitted["channels"] == explicit["channels"]
+    assert omitted["channels"]
+
+
+def test_slack_conversations_list_rejects_an_unknown_type(client, admin_h):
+    """Real Slack answers `invalid_types`; the mock accepted anything, so a typo'd filter silently
+    returned the unfiltered list."""
+    j = client.get("/slack/api/conversations.list", headers=admin_h,
+                   params={"types": "bogus_type"}).json()
+    assert j == {"ok": False, "error": "invalid_types"}
+    mixed = client.get("/slack/api/conversations.list", headers=admin_h,
+                       params={"types": "public_channel,bogus_type"}).json()
+    assert mixed == {"ok": False, "error": "invalid_types"}
+
+
+@pytest.mark.parametrize("param, error", [("latest", "invalid_ts_latest"),
+                                          ("oldest", "invalid_ts_oldest")])
+def test_slack_history_rejects_a_malformed_timestamp(client, admin_h, param, error):
+    """`float(oldest)` was unguarded, so a bad argument was a 500 — which clients that back off on
+    5xx will retry, burning the whole budget on a request that can never succeed. Real Slack
+    answers 200 with the named error."""
+    r = client.get("/slack/api/conversations.history", headers=admin_h,
+                   params={"channel": _a_channel_id(client, admin_h), param: "not-a-ts"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": error}
+
+
+@pytest.mark.parametrize("path", ["conversations.list", "users.list"])
+def test_slack_rejects_an_invalid_cursor(client, admin_h, path):
+    """An undecodable cursor was treated as offset 0, so a client paginating with a corrupted
+    cursor looped on page 1 forever instead of failing. Real Slack answers `invalid_cursor`."""
+    for bad in ("bogus", "###"):
+        j = client.get(f"/slack/api/{path}", headers=admin_h, params={"cursor": bad}).json()
+        assert j == {"ok": False, "error": "invalid_cursor"}, (path, bad)
+
+
+def test_slack_history_rejects_an_invalid_cursor(client, admin_h):
+    j = client.get("/slack/api/conversations.history", headers=admin_h,
+                   params={"channel": _a_channel_id(client, admin_h), "cursor": "bogus"}).json()
+    assert j == {"ok": False, "error": "invalid_cursor"}
+
+
+def test_slack_members_are_the_channels_own_speakers(client, admin_h, ro_conn):
+    """Every public channel reported the same membership — the entire roster — because the handler
+    skipped membership for a public channel. Real Slack's membership differs per channel, and a
+    workspace where every channel holds everybody is not a shape it produces.
+
+    Membership is now the channel's own participants, which is what the corpus actually knows."""
+    chans = client.get("/slack/api/conversations.list", headers=admin_h,
+                       params={"limit": 100}).json()["channels"]
+    seen = {}
+    for c in chans[:4]:
+        m = client.get("/slack/api/conversations.members", headers=admin_h,
+                       params={"channel": c["id"], "limit": 1000}).json()
+        assert m["ok"] is True
+        seen[c["name"]] = set(m["members"])
+        expected = {r[0] for r in ro_conn.execute(
+            "SELECT DISTINCT author_email FROM slack_messages WHERE channel = ?", (c["name"],))}
+        assert len(seen[c["name"]]) == len(expected), c["name"]
+    assert len(set(map(frozenset, seen.values()))) > 1, \
+        "different channels must not all report identical membership"
+
+
+def test_slack_members_paginate(client, admin_h):
+    """`limit` and `cursor` were never read, so `limit=5` returned 16,034 members with an empty
+    cursor. Real Slack paginates this method (default 100, cursor-based)."""
+    cid = _a_channel_id(client, admin_h)
+    first = client.get("/slack/api/conversations.members", headers=admin_h,
+                       params={"channel": cid, "limit": 2}).json()
+    assert len(first["members"]) <= 2
+    cursor = first["response_metadata"]["next_cursor"]
+    everyone = client.get("/slack/api/conversations.members", headers=admin_h,
+                          params={"channel": cid, "limit": 1000}).json()["members"]
+    if len(everyone) > 2:
+        assert cursor, "a truncated page must hand back a cursor"
+        second = client.get("/slack/api/conversations.members", headers=admin_h,
+                            params={"channel": cid, "limit": 2, "cursor": cursor}).json()
+        assert not set(first["members"]) & set(second["members"]), "pages must not overlap"
+        assert set(first["members"]) | set(second["members"]) <= set(everyone)
+    else:
+        assert cursor == ""
+
+
+def test_slack_num_members_agrees_with_the_member_list(client, admin_h):
+    """`conversations.info.num_members` counted the roster while `conversations.members` now pages
+    the channel's own speakers. A client that stats a channel and then walks it must not get two
+    different answers for the same question."""
+    chans = client.get("/slack/api/conversations.list", headers=admin_h,
+                       params={"limit": 100}).json()["channels"]
+    for c in chans[:4]:
+        listed = client.get("/slack/api/conversations.members", headers=admin_h,
+                            params={"channel": c["id"], "limit": 1000}).json()["members"]
+        assert c["num_members"] == len(listed), c["name"]
+        info = client.get("/slack/api/conversations.info", headers=admin_h,
+                          params={"channel": c["id"]}).json()["channel"]
+        assert info["num_members"] == len(listed), c["name"]
+
+
+def test_slack_members_channel_not_found(client, admin_h):
+    j = client.get("/slack/api/conversations.members", headers=admin_h,
+                   params={"channel": "C_NOPE"}).json()
+    assert j == {"ok": False, "error": "channel_not_found"}
 
 
 def test_slack_search_all(client, admin_h):
@@ -1249,10 +1532,12 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens, admin_h, ro_conn
     ).fetchone()
     if doc is None:
         pytest.skip("no gmail doc for user B in this subset")
+    from app import synth
+    hexid = synth.gmail_message_id(doc["doc_id"])   # served ids are hex, not dsids (#39)
     ah = {"Authorization": f"Bearer {user_a['token']}"}
-    r = client.get(f"/gmail/v1/users/me/messages/{doc['doc_id']}", headers=ah)
+    r = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=ah)
     # A may coincidentally be a recipient; assert admin can always read it
-    assert client.get(f"/gmail/v1/users/me/messages/{doc['doc_id']}", headers=admin_h).status_code == 200
+    assert client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h).status_code == 200
     assert r.status_code in (200, 404)
 
 
@@ -1654,6 +1939,166 @@ def test_s3_max_keys_zero_returns_empty_page_safely(big_bucket_client, big_bucke
     assert root.findtext(f"{{{S3NS}}}NextContinuationToken") is None
 
 
+# --- Google error envelope (#37) ------------------------------------------------------------
+#
+# Every case below was MEASURED against the live APIs with real OAuth credentials. The envelope is
+# per-family, not uniform:
+#
+#   family                       errors[]   status                 no Authorization header
+#   -----------------------------|----------|-----------------------|------------------------
+#   Drive v3                     | always   | auth failures only    | 403 PERMISSION_DENIED
+#   Gmail v1                     | always   | always                | 401 UNAUTHENTICATED
+#   Docs v1 / Sheets v4 / Slides | never    | always                | 401 UNAUTHENTICATED
+#
+# A bad bearer token is 401 UNAUTHENTICATED in every family.
+
+def _gerr(resp):
+    """The `error` object, or a clear failure naming what came back instead."""
+    body = resp.json()
+    assert "error" in body, f"expected a Google error envelope, got {body}"
+    return body["error"]
+
+
+def test_google_errors_use_googles_envelope(client, admin_h):
+    """`google-api-python-client` reads `error.message` to build HttpError, so `{"detail": …}` left
+    every error unreadable to the one client the mock exists to serve."""
+    r = client.get("/drive/v3/files", headers=admin_h, params={"fields": "totallyBogusField"})
+    assert r.status_code == 400
+    e = _gerr(r)
+    assert e["code"] == 400
+    assert e["message"] == "Invalid field selection totallyBogusField"
+    assert "detail" not in r.json()
+    # non-Google paths keep FastAPI's default envelope
+    assert "detail" in client.get("/no-such-route").json()
+
+
+def test_drive_errors_carry_the_legacy_errors_array(client, admin_h):
+    """Drive v3 always sends `errors[]` with a `reason` a client can branch on, and repeats the
+    message inside it. It does NOT send `status` for a parameter failure — measured."""
+    e = _gerr(client.get("/drive/v3/files", headers=admin_h, params={"fields": "nope"}))
+    assert e["errors"] == [{"message": "Invalid field selection nope", "domain": "global",
+                            "reason": "invalidParameter", "location": "fields",
+                            "locationType": "parameter"}]
+    assert "status" not in e, "Drive omits status on parameter failures"
+
+
+def test_editor_api_errors_carry_status_and_no_errors_array(client, admin_h):
+    """The editor APIs are the mirror image of Drive: `status`, never `errors[]` — measured."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    e = _gerr(client.get(f"/sheets/v4/spreadsheets/{doc}", headers=admin_h))
+    assert e["code"] == 404 and e["status"] == "NOT_FOUND"
+    assert e["message"] == "Requested entity was not found."
+    assert "errors" not in e
+
+
+def test_gmail_errors_carry_both(client, admin_h):
+    """Gmail sends `errors[]` AND `status` — measured, and the only family that does both."""
+    # a well-formed but unknown id; a non-hex one is 400 "Invalid id value" (see #39)
+    e = _gerr(client.get("/gmail/v1/users/me/messages/00000000deadbeef", headers=admin_h))
+    assert e["code"] == 404 and e["status"] == "NOT_FOUND"
+    assert e["message"] == "Requested entity was not found."
+    assert e["errors"][0]["reason"] == "notFound"
+
+
+# (path, params, code, status, reason, location) — one row per measured case.
+GOOGLE_ERROR_CASES = [
+    ("/drive/v3/files", {"fields": "bogus"}, 400, None, "invalidParameter", "fields"),
+    ("/drive/v3/files", {"orderBy": "bogusKey"}, 400, None, "invalid", "orderBy"),
+    ("/drive/v3/files/no-such-file", {}, 404, None, "notFound", "fileId"),
+    ("/drive/v3/about", {}, 400, None, "required", "fields"),
+    ("/drive/v3/about", {"fields": "storageQuoat"}, 400, None, "invalidParameter", "fields"),
+    ("/gmail/v1/users/me/messages/00000000deadbeef", {}, 404, "NOT_FOUND", "notFound", None),
+    ("/gmail/v1/users/me/labels/NO_SUCH", {}, 404, "NOT_FOUND", "notFound", None),
+]
+
+
+@pytest.mark.parametrize("path, params, code, status, reason, location", GOOGLE_ERROR_CASES)
+def test_google_error_reasons_match_the_real_api(client, admin_h, path, params, code, status,
+                                                 reason, location):
+    r = client.get(path, headers=admin_h, params=params)
+    assert r.status_code == code
+    e = _gerr(r)
+    assert e["code"] == code
+    assert e.get("status") == status
+    err0 = e["errors"][0]
+    assert err0["reason"] == reason
+    assert err0["domain"] == "global"
+    assert err0.get("location") == location
+    if location is not None:
+        assert err0["locationType"] == "parameter"
+
+
+def test_drive_not_found_names_the_file_id(client, admin_h):
+    """Measured: `File not found: {id}.` — the id is in the message, so a batch caller can tell
+    which of its requests failed."""
+    e = _gerr(client.get("/drive/v3/files/abc123xyz", headers=admin_h))
+    assert e["message"] == "File not found: abc123xyz."
+
+
+def test_drive_export_requires_mime_type_with_googles_wording(client, admin_h):
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    e = _gerr(client.get(f"/drive/v3/files/{doc}/export", headers=admin_h))
+    assert e["code"] == 400 and e["message"] == "Required parameter: mimeType"
+    assert e["errors"][0] == {"message": "Required parameter: mimeType", "domain": "global",
+                              "reason": "required", "location": "mimeType",
+                              "locationType": "parameter"}
+
+
+@pytest.mark.parametrize("path, reason, location", [
+    ("/drive/v3/files/{pdf}/export?mimeType=text/plain", "fileNotExportable", None),
+    ("/drive/v3/files/{doc}?alt=media", "fileNotDownloadable", "alt"),
+])
+def test_drive_403s_carry_their_own_reasons(client, admin_h, path, reason, location):
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    pdf = _drive_find(client, admin_h, "Whitepaper")["id"]
+    e = _gerr(client.get(path.format(doc=doc, pdf=pdf), headers=admin_h))
+    assert e["code"] == 403
+    assert e["errors"][0]["reason"] == reason
+    assert e["errors"][0].get("location") == location
+
+
+BAD_TOKEN = {"Authorization": "Bearer not-a-real-token"}
+
+
+@pytest.mark.parametrize("path", ["/drive/v3/files", "/gmail/v1/users/me/profile",
+                                  "/sheets/v4/spreadsheets/x", "/docs/v1/documents/x",
+                                  "/slides/v1/presentations/x"])
+def test_a_bad_token_is_unauthenticated_everywhere(client, path):
+    """Measured: every family answers a present-but-invalid bearer with 401 UNAUTHENTICATED, and
+    the short "Invalid Credentials" lives in `errors[0]` while the top message is the long form."""
+    r = client.get(path, headers=BAD_TOKEN)
+    assert r.status_code == 401
+    e = _gerr(r)
+    assert e["code"] == 401 and e["status"] == "UNAUTHENTICATED"
+    assert e["message"].startswith("Request had invalid authentication credentials.")
+    if "errors" in e:
+        assert e["errors"][0]["message"] == "Invalid Credentials"
+        assert e["errors"][0]["reason"] == "authError"
+        assert e["errors"][0]["location"] == "Authorization"
+        assert e["errors"][0]["locationType"] == "header"
+
+
+@pytest.mark.parametrize("path, code, status", [
+    ("/drive/v3/files", 403, "PERMISSION_DENIED"),        # Drive accepts API keys, so anonymous
+    ("/sheets/v4/spreadsheets/x", 403, "PERMISSION_DENIED"),  # ...is an "unregistered caller"
+    ("/gmail/v1/users/me/profile", 401, "UNAUTHENTICATED"),   # OAuth-only APIs say the
+    ("/docs/v1/documents/x", 401, "UNAUTHENTICATED"),         # ...credentials are missing
+    ("/slides/v1/presentations/x", 401, "UNAUTHENTICATED"),
+])
+def test_a_missing_header_differs_by_family(client, path, code, status):
+    """The surprise, measured: no `Authorization` header at all is NOT uniformly 401. Drive and
+    Sheets answer 403 PERMISSION_DENIED, Gmail and the Docs/Slides APIs answer 401. A bad token is
+    401 everywhere — so the two cases are genuinely distinct and the mock conflated them."""
+    r = client.get(path)
+    assert r.status_code == code
+    e = _gerr(r)
+    assert e["code"] == code and e["status"] == status
+    if code == 403:
+        assert "unregistered callers" in e["message"]
+    else:
+        assert "missing required authentication credential" in e["message"]
+
+
 def test_atlassian_errors_use_atlassian_envelope(client):
     # atlassian-python-api's Confluence client does response.json()["message"] on any error, so the
     # mock must shape /atlassian errors like Atlassian Cloud (message + statusCode), not {"detail"}.
@@ -1978,7 +2423,7 @@ def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
     r = client.get("/drive/v3/files", headers=admin_h,
                    params={"pageSize": 1, "fields": "files(totallyBogusField)"})
     assert r.status_code == 400
-    assert "totallyBogusField" in r.json()["detail"]
+    assert "totallyBogusField" in r.json()["error"]["message"]
     bad_top = client.get("/drive/v3/files", headers=admin_h,
                          params={"pageSize": 1, "fields": "bogusTop,files(id)"})
     assert bad_top.status_code == 400
@@ -2076,7 +2521,7 @@ def test_drive_about_requires_a_fields_mask(client, admin_h):
     Serving a full body instead would let a client ship a call that fails in production."""
     r = client.get(ABOUT, headers=admin_h)
     assert r.status_code == 400
-    assert "fields" in r.json()["detail"]
+    assert "fields" in r.json()["error"]["message"]
 
 
 def test_drive_about_rejects_an_unknown_field(client, admin_h):
@@ -2093,9 +2538,12 @@ def test_drive_about_rejects_a_mask_that_selects_nothing(client, admin_h):
 
 
 def test_drive_about_needs_auth(client):
-    assert client.get(ABOUT, params={"fields": "user"}).status_code == 401
-    # auth is resolved before the mask, as real Drive does — a bad mask on a bad token is still 401
-    assert client.get(ABOUT).status_code == 401
+    # no header at all -> 403 on Drive (an unregistered caller); a bad token -> 401
+    assert client.get(ABOUT, params={"fields": "user"}).status_code == 403
+    bad = {"Authorization": "Bearer nope"}
+    assert client.get(ABOUT, params={"fields": "user"}, headers=bad).status_code == 401
+    # auth is resolved before the mask, as real Drive does — a missing mask on a bad token is 401
+    assert client.get(ABOUT, headers=bad).status_code == 401
 
 
 def test_drive_about_serves_only_the_requested_fields(client, admin_h):

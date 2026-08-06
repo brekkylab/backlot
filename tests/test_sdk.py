@@ -86,6 +86,23 @@ def gmail():
     check("Gmail", "threads.list")(lambda: f'{len(svc.users().threads().list(userId="me").execute().get("threads", []))} threads')
     check("Gmail", "threads.get")(
         lambda: f'{len(svc.users().threads().get(userId="me", id=msgs[0]["id"]).execute()["messages"])} msgs')
+    # Served ids must look like Gmail's own (#39): 16 lowercase hex under 2**63. A dsid would be
+    # refused by the real API as an invalid id value, so a client written against the mock would
+    # only discover that in production.
+    check("Gmail", "ids are Gmail-shaped")(
+        lambda: f'{len(msgs)} hex ids'
+        if all(len(m["id"]) == 16 and int(m["id"], 16) < 2 ** 63
+               and m["id"] == m["id"].lower() for m in msgs) else 1 / 0)
+
+    def _unparsable_id():
+        """The 400/404 split, through the SDK: a non-hex id is an invalid argument, not a 404."""
+        from googleapiclient.errors import HttpError
+        try:
+            svc.users().messages().get(userId="me", id="not-a-hex-id").execute()
+        except HttpError as e:
+            return f"{e.resp.status} on a non-hex id" if e.resp.status == 400 else 1 / 0
+        raise AssertionError("a non-hex id was accepted")
+    check("Gmail", "non-hex id is 400")(_unparsable_id)
 
 
 # ------------------------------------------------------------------ Drive
@@ -171,6 +188,32 @@ def sheets():
             return f"{e.resp.status} on a Doc id" if e.resp.status == 404 else 1 / 0
         raise AssertionError("a Doc id was served as a spreadsheet")
     check("Sheets", "wrong doc type is not found")(_wrong_type)
+
+    # The envelope exists for THIS: googleapiclient parses `error.message` out of the body to build
+    # HttpError's reason. Against `{"detail": …}` it fell back to dumping raw bytes, so a client
+    # could not read the message it branches on. `error_details` carries the parsed `errors[]`.
+    def _error_message_is_readable():
+        try:
+            svc.spreadsheets().values().get(spreadsheetId=fid, range="Nope!A1").execute()
+        except HttpError as e:
+            if e.reason != "Unable to parse range: Nope!A1":
+                raise AssertionError(f"reason not parsed: {e.reason!r}")
+            return f"reason={e.reason[:28]!r}"
+        raise AssertionError("a bad range was accepted")
+    check("Sheets", "HttpError.reason from the body")(_error_message_is_readable)
+
+    def _drive_error_details():
+        """Drive's legacy `errors[]` reaches the SDK as `error_details`, which is where a client
+        finds the `reason` it branches on."""
+        try:
+            drive.files().list(fields="bogusField").execute()
+        except HttpError as e:
+            got = (e.error_details or [{}])[0]
+            if got.get("reason") != "invalidParameter" or got.get("location") != "fields":
+                raise AssertionError(f"error_details not parsed: {e.error_details!r}")
+            return f"reason={got['reason']}"
+        raise AssertionError("a bogus fields mask was accepted")
+    check("Drive", "HttpError.error_details reason")(_drive_error_details)
 
 
 # ------------------------------------------------------------------ GitHub

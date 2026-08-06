@@ -168,10 +168,10 @@ def test_editor_apis_treat_another_native_type_as_not_found(base, admin_h):
     ]:
         r = httpx.get(f"{base}{path}", headers=admin_h)
         assert r.status_code == 404, f"{label}: {r.status_code}"
-        assert r.json()["detail"] == NOT_FOUND, label
-    # and it is the same answer as an id that does not exist at all
+        assert r.json()["error"]["message"] == NOT_FOUND, label
+    # and it is the same answer as an id that does not exist at all — body and all
     assert httpx.get(f"{base}/sheets/v4/spreadsheets/no-such-id", headers=admin_h).json() == \
-        {"detail": NOT_FOUND}
+        {"error": {"code": 404, "message": NOT_FOUND, "status": "NOT_FOUND"}}
     # each API still serves its OWN type — without this arm a blanket 404 would pass
     assert httpx.get(f"{base}/docs/v1/documents/{doc}", headers=admin_h).status_code == 200
     assert httpx.get(f"{base}/sheets/v4/spreadsheets/{sheet}", headers=admin_h).status_code == 200
@@ -183,7 +183,7 @@ def test_sheets_values_treat_another_native_type_as_not_found(base, admin_h):
     doc, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
     for r in (_values(base, admin_h, doc, "Sheet1"), _batch(base, admin_h, doc, ["Sheet1"])):
         assert r.status_code == 404
-        assert r.json()["detail"] == NOT_FOUND
+        assert r.json()["error"]["message"] == NOT_FOUND
 
 
 def test_editor_apis_reject_a_non_native_file(base, admin_h):
@@ -194,7 +194,7 @@ def test_editor_apis_reject_a_non_native_file(base, admin_h):
                  f"/slides/v1/presentations/{pdf}"):
         r = httpx.get(f"{base}{path}", headers=admin_h)
         assert r.status_code == 400, path
-        assert r.json()["detail"] == INVALID_ARG, path
+        assert r.json()["error"]["message"] == INVALID_ARG, path
 
 
 def test_editor_apis_reject_an_office_file_of_their_own_family(base, admin_h):
@@ -207,10 +207,10 @@ def test_editor_apis_reject_an_office_file_of_their_own_family(base, admin_h):
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     r = httpx.get(f"{base}/sheets/v4/spreadsheets/{xlsx}", headers=admin_h)
     assert r.status_code == 400
-    assert r.json()["detail"] == OFFICE_MSG
+    assert r.json()["error"]["message"] == OFFICE_MSG
     # the same file through the other two APIs is just an invalid argument
     for path in (f"/docs/v1/documents/{xlsx}", f"/slides/v1/presentations/{xlsx}"):
-        assert httpx.get(f"{base}{path}", headers=admin_h).json()["detail"] == INVALID_ARG
+        assert httpx.get(f"{base}{path}", headers=admin_h).json()["error"]["message"] == INVALID_ARG
 
 
 def test_editor_apis_reject_a_folder(base, admin_h):
@@ -220,7 +220,7 @@ def test_editor_apis_reject_a_folder(base, admin_h):
                        params={"q": "'root' in parents", "pageSize": 1}).json()["files"][0]["id"]
     r = httpx.get(f"{base}/docs/v1/documents/{folder}", headers=admin_h)
     assert r.status_code == 400
-    assert r.json()["detail"] == INVALID_ARG
+    assert r.json()["error"]["message"] == INVALID_ARG
 
 
 def test_wrong_type_is_refused_before_it_is_read(base, live_server):
@@ -406,7 +406,7 @@ def test_sheets_values_get_rejects_a_bad_enum(base, admin_h, sheet_id, params, f
     r = _values(base, admin_h, sheet_id, "Sheet1!A1:A2", **params)
     assert r.status_code == 400
     bad = next(iter(params.values()))
-    assert r.json()["detail"] == (
+    assert r.json()["error"]["message"] == (
         f"Invalid value at \'{field}\' "
         f"(type.googleapis.com/google.apps.sheets.v4.{enum}), \"{bad}\"")
 
@@ -449,7 +449,11 @@ def test_sheets_values_get_enforces_the_acl(base, live_server, sheet_id):
 
 
 def test_sheets_values_get_needs_auth(base, sheet_id):
-    assert _values(base, {}, sheet_id, "Sheet1").status_code == 401
+    # Sheets accepts API keys, so no header at all is 403 PERMISSION_DENIED; a bad bearer is 401.
+    # Both measured against the live API.
+    assert _values(base, {}, sheet_id, "Sheet1").status_code == 403
+    assert _values(base, {"Authorization": "Bearer nope"}, sheet_id,
+                   "Sheet1").status_code == 401
 
 
 def test_sheets_values_get_clamps_a_range_that_overflows_the_grid(base, admin_h, sheet_id):
@@ -466,8 +470,9 @@ def test_sheets_values_get_rejects_a_start_outside_the_grid(base, admin_h, sheet
     is an error naming the limits."""
     r = _values(base, admin_h, sheet_id, rng)
     assert r.status_code == 400
-    assert r.json()["detail"].startswith("Range (Sheet1!")
-    assert r.json()["detail"].endswith("exceeds grid limits. Max rows: 1000, max columns: 26")
+    assert r.json()["error"]["message"].startswith("Range (Sheet1!")
+    assert r.json()["error"]["message"].endswith(
+        "exceeds grid limits. Max rows: 1000, max columns: 26")
 
 
 def test_sheets_values_get_empty_inside_the_grid_is_not_an_error(base, admin_h, sheet_id):
@@ -517,7 +522,7 @@ def test_sheets_values_quoting_distinguishes_a_sheet_from_a_cell(base, admin_h, 
     assert _values(base, admin_h, sheet_id, "A1").json()["range"] == "Sheet1!A1"
     r = _values(base, admin_h, sheet_id, "'A1'")
     assert r.status_code == 400
-    assert r.json()["detail"] == "Unable to parse range: 'A1'"
+    assert r.json()["error"]["message"] == "Unable to parse range: 'A1'"
     # a quoted name that is not this spreadsheet's sheet is refused the same way
     assert _values(base, admin_h, sheet_id, "'Other'").status_code == 400
     assert _batch(base, admin_h, sheet_id, ["'Other'"]).status_code == 400
@@ -538,7 +543,7 @@ def test_sheets_values_range_echo_matches_real_sheets(base, admin_h, sheet_id, r
 def test_sheets_values_parse_error_matches_real_sheets(base, admin_h, sheet_id, rng, message):
     r = _values(base, admin_h, sheet_id, rng)
     assert r.status_code == 400
-    assert r.json()["detail"] == message
+    assert r.json()["error"]["message"] == message
 
 
 def test_sheets_batch_get_returns_one_value_range_per_request_range(base, admin_h, sheet_id):

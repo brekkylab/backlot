@@ -13,8 +13,7 @@ import json
 import pytest
 
 from app import synth
-from tests._helpers import build_corpus, client_for, db_count
-
+from tests._helpers import build_corpus, client_for, corpus_client, db_count
 
 
 # --- Linear (GraphQL) -------------------------------------------------------------
@@ -631,3 +630,69 @@ def test_an_empty_labels_predicate_is_an_error_not_a_no_op(fclient):
     whole filter and answer with the full corpus, so it is rejected instead."""
     assert "must constrain something" in err(fclient, "{labels: {some: {}}}")
     assert "needs `some` or `every`" in err(fclient, "{labels: {}}")
+
+
+# --- response-shape assertions (were tests/test_fidelity.py) --------------------------------
+
+
+def _linear_client(tmp_path):
+    """``with _linear_client(p) as (client, settings):`` over LINEAR_CORPUS."""
+    return corpus_client(tmp_path, LINEAR_CORPUS)
+
+
+# --- Linear -----------------------------------------------------------------------
+# Linear's auth is the one shape no other source in this repo uses: the personal API key is the
+# BARE `Authorization` value with no scheme, while an OAuth access token is `Bearer <token>`, and
+# the real API accepts both on the same header. Getting this wrong is silent — a stripped-scheme
+# parse would accept `Bearer <key>` and reject the bare key that every real Linear client sends.
+
+LINEAR_CORPUS = [
+    {"source_type": "linear", "doc_id": "lin-a", "team": "engineering", "group": "engineering",
+     "title": "Batching stall", "content": "A 50ms stall after compaction.",
+     "author_email": "ava@acme.com", "author_groups": ["engineering"], "visibility": "public",
+     "identifier": "ENG-9", "state": "In Progress", "priority": 2},
+]
+
+
+def _linear_identifiers(client, authorization):
+    """``authorization`` verbatim, not a Bearer-wrapped token — these tests assert on the scheme."""
+    r = gql(client, "{ issues { nodes { identifier } } }", {"Authorization": authorization})
+    return r.status_code, r.json()
+
+
+def test_linear_accepts_a_bare_api_key_with_no_scheme(tmp_path):
+    """What `LinearReader` and `@linear/sdk` both send: `Authorization: <key>`, no prefix."""
+    with _linear_client(tmp_path) as (client, settings):
+        status, body = _linear_identifiers(client, settings.admin_token)
+        assert status == 200
+        assert [n["identifier"] for n in body["data"]["issues"]["nodes"]] == ["ENG-9"]
+
+
+def test_linear_accepts_a_bearer_oauth_token(tmp_path):
+    """The OAuth shape, on the same header."""
+    with _linear_client(tmp_path) as (client, settings):
+        status, body = _linear_identifiers(client, f"Bearer {settings.admin_token}")
+        assert status == 200
+        assert [n["identifier"] for n in body["data"]["issues"]["nodes"]] == ["ENG-9"]
+
+
+def test_linear_rejects_a_stray_scheme_rather_than_stripping_it(tmp_path):
+    """To the real API the WHOLE header value is the key, so `Token <key>` is simply a wrong key —
+    not a key with a scheme to discard. Stripping the first word would authenticate a credential
+    the real API refuses."""
+    with _linear_client(tmp_path) as (client, settings):
+        assert _linear_identifiers(client, f"Token {settings.admin_token}")[0] == 401
+
+
+def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
+    """Real Linear splits these: a bad document never executed is a 400 with no `data` key, while
+    an error raised mid-execution is a 200 carrying `data` alongside `errors`."""
+    with _linear_client(tmp_path) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+        bad = client.post("/linear/graphql", json={"query": "{ issues( }"}, headers=h)
+        assert bad.status_code == 400 and "data" not in bad.json()
+
+        missing = client.post("/linear/graphql",
+                              json={"query": '{ issue(id: "NOPE-1") { identifier } }'}, headers=h)
+        assert missing.status_code == 200
+        assert "data" in missing.json() and missing.json()["errors"]

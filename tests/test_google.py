@@ -13,38 +13,8 @@ import re
 import httpx
 import pytest
 
-from tests._helpers import db_count, tok
-
-
-
-# --- crawlers (small page sizes to exercise pagination) -------------------------
-
-def crawl_gmail(client, headers, user="me"):
-    ids, token = [], None
-    while True:
-        p = {"maxResults": 7}
-        if token:
-            p["pageToken"] = token
-        j = client.get(f"/gmail/v1/users/{user}/messages", headers=headers, params=p).json()
-        ids += [m["id"] for m in j.get("messages", [])]
-        token = j.get("nextPageToken")
-        if not token:
-            break
-    return ids
-
-
-def crawl_drive(client, headers):
-    ids, token = [], None
-    while True:
-        p = {"pageSize": 7}
-        if token:
-            p["pageToken"] = token
-        j = client.get("/drive/v3/files", headers=headers, params=p).json()
-        ids += [f["id"] for f in j.get("files", [])]
-        token = j.get("nextPageToken")
-        if not token:
-            break
-    return ids
+from app import store
+from tests._helpers import crawl_drive, crawl_gmail, db_count, tiny_corpus, tok
 
 
 # --- admin full-crawl completeness ---------------------------------------------
@@ -1590,3 +1560,106 @@ def test_history_honors_oldest_latest(base, admin_h):
                       params={"channel": cid, "oldest": ts + 1, "latest": ts + 100,
                               "limit": 1000}).json()["messages"]
     assert all(float(m["ts"]) > ts for m in after)  # the sampled message is excluded
+
+
+# --- response-shape assertions (were tests/test_fidelity.py) --------------------------------
+
+
+# --- Drive -----------------------------------------------------------------------
+
+def test_drive_permissions_and_trashed(tmp_path):
+    from app.routers.google import _drive_permissions, _drive_q_match
+    s = tiny_corpus(tmp_path, [
+        {"source_type": "google_drive", "doc_id": "d1", "folder": "mk", "title": "Deck",
+         "content": "x", "author_email": "a@x.com", "visibility": "public"},
+        {"source_type": "google_drive", "doc_id": "d2", "folder": "mk", "title": "Old",
+         "content": "y", "author_email": "a@x.com", "visibility": "group", "group": "mkt",
+         "trashed": True},
+    ])
+    conn = store.connect_ro(s.db_path)
+    perms = _drive_permissions(conn, "d1")
+    # public share is type "anyone" (not "domain"), and an owner permission exists
+    assert any(p["type"] == "anyone" for p in perms)
+    assert any(p["role"] == "owner" for p in perms)
+    # group-restricted doc surfaces a group-type permission
+    gperms = _drive_permissions(conn, "d2")
+    assert any(p["type"] == "group" for p in gperms)
+    # trashed excluded from a default `q`, included when asked
+    d2 = store.get_document(conn, "google_drive", "d2")
+    assert _drive_q_match(d2, "trashed = false") is False
+    assert _drive_q_match(d2, "trashed = true") is True
+
+
+def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
+    """Google: `size` "is populated for files with binary content stored in Google Drive AND for
+    Docs Editors files; it is not populated for shortcuts or folders." The mock set it only in the
+    binary branch, so it taught implementors that native Docs have no byte size (issue #23)."""
+    from app.routers.google import _drive_file
+    s = tiny_corpus(tmp_path, [
+        {"source_type": "google_drive", "doc_id": "n1", "folder": "mk", "title": "Doc",
+         "content": "hello there", "author_email": "a@x.com", "subtype": "document"},
+        {"source_type": "google_drive", "doc_id": "b1", "folder": "mk", "title": "Scan.pdf",
+         "content": "%PDF-1.7", "author_email": "a@x.com", "subtype": "pdf",
+         "meta": {"mime_type": "application/pdf"}},
+    ])
+    conn = store.connect_ro(s.db_path)
+    native = _drive_file(conn, store.get_document(conn, "google_drive", "n1"))
+    assert native["size"] == str(len("hello there"))
+    # checksums and a download link stay binary-only, as they are on real Drive
+    assert "md5Checksum" not in native and "webContentLink" not in native
+    binary = _drive_file(conn, store.get_document(conn, "google_drive", "b1"))
+    assert binary["size"] == str(len("%PDF-1.7")) and binary["md5Checksum"]
+
+
+# --- Gmail -----------------------------------------------------------------------
+
+def test_gmail_raw_and_headers(tmp_path):
+    from app.routers.google import _gmail_message
+    s = tiny_corpus(tmp_path, [
+        {"source_type": "gmail", "doc_id": "m1", "mailbox": "ceo", "title": "Hi",
+         "content": "body text", "author_email": "ceo@x.com", "bcc": "secret@x.com"},
+    ])
+    conn = store.connect_ro(s.db_path)
+    row = store.get_document(conn, "gmail", "m1")
+    # raw format returns the base64url RFC822 message, no parsed payload
+    raw = _gmail_message(row, "raw")
+    assert "raw" in raw and "payload" not in raw
+    import base64
+    decoded = base64.urlsafe_b64decode(raw["raw"]).decode()
+    assert "Subject: Hi" in decoded and "MIME-Version: 1.0" in decoded
+    # Bcc must NOT appear in a fetched message's headers (stripped in transit)
+    full = _gmail_message(row, "full")
+    names = {h["name"] for h in full["payload"]["headers"]}
+    assert "Bcc" not in names and "MIME-Version" in names
+
+    # The declared Content-Type (multipart/alternative here, no attachments) must be backed by a
+    # genuinely boundary-delimited body -- not just plain text under a multipart header (invalid
+    # MIME real Gmail never produces). Round-trip through Python's own `email` parser: a well-
+    # formed message parses with no defects, `is_multipart()` True, and yields the plain-text
+    # body back out, matching what a real reader (e.g. llama-index's GmailReader) needs.
+    import email
+    mime_msg = email.message_from_bytes(base64.urlsafe_b64decode(raw["raw"]))
+    assert not mime_msg.defects, f"raw Gmail message is not valid MIME: {mime_msg.defects}"
+    assert mime_msg.is_multipart()
+    plain_parts = [p for p in mime_msg.get_payload() if p.get_content_type() == "text/plain"]
+    assert plain_parts and plain_parts[0].get_payload(decode=True).decode() == "body text"
+
+
+def test_gmail_raw_with_attachment_is_valid_mime(tmp_path):
+    from app.routers.google import _gmail_message
+    s = tiny_corpus(tmp_path, [
+        {"source_type": "gmail", "doc_id": "m2", "mailbox": "ceo", "title": "With attachment",
+         "content": "see attached", "author_email": "ceo@x.com",
+         "attachments": [{"filename": "notes.txt", "mime": "text/plain", "content": "hello"}]},
+    ])
+    conn = store.connect_ro(s.db_path)
+    row = store.get_document(conn, "gmail", "m2")
+    raw = _gmail_message(row, "raw")
+    import base64, email
+    decoded_bytes = base64.urlsafe_b64decode(raw["raw"])
+    assert b"Content-Type: multipart/mixed" in decoded_bytes  # top_mime switches with attachments
+    mime_msg = email.message_from_bytes(decoded_bytes)
+    assert not mime_msg.defects, f"raw Gmail message is not valid MIME: {mime_msg.defects}"
+    assert mime_msg.is_multipart()
+    filenames = {p.get_filename() for p in mime_msg.get_payload() if p.get_filename()}
+    assert "notes.txt" in filenames

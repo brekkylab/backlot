@@ -74,3 +74,10 @@ def gql(client, path: str, query: str, token: str | None = None, **variables):
         body["variables"] = variables
     headers = {"Authorization": token} if token is not None else {}
     return client.post(path, json=body, headers=headers)
+
+
+def db_count(conn, source_type, **kw) -> int:
+    """The stored row count a crawl's completeness assertion is checked against."""
+    from app import store
+
+    return store.count_documents(conn, source_type, **kw)

@@ -20,41 +20,7 @@ import yaml
 
 from app import store
 from app.config import Settings
-from tests._helpers import build_corpus, client_for
-
-
-@pytest.fixture(scope="module")
-def client(sample_settings):
-    """A TestClient over the SAMPLE DB, not the ambient ``data/`` import."""
-    with client_for(sample_settings) as c:
-        yield c
-
-
-@pytest.fixture(scope="module")
-def org(client):
-    """The org name the mock derived from the corpus (SAMPLE is @acme.com -> 'acme')."""
-    return client.get("/_mock/users").json()["org"]
-
-
-@pytest.fixture(scope="module")
-def tokens(sample_settings):
-    return yaml.safe_load(sample_settings.tokens_path.read_text())
-
-
-@pytest.fixture(scope="module")
-def admin_h(tokens):
-    return {"Authorization": f"Bearer {tokens['admin_token']}"}
-
-
-@pytest.fixture(scope="module")
-def ro_conn(sample_settings):
-    conn = store.connect_ro(sample_settings.db_path)
-    yield conn
-    conn.close()
-
-
-def db_count(conn, source_type, **kw):
-    return store.count_documents(conn, source_type, **kw)
+from tests._helpers import build_corpus, client_for, db_count
 
 
 # --- crawlers (small page sizes to exercise pagination) -------------------------
@@ -333,9 +299,9 @@ def test_atlassian_401_keeps_the_atlassian_error_envelope(client):
     assert body["statusCode"] == 401
 
 
-def test_hubspot_acl_hides_restricted_record(client, tokens):
+def test_hubspot_acl_hides_restricted_record(client, tokens_yaml):
     """`hs-co-secret` is readable only by hana; another user's crawl must not contain it."""
-    users = {u["email"]: u["token"] for u in tokens["users"]}
+    users = {u["email"]: u["token"] for u in tokens_yaml["users"]}
     ava_h = {"Authorization": f"Bearer {users['ava@acme.com']}"}
     hana_h = {"Authorization": f"Bearer {users['hana@acme.com']}"}
     names = lambda h: {r["properties"].get("name")  # noqa: E731
@@ -499,9 +465,9 @@ def test_hubspot_search_sorts(client, admin_h):
     assert names("DESCENDING") == ["Borealis Clinics", "Acme Health"]
 
 
-def test_hubspot_search_is_acl_scoped(client, tokens):
+def test_hubspot_search_is_acl_scoped(client, tokens_yaml):
     """Search must filter by the caller like every other read — not only the plain listing."""
-    users = {u["email"]: u["token"] for u in tokens["users"]}
+    users = {u["email"]: u["token"] for u in tokens_yaml["users"]}
     body = {"filterGroups": [{"filters": [{"propertyName": "name", "operator": "HAS_PROPERTY"}]}]}
     ava = {"Authorization": f"Bearer {users['ava@acme.com']}"}
     hana = {"Authorization": f"Bearer {users['hana@acme.com']}"}
@@ -684,7 +650,7 @@ def test_gmail_an_unparsable_id_is_an_invalid_argument(client, admin_h, mid):
         assert e["errors"][0]["reason"] == "invalidArgument"
 
 
-def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens, ro_conn):
+def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_conn):
     """Resolving through the index must not become a way around the ACL. The index is global — it
     maps every hex id, visible or not — so the ACL read after it is the only thing standing between
     a scoped caller and someone else's mail. The CFO's comp review is granted to cfo alone."""
@@ -693,9 +659,9 @@ def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens, ro_conn):
                           ).fetchone()
     hexid = synth.gmail_message_id(row["doc_id"])
     assert client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h).status_code == 200
-    cfo = {"Authorization": f"Bearer {_tok(tokens, 'cfo@acme.com')}"}
+    cfo = {"Authorization": f"Bearer {_tok(tokens_yaml, 'cfo@acme.com')}"}
     assert client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=cfo).status_code == 200
-    outsider = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    outsider = {"Authorization": f"Bearer {_tok(tokens_yaml, 'mia@acme.com')}"}
     r = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=outsider)
     assert r.status_code == 404
     assert r.json()["error"]["message"] == "Requested entity was not found."
@@ -1157,8 +1123,8 @@ def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
 
 # --- ACL enforcement over HTTP --------------------------------------------------
 
-def test_user_sees_subset_of_admin(client, admin_h, tokens, ro_conn, sample_settings):
-    user = tokens["users"][0]
+def test_user_sees_subset_of_admin(client, admin_h, tokens_yaml, ro_conn, sample_settings):
+    user = tokens_yaml["users"][0]
     uh = {"Authorization": f"Bearer {user['token']}"}
     admin_conf = len(crawl_confluence(client, admin_h))
     user_conf = len(crawl_confluence(client, uh))
@@ -1170,19 +1136,19 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens, ro_conn, sample_sett
     assert user_conf == db_count(ro_conn, "confluence", visible_ids=vids)
 
 
-def test_mock_users_directory(client, tokens, org):
+def test_mock_users_directory(client, tokens_yaml, org):
     # the /_mock/users directory lists every user + token (for testing per-user ACL)
     from app import synth
     body = client.get("/_mock/users").json()
-    assert body["admin_token"] == tokens["admin_token"]
+    assert body["admin_token"] == tokens_yaml["admin_token"]
     # S3 uses an AWS keypair, not a token — the directory exposes an admin pair (derived from the
     # admin token, which is what the SigV4 verifier resolves) so a client can use it directly
     assert body["admin_s3_access_key_id"] == synth.s3_access_key_id(body["admin_token"])
     assert body["admin_s3_secret_access_key"] == synth.s3_secret_access_key(body["admin_token"])
-    yaml_by_email = {u["email"]: u["token"] for u in tokens["users"]}
+    yaml_by_email = {u["email"]: u["token"] for u in tokens_yaml["users"]}
     assert body["count"] == len(body["users"]) == len(yaml_by_email) > 0
     for u in body["users"]:
-        assert u["token"] == yaml_by_email[u["email"]]  # matches data/tokens.yaml
+        assert u["token"] == yaml_by_email[u["email"]]  # matches data/tokens_yaml.yaml
         assert u["name"] and isinstance(u["groups"], list)
         # each user also carries their derived S3 access-key/secret pair
         assert u["s3_access_key_id"] == synth.s3_access_key_id(u["token"])
@@ -1224,10 +1190,10 @@ def test_slack_api_test_requires_no_auth(client):
     assert err == {"ok": False, "error": "boom"}
 
 
-def test_slack_accepts_form_field_token(client, tokens):
+def test_slack_accepts_form_field_token(client, tokens_yaml):
     # the official slack-go SDK posts the token as a form field (no bearer header); the mock
     # must accept it exactly like a real Slack Web API.
-    admin = tokens["admin_token"]
+    admin = tokens_yaml["admin_token"]
     ok = client.post("/slack/api/search.messages", data={"token": admin, "query": "the"}).json()
     assert ok["ok"] is True
     # no token anywhere -> not_authed
@@ -1523,9 +1489,9 @@ def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
     assert "Rolled back" in texts               # the reply we searched for is in the same thread
 
 
-def test_user_cannot_fetch_others_private_gmail(client, tokens, admin_h, ro_conn):
+def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro_conn):
     # a private gmail doc owned by user B, fetched with user A's token -> 404
-    user_a, user_b = tokens["users"][0], tokens["users"][1]
+    user_a, user_b = tokens_yaml["users"][0], tokens_yaml["users"][1]
     doc = ro_conn.execute(
         "SELECT doc_id FROM gmail_messages WHERE author_email=? LIMIT 1",
         (user_b["email"],),
@@ -1543,8 +1509,8 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens, admin_h, ro_conn
 
 # --------------------------------------------------------------------------- Notion
 
-def _tok(tokens, email):
-    return next(u["token"] for u in tokens["users"] if u["email"] == email)
+def _tok(tokens_yaml, email):
+    return next(u["token"] for u in tokens_yaml["users"] if u["email"] == email)
 
 
 def test_notion_page_retrieve_and_blocks(client, admin_h):
@@ -1601,14 +1567,14 @@ def test_notion_unauth_is_401(client):
     assert r.status_code == 401 and r.json()["code"] == "unauthorized"
 
 
-def test_notion_acl_hides_group_doc_from_outsider(client, tokens):
+def test_notion_acl_hides_group_doc_from_outsider(client, tokens_yaml):
     from app import synth
     pid = synth.notion_id("nt-secret")
-    outsider = _tok(tokens, "ava@acme.com")  # ava is engineering, not people
+    outsider = _tok(tokens_yaml, "ava@acme.com")  # ava is engineering, not people
     r = client.get(f"/notion/v1/pages/{pid}", headers={"Authorization": f"Bearer {outsider}"})
     assert r.status_code == 404 and r.json()["code"] == "object_not_found"
     # the owner (hana, in people) can see it
-    owner = _tok(tokens, "hana@acme.com")
+    owner = _tok(tokens_yaml, "hana@acme.com")
     assert client.get(f"/notion/v1/pages/{pid}",
                       headers={"Authorization": f"Bearer {owner}"}).status_code == 200
 
@@ -2277,11 +2243,11 @@ def _drive_ids(client, headers, **params):
     return [f["id"] for f in j.get("files", [])]
 
 
-def test_drive_shared_with_me_partitions_by_owner(client, tokens):
+def test_drive_shared_with_me_partitions_by_owner(client, tokens_yaml):
     """`q=sharedWithMe=true` must return only items shared with the caller by someone else, and
     `false` must exclude them — real Drive's "Shared with me" is the only way to enumerate those.
     The mock used to ignore the clause, so both returned the caller's whole visible corpus."""
-    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    mia = {"Authorization": f"Bearer {_tok(tokens_yaml, 'mia@acme.com')}"}
     all_ids = set(_drive_ids(client, mia, q="trashed=false", pageSize=100))
     shared = set(_drive_ids(client, mia, q="sharedWithMe=true and trashed=false", pageSize=100))
     own = set(_drive_ids(client, mia, q="sharedWithMe=false and trashed=false", pageSize=100))
@@ -2293,12 +2259,12 @@ def test_drive_shared_with_me_partitions_by_owner(client, tokens):
     assert brand in own and brand not in shared
 
 
-def test_drive_shared_items_carry_shared_with_me_time(client, tokens):
+def test_drive_shared_items_carry_shared_with_me_time(client, tokens_yaml):
     """Real Drive populates `sharedWithMeTime` only on items shared with the caller, and omits
     `parents` on them — so its presence is how a client classifies one. Filtering on
     `sharedWithMe` while never emitting the field left a row that the filter calls shared unable to
     say so itself."""
-    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    mia = {"Authorization": f"Bearer {_tok(tokens_yaml, 'mia@acme.com')}"}
     shared = client.get("/drive/v3/files", headers=mia,
                         params={"q": "sharedWithMe=true and trashed=false",
                                 "pageSize": 100}).json()["files"]
@@ -2324,10 +2290,10 @@ def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
                       params={"pageSize": 5, "orderBy": "sharedWithMeTime"}).status_code == 200
 
 
-def test_drive_order_by_shared_with_me_time(client, tokens):
+def test_drive_order_by_shared_with_me_time(client, tokens_yaml):
     """The mock models the relation this key sorts on (owner vs caller), so it sorts rather than
     400s — unlike the view/modify-by-me timestamps, which have no counterpart here at all."""
-    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    mia = {"Authorization": f"Bearer {_tok(tokens_yaml, 'mia@acme.com')}"}
     r = client.get("/drive/v3/files", headers=mia,
                    params={"q": "sharedWithMe=true", "pageSize": 100,
                            "orderBy": "sharedWithMeTime desc"})
@@ -2336,9 +2302,9 @@ def test_drive_order_by_shared_with_me_time(client, tokens):
     assert times == sorted(times, reverse=True)
 
 
-def test_drive_owned_by_me_reflects_the_caller(client, tokens):
+def test_drive_owned_by_me_reflects_the_caller(client, tokens_yaml):
     """`ownedByMe` is per-caller in real Drive; the mock reported False for every file."""
-    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    mia = {"Authorization": f"Bearer {_tok(tokens_yaml, 'mia@acme.com')}"}
     assert _drive_find(client, mia, "Brand")["ownedByMe"] is True
     assert _drive_find(client, mia, "Whitepaper")["ownedByMe"] is False
 
@@ -2552,10 +2518,10 @@ def test_drive_about_nested_mask_selects_its_parent(client, admin_h):
     assert "usage" in j["storageQuota"]
 
 
-def test_drive_about_user_is_the_caller(client, tokens):
+def test_drive_about_user_is_the_caller(client, tokens_yaml):
     """`about.user` is the authenticated user, so `me` is true — the opposite of the same object
     read as a file's `owners` entry, where it describes someone else."""
-    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    mia = {"Authorization": f"Bearer {_tok(tokens_yaml, 'mia@acme.com')}"}
     u = _about(client, mia, "user").json()["user"]
     assert u["kind"] == "drive#user"
     assert u["emailAddress"] == "mia@acme.com"
@@ -2571,10 +2537,10 @@ def test_drive_about_admin_token_reports_a_concrete_address(client, admin_h):
     assert "@" in u["emailAddress"] and u["me"] is True
 
 
-def test_drive_about_usage_matches_the_sizes_files_list_serves(client, tokens):
+def test_drive_about_usage_matches_the_sizes_files_list_serves(client, tokens_yaml):
     """storageQuota and files.list are two views of one corpus. If they disagree, a client cannot
     reconcile "how much space do I use" with "what is in my Drive"."""
-    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    mia = {"Authorization": f"Bearer {_tok(tokens_yaml, 'mia@acme.com')}"}
     quota = _about(client, mia, "storageQuota").json()["storageQuota"]
     files = client.get("/drive/v3/files", headers=mia,
                        params={"pageSize": 100, "fields": "files(size)"}).json()["files"]
@@ -2586,9 +2552,9 @@ def test_drive_about_usage_matches_the_sizes_files_list_serves(client, tokens):
     assert int(quota["usageInDriveTrash"]) == 0     # SAMPLE trashes nothing
 
 
-def test_drive_about_usage_is_scoped_to_the_caller(client, admin_h, tokens):
+def test_drive_about_usage_is_scoped_to_the_caller(client, admin_h, tokens_yaml):
     """A scoped token must not be told the weight of a corpus it cannot read."""
-    mia = {"Authorization": f"Bearer {_tok(tokens, 'mia@acme.com')}"}
+    mia = {"Authorization": f"Bearer {_tok(tokens_yaml, 'mia@acme.com')}"}
     mine = int(_about(client, mia, "storageQuota").json()["storageQuota"]["usage"])
     everything = int(_about(client, admin_h, "storageQuota").json()["storageQuota"]["usage"])
     assert 0 < mine < everything
@@ -2727,8 +2693,8 @@ def gql(client, query, headers, **variables):
     return client.post("/linear/graphql", json=body, headers=headers)
 
 
-def linear_user_token(tokens, email):
-    return next(u["token"] for u in tokens["users"] if u["email"] == email)
+def linear_user_token(tokens_yaml, email):
+    return next(u["token"] for u in tokens_yaml["users"] if u["email"] == email)
 
 
 def lit(value) -> str:
@@ -2809,14 +2775,14 @@ def test_linear_team_resolves_by_key_and_uuid(client, admin_h):
                admin_h).json()["data"]["team"]["key"] == "ENG"
 
 
-def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens):
+def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_yaml):
     """Asserted for BOTH an admin and a restricted caller: as admin alone the count's ACL branch
     never runs, so the assertion would hold with scoping removed entirely."""
     admin = {t["key"]: t["issueCount"] for t in
              gql(client, "{ teams { nodes { key issueCount } } }",
                  admin_h).json()["data"]["teams"]["nodes"]}
     assert admin == {"ENG": 3, "DES": 1, "BLA": 1}
-    ava_h = {"Authorization": linear_user_token(tokens, "ava@acme.com")}
+    ava_h = {"Authorization": linear_user_token(tokens_yaml, "ava@acme.com")}
     ava = {t["key"]: t["issueCount"] for t in
            gql(client, "{ teams { nodes { key issueCount } } }",
                ava_h).json()["data"]["teams"]["nodes"]}
@@ -2878,8 +2844,8 @@ def test_linear_workflow_states_are_per_team(client, admin_h):
     assert synth.linear_state_id("Done", "engineering") != synth.linear_state_id("Done", "design")
 
 
-def test_linear_viewer_reports_the_authenticated_identity(client, tokens):
-    h = {"Authorization": linear_user_token(tokens, "ava@acme.com")}
+def test_linear_viewer_reports_the_authenticated_identity(client, tokens_yaml):
+    h = {"Authorization": linear_user_token(tokens_yaml, "ava@acme.com")}
     me = gql(client, "{ viewer { email isMe } }", h).json()["data"]["viewer"]
     assert me == {"email": "ava@acme.com", "isMe": True}
 
@@ -2936,15 +2902,15 @@ def test_linear_unauthenticated_is_401(client):
     assert r.json()["errors"][0]["message"] == "Authentication required"
 
 
-def test_linear_parent_resolves_and_is_acl_scoped(client, admin_h, tokens):
+def test_linear_parent_resolves_and_is_acl_scoped(client, admin_h, tokens_yaml):
     """`Issue.parent` is declared in the SDL and `@linear/sdk`'s fragment selects `parent { id }`.
     The bench fills `parent_issue` on 46.7% of records, so it must resolve — and it must resolve
     through the ACL, or it becomes another way to confirm a hidden issue exists."""
     # lin-batch (ENG-102) is parented to lin-secret (ENG-103), which only hana can read.
     q = '{ issue(id: "ENG-102") { identifier parent { identifier title } } }'
-    as_hana = gql(client, q, {"Authorization": linear_user_token(tokens, "hana@acme.com")})
+    as_hana = gql(client, q, {"Authorization": linear_user_token(tokens_yaml, "hana@acme.com")})
     assert as_hana.json()["data"]["issue"]["parent"]["identifier"] == "ENG-103"
-    as_ava = gql(client, q, {"Authorization": linear_user_token(tokens, "ava@acme.com")})
+    as_ava = gql(client, q, {"Authorization": linear_user_token(tokens_yaml, "ava@acme.com")})
     assert as_ava.json()["data"]["issue"]["parent"] is None    # hidden parent -> null, not a leak
     # admin sees it, confirming the null above is the ACL and not a broken lookup
     assert gql(client, q, admin_h).json()["data"]["issue"]["parent"]["identifier"] == "ENG-103"
@@ -2991,10 +2957,10 @@ def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):
     assert back["identifier"] == "ENG-103"
 
 
-def test_linear_children_is_acl_scoped(client, tokens):
+def test_linear_children_is_acl_scoped(client, tokens_yaml):
     """ENG-103 is restricted to hana, so ava cannot even reach it to ask for its children — and
     the children list must never become a way to observe an issue she is denied."""
-    ava = {"Authorization": linear_user_token(tokens, "ava@acme.com")}
+    ava = {"Authorization": linear_user_token(tokens_yaml, "ava@acme.com")}
     denied = gql(client, '{ issue(id: "ENG-103") { children { nodes { identifier } } } }', ava)
     assert "Entity not found" in denied.json()["errors"][0]["message"]
 
@@ -3011,10 +2977,10 @@ def test_linear_relations_and_their_inverse(client, admin_h):
         [("blocks", "ENG-102")]
 
 
-def test_linear_relation_to_a_hidden_issue_is_omitted(client, tokens, admin_h):
+def test_linear_relation_to_a_hidden_issue_is_omitted(client, tokens_yaml, admin_h):
     """A relation is scoped on the FAR end: surfacing one whose counterpart the caller cannot read
     would disclose that issue's existence — the leak class the by-id roots were fixed for."""
-    ava = {"Authorization": linear_user_token(tokens, "ava@acme.com")}
+    ava = {"Authorization": linear_user_token(tokens_yaml, "ava@acme.com")}
     q = '{ issue(id: "ENG-102") { relations { nodes { relatedIssue { identifier } } } } }'
     seen = [r["relatedIssue"]["identifier"]
             for r in gql(client, q, ava).json()["data"]["issue"]["relations"]["nodes"]]
@@ -3050,11 +3016,11 @@ def test_linear_releases_and_the_by_id_root(client, admin_h):
                admin_h).json()["data"]["release"]["name"] == "runtime-1.19"
 
 
-def test_linear_release_by_id_is_acl_scoped(client, tokens):
+def test_linear_release_by_id_is_acl_scoped(client, tokens_yaml):
     """The release only appears on ENG-102, which ava CAN read — so she resolves it. Asserted to
     pin that the scoping is on visibility, not a blanket denial."""
     from app import synth
-    ava = {"Authorization": linear_user_token(tokens, "ava@acme.com")}
+    ava = {"Authorization": linear_user_token(tokens_yaml, "ava@acme.com")}
     got = gql(client, '{ release(id: %s) { name } }' % lit(synth.linear_release_id("runtime-1.19")),
               ava)
     assert got.json()["data"]["release"]["name"] == "runtime-1.19"
@@ -3247,11 +3213,11 @@ def test_fireflies_request_errors_are_400_with_no_data_key(client, admin_h):
         assert r.json()["errors"], query
 
 
-def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens):
+def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_yaml):
     """`user` with no id is the authenticated user. An admin/service token is not a person."""
     assert ff_gql(client, "{ user { user_id email } }",
                   admin_h).json()["data"]["user"] is None
-    ava = next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    ava = next(u["token"] for u in tokens_yaml["users"] if u["email"] == "ava@acme.com")
     h = {"Authorization": f"Bearer {ava}"}
     me = ff_gql(client, "{ user { user_id email name } }", h).json()["data"]["user"]
     assert me["email"] == "ava@acme.com" and me["user_id"]

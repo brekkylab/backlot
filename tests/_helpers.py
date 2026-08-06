@@ -81,3 +81,8 @@ def db_count(conn, source_type, **kw) -> int:
     from app import store
 
     return store.count_documents(conn, source_type, **kw)
+
+
+def tok(tokens_yaml, email: str) -> str:
+    """One user's bearer token out of ``tokens.yaml``."""
+    return next(u["token"] for u in tokens_yaml["users"] if u["email"] == email)

@@ -6,6 +6,7 @@ Client base-URL override: point the Gmail client at ``http://<host>/gmail`` and 
 Drive client at ``http://<host>/drive`` (google-api-python-client ``api_endpoint``).
 All authenticate with ``Authorization: Bearer <token>``.
 """
+
 from __future__ import annotations
 
 import base64
@@ -32,6 +33,7 @@ router = APIRouter(tags=["google"])
 # Query params are read query-only (via _int/request.query_params); documenting them with
 # openapi_extra keeps the handler bodies untouched and merges cleanly with the auto-generated
 # path params. Response models use extra="allow" so builders' full field set passes through.
+
 
 class _GLoose(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -78,8 +80,7 @@ class DrivePermissionList(_GLoose):
 
 # drive_files_get / .export return raw Response/PlainTextResponse on some branches — they get
 # openapi_extra params only (no JSON response_model, which would mis-serialize the raw body).
-_P_DRIVE_LIST = [qp("pageSize", "integer"), qp("pageToken"), qp("q"), qp("fields"),
-                 qp("orderBy")]
+_P_DRIVE_LIST = [qp("pageSize", "integer"), qp("pageToken"), qp("q"), qp("fields"), qp("orderBy")]
 _P_DRIVE_ALT = [qp("alt"), qp("fields")]
 _P_DRIVE_EXPORT = [qp("mimeType", required=True)]
 _P_DRIVE_ABOUT = [qp("fields", required=True)]
@@ -144,17 +145,25 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
     async with httpx.AsyncClient(transport=transport, base_url="http://mock.batch") as client:
         for part in parsed.get_payload():
             cid = part.get("Content-ID", "")
-            method, target, sub_headers, sub_body = _parse_batch_subrequest(part.get_payload(decode=False))
+            method, target, sub_headers, sub_body = _parse_batch_subrequest(
+                part.get_payload(decode=False)
+            )
             if outer_auth and not any(k.lower() == "authorization" for k in sub_headers):
                 sub_headers["Authorization"] = outer_auth
             if not method or not target:
                 sub_resp = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nmalformed sub-request"
             else:
-                r = await client.request(method, target, headers=sub_headers,
-                                         content=sub_body.encode() if sub_body else None)
-                sub_resp = (f"HTTP/1.1 {r.status_code} {_batch_reason(r.status_code)}\r\n"
-                            f"Content-Type: {r.headers.get('content-type', 'application/json')}\r\n"
-                            f"\r\n{r.text}")
+                r = await client.request(
+                    method,
+                    target,
+                    headers=sub_headers,
+                    content=sub_body.encode() if sub_body else None,
+                )
+                sub_resp = (
+                    f"HTTP/1.1 {r.status_code} {_batch_reason(r.status_code)}\r\n"
+                    f"Content-Type: {r.headers.get('content-type', 'application/json')}\r\n"
+                    f"\r\n{r.text}"
+                )
             out_parts.append((cid, sub_resp))
 
     body = ""
@@ -186,6 +195,7 @@ def _b64url(text: str) -> str:
 
 
 # ================================ Gmail =========================================
+
 
 def _mailbox_email(caller: Caller, user_id: str) -> str | None:
     """Resolve the mailbox owner email; None means 'all mailboxes' (admin, 'me')."""
@@ -224,25 +234,44 @@ async def gmail_profile(user_id: str, request: Request):
     # otherwise the admin/service identity — never echo the raw ``me`` path segment.
     email = _mailbox_email(caller, user_id) or caller.email or _service_email(request)
     ids = auth.visible_ids(request, caller)
-    total = store.count_documents(conn, "gmail",
-                                  container=_mailbox_slug(caller, user_id), visible_ids=ids)
-    return {"emailAddress": email, "messagesTotal": total, "threadsTotal": total,
-            "historyId": "1"}
+    total = store.count_documents(
+        conn, "gmail", container=_mailbox_slug(caller, user_id), visible_ids=ids
+    )
+    return {"emailAddress": email, "messagesTotal": total, "threadsTotal": total, "historyId": "1"}
 
 
 # The system labels Gmail always exposes (users.labels.list).
-_SYSTEM_LABELS = ["INBOX", "SENT", "DRAFT", "SPAM", "TRASH", "UNREAD", "STARRED", "IMPORTANT",
-                  "CHAT", "CATEGORY_PERSONAL", "CATEGORY_SOCIAL", "CATEGORY_UPDATES",
-                  "CATEGORY_FORUMS", "CATEGORY_PROMOTIONS"]
+_SYSTEM_LABELS = [
+    "INBOX",
+    "SENT",
+    "DRAFT",
+    "SPAM",
+    "TRASH",
+    "UNREAD",
+    "STARRED",
+    "IMPORTANT",
+    "CHAT",
+    "CATEGORY_PERSONAL",
+    "CATEGORY_SOCIAL",
+    "CATEGORY_UPDATES",
+    "CATEGORY_FORUMS",
+    "CATEGORY_PROMOTIONS",
+]
 
 
 def _label_obj(lid: str, total: int = 0) -> dict:
     hide = lid in ("SPAM", "TRASH", "CHAT")
-    return {"id": lid, "name": lid, "type": "system",
-            "messageListVisibility": "hide" if hide else "show",
-            "labelListVisibility": "labelHide" if lid.startswith("CATEGORY_") else "labelShow",
-            "messagesTotal": total, "messagesUnread": 0,
-            "threadsTotal": total, "threadsUnread": 0}
+    return {
+        "id": lid,
+        "name": lid,
+        "type": "system",
+        "messageListVisibility": "hide" if hide else "show",
+        "labelListVisibility": "labelHide" if lid.startswith("CATEGORY_") else "labelShow",
+        "messagesTotal": total,
+        "messagesUnread": 0,
+        "threadsTotal": total,
+        "threadsUnread": 0,
+    }
 
 
 @router.get("/gmail/v1/users/{user_id}/labels")
@@ -250,8 +279,9 @@ async def gmail_labels(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    total = store.count_documents(conn, "gmail", container=_mailbox_slug(caller, user_id),
-                                  visible_ids=ids)
+    total = store.count_documents(
+        conn, "gmail", container=_mailbox_slug(caller, user_id), visible_ids=ids
+    )
     labels = [_label_obj(lid, total if lid == "INBOX" else 0) for lid in _SYSTEM_LABELS]
     return {"labels": labels}
 
@@ -263,15 +293,25 @@ async def gmail_label_get(user_id: str, label_id: str, request: Request):
     if label_id not in _SYSTEM_LABELS:
         raise gerr.not_found_entity()
     ids = auth.visible_ids(request, caller)
-    total = store.count_documents(conn, "gmail", author_email=_mailbox_email(caller, user_id),
-                                  visible_ids=ids)
+    total = store.count_documents(
+        conn, "gmail", author_email=_mailbox_email(caller, user_id), visible_ids=ids
+    )
     return _label_obj(label_id, total if label_id == "INBOX" else 0)
 
 
 _GMAIL_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
 # operators we honor; anything else stays as free text
-_GMAIL_KEYS = {"from", "to", "subject", "after", "before", "label", "has",
-               "newer_than", "older_than"}
+_GMAIL_KEYS = {
+    "from",
+    "to",
+    "subject",
+    "after",
+    "before",
+    "label",
+    "has",
+    "newer_than",
+    "older_than",
+}
 
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
@@ -294,8 +334,9 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
 def _gmail_date(v: str) -> int | None:
     for fmt in ("%Y/%m/%d", "%Y-%m-%d"):
         try:
-            return int(datetime.datetime.strptime(v, fmt)
-                       .replace(tzinfo=datetime.timezone.utc).timestamp())
+            return int(
+                datetime.datetime.strptime(v, fmt).replace(tzinfo=datetime.timezone.utc).timestamp()
+            )
         except ValueError:
             continue
     try:
@@ -350,7 +391,9 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("label", []):
         if v.lower() not in [x.lower() for x in store.jcol(row, "label_ids")]:
             return False
-    if any(v.lower() == "attachment" for v in ops.get("has", [])) and not store.jcol(row, "attachments"):
+    if any(v.lower() == "attachment" for v in ops.get("has", [])) and not store.jcol(
+        row, "attachments"
+    ):
         return False
     ts = _gmail_ts(row)
     for v in ops.get("after", []):
@@ -376,15 +419,20 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
         # coincidental "upload csv" mentions. Unquoted free text stays an AND of terms.
         phrase = len(free) >= 2 and free[0] == '"' and free[-1] == '"'
         term = free[1:-1] if phrase else free
-        cand = store.search_documents(conn, term, "gmail", ids, limit=10_000, offset=0,
-                                      container=mailbox, phrase=phrase)
+        cand = store.search_documents(
+            conn, term, "gmail", ids, limit=10_000, offset=0, container=mailbox, phrase=phrase
+        )
     else:
         # No free text. If the query pins a date range (after:/before:), filter created_ts in SQL —
         # a date-dir listing otherwise materialized the whole mailbox (~100k rows) then date-filtered
         # in Python. after: -> ts >= d (inclusive lo), before: -> ts < d (exclusive hi), matching
         # _gmail_op_match; the remaining ops still filter the (now small) candidate set below.
-        lo = max((d for v in ops.get("after", []) if (d := _gmail_date(v)) is not None), default=None)
-        hi = min((d for v in ops.get("before", []) if (d := _gmail_date(v)) is not None), default=None)
+        lo = max(
+            (d for v in ops.get("after", []) if (d := _gmail_date(v)) is not None), default=None
+        )
+        hi = min(
+            (d for v in ops.get("before", []) if (d := _gmail_date(v)) is not None), default=None
+        )
         # list_gmail_in_range for BOTH the date-pinned and the open-ended case (lo=hi=None): its
         # created_ts DESC, doc_id order is the newest-first listing real Gmail returns — the plain
         # list_documents path ordered by doc_id (hash), scattering the listing by date.
@@ -425,12 +473,17 @@ def _gmail_doc(request: Request, conn, ids, served_id: str):
 def _gmail_ids(row) -> tuple[str, str]:
     """``(id, threadId)`` for a row. A message that is its own thread root reports the same value
     twice, as real Gmail does."""
-    return (synth.gmail_message_id(row["doc_id"]),
-            synth.gmail_message_id(row["thread_id"] or row["doc_id"]))
+    return (
+        synth.gmail_message_id(row["doc_id"]),
+        synth.gmail_message_id(row["thread_id"] or row["doc_id"]),
+    )
 
 
-@router.get("/gmail/v1/users/{user_id}/messages", response_model=GmailMessageList,
-            openapi_extra={"parameters": _P_GMAIL_LIST})
+@router.get(
+    "/gmail/v1/users/{user_id}/messages",
+    response_model=GmailMessageList,
+    openapi_extra={"parameters": _P_GMAIL_LIST},
+)
 async def gmail_messages_list(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -442,7 +495,7 @@ async def gmail_messages_list(user_id: str, request: Request):
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
         matched = _gmail_query(conn, mailbox, ids, q)
         total = len(matched)
-        rows = matched[offset:offset + limit]
+        rows = matched[offset : offset + limit]
     else:
         # newest-first by internalDate (created_ts), like real Gmail — NOT doc_id (hash) order, so a
         # capped "newest N" crawl is deterministic by date, not random. Open-ended range = whole box.
@@ -457,8 +510,11 @@ async def gmail_messages_list(user_id: str, request: Request):
     return body
 
 
-@router.get("/gmail/v1/users/{user_id}/messages/{msg_id}", response_model=GmailMessage,
-            openapi_extra={"parameters": _P_GMAIL_FORMAT})
+@router.get(
+    "/gmail/v1/users/{user_id}/messages/{msg_id}",
+    response_model=GmailMessage,
+    openapi_extra={"parameters": _P_GMAIL_FORMAT},
+)
 async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -469,8 +525,10 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     return _gmail_message(row, request.query_params.get("format", "full"))
 
 
-@router.get("/gmail/v1/users/{user_id}/messages/{msg_id}/attachments/{att_id}",
-            response_model=GmailAttachment)
+@router.get(
+    "/gmail/v1/users/{user_id}/messages/{msg_id}/attachments/{att_id}",
+    response_model=GmailAttachment,
+)
 async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -479,14 +537,23 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     if row is None:
         raise gerr.not_found_entity()
     doc_id = row["doc_id"]
-    found = next(((i, a) for i, a in enumerate(store.jcol(row, "attachments"))
-                  if _att_id(doc_id, i) == att_id), None)
+    found = next(
+        (
+            (i, a)
+            for i, a in enumerate(store.jcol(row, "attachments"))
+            if _att_id(doc_id, i) == att_id
+        ),
+        None,
+    )
     body = _att_content(doc_id, found[0], found[1]) if found else f"attachment {att_id}"
     return {"attachmentId": att_id, "size": len(body), "data": _b64url(body)}
 
 
-@router.get("/gmail/v1/users/{user_id}/threads", response_model=GmailThreadList,
-            openapi_extra={"parameters": _P_GMAIL_LIST})
+@router.get(
+    "/gmail/v1/users/{user_id}/threads",
+    response_model=GmailThreadList,
+    openapi_extra={"parameters": _P_GMAIL_LIST},
+)
 async def gmail_threads_list(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -498,14 +565,18 @@ async def gmail_threads_list(user_id: str, request: Request):
     if q.strip():
         matched = _gmail_query(conn, mailbox, ids, q)
         total = len(matched)
-        rows = matched[offset:offset + limit]
+        rows = matched[offset : offset + limit]
     else:
         total = store.count_documents(conn, "gmail", author_email=mailbox, visible_ids=ids)
-        rows = store.list_documents(conn, "gmail", author_email=mailbox, visible_ids=ids,
-                                    limit=limit, offset=offset)
+        rows = store.list_documents(
+            conn, "gmail", author_email=mailbox, visible_ids=ids, limit=limit, offset=offset
+        )
     # a thread is keyed by its root; reply rows (thread_seq>0) aren't separate threads
-    threads = [{"id": _gmail_ids(r)[1], "snippet": r["content"][:200], "historyId": "1"}
-               for r in rows if (r["thread_seq"] or 0) == 0]
+    threads = [
+        {"id": _gmail_ids(r)[1], "snippet": r["content"][:200], "historyId": "1"}
+        for r in rows
+        if (r["thread_seq"] or 0) == 0
+    ]
     body = {"threads": threads, "resultSizeEstimate": total}
     token = next_page_token(offset, len(rows), total)
     if token:
@@ -513,8 +584,11 @@ async def gmail_threads_list(user_id: str, request: Request):
     return body
 
 
-@router.get("/gmail/v1/users/{user_id}/threads/{thread_id}", response_model=GmailThread,
-            openapi_extra={"parameters": _P_GMAIL_FORMAT})
+@router.get(
+    "/gmail/v1/users/{user_id}/threads/{thread_id}",
+    response_model=GmailThread,
+    openapi_extra={"parameters": _P_GMAIL_FORMAT},
+)
 async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -527,8 +601,12 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
             raise gerr.not_found_entity()
         msgs = [row]
     fmt = request.query_params.get("format", "full")
-    return {"id": thread_id.lower(), "snippet": msgs[0]["content"][:200], "historyId": "1",
-            "messages": [_gmail_message(m, fmt) for m in msgs]}
+    return {
+        "id": thread_id.lower(),
+        "snippet": msgs[0]["content"][:200],
+        "historyId": "1",
+        "messages": [_gmail_message(m, fmt) for m in msgs],
+    }
 
 
 def _att_id(doc_id: str, i: int) -> str:
@@ -544,8 +622,12 @@ def _att_content(doc_id: str, i: int, att: dict) -> str:
 
 
 def _leaf(mime: str, part_id: str, data: str) -> dict:
-    return {"partId": part_id, "mimeType": mime, "filename": "",
-            "body": {"size": len(data), "data": _b64url(data)}}
+    return {
+        "partId": part_id,
+        "mimeType": mime,
+        "filename": "",
+        "body": {"size": len(data), "data": _b64url(data)},
+    }
 
 
 def _gmail_ts(row) -> int:
@@ -565,7 +647,10 @@ def _gmail_message(row, fmt: str) -> dict:
     msg_id = row["message_id"] or f"<{row['doc_id']}@{get_settings().org_domain}>"
     # a fetched (received) message carries transport/MIME headers but NOT Bcc (stripped in transit)
     headers = [
-        {"name": "Delivered-To", "value": row["to_addr"] or f"{row['mailbox']}@{get_settings().org_domain}"},
+        {
+            "name": "Delivered-To",
+            "value": row["to_addr"] or f"{row['mailbox']}@{get_settings().org_domain}",
+        },
         {"name": "MIME-Version", "value": "1.0"},
         {"name": "Subject", "value": row["title"]},
         {"name": "From", "value": f"{display} <{author}>"},
@@ -573,20 +658,27 @@ def _gmail_message(row, fmt: str) -> dict:
         {"name": "Date", "value": synth.rfc2822(ts)},
         {"name": "Message-ID", "value": msg_id},
     ]
-    for hname, col in (("Cc", "cc"), ("Reply-To", "reply_to"),
-                       ("In-Reply-To", "in_reply_to"), ("References", "refs")):
+    for hname, col in (
+        ("Cc", "cc"),
+        ("Reply-To", "reply_to"),
+        ("In-Reply-To", "in_reply_to"),
+        ("References", "refs"),
+    ):
         if row[col]:
             headers.append({"name": hname, "value": row[col]})
     attachments = store.jcol(row, "attachments")
     top_mime = "multipart/mixed" if attachments else "multipart/alternative"
-    boundary = f'b_{row["doc_id"][:12]}'
+    boundary = f"b_{row['doc_id'][:12]}"
     headers.append({"name": "Content-Type", "value": f'{top_mime}; boundary="{boundary}"'})
 
     msg = {
-        "id": _gmail_ids(row)[0], "threadId": _gmail_ids(row)[1],
+        "id": _gmail_ids(row)[0],
+        "threadId": _gmail_ids(row)[1],
         "labelIds": store.jcol(row, "label_ids") or ["INBOX"],
-        "snippet": row["content"][:200], "historyId": "1",
-        "internalDate": str(ts * 1000), "sizeEstimate": len(row["content"]) + 400,
+        "snippet": row["content"][:200],
+        "historyId": "1",
+        "internalDate": str(ts * 1000),
+        "sizeEstimate": len(row["content"]) + 400,
     }
     html = row["body_html"] or f"<html><body><p>{row['content']}</p></body></html>"
     if fmt == "raw":
@@ -605,11 +697,13 @@ def _gmail_message(row, fmt: str) -> dict:
             filename = att.get("filename", "attachment.bin")
             mime = att.get("mime", "application/octet-stream")
             # same bytes attachments.get serves, so raw MIME and the attachment endpoint agree
-            b64 = base64.b64encode(_att_content(row["doc_id"], i, att).encode("utf-8")).decode("ascii")
+            b64 = base64.b64encode(_att_content(row["doc_id"], i, att).encode("utf-8")).decode(
+                "ascii"
+            )
             leaves.append(
                 f'Content-Type: {mime}; name="{filename}"\r\n'
                 f'Content-Disposition: attachment; filename="{filename}"\r\n'
-                f'Content-Transfer-Encoding: base64\r\n\r\n{b64}'
+                f"Content-Transfer-Encoding: base64\r\n\r\n{b64}"
             )
         mime_body = "".join(f"--{boundary}\r\n{leaf}\r\n" for leaf in leaves) + f"--{boundary}--"
         raw = "\r\n".join(f"{h['name']}: {h['value']}" for h in headers) + "\r\n\r\n" + mime_body
@@ -618,26 +712,45 @@ def _gmail_message(row, fmt: str) -> dict:
     if fmt == "minimal":
         return msg
     if fmt == "metadata":
-        msg["payload"] = {"partId": "", "mimeType": top_mime, "filename": "",
-                          "headers": headers, "body": {"size": 0}}
+        msg["payload"] = {
+            "partId": "",
+            "mimeType": top_mime,
+            "filename": "",
+            "headers": headers,
+            "body": {"size": 0},
+        }
         return msg
 
     # full: multipart with text/plain + text/html leaves, plus attachment leaves
-    parts = [_leaf("text/plain", "0", row["content"]),
-             _leaf("text/html", "1", html)]
+    parts = [_leaf("text/plain", "0", row["content"]), _leaf("text/html", "1", html)]
     for i, att in enumerate(attachments):
-        parts.append({
-            "partId": str(i + 2), "mimeType": att.get("mime", "application/octet-stream"),
-            "filename": att.get("filename", "attachment.bin"),
-            "headers": [{"name": "Content-Disposition",
-                         "value": f'attachment; filename="{att.get("filename", "attachment.bin")}"'}],
-            # size = the exact byte length attachments.get serves (see _att_content), so a client can
-            # stat the attachment from this metadata without a second call — real Gmail's contract.
-            "body": {"attachmentId": _att_id(row["doc_id"], i),
-                     "size": len(_att_content(row["doc_id"], i, att))},
-        })
-    msg["payload"] = {"partId": "", "mimeType": top_mime, "filename": "",
-                      "headers": headers, "body": {"size": 0}, "parts": parts}
+        parts.append(
+            {
+                "partId": str(i + 2),
+                "mimeType": att.get("mime", "application/octet-stream"),
+                "filename": att.get("filename", "attachment.bin"),
+                "headers": [
+                    {
+                        "name": "Content-Disposition",
+                        "value": f'attachment; filename="{att.get("filename", "attachment.bin")}"',
+                    }
+                ],
+                # size = the exact byte length attachments.get serves (see _att_content), so a client can
+                # stat the attachment from this metadata without a second call — real Gmail's contract.
+                "body": {
+                    "attachmentId": _att_id(row["doc_id"], i),
+                    "size": len(_att_content(row["doc_id"], i, att)),
+                },
+            }
+        )
+    msg["payload"] = {
+        "partId": "",
+        "mimeType": top_mime,
+        "filename": "",
+        "headers": headers,
+        "body": {"size": 0},
+        "parts": parts,
+    }
     return msg
 
 
@@ -671,23 +784,31 @@ def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) 
 def _drive_facts(row) -> dict:
     """The values `q` clauses are evaluated against, taken from a stored row."""
     modified = row["updated_ts"] or (row["created_ts"] or synth.epoch(row["doc_id"])) + 3600
-    return {"trashed": bool(row["trashed"]),
-            "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
-            "mime": _drive_mime(row), "name": row["title"] or "",
-            "modified": synth.rfc3339(modified), "owner_email": row["author_email"],
-            # real Drive keys `in owners` on the owner's email; the mock also accepts the owner
-            # display name, since that's the only owner identifier some callers have.
-            "owners": {(row["author_email"] or "").lower(), (row["owner_display"] or "").lower()}}
+    return {
+        "trashed": bool(row["trashed"]),
+        "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
+        "mime": _drive_mime(row),
+        "name": row["title"] or "",
+        "modified": synth.rfc3339(modified),
+        "owner_email": row["author_email"],
+        # real Drive keys `in owners` on the owner's email; the mock also accepts the owner
+        # display name, since that's the only owner identifier some callers have.
+        "owners": {(row["author_email"] or "").lower(), (row["owner_display"] or "").lower()},
+    }
 
 
 def _drive_obj_facts(obj: dict) -> dict:
     """The same values taken from an already-built file object — the synthesized folders, which
     exist only as objects, are matched through this so every clause treats them like a row."""
-    return {"trashed": bool(obj.get("trashed")), "parents": obj.get("parents") or [],
-            "mime": obj.get("mimeType") or "", "name": obj.get("name") or "",
-            "modified": obj.get("modifiedTime") or "",
-            "owner_email": (obj.get("owners") or [{}])[0].get("emailAddress"),
-            "owners": {(o.get("emailAddress") or "").lower() for o in (obj.get("owners") or [])}}
+    return {
+        "trashed": bool(obj.get("trashed")),
+        "parents": obj.get("parents") or [],
+        "mime": obj.get("mimeType") or "",
+        "name": obj.get("name") or "",
+        "modified": obj.get("modifiedTime") or "",
+        "owner_email": (obj.get("owners") or [{}])[0].get("emailAddress"),
+        "owners": {(o.get("emailAddress") or "").lower() for o in (obj.get("owners") or [])},
+    }
 
 
 def _drive_q_match_facts(f: dict, q: str, me: str | None = None) -> bool:
@@ -747,20 +868,38 @@ def _drive_folder_obj(conn, name: str, me: str | None = None) -> dict:
     fid = synth.drive_folder_id(name)
     ts = synth.epoch("folder:" + name)
     return {
-        "kind": "drive#file", "id": fid, "name": name,
-        "mimeType": DRIVE_FOLDER_MIME, "parents": ["root"],
-        "createdTime": synth.rfc3339(ts), "modifiedTime": synth.rfc3339(ts),
+        "kind": "drive#file",
+        "id": fid,
+        "name": name,
+        "mimeType": DRIVE_FOLDER_MIME,
+        "parents": ["root"],
+        "createdTime": synth.rfc3339(ts),
+        "modifiedTime": synth.rfc3339(ts),
         **_shared_with_me_time(None, me, ts),
-        "trashed": False, "explicitlyTrashed": False, "starred": False,
-        "shared": True, "ownedByMe": False, "viewedByMe": False,
-        "version": "1", "spaces": ["drive"],
+        "trashed": False,
+        "explicitlyTrashed": False,
+        "starred": False,
+        "shared": True,
+        "ownedByMe": False,
+        "viewedByMe": False,
+        "version": "1",
+        "spaces": ["drive"],
         "webViewLink": f"https://drive.google.com/drive/folders/{fid}",
         "iconLink": "https://drive.google.com/icons/folder.png",
-        "capabilities": {"canDownload": False, "canListChildren": True, "canComment": False,
-                         "canEdit": False, "canCopy": False, "canShare": True,
-                         "canRename": False, "canTrash": False, "canDelete": False,
-                         "canReadRevisions": False, "canAddChildren": False,
-                         "canModifyContent": False},
+        "capabilities": {
+            "canDownload": False,
+            "canListChildren": True,
+            "canComment": False,
+            "canEdit": False,
+            "canCopy": False,
+            "canShare": True,
+            "canRename": False,
+            "canTrash": False,
+            "canDelete": False,
+            "canReadRevisions": False,
+            "canAddChildren": False,
+            "canModifyContent": False,
+        },
     }
 
 
@@ -778,7 +917,8 @@ def _drive_folder_name_by_id(conn, file_id: str) -> str | None:
 # documented set, not just the keys this mock synthesizes: real Drive accepts a documented field
 # it has no value for (and omits it from the response) while rejecting anything unknown with 400.
 # Validating against it is what makes a mock-backed test able to catch a typo'd or stale mask.
-_DRIVE_FILE_FIELDS = frozenset("""
+_DRIVE_FILE_FIELDS = frozenset(
+    """
     appProperties capabilities contentHints contentRestrictions copyRequiresWriterPermission
     createdTime description driveId explicitlyTrashed exportLinks fileExtension folderColorRgb
     fullFileExtension hasAugmentedPermissions hasThumbnail headRevisionId iconLink id
@@ -789,7 +929,8 @@ _DRIVE_FILE_FIELDS = frozenset("""
     sharingUser shortcutDetails size spaces starred teamDriveId thumbnailLink thumbnailVersion
     trashed trashedTime trashingUser version videoMediaMetadata viewedByMe viewedByMeTime
     viewersCanCopyContent webContentLink webViewLink writersCanShare
-""".split())
+""".split()
+)
 _DRIVE_LIST_FIELDS = frozenset({"kind", "nextPageToken", "incompleteSearch", "files"})
 
 
@@ -845,7 +986,7 @@ def _drive_file_field_keys(fields: str | None) -> set[str] | None:
             keys |= _mask_names(group.group(1))
         elif tok.startswith("files/"):
             top.add("files")
-            keys |= _mask_names(tok[len("files/"):])
+            keys |= _mask_names(tok[len("files/") :])
         else:
             top.add(tok.split("/")[0].split("(")[0])
     _check_mask(top, _DRIVE_LIST_FIELDS)
@@ -880,10 +1021,14 @@ def _drive_fill_shared(conn, files: list[dict], stored: set[str]) -> None:
 
 # --- `orderBy` -----------------------------------------------------------------------------
 
+
 def _natural_key(name: str) -> list[tuple]:
     """Drive's ``name_natural``: digit runs compare numerically, so ``v2`` sorts before ``v10``."""
-    return [(0, int(t), "") if t.isdigit() else (1, 0, t.casefold())
-            for t in re.split(r"(\d+)", name) if t]
+    return [
+        (0, int(t), "") if t.isdigit() else (1, 0, t.casefold())
+        for t in re.split(r"(\d+)", name)
+        if t
+    ]
 
 
 # Real Drive's documented `orderBy` keys -> the sort key each takes from the served file object
@@ -928,7 +1073,8 @@ def _drive_order_specs(order_by: str | None) -> list[tuple]:
             raise gerr.invalid_value(
                 "orderBy",
                 f"Sorting by '{key}' is not supported by this mock (it models no per-caller "
-                       f"view/share timestamps). Supported: {', '.join(sorted(_DRIVE_ORDER_KEYS))}.")
+                f"view/share timestamps). Supported: {', '.join(sorted(_DRIVE_ORDER_KEYS))}.",
+            )
         if key not in _DRIVE_ORDER_KEYS:
             raise gerr.invalid_value("orderBy", f"Invalid sort key: {tok.strip()}")
         specs.append((_DRIVE_ORDER_KEYS[key], len(parts) == 2))
@@ -971,8 +1117,11 @@ def _drive_folder_candidates(conn, ids, q: str, me: str | None) -> list[dict]:
     covers document content, not container names), so it can't take part in an FTS match."""
     if _DRIVE_FULLTEXT_RE.search(q) or _drive_q_excludes_folders(q):
         return []
-    return [f for f in (_drive_folder_obj(conn, n, me) for n in _visible_drive_folders(conn, ids))
-            if _drive_q_match_facts(_drive_obj_facts(f), q, me)]
+    return [
+        f
+        for f in (_drive_folder_obj(conn, n, me) for n in _visible_drive_folders(conn, ids))
+        if _drive_q_match_facts(_drive_obj_facts(f), q, me)
+    ]
 
 
 def _drive_shared_with_me_scope(q: str, me: str | None) -> tuple[str | None, str | None]:
@@ -998,8 +1147,9 @@ def _drive_q_rows(conn, q: str, container: str | None, ids, me: str | None) -> l
         phrase = len(ft_raw) >= 2 and ft_raw[0] == '"' and ft_raw[-1] == '"'
         ft_term = ft_raw[1:-1] if phrase else ft_raw
         q_rest = _DRIVE_FULLTEXT_RE.sub(" ", q)  # FTS owns fullText; strip it from the rest
-        candidates = store.search_documents(conn, ft_term, "google_drive", ids,
-                                            limit=10_000, phrase=phrase)
+        candidates = store.search_documents(
+            conn, ft_term, "google_drive", ids, limit=10_000, phrase=phrase
+        )
     else:
         q_rest = q
         nm = re.search(r"name\s+contains\s+'([^']+)'", q)
@@ -1009,9 +1159,15 @@ def _drive_q_rows(conn, q: str, container: str | None, ids, me: str | None) -> l
             candidates = store.list_drive_by_name(conn, nm.group(1), container, ids, limit=100_000)
         else:  # scope to the folder and/or the owner (if any) to shrink the set before the filter
             owner, not_owner = _drive_shared_with_me_scope(q, me)
-            candidates = store.list_documents(conn, "google_drive", container=container,
-                                              visible_ids=ids, limit=100_000,
-                                              author_email=owner, not_author_email=not_owner)
+            candidates = store.list_documents(
+                conn,
+                "google_drive",
+                container=container,
+                visible_ids=ids,
+                limit=100_000,
+                author_email=owner,
+                not_author_email=not_owner,
+            )
     return [r for r in candidates if _drive_q_match(r, q_rest, me)]
 
 
@@ -1020,10 +1176,12 @@ def _drive_q_rows(conn, q: str, container: str | None, ids, me: str | None) -> l
 # Every field of the Drive v3 `about` resource, for the same reason `_DRIVE_FILE_FIELDS` is the
 # whole documented set: real Drive accepts a documented name it has no value for and rejects an
 # unknown one with 400, so validating against it is what lets a test catch a typo'd mask.
-_DRIVE_ABOUT_FIELDS = frozenset("""
+_DRIVE_ABOUT_FIELDS = frozenset(
+    """
     appInstalled canCreateDrives canCreateTeamDrives driveThemes exportFormats folderColorPalette
     importFormats kind maxImportSizes maxUploadSize storageQuota teamDriveThemes user
-""".split())
+""".split()
+)
 
 
 def _drive_about_field_keys(fields: str | None) -> set[str] | None:
@@ -1034,8 +1192,7 @@ def _drive_about_field_keys(fields: str | None) -> set[str] | None:
     projection": on a resource where the mask is required, answering a request for nothing with
     everything is the one outcome the caller certainly did not ask for."""
     if not (fields or "").strip():
-        raise gerr.required("fields",
-                            "The 'fields' parameter is required for this method.")
+        raise gerr.required("fields", "The 'fields' parameter is required for this method.")
     keys = _mask_names(fields)
     _check_mask(keys, _DRIVE_ABOUT_FIELDS)
     if not keys:
@@ -1051,18 +1208,30 @@ def _drive_about_field_keys(fields: str | None) -> set[str] | None:
 # actually stores (`_NATIVE` minus the folder, which is not exportable anywhere).
 _DRIVE_EXPORT_FORMATS = {
     DRIVE_DOC_MIME: [
-        "application/rtf", "application/vnd.oasis.opendocument.text", "text/html",
-        "application/pdf", "application/epub+zip", "application/zip",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"],
-    "application/vnd.google-apps.spreadsheet": [
-        "application/x-vnd.oasis.opendocument.spreadsheet", "text/tab-separated-values",
-        "application/pdf", "application/vnd.oasis.opendocument.spreadsheet", "text/csv",
+        "application/rtf",
+        "application/vnd.oasis.opendocument.text",
+        "text/html",
+        "application/pdf",
+        "application/epub+zip",
         "application/zip",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/plain",
+    ],
+    "application/vnd.google-apps.spreadsheet": [
+        "application/x-vnd.oasis.opendocument.spreadsheet",
+        "text/tab-separated-values",
+        "application/pdf",
+        "application/vnd.oasis.opendocument.spreadsheet",
+        "text/csv",
+        "application/zip",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ],
     "application/vnd.google-apps.presentation": [
-        "application/vnd.oasis.opendocument.presentation", "application/pdf",
+        "application/vnd.oasis.opendocument.presentation",
+        "application/pdf",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "text/plain"],
+        "text/plain",
+    ],
 }
 
 # Source type -> the native types Drive can convert it into on upload. Google's map is longer;
@@ -1083,13 +1252,14 @@ _DRIVE_IMPORT_FORMATS = {
     "text/tab-separated-values": ["application/vnd.google-apps.spreadsheet"],
     "application/vnd.ms-excel": ["application/vnd.google-apps.spreadsheet"],
     "application/vnd.oasis.opendocument.spreadsheet": ["application/vnd.google-apps.spreadsheet"],
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-        ["application/vnd.google-apps.spreadsheet"],
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
+        "application/vnd.google-apps.spreadsheet"
+    ],
     "application/vnd.ms-powerpoint": ["application/vnd.google-apps.presentation"],
-    "application/vnd.oasis.opendocument.presentation":
-        ["application/vnd.google-apps.presentation"],
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-        ["application/vnd.google-apps.presentation"],
+    "application/vnd.oasis.opendocument.presentation": ["application/vnd.google-apps.presentation"],
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": [
+        "application/vnd.google-apps.presentation"
+    ],
 }
 
 _DRIVE_MAX_IMPORT_SIZES = {
@@ -1103,15 +1273,35 @@ _DRIVE_MAX_UPLOAD_SIZE = "5242880000000"
 # The colors `files.folderColorRgb` may be set to — a documented file field, so the palette a
 # client picks from has to be the real one.
 _DRIVE_FOLDER_COLORS = [
-    "#ac725e", "#d06b64", "#f83a22", "#fa573c", "#ff7537", "#ffad46",
-    "#42d692", "#16a765", "#7bd148", "#b3dc6c", "#fbe983", "#fad165",
-    "#92e1c0", "#9fe1e7", "#9fc6e7", "#4986e7", "#9a9cff", "#b99aff",
-    "#c2c2c2", "#cabdbf", "#cca6ac", "#f691b2", "#cd74e6", "#a47ae2",
+    "#ac725e",
+    "#d06b64",
+    "#f83a22",
+    "#fa573c",
+    "#ff7537",
+    "#ffad46",
+    "#42d692",
+    "#16a765",
+    "#7bd148",
+    "#b3dc6c",
+    "#fbe983",
+    "#fad165",
+    "#92e1c0",
+    "#9fe1e7",
+    "#9fc6e7",
+    "#4986e7",
+    "#9a9cff",
+    "#b99aff",
+    "#c2c2c2",
+    "#cabdbf",
+    "#cca6ac",
+    "#f691b2",
+    "#cd74e6",
+    "#a47ae2",
 ]
 
 # 2 TiB — a fixed plan size. The usage beside it is measured from the corpus, so the pair reads
 # like a real account rather than a made-up ratio.
-_DRIVE_STORAGE_LIMIT = 2 * 1024 ** 4
+_DRIVE_STORAGE_LIMIT = 2 * 1024**4
 
 
 @router.get("/drive/v3/about", openapi_extra={"parameters": _P_DRIVE_ABOUT})
@@ -1130,12 +1320,14 @@ async def drive_about(request: Request):
     used, trashed = store.drive_usage_bytes(conn, ids)
     about = {
         "kind": "drive#about",
-        "user": _drive_user(email) | {"me": True},   # `about.user` IS the caller
+        "user": _drive_user(email) | {"me": True},  # `about.user` IS the caller
         "storageQuota": {
             "limit": str(_DRIVE_STORAGE_LIMIT),
             # `usage` spans every Google service; the mock stores nothing outside Drive, so the two
             # are equal. Both include the trash, which is the subset `usageInDriveTrash` reports.
-            "usage": str(used), "usageInDrive": str(used), "usageInDriveTrash": str(trashed),
+            "usage": str(used),
+            "usageInDrive": str(used),
+            "usageInDriveTrash": str(trashed),
         },
         "importFormats": _DRIVE_IMPORT_FORMATS,
         "exportFormats": _DRIVE_EXPORT_FORMATS,
@@ -1145,8 +1337,10 @@ async def drive_about(request: Request):
         "folderColorPalette": _DRIVE_FOLDER_COLORS,
         # The corpus is all My Drive and /drive/v3/drives is empty, so every shared-drive field
         # says so rather than hinting at a capability that isn't there.
-        "canCreateDrives": False, "canCreateTeamDrives": False,
-        "driveThemes": [], "teamDriveThemes": [],
+        "canCreateDrives": False,
+        "canCreateTeamDrives": False,
+        "driveThemes": [],
+        "teamDriveThemes": [],
     }
     return _drive_project([about], keys)[0]
 
@@ -1159,8 +1353,9 @@ async def drive_shared_drives(request: Request):
     return {"kind": "drive#driveList", "drives": []}
 
 
-@router.get("/drive/v3/files", response_model=DriveFileList,
-            openapi_extra={"parameters": _P_DRIVE_LIST})
+@router.get(
+    "/drive/v3/files", response_model=DriveFileList, openapi_extra={"parameters": _P_DRIVE_LIST}
+)
 async def drive_files_list(request: Request):
     """A listing is the union of two streams — the stored files and the synthesized folders — put
     through one matcher, one sort and one projection, so a query that should match a folder does
@@ -1172,8 +1367,8 @@ async def drive_files_list(request: Request):
     limit = _int(request, "pageSize", get_settings().default_page_size)
     offset = decode_cursor(request.query_params.get("pageToken"))
     q = request.query_params.get("q", "") or ""
-    keys = _drive_file_field_keys(request.query_params.get("fields"))   # 400 on an unknown field
-    order = _drive_order_specs(request.query_params.get("orderBy"))     # 400 on an unusable key
+    keys = _drive_file_field_keys(request.query_params.get("fields"))  # 400 on an unknown field
+    order = _drive_order_specs(request.query_params.get("orderBy"))  # 400 on an unusable key
     parent_ids = re.findall(r"'([^']+)'\s+in\s+parents", q)
     # A folder-scoped parent resolves to one container name (for the SQL-scoped paths below).
     scoped = [pid for pid in parent_ids if pid != "root"]
@@ -1192,11 +1387,12 @@ async def drive_files_list(request: Request):
         fetch = lambda o, n: store.list_drive_folder(conn, container, ids, limit=n, offset=o)  # noqa: E731
     elif q.strip():  # filter the visible set by the query, then paginate
         matched = _drive_q_rows(conn, q, container, ids, me)
-        total_rows, fetch = len(matched), lambda o, n: matched[o:o + n]  # noqa: E731
+        total_rows, fetch = len(matched), lambda o, n: matched[o : o + n]  # noqa: E731
     else:
         total_rows = store.count_documents(conn, "google_drive", visible_ids=ids)
         fetch = lambda o, n: store.list_documents(  # noqa: E731
-            conn, "google_drive", visible_ids=ids, limit=n, offset=o)
+            conn, "google_drive", visible_ids=ids, limit=n, offset=o
+        )
 
     stored: set[str] = set()  # ids that came from the row stream (vs. a synthesized folder)
 
@@ -1212,8 +1408,9 @@ async def drive_files_list(request: Request):
         # each page in isolation. Materializing the corpus costs more than a paged listing, which
         # is why it happens only when a sort is actually asked for — and `shared`, the one field
         # that costs a query per page and that no sort key reads, is deferred to the page below.
-        files = _drive_sort(objects(0, total_rows, with_shared=False) + folders,
-                            order)[offset:offset + limit]
+        files = _drive_sort(objects(0, total_rows, with_shared=False) + folders, order)[
+            offset : offset + limit
+        ]
         _drive_fill_shared(conn, files, stored)
     else:
         # No sort: the stored rows first (SQL-paginated), the folder objects as the tail. Real
@@ -1222,9 +1419,12 @@ async def drive_files_list(request: Request):
         files = objects(offset, min(limit, max(0, total_rows - offset)))
         if len(files) < limit:
             start = max(0, offset - total_rows)
-            files += folders[start:start + limit - len(files)]
-    body = {"kind": "drive#fileList", "incompleteSearch": False,
-            "files": _drive_project(files, keys)}
+            files += folders[start : start + limit - len(files)]
+    body = {
+        "kind": "drive#fileList",
+        "incompleteSearch": False,
+        "files": _drive_project(files, keys),
+    }
     token = next_page_token(offset, len(files), total)
     if token:
         body["nextPageToken"] = token
@@ -1289,8 +1489,10 @@ async def drive_files_permissions(file_id: str, request: Request):
         name = _drive_folder_name_by_id(conn, file_id)
         if name is None:
             raise gerr.not_found_file(file_id)
-        return {"kind": "drive#permissionList",
-                "permissions": _drive_permissions(conn, file_id, folder=name)}
+        return {
+            "kind": "drive#permissionList",
+            "permissions": _drive_permissions(conn, file_id, folder=name),
+        }
     return {"kind": "drive#permissionList", "permissions": _drive_permissions(conn, file_id)}
 
 
@@ -1323,13 +1525,16 @@ async def drive_files_permissions(file_id: str, request: Request):
 # measured; no .pptx was available in the probed account.
 EDITOR_NOT_FOUND = "Requested entity was not found."
 EDITOR_INVALID_ARG = "Request contains an invalid argument."
-EDITOR_OFFICE = ("This operation is not supported for this document. "
-                 "The document must not be an Office file.")
+EDITOR_OFFICE = (
+    "This operation is not supported for this document. The document must not be an Office file."
+)
 
 # The binary subtypes (importer `_ATT_MIME` keys) each editor API considers its own family.
-_EDITOR_OFFICE_FAMILY = {"document": {"doc", "docx"},
-                         "spreadsheet": {"xls", "xlsx"},
-                         "presentation": {"ppt", "pptx"}}
+_EDITOR_OFFICE_FAMILY = {
+    "document": {"doc", "docx"},
+    "spreadsheet": {"xls", "xlsx"},
+    "presentation": {"ppt", "pptx"},
+}
 _EDITOR_NATIVE = frozenset(_EDITOR_OFFICE_FAMILY)
 
 
@@ -1357,7 +1562,7 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     subtype = row["subtype"] or "document"
     if subtype == expect:
         return row
-    if subtype in _EDITOR_NATIVE:       # a different Workspace type: not this API's entity at all
+    if subtype in _EDITOR_NATIVE:  # a different Workspace type: not this API's entity at all
         raise gerr.not_found_entity()
     if subtype in _EDITOR_OFFICE_FAMILY[expect]:
         raise gerr.failed_precondition(EDITOR_OFFICE)
@@ -1370,11 +1575,18 @@ async def docs_get(document_id: str, request: Request):
     # Docs body is an ordered list of structural elements; one paragraph per line.
     content = [{"sectionBreak": {"sectionStyle": {}}}]
     for line in (row["content"] or "").split("\n"):
-        content.append({"paragraph": {"elements": [
-            {"textRun": {"content": line + "\n", "textStyle": {}}}]}})
-    return {"documentId": document_id, "title": row["title"],
-            "revisionId": synth._digest(document_id)[:24], "suggestionsViewMode": "SUGGESTIONS_INLINE",
-            "body": {"content": content}, "documentStyle": {}, "namedStyles": {"styles": []}}
+        content.append(
+            {"paragraph": {"elements": [{"textRun": {"content": line + "\n", "textStyle": {}}}]}}
+        )
+    return {
+        "documentId": document_id,
+        "title": row["title"],
+        "revisionId": synth._digest(document_id)[:24],
+        "suggestionsViewMode": "SUGGESTIONS_INLINE",
+        "body": {"content": content},
+        "documentStyle": {},
+        "namedStyles": {"styles": []},
+    }
 
 
 def _sheets_grid(content: str | None) -> list[list[str]]:
@@ -1395,8 +1607,7 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
 _P_SHEETS_GET = [qp("includeGridData", "boolean"), qp("ranges")]
 
 
-@router.get("/sheets/v4/spreadsheets/{spreadsheet_id}",
-            openapi_extra={"parameters": _P_SHEETS_GET})
+@router.get("/sheets/v4/spreadsheets/{spreadsheet_id}", openapi_extra={"parameters": _P_SHEETS_GET})
 async def sheets_get(spreadsheet_id: str, request: Request):
     """The spreadsheet's structure, and its cells only if asked for.
 
@@ -1406,18 +1617,26 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     never hand it, and the document it assembled had a different layout against the two backends.
     With the flag, ``ranges`` scopes the returned rows (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
     row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
-    sheet = {"properties": {"sheetId": 0, "title": SHEETS_SHEET_TITLE, "index": 0,
-                            "sheetType": "GRID",
-                            # the grid, not the data extent — see SHEETS_GRID_ROWS
-                            "gridProperties": {"rowCount": SHEETS_GRID_ROWS,
-                                               "columnCount": SHEETS_GRID_COLS}}}
+    sheet = {
+        "properties": {
+            "sheetId": 0,
+            "title": SHEETS_SHEET_TITLE,
+            "index": 0,
+            "sheetType": "GRID",
+            # the grid, not the data extent — see SHEETS_GRID_ROWS
+            "gridProperties": {"rowCount": SHEETS_GRID_ROWS, "columnCount": SHEETS_GRID_COLS},
+        }
+    }
     if (request.query_params.get("includeGridData") or "").lower() == "true":
         rows = _sheets_grid(row["content"])
         specs = request.query_params.getlist("ranges") or [SHEETS_SHEET_TITLE]
         sheet["data"] = [_sheets_grid_data(rows, s) for s in specs]
-    return {"spreadsheetId": spreadsheet_id, "properties": {"title": row["title"], "locale": "en_US"},
-            "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
-            "sheets": [sheet]}
+    return {
+        "spreadsheetId": spreadsheet_id,
+        "properties": {"title": row["title"], "locale": "en_US"},
+        "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
+        "sheets": [sheet],
+    }
 
 
 # --- Sheets `values` reads ------------------------------------------------------------------
@@ -1426,7 +1645,7 @@ async def sheets_get(spreadsheet_id: str, request: Request):
 # range against the same grid `sheets_get` builds, so the three calls cannot disagree about what
 # a cell holds.
 
-SHEETS_SHEET_TITLE = "Sheet1"   # the mock shapes every spreadsheet as one sheet with this title
+SHEETS_SHEET_TITLE = "Sheet1"  # the mock shapes every spreadsheet as one sheet with this title
 
 # A real sheet's GRID is larger than its data — Sheets creates one at 1000x26 — and every range
 # behaviour below is defined against the grid rather than against the occupied cells. Measured on a
@@ -1513,11 +1732,11 @@ def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
         if title != SHEETS_SHEET_TITLE:
             raise gerr.invalid_argument(f"Unable to parse range: {spec}")
         body = body.strip()
-        if not body:        # `Sheet1!` with nothing after it is malformed
+        if not body:  # `Sheet1!` with nothing after it is malformed
             raise gerr.invalid_argument(f"Unable to parse range: {spec}")
     start, sep, end = body.partition(":")
     r0, c0 = _a1_endpoint(start, spec)
-    if not sep:                         # a single reference: one cell, one whole row, one column
+    if not sep:  # a single reference: one cell, one whole row, one column
         r0f, c0f = (0 if r0 is None else r0), (0 if c0 is None else c0)
         r1 = nrows if r0 is None else r0 + 1
         c1 = ncols if c0 is None else c0 + 1
@@ -1535,8 +1754,11 @@ def _a1_range(spec: str, rows: list[list[str]]) -> tuple[int, int, int, int]:
     if r0f >= nrows or c0f >= ncols or r0f < 0 or c0f < 0:
         # The START is outside the grid — refused, with the range echoed back unclamped.
         raise gerr.invalid_argument(
-            (f"Range ({_a1_name(r0f, c0f, r1, c1)}) exceeds grid limits. "
-                    f"Max rows: {nrows}, max columns: {ncols}"))
+            (
+                f"Range ({_a1_name(r0f, c0f, r1, c1)}) exceeds grid limits. "
+                f"Max rows: {nrows}, max columns: {ncols}"
+            )
+        )
     return r0f, c0f, min(r1, nrows), min(c1, ncols)
 
 
@@ -1545,6 +1767,7 @@ def _a1_name(r0: int, c0: int, r1: int, c1: int) -> str:
 
     A single cell echoes as a bare reference (``Sheet1!A1``), not as ``A1:A1`` — measured: real
     Sheets collapses a 1x1 range even when the request spelled it out as ``A1:A1``."""
+
     def col(i: int) -> str:
         s = ""
         i += 1
@@ -1552,6 +1775,7 @@ def _a1_name(r0: int, c0: int, r1: int, c1: int) -> str:
             i, rem = divmod(i - 1, 26)
             s = chr(65 + rem) + s
         return s
+
     start = f"{col(c0)}{r0 + 1}"
     if r1 - r0 == 1 and c1 - c0 == 1:
         return f"{SHEETS_SHEET_TITLE}!{start}"
@@ -1569,8 +1793,10 @@ def _sheets_block(rows: list[list[str]], spec: str):
     cells it covers with trailing empties trimmed off each row and off the block. The bounds are the
     RANGE's, not the data's — callers echo them, so they must not shrink to the occupied cells."""
     r0, c0, r1, c1 = _a1_range(spec, rows)
-    block = [[(rows[r][c] if c < len(rows[r]) else "") for c in range(c0, c1)]
-             for r in range(r0, min(r1, len(rows)))]
+    block = [
+        [(rows[r][c] if c < len(rows[r]) else "") for c in range(c0, c1)]
+        for r in range(r0, min(r1, len(rows)))
+    ]
     block = [_rstrip_empty(row) for row in block]
     while block and not block[-1]:
         block.pop()
@@ -1595,10 +1821,18 @@ def _sheets_grid_data(rows: list[list[str]], spec: str) -> dict:
     if c0:
         out["startColumn"] = c0
     out["rowData"] = [
-        {"values": [({"formattedValue": row[i], "effectiveValue": {"stringValue": row[i]}}
-                     if i < len(row) and row[i] != "" else {})
-                    for i in range(width)]}
-        for row in block]
+        {
+            "values": [
+                (
+                    {"formattedValue": row[i], "effectiveValue": {"stringValue": row[i]}}
+                    if i < len(row) and row[i] != ""
+                    else {}
+                )
+                for i in range(width)
+            ]
+        }
+        for row in block
+    ]
     return out
 
 
@@ -1611,8 +1845,7 @@ def _sheets_value_range(rows: list[list[str]], spec: str, major: str) -> dict:
     out = {"range": _a1_name(r0, c0, r1, c1), "majorDimension": major}
     if major == "COLUMNS":
         width = max((len(r) for r in block), default=0)
-        block = [_rstrip_empty([(r[i] if i < len(r) else "") for r in block])
-                 for i in range(width)]
+        block = [_rstrip_empty([(r[i] if i < len(r) else "") for r in block]) for i in range(width)]
         while block and not block[-1]:
             block.pop()
     if block:
@@ -1634,26 +1867,27 @@ def _sheets_options(request: Request) -> str:
     major = request.query_params.get("majorDimension") or "ROWS"
     render = request.query_params.get("valueRenderOption") or "FORMATTED_VALUE"
     if major not in _A1_MAJOR:
-        raise gerr.invalid_argument(_a1_enum_error("major_dimension",
-                                                                  "Dimension", major))
+        raise gerr.invalid_argument(_a1_enum_error("major_dimension", "Dimension", major))
     # On a real spreadsheet these three genuinely differ — measured on one holding formulas and
     # currency: FORMATTED_VALUE gives "₩4,000,000", UNFORMATTED_VALUE gives the JSON number
     # 4000000, FORMULA gives "=B2/12". This corpus has none of that: a cell is one line of stored
     # text, so all three return the same string. The value is still validated, so a client's typo
     # fails here exactly as it would against real Sheets.
     if render not in _A1_RENDER:
-        raise gerr.invalid_argument(_a1_enum_error("value_render_option",
-                                                                  "ValueRenderOption", render))
+        raise gerr.invalid_argument(
+            _a1_enum_error("value_render_option", "ValueRenderOption", render)
+        )
     return major
 
 
-_P_SHEETS_VALUES = [qp("majorDimension"), qp("valueRenderOption"),
-                    qp("dateTimeRenderOption")]
+_P_SHEETS_VALUES = [qp("majorDimension"), qp("valueRenderOption"), qp("dateTimeRenderOption")]
 _P_SHEETS_BATCH = [qp("ranges"), *_P_SHEETS_VALUES]
 
 
-@router.get("/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchGet",
-            openapi_extra={"parameters": _P_SHEETS_BATCH})
+@router.get(
+    "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchGet",
+    openapi_extra={"parameters": _P_SHEETS_BATCH},
+)
 async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
     """Several ranges in one round trip. Declared before ``values/{range}`` for clarity only —
     ``values:batchGet`` is a single path segment, so the two cannot collide.
@@ -1673,8 +1907,10 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
     return body
 
 
-@router.get("/sheets/v4/spreadsheets/{spreadsheet_id}/values/{a1_range:path}",
-            openapi_extra={"parameters": _P_SHEETS_VALUES})
+@router.get(
+    "/sheets/v4/spreadsheets/{spreadsheet_id}/values/{a1_range:path}",
+    openapi_extra={"parameters": _P_SHEETS_VALUES},
+)
 async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request):
     """One range of a spreadsheet, ACL-enforced through the same lookup as ``spreadsheets.get``."""
     rows = _sheets_rows(request, spreadsheet_id)
@@ -1685,16 +1921,39 @@ async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request
 @router.get("/slides/v1/presentations/{presentation_id}")
 async def slides_get(presentation_id: str, request: Request):
     row = _editor_doc(request, presentation_id, expect="presentation")
-    chunks = [c for c in (row["content"] or "").split("\n\n") if c.strip()] or [row["content"] or ""]
+    chunks = [c for c in (row["content"] or "").split("\n\n") if c.strip()] or [
+        row["content"] or ""
+    ]
     slides = []
     for i, chunk in enumerate(chunks):
-        slides.append({"objectId": f"p{i}", "pageType": "SLIDE", "pageElements": [
-            {"objectId": f"p{i}_t", "shape": {"shapeType": "TEXT_BOX", "text": {"textElements": [
-                {"textRun": {"content": chunk + "\n", "style": {}}}]}}}]})
-    return {"presentationId": presentation_id, "title": row["title"],
-            "pageSize": {"width": {"magnitude": 9144000, "unit": "EMU"},
-                         "height": {"magnitude": 6858000, "unit": "EMU"}},
-            "slides": slides}
+        slides.append(
+            {
+                "objectId": f"p{i}",
+                "pageType": "SLIDE",
+                "pageElements": [
+                    {
+                        "objectId": f"p{i}_t",
+                        "shape": {
+                            "shapeType": "TEXT_BOX",
+                            "text": {
+                                "textElements": [
+                                    {"textRun": {"content": chunk + "\n", "style": {}}}
+                                ]
+                            },
+                        },
+                    }
+                ],
+            }
+        )
+    return {
+        "presentationId": presentation_id,
+        "title": row["title"],
+        "pageSize": {
+            "width": {"magnitude": 9144000, "unit": "EMU"},
+            "height": {"magnitude": 6858000, "unit": "EMU"},
+        },
+        "slides": slides,
+    }
 
 
 # Google Workspace native types: subtype -> (mimeType, webView path segment, export content-type)
@@ -1712,10 +1971,14 @@ def _native(row):
 
 
 def _drive_user(email: str) -> dict:
-    return {"kind": "drive#user", "displayName": email.split("@")[0].replace(".", " ").title(),
-            "emailAddress": email, "me": False,
-            "permissionId": str(synth.github_user_id(email)),
-            "photoLink": synth.github_avatar(synth.github_user_id(email))}
+    return {
+        "kind": "drive#user",
+        "displayName": email.split("@")[0].replace(".", " ").title(),
+        "emailAddress": email,
+        "me": False,
+        "permissionId": str(synth.github_user_id(email)),
+        "photoLink": synth.github_avatar(synth.github_user_id(email)),
+    }
 
 
 def _drive_mime(row) -> str:
@@ -1735,8 +1998,11 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     mime = _drive_mime(row)
     if native is not None:
         seg = native[1]
-        view = (f"https://docs.google.com/{seg}/d/{row['doc_id']}/edit" if seg
-                else f"https://drive.google.com/drive/folders/{row['doc_id']}")
+        view = (
+            f"https://docs.google.com/{seg}/d/{row['doc_id']}/edit"
+            if seg
+            else f"https://drive.google.com/drive/folders/{row['doc_id']}"
+        )
     else:  # binary file (PDF, image, office doc)
         view = f"https://drive.google.com/file/d/{row['doc_id']}/view"
     is_folder = row["subtype"] == "folder"
@@ -1747,23 +2013,40 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     ext = row["title"].rsplit(".", 1)[-1] if (native is None and "." in row["title"]) else None
     nbytes = len((row["content"] or "").encode("utf-8"))
     f = {
-        "kind": "drive#file", "id": row["doc_id"], "name": row["title"], "mimeType": mime,
+        "kind": "drive#file",
+        "id": row["doc_id"],
+        "name": row["title"],
+        "mimeType": mime,
         "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
-        "createdTime": synth.rfc3339(created), "modifiedTime": synth.rfc3339(modified),
-        "owners": [_drive_user(author)], "lastModifyingUser": _drive_user(author),
-        "trashed": bool(row["trashed"]), "explicitlyTrashed": bool(row["trashed"]),
-        "starred": False, "shared": bool(shared), "viewedByMe": False,
+        "createdTime": synth.rfc3339(created),
+        "modifiedTime": synth.rfc3339(modified),
+        "owners": [_drive_user(author)],
+        "lastModifyingUser": _drive_user(author),
+        "trashed": bool(row["trashed"]),
+        "explicitlyTrashed": bool(row["trashed"]),
+        "starred": False,
+        "shared": bool(shared),
+        "viewedByMe": False,
         "ownedByMe": _drive_owned_by(author, me),
         **_shared_with_me_time(author, me, created),
         "version": str(2 if row["updated_ts"] else 1),
-        "spaces": ["drive"], "webViewLink": view,
+        "spaces": ["drive"],
+        "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
         "capabilities": {
-            "canDownload": not is_folder, "canListChildren": is_folder,
-            "canComment": not is_folder, "canEdit": False, "canCopy": not is_folder,
-            "canShare": True, "canRename": False, "canTrash": False, "canDelete": False,
-            "canReadRevisions": not is_folder, "canAddChildren": is_folder,
-            "canModifyContent": False},
+            "canDownload": not is_folder,
+            "canListChildren": is_folder,
+            "canComment": not is_folder,
+            "canEdit": False,
+            "canCopy": not is_folder,
+            "canShare": True,
+            "canRename": False,
+            "canTrash": False,
+            "canDelete": False,
+            "canReadRevisions": not is_folder,
+            "canAddChildren": is_folder,
+            "canModifyContent": False,
+        },
     }
     # Per Google's reference, `size` "is populated for files with binary content stored in Google
     # Drive AND for Docs Editors files; it is not populated for shortcuts or folders" — so a native
@@ -1786,30 +2069,62 @@ def _drive_permissions(conn, doc_id: str, *, folder: str | None = None) -> list[
     synthesized folder, ``folder`` names the container and the grants come from its files (which is
     what makes the folder visible in the first place); the mock models no folder owner, so there is
     no owner permission to add."""
-    grants = (store.container_grants(conn, "google_drive", folder) if folder
-              else store.doc_grants(conn, doc_id))
+    grants = (
+        store.container_grants(conn, "google_drive", folder)
+        if folder
+        else store.doc_grants(conn, doc_id)
+    )
     domain = get_settings().org_domain
     perms = []
     for g in grants:
         ptype, pid = g["principal_type"], g["principal_id"]
         if ptype == "org":  # anyone-in-org / anyone-with-link
-            perms.append({"kind": "drive#permission", "id": "anyoneWithLink", "type": "anyone",
-                          "role": "reader", "allowFileDiscovery": True})
+            perms.append(
+                {
+                    "kind": "drive#permission",
+                    "id": "anyoneWithLink",
+                    "type": "anyone",
+                    "role": "reader",
+                    "allowFileDiscovery": True,
+                }
+            )
         elif ptype == "group":
-            perms.append({"kind": "drive#permission", "id": str(synth.github_user_id(pid)),
-                          "type": "group", "role": "reader", "emailAddress": f"{pid}@{domain}",
-                          "displayName": pid})
+            perms.append(
+                {
+                    "kind": "drive#permission",
+                    "id": str(synth.github_user_id(pid)),
+                    "type": "group",
+                    "role": "reader",
+                    "emailAddress": f"{pid}@{domain}",
+                    "displayName": pid,
+                }
+            )
         else:  # user
-            perms.append({"kind": "drive#permission", "id": str(synth.github_user_id(pid)),
-                          "type": "user", "role": "reader", "emailAddress": pid,
-                          "displayName": pid.split("@")[0].replace(".", " ").title()})
+            perms.append(
+                {
+                    "kind": "drive#permission",
+                    "id": str(synth.github_user_id(pid)),
+                    "type": "user",
+                    "role": "reader",
+                    "emailAddress": pid,
+                    "displayName": pid.split("@")[0].replace(".", " ").title(),
+                }
+            )
     # every file has an owner
     row = store.get_document(conn, "google_drive", doc_id)
     if row is not None:
         owner = row["author_email"]
-        perms.insert(0, {"kind": "drive#permission", "id": str(synth.github_user_id(owner)),
-                         "type": "user", "role": "owner", "emailAddress": owner,
-                         "displayName": owner.split("@")[0].replace(".", " ").title()})
+        perms.insert(
+            0,
+            {
+                "kind": "drive#permission",
+                "id": str(synth.github_user_id(owner)),
+                "type": "user",
+                "role": "owner",
+                "emailAddress": owner,
+                "displayName": owner.split("@")[0].replace(".", " ").title(),
+            },
+        )
     return perms
 
 

@@ -17,6 +17,7 @@ the lexicographically greatest path). Served at ``GET /_mock/openapi/{source}`` 
 it directly — no client-side spec surgery. S3 is intentionally absent: it is SigV4-signed, which a
 static bridge auth header can't produce.
 """
+
 from __future__ import annotations
 
 import re
@@ -59,8 +60,9 @@ def unique_operation_id(route) -> str:
     name, so it is stable too.
     """
     ident = re.sub(r"\W", "_", f"{route.name}{route.path_format}")
-    method = min(route.methods,
-                 key=lambda m: (_METHOD_RANK.get(m.lower(), len(_METHODS)), m.lower()))
+    method = min(
+        route.methods, key=lambda m: (_METHOD_RANK.get(m.lower(), len(_METHODS)), m.lower())
+    )
     return f"{ident}_{method.lower()}"
 
 
@@ -78,8 +80,11 @@ def qp(name: str, typ: str = "string", required: bool = False) -> dict:
 
 def slice_spec(spec: dict, prefixes: list[str]) -> dict:
     """Copy ``spec`` keeping only paths under one of ``prefixes``."""
-    paths = {p: item for p, item in spec.get("paths", {}).items()
-             if any(p == pre or p.startswith(pre + "/") for pre in prefixes)}
+    paths = {
+        p: item
+        for p, item in spec.get("paths", {}).items()
+        if any(p == pre or p.startswith(pre + "/") for pre in prefixes)
+    }
     if not paths:
         raise ValueError(f"no paths matched {prefixes} — is the router enriched/mounted?")
     return {**spec, "paths": paths}

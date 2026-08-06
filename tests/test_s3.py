@@ -3,6 +3,7 @@
 One file per router, so a provider's shape assertions live in one place whether they go over HTTP
 or call the response builder directly.
 """
+
 from __future__ import annotations
 
 import json
@@ -18,12 +19,18 @@ from starlette.requests import Request
 
 from app import auth, synth
 from app.acl import Acl, Caller
-from app.sigv4 import (expected_signature, is_skewed, parse_amz_date, parse_authorization,
-                       split_credential)
+from app.sigv4 import (
+    expected_signature,
+    is_skewed,
+    parse_amz_date,
+    parse_authorization,
+    split_credential,
+)
 from tests._helpers import client_for
 
 
 # ------------------------------------------------------------------------ S3 (SigV4/404/416 edges)
+
 
 def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None):
     """Return (url, headers) for a SigV4-signed GET, using botocore (the real signer)."""
@@ -57,13 +64,20 @@ def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None):
 
 def test_s3_unknown_access_key_rejected(live_server):
     import urllib.request
+
     base_url, settings = live_server
     url = f"{base_url}/s3/eng-artifacts?list-type=2"
-    req = urllib.request.Request(url, headers={
-        "Authorization": ("AWS4-HMAC-SHA256 Credential=AKIABOGUS0000000BOGUS/"
-                          "20260720/us-east-1/s3/aws4_request, "
-                          "SignedHeaders=host, Signature=00"),
-        "x-amz-date": "20260720T000000Z"})
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": (
+                "AWS4-HMAC-SHA256 Credential=AKIABOGUS0000000BOGUS/"
+                "20260720/us-east-1/s3/aws4_request, "
+                "SignedHeaders=host, Signature=00"
+            ),
+            "x-amz-date": "20260720T000000Z",
+        },
+    )
     with pytest.raises(urllib.error.HTTPError) as e:
         urllib.request.urlopen(req)
     assert e.value.code == 403 and b"InvalidAccessKeyId" in e.value.read()
@@ -71,9 +85,11 @@ def test_s3_unknown_access_key_rejected(live_server):
 
 def test_s3_tampered_signature_rejected(live_server):
     import urllib.request
+
     base_url, settings = live_server
-    url, headers = _sign_get(base_url, "/s3/eng-artifacts?list-type=2",
-                             settings.admin_token, tamper=True)
+    url, headers = _sign_get(
+        base_url, "/s3/eng-artifacts?list-type=2", settings.admin_token, tamper=True
+    )
     with pytest.raises(urllib.error.HTTPError) as e:
         urllib.request.urlopen(urllib.request.Request(url, headers=headers))
     assert e.value.code == 403 and b"SignatureDoesNotMatch" in e.value.read()
@@ -81,6 +97,7 @@ def test_s3_tampered_signature_rejected(live_server):
 
 def test_s3_missing_key_is_nosuchkey(live_server):
     import urllib.request
+
     base_url, settings = live_server
     url, headers = _sign_get(base_url, "/s3/eng-artifacts/does/not/exist.md", settings.admin_token)
     with pytest.raises(urllib.error.HTTPError) as e:
@@ -90,9 +107,14 @@ def test_s3_missing_key_is_nosuchkey(live_server):
 
 def test_s3_unsatisfiable_range_is_416(live_server):
     import urllib.request
+
     base_url, settings = live_server
-    url, headers = _sign_get(base_url, "/s3/eng-artifacts/runbooks/oncall.md",
-                             settings.admin_token, extra_headers={"Range": "bytes=99999-100000"})
+    url, headers = _sign_get(
+        base_url,
+        "/s3/eng-artifacts/runbooks/oncall.md",
+        settings.admin_token,
+        extra_headers={"Range": "bytes=99999-100000"},
+    )
     with pytest.raises(urllib.error.HTTPError) as e:
         urllib.request.urlopen(urllib.request.Request(url, headers=headers))
     assert e.value.code == 416 and b"InvalidRange" in e.value.read()
@@ -102,6 +124,7 @@ def test_s3_unsatisfiable_range_is_416(live_server):
 
 
 # ---------------------------------------------------- S3 large-bucket perf (SQL-pushed listing)
+
 
 def _s3_big_corpus(n=3000):
     """~3000 objects in one bucket: 12 month-prefixes x 25 day-prefixes, split 50/50 across two
@@ -114,25 +137,50 @@ def _s3_big_corpus(n=3000):
         key = f"logs/2026/{month:02d}/{day:02d}/obj-{i:05d}.json"
         group = "engineering" if (i // 12) % 2 == 0 else "people"
         author = "eng-bulk@acme.com" if group == "engineering" else "people-bulk@acme.com"
-        yield {"source_type": "s3", "doc_id": f"s3-big-{i:05d}", "bucket": "big-bucket",
-               "group": group, "key": key, "title": key, "content": f"payload-{i}",
-               "author_email": author, "author_groups": [group], "visibility": "group"}
+        yield {
+            "source_type": "s3",
+            "doc_id": f"s3-big-{i:05d}",
+            "bucket": "big-bucket",
+            "group": group,
+            "key": key,
+            "title": key,
+            "content": f"payload-{i}",
+            "author_email": author,
+            "author_groups": [group],
+            "visibility": "group",
+        }
     # A second, dedicated bucket for the CommonPrefixes-straddling regression (Fix 3): one
     # "folder" (150 objects) bigger than a max-keys=100 page, plus a small trailing folder — the
     # exact shape that made a rolled-up CommonPrefixes group straddle a page cutoff and get
     # emitted twice before the fix.
     for i in range(150):
         key = f"grp/big/f-{i:04d}.json"
-        yield {"source_type": "s3", "doc_id": f"s3-straddle-big-{i:04d}", "bucket": "straddle-bucket",
-               "group": "engineering", "key": key, "title": key, "content": f"big-payload-{i}",
-               "author_email": "eng-bulk@acme.com", "author_groups": ["engineering"],
-               "visibility": "public"}
+        yield {
+            "source_type": "s3",
+            "doc_id": f"s3-straddle-big-{i:04d}",
+            "bucket": "straddle-bucket",
+            "group": "engineering",
+            "key": key,
+            "title": key,
+            "content": f"big-payload-{i}",
+            "author_email": "eng-bulk@acme.com",
+            "author_groups": ["engineering"],
+            "visibility": "public",
+        }
     for i in range(5):
         key = f"grp/small/f-{i:02d}.json"
-        yield {"source_type": "s3", "doc_id": f"s3-straddle-small-{i:02d}", "bucket": "straddle-bucket",
-               "group": "engineering", "key": key, "title": key, "content": f"small-payload-{i}",
-               "author_email": "eng-bulk@acme.com", "author_groups": ["engineering"],
-               "visibility": "public"}
+        yield {
+            "source_type": "s3",
+            "doc_id": f"s3-straddle-small-{i:02d}",
+            "bucket": "straddle-bucket",
+            "group": "engineering",
+            "key": key,
+            "title": key,
+            "content": f"small-payload-{i}",
+            "author_email": "eng-bulk@acme.com",
+            "author_groups": ["engineering"],
+            "visibility": "public",
+        }
 
 
 @pytest.fixture(scope="module")
@@ -197,13 +245,15 @@ def _s3_keys(root) -> list[str]:
 
 def test_s3_large_bucket_prefix_filters_and_sorts(big_bucket_client, big_bucket_settings):
     pytest.importorskip("botocore")
-    r = _s3_get(big_bucket_client,
-               "/s3/big-bucket?list-type=2&prefix=logs/2026/01/&max-keys=1000",
-               big_bucket_settings.admin_token)
+    r = _s3_get(
+        big_bucket_client,
+        "/s3/big-bucket?list-type=2&prefix=logs/2026/01/&max-keys=1000",
+        big_bucket_settings.admin_token,
+    )
     assert r.status_code == 200
     root = ET.fromstring(r.text)
     keys = _s3_keys(root)
-    assert len(keys) == 250                                   # 3000 / 12 months
+    assert len(keys) == 250  # 3000 / 12 months
     assert keys == sorted(keys)
     assert all(k.startswith("logs/2026/01/") for k in keys)
     assert root.findtext(f"{{{S3NS}}}IsTruncated") == "false"
@@ -221,14 +271,17 @@ def test_s3_large_bucket_pagination_round_trips(big_bucket_client, big_bucket_se
     assert token
 
     from urllib.parse import quote
-    r2 = _s3_get(big_bucket_client,
-                f"/s3/big-bucket?list-type=2&max-keys=100&continuation-token={quote(token)}",
-                admin)
+
+    r2 = _s3_get(
+        big_bucket_client,
+        f"/s3/big-bucket?list-type=2&max-keys=100&continuation-token={quote(token)}",
+        admin,
+    )
     root2 = ET.fromstring(r2.text)
     keys2 = _s3_keys(root2)
     assert len(keys2) == 100 and keys2 == sorted(keys2)
-    assert not (set(keys1) & set(keys2))               # no overlap between pages
-    assert keys1[-1] < keys2[0]                        # contiguous keyset order, no gap/dup
+    assert not (set(keys1) & set(keys2))  # no overlap between pages
+    assert keys1[-1] < keys2[0]  # contiguous keyset order, no gap/dup
     assert root2.findtext(f"{{{S3NS}}}ContinuationToken") == token
 
 
@@ -237,23 +290,31 @@ def test_s3_large_bucket_delimiter_returns_common_prefixes(big_bucket_client, bi
     # Under a single month (250 objects, well within one SQL page) every "day" folder rolls up
     # into one CommonPrefixes entry, computed over that bounded page — see the comment on
     # app.routers.s3._list_objects_v2 for why this only holds a page's worth of raw rows at once.
-    r = _s3_get(big_bucket_client,
-               "/s3/big-bucket?list-type=2&prefix=logs/2026/01/&delimiter=/&max-keys=1000",
-               big_bucket_settings.admin_token)
+    r = _s3_get(
+        big_bucket_client,
+        "/s3/big-bucket?list-type=2&prefix=logs/2026/01/&delimiter=/&max-keys=1000",
+        big_bucket_settings.admin_token,
+    )
     root = ET.fromstring(r.text)
-    prefixes = {cp.findtext(f"{{{S3NS}}}Prefix")
-               for cp in root.findall(f"{{{S3NS}}}CommonPrefixes")}
+    prefixes = {
+        cp.findtext(f"{{{S3NS}}}Prefix") for cp in root.findall(f"{{{S3NS}}}CommonPrefixes")
+    }
     assert prefixes == {f"logs/2026/01/{d:02d}/" for d in range(1, 26)}
-    assert root.findall(f"{{{S3NS}}}Contents") == []      # every key continues past the delimiter
+    assert root.findall(f"{{{S3NS}}}Contents") == []  # every key continues past the delimiter
     assert root.findtext(f"{{{S3NS}}}IsTruncated") == "false"
 
 
-def test_s3_large_bucket_acl_scopes_listing(big_bucket_client, big_bucket_settings, big_bucket_tokens):
+def test_s3_large_bucket_acl_scopes_listing(
+    big_bucket_client, big_bucket_settings, big_bucket_tokens
+):
     pytest.importorskip("botocore")
 
     def keys_for(token):
-        r = _s3_get(big_bucket_client,
-                   "/s3/big-bucket?list-type=2&prefix=logs/2026/01/&max-keys=1000", token)
+        r = _s3_get(
+            big_bucket_client,
+            "/s3/big-bucket?list-type=2&prefix=logs/2026/01/&max-keys=1000",
+            token,
+        )
         return {e.text for e in ET.fromstring(r.text).findall(f"{{{S3NS}}}Contents/{{{S3NS}}}Key")}
 
     admin_keys = keys_for(big_bucket_settings.admin_token)
@@ -262,12 +323,14 @@ def test_s3_large_bucket_acl_scopes_listing(big_bucket_client, big_bucket_settin
 
     assert len(admin_keys) == 250
     assert eng_keys and people_keys
-    assert eng_keys < admin_keys and people_keys < admin_keys      # proper, non-empty subsets
+    assert eng_keys < admin_keys and people_keys < admin_keys  # proper, non-empty subsets
     assert eng_keys.isdisjoint(people_keys)
     assert eng_keys | people_keys == admin_keys
 
 
-def test_s3_delimiter_common_prefix_not_duplicated_across_pages(big_bucket_client, big_bucket_settings):
+def test_s3_delimiter_common_prefix_not_duplicated_across_pages(
+    big_bucket_client, big_bucket_settings
+):
     """Fix 3 (correctness): "straddle-bucket" has one 150-object folder ("grp/big/") — bigger
     than a max-keys=100 page — plus a small trailing folder ("grp/small/"). Before the fix, the
     "grp/big/" CommonPrefixes group straddled the page cutoff and was emitted on BOTH the page
@@ -287,8 +350,9 @@ def test_s3_delimiter_common_prefix_not_duplicated_across_pages(big_bucket_clien
         r = _s3_get(big_bucket_client, url, admin)
         assert r.status_code == 200
         root = ET.fromstring(r.text)
-        seen_prefixes += [cp.findtext(f"{{{S3NS}}}Prefix")
-                          for cp in root.findall(f"{{{S3NS}}}CommonPrefixes")]
+        seen_prefixes += [
+            cp.findtext(f"{{{S3NS}}}Prefix") for cp in root.findall(f"{{{S3NS}}}CommonPrefixes")
+        ]
         seen_keys += _s3_keys(root)
         token = root.findtext(f"{{{S3NS}}}NextContinuationToken")
         if root.findtext(f"{{{S3NS}}}IsTruncated") != "true":
@@ -307,14 +371,15 @@ def test_s3_max_keys_zero_returns_empty_page_safely(big_bucket_client, big_bucke
     """Fix 4: max-keys=0 must not crash (no indexing into an empty page) and must report
     IsTruncated based on whether more data exists, with KeyCount 0 and no NextContinuationToken."""
     pytest.importorskip("botocore")
-    r = _s3_get(big_bucket_client, "/s3/big-bucket?list-type=2&max-keys=0",
-               big_bucket_settings.admin_token)
+    r = _s3_get(
+        big_bucket_client, "/s3/big-bucket?list-type=2&max-keys=0", big_bucket_settings.admin_token
+    )
     assert r.status_code == 200
     root = ET.fromstring(r.text)
     assert root.findtext(f"{{{S3NS}}}KeyCount") == "0"
     assert root.findall(f"{{{S3NS}}}Contents") == []
     assert root.findall(f"{{{S3NS}}}CommonPrefixes") == []
-    assert root.findtext(f"{{{S3NS}}}IsTruncated") == "true"          # big-bucket has 3000 objects
+    assert root.findtext(f"{{{S3NS}}}IsTruncated") == "true"  # big-bucket has 3000 objects
     assert root.findtext(f"{{{S3NS}}}NextContinuationToken") is None
 
 
@@ -358,9 +423,9 @@ def test_list_objects_v2_delimiter_common_prefixes(live_server):
 
 # --- the SigV4 verifier (app/sigv4.py) — S3 is its only caller ------------------------------------
 botocore = pytest.importorskip("botocore")
-from botocore.auth import S3SigV4Auth            # noqa: E402
-from botocore.awsrequest import AWSRequest       # noqa: E402
-from botocore.credentials import Credentials     # noqa: E402
+from botocore.auth import S3SigV4Auth  # noqa: E402
+from botocore.awsrequest import AWSRequest  # noqa: E402
+from botocore.credentials import Credentials  # noqa: E402
 
 
 TOKEN = "usr-7d0022af43df72b74a89"
@@ -371,6 +436,7 @@ SK = synth.s3_secret_access_key(TOKEN)
 def _sign(method, url, region="us-east-1"):
     """Sign a request exactly as boto3 would; return (headers, path, query)."""
     from urllib.parse import urlsplit
+
     req = AWSRequest(method=method, url=url)
     req.headers["x-amz-content-sha256"] = "UNSIGNED-PAYLOAD"
     S3SigV4Auth(Credentials(AK, SK), "s3", region).add_auth(req)
@@ -390,9 +456,17 @@ def _verify(headers, method, path, query):
     ak, date_stamp, region = split_credential(parsed["credential"])
     assert ak == AK
     return expected_signature(
-        SK, method, path, query, hdrs, parsed["signed_headers"],
+        SK,
+        method,
+        path,
+        query,
+        hdrs,
+        parsed["signed_headers"],
         hdrs.get("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
-        hdrs["x-amz-date"], date_stamp, region), parsed["signature"]
+        hdrs["x-amz-date"],
+        date_stamp,
+        region,
+    ), parsed["signature"]
 
 
 def test_verifier_accepts_a_real_botocore_signature():
@@ -415,16 +489,25 @@ def test_verifier_rejects_a_tampered_signature():
 
 def test_acl_resolve_access_key(tmp_path):
     import yaml
+
     tokens = tmp_path / "tokens.yaml"
-    tokens.write_text(yaml.safe_dump({
-        "admin_token": "admin-service-token",
-        "users": [{"email": "ava@acme.com", "name": "Ava", "token": TOKEN}],
-    }))
+    tokens.write_text(
+        yaml.safe_dump(
+            {
+                "admin_token": "admin-service-token",
+                "users": [{"email": "ava@acme.com", "name": "Ava", "token": TOKEN}],
+            }
+        )
+    )
     acl = Acl.load(tokens, "admin-service-token", "acme")
     caller, secret = acl.resolve_access_key(AK)
     assert caller == Caller(email="ava@acme.com", is_admin=False) and secret == SK
-    admin_caller, admin_secret = acl.resolve_access_key(synth.s3_access_key_id("admin-service-token"))
-    assert admin_caller.is_admin and admin_secret == synth.s3_secret_access_key("admin-service-token")
+    admin_caller, admin_secret = acl.resolve_access_key(
+        synth.s3_access_key_id("admin-service-token")
+    )
+    assert admin_caller.is_admin and admin_secret == synth.s3_secret_access_key(
+        "admin-service-token"
+    )
     assert acl.resolve_access_key("AKIADOESNOTEXIST0000") is None
 
 
@@ -460,17 +543,29 @@ def _request(method, path, query, headers) -> Request:
     return Request(scope)
 
 
-def _header_auth_request(amz_date: str, path="/s3/eng-artifacts", query="list-type=2",
-                         region="us-east-1"):
+def _header_auth_request(
+    amz_date: str, path="/s3/eng-artifacts", query="list-type=2", region="us-east-1"
+):
     """Build a header-auth GET signed for `amz_date` with a genuinely valid signature."""
     date_stamp = amz_date[:8]
     signed_headers = "host;x-amz-date"
     headers = {"host": "mock", "x-amz-date": amz_date, "x-amz-content-sha256": "UNSIGNED-PAYLOAD"}
-    sig = expected_signature(SK, "GET", path, query, headers, signed_headers,
-                             "UNSIGNED-PAYLOAD", amz_date, date_stamp, region)
+    sig = expected_signature(
+        SK,
+        "GET",
+        path,
+        query,
+        headers,
+        signed_headers,
+        "UNSIGNED-PAYLOAD",
+        amz_date,
+        date_stamp,
+        region,
+    )
     credential = f"{AK}/{date_stamp}/{region}/s3/aws4_request"
-    headers["authorization"] = (f"AWS4-HMAC-SHA256 Credential={credential}, "
-                                f"SignedHeaders={signed_headers}, Signature={sig}")
+    headers["authorization"] = (
+        f"AWS4-HMAC-SHA256 Credential={credential}, SignedHeaders={signed_headers}, Signature={sig}"
+    )
     return _request("GET", path, query, headers)
 
 
@@ -488,8 +583,18 @@ def _presigned_request(amz_date: str, expires: int, path="/s3/eng-artifacts", re
         "X-Amz-SignedHeaders": signed_headers,
     }
     query = urlencode(params, safe="-_.~", quote_via=quote)
-    sig = expected_signature(SK, "GET", path, query, headers, signed_headers,
-                             "UNSIGNED-PAYLOAD", amz_date, date_stamp, region)
+    sig = expected_signature(
+        SK,
+        "GET",
+        path,
+        query,
+        headers,
+        signed_headers,
+        "UNSIGNED-PAYLOAD",
+        amz_date,
+        date_stamp,
+        region,
+    )
     query = f"{query}&X-Amz-Signature={sig}"
     return _request("GET", path, query, headers)
 
@@ -523,8 +628,10 @@ def test_header_auth_skew_check_precedes_signature_check():
     signed_headers = "host;x-amz-date"
     headers = {"host": "mock", "x-amz-date": stale, "x-amz-content-sha256": "UNSIGNED-PAYLOAD"}
     credential = f"{AK}/{date_stamp}/us-east-1/s3/aws4_request"
-    headers["authorization"] = (f"AWS4-HMAC-SHA256 Credential={credential}, "
-                                f"SignedHeaders={signed_headers}, Signature=deadbeef")
+    headers["authorization"] = (
+        f"AWS4-HMAC-SHA256 Credential={credential}, "
+        f"SignedHeaders={signed_headers}, Signature=deadbeef"
+    )
     caller, err = auth.resolve_sigv4(_request("GET", "/s3/eng-artifacts", "list-type=2", headers))
     assert caller is None
     assert err == "RequestTimeTooSkewed"

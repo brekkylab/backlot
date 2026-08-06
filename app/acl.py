@@ -5,6 +5,7 @@ so a document is visible to a caller iff any of the doc's ACL ``principal_id`` v
 is in the caller's principal set: ``{org} ∪ {their groups} ∪ {their own email}``.
 An admin/service token bypasses filtering entirely (``visible_ids`` -> ``None``).
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -33,10 +34,14 @@ class Acl:
         # so a signed S3 request resolves to the same identity a bearer token would.
         self._access_keys: dict[str, tuple[Caller, str]] = {}
         self._access_keys[synth.s3_access_key_id(admin_token)] = (
-            Caller(email=None, is_admin=True), synth.s3_secret_access_key(admin_token))
+            Caller(email=None, is_admin=True),
+            synth.s3_secret_access_key(admin_token),
+        )
         for token, email in token_to_email.items():
             self._access_keys[synth.s3_access_key_id(token)] = (
-                Caller(email=email, is_admin=False), synth.s3_secret_access_key(token))
+                Caller(email=email, is_admin=False),
+                synth.s3_secret_access_key(token),
+            )
 
     @property
     def admin_token(self) -> str:

@@ -17,6 +17,7 @@ envelope is NOT uniform — three families differ in which optional members they
 A present-but-invalid bearer token is 401 UNAUTHENTICATED in every family, which is why a missing
 header and a bad token are separate constructors here rather than one "unauthorized".
 """
+
 from __future__ import annotations
 
 from fastapi import HTTPException
@@ -39,14 +40,17 @@ _PREFIX_FAMILY = (
 BAD_TOKEN_MESSAGE = (
     "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie "
     "or other valid authentication credential. See "
-    "https://developers.google.com/identity/sign-in/web/devconsole-project.")
+    "https://developers.google.com/identity/sign-in/web/devconsole-project."
+)
 MISSING_CREDENTIALS_MESSAGE = (
     "Request is missing required authentication credential. Expected OAuth 2 access token, login "
     "cookie or other valid authentication credential. See "
-    "https://developers.google.com/identity/sign-in/web/devconsole-project.")
+    "https://developers.google.com/identity/sign-in/web/devconsole-project."
+)
 UNREGISTERED_CALLER_MESSAGE = (
     "Method doesn't allow unregistered callers (callers without established identity). Please use "
-    "API Key or other form of API consumer identity to call this API.")
+    "API Key or other form of API consumer identity to call this API."
+)
 
 
 def family(path: str) -> str | None:
@@ -66,9 +70,17 @@ class GoogleError(HTTPException):
     one, where Google's top-level message is the long form and ``errors[0]`` says "Invalid
     Credentials"."""
 
-    def __init__(self, status_code: int, message: str, *, reason: str | None = None,
-                 location: str | None = None, location_type: str = "parameter",
-                 status: str | None = None, short: str | None = None):
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        reason: str | None = None,
+        location: str | None = None,
+        location_type: str = "parameter",
+        status: str | None = None,
+        short: str | None = None,
+    ):
         super().__init__(status_code=status_code, detail=message)
         self.message = message
         self.reason = reason
@@ -80,11 +92,13 @@ class GoogleError(HTTPException):
 
 # --- constructors: the call site names the KIND of failure, which is what only it knows ---------
 
+
 def required(param: str, message: str | None = None) -> GoogleError:
     """A parameter the method cannot run without. Google's wording is ``Required parameter: X``,
     except on ``about.get`` where it spells out the sentence — hence the override."""
-    return GoogleError(400, message or f"Required parameter: {param}",
-                       reason="required", location=param)
+    return GoogleError(
+        400, message or f"Required parameter: {param}", reason="required", location=param
+    )
 
 
 def invalid_parameter(param: str, message: str) -> GoogleError:
@@ -105,19 +119,22 @@ def not_found_file(file_id: str) -> GoogleError:
 
 def not_found_entity() -> GoogleError:
     """The not-found every API other than Drive gives: no id, no location."""
-    return GoogleError(404, "Requested entity was not found.", reason="notFound",
-                       status="NOT_FOUND")
+    return GoogleError(
+        404, "Requested entity was not found.", reason="notFound", status="NOT_FOUND"
+    )
 
 
 def not_exportable() -> GoogleError:
-    return GoogleError(403, "Export only supports Docs Editors files.",
-                       reason="fileNotExportable")
+    return GoogleError(403, "Export only supports Docs Editors files.", reason="fileNotExportable")
 
 
 def not_downloadable() -> GoogleError:
-    return GoogleError(403, "Only files with binary content can be downloaded. Use Export with "
-                            "Docs Editors files.",
-                       reason="fileNotDownloadable", location="alt")
+    return GoogleError(
+        403,
+        "Only files with binary content can be downloaded. Use Export with Docs Editors files.",
+        reason="fileNotDownloadable",
+        location="alt",
+    )
 
 
 def invalid_argument(message: str) -> GoogleError:
@@ -128,8 +145,7 @@ def invalid_argument(message: str) -> GoogleError:
 def invalid_id_value() -> GoogleError:
     """Gmail's answer to an id it cannot parse — measured: 400 INVALID_ARGUMENT "Invalid id value"
     for a non-hex id or one at/above 2**63, where a well-formed but unknown id is 404 instead."""
-    return GoogleError(400, "Invalid id value", reason="invalidArgument",
-                       status="INVALID_ARGUMENT")
+    return GoogleError(400, "Invalid id value", reason="invalidArgument", status="INVALID_ARGUMENT")
 
 
 def failed_precondition(message: str) -> GoogleError:
@@ -139,22 +155,30 @@ def failed_precondition(message: str) -> GoogleError:
 
 def bad_token() -> GoogleError:
     """A present-but-invalid bearer: 401 in every family."""
-    return GoogleError(401, BAD_TOKEN_MESSAGE, reason="authError", location="Authorization",
-                       location_type="header", status="UNAUTHENTICATED",
-                       short="Invalid Credentials")
+    return GoogleError(
+        401,
+        BAD_TOKEN_MESSAGE,
+        reason="authError",
+        location="Authorization",
+        location_type="header",
+        status="UNAUTHENTICATED",
+        short="Invalid Credentials",
+    )
 
 
 def missing_credentials() -> GoogleError:
     """No Authorization header, on an OAuth-only API (Gmail, Docs, Slides)."""
-    return GoogleError(401, MISSING_CREDENTIALS_MESSAGE, reason="required",
-                       status="UNAUTHENTICATED")
+    return GoogleError(
+        401, MISSING_CREDENTIALS_MESSAGE, reason="required", status="UNAUTHENTICATED"
+    )
 
 
 def unregistered_caller() -> GoogleError:
     """No Authorization header, on an API that also accepts API keys (Drive, Sheets) — so an
     anonymous request is a caller with no established identity rather than a missing credential."""
-    return GoogleError(403, UNREGISTERED_CALLER_MESSAGE, reason="forbidden",
-                       status="PERMISSION_DENIED")
+    return GoogleError(
+        403, UNREGISTERED_CALLER_MESSAGE, reason="forbidden", status="PERMISSION_DENIED"
+    )
 
 
 def no_credentials(path: str) -> GoogleError:

@@ -11,6 +11,7 @@ against it — so the example stays self-contained with no separate process to l
     with serve_or_connect(CORPUS) as mock:
         ...  # point an SDK at mock.base_url, using mock.token (admin: sees everything)
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -31,8 +32,14 @@ while not (ROOT / "pyproject.toml").exists():
 TOKEN = "admin-service-token"  # Settings default; a per-user token is in <data>/tokens.yaml
 
 # What each directory's `_mockserver.py` shim re-exports.
-__all__ = ["ROOT", "TOKEN", "google_oauth_user", "google_service_account_info",
-           "mock_server", "serve_or_connect"]
+__all__ = [
+    "ROOT",
+    "TOKEN",
+    "google_oauth_user",
+    "google_service_account_info",
+    "mock_server",
+    "serve_or_connect",
+]
 
 # When talking to an HTTPS `--url` (e.g. a real deployment behind an ACM cert), Python's
 # default SSL context may have no CA bundle on macOS (`ssl.get_default_verify_paths().cafile`
@@ -40,6 +47,7 @@ __all__ = ["ROOT", "TOKEN", "google_oauth_user", "google_service_account_info",
 # cert. certifi ships with the [examples] extra; point OpenSSL at it unless already configured.
 try:
     import certifi
+
     os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 except ImportError:
     pass
@@ -51,7 +59,9 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def google_service_account_info(base_url: str, subject: str | None = None) -> tuple[dict, str | None]:
+def google_service_account_info(
+    base_url: str, subject: str | None = None
+) -> tuple[dict, str | None]:
     """Fetch the mock's service-account key from ``/_mock/credentials`` — the mock-specific glue,
     standing in for the JSON you'd download from the Cloud Console. Returns ``(sa_info, subject)``
     where ``subject`` is the user to impersonate via domain-wide delegation (ACL-filtered to them)
@@ -82,9 +92,15 @@ def google_oauth_user(base_url: str, user: str | None = None) -> tuple[str, str,
         creds = json.load(r)
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/users") as r:
         users = json.load(r)["users"]
-    who = next((u for u in users if u["email"] == user), None) if user else (users[0] if users else None)
+    who = (
+        next((u for u in users if u["email"] == user), None)
+        if user
+        else (users[0] if users else None)
+    )
     if who is None:
-        raise SystemExit(f"--user {user!r} not found in /_mock/users" if user else "no users on the mock")
+        raise SystemExit(
+            f"--user {user!r} not found in /_mock/users" if user else "no users on the mock"
+        )
     print(f"authenticating as {who['email']} (authorized_user — client_id/secret + refresh token)")
     client = creds["oauth_client"]
     return client["client_id"], client["client_secret"], who["token"], creds["token_uri"]
@@ -137,12 +153,28 @@ def mock_server(records: list[dict]):
         corpus = Path(data_dir) / "corpus.jsonl"
         corpus.write_text("\n".join(json.dumps(r) for r in records))
         env = {**os.environ, "MOCK_DATA_DIR": data_dir}
-        subprocess.run([sys.executable, "-m", "app.importer.byo", str(corpus)],
-                       cwd=ROOT, env=env, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(
+            [sys.executable, "-m", "app.importer.byo", str(corpus)],
+            cwd=ROOT,
+            env=env,
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
         port = _free_port()
         proc = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port), "--log-level", "warning"],
-            cwd=ROOT, env=env)
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "app.main:app",
+                "--port",
+                str(port),
+                "--log-level",
+                "warning",
+            ],
+            cwd=ROOT,
+            env=env,
+        )
         base = f"http://127.0.0.1:{port}"
         try:
             for _ in range(100):

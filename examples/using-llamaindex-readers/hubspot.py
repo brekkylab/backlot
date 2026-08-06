@@ -18,6 +18,7 @@ Note what the reader returns: **three** Documents — one each for deals, contac
 whose text is the `str()` of a list of SDK objects, not one Document per record. That is the
 reader's own design; the mock just serves the three listings it pages through.
 """
+
 import argparse
 
 from _llamaindex import drop_self_from_syspath, point_hubspot_at, serve_or_connect
@@ -29,18 +30,35 @@ drop_self_from_syspath(__file__)
 from llama_index.readers.hubspot import HubspotReader  # noqa: E402
 
 CORPUS = [
-    {"source_type": "hubspot", "object_type": "companies", "doc_id": "hs-co-acme",
-     "title": "Acme Health", "content": "Mid-market healthcare provider evaluating the platform.",
-     "properties": {"name": "Acme Health", "domain": "acme-health.com",
-                    "industry": "healthcare", "lifecyclestage": "evaluation"}},
-    {"source_type": "hubspot", "object_type": "contacts", "title": "Ava Stone",
-     "content": "Ava Stone — VP Platform at Acme Health.",
-     "properties": {"firstname": "Ava", "lastname": "Stone", "email": "ava@acme-health.com"},
-     "associations": [{"to": "hs-co-acme", "label": "Primary"}]},
-    {"source_type": "hubspot", "object_type": "deals", "title": "Acme Health — renewal",
-     "content": "12-month renewal, EU residency required.",
-     "properties": {"dealname": "Acme Health — renewal", "amount": "50000"},
-     "associations": [{"to": "hs-co-acme"}]},
+    {
+        "source_type": "hubspot",
+        "object_type": "companies",
+        "doc_id": "hs-co-acme",
+        "title": "Acme Health",
+        "content": "Mid-market healthcare provider evaluating the platform.",
+        "properties": {
+            "name": "Acme Health",
+            "domain": "acme-health.com",
+            "industry": "healthcare",
+            "lifecyclestage": "evaluation",
+        },
+    },
+    {
+        "source_type": "hubspot",
+        "object_type": "contacts",
+        "title": "Ava Stone",
+        "content": "Ava Stone — VP Platform at Acme Health.",
+        "properties": {"firstname": "Ava", "lastname": "Stone", "email": "ava@acme-health.com"},
+        "associations": [{"to": "hs-co-acme", "label": "Primary"}],
+    },
+    {
+        "source_type": "hubspot",
+        "object_type": "deals",
+        "title": "Acme Health — renewal",
+        "content": "12-month renewal, EU residency required.",
+        "properties": {"dealname": "Acme Health — renewal", "amount": "50000"},
+        "associations": [{"to": "hs-co-acme"}],
+    },
 ]
 
 
@@ -55,7 +73,7 @@ def main(reader):
     docs = reader.load_data()
     print(f"loaded {len(docs)} Document(s):")
     for d in docs:
-        kind = d.metadata.get("type")   # `extra_info` is the deprecated alias for this
+        kind = d.metadata.get("type")  # `extra_info` is the deprecated alias for this
         print(f"  - {kind}: {len(d.text)} chars")
         for needle in ("Acme Health", "Ava", "renewal"):
             if needle in d.text:

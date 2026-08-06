@@ -23,33 +23,64 @@ and `creator`. Real Linear returns null for those too, so this reproduces agains
 api.linear.app and no mock-side change can fix it. The query below therefore filters to issues
 that have both an assignee and a project — server-side, which the mock compiles into SQL.
 """
+
 import argparse
 
 from _llamaindex import linear_base_url, patch_linear_at, serve_or_connect
 from llama_index.readers.linear import LinearReader
 
 CORPUS = [
-    {"source_type": "linear", "doc_id": "lin-kv", "team": "engineering",
-     "title": "Variant-aware GPU allocation and KV residency",
-     "content": "Long-context configs push peak GPU memory into fragile regions.",
-     "author_email": "amaya.chen@acme.com", "identifier": "ENG-49121",
-     "state": "In Progress", "priority": "P1", "estimate": 5, "labels": ["kv-cache", "memory"],
-     "project": "runtime-memory-2025", "cycle": "2025-W08", "dueDate": "2025-03-15",
-     "assignee": "diego.martinez@acme.com", "assigneeName": "Diego Martinez",
-     "comments": [{"content": "Residency bands cut peak memory 20%.",
-                   "author_email": "diego.martinez@acme.com"}]},
-    {"source_type": "linear", "doc_id": "lin-batch", "team": "engineering",
-     "title": "Continuous batching stalls after compaction",
-     "content": "A 50ms stall when the batcher merges requests right after compaction.",
-     "author_email": "diego.martinez@acme.com", "identifier": "ENG-49188",
-     "state": "Done", "priority": "P0", "estimate": 3, "labels": ["latency"],
-     "project": "runtime-memory-2025",
-     "assignee": "amaya.chen@acme.com", "assigneeName": "Amaya Chen"},
+    {
+        "source_type": "linear",
+        "doc_id": "lin-kv",
+        "team": "engineering",
+        "title": "Variant-aware GPU allocation and KV residency",
+        "content": "Long-context configs push peak GPU memory into fragile regions.",
+        "author_email": "amaya.chen@acme.com",
+        "identifier": "ENG-49121",
+        "state": "In Progress",
+        "priority": "P1",
+        "estimate": 5,
+        "labels": ["kv-cache", "memory"],
+        "project": "runtime-memory-2025",
+        "cycle": "2025-W08",
+        "dueDate": "2025-03-15",
+        "assignee": "diego.martinez@acme.com",
+        "assigneeName": "Diego Martinez",
+        "comments": [
+            {
+                "content": "Residency bands cut peak memory 20%.",
+                "author_email": "diego.martinez@acme.com",
+            }
+        ],
+    },
+    {
+        "source_type": "linear",
+        "doc_id": "lin-batch",
+        "team": "engineering",
+        "title": "Continuous batching stalls after compaction",
+        "content": "A 50ms stall when the batcher merges requests right after compaction.",
+        "author_email": "diego.martinez@acme.com",
+        "identifier": "ENG-49188",
+        "state": "Done",
+        "priority": "P0",
+        "estimate": 3,
+        "labels": ["latency"],
+        "project": "runtime-memory-2025",
+        "assignee": "amaya.chen@acme.com",
+        "assigneeName": "Amaya Chen",
+    },
     # Unassigned on purpose: it is what the `assignee: {null: false}` filter below exists for.
-    {"source_type": "linear", "doc_id": "lin-triage", "team": "engineering",
-     "title": "Triage: intermittent 502s on the gateway",
-     "content": "Reported twice this week; no owner yet.",
-     "author_email": "amaya.chen@acme.com", "identifier": "ENG-49200", "state": "Triage"},
+    {
+        "source_type": "linear",
+        "doc_id": "lin-triage",
+        "team": "engineering",
+        "title": "Triage: intermittent 502s on the gateway",
+        "content": "Reported twice this week; no owner yet.",
+        "author_email": "amaya.chen@acme.com",
+        "identifier": "ENG-49200",
+        "state": "Triage",
+    },
 ]
 
 # The reader's own field set, plus the filter that keeps its null-dereference bug out of the way.
@@ -96,8 +127,10 @@ def main(reader, team="ENG"):
     if not docs:
         # The reader swallows a GraphQL error envelope and returns [], so say so rather than
         # printing a cheerful "loaded 0".
-        raise SystemExit(f"no issues came back for team {team!r} — the reader discards GraphQL "
-                         f"errors silently, so check the query against the mock's schema.")
+        raise SystemExit(
+            f"no issues came back for team {team!r} — the reader discards GraphQL "
+            f"errors silently, so check the query against the mock's schema."
+        )
     print(f"loaded {len(docs)} Document(s):")
     for d in docs:
         m = d.metadata  # `extra_info` is the deprecated alias for this

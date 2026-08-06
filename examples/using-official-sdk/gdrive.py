@@ -8,6 +8,7 @@ Self-contained.
     python examples/using-official-sdk/gdrive.py --user mia@acme.com      # impersonate a user (ACL)
     python examples/using-official-sdk/gdrive.py --url http://localhost:8000 --user <email>
 """
+
 import argparse
 
 from google.api_core.client_options import ClientOptions
@@ -17,30 +18,58 @@ from googleapiclient.discovery import build
 from _mockserver import google_service_account_info, serve_or_connect
 
 CORPUS = [
-    {"source_type": "google_drive", "folder": "marketing", "title": "Brand guidelines v3",
-     "content": "Logo usage, color palette, typography.", "subtype": "document",
-     "author_email": "mia@acme.com"},
-    {"source_type": "google_drive", "folder": "finance", "title": "Q1 Revenue Model",
-     "content": "month,revenue\nJan,120000\nFeb,135000", "subtype": "spreadsheet",
-     "author_email": "cfo@acme.com"},
-    {"source_type": "google_drive", "folder": "marketing", "title": "All-hands Q1 Deck",
-     "content": "Slide 1: Welcome\n\nSlide 2: Roadmap", "subtype": "presentation",
-     "author_email": "mia@acme.com"},
+    {
+        "source_type": "google_drive",
+        "folder": "marketing",
+        "title": "Brand guidelines v3",
+        "content": "Logo usage, color palette, typography.",
+        "subtype": "document",
+        "author_email": "mia@acme.com",
+    },
+    {
+        "source_type": "google_drive",
+        "folder": "finance",
+        "title": "Q1 Revenue Model",
+        "content": "month,revenue\nJan,120000\nFeb,135000",
+        "subtype": "spreadsheet",
+        "author_email": "cfo@acme.com",
+    },
+    {
+        "source_type": "google_drive",
+        "folder": "marketing",
+        "title": "All-hands Q1 Deck",
+        "content": "Slide 1: Welcome\n\nSlide 2: Roadmap",
+        "subtype": "presentation",
+        "author_email": "mia@acme.com",
+    },
 ]
 
-_p = argparse.ArgumentParser(description="Read Google Drive through google-api-python-client against the mock.")
+_p = argparse.ArgumentParser(
+    description="Read Google Drive through google-api-python-client against the mock."
+)
 _p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-_p.add_argument("--user", help="email to impersonate via the service account (default: bare service account = admin, sees everything)")
+_p.add_argument(
+    "--user",
+    help="email to impersonate via the service account (default: bare service account = admin, sees everything)",
+)
 args = _p.parse_args()
 
 with serve_or_connect(CORPUS, url=args.url) as mock:
     # Auth is an ordinary Google service-account credential; only the api_endpoint changes. The
     # mock issues the key and honors the JWT exchange it triggers.
-    sa_info, subject = google_service_account_info(mock.base_url, args.user)  # stands in for the JSON key file
+    sa_info, subject = google_service_account_info(
+        mock.base_url, args.user
+    )  # stands in for the JSON key file
     creds = service_account.Credentials.from_service_account_info(
-        sa_info, scopes=["https://www.googleapis.com/auth/drive.readonly"], subject=subject)
-    gdrive = build("drive", "v3", credentials=creds, static_discovery=True,
-                   client_options=ClientOptions(api_endpoint=f"{mock.base_url}/drive/v3"))
+        sa_info, scopes=["https://www.googleapis.com/auth/drive.readonly"], subject=subject
+    )
+    gdrive = build(
+        "drive",
+        "v3",
+        credentials=creds,
+        static_discovery=True,
+        client_options=ClientOptions(api_endpoint=f"{mock.base_url}/drive/v3"),
+    )
 
     files = gdrive.files().list(pageSize=5).execute()["files"]
     if not files:

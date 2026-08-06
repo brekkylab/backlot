@@ -14,6 +14,7 @@ day — so an agent reads it with plain ``ls`` / ``cat``. Slack's API host is a 
 With ``--fuse`` the channel tree is exposed as an actual filesystem (needs macFUSE/fuse3) and
 read with plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
 """
+
 import argparse
 import os
 import subprocess
@@ -24,11 +25,19 @@ from mirage.resource.slack import SlackConfig, SlackResource
 from _mirage import FUSE_HELP, lines, run_mirage, serve_or_connect, slack_base_url
 
 CORPUS = [  # `created` keeps the throwaway channels' dates tight (one day) rather than synthesized
-    {"source_type": "slack", "channel": "eng", "content": "Deploy freeze starts Friday 5pm.",
-     "created": "2024-08-01T09:00:00Z"},
-    {"source_type": "slack", "channel": "incidents", "content": "Anyone seeing 502s from the gateway?",
-     "created": "2024-08-01T14:30:00Z",
-     "replies": [{"content": "Looking now."}, {"content": "Rolled back — clearing up."}]},
+    {
+        "source_type": "slack",
+        "channel": "eng",
+        "content": "Deploy freeze starts Friday 5pm.",
+        "created": "2024-08-01T09:00:00Z",
+    },
+    {
+        "source_type": "slack",
+        "channel": "incidents",
+        "content": "Anyone seeing 502s from the gateway?",
+        "created": "2024-08-01T14:30:00Z",
+        "replies": [{"content": "Looking now."}, {"content": "Rolled back — clearing up."}],
+    },
 ]
 
 
@@ -81,7 +90,9 @@ def main_fuse(resource) -> None:
             print(f"\n$ head -c 160 channels/{channel}/{day}/chat.jsonl")
             print("  " + open(chat).read(160).replace("\n", " "))  # a genuine open() via FUSE
             count = subprocess.run(["grep", "-c", ".", chat], capture_output=True, text=True)
-            print(f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}")
+            print(
+                f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"
+            )
             print(f"\nexplore it live in another terminal:  ls {mnt}/channels")
     except (ImportError, RuntimeError, OSError) as e:
         raise SystemExit(FUSE_HELP.format(err=e))
@@ -90,9 +101,14 @@ def main_fuse(resource) -> None:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Read Slack through mirage against the mock.")
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-    p.add_argument("--token", help="mock bearer token from GET /_mock/users "
-                                   "(default: the admin token, which sees everything)")
-    p.add_argument("--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)")
+    p.add_argument(
+        "--token",
+        help="mock bearer token from GET /_mock/users "
+        "(default: the admin token, which sees everything)",
+    )
+    p.add_argument(
+        "--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)"
+    )
     return p.parse_args()
 
 

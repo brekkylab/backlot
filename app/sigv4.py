@@ -9,6 +9,7 @@ Only read-only GET/HEAD is served, so the payload hash is taken verbatim from th
 signer uses the request path *verbatim* as the canonical URI (no normalization, no re-encoding),
 which is why the router passes the raw wire path through unchanged.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -40,14 +41,17 @@ def parse_authorization(header: str | None) -> dict | None:
     if not header or not header.startswith(ALGORITHM):
         return None
     parts: dict[str, str] = {}
-    for kv in header[len(ALGORITHM):].strip().split(","):
+    for kv in header[len(ALGORITHM) :].strip().split(","):
         k, _, v = kv.strip().partition("=")
         if k:
             parts[k.strip()] = v.strip()
     if not {"Credential", "SignedHeaders", "Signature"} <= parts.keys():
         return None
-    return {"credential": parts["Credential"], "signed_headers": parts["SignedHeaders"],
-            "signature": parts["Signature"]}
+    return {
+        "credential": parts["Credential"],
+        "signed_headers": parts["SignedHeaders"],
+        "signature": parts["Signature"],
+    }
 
 
 def split_credential(credential: str) -> tuple[str, str, str] | None:
@@ -60,8 +64,7 @@ def split_credential(credential: str) -> tuple[str, str, str] | None:
 
 def _canonical_query(query: str) -> str:
     """RFC-3986 encode + sort the query params, excluding the presigned signature itself."""
-    pairs = [(k, v) for k, v in parse_qsl(query, keep_blank_values=True)
-             if k != "X-Amz-Signature"]
+    pairs = [(k, v) for k, v in parse_qsl(query, keep_blank_values=True) if k != "X-Amz-Signature"]
     enc = sorted((quote(k, safe="-_.~"), quote(v, safe="-_.~")) for k, v in pairs)
     return "&".join(f"{k}={v}" for k, v in enc)
 
@@ -75,14 +78,16 @@ def _canonical_headers(headers: dict, signed_headers: str) -> str:
 
 
 def canonical_request(method, path, query, headers, signed_headers, payload_hash) -> str:
-    return "\n".join([
-        method,
-        path,                                   # S3: verbatim path, no normalization/re-encoding
-        _canonical_query(query),
-        _canonical_headers(headers, signed_headers),
-        signed_headers,
-        payload_hash,
-    ])
+    return "\n".join(
+        [
+            method,
+            path,  # S3: verbatim path, no normalization/re-encoding
+            _canonical_query(query),
+            _canonical_headers(headers, signed_headers),
+            signed_headers,
+            payload_hash,
+        ]
+    )
 
 
 def parse_amz_date(amz_date: str) -> datetime | None:
@@ -105,10 +110,12 @@ def is_skewed(request_time: datetime, now: datetime, max_skew: int = 900) -> boo
     return abs((now - request_time).total_seconds()) > max_skew
 
 
-def expected_signature(secret, method, path, query, headers, signed_headers,
-                       payload_hash, amz_date, date_stamp, region) -> str:
+def expected_signature(
+    secret, method, path, query, headers, signed_headers, payload_hash, amz_date, date_stamp, region
+) -> str:
     cr = canonical_request(method, path, query, headers, signed_headers, payload_hash)
     scope = f"{date_stamp}/{region}/s3/aws4_request"
     sts = "\n".join([ALGORITHM, amz_date, scope, _sha256_hex(cr.encode("utf-8"))])
-    return hmac.new(_signing_key(secret, date_stamp, region),
-                    sts.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.new(
+        _signing_key(secret, date_stamp, region), sts.encode("utf-8"), hashlib.sha256
+    ).hexdigest()

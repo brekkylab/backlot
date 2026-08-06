@@ -17,6 +17,7 @@ the per-service example files (``examples/using-mcp-with-agents/{atlassian,notio
 than importing them — a test must not reach into ``examples/`` (no ``sys.path`` hacks); a little
 copied setup is the lesser evil.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -51,24 +52,49 @@ def _atlassian_params(base: str, token: str):
 
     port = base.rsplit(":", 1)[1]  # Docker reaches the host mock via host-gateway
     host, url = "mock.atlassian.net", f"http://mock.atlassian.net:{port}"
-    return StdioServerParameters(command="docker", args=[
-        "run", "-i", "--rm", f"--add-host={host}:host-gateway",
-        "-e", f"JIRA_URL={url}/atlassian", "-e", "JIRA_USERNAME=svc@example.com",
-        "-e", f"JIRA_API_TOKEN={token}",
-        "-e", f"CONFLUENCE_URL={url}/atlassian/wiki", "-e", "CONFLUENCE_USERNAME=svc@example.com",
-        "-e", f"CONFLUENCE_API_TOKEN={token}",
-        "-e", "MCP_ALLOWED_URL_DOMAINS=atlassian.net", "-e", "READ_ONLY_MODE=true",
-        "ghcr.io/sooperset/mcp-atlassian:latest", "--transport", "stdio",
-    ])
+    return StdioServerParameters(
+        command="docker",
+        args=[
+            "run",
+            "-i",
+            "--rm",
+            f"--add-host={host}:host-gateway",
+            "-e",
+            f"JIRA_URL={url}/atlassian",
+            "-e",
+            "JIRA_USERNAME=svc@example.com",
+            "-e",
+            f"JIRA_API_TOKEN={token}",
+            "-e",
+            f"CONFLUENCE_URL={url}/atlassian/wiki",
+            "-e",
+            "CONFLUENCE_USERNAME=svc@example.com",
+            "-e",
+            f"CONFLUENCE_API_TOKEN={token}",
+            "-e",
+            "MCP_ALLOWED_URL_DOMAINS=atlassian.net",
+            "-e",
+            "READ_ONLY_MODE=true",
+            "ghcr.io/sooperset/mcp-atlassian:latest",
+            "--transport",
+            "stdio",
+        ],
+    )
 
 
 def _notion_params(base: str, token: str):
     """`npx` args pointing the official notion-mcp-server at the mock via BASE_URL."""
     from mcp import StdioServerParameters
 
-    return StdioServerParameters(command="npx", args=["-y", "@notionhq/notion-mcp-server"],
-                                 env={"BASE_URL": f"{base.rstrip('/')}/notion",
-                                      "NOTION_TOKEN": token, "NOTION_VERSION": "2025-09-03"})
+    return StdioServerParameters(
+        command="npx",
+        args=["-y", "@notionhq/notion-mcp-server"],
+        env={
+            "BASE_URL": f"{base.rstrip('/')}/notion",
+            "NOTION_TOKEN": token,
+            "NOTION_VERSION": "2025-09-03",
+        },
+    )
 
 
 def _restricted_doc(settings, user_token: str, source: str, where: str = "1=1"):
@@ -101,6 +127,7 @@ async def _call(params, tool_pred, args, ok_pred) -> bool:
 
 # --------------------------------------------------------------------------- Atlassian
 
+
 @pytest.mark.skipif(not _docker_available(), reason="Docker not available")
 def test_mcp_atlassian_acl_enforced(live_server):
     base, settings = live_server
@@ -110,17 +137,21 @@ def test_mcp_atlassian_acl_enforced(live_server):
     key = synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"]))
 
     def reads(token):
-        return asyncio.run(_call(
-            _atlassian_params(base, token),
-            tool_pred=lambda n: n == "jira_get_issue",
-            args={"issue_key": key},
-            ok_pred=lambda t: t.strip().startswith("{") and '"key"' in t))
+        return asyncio.run(
+            _call(
+                _atlassian_params(base, token),
+                tool_pred=lambda n: n == "jira_get_issue",
+                args={"issue_key": key},
+                ok_pred=lambda t: t.strip().startswith("{") and '"key"' in t,
+            )
+        )
 
     assert reads(settings.admin_token), "admin should read the issue through mcp-atlassian"
     assert not reads(user["token"]), f"{email} should be blocked from the issue via mcp-atlassian"
 
 
 # --------------------------------------------------------------------------- Notion
+
 
 @pytest.mark.skipif(shutil.which("npx") is None, reason="npx (Node) not available")
 def test_mcp_notion_acl_enforced(live_server):
@@ -131,18 +162,24 @@ def test_mcp_notion_acl_enforced(live_server):
     page_id = synth.notion_id(row["doc_id"])
 
     def reads(token):
-        return asyncio.run(_call(
-            _notion_params(base, token),
-            # the proxy names tools from OpenAPI operationIds (e.g. "API-retrieve-a-page")
-            tool_pred=lambda n: "retrieve-a-page" in n or ("page" in n and "retrieve" in n),
-            args={"page_id": page_id},
-            ok_pred=lambda t: '"object": "page"' in t or '"object":"page"' in t))
+        return asyncio.run(
+            _call(
+                _notion_params(base, token),
+                # the proxy names tools from OpenAPI operationIds (e.g. "API-retrieve-a-page")
+                tool_pred=lambda n: "retrieve-a-page" in n or ("page" in n and "retrieve" in n),
+                args={"page_id": page_id},
+                ok_pred=lambda t: '"object": "page"' in t or '"object":"page"' in t,
+            )
+        )
 
     assert reads(settings.admin_token), "admin should read the page through notion-mcp-server"
-    assert not reads(user["token"]), f"{email} should be blocked from the page via notion-mcp-server"
+    assert not reads(user["token"]), (
+        f"{email} should be blocked from the page via notion-mcp-server"
+    )
 
 
 # --------------------------------------------------------------------------- S3
+
 
 def _s3_params(base: str, token: str):
     """`uvx` args pointing the awslabs aws-api MCP server at the mock via AWS_ENDPOINT_URL (see
@@ -152,11 +189,16 @@ def _s3_params(base: str, token: str):
     from mcp import StdioServerParameters
 
     return StdioServerParameters(
-        command="uvx", args=["awslabs.aws-api-mcp-server@latest"],
-        env={"AWS_ENDPOINT_URL": f"{base.rstrip('/')}/s3",
-             "AWS_ACCESS_KEY_ID": synth.s3_access_key_id(token),
-             "AWS_SECRET_ACCESS_KEY": synth.s3_secret_access_key(token),
-             "AWS_REGION": "us-east-1", "READ_OPERATIONS_ONLY": "true"})
+        command="uvx",
+        args=["awslabs.aws-api-mcp-server@latest"],
+        env={
+            "AWS_ENDPOINT_URL": f"{base.rstrip('/')}/s3",
+            "AWS_ACCESS_KEY_ID": synth.s3_access_key_id(token),
+            "AWS_SECRET_ACCESS_KEY": synth.s3_secret_access_key(token),
+            "AWS_REGION": "us-east-1",
+            "READ_OPERATIONS_ONLY": "true",
+        },
+    )
 
 
 @pytest.mark.skipif(shutil.which("uvx") is None, reason="uvx not installed")
@@ -164,17 +206,23 @@ def test_mcp_s3_lists_objects(live_server):
     """The awslabs aws-api MCP server, pointed at the mock, lists objects via a signed AWS CLI call."""
     base, settings = live_server
     params = _s3_params(base, settings.admin_token)
-    out = asyncio.run(_call(
-        params,
-        # the server also exposes a "suggest_aws_commands" tool; pick the one that runs a command.
-        tool_pred=lambda name: name == "call_aws",
-        args={"cli_command": f"aws s3api list-objects-v2 --bucket eng-artifacts "
-                             f"--endpoint-url {base}/s3"},
-        ok_pred=lambda text: "runbooks/oncall.md" in text))
+    out = asyncio.run(
+        _call(
+            params,
+            # the server also exposes a "suggest_aws_commands" tool; pick the one that runs a command.
+            tool_pred=lambda name: name == "call_aws",
+            args={
+                "cli_command": f"aws s3api list-objects-v2 --bucket eng-artifacts "
+                f"--endpoint-url {base}/s3"
+            },
+            ok_pred=lambda text: "runbooks/oncall.md" in text,
+        )
+    )
     assert out, "expected the SAMPLE eng-artifacts/runbooks/oncall.md key in the listing"
 
 
 # ------------------------------------------------------ GitHub (generic OpenAPI→MCP bridge)
+
 
 def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None) -> bool:
     """Exercise the OpenAPI→MCP bridge path WITHOUT touching ``examples/``.
@@ -191,7 +239,9 @@ def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None
 
     spec = httpx.get(f"{base}/_mock/openapi/{source}", timeout=10).json()
     if username:  # Atlassian: Basic username:token (the api_token IS the mock token)
-        header = {"Authorization": "Basic " + b64.b64encode(f"{username}:{token}".encode()).decode()}
+        header = {
+            "Authorization": "Basic " + b64.b64encode(f"{username}:{token}".encode()).decode()
+        }
     else:
         header = {"Authorization": f"Bearer {token}"}
 
@@ -220,16 +270,21 @@ def test_mcp_github_bridge_acl_enforced(live_server):
     owner, repo = settings.org_name, row["repo"]
 
     def reads(token):
-        return _bridge_call(base, "github", token,
-                            tool_pred=lambda n: n.startswith("get_issue"),
-                            args={"owner": owner, "repo": repo, "number": number},
-                            ok_pred=lambda t: '"number"' in t and '"title"' in t)
+        return _bridge_call(
+            base,
+            "github",
+            token,
+            tool_pred=lambda n: n.startswith("get_issue"),
+            args={"owner": owner, "repo": repo, "number": number},
+            ok_pred=lambda t: '"number"' in t and '"title"' in t,
+        )
 
     assert reads(settings.admin_token), "admin should read the issue through the OpenAPI bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the issue via the bridge"
 
 
 # ------------------------------------------------------ Slack (generic OpenAPI→MCP bridge)
+
 
 def test_mcp_hubspot_bridge_acl_enforced(live_server):
     """A CRM record the admin can read through the bridge's get_object tool is 404 for a scoped user.
@@ -245,10 +300,14 @@ def test_mcp_hubspot_bridge_acl_enforced(live_server):
     record_id = synth.hubspot_record_id(row["doc_id"])
 
     def reads(token):
-        return _bridge_call(base, "hubspot", token,
-                            tool_pred=lambda n: n.startswith("get_object"),
-                            args={"object_type": row["object_type"], "record_id": record_id},
-                            ok_pred=lambda t: '"properties"' in t and record_id in t)
+        return _bridge_call(
+            base,
+            "hubspot",
+            token,
+            tool_pred=lambda n: n.startswith("get_object"),
+            args={"object_type": row["object_type"], "record_id": record_id},
+            ok_pred=lambda t: '"properties"' in t and record_id in t,
+        )
 
     assert reads(settings.admin_token), "admin should read the record through the OpenAPI bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the record via the bridge"
@@ -260,12 +319,18 @@ def test_mcp_hubspot_bridge_search_tool(live_server):
     pytest.importorskip("fastmcp")
     base, settings = live_server
     assert _bridge_call(
-        base, "hubspot", settings.admin_token,
+        base,
+        "hubspot",
+        settings.admin_token,
         tool_pred=lambda n: n.startswith("search_objects"),
-        args={"object_type": "companies",
-              "filterGroups": [{"filters": [{"propertyName": "industry", "operator": "EQ",
-                                             "value": "healthcare"}]}]},
-        ok_pred=lambda t: '"total"' in t and "Acme Health" in t)
+        args={
+            "object_type": "companies",
+            "filterGroups": [
+                {"filters": [{"propertyName": "industry", "operator": "EQ", "value": "healthcare"}]}
+            ],
+        },
+        ok_pred=lambda t: '"total"' in t and "Acme Health" in t,
+    )
 
 
 def test_mcp_slack_bridge_acl_enforced(live_server):
@@ -277,16 +342,21 @@ def test_mcp_slack_bridge_acl_enforced(live_server):
     assert row is not None, f"no Slack message is ACL-restricted from {email} in the sample corpus"
 
     def finds(token):
-        return _bridge_call(base, "slack", token,
-                            tool_pred=lambda n: n.startswith("search_messages"),
-                            args={"query": "reorg"},   # the restricted people-confidential message
-                            ok_pred=lambda t: "headcount" in t)  # a word only that message carries
+        return _bridge_call(
+            base,
+            "slack",
+            token,
+            tool_pred=lambda n: n.startswith("search_messages"),
+            args={"query": "reorg"},  # the restricted people-confidential message
+            ok_pred=lambda t: "headcount" in t,
+        )  # a word only that message carries
 
     assert finds(settings.admin_token), "admin search should surface the restricted message"
     assert not finds(user["token"]), f"{email} search should not surface the restricted message"
 
 
 # ------------------------------------------------------ Gmail (generic OpenAPI→MCP bridge)
+
 
 def test_mcp_gmail_bridge_acl_enforced(live_server):
     """A Gmail message the admin can read via the bridge's messages.get tool is 404 for a user."""
@@ -298,19 +368,25 @@ def test_mcp_gmail_bridge_acl_enforced(live_server):
     # Gmail serves hex ids, not dsids (#39) — the bridge forwards whatever the caller passes, so a
     # dsid here would be refused as an invalid id value before the ACL was ever consulted.
     from app import synth
+
     msg_id = synth.gmail_message_id(row["doc_id"])
 
     def reads(token):
-        return _bridge_call(base, "gmail", token,
-                            tool_pred=lambda n: n.startswith("gmail_messages_get"),
-                            args={"user_id": "me", "msg_id": msg_id, "format": "full"},
-                            ok_pred=lambda t: '"payload"' in t or '"snippet"' in t)
+        return _bridge_call(
+            base,
+            "gmail",
+            token,
+            tool_pred=lambda n: n.startswith("gmail_messages_get"),
+            args={"user_id": "me", "msg_id": msg_id, "format": "full"},
+            ok_pred=lambda t: '"payload"' in t or '"snippet"' in t,
+        )
 
     assert reads(settings.admin_token), "admin should read the message through the bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the message via the bridge"
 
 
 # ------------------------------------------------------ Google Drive (generic OpenAPI→MCP bridge)
+
 
 def test_mcp_gdrive_bridge_acl_enforced(live_server):
     """A Drive file the admin can read via the bridge's files.get tool is 404 for a scoped user."""
@@ -322,10 +398,14 @@ def test_mcp_gdrive_bridge_acl_enforced(live_server):
     file_id = row["doc_id"]
 
     def reads(token):
-        return _bridge_call(base, "gdrive", token,
-                            tool_pred=lambda n: n.startswith("drive_files_get"),
-                            args={"file_id": file_id},
-                            ok_pred=lambda t: '"name"' in t and '"mimeType"' in t)
+        return _bridge_call(
+            base,
+            "gdrive",
+            token,
+            tool_pred=lambda n: n.startswith("drive_files_get"),
+            args={"file_id": file_id},
+            ok_pred=lambda t: '"name"' in t and '"mimeType"' in t,
+        )
 
     assert reads(settings.admin_token), "admin should read the file through the bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the file via the bridge"
@@ -334,6 +414,7 @@ def test_mcp_gdrive_bridge_acl_enforced(live_server):
 # ------------------------------------------------------ Notion (generic OpenAPI→MCP bridge)
 # Notion also has a vendor-server example (test_mcp_notion_acl_enforced); this proves the same
 # ACL additively through the generic bridge, with no vendor server.
+
 
 def test_mcp_notion_bridge_acl_enforced(live_server):
     pytest.importorskip("fastmcp")
@@ -344,10 +425,14 @@ def test_mcp_notion_bridge_acl_enforced(live_server):
     page_id = synth.notion_id(row["doc_id"])
 
     def reads(token):
-        return _bridge_call(base, "notion", token,
-                            tool_pred=lambda n: n.startswith("get_page"),
-                            args={"page_id": page_id},
-                            ok_pred=lambda t: '"object": "page"' in t or '"object":"page"' in t)
+        return _bridge_call(
+            base,
+            "notion",
+            token,
+            tool_pred=lambda n: n.startswith("get_page"),
+            args={"page_id": page_id},
+            ok_pred=lambda t: '"object": "page"' in t or '"object":"page"' in t,
+        )
 
     assert reads(settings.admin_token), "admin should read the page through the bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the page via the bridge"
@@ -356,6 +441,7 @@ def test_mcp_notion_bridge_acl_enforced(live_server):
 # ------------------------------------------------------ Atlassian (generic OpenAPI→MCP bridge)
 # Atlassian also has a vendor-server example (test_mcp_atlassian_acl_enforced, Docker); this
 # proves the same ACL additively through the generic bridge (basic auth), with no vendor server.
+
 
 def test_mcp_atlassian_bridge_acl_enforced(live_server):
     pytest.importorskip("fastmcp")
@@ -366,10 +452,17 @@ def test_mcp_atlassian_bridge_acl_enforced(live_server):
     key = synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"]))
 
     def reads(token):
-        return _bridge_call(base, "atlassian", token, username="svc@example.com",
-                            tool_pred=lambda n: n.startswith("jira_get_issue"),
-                            args={"key": key},
-                            ok_pred=lambda t: '"key"' in t and '"fields"' in t)
+        return _bridge_call(
+            base,
+            "atlassian",
+            token,
+            username="svc@example.com",
+            tool_pred=lambda n: n.startswith("jira_get_issue"),
+            args={"key": key},
+            ok_pred=lambda t: '"key"' in t and '"fields"' in t,
+        )
 
-    assert reads(settings.admin_token), "admin should read the issue through the bridge (basic auth)"
+    assert reads(settings.admin_token), (
+        "admin should read the issue through the bridge (basic auth)"
+    )
     assert not reads(user["token"]), f"{email} should be blocked from the issue via the bridge"

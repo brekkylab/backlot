@@ -10,6 +10,7 @@ why this module monkeypatches (see ``point_google_at`` / ``point_github_at``).
 Also re-exports the serve/credential helpers from ``examples/_common/mockserver.py``, so every
 example shares one ``--url`` / ``--user`` / ``--token`` behaviour and one local fallback.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -36,8 +37,18 @@ try:  # best-effort; the SSL_CERT_FILE path _mockserver sets still applies if in
 except Exception:  # noqa: BLE001
     pass
 
-__all__ = ["point_google_at", "point_github_at", "slack_base_url", "notion_base_url", "s3_base_url",
-           "serve_or_connect", "google_oauth_user", "lines", "run_mirage", "FUSE_HELP"]
+__all__ = [
+    "point_google_at",
+    "point_github_at",
+    "slack_base_url",
+    "notion_base_url",
+    "s3_base_url",
+    "serve_or_connect",
+    "google_oauth_user",
+    "lines",
+    "run_mirage",
+    "FUSE_HELP",
+]
 
 
 def slack_base_url(base_url: str) -> str:
@@ -131,14 +142,17 @@ def point_google_at(base_url: str) -> None:
     Idempotent; call once, before constructing the Google resources.
     """
     base = base_url.rstrip("/")
-    _rebind_mirage_constants("mirage.core.google._client", {
-        "TOKEN_URL": f"{base}/oauth2/token",
-        "GMAIL_API_BASE": f"{base}/gmail/v1",
-        "DRIVE_API_BASE": f"{base}/drive/v3",
-        "DOCS_API_BASE": f"{base}/docs/v1",
-        "SHEETS_API_BASE": f"{base}/sheets/v4",
-        "SLIDES_API_BASE": f"{base}/slides/v1",
-    })
+    _rebind_mirage_constants(
+        "mirage.core.google._client",
+        {
+            "TOKEN_URL": f"{base}/oauth2/token",
+            "GMAIL_API_BASE": f"{base}/gmail/v1",
+            "DRIVE_API_BASE": f"{base}/drive/v3",
+            "DOCS_API_BASE": f"{base}/docs/v1",
+            "SHEETS_API_BASE": f"{base}/sheets/v4",
+            "SLIDES_API_BASE": f"{base}/slides/v1",
+        },
+    )
 
 
 def point_github_at(base_url: str) -> None:

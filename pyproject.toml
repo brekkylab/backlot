@@ -108,6 +108,17 @@ Homepage = "https://github.com/brekkylab/enterprise-mock"
 Repository = "https://github.com/brekkylab/enterprise-mock"
 Issues = "https://github.com/brekkylab/enterprise-mock/issues"
 
+[tool.ruff]
+# 100, not ruff's default 88: the code was hand-wrapped to ~100 columns long before ruff was
+# introduced, and 88 would rewrap 5,317 otherwise-fine lines to no benefit.
+line-length = 100
+
+[tool.ruff.lint]
+# Ruff's defaults (E4/E7/E9 + F). Deliberately NOT E501: `ruff format` already keeps code inside
+# the limit, and the lines that remain over it are long string literals and comment tables (the
+# measured-behaviour tables in app/google_errors.py and app/store.py) that reflowing would ruin.
+ignore = ["E402"]  # module-level import not at top: the examples must set sys.path first
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

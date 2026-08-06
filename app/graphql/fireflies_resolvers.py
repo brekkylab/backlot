@@ -15,6 +15,7 @@ Three things are worth knowing before reading further:
 - **Nulls are honest.** Anything the corpus cannot back resolves to ``null``; the SDL header
   lists every such field and why.
 """
+
 from __future__ import annotations
 
 import datetime as _dt
@@ -85,8 +86,9 @@ def _millis(ts) -> float | None:
 def _iso(ts) -> str | None:
     if ts is None:
         return None
-    return _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc).isoformat().replace(
-        "+00:00", "Z")
+    return (
+        _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    )
 
 
 def _display_name(email: str | None) -> str | None:
@@ -100,24 +102,32 @@ def _user(email: str | None, display: str | None = None) -> dict | None:
     """A workspace user. `user_id` is derived from the address so it is stable and reversible."""
     if not email:
         return None
-    return {"user_id": synth.fireflies_user_id(email),
-            "email": email, "name": display or _display_name(email),
-            "num_transcripts": None, "recent_meeting": None,
-            # account/billing state this mock does not model — see the SDL header
-            "minutes_consumed": None, "is_admin": None, "integrations": None}
+    return {
+        "user_id": synth.fireflies_user_id(email),
+        "email": email,
+        "name": display or _display_name(email),
+        "num_transcripts": None,
+        "recent_meeting": None,
+        # account/billing state this mock does not model — see the SDL header
+        "minutes_consumed": None,
+        "is_admin": None,
+        "integrations": None,
+    }
 
 
 def _sentence(row, index: int) -> dict:
-    return {"index": index,
-            "speaker_name": row["speaker_name"],
-            "speaker_id": row["speaker_id"],
-            "text": row["body"],
-            # The corpus carries one text form, so the "raw" form is the same string rather than
-            # a second, invented one.
-            "raw_text": row["body"],
-            "start_time": row["start_time"],
-            "end_time": row["end_time"],
-            "ai_filters": None}
+    return {
+        "index": index,
+        "speaker_name": row["speaker_name"],
+        "speaker_id": row["speaker_id"],
+        "text": row["body"],
+        # The corpus carries one text form, so the "raw" form is the same string rather than
+        # a second, invented one.
+        "raw_text": row["body"],
+        "start_time": row["start_time"],
+        "end_time": row["end_time"],
+        "ai_filters": None,
+    }
 
 
 def _summary(row) -> dict:
@@ -130,14 +140,20 @@ def _summary(row) -> dict:
     outline = s.get("outline")
     if isinstance(outline, list):
         outline = "\n".join(str(x) for x in outline)
-    return {"keywords": s.get("keywords"), "action_items": action_items, "outline": outline,
-            "overview": s.get("overview"),
-            "shorthand_bullet": s.get("shorthand_bullet"),
-            "short_summary": s.get("short_summary") or s.get("overview"),
-            "topics_discussed": s.get("topics_discussed"),
-            "meeting_type": s.get("meeting_type"),
-            # further LLM renderings of the same notes — see the SDL header
-            "bullet_gist": None, "gist": None, "transcript_chapters": None}
+    return {
+        "keywords": s.get("keywords"),
+        "action_items": action_items,
+        "outline": outline,
+        "overview": s.get("overview"),
+        "shorthand_bullet": s.get("shorthand_bullet"),
+        "short_summary": s.get("short_summary") or s.get("overview"),
+        "topics_discussed": s.get("topics_discussed"),
+        "meeting_type": s.get("meeting_type"),
+        # further LLM renderings of the same notes — see the SDL header
+        "bullet_gist": None,
+        "gist": None,
+        "transcript_chapters": None,
+    }
 
 
 def _speakers(row) -> list[dict]:
@@ -146,9 +162,12 @@ def _speakers(row) -> list[dict]:
 
 def _analytics(row) -> dict:
     a = store.jcol(row, "analytics") or {}
-    return {"sentiments": a.get("sentiments"), "speakers": a.get("speakers") or [],
-            # classifier buckets — see the SDL header
-            "categories": a.get("categories")}
+    return {
+        "sentiments": a.get("sentiments"),
+        "speakers": a.get("speakers") or [],
+        # classifier buckets — see the SDL header
+        "categories": a.get("categories"),
+    }
 
 
 def _transcript(row, info) -> dict:
@@ -168,8 +187,11 @@ def _transcript(row, info) -> dict:
         "organizer_email": row["organizer_email"] or host,
         "participants": store.jcol(row, "participants", []) or [],
         "user": _user(host, row["owner_display"]),
-        "fireflies_users": [e for e in (store.jcol(row, "participants", []) or [])
-                            if isinstance(e, str) and "@external." not in e],
+        "fireflies_users": [
+            e
+            for e in (store.jcol(row, "participants", []) or [])
+            if isinstance(e, str) and "@external." not in e
+        ],
         "meeting_link": row["meeting_link"],
         "calendar_id": row["calendar_id"],
         "cal_id": row["calendar_id"],
@@ -183,8 +205,11 @@ def _transcript(row, info) -> dict:
         "meeting_attendees": store.jcol(row, "meeting_attendees", []) or [],
         # who was INVITED is in the corpus; who dialed in and for how long is not
         "meeting_attendance": None,
-        "meeting_info": {"fred_joined": True, "silent_meeting": False,
-                         "summary_status": "processed"},
+        "meeting_info": {
+            "fred_joined": True,
+            "silent_meeting": False,
+            "summary_status": "processed",
+        },
         "apps_preview": None,
         "speakers": _speakers(row),
     }
@@ -192,9 +217,24 @@ def _transcript(row, info) -> dict:
 
 # --- Query roots ------------------------------------------------------------------
 
-def resolve_transcripts(_root, info, keyword=None, scope=None, fromDate=None, toDate=None,
-                       host_email=None, organizers=None, participants=None, user_id=None,
-                       mine=None, channel_id=None, limit=None, skip=None, **_ignored):
+
+def resolve_transcripts(
+    _root,
+    info,
+    keyword=None,
+    scope=None,
+    fromDate=None,
+    toDate=None,
+    host_email=None,
+    organizers=None,
+    participants=None,
+    user_id=None,
+    mine=None,
+    channel_id=None,
+    limit=None,
+    skip=None,
+    **_ignored,
+):
     ctx = _ctx(info)
     if store.fireflies_scope_columns(scope) is None:
         # An unknown `scope` is a client mistake, and silently searching everything would hide it.
@@ -216,11 +256,19 @@ def resolve_transcripts(_root, info, keyword=None, scope=None, fromDate=None, to
         return []
 
     rows = store.list_fireflies_transcripts(
-        ctx["conn"], channel=channel_id, host_email=hosts[0] if hosts else None,
-        organizers=organizers or None, participants=participants or None,
-        from_ts=to_epoch_seconds(fromDate), to_ts=to_epoch_seconds(toDate),
-        keyword=keyword, scope=scope, visible_ids=ctx.get("visible_ids"),
-        limit=clamp_limit(limit), offset=clamp_skip(skip))
+        ctx["conn"],
+        channel=channel_id,
+        host_email=hosts[0] if hosts else None,
+        organizers=organizers or None,
+        participants=participants or None,
+        from_ts=to_epoch_seconds(fromDate),
+        to_ts=to_epoch_seconds(toDate),
+        keyword=keyword,
+        scope=scope,
+        visible_ids=ctx.get("visible_ids"),
+        limit=clamp_limit(limit),
+        offset=clamp_skip(skip),
+    )
     return [_transcript(r, info) for r in rows]
 
 
@@ -298,5 +346,12 @@ def build_engine():
     return engine.from_sdl(__file__, "fireflies", RESOLVERS)
 
 
-__all__ = ["RESOLVERS", "build_engine", "PAGE_DEFAULT", "PAGE_MAX", "clamp_limit", "clamp_skip",
-           "to_epoch_seconds"]
+__all__ = [
+    "RESOLVERS",
+    "build_engine",
+    "PAGE_DEFAULT",
+    "PAGE_MAX",
+    "clamp_limit",
+    "clamp_skip",
+    "to_epoch_seconds",
+]

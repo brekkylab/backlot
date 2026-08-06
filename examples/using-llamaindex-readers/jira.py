@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Load Jira issues through the official llama-index Jira reader. Self-contained.
 
-    pip install -e ".[examples,llamaindex]"
-    python examples/using-llamaindex-readers/jira.py            # or: --url http://localhost:8000
-    python examples/using-llamaindex-readers/jira.py --url http://localhost:8000 --token <usr-token>
+pip install -e ".[examples,llamaindex]"
+python examples/using-llamaindex-readers/jira.py            # or: --url http://localhost:8000
+python examples/using-llamaindex-readers/jira.py --url http://localhost:8000 --token <usr-token>
 """
+
 import argparse
 
 from _llamaindex import atlassian_base_url, drop_self_from_syspath, serve_or_connect
@@ -16,11 +17,22 @@ drop_self_from_syspath(__file__)
 from llama_index.readers.jira import JiraReader  # noqa: E402
 
 CORPUS = [
-    {"source_type": "jira", "project": "payments", "title": "SEV2: checkout latency spike",
-     "content": "p95 checkout latency jumped to 2.1s after the payments migration.",
-     "status": "In Progress", "issuetype": "Incident", "priority": "High"},
-    {"source_type": "jira", "project": "payments", "title": "Write the postmortem",
-     "content": "Draft the postmortem and action items.", "status": "To Do"},
+    {
+        "source_type": "jira",
+        "project": "payments",
+        "title": "SEV2: checkout latency spike",
+        "content": "p95 checkout latency jumped to 2.1s after the payments migration.",
+        "status": "In Progress",
+        "issuetype": "Incident",
+        "priority": "High",
+    },
+    {
+        "source_type": "jira",
+        "project": "payments",
+        "title": "Write the postmortem",
+        "content": "Draft the postmortem and action items.",
+        "status": "To Do",
+    },
 ]
 
 

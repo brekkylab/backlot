@@ -4,12 +4,14 @@ Each vendor exposes a different native pagination contract. All of them reduce t
 integer offset over a stably-ordered result set; these helpers translate between that
 offset and the vendor's token/header representation.
 """
+
 from __future__ import annotations
 
 import base64
 
 
 # --- opaque offset cursor (Slack next_cursor, Gmail/Drive pageToken, Jira token) ---
+
 
 def encode_cursor(offset: int) -> str:
     return base64.urlsafe_b64encode(f"o:{offset}".encode()).decode()
@@ -60,6 +62,7 @@ def next_page_token(offset: int, page_len: int, total: int) -> str | None:
 # cursor above (Linear's ``after`` is an offset cursor like every other source's token) and
 # the page-size clamp below. The response shapes stay in each vendor's resolvers.
 
+
 def clamp_limit(limit: int | None, default: int, maximum: int) -> int:
     """Page size with the vendor's default and hard cap applied (Fireflies caps at 50)."""
     n = limit if limit and limit > 0 else default
@@ -68,14 +71,19 @@ def clamp_limit(limit: int | None, default: int, maximum: int) -> int:
 
 # --- GitHub: page/per_page + RFC5988 Link header --------------------------------
 
-def clamp_page(page: int | None, per_page: int | None, default: int, maximum: int) -> tuple[int, int]:
+
+def clamp_page(
+    page: int | None, per_page: int | None, default: int, maximum: int
+) -> tuple[int, int]:
     p = page if page and page > 0 else 1
     pp = per_page if per_page and per_page > 0 else default
     pp = min(pp, maximum)
     return p, pp
 
 
-def github_link_header(url_no_query: str, params: dict, page: int, per_page: int, total: int) -> str | None:
+def github_link_header(
+    url_no_query: str, params: dict, page: int, per_page: int, total: int
+) -> str | None:
     """Build a Link header with rel=next/prev/first/last. ``params`` are extra query args."""
     last_page = max(1, (total + per_page - 1) // per_page)
     if last_page <= 1:
@@ -97,7 +105,10 @@ def github_link_header(url_no_query: str, params: dict, page: int, per_page: int
 
 # --- Confluence: start/limit + relative _links.next -----------------------------
 
-def confluence_next_link(path: str, params: dict, start: int, limit: int, size: int, total: int) -> str | None:
+
+def confluence_next_link(
+    path: str, params: dict, start: int, limit: int, size: int, total: int
+) -> str | None:
     nxt = start + size
     if nxt >= total or size == 0:
         return None

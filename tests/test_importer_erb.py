@@ -4,11 +4,11 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-import types
 import urllib.request
 from pathlib import Path
 
 import certifi
+
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 
 import pytest
@@ -27,25 +27,44 @@ C = erb
 # from test_erb_source.py
 # ---------------------------------------------------------------------------
 
+
 def test_derive_title_content_scalar():
-    raw = {"title_field_name": "title", "content_field_names": ["body", "body_addendum"],
-           "title": "Doc A", "body": "hello", "body_addendum": "world"}
+    raw = {
+        "title_field_name": "title",
+        "content_field_names": ["body", "body_addendum"],
+        "title": "Doc A",
+        "body": "hello",
+        "body_addendum": "world",
+    }
     title, content = erb.derive_title_content(raw)
     assert title == "Doc A"
     assert "hello" in content and "world" in content
 
 
 def test_derive_title_content_list_field():
-    raw = {"title_field_name": "channel", "content_field_names": ["messages"],
-           "channel": "eng-infra", "messages": "Alex: hi\nMaria: yo"}
+    raw = {
+        "title_field_name": "channel",
+        "content_field_names": ["messages"],
+        "channel": "eng-infra",
+        "messages": "Alex: hi\nMaria: yo",
+    }
     title, content = erb.derive_title_content(raw)
     assert title == "eng-infra"
     assert "Alex: hi" in content
 
 
 def test_supported_sources():
-    assert erb.SUPPORTED == ("slack", "gmail", "google_drive", "github", "jira", "confluence",
-                             "hubspot", "linear", "fireflies")
+    assert erb.SUPPORTED == (
+        "slack",
+        "gmail",
+        "google_drive",
+        "github",
+        "jira",
+        "confluence",
+        "hubspot",
+        "linear",
+        "fireflies",
+    )
 
 
 def test_erb_sources_are_registered_in_the_store():
@@ -60,8 +79,17 @@ def test_erb_sources_are_registered_in_the_store():
 # google_drive 25,142 / hubspot 15,020 / fireflies 10,182 / github 8,078 / jira 6,126 /
 # confluence 5,313. Read these from the tarball: `fetch_generated_data` extracts only SUPPORTED,
 # so an extracted generated_data/ dir reflects the importer's coverage, not the bench's contents.
-BENCH_SOURCES = {"slack", "gmail", "google_drive", "github", "jira", "confluence",
-                 "hubspot", "linear", "fireflies"}
+BENCH_SOURCES = {
+    "slack",
+    "gmail",
+    "google_drive",
+    "github",
+    "jira",
+    "confluence",
+    "hubspot",
+    "linear",
+    "fireflies",
+}
 
 
 def test_every_bench_source_has_a_converter():
@@ -167,8 +195,16 @@ def test_resolve_rejects_non_person_junk():
 
 def test_harvest_gmail_email_wins_over_synthesis():
     p = _p()
-    rec = ("gmail", "dsid_x", {"title_field_name": "subject", "content_field_names": ["messages"],
-            "subject": "s", "messages": ["From: Maya Chen <maya_chen@redwoodinference.com>\nTo: x\n\nhi"]})
+    rec = (
+        "gmail",
+        "dsid_x",
+        {
+            "title_field_name": "subject",
+            "content_field_names": ["messages"],
+            "subject": "s",
+            "messages": ["From: Maya Chen <maya_chen@redwoodinference.com>\nTo: x\n\nhi"],
+        },
+    )
     p.harvest_gmail_emails([rec])
     assert p.resolve("Maya Chen", role="author") == "maya_chen@redwoodinference.com"
 
@@ -176,8 +212,16 @@ def test_harvest_gmail_email_wins_over_synthesis():
 def test_harvest_skips_alias_header_names():
     # a header alias like 'On-Call (SRE) <oncall@…>' is not a person → not harvested as a user
     p = _p()
-    rec = ("gmail", "dsid_y", {"title_field_name": "subject", "content_field_names": ["messages"],
-            "subject": "s", "messages": ["From: On-Call (SRE) <oncall@redwoodinference.com>\n\nhi"]})
+    rec = (
+        "gmail",
+        "dsid_y",
+        {
+            "title_field_name": "subject",
+            "content_field_names": ["messages"],
+            "subject": "s",
+            "messages": ["From: On-Call (SRE) <oncall@redwoodinference.com>\n\nhi"],
+        },
+    )
     p.harvest_gmail_emails([rec])
     assert "oncall@redwoodinference.com" not in p.users
 
@@ -185,8 +229,16 @@ def test_harvest_skips_alias_header_names():
 def _p_multi():
     employees = [
         {"name": "Ava Chen", "email": "ava.chen@redwoodinference.com", "dept_slug": "engineering"},
-        {"name": "Maya Chen", "email": "maya.chen@redwoodinference.com", "dept_slug": "security-compliance"},
-        {"name": "Priya Desai", "email": "priya.desai@redwoodinference.com", "dept_slug": "applied-ml-research"},
+        {
+            "name": "Maya Chen",
+            "email": "maya.chen@redwoodinference.com",
+            "dept_slug": "security-compliance",
+        },
+        {
+            "name": "Priya Desai",
+            "email": "priya.desai@redwoodinference.com",
+            "dept_slug": "applied-ml-research",
+        },
     ]
     return Principals(employees, "redwoodinference.com")
 
@@ -207,17 +259,31 @@ def test_canonical_group_unknown_team_is_its_own_group():
 
 
 def test_write_tokens_is_directory_only(tmp_path):
-    import types, yaml as _yaml
-    p = Principals([{"name": "Ava Chen", "email": "ava.chen@redwoodinference.com",
-                     "dept_slug": "engineering"}], "redwoodinference.com")
-    p.resolve("Maya Chen", role="owner", group_hint="engineering")   # synthesized, non-directory
-    p.resolve("Wei Chen", role="reviewer")                            # synthesized, non-directory
-    st = types.SimpleNamespace(tokens_path=tmp_path / "tokens.yaml", org_name="redwood",
-                               org_domain="redwoodinference.com", admin_token="admin-service-token")
+    import types
+    import yaml as _yaml
+
+    p = Principals(
+        [
+            {
+                "name": "Ava Chen",
+                "email": "ava.chen@redwoodinference.com",
+                "dept_slug": "engineering",
+            }
+        ],
+        "redwoodinference.com",
+    )
+    p.resolve("Maya Chen", role="owner", group_hint="engineering")  # synthesized, non-directory
+    p.resolve("Wei Chen", role="reviewer")  # synthesized, non-directory
+    st = types.SimpleNamespace(
+        tokens_path=tmp_path / "tokens.yaml",
+        org_name="redwood",
+        org_domain="redwoodinference.com",
+        admin_token="admin-service-token",
+    )
     p.write_tokens(st)
     d = _yaml.safe_load(st.tokens_path.read_text())
     emails = {u["email"] for u in d["users"]}
-    assert emails == {"ava.chen@redwoodinference.com"}   # only the directory employee
+    assert emails == {"ava.chen@redwoodinference.com"}  # only the directory employee
     assert "maya.chen@redwoodinference.com" not in emails
 
 
@@ -228,29 +294,48 @@ def test_canonical_folds_accents():
 def test_mint_does_not_clobber_directory_user(tmp_path):
     # an accented/titled directory name whose doc-reference doesn't canonical-match must still
     # keep its directory flag (the colliding mint must not overwrite it) → stays tokened
-    import types, yaml as _yaml
-    p = Principals([{"name": "Tomáš Novák", "email": "tomas.novak@redwoodinference.com",
-                     "dept_slug": "engineering"}], "redwoodinference.com")
+    import types
+    import yaml as _yaml
+
+    p = Principals(
+        [
+            {
+                "name": "Tomáš Novák",
+                "email": "tomas.novak@redwoodinference.com",
+                "dept_slug": "engineering",
+            }
+        ],
+        "redwoodinference.com",
+    )
     # a doc references the plain spelling; folded canonical now matches → resolves to the dir user
     assert p.resolve("Tomas Novak", role="owner") == "tomas.novak@redwoodinference.com"
     assert p.users["tomas.novak@redwoodinference.com"].get("directory") is True
-    st = types.SimpleNamespace(tokens_path=tmp_path / "t.yaml", org_name="redwood",
-                               org_domain="redwoodinference.com", admin_token="admin-service-token")
+    st = types.SimpleNamespace(
+        tokens_path=tmp_path / "t.yaml",
+        org_name="redwood",
+        org_domain="redwoodinference.com",
+        admin_token="admin-service-token",
+    )
     p.write_tokens(st)
-    assert "tomas.novak@redwoodinference.com" in {u["email"] for u in _yaml.safe_load(st.tokens_path.read_text())["users"]}
+    assert "tomas.novak@redwoodinference.com" in {
+        u["email"] for u in _yaml.safe_load(st.tokens_path.read_text())["users"]
+    }
 
 
 # ---------------------------------------------------------------------------
 # from test_conversations.py
 # ---------------------------------------------------------------------------
 
+
 def test_parse_gmail_thread():
-    msgs = ["From: Vivek K <vivek_k@redwoodinference.com>\n"
-            "To: Connor O'Brien <connor_obrien@redwoodinference.com>\n"
-            "Date: Wed, May 14, 2025 at 9:12 AM PT\nSubject: Beta plan\n\nBody one.",
-            "From: Connor O'Brien <connor_obrien@redwoodinference.com>\n"
-            "To: Vivek K <vivek_k@redwoodinference.com>\nDate: Wed, May 14, 2025 at 10:00 AM PT\n"
-            "Subject: Re: Beta plan\n\nReply two."]
+    msgs = [
+        "From: Vivek K <vivek_k@redwoodinference.com>\n"
+        "To: Connor O'Brien <connor_obrien@redwoodinference.com>\n"
+        "Date: Wed, May 14, 2025 at 9:12 AM PT\nSubject: Beta plan\n\nBody one.",
+        "From: Connor O'Brien <connor_obrien@redwoodinference.com>\n"
+        "To: Vivek K <vivek_k@redwoodinference.com>\nDate: Wed, May 14, 2025 at 10:00 AM PT\n"
+        "Subject: Re: Beta plan\n\nReply two.",
+    ]
     out = C.parse_gmail_thread(msgs)
     assert len(out) == 2
     assert out[0]["from_email"] == "vivek_k@redwoodinference.com"
@@ -261,14 +346,14 @@ def test_parse_gmail_thread():
 def test_to_epoch_parses_bench_date_formats():
     # RFC 2822 email Date header (the bench's gmail format) — the big one: previously unparsed,
     # which left ~96% of gmail with NULL created_ts and a synthesized (fake) served date.
-    assert C.to_epoch("Mon, 18 May 2026 09:02:00 -0700") == 1779120120   # 16:02Z
+    assert C.to_epoch("Mon, 18 May 2026 09:02:00 -0700") == 1779120120  # 16:02Z
     assert C.to_epoch("Mon, 18 May 2026 10:17:00 -07:00") == 1779124620  # malformed colon offset
     # ISO 8601 with a numeric offset and with a trailing Z
     assert C.to_epoch("2026-05-18T09:02:00-07:00") == 1779120120
     assert C.to_epoch("2028-05-23T09:12:00Z") == 1842685920
     # timezone-ABBREVIATION formats (no numeric offset) — the bench's third gmail date shape
-    assert C.to_epoch("2026-08-30 09:12 PDT") == 1788106320   # 16:12Z (PDT = -0700)
-    assert C.to_epoch("2026-10-04 09:12 UTC") == 1791105120   # 09:12Z
+    assert C.to_epoch("2026-08-30 09:12 PDT") == 1788106320  # 16:12Z (PDT = -0700)
+    assert C.to_epoch("2026-10-04 09:12 UTC") == 1791105120  # 09:12Z
     assert C.to_epoch("Wed, May 14, 2025 at 9:12 AM PT") == 1747242720  # 17:12Z (PT = -0800)
     # date-only, epoch string, and unparseable
     assert C.to_epoch("2025-11-05") == 1762300800
@@ -277,8 +362,9 @@ def test_to_epoch_parses_bench_date_formats():
 
 
 def test_parse_jira_comments():
-    out = C.parse_jira_comments(["2026-03-14 Jordan Kim: Filing request.",
-                                 "2026-03-15 Priya Desai: On it."])
+    out = C.parse_jira_comments(
+        ["2026-03-14 Jordan Kim: Filing request.", "2026-03-15 Priya Desai: On it."]
+    )
     assert out[0] == {"date": "2026-03-14", "name": "Jordan Kim", "body": "Filing request."}
     assert out[1]["name"] == "Priya Desai"
 
@@ -295,7 +381,8 @@ def test_parse_slack_transcript_gates_on_participants():
     # participant) — it stays as body of the current turn, so no fake author is minted.
     out = C.parse_slack_transcript(
         "Alex: hey team\nA couple followups: can we warn on whitespace?\nMaria: sure",
-        ["Alex", "Maria"])
+        ["Alex", "Maria"],
+    )
     assert [s for s, _ in out] == ["Alex", "Maria"]
     assert "A couple followups: can we warn on whitespace?" in out[0][1]  # merged into Alex
     # participant match is tolerant of team labels / formatting, and the speaker is normalized to
@@ -325,41 +412,75 @@ def test_parse_slack_transcript_speaker_with_parenthetical_team():
     # Some bench docs label speakers "Name (Team):" — each turn must still split per speaker,
     # the parenthetical dropped so the name resolves against the directory.
     out = C.parse_slack_transcript(
-        "Elena (CFO): Following up.\nDiego (Eng): thanks\nAsha (FinanceOps): filed it")
-    assert out == [("Elena", "Following up."), ("Diego", "thanks"),
-                   ("Asha", "filed it")]
+        "Elena (CFO): Following up.\nDiego (Eng): thanks\nAsha (FinanceOps): filed it"
+    )
+    assert out == [("Elena", "Following up."), ("Diego", "thanks"), ("Asha", "filed it")]
 
 
 # ---------------------------------------------------------------------------
 # from test_acl_faithful.py
 # ---------------------------------------------------------------------------
 
+
 def test_drive_grants_owner_collaborators_and_group():
-    g = grants_for("google_drive", {"owner": "a@x.com", "people": ["b@x.com"],
-                                    "group": "finance", "confidentiality": None, "org": "redwood"})
+    g = grants_for(
+        "google_drive",
+        {
+            "owner": "a@x.com",
+            "people": ["b@x.com"],
+            "group": "finance",
+            "confidentiality": None,
+            "org": "redwood",
+        },
+    )
     assert ("user", "a@x.com") in g and ("user", "b@x.com") in g
     assert ("group", "finance") in g
 
 
 def test_gmail_is_private_no_org_or_group():
-    g = grants_for("gmail", {"owner": "a@x.com", "people": ["b@x.com", "ext@external.example"],
-                             "group": "sales", "confidentiality": None, "org": "redwood"})
+    g = grants_for(
+        "gmail",
+        {
+            "owner": "a@x.com",
+            "people": ["b@x.com", "ext@external.example"],
+            "group": "sales",
+            "confidentiality": None,
+            "org": "redwood",
+        },
+    )
     assert ("user", "a@x.com") in g
     assert not any(t == "org" or t == "group" for t, _ in g)
 
 
 def test_confluence_confidentiality_scope():
-    pub = grants_for("confluence", {"owner": "a@x.com", "people": [], "group": "eng",
-                                    "confidentiality": "public", "org": "redwood"})
+    pub = grants_for(
+        "confluence",
+        {
+            "owner": "a@x.com",
+            "people": [],
+            "group": "eng",
+            "confidentiality": "public",
+            "org": "redwood",
+        },
+    )
     assert ("org", "redwood") in pub
-    restr = grants_for("confluence", {"owner": "a@x.com", "people": [], "group": "eng",
-                                      "confidentiality": "restricted", "org": "redwood"})
+    restr = grants_for(
+        "confluence",
+        {
+            "owner": "a@x.com",
+            "people": [],
+            "group": "eng",
+            "confidentiality": "restricted",
+            "org": "redwood",
+        },
+    )
     assert ("group", "eng") in restr and ("org", "redwood") not in restr
 
 
 # ---------------------------------------------------------------------------
 # from test_erb_load.py
 # ---------------------------------------------------------------------------
+
 
 def _conn():
     c = sqlite3.connect(":memory:")
@@ -396,11 +517,21 @@ def test_to_epoch_formats():
 def test_drive_owner_is_faithful():
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    raw = {"title_field_name": "title", "content_field_names": ["body"], "title": "Model",
-           "body": "x", "owner": "Maya Chen", "collaborators": ["Ethan Park"],
-           "team": "research-applied-ml", "created_at": "2025-09-18", "doc_type": "doc"}
+    raw = {
+        "title_field_name": "title",
+        "content_field_names": ["body"],
+        "title": "Model",
+        "body": "x",
+        "owner": "Maya Chen",
+        "collaborators": ["Ethan Park"],
+        "team": "research-applied-ml",
+        "created_at": "2025-09-18",
+        "doc_type": "doc",
+    }
     _load_one(conn, "google_drive", "dsid_1", raw, P)
-    row = conn.execute("SELECT author_email, owner_display, created_ts FROM gdrive_files WHERE doc_id='dsid_1'").fetchone()
+    row = conn.execute(
+        "SELECT author_email, owner_display, created_ts FROM gdrive_files WHERE doc_id='dsid_1'"
+    ).fetchone()
     assert row["author_email"] == "maya.chen@redwoodinference.com"
     assert row["owner_display"] == "Maya Chen"
     assert row["created_ts"] is not None
@@ -414,15 +545,25 @@ def test_drive_doc_type_maps_onto_drive_mime_types():
 
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    base = {"title_field_name": "title", "content_field_names": ["body"], "body": "x",
-            "owner": "Maya Chen", "team": "research-applied-ml", "created_at": "2025-09-18"}
-    cases = {"doc": "application/vnd.google-apps.document",
-             "sheet": "application/vnd.google-apps.spreadsheet",
-             "slides": "application/vnd.google-apps.presentation",
-             "pdf": "application/pdf",
-             None: "application/vnd.google-apps.document"}  # unspecified -> a Doc, not a blob
+    base = {
+        "title_field_name": "title",
+        "content_field_names": ["body"],
+        "body": "x",
+        "owner": "Maya Chen",
+        "team": "research-applied-ml",
+        "created_at": "2025-09-18",
+    }
+    cases = {
+        "doc": "application/vnd.google-apps.document",
+        "sheet": "application/vnd.google-apps.spreadsheet",
+        "slides": "application/vnd.google-apps.presentation",
+        "pdf": "application/pdf",
+        None: "application/vnd.google-apps.document",
+    }  # unspecified -> a Doc, not a blob
     for i, (doc_type, mime) in enumerate(cases.items()):
-        _load_one(conn, "google_drive", f"dt_{i}", {**base, "title": f"T{i}", "doc_type": doc_type}, P)
+        _load_one(
+            conn, "google_drive", f"dt_{i}", {**base, "title": f"T{i}", "doc_type": doc_type}, P
+        )
         row = store.get_document(conn, "google_drive", f"dt_{i}")
         assert _drive_file(conn, row)["mimeType"] == mime, doc_type
 
@@ -432,9 +573,16 @@ def test_drive_unknown_doc_type_falls_back_to_the_title_extension():
 
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    raw = {"title_field_name": "title", "content_field_names": ["body"], "body": "x",
-           "title": "Executed Addendum.pdf", "owner": "Maya Chen", "doc_type": "scan",
-           "team": "research-applied-ml", "created_at": "2025-09-18"}
+    raw = {
+        "title_field_name": "title",
+        "content_field_names": ["body"],
+        "body": "x",
+        "title": "Executed Addendum.pdf",
+        "owner": "Maya Chen",
+        "doc_type": "scan",
+        "team": "research-applied-ml",
+        "created_at": "2025-09-18",
+    }
     _load_one(conn, "google_drive", "dt_ext", raw, P)
     row = store.get_document(conn, "google_drive", "dt_ext")
     assert _drive_file(conn, row)["mimeType"] == "application/pdf"
@@ -443,11 +591,21 @@ def test_drive_unknown_doc_type_falls_back_to_the_title_extension():
 def test_jira_assignee_reporter_and_duedate():
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    raw = {"title_field_name": "summary", "content_field_names": ["description"],
-           "summary": "S", "description": "d", "reporter": "Jordan Kim", "assignee": "Priya Desai",
-           "project": "INT", "status": "In Progress", "created_at": "2025-11-01"}
+    raw = {
+        "title_field_name": "summary",
+        "content_field_names": ["description"],
+        "summary": "S",
+        "description": "d",
+        "reporter": "Jordan Kim",
+        "assignee": "Priya Desai",
+        "project": "INT",
+        "status": "In Progress",
+        "created_at": "2025-11-01",
+    }
     _load_one(conn, "jira", "dsid_2", raw, P)
-    row = conn.execute("SELECT reporter_email, assignee_email, status FROM jira_issues WHERE doc_id='dsid_2'").fetchone()
+    row = conn.execute(
+        "SELECT reporter_email, assignee_email, status FROM jira_issues WHERE doc_id='dsid_2'"
+    ).fetchone()
     assert row["reporter_email"] == "jordan.kim@redwoodinference.com"
     assert row["assignee_email"] == "priya.desai@redwoodinference.com"
     assert row["status"] == "In Progress"
@@ -497,14 +655,14 @@ def test_hubspot_company_maps_to_crm_properties():
     row = conn.execute("SELECT * FROM hubspot_objects WHERE doc_id='dsid_hs1'").fetchone()
     assert row["object_type"] == "companies"
     assert row["title"] == "Acacia Loop Services"
-    assert row["author_email"] == "maya.chen@redwoodinference.com"   # owner (AE), resolved
+    assert row["author_email"] == "maya.chen@redwoodinference.com"  # owner (AE), resolved
     assert row["owner_display"] == "Maya Chen"
     props = store.jcol(row, "properties", {})
     assert props["name"] == "Acacia Loop Services"
     assert props["domain"] == "acacia-loop.com"
     assert props["industry"] == "financial_services"
-    assert props["lifecyclestage"] == "evaluation"                    # stage -> HubSpot's own name
-    assert props["account_tier"] == "enterprise"                      # no default property -> custom
+    assert props["lifecyclestage"] == "evaluation"  # stage -> HubSpot's own name
+    assert props["account_tier"] == "enterprise"  # no default property -> custom
     assert row["created_ts"] == erb.to_epoch("2025-11-05")
     assert row["updated_ts"] == erb.to_epoch("2026-03-10")
 
@@ -516,17 +674,20 @@ def test_hubspot_notes_materialize_as_note_objects():
     conn = _conn()
     P = Principals([], "redwoodinference.com")
     _load_one(conn, "hubspot", "dsid_hs1", HS_RAW, P)
-    notes = conn.execute("SELECT * FROM hubspot_objects WHERE object_type='notes' "
-                         "ORDER BY doc_id").fetchall()
+    notes = conn.execute(
+        "SELECT * FROM hubspot_objects WHERE object_type='notes' ORDER BY doc_id"
+    ).fetchall()
     assert len(notes) == 2
     assert notes[0]["content"].startswith("Inbound SMB")
     # API fidelity: a HubSpot note carries its body in hs_note_body
     assert store.jcol(notes[0], "properties", {})["hs_note_body"] == notes[0]["content"]
     # each note is associated with the company, in both directions
-    assert [r["to_doc_id"] for r in store.hubspot_associations(conn, "dsid_hs1", "notes")] \
-        == sorted(n["doc_id"] for n in notes)
-    assert [r["to_doc_id"] for r in
-            store.hubspot_associations(conn, notes[0]["doc_id"], "companies")] == ["dsid_hs1"]
+    assert [
+        r["to_doc_id"] for r in store.hubspot_associations(conn, "dsid_hs1", "notes")
+    ] == sorted(n["doc_id"] for n in notes)
+    assert [
+        r["to_doc_id"] for r in store.hubspot_associations(conn, notes[0]["doc_id"], "companies")
+    ] == ["dsid_hs1"]
 
 
 def test_hubspot_timeline_stays_in_the_company_body():
@@ -537,8 +698,10 @@ def test_hubspot_timeline_stays_in_the_company_body():
     _load_one(conn, "hubspot", "dsid_hs1", HS_RAW, P)
     company = conn.execute("SELECT content FROM hubspot_objects WHERE doc_id='dsid_hs1'").fetchone()
     assert "inbound signup via marketplace" in company["content"]
-    assert conn.execute("SELECT COUNT(*) FROM hubspot_objects WHERE object_type='notes'"
-                        ).fetchone()[0] == 2      # only the two `notes`, nothing from `timeline`
+    assert (
+        conn.execute("SELECT COUNT(*) FROM hubspot_objects WHERE object_type='notes'").fetchone()[0]
+        == 2
+    )  # only the two `notes`, nothing from `timeline`
 
 
 def test_hubspot_linked_artifacts_stay_property_stubs():
@@ -550,7 +713,9 @@ def test_hubspot_linked_artifacts_stay_property_stubs():
     _load_one(conn, "hubspot", "dsid_hs1", HS_RAW, P)
     props = store.jcol(
         conn.execute("SELECT properties FROM hubspot_objects WHERE doc_id='dsid_hs1'").fetchone(),
-        "properties", {})
+        "properties",
+        {},
+    )
     assert props["linked_fireflies"] == ["ff_2026-02-19_abbeygate_intro"]
     assert props["linked_support_tickets"] == ["RINF-7421"]
     # the only associations are company <-> its own notes
@@ -565,8 +730,10 @@ def test_hubspot_bundle_names_owner_se_and_csm():
     P = Principals([], "redwoodinference.com")
     bundle = _load_one(conn, "hubspot", "dsid_hs1", HS_RAW, P)
     assert bundle["owner"] == "maya.chen@redwoodinference.com"
-    assert set(bundle["people"]) == {"ethan.park@redwoodinference.com",
-                                     "priya.desai@redwoodinference.com"}
+    assert set(bundle["people"]) == {
+        "ethan.park@redwoodinference.com",
+        "priya.desai@redwoodinference.com",
+    }
     grants = grants_for("hubspot", {**bundle, "org": "redwood"})
     assert ("user", "maya.chen@redwoodinference.com") in grants
 
@@ -576,12 +743,17 @@ def test_hubspot_is_org_visible():
     employee directory can authenticate. Scoping a record to its owner (or to the object type's
     group, whose only members are those same synthesized owners) leaves the corpus visible to admin
     and to almost nobody else — so HubSpot gets an org grant, the way Slack does."""
-    bundle = {"owner": "maya.chen@redwoodinference.com", "people": [], "group": "companies",
-              "confidentiality": None, "org": "redwood"}
+    bundle = {
+        "owner": "maya.chen@redwoodinference.com",
+        "people": [],
+        "group": "companies",
+        "confidentiality": None,
+        "org": "redwood",
+    }
     grants = grants_for("hubspot", bundle)
     assert ("org", "redwood") in grants
-    assert ("group", "companies") not in grants          # the org grant supersedes it
-    assert ("user", "maya.chen@redwoodinference.com") in grants   # named people still granted
+    assert ("group", "companies") not in grants  # the org grant supersedes it
+    assert ("user", "maya.chen@redwoodinference.com") in grants  # named people still granted
 
 
 def test_confluence_restricted_grants_reconciled_directory_group():
@@ -589,13 +761,24 @@ def test_confluence_restricted_grants_reconciled_directory_group():
     ("security-compliance") for the ACL grant — not become its own empty group."""
     conn = _conn()
     employees = [
-        {"name": "Priya Desai", "email": "priya.desai@redwoodinference.com",
-         "dept_slug": "security-compliance"},
+        {
+            "name": "Priya Desai",
+            "email": "priya.desai@redwoodinference.com",
+            "dept_slug": "security-compliance",
+        },
     ]
     P = Principals(employees, "redwoodinference.com")
-    raw = {"title_field_name": "title", "content_field_names": ["body"], "title": "Sec Policy",
-           "body": "x", "author": "Priya Desai", "owner_team": "security",
-           "confidentiality": "restricted", "space": "SEC", "created_at": "2025-09-18"}
+    raw = {
+        "title_field_name": "title",
+        "content_field_names": ["body"],
+        "title": "Sec Policy",
+        "body": "x",
+        "author": "Priya Desai",
+        "owner_team": "security",
+        "confidentiality": "restricted",
+        "space": "SEC",
+        "created_at": "2025-09-18",
+    }
     bundle = _load_one(conn, "confluence", "dsid_3", raw, P)
     assert bundle["group"] == "security-compliance"
     grants = grants_for("confluence", {**bundle, "org": "redwood"})
@@ -607,12 +790,18 @@ def test_slack_text_variant_not_empty():
     # slack docs whose transcript is in 'text' (title_field_name 'file_name') must still parse
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    raw = {"title_field_name": "file_name", "content_field_names": ["text"],
-           "file_name": "1711-foo.json", "channel": "partnerships",
-           "text": "andrea_p: Heads up on EU regions.\nmike_partner: On it, ETA next week.",
-           "participants": ["andrea_p", "mike_partner"]}
+    raw = {
+        "title_field_name": "file_name",
+        "content_field_names": ["text"],
+        "file_name": "1711-foo.json",
+        "channel": "partnerships",
+        "text": "andrea_p: Heads up on EU regions.\nmike_partner: On it, ETA next week.",
+        "participants": ["andrea_p", "mike_partner"],
+    }
     _load_one(conn, "slack", "dsid_s1", raw, P)
-    rows = conn.execute("SELECT title, content, thread_seq FROM slack_messages WHERE thread_id='dsid_s1' ORDER BY thread_seq").fetchall()
+    rows = conn.execute(
+        "SELECT title, content, thread_seq FROM slack_messages WHERE thread_id='dsid_s1' ORDER BY thread_seq"
+    ).fetchall()
     assert len(rows) == 2
     assert rows[0]["title"] == "" and "Heads up" in rows[0]["content"]  # not '*file_name*'
     assert "On it" in rows[1]["content"]
@@ -622,9 +811,13 @@ def test_gmail_body_variant_not_empty():
     # gmail docs carrying a single email in 'body' (no 'messages' list) must still get content
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    raw = {"title_field_name": "subject", "content_field_names": ["body"],
-           "subject": "Q2 plan", "mailbox_owner": "Ceo Person",
-           "body": "Here is the Q2 plan draft, please review."}
+    raw = {
+        "title_field_name": "subject",
+        "content_field_names": ["body"],
+        "subject": "Q2 plan",
+        "mailbox_owner": "Ceo Person",
+        "body": "Here is the Q2 plan draft, please review.",
+    }
     _load_one(conn, "gmail", "dsid_g1", raw, P)
     r = conn.execute("SELECT title, content FROM gmail_messages WHERE doc_id='dsid_g1'").fetchone()
     assert r["title"] == "Q2 plan"
@@ -635,22 +828,38 @@ def test_gmail_thread_attachments_ingested():
     # the bench's thread-level `attachments` (filename strings) must land on the root message
     # so the Gmail API can render them as parts (this is qst_0012's missing data).
     import json as _json
+
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    raw = {"title_field_name": "subject", "content_field_names": ["messages"],
-           "subject": "Epoch procurement", "mailbox_owner": "Irene Choi",
-           "attachments": ["Epoch_MSAAttachment_v3.pdf", "redlines_epoch_orderform_20290715.docx"],
-           "messages": ["From: A <a@x.com>\nTo: B <b@y.com>\nDate: 2029-07-15\nSubject: Epoch procurement\n\nbody"]}
+    raw = {
+        "title_field_name": "subject",
+        "content_field_names": ["messages"],
+        "subject": "Epoch procurement",
+        "mailbox_owner": "Irene Choi",
+        "attachments": ["Epoch_MSAAttachment_v3.pdf", "redlines_epoch_orderform_20290715.docx"],
+        "messages": [
+            "From: A <a@x.com>\nTo: B <b@y.com>\nDate: 2029-07-15\nSubject: Epoch procurement\n\nbody"
+        ],
+    }
     _load_one(conn, "gmail", "dsid_att", raw, P)
     r = conn.execute("SELECT attachments FROM gmail_messages WHERE doc_id='dsid_att'").fetchone()
     atts = _json.loads(r["attachments"])
-    assert [a["filename"] for a in atts] == ["Epoch_MSAAttachment_v3.pdf",
-                                             "redlines_epoch_orderform_20290715.docx"]
+    assert [a["filename"] for a in atts] == [
+        "Epoch_MSAAttachment_v3.pdf",
+        "redlines_epoch_orderform_20290715.docx",
+    ]
     assert atts[0]["mime"] == "application/pdf"
-    assert atts[1]["mime"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assert (
+        atts[1]["mime"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
     # a doc with no attachments leaves the column NULL (not "[]")
     _load_one(conn, "gmail", "dsid_noatt", {"content_field_names": ["body"], "body": "x"}, P)
-    assert conn.execute("SELECT attachments FROM gmail_messages WHERE doc_id='dsid_noatt'").fetchone()[0] is None
+    assert (
+        conn.execute("SELECT attachments FROM gmail_messages WHERE doc_id='dsid_noatt'").fetchone()[
+            0
+        ]
+        is None
+    )
 
 
 def test_gmail_thread_title_is_doc_level_subject():
@@ -658,29 +867,48 @@ def test_gmail_thread_title_is_doc_level_subject():
     # message's RFC822 "Re: ..." Subject header (qst_0026's dropped-subject bug).
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    raw = {"title_field_name": "subject", "content_field_names": ["messages"],
-           "subject": "[P0] Acme Health — retry storm", "mailbox_owner": "Sean Gallagher",
-           "messages": ["From: a@x.com\nSubject: Re: urgent — spikes in 5xx\n\nbody one",
-                        "From: b@y.com\nSubject: Re: urgent — spikes in 5xx\n\nbody two"]}
+    raw = {
+        "title_field_name": "subject",
+        "content_field_names": ["messages"],
+        "subject": "[P0] Acme Health — retry storm",
+        "mailbox_owner": "Sean Gallagher",
+        "messages": [
+            "From: a@x.com\nSubject: Re: urgent — spikes in 5xx\n\nbody one",
+            "From: b@y.com\nSubject: Re: urgent — spikes in 5xx\n\nbody two",
+        ],
+    }
     _load_one(conn, "gmail", "dsid_subj", raw, P)
     title = conn.execute("SELECT title FROM gmail_messages WHERE doc_id='dsid_subj'").fetchone()[0]
     assert title == "[P0] Acme Health — retry storm"
     # fallback: no doc-level subject -> the message Subject header is used
-    raw2 = {"title_field_name": "subject", "content_field_names": ["messages"], "subject": "",
-            "mailbox_owner": "X", "messages": ["From: a@x.com\nSubject: Real subject\n\nbody"]}
+    raw2 = {
+        "title_field_name": "subject",
+        "content_field_names": ["messages"],
+        "subject": "",
+        "mailbox_owner": "X",
+        "messages": ["From: a@x.com\nSubject: Real subject\n\nbody"],
+    }
     _load_one(conn, "gmail", "dsid_subj2", raw2, P)
-    assert conn.execute("SELECT title FROM gmail_messages WHERE doc_id='dsid_subj2'").fetchone()[0] == "Real subject"
+    assert (
+        conn.execute("SELECT title FROM gmail_messages WHERE doc_id='dsid_subj2'").fetchone()[0]
+        == "Real subject"
+    )
 
 
 # ---------------------------------------------------------------------------
 # from test_erb_orchestration.py
 # ---------------------------------------------------------------------------
 
+
 def test_acl_bundle_to_grants_drive():
     # a private-ish drive doc: owner + collaborator become user grants + team group
-    bundle = {"_source": "google_drive", "owner": "maya.chen@redwoodinference.com",
-              "people": ["ethan.park@redwoodinference.com"], "group": "research-applied-ml",
-              "confidentiality": None}
+    bundle = {
+        "_source": "google_drive",
+        "owner": "maya.chen@redwoodinference.com",
+        "people": ["ethan.park@redwoodinference.com"],
+        "group": "research-applied-ml",
+        "confidentiality": None,
+    }
     g = grants_for(bundle["_source"], {**bundle, "org": "redwood"})
     assert ("user", "maya.chen@redwoodinference.com") in g
     assert ("group", "research-applied-ml") in g
@@ -696,15 +924,41 @@ def test_synthesized_users_installed_after_load(tmp_path, monkeypatch):
     """Regression: users synthesized DURING load (owner/collaborator not in the directory) must
     land in principals AND their team group_members — i.e. P.install() runs after the load,
     not before (else they'd get tokens but no principal/group, breaking group-scoped ACL)."""
-    data = tmp_path / "data"; data.mkdir()
-    gen = tmp_path / "gen"; (gen / "sources" / "google_drive").mkdir(parents=True)
-    (gen / "employee_directory.yaml").write_text(yaml.safe_dump({"departments": {"Engineering": [
-        {"name": "Real Dev", "email": "real.dev@redwoodinference.com", "title": "Eng"}]}}))
-    (gen / "sources" / "google_drive" / "d.json").write_text(json.dumps({
-        "title_field_name": "title", "content_field_names": ["body"],
-        "dataset_doc_uuid": "dsid_test1", "title": "Doc", "body": "x",
-        "owner": "Zoe Newperson", "collaborators": ["Ravi Other"], "team": "engineering",
-        "created_at": "2025-01-01", "confidentiality": "restricted"}))
+    data = tmp_path / "data"
+    data.mkdir()
+    gen = tmp_path / "gen"
+    (gen / "sources" / "google_drive").mkdir(parents=True)
+    (gen / "employee_directory.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "departments": {
+                    "Engineering": [
+                        {
+                            "name": "Real Dev",
+                            "email": "real.dev@redwoodinference.com",
+                            "title": "Eng",
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    (gen / "sources" / "google_drive" / "d.json").write_text(
+        json.dumps(
+            {
+                "title_field_name": "title",
+                "content_field_names": ["body"],
+                "dataset_doc_uuid": "dsid_test1",
+                "title": "Doc",
+                "body": "x",
+                "owner": "Zoe Newperson",
+                "collaborators": ["Ravi Other"],
+                "team": "engineering",
+                "created_at": "2025-01-01",
+                "confidentiality": "restricted",
+            }
+        )
+    )
     monkeypatch.setenv("MOCK_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
@@ -713,10 +967,12 @@ def test_synthesized_users_installed_after_load(tmp_path, monkeypatch):
 
     c = sqlite3.connect(settings.db_path)
     zoe = "zoe.newperson@redwoodinference.com"
-    assert c.execute("SELECT 1 FROM principals WHERE email=?", (zoe,)).fetchone(), \
+    assert c.execute("SELECT 1 FROM principals WHERE email=?", (zoe,)).fetchone(), (
         "synthesized owner missing from principals"
-    assert c.execute("SELECT 1 FROM group_members WHERE group_id='engineering' AND user_id=?",
-                     (zoe,)).fetchone(), "synthesized owner missing from its team group_members"
+    )
+    assert c.execute(
+        "SELECT 1 FROM group_members WHERE group_id='engineering' AND user_id=?", (zoe,)
+    ).fetchone(), "synthesized owner missing from its team group_members"
     c.close()
     get_settings.cache_clear()
 
@@ -724,12 +980,28 @@ def test_synthesized_users_installed_after_load(tmp_path, monkeypatch):
 def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
     """End of the wiring: a `sources/hubspot/` dir in generated_data must be walked, loaded, and
     counted by the real import path — not just loadable via load_hubspot() in isolation."""
-    data = tmp_path / "data"; data.mkdir()
-    gen = tmp_path / "gen"; (gen / "sources" / "hubspot").mkdir(parents=True)
-    (gen / "employee_directory.yaml").write_text(yaml.safe_dump({"departments": {"Sales": [
-        {"name": "Maya Chen", "email": "maya.chen@redwoodinference.com", "title": "AE"}]}}))
+    data = tmp_path / "data"
+    data.mkdir()
+    gen = tmp_path / "gen"
+    (gen / "sources" / "hubspot").mkdir(parents=True)
+    (gen / "employee_directory.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "departments": {
+                    "Sales": [
+                        {
+                            "name": "Maya Chen",
+                            "email": "maya.chen@redwoodinference.com",
+                            "title": "AE",
+                        }
+                    ]
+                }
+            }
+        )
+    )
     (gen / "sources" / "hubspot" / "company-acacia-loop-services.json").write_text(
-        json.dumps({**HS_RAW, "dataset_doc_uuid": "dsid_hs_e2e"}))
+        json.dumps({**HS_RAW, "dataset_doc_uuid": "dsid_hs_e2e"})
+    )
     monkeypatch.setenv("MOCK_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
@@ -744,8 +1016,10 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
     company = c.execute("SELECT * FROM hubspot_objects WHERE object_type='companies'").fetchone()
     assert company["doc_id"] == "dsid_hs_e2e"
     assert company["author_email"] == "maya.chen@redwoodinference.com"
-    assert c.execute("SELECT COUNT(*) FROM hubspot_objects WHERE object_type='notes'"
-                     ).fetchone()[0] == 2
+    assert (
+        c.execute("SELECT COUNT(*) FROM hubspot_objects WHERE object_type='notes'").fetchone()[0]
+        == 2
+    )
     # the company is ACL-granted, so a non-admin can actually reach it
     assert c.execute("SELECT COUNT(*) FROM doc_acl WHERE doc_id='dsid_hs_e2e'").fetchone()[0] > 0
     c.close()
@@ -754,10 +1028,13 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
 
 def _import_gen(tmp_path, monkeypatch, source: str, filename: str, raw: dict, employees: list):
     """Run the real import over a one-document generated_data tree; returns the built settings."""
-    data = tmp_path / "data"; data.mkdir()
-    gen = tmp_path / "gen"; (gen / "sources" / source).mkdir(parents=True)
+    data = tmp_path / "data"
+    data.mkdir()
+    gen = tmp_path / "gen"
+    (gen / "sources" / source).mkdir(parents=True)
     (gen / "employee_directory.yaml").write_text(
-        yaml.safe_dump({"departments": {"Team": employees}}))
+        yaml.safe_dump({"departments": {"Team": employees}})
+    )
     (gen / "sources" / source / filename).write_text(json.dumps(raw))
     monkeypatch.setenv("MOCK_DATA_DIR", str(data))
     get_settings.cache_clear()
@@ -768,8 +1045,10 @@ def _import_gen(tmp_path, monkeypatch, source: str, filename: str, raw: dict, em
 
 
 def _granted(conn, doc_id) -> set:
-    return {(r["principal_type"], r["principal_id"])
-            for r in conn.execute("SELECT * FROM doc_acl WHERE doc_id=?", (doc_id,))}
+    return {
+        (r["principal_type"], r["principal_id"])
+        for r in conn.execute("SELECT * FROM doc_acl WHERE doc_id=?", (doc_id,))
+    }
 
 
 def test_materialized_note_rows_inherit_the_company_grants(tmp_path, monkeypatch):
@@ -777,14 +1056,20 @@ def test_materialized_note_rows_inherit_the_company_grants(tmp_path, monkeypatch
     (`_acl_clause` matches per row), so a note with no grants of its own is invisible to every
     non-admin caller — the company would list zero notes."""
     settings = _import_gen(
-        tmp_path, monkeypatch, "hubspot", "company-acacia.json",
+        tmp_path,
+        monkeypatch,
+        "hubspot",
+        "company-acacia.json",
         {**HS_RAW, "dataset_doc_uuid": "dsid_hs_acl"},
-        [{"name": "Maya Chen", "email": "maya.chen@redwoodinference.com", "title": "AE"}])
-    conn = sqlite3.connect(settings.db_path); conn.row_factory = sqlite3.Row
+        [{"name": "Maya Chen", "email": "maya.chen@redwoodinference.com", "title": "AE"}],
+    )
+    conn = sqlite3.connect(settings.db_path)
+    conn.row_factory = sqlite3.Row
     company = _granted(conn, "dsid_hs_acl")
-    assert company                                     # sanity: the parent is granted
-    notes = [r[0] for r in conn.execute(
-        "SELECT doc_id FROM hubspot_objects WHERE object_type='notes'")]
+    assert company  # sanity: the parent is granted
+    notes = [
+        r[0] for r in conn.execute("SELECT doc_id FROM hubspot_objects WHERE object_type='notes'")
+    ]
     assert notes
     for n in notes:
         assert _granted(conn, n) == company, f"note {n} does not inherit the company's grants"
@@ -796,17 +1081,26 @@ def test_thread_reply_rows_inherit_the_root_grants(tmp_path, monkeypatch):
     """Same defect on the pre-existing thread loaders: `slack_thread`/`gmail_thread` ACL-filter
     row by row, so ungranted replies silently truncate a thread for non-admin callers."""
     settings = _import_gen(
-        tmp_path, monkeypatch, "slack", "1711-foo.json",
-        {"title_field_name": "file_name", "content_field_names": ["text"],
-         "dataset_doc_uuid": "dsid_s_acl", "file_name": "1711-foo.json", "channel": "partnerships",
-         "text": "andrea_p: Heads up on EU regions.\nmike_partner: On it, ETA next week.",
-         "participants": ["andrea_p", "mike_partner"]},
-        [{"name": "Andrea Park", "email": "andrea.park@redwoodinference.com", "title": "PM"}])
-    conn = sqlite3.connect(settings.db_path); conn.row_factory = sqlite3.Row
+        tmp_path,
+        monkeypatch,
+        "slack",
+        "1711-foo.json",
+        {
+            "title_field_name": "file_name",
+            "content_field_names": ["text"],
+            "dataset_doc_uuid": "dsid_s_acl",
+            "file_name": "1711-foo.json",
+            "channel": "partnerships",
+            "text": "andrea_p: Heads up on EU regions.\nmike_partner: On it, ETA next week.",
+            "participants": ["andrea_p", "mike_partner"],
+        },
+        [{"name": "Andrea Park", "email": "andrea.park@redwoodinference.com", "title": "PM"}],
+    )
+    conn = sqlite3.connect(settings.db_path)
+    conn.row_factory = sqlite3.Row
     root = _granted(conn, "dsid_s_acl")
     assert root
-    replies = [r[0] for r in conn.execute(
-        "SELECT doc_id FROM slack_messages WHERE thread_seq > 0")]
+    replies = [r[0] for r in conn.execute("SELECT doc_id FROM slack_messages WHERE thread_seq > 0")]
     assert replies
     for rid in replies:
         assert _granted(conn, rid) == root, f"reply {rid} does not inherit the root's grants"
@@ -818,27 +1112,37 @@ def test_thread_reply_rows_inherit_the_root_grants(tmp_path, monkeypatch):
 # from test_faithful_e2e.py
 # ---------------------------------------------------------------------------
 
+
 def _extra_questions(tmp):
     p = Path(tmp) / "extra_questions.jsonl"
     urllib.request.urlretrieve(
-        "https://raw.githubusercontent.com/onyx-dot-app/EnterpriseRAG-Bench/main/extra_questions.jsonl", p)
-    return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+        "https://raw.githubusercontent.com/onyx-dot-app/EnterpriseRAG-Bench/main/extra_questions.jsonl",
+        p,
+    )
+    return [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
 
 
-@pytest.mark.skipif(os.environ.get("ERB_E2E") != "1",
-                    reason="set ERB_E2E=1 to run the network-backed faithful-import e2e")
+@pytest.mark.skipif(
+    os.environ.get("ERB_E2E") != "1",
+    reason="set ERB_E2E=1 to run the network-backed faithful-import e2e",
+)
 def test_qst_0001_owner_is_maya_chen(tmp_path):
     data_dir = tmp_path / "data"
     qfile = Path(tmp_path) / "extra_questions.jsonl"
     _extra_questions(tmp_path)
     env = {**os.environ, "MOCK_DATA_DIR": str(data_dir)}
-    subprocess.run([sys.executable, "-m", "app.importer.erb", "--slice-questions", str(qfile)],
-                   check=True, env=env)
+    subprocess.run(
+        [sys.executable, "-m", "app.importer.erb", "--slice-questions", str(qfile)],
+        check=True,
+        env=env,
+    )
     # dsid_fc36... is qst_0001's expected doc; owner must now be Maya Chen, not a hash pick
     with client_for(Settings(data_dir=data_dir)) as c:
-        r = c.get("/drive/v3/files/dsid_fc36d1d60e7e4b4abc7db84629563b7a",
-                  params={"fields": "owners(displayName)"},
-                  headers={"Authorization": "Bearer admin-service-token"}).json()
+        r = c.get(
+            "/drive/v3/files/dsid_fc36d1d60e7e4b4abc7db84629563b7a",
+            params={"fields": "owners(displayName)"},
+            headers={"Authorization": "Bearer admin-service-token"},
+        ).json()
         assert r["owners"][0]["displayName"] == "Maya Chen"
 
 
@@ -851,16 +1155,28 @@ def test_qst_0001_owner_is_maya_chen(tmp_path):
 
 # A record shaped exactly like the bench's, per `sources/linear/agents.md`.
 LINEAR_RAW = {
-    "title_field_name": "title", "content_field_names": ["description", "comments"],
-    "dataset_doc_uuid": "dsid_lin", "key": "ENG-49121", "team": "engineering",
-    "title": "Variant-aware GPU allocation", "status": "In Progress", "priority": "P1",
-    "created_at": "2025-02-18", "updated_at": "2025-03-04",
-    "creator": "Amaya Chen", "assignee": "Diego Martinez",
-    "project": "runtime-memory-2025", "cycle": "2025-W08", "estimate": "5",
-    "due_date": "2025-03-15", "labels": ["kv-cache", "long-context"],
+    "title_field_name": "title",
+    "content_field_names": ["description", "comments"],
+    "dataset_doc_uuid": "dsid_lin",
+    "key": "ENG-49121",
+    "team": "engineering",
+    "title": "Variant-aware GPU allocation",
+    "status": "In Progress",
+    "priority": "P1",
+    "created_at": "2025-02-18",
+    "updated_at": "2025-03-04",
+    "creator": "Amaya Chen",
+    "assignee": "Diego Martinez",
+    "project": "runtime-memory-2025",
+    "cycle": "2025-W08",
+    "estimate": "5",
+    "due_date": "2025-03-15",
+    "labels": ["kv-cache", "long-context"],
     "description": "Long-context configs push peak GPU memory into fragile regions.",
-    "comments": ["2025-02-18 - Created: initial hypothesis captured.",
-                 "2025-02-20 Diego Martinez: ran baseline traces."],
+    "comments": [
+        "2025-02-18 - Created: initial hypothesis captured.",
+        "2025-02-20 Diego Martinez: ran baseline traces.",
+    ],
 }
 
 
@@ -870,17 +1186,18 @@ def _load_linear(raw, dsid="dsid_lin"):
     _load_one(conn, "linear", dsid, raw, P)
     row = conn.execute("SELECT * FROM linear_issues WHERE doc_id = ?", (dsid,)).fetchone()
     comments = conn.execute(
-        "SELECT * FROM linear_comments WHERE doc_id = ? ORDER BY seq", (dsid,)).fetchall()
+        "SELECT * FROM linear_comments WHERE doc_id = ? ORDER BY seq", (dsid,)
+    ).fetchall()
     return conn, row, comments
 
 
 def test_linear_maps_the_bench_record_onto_the_api_schema():
     _conn_, row, _c = _load_linear(LINEAR_RAW)
     assert row["team"] == "engineering"
-    assert row["identifier"] == "ENG-49121"      # the bench key IS the Linear identifier
-    assert row["state"] == "In Progress"          # `status` -> Linear's `state`
-    assert row["priority"] == 2                   # P1 -> Linear's scale (1 is most urgent)
-    assert row["estimate"] == 5                   # the bench writes it as a string
+    assert row["identifier"] == "ENG-49121"  # the bench key IS the Linear identifier
+    assert row["state"] == "In Progress"  # `status` -> Linear's `state`
+    assert row["priority"] == 2  # P1 -> Linear's scale (1 is most urgent)
+    assert row["estimate"] == 5  # the bench writes it as a string
     assert row["project"] == "runtime-memory-2025"
     assert row["cycle"] == "2025-W08"
     assert row["due_date"] == "2025-03-15"
@@ -903,9 +1220,14 @@ def test_linear_container_is_the_team_field_not_the_directory():
 
 def test_linear_team_maps_onto_a_real_directory_department():
     """The ACL group has to have members, so the three bench teams must reconcile to dept slugs."""
-    P = Principals([{"name": "A B", "email": "a.b@x.com", "dept_slug": "engineering"},
-                    {"name": "C D", "email": "c.d@x.com", "dept_slug": "product"},
-                    {"name": "E F", "email": "e.f@x.com", "dept_slug": "design-ux"}], "x.com")
+    P = Principals(
+        [
+            {"name": "A B", "email": "a.b@x.com", "dept_slug": "engineering"},
+            {"name": "C D", "email": "c.d@x.com", "dept_slug": "product"},
+            {"name": "E F", "email": "e.f@x.com", "dept_slug": "design-ux"},
+        ],
+        "x.com",
+    )
     assert P.canonical_group("engineering") == "engineering"
     assert P.canonical_group("product-management") == "product"
     assert P.canonical_group("design") == "design-ux"
@@ -913,8 +1235,7 @@ def test_linear_team_maps_onto_a_real_directory_department():
 
 def test_linear_branch_name_is_derived_when_the_bench_has_none():
     _conn_, row, _c = _load_linear(LINEAR_RAW)
-    assert row["branch_name"] == (
-        "diegomartinez/eng-49121-variant-aware-gpu-allocation")
+    assert row["branch_name"] == ("diegomartinez/eng-49121-variant-aware-gpu-allocation")
 
 
 def test_linear_completed_timestamp_derives_from_the_state_category():
@@ -938,7 +1259,7 @@ def test_linear_open_issue_has_no_lifecycle_timestamps():
 
 
 def test_linear_unassigned_is_not_turned_into_a_person():
-    """"unassigned" is a literal value in the bench (11 docs). Linear stores no assignee for an
+    """ "unassigned" is a literal value in the bench (11 docs). Linear stores no assignee for an
     unassigned issue, and minting a user called "unassigned" would pollute the roster."""
     _conn_, row, _c = _load_linear({**LINEAR_RAW, "assignee": "unassigned"})
     assert row["assignee_email"] is None and row["assignee_display"] is None
@@ -953,17 +1274,29 @@ def test_linear_comment_shapes_are_all_parsed():
     """The shapes measured across all 165,243 bench comments. The date and the name are peeled
     off INDEPENDENTLY — an earlier whole-line-alternatives parse put the dash pattern first, and
     since it had no name group it swallowed the author of 60,282 comments into the body."""
-    parsed = erb.parse_linear_comments([
-        "2025-02-18 - Maya Patel: Filed initial PRD.",          # dash + name: the most common
-        "2025-02-18 - Created: initial hypothesis captured.",   # dash + a LABEL, not a person
-        "2026-03-05 Anjali Rao: Updated acceptance criteria.",  # no dash, name
-        "2025-12-18 (Naomi Feldman): Include the audit log.",   # parenthesised name
-        "Implementation notes: use model heuristics.",          # undated
-    ])
+    parsed = erb.parse_linear_comments(
+        [
+            "2025-02-18 - Maya Patel: Filed initial PRD.",  # dash + name: the most common
+            "2025-02-18 - Created: initial hypothesis captured.",  # dash + a LABEL, not a person
+            "2026-03-05 Anjali Rao: Updated acceptance criteria.",  # no dash, name
+            "2025-12-18 (Naomi Feldman): Include the audit log.",  # parenthesised name
+            "Implementation notes: use model heuristics.",  # undated
+        ]
+    )
     assert [c["date"] for c in parsed] == [
-        "2025-02-18", "2025-02-18", "2026-03-05", "2025-12-18", None]
+        "2025-02-18",
+        "2025-02-18",
+        "2026-03-05",
+        "2025-12-18",
+        None,
+    ]
     assert [c["name"] for c in parsed] == [
-        "Maya Patel", "Created", "Anjali Rao", "Naomi Feldman", "Implementation notes"]
+        "Maya Patel",
+        "Created",
+        "Anjali Rao",
+        "Naomi Feldman",
+        "Implementation notes",
+    ]
     # `body` drops the prefix, `body_with_name` keeps it — the loader picks per comment, so an
     # unresolvable label like "Created:" never gets deleted from the text.
     assert parsed[0]["body"] == "Filed initial PRD."
@@ -971,14 +1304,28 @@ def test_linear_comment_shapes_are_all_parsed():
 
 
 def test_linear_comment_author_prefix_is_kept_when_the_name_is_not_a_person():
-    """"Created:" and "Design review:" are labels, not attributions. If they don't resolve to
+    """ "Created:" and "Design review:" are labels, not attributions. If they don't resolve to
     somebody, the body must keep them rather than silently losing the words."""
     conn = _conn()
-    P = Principals([{"name": "Maya Patel", "email": "maya.patel@redwoodinference.com",
-                     "dept_slug": "engineering"}], "redwoodinference.com")
-    raw = {**LINEAR_RAW, "creator": "Maya Patel", "assignee": "unassigned",
-           "comments": ["2025-02-20 - Maya Patel: filed the PRD.",
-                        "2025-02-21 - Created: initial hypothesis captured."]}
+    P = Principals(
+        [
+            {
+                "name": "Maya Patel",
+                "email": "maya.patel@redwoodinference.com",
+                "dept_slug": "engineering",
+            }
+        ],
+        "redwoodinference.com",
+    )
+    raw = {
+        **LINEAR_RAW,
+        "creator": "Maya Patel",
+        "assignee": "unassigned",
+        "comments": [
+            "2025-02-20 - Maya Patel: filed the PRD.",
+            "2025-02-21 - Created: initial hypothesis captured.",
+        ],
+    }
     _load_one(conn, "linear", "dsid_p", raw, P)
     rows = conn.execute(
         "SELECT author_email, body FROM linear_comments WHERE doc_id='dsid_p' ORDER BY seq"
@@ -996,25 +1343,29 @@ def test_linear_undated_comment_never_sorts_before_its_dated_neighbours():
     ISSUE's creation date put a trailing "Next steps:" note at the FRONT of 1,270 real threads."""
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    raw = {**LINEAR_RAW, "created_at": "2025-01-01",
-           "comments": ["2025-02-01 - first", "2025-03-01 - second", "Next steps: trailing note"]}
+    raw = {
+        **LINEAR_RAW,
+        "created_at": "2025-01-01",
+        "comments": ["2025-02-01 - first", "2025-03-01 - second", "Next steps: trailing note"],
+    }
     _load_one(conn, "linear", "dsid_m", raw, P)
     rows = conn.execute(
         "SELECT seq, created_ts FROM linear_comments WHERE doc_id='dsid_m' ORDER BY created_ts, seq"
     ).fetchall()
     assert [r["seq"] for r in rows] == [1, 2, 3]
-    assert rows[2]["created_ts"] == rows[1]["created_ts"] + 1   # one second after its predecessor
+    assert rows[2]["created_ts"] == rows[1]["created_ts"] + 1  # one second after its predecessor
 
 
 def test_linear_parent_issue_is_stored_for_resolution():
     """`Issue.parent` is declared in the SDL and the bench fills `parent_issue` on 46.7% of
     records, so the key has to survive import for the resolver to look it up."""
     conn, row, _c = _load_linear({**LINEAR_RAW, "parent_issue": ["ENG-20297", "ENG-1"]})
-    assert row["parent_key"] == "ENG-20297"        # a list -> the first; Linear has one parent
+    assert row["parent_key"] == "ENG-20297"  # a list -> the first; Linear has one parent
     conn2, row2, _ = _load_linear({**LINEAR_RAW, "parent_issue": "ENG-555"}, dsid="dsid_ps")
-    assert row2["parent_key"] == "ENG-555"         # 552 bench docs use a bare string
-    conn3, row3, _ = _load_linear({k: v for k, v in LINEAR_RAW.items() if k != "parent_issue"},
-                                  dsid="dsid_pn")
+    assert row2["parent_key"] == "ENG-555"  # 552 bench docs use a bare string
+    conn3, row3, _ = _load_linear(
+        {k: v for k, v in LINEAR_RAW.items() if k != "parent_issue"}, dsid="dsid_pn"
+    )
     assert row3["parent_key"] is None
 
 
@@ -1044,12 +1395,19 @@ def test_linear_comment_author_is_matched_never_minted():
     against the EXISTING roster and stays unattributed otherwise."""
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    raw = {**LINEAR_RAW, "creator": "Amaya Chen", "assignee": "unassigned",
-           "comments": ["2025-02-20 Amaya Chen: known person, resolved from the issue's creator.",
-                        "2025-02-21 Design review: a label, not a person."]}
+    raw = {
+        **LINEAR_RAW,
+        "creator": "Amaya Chen",
+        "assignee": "unassigned",
+        "comments": [
+            "2025-02-20 Amaya Chen: known person, resolved from the issue's creator.",
+            "2025-02-21 Design review: a label, not a person.",
+        ],
+    }
     _load_one(conn, "linear", "dsid_c", raw, P)
     rows = conn.execute(
-        "SELECT author_email FROM linear_comments WHERE doc_id='dsid_c' ORDER BY seq").fetchall()
+        "SELECT author_email FROM linear_comments WHERE doc_id='dsid_c' ORDER BY seq"
+    ).fetchall()
     assert rows[0]["author_email"] == "amaya.chen@redwoodinference.com"
     assert rows[1]["author_email"] is None
     assert "design.review@redwoodinference.com" not in P.users
@@ -1064,8 +1422,8 @@ def test_linear_undated_comment_stays_on_the_issues_clock():
 def test_linear_priority_normalisation():
     assert [erb.linear_priority(v) for v in ("P0", "P1", "P2", "P3")] == [1, 2, 3, 4]
     assert [erb.linear_priority(v) for v in ("Urgent", "High", "Medium", "Low")] == [1, 2, 3, 4]
-    assert erb.linear_priority(3) == 3                 # already Linear's scale
-    assert erb.linear_priority("unrecognised") == 0    # Linear's "No priority"
+    assert erb.linear_priority(3) == 3  # already Linear's scale
+    assert erb.linear_priority("unrecognised") == 0  # Linear's "No priority"
     assert erb.linear_priority(None) is None
 
 
@@ -1073,10 +1431,14 @@ def test_linear_grants_flow_through_the_shared_container_path():
     """Linear needs no branch in `grants_for`: its container maps to a group like github/jira."""
     bundle = {"owner": "a@x.com", "people": ["b@x.com"], "group": "engineering", "org": "acme"}
     assert set(grants_for("linear", bundle)) == {
-        ("user", "a@x.com"), ("user", "b@x.com"), ("group", "engineering")}
+        ("user", "a@x.com"),
+        ("user", "b@x.com"),
+        ("group", "engineering"),
+    }
 
 
 # --- Linear relations / attachments / release (#25) ---------------------------------
+
 
 def test_linear_relation_parsing_defaults_to_related():
     """Linear's vocabulary is blocks | duplicate | related. The bench lists a dependency as a bare
@@ -1087,16 +1449,19 @@ def test_linear_relation_parsing_defaults_to_related():
     assert erb.parse_linear_relations(["blocked by ENG-2"]) == [("blocks", "ENG-2")]
     assert erb.parse_linear_relations(["duplicate of ENG-3"]) == [("duplicate", "ENG-3")]
     assert erb.parse_linear_relations(["no key here"]) == []
-    assert erb.parse_linear_relations("ENG-9") == [("related", "ENG-9")]     # 6 docs use a string
+    assert erb.parse_linear_relations("ENG-9") == [("related", "ENG-9")]  # 6 docs use a string
 
 
 def test_linear_attachment_titles_are_never_empty():
     """`Attachment.title` is non-null in Linear. `links` carry `Label: URL`; `attachments` are
     bare URLs and need a derived title."""
     got = erb.parse_linear_attachments(
-        ["Confluence: https://conf.example/a/design"], ["https://figma.example/frames.zip"])
-    assert got == [{"url": "https://conf.example/a/design", "title": "Confluence"},
-                   {"url": "https://figma.example/frames.zip", "title": "frames.zip"}]
+        ["Confluence: https://conf.example/a/design"], ["https://figma.example/frames.zip"]
+    )
+    assert got == [
+        {"url": "https://conf.example/a/design", "title": "Confluence"},
+        {"url": "https://figma.example/frames.zip", "title": "frames.zip"},
+    ]
     assert all(a["title"] for a in got)
 
 
@@ -1107,7 +1472,7 @@ def test_linear_attachments_dedupe_across_the_two_bench_fields():
 
 
 def test_linear_release_takes_one_name():
-    assert erb._linear_release(["runtime-1.19", "other"]) == "runtime-1.19"   # 8 docs use a list
+    assert erb._linear_release(["runtime-1.19", "other"]) == "runtime-1.19"  # 8 docs use a list
     assert erb._linear_release("console-2025.02") == "console-2025.02"
     assert erb._linear_release(None) is None
 
@@ -1118,8 +1483,12 @@ def test_linear_second_pass_resolves_keys_and_drops_dangling():
     one issue's children to every issue sharing its key)."""
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    child = {**LINEAR_RAW, "key": "ENG-2", "parent_issue": ["ENG-1"],
-             "dependencies": ["blocks ENG-1", "ENG-NOSUCH"]}
+    child = {
+        **LINEAR_RAW,
+        "key": "ENG-2",
+        "parent_issue": ["ENG-1"],
+        "dependencies": ["blocks ENG-1", "ENG-NOSUCH"],
+    }
     parent = {**LINEAR_RAW, "key": "ENG-1", "parent_issue": None, "dependencies": None}
     # A relation names its target by KEY, and the index that resolves a key is built over the whole
     # corpus before any conversion — the half of the second pass that cannot be per-document.
@@ -1134,8 +1503,9 @@ def test_linear_second_pass_resolves_keys_and_drops_dangling():
     assert row["parent_doc_id"] == "d_parent"
     rels = conn.execute("SELECT from_doc_id, to_doc_id, type FROM linear_relations").fetchall()
     # ENG-NOSUCH resolves to nothing and is dropped rather than stored dangling.
-    assert [(r["from_doc_id"], r["to_doc_id"], r["type"]) for r in rels] == \
-        [("d_child", "d_parent", "blocks")]
+    assert [(r["from_doc_id"], r["to_doc_id"], r["type"]) for r in rels] == [
+        ("d_child", "d_parent", "blocks")
+    ]
 
 
 def test_linear_second_pass_never_makes_an_issue_its_own_parent():
@@ -1146,21 +1516,31 @@ def test_linear_second_pass_never_makes_an_issue_its_own_parent():
     raw = {**LINEAR_RAW, "key": "ENG-7", "parent_issue": ["ENG-7"], "dependencies": ["ENG-7"]}
     erb._precompute_globals([("linear", "d_self", raw)])
     _load_one(conn, "linear", "d_self", raw, P)
-    assert conn.execute(
-        "SELECT parent_doc_id FROM linear_issues WHERE doc_id='d_self'").fetchone()[0] is None
+    assert (
+        conn.execute("SELECT parent_doc_id FROM linear_issues WHERE doc_id='d_self'").fetchone()[0]
+        is None
+    )
     # A self-relation is dropped for the same reason: an issue is not related to itself.
     assert conn.execute("SELECT COUNT(*) FROM linear_relations").fetchone()[0] == 0
 
 
 def test_linear_loader_stores_release_and_attachments():
-    conn, row, _c = _load_linear({**LINEAR_RAW, "release": "runtime-1.19",
-                                  "links": ["Confluence: https://conf.example/x"],
-                                  "attachments": ["https://figma.example/y.zip"]})
+    conn, row, _c = _load_linear(
+        {
+            **LINEAR_RAW,
+            "release": "runtime-1.19",
+            "links": ["Confluence: https://conf.example/x"],
+            "attachments": ["https://figma.example/y.zip"],
+        }
+    )
     assert row["release"] == "runtime-1.19"
     atts = conn.execute(
-        "SELECT title, url FROM linear_attachments WHERE doc_id='dsid_lin' ORDER BY seq").fetchall()
+        "SELECT title, url FROM linear_attachments WHERE doc_id='dsid_lin' ORDER BY seq"
+    ).fetchall()
     assert [(a["title"], a["url"]) for a in atts] == [
-        ("Confluence", "https://conf.example/x"), ("y.zip", "https://figma.example/y.zip")]
+        ("Confluence", "https://conf.example/x"),
+        ("y.zip", "https://figma.example/y.zip"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1209,17 +1589,23 @@ def _ff_load(raw=None, employees=None):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(store.SCHEMA)
-    P = erb.Principals(employees if employees is not None else [
-        {"name": "Ava Chen", "email": "ava.chen@acme.com", "dept_slug": "sales"},
-        {"name": "Bob Stone", "email": "bob.stone@acme.com", "dept_slug": "engineering"},
-    ], "acme.com")
+    P = erb.Principals(
+        employees
+        if employees is not None
+        else [
+            {"name": "Ava Chen", "email": "ava.chen@acme.com", "dept_slug": "sales"},
+            {"name": "Bob Stone", "email": "bob.stone@acme.com", "dept_slug": "engineering"},
+        ],
+        "acme.com",
+    )
     bundle = _load_one(conn, "fireflies", "dsid_ff1", dict(raw or FF_RAW), P)
     return conn, bundle
 
 
 def test_fireflies_parses_every_timestamp_and_speaker_form():
-    sents = erb.parse_fireflies_transcript(FF_RAW["transcript"],
-                                           ["Ava Chen", "Bob Stone", "Dana Ruiz"])
+    sents = erb.parse_fireflies_transcript(
+        FF_RAW["transcript"], ["Ava Chen", "Bob Stone", "Dana Ruiz"]
+    )
     # "[00:00] Ava:", "00:14 - Dana:", "00:31 [Bob]:", "(00:52) Ava (Redwood AE):" — all four.
     assert [s["speaker_name"] for s in sents] == ["Ava Chen", "Dana Ruiz", "Bob Stone", "Ava Chen"]
     assert [s["start_time"] for s in sents] == [0.0, 14.0, 31.0, 52.0]
@@ -1229,10 +1615,11 @@ def test_fireflies_parses_every_timestamp_and_speaker_form():
 
 
 def test_fireflies_auto_notes_preamble_never_mints_a_speaker():
-    """"Date: …" / "Duration: …" parse as `Name: text`; gating on the declared attendees is what
+    """ "Date: …" / "Duration: …" parse as `Name: text`; gating on the declared attendees is what
     stops them becoming speakers (and inventing 'Date' as a person)."""
-    sents = erb.parse_fireflies_transcript(FF_RAW["transcript"], ["Ava Chen", "Bob Stone",
-                                                                 "Dana Ruiz"])
+    sents = erb.parse_fireflies_transcript(
+        FF_RAW["transcript"], ["Ava Chen", "Bob Stone", "Dana Ruiz"]
+    )
     assert "Date" not in {s["speaker_name"] for s in sents}
     assert "Duration" not in {s["speaker_name"] for s in sents}
     assert "Meeting header" not in {s["speaker_name"] for s in sents}
@@ -1240,9 +1627,9 @@ def test_fireflies_auto_notes_preamble_never_mints_a_speaker():
 
 def test_fireflies_speaker_resolution_tolerates_first_names_and_initials():
     m = erb.fireflies_speaker_map(["Ava Chen - Account Executive", "Dana Ruiz, Head of Platform"])
-    assert erb._ff_resolve_speaker("Ava", m) == "Ava Chen"        # first name only
-    assert erb._ff_resolve_speaker("Ava C.", m) == "Ava Chen"     # first + initial
-    assert erb._ff_resolve_speaker("Moderator - Ava", m) == "Ava Chen"   # role-prefixed
+    assert erb._ff_resolve_speaker("Ava", m) == "Ava Chen"  # first name only
+    assert erb._ff_resolve_speaker("Ava C.", m) == "Ava Chen"  # first + initial
+    assert erb._ff_resolve_speaker("Moderator - Ava", m) == "Ava Chen"  # role-prefixed
     assert erb._ff_resolve_speaker("Dana Ruiz", m) == "Dana Ruiz"  # role stripped from the decl
     assert erb._ff_resolve_speaker("Someone Else", m) is None
 
@@ -1251,15 +1638,18 @@ def test_fireflies_anonymous_speakers_survive_when_nobody_is_recognized():
     """The corpus deliberately contains transcripts labeled only "Speaker 1"/"Speaker 2"
     (agents.md calls for it). Gating would drop every one, so it falls back to ungated."""
     sents = erb.parse_fireflies_transcript(
-        "[00:00] Speaker 1: kickoff.\n[00:10] Speaker 2: agreed.\n", ["Ava Chen"])
+        "[00:00] Speaker 1: kickoff.\n[00:10] Speaker 2: agreed.\n", ["Ava Chen"]
+    )
     assert [s["speaker_name"] for s in sents] == ["Speaker 1", "Speaker 2"]
 
 
 def test_fireflies_content_is_the_exact_inverse_of_the_sentences():
     conn, _ = _ff_load()
     row = conn.execute("SELECT content FROM fireflies_transcripts").fetchone()
-    stored = [{"speaker_name": r["speaker_name"], "text": r["body"]} for r in
-              conn.execute("SELECT speaker_name, body FROM fireflies_sentences ORDER BY seq")]
+    stored = [
+        {"speaker_name": r["speaker_name"], "text": r["body"]}
+        for r in conn.execute("SELECT speaker_name, body FROM fireflies_sentences ORDER BY seq")
+    ]
     assert synth.fireflies_transcript_text(stored) == row["content"]
 
 
@@ -1280,13 +1670,13 @@ def test_fireflies_summary_notes_are_not_folded_into_the_sentences():
     (and break the round-trip), so they map onto the API's `summary` object instead."""
     conn, _ = _ff_load()
     row = conn.execute("SELECT content, summary FROM fireflies_transcripts").fetchone()
-    assert "sub-300ms" not in row["content"]          # the summary prose is NOT in the sentences
+    assert "sub-300ms" not in row["content"]  # the summary prose is NOT in the sentences
     summary = json.loads(row["summary"])
     assert summary["overview"] == "Northwind wants sub-300ms p95."
     assert summary["topics_discussed"] == ["latency budget", "batching"]
     assert summary["action_items"] == ["Ava: send the batching benchmark"]
-    assert summary["outline"] == ["Schedule a follow-up"]      # next_steps -> outline
-    assert summary["meeting_type"] == "discovery"              # call_type -> meeting_type
+    assert summary["outline"] == ["Schedule a follow-up"]  # next_steps -> outline
+    assert summary["meeting_type"] == "discovery"  # call_type -> meeting_type
 
 
 def test_fireflies_maps_the_bench_onto_the_api_columns():
@@ -1302,7 +1692,7 @@ def test_fireflies_maps_the_bench_onto_the_api_columns():
     assert row["owner_display"] == "Ava Chen"
     # duration is MINUTES (the API's unit), parsed out of the bench's string
     assert row["duration"] == 32.0
-    assert row["created_ts"] == 1775142000        # 2026-04-02T15:00:00Z
+    assert row["created_ts"] == 1775142000  # 2026-04-02T15:00:00Z
     # meeting_id is NOT unique in the corpus, so it becomes calendar_id and `id` is synthesized
     assert row["calendar_id"] == "ff-20260402-northwind-001"
     assert row["transcript_id"] == synth.fireflies_id("dsid_ff1")
@@ -1314,12 +1704,13 @@ def test_fireflies_resolves_internal_and_external_attendees_differently():
     """No email appears anywhere in the Fireflies corpus, so identities come from Principals:
     Redwood attendees become org users, customer attendees external contacts (never principals)."""
     conn, bundle = _ff_load()
-    attendees = json.loads(conn.execute(
-        "SELECT meeting_attendees FROM fireflies_transcripts").fetchone()[0])
+    attendees = json.loads(
+        conn.execute("SELECT meeting_attendees FROM fireflies_transcripts").fetchone()[0]
+    )
     by_name = {a["displayName"]: a for a in attendees}
     assert by_name["Ava Chen"]["email"] == "ava.chen@acme.com"
     assert by_name["Dana Ruiz"]["email"].endswith("@external.example")
-    assert by_name["Dana Ruiz"]["location"] == "Northwind"       # the customer company
+    assert by_name["Dana Ruiz"]["location"] == "Northwind"  # the customer company
     # only addresses that can authenticate become ACL grants
     assert all(not e.endswith("@external.example") for e in bundle["people"])
     assert "ava.chen@acme.com" in bundle["people"]
@@ -1327,27 +1718,30 @@ def test_fireflies_resolves_internal_and_external_attendees_differently():
 
 def test_fireflies_speaker_ids_are_per_meeting_ordinals():
     conn, _ = _ff_load()
-    rows = conn.execute("SELECT speaker_name, speaker_id FROM fireflies_sentences "
-                        "ORDER BY seq").fetchall()
-    assert [r["speaker_id"] for r in rows] == [0, 1, 2, 0]   # Ava reuses her own ordinal
+    rows = conn.execute(
+        "SELECT speaker_name, speaker_id FROM fireflies_sentences ORDER BY seq"
+    ).fetchall()
+    assert [r["speaker_id"] for r in rows] == [0, 1, 2, 0]  # Ava reuses her own ordinal
     assert all(isinstance(r["speaker_id"], int) for r in rows)
 
 
 def test_fireflies_sentences_sit_on_the_meetings_clock():
     conn, _ = _ff_load()
     base = conn.execute("SELECT created_ts FROM fireflies_transcripts").fetchone()[0]
-    rows = conn.execute("SELECT created_ts, start_time FROM fireflies_sentences "
-                        "ORDER BY seq").fetchall()
+    rows = conn.execute(
+        "SELECT created_ts, start_time FROM fireflies_sentences ORDER BY seq"
+    ).fetchall()
     assert [r["created_ts"] for r in rows] == [base + int(r["start_time"]) for r in rows]
 
 
 def test_fireflies_only_resolvable_speakers_get_an_identity():
     conn, _ = _ff_load()
-    rows = conn.execute("SELECT speaker_name, author_email FROM fireflies_sentences "
-                        "ORDER BY seq").fetchall()
-    assert rows[0]["author_email"] == "ava.chen@acme.com"   # a declared Redwood attendee
-    assert rows[1]["author_email"] is None                  # Dana is external, not an identity
-    assert rows[1]["speaker_name"] == "Dana Ruiz"           # but her label is still served
+    rows = conn.execute(
+        "SELECT speaker_name, author_email FROM fireflies_sentences ORDER BY seq"
+    ).fetchall()
+    assert rows[0]["author_email"] == "ava.chen@acme.com"  # a declared Redwood attendee
+    assert rows[1]["author_email"] is None  # Dana is external, not an identity
+    assert rows[1]["speaker_name"] == "Dana Ruiz"  # but her label is still served
 
 
 def test_fireflies_transcript_without_speaker_labels_still_serves_its_text():
@@ -1358,7 +1752,7 @@ def test_fireflies_transcript_without_speaker_labels_still_serves_its_text():
     row = conn.execute("SELECT content FROM fireflies_transcripts").fetchone()
     assert row["content"] == "Just prose about the meeting. No labels at all."
     sent = conn.execute("SELECT speaker_name, body FROM fireflies_sentences").fetchone()
-    assert sent["speaker_name"] is None       # honest: no label was produced
+    assert sent["speaker_name"] is None  # honest: no label was produced
     assert sent["body"] == row["content"]
 
 
@@ -1373,9 +1767,15 @@ def test_fireflies_transcript_missing_entirely_falls_back_to_the_envelope():
 def test_fireflies_is_org_visible_like_slack_and_hubspot():
     """The corpus names 1,104 distinct hosts of whom only the ~167 directory employees can
     authenticate, so an owner-or-channel scope would leave ~91% of transcripts admin-only."""
-    grants = erb.grants_for("fireflies", {"org": "acme", "group": "sales-calls",
-                                          "owner": "ava.chen@acme.com",
-                                          "people": ["bob.stone@acme.com"]})
+    grants = erb.grants_for(
+        "fireflies",
+        {
+            "org": "acme",
+            "group": "sales-calls",
+            "owner": "ava.chen@acme.com",
+            "people": ["bob.stone@acme.com"],
+        },
+    )
     assert ("org", "acme") in grants
     assert ("user", "ava.chen@acme.com") in grants
     assert ("user", "bob.stone@acme.com") in grants
@@ -1383,9 +1783,15 @@ def test_fireflies_is_org_visible_like_slack_and_hubspot():
 
 
 def test_fireflies_external_addresses_never_become_acl_grants():
-    grants = erb.grants_for("fireflies", {"org": "acme", "group": "sales-calls",
-                                          "owner": "ava.chen@acme.com",
-                                          "people": ["dana.ruiz@external.example"]})
+    grants = erb.grants_for(
+        "fireflies",
+        {
+            "org": "acme",
+            "group": "sales-calls",
+            "owner": "ava.chen@acme.com",
+            "people": ["dana.ruiz@external.example"],
+        },
+    )
     assert not any(pid.endswith("@external.example") for _, pid in grants)
 
 
@@ -1417,8 +1823,9 @@ def test_fireflies_escaped_newlines_are_unescaped_before_parsing():
 def test_fireflies_root_level_document_lands_in_uncategorized():
     """11 bench documents sit at the source root, which its own agents.md says should not happen."""
     conn, _ = _ff_load({**FF_RAW, "_erb_path": "2026-04-02-a-meeting.json"})
-    assert conn.execute("SELECT channel FROM fireflies_transcripts").fetchone()[0] == \
-        "uncategorized"
+    assert (
+        conn.execute("SELECT channel FROM fireflies_transcripts").fetchone()[0] == "uncategorized"
+    )
 
 
 def test_fireflies_erb_path_is_not_hubspot_property_data():
@@ -1455,62 +1862,113 @@ RT_EMPLOYEES = {
 RT_DOCS = {
     "confluence": {
         "restricted.json": {
-            "title_field_name": "title", "content_field_names": ["body"],
-            "dataset_doc_uuid": "dsid_conf_1", "title": "Gateway incident runbook",
+            "title_field_name": "title",
+            "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_conf_1",
+            "title": "Gateway incident runbook",
             "body": "Roll back the gateway, then page the on-call.",
-            "space": "ENG", "owner_team": "engineering", "author": "Ava Chen",
+            "space": "ENG",
+            "owner_team": "engineering",
+            "author": "Ava Chen",
             # 'Zoe Newperson' is not in the directory -> synthesized user, and a reviewer takes no
             # group hint, so it must land in the roster with no group.
             "reviewers": ["Maya Chen", "Zoe Newperson"],
             "confidentiality": "restricted (customer-sensitive)",
             "labels": ["oncall", "runbook"],
-            "created_at": "2026-01-05", "last_updated": "2026-02-01"},
+            "created_at": "2026-01-05",
+            "last_updated": "2026-02-01",
+        },
         "internal.json": {
-            "title_field_name": "title", "content_field_names": ["body"],
-            "dataset_doc_uuid": "dsid_conf_2", "title": "Handbook", "body": "How we work.",
-            "space": "HANDBOOK", "author": "Maya Chen", "confidentiality": "internal",
-            "created_at": "2026-01-06"},
+            "title_field_name": "title",
+            "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_conf_2",
+            "title": "Handbook",
+            "body": "How we work.",
+            "space": "HANDBOOK",
+            "author": "Maya Chen",
+            "confidentiality": "internal",
+            "created_at": "2026-01-06",
+        },
     },
     "google_drive": {
         "model.json": {
-            "title_field_name": "title", "content_field_names": ["body"],
-            "dataset_doc_uuid": "dsid_drive_1", "title": "Q1 revenue model",
-            "body": "month,revenue\nJan,120000", "team": "Research & Applied ML",
-            "drive_area": "research", "owner": "Maya Chen",
-            "collaborators": ["Ava Chen", "Ravi Other"], "doc_type": "sheet",
-            "created_at": "2026-01-02", "last_modified": "2026-01-09"},
+            "title_field_name": "title",
+            "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_drive_1",
+            "title": "Q1 revenue model",
+            "body": "month,revenue\nJan,120000",
+            "team": "Research & Applied ML",
+            "drive_area": "research",
+            "owner": "Maya Chen",
+            "collaborators": ["Ava Chen", "Ravi Other"],
+            "doc_type": "sheet",
+            "created_at": "2026-01-02",
+            "last_modified": "2026-01-09",
+        },
         "teamless.json": {
-            "title_field_name": "title", "content_field_names": ["body"],
-            "dataset_doc_uuid": "dsid_drive_2", "title": "Scratch", "body": "notes",
-            "owner": "Ava Chen", "doc_type": "doc", "created_at": "2026-01-03"},
+            "title_field_name": "title",
+            "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_drive_2",
+            "title": "Scratch",
+            "body": "notes",
+            "owner": "Ava Chen",
+            "doc_type": "doc",
+            "created_at": "2026-01-03",
+        },
     },
     "jira": {
         "latency.json": {
-            "title_field_name": "summary", "content_field_names": ["description"],
-            "dataset_doc_uuid": "dsid_jira_1", "summary": "SEV1: checkout latency spike",
-            "description": "p95 checkout latency jumped to 2.1s.", "project": "PAY",
-            "squad": "engineering", "reporter": "Ava Chen", "assignee": "Maya Chen",
-            "severity": "Sev1", "status": "In Progress", "issue_type": "Incident",
-            "priority": "P1", "labels": ["latency"], "components": ["gateway"],
-            "comments": ["2026-01-06 Maya Chen: looking now",
-                         "2026-01-07 Zoe Newperson: rolled back"],
-            "created_at": "2026-01-05", "updated_at": "2026-01-08", "due_date": "2026-02-01"},
+            "title_field_name": "summary",
+            "content_field_names": ["description"],
+            "dataset_doc_uuid": "dsid_jira_1",
+            "summary": "SEV1: checkout latency spike",
+            "description": "p95 checkout latency jumped to 2.1s.",
+            "project": "PAY",
+            "squad": "engineering",
+            "reporter": "Ava Chen",
+            "assignee": "Maya Chen",
+            "severity": "Sev1",
+            "status": "In Progress",
+            "issue_type": "Incident",
+            "priority": "P1",
+            "labels": ["latency"],
+            "components": ["gateway"],
+            "comments": [
+                "2026-01-06 Maya Chen: looking now",
+                "2026-01-07 Zoe Newperson: rolled back",
+            ],
+            "created_at": "2026-01-05",
+            "updated_at": "2026-01-08",
+            "due_date": "2026-02-01",
+        },
     },
     "github": {
         "pr.json": {
-            "title_field_name": "title", "content_field_names": ["body"],
-            "dataset_doc_uuid": "dsid_gh_1", "title": "Fix token-bucket refill off-by-one",
-            "body": "Corrects the refill tick; adds a test.", "repo": "gateway",
-            "author": "Ava Chen", "reviewers": ["Maya Chen"], "state": "closed",
-            "labels": ["bug"], "pr_number": 42,
-            "created_at": "2026-01-03", "updated_at": "2026-01-04"},
+            "title_field_name": "title",
+            "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_gh_1",
+            "title": "Fix token-bucket refill off-by-one",
+            "body": "Corrects the refill tick; adds a test.",
+            "repo": "gateway",
+            "author": "Ava Chen",
+            "reviewers": ["Maya Chen"],
+            "state": "closed",
+            "labels": ["bug"],
+            "pr_number": 42,
+            "created_at": "2026-01-03",
+            "updated_at": "2026-01-04",
+        },
     },
     "gmail": {
         "thread.json": {
-            "title_field_name": "subject", "content_field_names": ["messages"],
-            "dataset_doc_uuid": "dsid_gm_1", "subject": "[P0] Acme Health — retry storm",
-            "mailbox_owner": "Ava Chen", "participants_internal": ["Maya Chen"],
-            "attachments": ["postmortem.pdf"], "first_email_at": "2026-01-04T09:00:00Z",
+            "title_field_name": "subject",
+            "content_field_names": ["messages"],
+            "dataset_doc_uuid": "dsid_gm_1",
+            "subject": "[P0] Acme Health — retry storm",
+            "mailbox_owner": "Ava Chen",
+            "participants_internal": ["Maya Chen"],
+            "attachments": ["postmortem.pdf"],
+            "first_email_at": "2026-01-04T09:00:00Z",
             "messages": [
                 "From: Ava Chen <ava.chen@redwoodinference.com>\n"
                 "To: ops@redwoodinference.com\nCc: maya.chen@redwoodinference.com\n"
@@ -1523,76 +1981,121 @@ RT_DOCS = {
                 # no Date header: its time is the root's clock + an hour per position, which the
                 # converted record has to carry explicitly.
                 "From: ops-bot@redwoodinference.com\nSubject: Re: [P0] retry storm\n\nAuto-ack.",
-            ]},
+            ],
+        },
         "single.json": {
-            "title_field_name": "subject", "content_field_names": ["body"],
-            "dataset_doc_uuid": "dsid_gm_2", "subject": "Lunch", "mailbox_owner": "Maya Chen",
-            "body": "Anyone up for lunch?"},
+            "title_field_name": "subject",
+            "content_field_names": ["body"],
+            "dataset_doc_uuid": "dsid_gm_2",
+            "subject": "Lunch",
+            "mailbox_owner": "Maya Chen",
+            "body": "Anyone up for lunch?",
+        },
     },
     "slack": {
         "thread.json": {
-            "title_field_name": "channel", "content_field_names": ["messages"],
-            "dataset_doc_uuid": "dsid_sl_1", "channel": "incidents",
-            "participants": ["ava", "maya_r", "infra-bot"], "first_message_ts": "1767513600",
+            "title_field_name": "channel",
+            "content_field_names": ["messages"],
+            "dataset_doc_uuid": "dsid_sl_1",
+            "channel": "incidents",
+            "participants": ["ava", "maya_r", "infra-bot"],
+            "first_message_ts": "1767513600",
             "messages": "ava: Anyone seeing 502s from the gateway?\n"
-                        "maya_r: Looking now.\ninfra-bot: alert cleared"},
+            "maya_r: Looking now.\ninfra-bot: alert cleared",
+        },
         "future.json": {
-            "title_field_name": "file_name", "content_field_names": ["text"],
-            "dataset_doc_uuid": "dsid_sl_2", "file_name": "0001-eu.json",
-            "channel": "partnerships", "participants": ["andrea_p"],
+            "title_field_name": "file_name",
+            "content_field_names": ["text"],
+            "dataset_doc_uuid": "dsid_sl_2",
+            "file_name": "0001-eu.json",
+            "channel": "partnerships",
+            "participants": ["andrea_p"],
             # beyond the year-2035 cutoff: rank-based and order-preserving, so the remapped value
             # cannot be recomputed from this record alone and has to be baked into the artifact.
             "first_message_ts": "9999999999",
-            "text": "andrea_p: EU regions land next week."},
+            "text": "andrea_p: EU regions land next week.",
+        },
     },
     "hubspot": {"company.json": {**HS_RAW, "dataset_doc_uuid": "dsid_hs_1"}},
     # Fireflies' container comes from the DIRECTORY LAYOUT, not a field, so the subdirectory here
     # is load-bearing: `iter_records` injects `_erb_path` and the first segment is the channel.
     "fireflies": {
         "sales-calls/discovery.json": {
-            "title_field_name": "title", "content_field_names": ["transcript"],
-            "dataset_doc_uuid": "dsid_ff_1", "title": "Acacia Loop — discovery",
-            "meeting_id": "mtg-4471", "recorded_at": "2026-02-19T15:00:00Z",
-            "duration_minutes": "42", "call_type": "discovery",
-            "redwood_owner": "Maya Chen", "redwood_attendees": ["Ava Chen"],
+            "title_field_name": "title",
+            "content_field_names": ["transcript"],
+            "dataset_doc_uuid": "dsid_ff_1",
+            "title": "Acacia Loop — discovery",
+            "meeting_id": "mtg-4471",
+            "recorded_at": "2026-02-19T15:00:00Z",
+            "duration_minutes": "42",
+            "call_type": "discovery",
+            "redwood_owner": "Maya Chen",
+            "redwood_attendees": ["Ava Chen"],
             "customer_company": "Acacia Loop Services",
             "customer_attendees": ["Dana Ruiz, CTO"],
             "summary": "Discovery call on latency and KMS.",
-            "topics": ["latency", "kms"], "action_items": ["Maya: send pricing"],
+            "topics": ["latency", "kms"],
+            "action_items": ["Maya: send pricing"],
             # Six line formats and an auto-notes preamble whose "Date:"/"Duration:" lines look
             # exactly like speaker lines — the parse has to agree between the two importers.
             "transcript": "Date: 2026-02-19\nDuration: ~42 minutes\n"
-                          "[00:00] Maya Chen: Thanks for making time.\n"
-                          "00:18 - Dana Ruiz: Our p95 sits at 300ms.\n"
-                          "00:41 [Ava Chen]: We can cut that with the two-tier cache.\n"
-                          "And the gateway change lands next week.\n"
-                          "(01:05) Speaker 3: What about KMS?"},
+            "[00:00] Maya Chen: Thanks for making time.\n"
+            "00:18 - Dana Ruiz: Our p95 sits at 300ms.\n"
+            "00:41 [Ava Chen]: We can cut that with the two-tier cache.\n"
+            "And the gateway change lands next week.\n"
+            "(01:05) Speaker 3: What about KMS?",
+        },
         "uncategorized-root.json": {
-            "title_field_name": "title", "content_field_names": ["transcript"],
-            "dataset_doc_uuid": "dsid_ff_2", "title": "Untitled sync",
+            "title_field_name": "title",
+            "content_field_names": ["transcript"],
+            "dataset_doc_uuid": "dsid_ff_2",
+            "title": "Untitled sync",
             "recorded_at": "2026-03-01T09:00:00Z",
             # no attendees at all -> ungated parse; and a root-level file -> "uncategorized"
-            "transcript": "Speaker 1: quick sync.\nSpeaker 2: agreed."},
+            "transcript": "Speaker 1: quick sync.\nSpeaker 2: agreed.",
+        },
     },
     "linear": {
         "child.json": {
-            "title_field_name": "title", "content_field_names": ["description"],
-            "dataset_doc_uuid": "dsid_lin_1", "title": "Ship the two-tier cache",
-            "description": "Cache the gateway's hot path.", "key": "ENG-7",
-            "team": "engineering", "status": "Done", "priority": "P1", "creator": "Ava Chen",
-            "assignee": "Maya Chen", "estimate": "5", "labels": ["cache"], "project": "gateway",
-            "cycle": "Cycle 41", "due_date": "2026-04-01", "release": "runtime-1.19",
-            "created_at": "2026-01-01", "updated_at": "2026-03-20",
+            "title_field_name": "title",
+            "content_field_names": ["description"],
+            "dataset_doc_uuid": "dsid_lin_1",
+            "title": "Ship the two-tier cache",
+            "description": "Cache the gateway's hot path.",
+            "key": "ENG-7",
+            "team": "engineering",
+            "status": "Done",
+            "priority": "P1",
+            "creator": "Ava Chen",
+            "assignee": "Maya Chen",
+            "estimate": "5",
+            "labels": ["cache"],
+            "project": "gateway",
+            "cycle": "Cycle 41",
+            "due_date": "2026-04-01",
+            "release": "runtime-1.19",
+            "created_at": "2026-01-01",
+            "updated_at": "2026-03-20",
             "links": ["Design: https://example.com/design"],
             "attachments": ["https://example.com/bench.zip"],
             "comments": ["2026-02-01 - Maya Chen: rolled out to 10%", "Created: initial scope"],
-            "parent_issue": ["ENG-8"], "dependencies": ["blocks ENG-8"]},
+            "parent_issue": ["ENG-8"],
+            "dependencies": ["blocks ENG-8"],
+        },
         "parent.json": {
-            "title_field_name": "title", "content_field_names": ["description"],
-            "dataset_doc_uuid": "dsid_lin_2", "title": "Caching epic",
-            "description": "Umbrella.", "key": "ENG-8", "team": "engineering",
-            "status": "In Progress", "priority": "P2", "creator": "Maya Chen",
-            "assignee": "unassigned", "created_at": "2026-01-01"},
+            "title_field_name": "title",
+            "content_field_names": ["description"],
+            "dataset_doc_uuid": "dsid_lin_2",
+            "title": "Caching epic",
+            "description": "Umbrella.",
+            "key": "ENG-8",
+            "team": "engineering",
+            "status": "In Progress",
+            "priority": "P2",
+            "creator": "Maya Chen",
+            "assignee": "unassigned",
+            "created_at": "2026-01-01",
+        },
     },
 }
 
@@ -1601,8 +2104,7 @@ def _write_generated_data(root: Path) -> Path:
     """Materialize an ERB ``generated_data/`` tree from RT_DOCS."""
     gen = root / "gen"
     (gen).mkdir(parents=True, exist_ok=True)
-    (gen / "employee_directory.yaml").write_text(
-        yaml.safe_dump({"departments": RT_EMPLOYEES}))
+    (gen / "employee_directory.yaml").write_text(yaml.safe_dump({"departments": RT_EMPLOYEES}))
     for src, docs in RT_DOCS.items():
         d = gen / "sources" / src
         d.mkdir(parents=True, exist_ok=True)
@@ -1618,14 +2120,19 @@ def _dump_db(path) -> dict[str, list]:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     try:
-        tables = [r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name NOT LIKE 'docs_fts%' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        tables = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'docs_fts%' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
         out = {}
         for t in tables:
             cols = [c[1] for c in conn.execute(f"PRAGMA table_info({t})")]
-            out[t] = sorted((tuple(r[c] for c in cols) for r in conn.execute(f"SELECT * FROM {t}")),
-                            key=repr)
+            out[t] = sorted(
+                (tuple(r[c] for c in cols) for r in conn.execute(f"SELECT * FROM {t}")), key=repr
+            )
         return out
     finally:
         conn.close()
@@ -1633,6 +2140,7 @@ def _dump_db(path) -> dict[str, list]:
 
 def _import_erb_directly(gen: Path, data_dir: Path):
     from app.config import Settings
+
     data_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(data_dir=data_dir)
     shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
@@ -1643,6 +2151,7 @@ def _import_erb_directly(gen: Path, data_dir: Path):
 def _import_via_byo(gen: Path, data_dir: Path, out_dir: Path):
     from app.config import Settings
     from app.importer import byo
+
     data_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(data_dir=data_dir)
@@ -1669,7 +2178,8 @@ def test_erb_to_byo_round_trip_builds_an_equivalent_database(tmp_path):
     for t in sorted(a):
         assert a[t] == b[t], (
             f"table {t} differs\n  only in direct: {[r for r in a[t] if r not in b[t]]}\n"
-            f"  only via byo:  {[r for r in b[t] if r not in a[t]]}")
+            f"  only via byo:  {[r for r in b[t] if r not in a[t]]}"
+        )
 
 
 def test_erb_to_byo_round_trip_writes_the_same_tokens(tmp_path):
@@ -1682,7 +2192,7 @@ def test_erb_to_byo_round_trip_writes_the_same_tokens(tmp_path):
     ta = yaml.safe_load(direct.tokens_path.read_text())
     tb = yaml.safe_load(viabyo.tokens_path.read_text())
     assert ta["org"] == tb["org"] and ta["org_domain"] == tb["org_domain"]
-    key = lambda us: sorted((u["email"], u["name"], u["token"]) for u in us)   # noqa: E731
+    key = lambda us: sorted((u["email"], u["name"], u["token"]) for u in us)  # noqa: E731
     assert key(ta["users"]) == key(tb["users"])
 
 
@@ -1691,11 +2201,14 @@ def test_erb_to_byo_output_validates_against_the_byo_schemas(tmp_path):
     same validator a hand-written corpus does — no private back door into the loader."""
     from app.validation import validate_file
     from app.config import Settings
+
     gen = _write_generated_data(tmp_path)
-    data = tmp_path / "data"; data.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
     settings = Settings(data_dir=data)
     shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
-    out = tmp_path / "artifact"; out.mkdir()
+    out = tmp_path / "artifact"
+    out.mkdir()
     erb.export_byo(settings, gen, out)
     assert validate_file(out / "corpus.jsonl") == []
 
@@ -1704,20 +2217,42 @@ def test_erb_to_byo_output_validates_against_the_byo_schemas(tmp_path):
 # fidelity fixes the round-trip exposed
 # ---------------------------------------------------------------------------
 
+
 def test_byo_drive_subtypes_are_all_accepted_by_the_schema():
     """`_drive_type` is the mock's Drive subtype vocabulary (#23), and a converted record has to
     carry its output — so the BYO drive schema must accept every value it can produce, or an
     artifact fails validation on a file type the importer itself created."""
     from app.validation import record_errors
-    for doc_type, title in (("doc", "Runbook"), ("sheet", "Model"), ("slides", "Deck"),
-                            ("pdf", "MSA"), ("folder", "Deals"), (None, "Notes"),
-                            (None, "redlines.docx"), (None, "export.csv"), (None, "logo.png")):
-        raw = {"title_field_name": "title", "content_field_names": ["body"], "title": title,
-               "body": "x", **({"doc_type": doc_type} if doc_type else {})}
+
+    for doc_type, title in (
+        ("doc", "Runbook"),
+        ("sheet", "Model"),
+        ("slides", "Deck"),
+        ("pdf", "MSA"),
+        ("folder", "Deals"),
+        (None, "Notes"),
+        (None, "redlines.docx"),
+        (None, "export.csv"),
+        (None, "logo.png"),
+    ):
+        raw = {
+            "title_field_name": "title",
+            "content_field_names": ["body"],
+            "title": title,
+            "body": "x",
+            **({"doc_type": doc_type} if doc_type else {}),
+        }
         subtype, mime_type = erb._drive_type(raw, title)
-        errs = record_errors({"source_type": "google_drive", "folder": "f", "title": title,
-                             "content": "x", "subtype": subtype,
-                             **({"mime_type": mime_type} if mime_type else {})})
+        errs = record_errors(
+            {
+                "source_type": "google_drive",
+                "folder": "f",
+                "title": title,
+                "content": "x",
+                "subtype": subtype,
+                **({"mime_type": mime_type} if mime_type else {}),
+            }
+        )
         assert errs == [], f"{doc_type or title} -> subtype {subtype!r}: {errs}"
 
 
@@ -1726,8 +2261,19 @@ def test_drive_folder_row_exists_even_without_a_team():
     filed in a folder `gdrive_folders` had no row for (group_id is nullable; the row is not)."""
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    _load_one(conn, "google_drive", "dsid_nt", {"title_field_name": "title", "content_field_names": ["body"],
-                                     "title": "Scratch", "body": "x", "owner": "Ava Chen"}, P)
+    _load_one(
+        conn,
+        "google_drive",
+        "dsid_nt",
+        {
+            "title_field_name": "title",
+            "content_field_names": ["body"],
+            "title": "Scratch",
+            "body": "x",
+            "owner": "Ava Chen",
+        },
+        P,
+    )
     folder = conn.execute("SELECT folder FROM gdrive_files WHERE doc_id='dsid_nt'").fetchone()[0]
     row = conn.execute("SELECT * FROM gdrive_folders WHERE folder=?", (folder,)).fetchone()
     assert row is not None and row["group_id"] is None
@@ -1738,19 +2284,37 @@ def test_unresolvable_principals_are_dropped_not_stored_as_nulls():
     slot in a list of principals — `requested_reviewers` is rendered per entry into a GitHub user,
     so a null 500s the pull-request endpoint (8 bench documents carry one)."""
     from app.routers.github import _gh_user
+
     with pytest.raises(AttributeError):
-        _gh_user(None)                      # the crash the null caused
+        _gh_user(None)  # the crash the null caused
 
     conn = _conn()
-    P = Principals([{"name": "Ava Chen", "email": "ava.chen@redwoodinference.com",
-                     "dept_slug": "engineering"}], "redwoodinference.com")
-    raw = {"title_field_name": "title", "content_field_names": ["body"], "title": "PR",
-           "body": "x", "repo": "gateway", "author": "Ava Chen",
-           # 'Customer Success Team' is a team label, not a person -> resolves to nobody
-           "reviewers": ["Ava Chen", "Customer Success Team"]}
+    P = Principals(
+        [
+            {
+                "name": "Ava Chen",
+                "email": "ava.chen@redwoodinference.com",
+                "dept_slug": "engineering",
+            }
+        ],
+        "redwoodinference.com",
+    )
+    raw = {
+        "title_field_name": "title",
+        "content_field_names": ["body"],
+        "title": "PR",
+        "body": "x",
+        "repo": "gateway",
+        "author": "Ava Chen",
+        # 'Customer Success Team' is a team label, not a person -> resolves to nobody
+        "reviewers": ["Ava Chen", "Customer Success Team"],
+    }
     _load_one(conn, "github", "dsid_rv", raw, P)
-    stored = json.loads(conn.execute(
-        "SELECT requested_reviewers FROM github_items WHERE doc_id='dsid_rv'").fetchone()[0])
+    stored = json.loads(
+        conn.execute(
+            "SELECT requested_reviewers FROM github_items WHERE doc_id='dsid_rv'"
+        ).fetchone()[0]
+    )
     assert stored == ["ava.chen@redwoodinference.com"]
     assert None not in stored
 
@@ -1760,19 +2324,33 @@ def test_slack_thread_id_only_when_the_transcript_has_replies():
     standalone post — and the router reads this column to decide."""
     conn = _conn()
     P = Principals([], "redwoodinference.com")
-    single = {"title_field_name": "file_name", "content_field_names": ["text"],
-              "file_name": "f.json", "channel": "partnerships", "participants": ["andrea_p"],
-              "text": "andrea_p: EU regions land next week."}
+    single = {
+        "title_field_name": "file_name",
+        "content_field_names": ["text"],
+        "file_name": "f.json",
+        "channel": "partnerships",
+        "participants": ["andrea_p"],
+        "text": "andrea_p: EU regions land next week.",
+    }
     _load_one(conn, "slack", "dsid_one", single, P)
-    assert conn.execute("SELECT thread_id FROM slack_messages WHERE doc_id='dsid_one'"
-                        ).fetchone()[0] is None
-    threaded = {**single, "participants": ["andrea_p", "mike_p"],
-                "text": "andrea_p: EU regions?\nmike_p: next week."}
+    assert (
+        conn.execute("SELECT thread_id FROM slack_messages WHERE doc_id='dsid_one'").fetchone()[0]
+        is None
+    )
+    threaded = {
+        **single,
+        "participants": ["andrea_p", "mike_p"],
+        "text": "andrea_p: EU regions?\nmike_p: next week.",
+    }
     _load_one(conn, "slack", "dsid_two", threaded, P)
-    assert conn.execute("SELECT thread_id FROM slack_messages WHERE doc_id='dsid_two'"
-                        ).fetchone()[0] == "dsid_two"
-    assert conn.execute("SELECT COUNT(*) FROM slack_messages WHERE thread_id='dsid_two'"
-                        ).fetchone()[0] == 2
+    assert (
+        conn.execute("SELECT thread_id FROM slack_messages WHERE doc_id='dsid_two'").fetchone()[0]
+        == "dsid_two"
+    )
+    assert (
+        conn.execute("SELECT COUNT(*) FROM slack_messages WHERE thread_id='dsid_two'").fetchone()[0]
+        == 2
+    )
 
 
 def test_hubspot_properties_are_stored_as_canonical_json():
@@ -1782,23 +2360,33 @@ def test_hubspot_properties_are_stored_as_canonical_json():
     P = Principals([], "redwoodinference.com")
     _load_one(conn, "hubspot", "dsid_a", {**HS_RAW}, P)
     _load_one(conn, "hubspot", "dsid_b", {k: HS_RAW[k] for k in reversed(list(HS_RAW))}, P)
-    a, b = (conn.execute("SELECT properties FROM hubspot_objects WHERE doc_id=?", (d,)).fetchone()[0]
-            for d in ("dsid_a", "dsid_b"))
+    a, b = (
+        conn.execute("SELECT properties FROM hubspot_objects WHERE doc_id=?", (d,)).fetchone()[0]
+        for d in ("dsid_a", "dsid_b")
+    )
     assert a == b
 
 
 def test_export_byo_writes_a_roster_carrying_names_and_who_may_authenticate(tmp_path):
     """The roster is the half of a converted artifact the records cannot hold: `_slug` is lossy, so
     a display name is unrecoverable from an email, and only the directory may authenticate."""
-    P = Principals([{"name": "Tomás Rré", "email": "tomas.rre@redwoodinference.com",
-                     "dept_slug": "engineering"}], "redwoodinference.com")
+    P = Principals(
+        [
+            {
+                "name": "Tomás Rré",
+                "email": "tomas.rre@redwoodinference.com",
+                "dept_slug": "engineering",
+            }
+        ],
+        "redwoodinference.com",
+    )
     # a name resolved during load that is NOT in the directory
     P.resolve("Zoe Newperson", role="owner", group_hint="research-applied-ml")
     P.resolve("Ravi Other", role="collaborator")
 
     from app.config import Settings
-    settings = Settings(data_dir=tmp_path, org_name="redwood",
-                        org_domain="redwoodinference.com")
+
+    settings = Settings(data_dir=tmp_path, org_name="redwood", org_domain="redwoodinference.com")
     out = tmp_path / "roster.yaml"
     P.write_roster(out, settings)
     roster = yaml.safe_load(out.read_text())
@@ -1806,7 +2394,8 @@ def test_export_byo_writes_a_roster_carrying_names_and_who_may_authenticate(tmp_
     assert roster["org"] == "redwood" and roster["org_domain"] == "redwoodinference.com"
     # the directory user keeps its accented name and sits under its group
     assert roster["departments"] == {
-        "engineering": [{"name": "Tomás Rré", "email": "tomas.rre@redwoodinference.com"}]}
+        "engineering": [{"name": "Tomás Rré", "email": "tomas.rre@redwoodinference.com"}]
+    }
     contacts = {c["email"]: c for c in roster["contacts"]}
     assert contacts["zoe.newperson@redwoodinference.com"]["group"] == "research-applied-ml"
     # a collaborator takes no group hint, so it has none
@@ -1814,9 +2403,13 @@ def test_export_byo_writes_a_roster_carrying_names_and_who_may_authenticate(tmp_
 
     # ...and byo reads exactly this back
     from app.importer.byo import load_roster
+
     parsed = load_roster(out)
     assert parsed["users"]["tomas.rre@redwoodinference.com"] == {
-        "name": "Tomás Rré", "group": "engineering", "token": True}
+        "name": "Tomás Rré",
+        "group": "engineering",
+        "token": True,
+    }
     assert parsed["users"]["ravi.other@redwoodinference.com"]["token"] is False
 
 
@@ -1831,24 +2424,37 @@ def test_conversion_does_not_depend_on_document_order():
     one comment attribution. `_populate_principals` resolves everything before anything is
     converted, so the corpus converts to the same records either way."""
     from app.config import Settings
+
     settings = Settings(data_dir=Path("/nonexistent"))
     settings.org_name, settings.org_domain = "redwood", "redwoodinference.com"
 
     # `commented_on` names Nadia only inside a comment (display_email — finds her only if she is
     # already known); `authored` is where resolve() actually registers her.
-    commented_on = ("linear", "d_commented",
-                    {**LINEAR_RAW, "key": "ENG-1", "creator": "Amaya Chen",
-                     "comments": ["2025-02-20 Nadia Weber: ran the baseline traces."]})
-    authored = ("linear", "d_authored",
-                {**LINEAR_RAW, "key": "ENG-2", "creator": "Nadia Weber", "comments": []})
+    commented_on = (
+        "linear",
+        "d_commented",
+        {
+            **LINEAR_RAW,
+            "key": "ENG-1",
+            "creator": "Amaya Chen",
+            "comments": ["2025-02-20 Nadia Weber: ran the baseline traces."],
+        },
+    )
+    authored = (
+        "linear",
+        "d_authored",
+        {**LINEAR_RAW, "key": "ENG-2", "creator": "Nadia Weber", "comments": []},
+    )
 
     def convert(order):
         P = Principals([], "redwoodinference.com")
         erb._precompute_globals(order)
         erb._populate_principals(order, P, settings)
-        return sorted(json.dumps(rec, sort_keys=True)
-                      for src, dsid, raw in order
-                      for rec in erb.to_byo(src, dsid, raw, P, settings.org_name))
+        return sorted(
+            json.dumps(rec, sort_keys=True)
+            for src, dsid, raw in order
+            for rec in erb.to_byo(src, dsid, raw, P, settings.org_name)
+        )
 
     forward = convert([commented_on, authored])
     assert forward == convert([authored, commented_on])
@@ -1872,16 +2478,19 @@ def test_export_byo_converts_every_document_it_was_given(tmp_path):
     """The counts `export_byo` returns must account for every record, per source — the guard on the
     soft failure above actually firing."""
     from app.config import Settings
+
     gen = _write_generated_data(tmp_path)
-    data = tmp_path / "data"; data.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
     settings = Settings(data_dir=data)
     shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
     out = tmp_path / "artifact"
     counts = erb.export_byo(settings, gen, out)
     assert counts == {src: len(docs) for src, docs in RT_DOCS.items()}
     # and the artifact holds at least one record per document (hubspot notes add more)
-    assert sum(1 for line in (out / "corpus.jsonl").read_text().split("\n") if line.strip()) \
-        >= sum(counts.values())
+    assert sum(1 for line in (out / "corpus.jsonl").read_text().split("\n") if line.strip()) >= sum(
+        counts.values()
+    )
 
 
 def test_grants_for_fallback_is_a_fallback_not_a_conjunction():
@@ -1890,11 +2499,13 @@ def test_grants_for_fallback_is_a_fallback_not_a_conjunction():
     g = grants_for("gmail", {"org": "acme", "group": "eng", "owner": None, "people": []})
     assert ("group", "eng") not in g and ("org", "acme") not in g
     # the live fallback — a Drive file whose container has no group is org-visible, not invisible
-    assert grants_for("google_drive", {"org": "acme", "group": None, "owner": None,
-                                       "people": []}) == [("org", "acme")]
+    assert grants_for(
+        "google_drive", {"org": "acme", "group": None, "owner": None, "people": []}
+    ) == [("org", "acme")]
     # ...and one that HAS a group gets exactly that, never the org too
-    assert grants_for("google_drive", {"org": "acme", "group": "eng", "owner": None,
-                                       "people": []}) == [("group", "eng")]
+    assert grants_for(
+        "google_drive", {"org": "acme", "group": "eng", "owner": None, "people": []}
+    ) == [("group", "eng")]
 
 
 def test_a_gmail_thread_with_no_participants_is_granted_to_nobody():
@@ -1903,13 +2514,14 @@ def test_a_gmail_thread_with_no_participants_is_granted_to_nobody():
     3 of the bench's ~121k threads land here, and the org grant was their ONLY grant."""
     assert grants_for("gmail", {"org": "acme", "group": None, "owner": None, "people": []}) == []
     # a thread that DOES name someone still grants to them
-    assert grants_for("gmail", {"org": "acme", "group": None, "owner": "ava@acme.com",
-                                "people": ["bob@acme.com"]}) == [
-        ("user", "ava@acme.com"), ("user", "bob@acme.com")]
+    assert grants_for(
+        "gmail", {"org": "acme", "group": None, "owner": "ava@acme.com", "people": ["bob@acme.com"]}
+    ) == [("user", "ava@acme.com"), ("user", "bob@acme.com")]
     # and no other source loses its scope
     for src in ("slack", "hubspot", "fireflies"):
-        assert ("org", "acme") in grants_for(src, {"org": "acme", "group": "c", "owner": None,
-                                                  "people": []}), src
+        assert ("org", "acme") in grants_for(
+            src, {"org": "acme", "group": "c", "owner": None, "people": []}
+        ), src
 
 
 def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
@@ -1919,8 +2531,10 @@ def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
     import gzip as _gzip
     import json as _json
     from app.config import Settings
+
     gen = _write_generated_data(tmp_path)
-    data = tmp_path / "data"; data.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
     settings = Settings(data_dir=data)
     shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
 
@@ -1936,20 +2550,21 @@ def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
             p = out / shard["path"]
             assert p.exists() and p.stat().st_size == shard["bytes"]
             assert erb._sha256(p) == shard["sha256"]
-            lines = [l for l in _gzip.open(p, "rt").read().split("\n") if l.strip()]
+            lines = [x for x in _gzip.open(p, "rt").read().split("\n") if x.strip()]
             assert len(lines) == shard["records"] <= 2
-            assert all(_json.loads(l)["source_type"] == src for l in lines)
+            assert all(_json.loads(x)["source_type"] == src for x in lines)
             seen += len(lines)
     assert seen == manifest["records"] > 0
     assert manifest["roster"]["sha256"] == erb._sha256(out / "roster.yaml")
-    assert not (out / "corpus.jsonl").exists()      # sharded mode writes no single file
+    assert not (out / "corpus.jsonl").exists()  # sharded mode writes no single file
 
     # a second conversion of the same input reproduces the same digests
     again = erb.export_byo(settings, gen, tmp_path / "sharded2", shard_records=2)
     assert again == counts
     m2 = _json.loads((tmp_path / "sharded2" / "manifest.json").read_text())
-    assert [s["sha256"] for i in m2["sources"].values() for s in i["shards"]] == \
-           [s["sha256"] for i in manifest["sources"].values() for s in i["shards"]]
+    assert [s["sha256"] for i in m2["sources"].values() for s in i["shards"]] == [
+        s["sha256"] for i in manifest["sources"].values() for s in i["shards"]
+    ]
 
 
 def test_select_records_drops_a_document_with_no_content(tmp_path):
@@ -1959,10 +2574,18 @@ def test_select_records_drops_a_document_with_no_content(tmp_path):
     gen = _write_generated_data(tmp_path)
     empty = gen / "sources" / "slack" / "general" / "empty-thread.json"
     empty.parent.mkdir(parents=True, exist_ok=True)
-    empty.write_text(json.dumps({
-        "channel": "general", "messages": "", "participants": ["Ava Chen"],
-        "title_field_name": "channel", "content_field_names": ["messages"],
-        "dataset_doc_uuid": "dsid_empty_thread"}))
+    empty.write_text(
+        json.dumps(
+            {
+                "channel": "general",
+                "messages": "",
+                "participants": ["Ava Chen"],
+                "title_field_name": "channel",
+                "content_field_names": ["messages"],
+                "dataset_doc_uuid": "dsid_empty_thread",
+            }
+        )
+    )
     ids = {dsid for _src, dsid, _raw in erb.select_records(gen)}
     assert "dsid_empty_thread" not in ids
     # and a document that does carry content is still yielded from the same directory
@@ -1974,16 +2597,26 @@ def _with_empty_thread(tmp_path, dsid="dsid_empty_thread"):
     gen = _write_generated_data(tmp_path)
     empty = gen / "sources" / "slack" / "general" / "empty-thread.json"
     empty.parent.mkdir(parents=True, exist_ok=True)
-    empty.write_text(json.dumps({
-        "channel": "general", "messages": "", "participants": ["Ava Chen"],
-        "title_field_name": "channel", "content_field_names": ["messages"],
-        "dataset_doc_uuid": dsid}))
+    empty.write_text(
+        json.dumps(
+            {
+                "channel": "general",
+                "messages": "",
+                "participants": ["Ava Chen"],
+                "title_field_name": "channel",
+                "content_field_names": ["messages"],
+                "dataset_doc_uuid": dsid,
+            }
+        )
+    )
     return gen
 
 
 def _settings_for(tmp_path, gen):
     from app.config import Settings
-    data = tmp_path / "data"; data.mkdir()
+
+    data = tmp_path / "data"
+    data.mkdir()
     settings = Settings(data_dir=data)
     shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
     return settings
@@ -1999,7 +2632,7 @@ def test_an_undeclared_empty_document_stops_the_export(tmp_path, capsys):
         erb.export_byo(settings, gen, tmp_path / "out", shard_records=2)
     err = capsys.readouterr().err
     assert "general/empty-thread.json" in err and "dsid_empty_thread" in err
-    assert "--allow-excluded 1" in err          # and says how to proceed once someone has looked
+    assert "--allow-excluded 1" in err  # and says how to proceed once someone has looked
 
 
 def test_a_declared_exclusion_is_recorded_by_identity_and_the_layer_adds_up(tmp_path, monkeypatch):
@@ -2013,28 +2646,39 @@ def test_a_declared_exclusion_is_recorded_by_identity_and_the_layer_adds_up(tmp_
     erb.export_byo(settings, gen, out, shard_records=2)
 
     layer = json.loads((out / "manifest.json").read_text())["layers"]["converted"]
-    assert layer["excluded"] == [{"source": "slack", "doc_id": "dsid_empty_thread",
-                                 "path": "general/empty-thread.json",
-                                 "reason": "content empty after strip"}]
-    assert layer["source_documents"] == (layer["documents"] + len(layer["excluded"])
-                                        + len(layer["failed"]))
+    assert layer["excluded"] == [
+        {
+            "source": "slack",
+            "doc_id": "dsid_empty_thread",
+            "path": "general/empty-thread.json",
+            "reason": "content empty after strip",
+        }
+    ]
+    assert layer["source_documents"] == (
+        layer["documents"] + len(layer["excluded"]) + len(layer["failed"])
+    )
 
 
 def test_the_snapshot_the_data_came_from_reaches_the_manifest(tmp_path):
     """Neither ref nor tag pins this data — `main` moved past the commit that added generated_data
     and the one tag predates it — so the artifact carries the tarball digest instead."""
     gen = _with_empty_thread(tmp_path)
-    monkey = {"repo": "onyx-dot-app/EnterpriseRAG-Bench", "ref": "main",
-              "tarball_sha256": "0" * 64, "tarball_bytes": 1000142917}
-    assert erb.read_snapshot(gen) is None            # a hand-assembled tree records nothing
+    monkey = {
+        "repo": "onyx-dot-app/EnterpriseRAG-Bench",
+        "ref": "main",
+        "tarball_sha256": "0" * 64,
+        "tarball_bytes": 1000142917,
+    }
+    assert erb.read_snapshot(gen) is None  # a hand-assembled tree records nothing
     (gen / erb.SNAPSHOT_FILE).write_text(json.dumps(monkey))
     assert erb.read_snapshot(gen) == monkey
 
     settings = _settings_for(tmp_path, gen)
     out = tmp_path / "out"
     erb.export_byo(settings, gen, out, shard_records=2, allow_excluded=1)
-    assert json.loads((out / "manifest.json").read_text())["layers"]["converted"]["snapshot"] \
-        == monkey
+    assert (
+        json.loads((out / "manifest.json").read_text())["layers"]["converted"]["snapshot"] == monkey
+    )
 
 
 def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
@@ -2048,28 +2692,44 @@ def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
     dsid = jira_first["dataset_doc_uuid"]
     # `zz-` so it sorts last: iter_records walks the source in path order. The title lives in
     # whichever field `title_field_name` names, so that is the one to change.
-    (gen / "sources" / "jira" / "zz-repeat.json").write_text(json.dumps(
-        {**jira_first, jira_first["title_field_name"]: "Repeated id, later record",
-         "status": "Resolved"}))
+    (gen / "sources" / "jira" / "zz-repeat.json").write_text(
+        json.dumps(
+            {
+                **jira_first,
+                jira_first["title_field_name"]: "Repeated id, later record",
+                "status": "Resolved",
+            }
+        )
+    )
     conf_first = json.loads(sorted((gen / "sources" / "confluence").glob("*.json"))[0].read_text())
-    (gen / "sources" / "confluence" / "zz-shared.json").write_text(json.dumps(
-        {**conf_first, "dataset_doc_uuid": dsid,
-         conf_first["title_field_name"]: "Same id, under confluence"}))
+    (gen / "sources" / "confluence" / "zz-shared.json").write_text(
+        json.dumps(
+            {
+                **conf_first,
+                "dataset_doc_uuid": dsid,
+                conf_first["title_field_name"]: "Same id, under confluence",
+            }
+        )
+    )
 
     direct = _import_erb_directly(gen, tmp_path / "direct")
     viabyo = _import_via_byo(gen, tmp_path / "viabyo", tmp_path / "artifact")
 
     for label, settings in (("direct", direct), ("via byo", viabyo)):
         conn = sqlite3.connect(settings.db_path)
-        assert conn.execute("SELECT title FROM jira_issues WHERE doc_id=?", (dsid,)).fetchone() \
-            == ("Repeated id, later record",), f"{label} kept the earlier of the two jira records"
-        assert conn.execute("SELECT title FROM confluence_pages WHERE doc_id=?",
-                            (dsid,)).fetchone() == ("Same id, under confluence",), \
+        assert conn.execute("SELECT title FROM jira_issues WHERE doc_id=?", (dsid,)).fetchone() == (
+            "Repeated id, later record",
+        ), f"{label} kept the earlier of the two jira records"
+        assert conn.execute(
+            "SELECT title FROM confluence_pages WHERE doc_id=?", (dsid,)
+        ).fetchone() == ("Same id, under confluence",), (
             f"{label} lost the confluence document to the jira one that shares its id"
+        )
         conn.close()
 
     a, b = _dump_db(direct.db_path), _dump_db(viabyo.db_path)
     for t in sorted(a):
         assert a[t] == b[t], (
             f"table {t} differs\n  only in direct: {[r for r in a[t] if r not in b[t]]}\n"
-            f"  only via byo:  {[r for r in b[t] if r not in a[t]]}")
+            f"  only via byo:  {[r for r in b[t] if r not in a[t]]}"
+        )

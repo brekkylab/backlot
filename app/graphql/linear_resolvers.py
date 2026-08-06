@@ -11,6 +11,7 @@ the DB are bound explicitly.
   call, so a resolver never makes an access decision of its own.
 - **Cursors are the repo's opaque offset cursor** (``app.pagination``) — Linear's are opaque too.
 """
+
 from __future__ import annotations
 
 from graphql import GraphQLError
@@ -38,6 +39,7 @@ def _org_domain(info) -> str:
 
 # --- pagination -------------------------------------------------------------------
 
+
 def _slice(first, after, last, before) -> tuple[int | None, int, int]:
     """Relay ``first``/``after`` (forward) or ``last``/``before`` (backward) ->
     ``(offset, limit, floor)``.
@@ -56,7 +58,7 @@ def _slice(first, after, last, before) -> tuple[int | None, int, int]:
     if last is not None or (before is not None and first is None):
         limit = pagination.clamp_limit(last, PAGE_DEFAULT, PAGE_MAX)
         if before is None:
-            return None, limit, start        # resolved against the total by _from_end
+            return None, limit, start  # resolved against the total by _from_end
         end = pagination.decode_cursor(before)
         return max(start, end - limit), min(limit, max(0, end - start)), start
     return start, pagination.clamp_limit(first, PAGE_DEFAULT, PAGE_MAX), start
@@ -101,14 +103,25 @@ def _page(rows: list, limit: int) -> tuple[list, bool]:
 # accepting a declared `filter:` and ignoring it — answers a narrowing query with the FULL set,
 # which is the silent-wrong-answer this schema promises not to give.
 
+
 def _match_string(value, spec: dict | None) -> bool:
     """A ``StringComparator`` against one Python value; mirrors the SQL comparator in
     app/graphql/linear_filters.py, operator for operator."""
     if not spec:
         return True
     v = "" if value is None else str(value)
-    known = ("eq", "neq", "in", "nin", "contains", "containsIgnoreCase", "startsWith",
-             "endsWith", "eqIgnoreCase", "neqIgnoreCase")
+    known = (
+        "eq",
+        "neq",
+        "in",
+        "nin",
+        "contains",
+        "containsIgnoreCase",
+        "startsWith",
+        "endsWith",
+        "eqIgnoreCase",
+        "neqIgnoreCase",
+    )
     for op, raw in spec.items():
         if raw is None:
             continue
@@ -159,16 +172,27 @@ def _match_fields(spec: dict | None, fields: dict) -> bool:
 
 
 def _match_team(container: str, spec) -> bool:
-    return _match_fields(spec, {"name": container,
-                                "key": synth.linear_team_key(container),
-                                "id": synth.linear_team_id(container)})
+    return _match_fields(
+        spec,
+        {
+            "name": container,
+            "key": synth.linear_team_key(container),
+            "id": synth.linear_team_id(container),
+        },
+    )
 
 
 def _match_user(row, spec) -> bool:
     email = row["email"]
-    return _match_fields(spec, {"email": email, "name": row["display_name"],
-                                "displayName": (email or "").split("@", 1)[0],
-                                "id": synth.linear_user_id(email)})
+    return _match_fields(
+        spec,
+        {
+            "email": email,
+            "name": row["display_name"],
+            "displayName": (email or "").split("@", 1)[0],
+            "id": synth.linear_user_id(email),
+        },
+    )
 
 
 def _match_label(node: dict, spec) -> bool:
@@ -176,16 +200,24 @@ def _match_label(node: dict, spec) -> bool:
 
 
 def _match_attachment(node: dict, spec) -> bool:
-    return _match_fields(spec, {"id": node["id"], "title": node["title"], "url": node["url"],
-                                "subtitle": node["subtitle"], "sourceType": node["sourceType"]})
+    return _match_fields(
+        spec,
+        {
+            "id": node["id"],
+            "title": node["title"],
+            "url": node["url"],
+            "subtitle": node["subtitle"],
+            "sourceType": node["sourceType"],
+        },
+    )
 
 
 def _match_release(node: dict, spec) -> bool:
-    return _match_fields(spec, {"id": node["id"], "name": node["name"],
-                                "slugId": node["slugId"]})
+    return _match_fields(spec, {"id": node["id"], "name": node["name"], "slugId": node["slugId"]})
 
 
 # --- shared shapes ------------------------------------------------------------------
+
 
 def _ts(value) -> str | None:
     return synth.rfc3339(value) if value is not None else None
@@ -203,18 +235,39 @@ def _user(email: str | None, display: str | None, info) -> dict | None:
     handle = email.split("@", 1)[0] if email else name.lower().replace(" ", "")
     caller = _ctx(info).get("caller_email")
     return {
-        "id": synth.linear_user_id(email or name), "name": name, "displayName": handle,
-        "email": email, "initials": initials, "url": f"https://linear.app/{_org(info)}/profiles/{handle}",
-        "active": True, "isAssignable": True, "guest": False, "admin": False, "owner": False,
-        "app": False, "isMentionable": True, "isMe": bool(caller and caller == email),
-        "supportsAgentSessions": False, "canAccessAnyPublicTeam": True,
-        "createdIssueCount": 0, "avatarBackgroundColor": "#5e6ad2",
+        "id": synth.linear_user_id(email or name),
+        "name": name,
+        "displayName": handle,
+        "email": email,
+        "initials": initials,
+        "url": f"https://linear.app/{_org(info)}/profiles/{handle}",
+        "active": True,
+        "isAssignable": True,
+        "guest": False,
+        "admin": False,
+        "owner": False,
+        "app": False,
+        "isMentionable": True,
+        "isMe": bool(caller and caller == email),
+        "supportsAgentSessions": False,
+        "canAccessAnyPublicTeam": True,
+        "createdIssueCount": 0,
+        "avatarBackgroundColor": "#5e6ad2",
         "inviteHash": synth.hnum(email or name, 0, 12).__format__("012x"),
         "createdAt": synth.rfc3339(synth.epoch(email or name)),
         "updatedAt": synth.rfc3339(synth.epoch(email or name)),
-        "description": None, "avatarUrl": None, "statusUntilAt": None, "statusEmoji": None,
-        "lastSeen": None, "timezone": "Etc/UTC", "disableReason": None, "statusLabel": None,
-        "archivedAt": None, "gitHubUserId": None, "title": None, "calendarHash": None,
+        "description": None,
+        "avatarUrl": None,
+        "statusUntilAt": None,
+        "statusEmoji": None,
+        "lastSeen": None,
+        "timezone": "Etc/UTC",
+        "disableReason": None,
+        "statusLabel": None,
+        "archivedAt": None,
+        "gitHubUserId": None,
+        "title": None,
+        "calendarHash": None,
     }
 
 
@@ -224,11 +277,19 @@ def _state(name: str | None, team: str, info) -> dict:
     both the id and the back-reference carry the team."""
     name = name or "Todo"
     created = synth.rfc3339(synth.epoch(f"linear-state:{team}:{name}"))
-    return {"id": synth.linear_state_id(name, team), "name": name,
-            "type": synth.linear_state_type(name), "color": synth.linear_state_color(name),
-            "position": 0.0, "description": None,
-            "createdAt": created, "updatedAt": created, "archivedAt": None,
-            "inheritedFrom": None, "team": _team(team, info)}
+    return {
+        "id": synth.linear_state_id(name, team),
+        "name": name,
+        "type": synth.linear_state_type(name),
+        "color": synth.linear_state_color(name),
+        "position": 0.0,
+        "description": None,
+        "createdAt": created,
+        "updatedAt": created,
+        "archivedAt": None,
+        "inheritedFrom": None,
+        "team": _team(team, info),
+    }
 
 
 def _project(name: str | None, info) -> dict | None:
@@ -241,27 +302,62 @@ def _project(name: str | None, info) -> dict | None:
     slug = synth.hnum(name, 0, 8).__format__("08x")
     created = synth.rfc3339(synth.epoch("linear-project:" + name))
     return {
-        "id": synth.linear_project_id(name), "name": name, "slugId": slug,
+        "id": synth.linear_project_id(name),
+        "name": name,
+        "slugId": slug,
         "url": f"https://linear.app/{_org(info)}/project/{slug}",
-        "description": "", "content": None, "color": "#5e6ad2", "icon": None,
-        "state": "started", "status": {"id": synth.linear_project_id("status:" + name)},
-        "priority": 0.0, "priorityLabel": "No priority",
-        "progress": 0.0, "scope": 0.0, "sortOrder": 0.0, "prioritySortOrder": 0.0,
-        "labelIds": [], "issueCountHistory": [], "completedIssueCountHistory": [],
-        "scopeHistory": [], "completedScopeHistory": [], "inProgressScopeHistory": [],
+        "description": "",
+        "content": None,
+        "color": "#5e6ad2",
+        "icon": None,
+        "state": "started",
+        "status": {"id": synth.linear_project_id("status:" + name)},
+        "priority": 0.0,
+        "priorityLabel": "No priority",
+        "progress": 0.0,
+        "scope": 0.0,
+        "sortOrder": 0.0,
+        "prioritySortOrder": 0.0,
+        "labelIds": [],
+        "issueCountHistory": [],
+        "completedIssueCountHistory": [],
+        "scopeHistory": [],
+        "completedScopeHistory": [],
+        "inProgressScopeHistory": [],
         "frequencyResolution": "week",
-        "slackIssueComments": False, "slackNewIssue": False, "slackIssueStatuses": False,
-        "createdAt": created, "updatedAt": created,
-        "trashed": None, "archivedAt": None, "autoArchivedAt": None, "canceledAt": None,
-        "completedAt": None, "startedAt": None, "healthUpdatedAt": None, "health": None,
-        "targetDate": None, "startDate": None, "targetDateResolution": None,
-        "startDateResolution": None, "updateRemindersDay": None, "updateRemindersHour": None,
-        "updateReminderFrequency": None, "updateReminderFrequencyInWeeks": None,
+        "slackIssueComments": False,
+        "slackNewIssue": False,
+        "slackIssueStatuses": False,
+        "createdAt": created,
+        "updatedAt": created,
+        "trashed": None,
+        "archivedAt": None,
+        "autoArchivedAt": None,
+        "canceledAt": None,
+        "completedAt": None,
+        "startedAt": None,
+        "healthUpdatedAt": None,
+        "health": None,
+        "targetDate": None,
+        "startDate": None,
+        "targetDateResolution": None,
+        "startDateResolution": None,
+        "updateRemindersDay": None,
+        "updateRemindersHour": None,
+        "updateReminderFrequency": None,
+        "updateReminderFrequencyInWeeks": None,
         "projectUpdateRemindersPausedUntilAt": None,
-        "slackChannelId": None, "microsoftTeamsChannelId": None,
-        "integrationsSettings": None, "documentContent": None, "syncedWith": None,
-        "convertedFromIssue": None, "lastAppliedTemplate": None, "lastUpdate": None,
-        "creator": None, "lead": None, "favorite": None,
+        "slackChannelId": None,
+        "microsoftTeamsChannelId": None,
+        "integrationsSettings": None,
+        "documentContent": None,
+        "syncedWith": None,
+        "convertedFromIssue": None,
+        "lastAppliedTemplate": None,
+        "lastUpdate": None,
+        "creator": None,
+        "lead": None,
+        "favorite": None,
     }
 
 
@@ -276,16 +372,30 @@ def _cycle(name: str | None, team: str, info) -> dict | None:
     start = synth.epoch("linear-cycle:" + name)
     created = synth.rfc3339(start)
     return {
-        "id": synth.linear_cycle_id(name, team), "name": name,
+        "id": synth.linear_cycle_id(name, team),
+        "name": name,
         "number": float(synth.linear_issue_number(name) or synth.hnum(name, 0, 4) % 200),
-        "startsAt": created, "endsAt": synth.rfc3339(start + 14 * 86400),
-        "createdAt": created, "updatedAt": created,
-        "progress": 0.0, "issueCountHistory": [], "completedIssueCountHistory": [],
-        "scopeHistory": [], "completedScopeHistory": [], "inProgressScopeHistory": [],
-        "isActive": False, "isFuture": False, "isPast": False, "isPrevious": False,
+        "startsAt": created,
+        "endsAt": synth.rfc3339(start + 14 * 86400),
+        "createdAt": created,
+        "updatedAt": created,
+        "progress": 0.0,
+        "issueCountHistory": [],
+        "completedIssueCountHistory": [],
+        "scopeHistory": [],
+        "completedScopeHistory": [],
+        "inProgressScopeHistory": [],
+        "isActive": False,
+        "isFuture": False,
+        "isPast": False,
+        "isPrevious": False,
         "isNext": False,
-        "description": None, "completedAt": None, "autoArchivedAt": None, "archivedAt": None,
-        "inheritedFrom": None, "team": _team(team, info),
+        "description": None,
+        "completedAt": None,
+        "autoArchivedAt": None,
+        "archivedAt": None,
+        "inheritedFrom": None,
+        "team": _team(team, info),
     }
 
 
@@ -294,11 +404,22 @@ def _labels(row) -> list[str]:
 
 
 def _label(name: str, ts: str) -> dict:
-    return {"id": synth.linear_label_id(name), "name": name, "color": "#bec2c8",
-            "isGroup": False, "createdAt": ts, "updatedAt": ts,
-            "description": None, "archivedAt": None, "lastAppliedAt": None,
-            "inheritedFrom": None, "parent": None, "team": None, "creator": None,
-            "retiredBy": None}
+    return {
+        "id": synth.linear_label_id(name),
+        "name": name,
+        "color": "#bec2c8",
+        "isGroup": False,
+        "createdAt": ts,
+        "updatedAt": ts,
+        "description": None,
+        "archivedAt": None,
+        "lastAppliedAt": None,
+        "inheritedFrom": None,
+        "parent": None,
+        "team": None,
+        "creator": None,
+        "retiredBy": None,
+    }
 
 
 def _label_nodes(row) -> list[dict]:
@@ -308,19 +429,37 @@ def _label_nodes(row) -> list[dict]:
 
 def _attachment(row, info) -> dict:
     ts = synth.rfc3339(row["created_ts"])
-    return {"id": synth.linear_attachment_id(row["id"]), "title": row["title"],
-            "url": row["url"], "subtitle": row["subtitle"], "sourceType": row["source_type"],
-            "metadata": {}, "source": None, "bodyData": None, "groupBySource": False,
-            "createdAt": ts, "updatedAt": ts, "archivedAt": None,
-            "creator": None, "externalUserCreator": None, "originalIssue": None,
-            "_doc_id": row["doc_id"]}
+    return {
+        "id": synth.linear_attachment_id(row["id"]),
+        "title": row["title"],
+        "url": row["url"],
+        "subtitle": row["subtitle"],
+        "sourceType": row["source_type"],
+        "metadata": {},
+        "source": None,
+        "bodyData": None,
+        "groupBySource": False,
+        "createdAt": ts,
+        "updatedAt": ts,
+        "archivedAt": None,
+        "creator": None,
+        "externalUserCreator": None,
+        "originalIssue": None,
+        "_doc_id": row["doc_id"],
+    }
 
 
 def _relation(row, info) -> dict:
     ts = synth.rfc3339(row["created_ts"])
-    return {"id": synth.linear_relation_id(row["id"]), "type": row["type"],
-            "createdAt": ts, "updatedAt": ts, "archivedAt": None,
-            "_from": row["from_doc_id"], "_to": row["to_doc_id"]}
+    return {
+        "id": synth.linear_relation_id(row["id"]),
+        "type": row["type"],
+        "createdAt": ts,
+        "updatedAt": ts,
+        "archivedAt": None,
+        "_from": row["from_doc_id"],
+        "_to": row["to_doc_id"],
+    }
 
 
 def _release(name: str | None, info) -> dict | None:
@@ -332,14 +471,30 @@ def _release(name: str | None, info) -> dict | None:
     slug = synth.hnum("linear-release:" + name, 0, 8).__format__("08x")
     created = synth.rfc3339(synth.epoch("linear-release:" + name))
     return {
-        "id": synth.linear_release_id(name), "name": name, "slugId": slug,
+        "id": synth.linear_release_id(name),
+        "name": name,
+        "slugId": slug,
         "url": f"https://linear.app/{_org(info)}/release/{slug}",
-        "issueCount": 0.0, "currentProgress": {}, "progressHistory": {},
-        "createdAt": created, "updatedAt": created,
-        "description": None, "version": None, "commitSha": None, "trashed": None,
-        "startDate": None, "targetDate": None, "startedAt": None, "completedAt": None,
-        "canceledAt": None, "autoArchivedAt": None, "archivedAt": None,
-        "releaseNotes": [], "stage": None, "pipeline": None, "creator": None,
+        "issueCount": 0.0,
+        "currentProgress": {},
+        "progressHistory": {},
+        "createdAt": created,
+        "updatedAt": created,
+        "description": None,
+        "version": None,
+        "commitSha": None,
+        "trashed": None,
+        "startDate": None,
+        "targetDate": None,
+        "startedAt": None,
+        "completedAt": None,
+        "canceledAt": None,
+        "autoArchivedAt": None,
+        "archivedAt": None,
+        "releaseNotes": [],
+        "stage": None,
+        "pipeline": None,
+        "creator": None,
     }
 
 
@@ -366,28 +521,60 @@ def _team(container: str, info) -> dict:
     key = synth.linear_team_key(container)
     created = synth.rfc3339(synth.epoch("linear-team:" + container))
     return {
-        "id": synth.linear_team_id(container), "key": key, "name": container,
-        "displayName": container, "createdAt": created, "updatedAt": created,
-        "timezone": "Etc/UTC", "visibility": "public", "private": False,
+        "id": synth.linear_team_id(container),
+        "key": key,
+        "name": container,
+        "displayName": container,
+        "createdAt": created,
+        "updatedAt": created,
+        "timezone": "Etc/UTC",
+        "visibility": "public",
+        "private": False,
         "inviteHash": synth.hnum("linear-team:" + container, 0, 12).__format__("012x"),
-        "cyclesEnabled": False, "cycleDuration": 2, "cycleCooldownTime": 0, "cycleStartDay": 1.0,
-        "cycleIssueAutoAssignCompleted": False, "cycleIssueAutoAssignStarted": False,
-        "cycleLockToActive": False, "upcomingCycleCount": 0.0,
+        "cyclesEnabled": False,
+        "cycleDuration": 2,
+        "cycleCooldownTime": 0,
+        "cycleStartDay": 1.0,
+        "cycleIssueAutoAssignCompleted": False,
+        "cycleIssueAutoAssignStarted": False,
+        "cycleLockToActive": False,
+        "upcomingCycleCount": 0.0,
         "cycleCalenderUrl": f"https://linear.app/{_org(info)}/team/{key}/cycles.ics",
-        "autoArchivePeriod": 6.0, "autoClosePeriod": None, "autoCloseStateId": None,
-        "securitySettings": {}, "issueEstimationType": "notUsed", "defaultIssueEstimate": 0.0,
-        "issueEstimationExtended": False, "issueEstimationAllowZero": False,
-        "inheritIssueEstimation": True, "inheritWorkflowStatuses": False,
-        "setIssueSortOrderOnStateChange": "first", "issueSortOrderDefaultToBottom": False,
-        "issueOrderingNoPriorityFirst": False, "requirePriorityToLeaveTriage": False,
-        "triageEnabled": False, "groupIssueHistory": True, "ledInitiativeCount": 0.0,
-        "aiDiscussionSummariesEnabled": False, "aiThreadSummariesEnabled": False,
-        "slackIssueComments": False, "slackNewIssue": False, "slackIssueStatuses": False,
-        "scimManaged": False, "scimGroupName": None, "icon": None, "color": None,
-        "description": None, "archivedAt": None, "retiredAt": None, "allMembersCanJoin": None,
-        "autoCloseChildIssues": None, "autoCloseParentIssues": None,
-        "defaultTemplateForMembersId": None, "defaultTemplateForNonMembersId": None,
-        "_container": container,   # not a schema field: how Team.issues knows what to query
+        "autoArchivePeriod": 6.0,
+        "autoClosePeriod": None,
+        "autoCloseStateId": None,
+        "securitySettings": {},
+        "issueEstimationType": "notUsed",
+        "defaultIssueEstimate": 0.0,
+        "issueEstimationExtended": False,
+        "issueEstimationAllowZero": False,
+        "inheritIssueEstimation": True,
+        "inheritWorkflowStatuses": False,
+        "setIssueSortOrderOnStateChange": "first",
+        "issueSortOrderDefaultToBottom": False,
+        "issueOrderingNoPriorityFirst": False,
+        "requirePriorityToLeaveTriage": False,
+        "triageEnabled": False,
+        "groupIssueHistory": True,
+        "ledInitiativeCount": 0.0,
+        "aiDiscussionSummariesEnabled": False,
+        "aiThreadSummariesEnabled": False,
+        "slackIssueComments": False,
+        "slackNewIssue": False,
+        "slackIssueStatuses": False,
+        "scimManaged": False,
+        "scimGroupName": None,
+        "icon": None,
+        "color": None,
+        "description": None,
+        "archivedAt": None,
+        "retiredAt": None,
+        "allMembersCanJoin": None,
+        "autoCloseChildIssues": None,
+        "autoCloseParentIssues": None,
+        "defaultTemplateForMembersId": None,
+        "defaultTemplateForNonMembersId": None,
+        "_container": container,  # not a schema field: how Team.issues knows what to query
     }
 
 
@@ -398,7 +585,8 @@ def _issue(row, info) -> dict:
     sort orders, bot actors and shared access are declared because `@linear/sdk`'s fragment
     selects them, and resolve empty because a document corpus has nothing behind them."""
     identifier = row["identifier"] or synth.linear_identifier(
-        row["doc_id"], synth.linear_team_key(row["team"]))
+        row["doc_id"], synth.linear_team_key(row["team"])
+    )
     title = row["title"] or ""
     created = row["created_ts"]
     # updatedAt is non-null in Linear; an issue with no recorded edit reports its creation time,
@@ -414,13 +602,14 @@ def _issue(row, info) -> dict:
         # issue's markdown description is.
         "description": row["content"],
         "url": synth.linear_url(identifier, title, _org(info)),
-        "branchName": row["branch_name"] or synth.linear_branch_name(
-            identifier, title, row["assignee_email"]),
+        "branchName": row["branch_name"]
+        or synth.linear_branch_name(identifier, title, row["assignee_email"]),
         "priority": float(row["priority"] if row["priority"] is not None else 0),
         "priorityLabel": synth.linear_priority_label(row["priority"]),
         "estimate": float(row["estimate"]) if row["estimate"] is not None else None,
         "dueDate": row["due_date"],
-        "createdAt": synth.rfc3339(created), "updatedAt": synth.rfc3339(updated),
+        "createdAt": synth.rfc3339(created),
+        "updatedAt": synth.rfc3339(updated),
         "archivedAt": _ts(row["archived_ts"]),
         "autoArchivedAt": _ts(row["auto_archived_ts"]),
         "autoClosedAt": _ts(row["auto_closed_ts"]),
@@ -435,48 +624,97 @@ def _issue(row, info) -> dict:
         "creator": _user(row["author_email"], row["owner_display"], info),
         "assignee": _user(row["assignee_email"], row["assignee_display"], info),
         # --- declared by the SDK's fragment, no corpus data behind them -------------
-        "trashed": None, "reactionData": {}, "reactions": [], "integrationSourceType": None,
-        "previousIdentifiers": [], "customerTicketCount": 0.0, "inheritsSharedAccess": False,
-        "boardOrder": 0.0, "sortOrder": 0.0, "prioritySortOrder": 0.0, "subIssueSortOrder": None,
-        "startedTriageAt": None, "triagedAt": None, "addedToCycleAt": None,
-        "addedToProjectAt": None, "addedToTeamAt": None, "snoozedUntilAt": None,
-        "slaStartedAt": None, "slaBreachesAt": None, "slaHighRiskAt": None,
-        "slaMediumRiskAt": None, "slaType": None,
+        "trashed": None,
+        "reactionData": {},
+        "reactions": [],
+        "integrationSourceType": None,
+        "previousIdentifiers": [],
+        "customerTicketCount": 0.0,
+        "inheritsSharedAccess": False,
+        "boardOrder": 0.0,
+        "sortOrder": 0.0,
+        "prioritySortOrder": 0.0,
+        "subIssueSortOrder": None,
+        "startedTriageAt": None,
+        "triagedAt": None,
+        "addedToCycleAt": None,
+        "addedToProjectAt": None,
+        "addedToTeamAt": None,
+        "snoozedUntilAt": None,
+        "slaStartedAt": None,
+        "slaBreachesAt": None,
+        "slaHighRiskAt": None,
+        "slaMediumRiskAt": None,
+        "slaType": None,
         # NOT null, and not a stub by choice: `@linear/sdk` builds `new IssueSharedAccess(...)`
         # unconditionally, so a null here is a TypeError inside the client rather than an empty
         # field. The values are also simply true — nothing in a document corpus is shared with an
         # external viewer — so the honest answer and the working one coincide.
-        "sharedAccess": {"isShared": False, "sharedWithCount": 0.0, "sharedWithUsers": [],
-                         "viewerHasOnlySharedAccess": False, "disallowedIssueFields": []},
-        "delegate": None, "botActor": None, "sourceComment": None,
-        "syncedWith": None, "externalUserCreator": None, "asksExternalUserRequester": None,
-        "asksRequester": None, "lastAppliedTemplate": None,
-        "projectMilestone": None, "recurringIssueTemplate": None, "snoozedBy": None,
+        "sharedAccess": {
+            "isShared": False,
+            "sharedWithCount": 0.0,
+            "sharedWithUsers": [],
+            "viewerHasOnlySharedAccess": False,
+            "disallowedIssueFields": [],
+        },
+        "delegate": None,
+        "botActor": None,
+        "sourceComment": None,
+        "syncedWith": None,
+        "externalUserCreator": None,
+        "asksExternalUserRequester": None,
+        "asksRequester": None,
+        "lastAppliedTemplate": None,
+        "projectMilestone": None,
+        "recurringIssueTemplate": None,
+        "snoozedBy": None,
         "favorite": None,
-        "_row": row,   # not a schema field: how Issue.comments / Issue.labels reach the row
+        "_row": row,  # not a schema field: how Issue.comments / Issue.labels reach the row
     }
 
 
 def _comment(row, info) -> dict:
     ts = synth.rfc3339(row["created_ts"])
     return {
-        "id": synth.linear_comment_id(row["id"]), "body": row["body"],
-        "createdAt": ts, "updatedAt": ts,
+        "id": synth.linear_comment_id(row["id"]),
+        "body": row["body"],
+        "createdAt": ts,
+        "updatedAt": ts,
         "url": f"https://linear.app/{_org(info)}/issue/#comment-{synth.linear_comment_id(row['id'])}",
-        "reactionData": {}, "reactions": [],
+        "reactionData": {},
+        "reactions": [],
         "user": _user(row["author_email"], None, info),
         "issueId": synth.linear_id(row["doc_id"]),
-        "quotedText": None, "archivedAt": None, "editedAt": None, "resolvedAt": None,
-        "resolvingCommentId": None, "documentContentId": None, "initiativeId": None,
-        "initiativeUpdateId": None, "parentId": None, "projectId": None, "projectUpdateId": None,
-        "agentSession": None, "botActor": None, "resolvingComment": None, "documentContent": None,
-        "syncedWith": None, "externalThread": None, "externalUser": None, "initiative": None,
-        "initiativeUpdate": None, "issue": None, "parent": None, "project": None,
-        "projectUpdate": None, "resolvingUser": None,
+        "quotedText": None,
+        "archivedAt": None,
+        "editedAt": None,
+        "resolvedAt": None,
+        "resolvingCommentId": None,
+        "documentContentId": None,
+        "initiativeId": None,
+        "initiativeUpdateId": None,
+        "parentId": None,
+        "projectId": None,
+        "projectUpdateId": None,
+        "agentSession": None,
+        "botActor": None,
+        "resolvingComment": None,
+        "documentContent": None,
+        "syncedWith": None,
+        "externalThread": None,
+        "externalUser": None,
+        "initiative": None,
+        "initiativeUpdate": None,
+        "issue": None,
+        "parent": None,
+        "project": None,
+        "projectUpdate": None,
+        "resolvingUser": None,
     }
 
 
 # --- Query roots ---------------------------------------------------------------------
+
 
 def _resolve_issue_ids(info, flt):
     """Rewrite an ``IssueFilter``'s ``id`` comparator from Linear UUIDs to doc_ids, since the
@@ -488,9 +726,14 @@ def _resolve_issue_ids(info, flt):
     for k, v in flt.items():
         if k == "id" and isinstance(v, dict):
             idx = info.context.get("index", {})
-            out[k] = {op: ([idx.get(str(x), "\x00none") for x in val]
-                           if isinstance(val, list) else idx.get(str(val), "\x00none"))
-                      for op, val in v.items()}
+            out[k] = {
+                op: (
+                    [idx.get(str(x), "\x00none") for x in val]
+                    if isinstance(val, list)
+                    else idx.get(str(val), "\x00none")
+                )
+                for op, val in v.items()
+            }
         elif k in ("and", "or") and isinstance(v, list):
             out[k] = [_resolve_issue_ids(info, s) for s in v]
         else:
@@ -498,9 +741,20 @@ def _resolve_issue_ids(info, flt):
     return out
 
 
-def _issue_page(info, *, team=None, first=None, after=None, last=None, before=None,
-                filter=None, orderBy=None, sort=None, includeArchived=False,
-                **_ignored) -> dict:
+def _issue_page(
+    info,
+    *,
+    team=None,
+    first=None,
+    after=None,
+    last=None,
+    before=None,
+    filter=None,
+    orderBy=None,
+    sort=None,
+    includeArchived=False,
+    **_ignored,
+) -> dict:
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
@@ -508,11 +762,25 @@ def _issue_page(info, *, team=None, first=None, after=None, last=None, before=No
     if offset is None:
         # `last:` with no `before:` is the only shape that needs a total, so the COUNT is paid
         # here and not on every page.
-        offset = _from_end(None, limit, floor, store.count_linear_issues(
-            conn, team, visible_ids=visible, prefilter=prefilter, archived=includeArchived))
-    rows = store.list_linear_issues(conn, team, visible_ids=visible, limit=limit + 1,
-                                    offset=offset, order_by=orderBy, prefilter=prefilter,
-                                    sort=sort, archived=includeArchived)
+        offset = _from_end(
+            None,
+            limit,
+            floor,
+            store.count_linear_issues(
+                conn, team, visible_ids=visible, prefilter=prefilter, archived=includeArchived
+            ),
+        )
+    rows = store.list_linear_issues(
+        conn,
+        team,
+        visible_ids=visible,
+        limit=limit + 1,
+        offset=offset,
+        order_by=orderBy,
+        prefilter=prefilter,
+        sort=sort,
+        archived=includeArchived,
+    )
     rows, has_next = _page(rows, limit)
     return _connection([_issue(r, info) for r in rows], offset, has_next)
 
@@ -544,16 +812,20 @@ def resolve_team(_root, info, id):
     ``team(id: "BLA")`` confirmed its existence and name."""
     ctx = _ctx(info)
     container = ctx.get("team_index", {}).get(str(id))
-    if container is not None and ctx["visible_ids"] is not None and not store.linear_team_has_visible(
-            ctx["conn"], container, ctx["visible_ids"]):
+    if (
+        container is not None
+        and ctx["visible_ids"] is not None
+        and not store.linear_team_has_visible(ctx["conn"], container, ctx["visible_ids"])
+    ):
         container = None
     if container is None:
         raise GraphQLError(f"Entity not found: Team - Could not find referenced Team. id={id}")
     return _team(container, info)
 
 
-def resolve_teams(_root, info, first=None, after=None, last=None, before=None, filter=None,
-                  **_ignored) -> dict:
+def resolve_teams(
+    _root, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+) -> dict:
     ctx = _ctx(info)
     offset, limit, floor = _slice(first, after, last, before)
     # A team the caller can see no issue in is not a team they can see — same rule the Slack
@@ -561,39 +833,52 @@ def resolve_teams(_root, info, first=None, after=None, last=None, before=None, f
     # An EXISTS probe per team, NOT the grouped count: `issueCount` is a bound field that only
     # runs when selected, and computing every team's total just to test visibility cost 22ms of
     # ACL-filtered scan on the bench corpus for a question `LIMIT 1` answers.
-    names = [r["name"] for r in store.list_containers(ctx["conn"], "linear")
-             if ctx["visible_ids"] is None
-             or store.linear_team_has_visible(ctx["conn"], r["name"], ctx["visible_ids"])]
+    names = [
+        r["name"]
+        for r in store.list_containers(ctx["conn"], "linear")
+        if ctx["visible_ids"] is None
+        or store.linear_team_has_visible(ctx["conn"], r["name"], ctx["visible_ids"])
+    ]
     names = [n for n in names if _match_team(n, filter)]
     offset = _from_end(offset, limit, floor, len(names))
-    page = names[offset:offset + limit]
+    page = names[offset : offset + limit]
     return _connection([_team(n, info) for n in page], offset, offset + limit < len(names))
 
 
-def resolve_comments(_root, info, first=None, after=None, last=None, before=None,
-                     filter=None, **_ignored) -> dict:
+def resolve_comments(
+    _root, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+) -> dict:
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
     prefilter = compile_comment_filter(conn, filter)
     if offset is None:
-        offset = _from_end(None, limit, floor, store.count_linear_comments(
-            conn, visible_ids=visible, prefilter=prefilter))
-    rows = store.list_linear_comments(conn, visible_ids=visible, limit=limit + 1, offset=offset,
-                                      prefilter=prefilter)
+        offset = _from_end(
+            None,
+            limit,
+            floor,
+            store.count_linear_comments(conn, visible_ids=visible, prefilter=prefilter),
+        )
+    rows = store.list_linear_comments(
+        conn, visible_ids=visible, limit=limit + 1, offset=offset, prefilter=prefilter
+    )
     rows, has_next = _page(rows, limit)
     return _connection([_comment(r, info) for r in rows], offset, has_next)
 
 
-def resolve_users(_root, info, first=None, after=None, last=None, before=None, filter=None,
-                  **_ignored) -> dict:
+def resolve_users(
+    _root, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+) -> dict:
     ctx = _ctx(info)
     offset, limit, floor = _slice(first, after, last, before)
     rows = [r for r in store.list_users(ctx["conn"]) if _match_user(r, filter)]
     offset = _from_end(offset, limit, floor, len(rows))
-    page = rows[offset:offset + limit]
-    return _connection([_user(r["email"], r["display_name"], info) for r in page],
-                       offset, offset + limit < len(rows))
+    page = rows[offset : offset + limit]
+    return _connection(
+        [_user(r["email"], r["display_name"], info) for r in page],
+        offset,
+        offset + limit < len(rows),
+    )
 
 
 # --- by-id roots for the SDK's lazy relation accessors ------------------------------------
@@ -616,15 +901,22 @@ def resolve_users(_root, info, first=None, after=None, last=None, before=None, f
 # This costs the honest caller nothing: `@linear/sdk`'s lazy accessors only fire these for
 # entities hanging off an issue it just successfully read, so the probe always finds that issue.
 
+
 def _by_id(info, index_key: str, id_value, entity: str, kind: str | None = None):
     ctx = _ctx(info)
     found = ctx.get(index_key, {}).get(str(id_value))
-    if found is not None and kind is not None and not store.linear_entity_has_visible(
-            ctx["conn"], kind, found, visible_ids=ctx["visible_ids"]):
-        found = None   # exists in the corpus, but not for this caller — answer as if absent
+    if (
+        found is not None
+        and kind is not None
+        and not store.linear_entity_has_visible(
+            ctx["conn"], kind, found, visible_ids=ctx["visible_ids"]
+        )
+    ):
+        found = None  # exists in the corpus, but not for this caller — answer as if absent
     if found is None:
         raise GraphQLError(
-            f"Entity not found: {entity} - Could not find referenced {entity}. id={id_value}")
+            f"Entity not found: {entity} - Could not find referenced {entity}. id={id_value}"
+        )
     return found
 
 
@@ -663,7 +955,8 @@ def resolve_attachment(_root, info, id) -> dict:
     row = store.linear_attachment_by_id(ctx["conn"], str(id), visible_ids=ctx["visible_ids"])
     if row is None:
         raise GraphQLError(
-            f"Entity not found: Attachment - Could not find referenced Attachment. id={id}")
+            f"Entity not found: Attachment - Could not find referenced Attachment. id={id}"
+        )
     return _attachment(row, info)
 
 
@@ -672,7 +965,8 @@ def resolve_issue_relation(_root, info, id) -> dict:
     row = store.linear_relation_by_id(ctx["conn"], str(id), visible_ids=ctx["visible_ids"])
     if row is None:
         raise GraphQLError(
-            f"Entity not found: IssueRelation - Could not find referenced IssueRelation. id={id}")
+            f"Entity not found: IssueRelation - Could not find referenced IssueRelation. id={id}"
+        )
     return _relation(row, info)
 
 
@@ -692,22 +986,36 @@ def resolve_viewer(_root, info) -> dict:
 
 # --- relation fields that take arguments ------------------------------------------------
 
+
 def resolve_team_issues(team, info, **kwargs) -> dict:
     return _issue_page(info, team=team["_container"], **kwargs)
 
 
-def resolve_issue_comments(issue, info, first=None, after=None, last=None, before=None,
-                           filter=None, **_ignored) -> dict:
+def resolve_issue_comments(
+    issue, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+) -> dict:
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
     doc_id = issue["_row"]["doc_id"]
     prefilter = compile_comment_filter(conn, filter)
     if offset is None:
-        offset = _from_end(None, limit, floor, store.count_linear_comments(
-            conn, doc_id=doc_id, visible_ids=visible, prefilter=prefilter))
-    rows = store.list_linear_comments(conn, doc_id=doc_id, visible_ids=visible, limit=limit + 1,
-                                      offset=offset, prefilter=prefilter)
+        offset = _from_end(
+            None,
+            limit,
+            floor,
+            store.count_linear_comments(
+                conn, doc_id=doc_id, visible_ids=visible, prefilter=prefilter
+            ),
+        )
+    rows = store.list_linear_comments(
+        conn,
+        doc_id=doc_id,
+        visible_ids=visible,
+        limit=limit + 1,
+        offset=offset,
+        prefilter=prefilter,
+    )
     rows, has_next = _page(rows, limit)
     return _connection([_comment(r, info) for r in rows], offset, has_next)
 
@@ -726,13 +1034,13 @@ def resolve_issue_parent(issue, info):
     if not parent_doc_id:
         return None
     ctx = _ctx(info)
-    row = store.get_document(ctx["conn"], "linear", parent_doc_id,
-                             visible_ids=ctx["visible_ids"])
+    row = store.get_document(ctx["conn"], "linear", parent_doc_id, visible_ids=ctx["visible_ids"])
     return _issue(row, info) if row is not None else None
 
 
-def resolve_issue_children(issue, info, first=None, after=None, last=None, before=None,
-                           filter=None, **_ignored) -> dict:
+def resolve_issue_children(
+    issue, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+) -> dict:
     """``Issue.children`` — the exact inverse of ``Issue.parent``, read off the ``parent_doc_id``
     resolved at import. Not a join on ``identifier``: bench keys repeat, so that would attach one
     issue's children to every issue sharing its key."""
@@ -742,10 +1050,19 @@ def resolve_issue_children(issue, info, first=None, after=None, last=None, befor
     doc_id = issue["_row"]["doc_id"]
     prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter))
     if offset is None:
-        offset = _from_end(None, limit, floor, len(store.linear_children(
-            conn, doc_id, visible_ids=visible, limit=PAGE_MAX, prefilter=prefilter)))
-    rows = store.linear_children(conn, doc_id, visible_ids=visible, limit=limit + 1,
-                                 offset=offset, prefilter=prefilter)
+        offset = _from_end(
+            None,
+            limit,
+            floor,
+            len(
+                store.linear_children(
+                    conn, doc_id, visible_ids=visible, limit=PAGE_MAX, prefilter=prefilter
+                )
+            ),
+        )
+    rows = store.linear_children(
+        conn, doc_id, visible_ids=visible, limit=limit + 1, offset=offset, prefilter=prefilter
+    )
     rows, has_next = _page(rows, limit)
     return _connection([_issue(r, info) for r in rows], offset, has_next)
 
@@ -756,24 +1073,37 @@ def _relations_page(issue, info, *, inverse, first, after, last, before) -> dict
     offset, limit, floor = _slice(first, after, last, before)
     doc_id = issue["_row"]["doc_id"]
     if offset is None:
-        offset = _from_end(None, limit, floor, len(store.linear_relations(
-            conn, doc_id, inverse=inverse, visible_ids=visible, limit=PAGE_MAX)))
-    rows = store.linear_relations(conn, doc_id, inverse=inverse, visible_ids=visible,
-                                  limit=limit + 1, offset=offset)
+        offset = _from_end(
+            None,
+            limit,
+            floor,
+            len(
+                store.linear_relations(
+                    conn, doc_id, inverse=inverse, visible_ids=visible, limit=PAGE_MAX
+                )
+            ),
+        )
+    rows = store.linear_relations(
+        conn, doc_id, inverse=inverse, visible_ids=visible, limit=limit + 1, offset=offset
+    )
     rows, has_next = _page(rows, limit)
     return _connection([_relation(r, info) for r in rows], offset, has_next)
 
 
-def resolve_issue_relations(issue, info, first=None, after=None, last=None, before=None,
-                            **_ignored) -> dict:
-    return _relations_page(issue, info, inverse=False, first=first, after=after, last=last,
-                           before=before)
+def resolve_issue_relations(
+    issue, info, first=None, after=None, last=None, before=None, **_ignored
+) -> dict:
+    return _relations_page(
+        issue, info, inverse=False, first=first, after=after, last=last, before=before
+    )
 
 
-def resolve_issue_inverse_relations(issue, info, first=None, after=None, last=None, before=None,
-                                    **_ignored) -> dict:
-    return _relations_page(issue, info, inverse=True, first=first, after=after, last=last,
-                           before=before)
+def resolve_issue_inverse_relations(
+    issue, info, first=None, after=None, last=None, before=None, **_ignored
+) -> dict:
+    return _relations_page(
+        issue, info, inverse=True, first=first, after=after, last=last, before=before
+    )
 
 
 def resolve_relation_issue(relation, info) -> dict:
@@ -794,41 +1124,48 @@ def _issue_by_doc_id(info, doc_id):
     return _issue(row, info)
 
 
-def resolve_issue_attachments(issue, info, first=None, after=None, last=None, before=None,
-                              url=None, filter=None, **_ignored) -> dict:
+def resolve_issue_attachments(
+    issue, info, first=None, after=None, last=None, before=None, url=None, filter=None, **_ignored
+) -> dict:
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
     doc_id = issue["_row"]["doc_id"]
-    nodes = [_attachment(r, info) for r in
-             store.linear_attachments(conn, doc_id, visible_ids=visible, limit=PAGE_MAX, url=url)]
+    nodes = [
+        _attachment(r, info)
+        for r in store.linear_attachments(
+            conn, doc_id, visible_ids=visible, limit=PAGE_MAX, url=url
+        )
+    ]
     nodes = [n for n in nodes if _match_attachment(n, filter)]
     offset = _from_end(offset, limit, floor, len(nodes))
-    return _connection(nodes[offset:offset + limit], offset, offset + limit < len(nodes))
+    return _connection(nodes[offset : offset + limit], offset, offset + limit < len(nodes))
 
 
 def resolve_attachment_issue(attachment, info) -> dict:
     return _issue_by_doc_id(info, attachment["_doc_id"])
 
 
-def resolve_issue_releases(issue, info, first=None, after=None, last=None, before=None,
-                           filter=None, **_ignored) -> dict:
+def resolve_issue_releases(
+    issue, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+) -> dict:
     """An issue names at most one release in the corpus, but Linear models it as a connection."""
     offset, limit, floor = _slice(first, after, last, before)
     rel = _release(issue["_row"]["release"], info)
     nodes = [n for n in ([rel] if rel else []) if _match_release(n, filter)]
     offset = _from_end(offset, limit, floor, len(nodes))
-    return _connection(nodes[offset:offset + limit], offset, offset + limit < len(nodes))
+    return _connection(nodes[offset : offset + limit], offset, offset + limit < len(nodes))
 
 
-def resolve_issue_labels(issue, info, first=None, after=None, last=None, before=None,
-                         filter=None, **_ignored) -> dict:
+def resolve_issue_labels(
+    issue, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+) -> dict:
     """Labels are a JSON column on the issue, so the whole set is already in hand; the page is a
     slice of it rather than another query."""
     offset, limit, floor = _slice(first, after, last, before)
     nodes = [n for n in _label_nodes(issue["_row"]) if _match_label(n, filter)]
     offset = _from_end(offset, limit, floor, len(nodes))
-    return _connection(nodes[offset:offset + limit], offset, offset + limit < len(nodes))
+    return _connection(nodes[offset : offset + limit], offset, offset + limit < len(nodes))
 
 
 RESOLVERS = {
@@ -850,13 +1187,20 @@ RESOLVERS = {
         "issueRelation": resolve_issue_relation,
     },
     "Team": {"issues": resolve_team_issues, "issueCount": resolve_team_issue_count},
-    "Issue": {"comments": resolve_issue_comments, "labels": resolve_issue_labels,
-              "parent": resolve_issue_parent, "children": resolve_issue_children,
-              "relations": resolve_issue_relations,
-              "inverseRelations": resolve_issue_inverse_relations,
-              "attachments": resolve_issue_attachments, "releases": resolve_issue_releases},
-    "IssueRelation": {"issue": resolve_relation_issue,
-                      "relatedIssue": resolve_relation_related_issue},
+    "Issue": {
+        "comments": resolve_issue_comments,
+        "labels": resolve_issue_labels,
+        "parent": resolve_issue_parent,
+        "children": resolve_issue_children,
+        "relations": resolve_issue_relations,
+        "inverseRelations": resolve_issue_inverse_relations,
+        "attachments": resolve_issue_attachments,
+        "releases": resolve_issue_releases,
+    },
+    "IssueRelation": {
+        "issue": resolve_relation_issue,
+        "relatedIssue": resolve_relation_related_issue,
+    },
     "Attachment": {"issue": resolve_attachment_issue},
 }
 
@@ -866,5 +1210,6 @@ def build_engine():
     from app.graphql import engine
 
     return engine.from_sdl(__file__, "linear", RESOLVERS)
+
 
 __all__ = ["RESOLVERS", "build_engine", "PAGE_DEFAULT", "PAGE_MAX"]

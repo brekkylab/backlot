@@ -4,6 +4,7 @@ Only a shim, and only because the examples are run directly — ``sys.path[0]`` 
 directory, so ``_common`` is not importable without this. One file per directory beats the same
 four lines in each of its scripts.
 """
+
 import sys
 from pathlib import Path
 

@@ -5,6 +5,7 @@ vendors look similar — a user object, an error envelope and a page wrapper dif
 definition, and collapsing them is how a mock starts serving the wrong vendor's shape. What lands
 here is plumbing that is genuinely vendor-independent.
 """
+
 from __future__ import annotations
 
 from fastapi import Request

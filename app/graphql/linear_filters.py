@@ -17,6 +17,7 @@ Two design rules make the result trustworthy rather than merely convenient:
   both are pure functions of a column whose distinct values are a handful of rows, so they
   compile to an ``IN`` over the names that satisfy the predicate. That is exact, not approximate.
 """
+
 from __future__ import annotations
 
 import datetime as _dt
@@ -72,19 +73,25 @@ class _Comparator:
                 continue
             v = self._value(raw)
             if op == "eq":
-                parts.append(f"{self.col} = ?"); params.append(v)
+                parts.append(f"{self.col} = ?")
+                params.append(v)
             elif op == "neq":
                 # NULL never equals anything, so a plain `<> ?` would silently drop NULL rows a
                 # caller asking "not X" expects to see.
-                parts.append(f"({self.col} IS NULL OR {self.col} <> ?)"); params.append(v)
+                parts.append(f"({self.col} IS NULL OR {self.col} <> ?)")
+                params.append(v)
             elif op == "lt":
-                parts.append(f"{self.col} < ?"); params.append(v)
+                parts.append(f"{self.col} < ?")
+                params.append(v)
             elif op == "lte":
-                parts.append(f"{self.col} <= ?"); params.append(v)
+                parts.append(f"{self.col} <= ?")
+                params.append(v)
             elif op == "gt":
-                parts.append(f"{self.col} > ?"); params.append(v)
+                parts.append(f"{self.col} > ?")
+                params.append(v)
             elif op == "gte":
-                parts.append(f"{self.col} >= ?"); params.append(v)
+                parts.append(f"{self.col} >= ?")
+                params.append(v)
             elif op in ("in", "nin"):
                 vals = [self._value(x) for x in (raw or [])]
                 if not vals:
@@ -94,18 +101,22 @@ class _Comparator:
                 parts.append(f"{self.col} {'IN' if op == 'in' else 'NOT IN'} ({marks})")
                 params += vals
             elif op == "contains":
-                parts.append(f"{self.col} LIKE ? ESCAPE '\\'"); params.append(f"%{_like(v)}%")
+                parts.append(f"{self.col} LIKE ? ESCAPE '\\'")
+                params.append(f"%{_like(v)}%")
             elif op == "containsIgnoreCase":
                 # SQLite LIKE is already ASCII case-insensitive; lower() on both sides keeps it
                 # correct for non-ASCII too, at the cost of the index (a contains scan anyway).
                 parts.append(f"lower({self.col}) LIKE lower(?) ESCAPE '\\'")
                 params.append(f"%{_like(v)}%")
             elif op == "startsWith":
-                parts.append(f"{self.col} LIKE ? ESCAPE '\\'"); params.append(f"{_like(v)}%")
+                parts.append(f"{self.col} LIKE ? ESCAPE '\\'")
+                params.append(f"{_like(v)}%")
             elif op == "endsWith":
-                parts.append(f"{self.col} LIKE ? ESCAPE '\\'"); params.append(f"%{_like(v)}")
+                parts.append(f"{self.col} LIKE ? ESCAPE '\\'")
+                params.append(f"%{_like(v)}")
             elif op == "eqIgnoreCase":
-                parts.append(f"lower({self.col}) = lower(?)"); params.append(v)
+                parts.append(f"lower({self.col}) = lower(?)")
+                params.append(v)
             elif op == "neqIgnoreCase":
                 parts.append(f"({self.col} IS NULL OR lower({self.col}) <> lower(?))")
                 params.append(v)
@@ -127,8 +138,12 @@ def _distinct(conn, column: str) -> list[str]:
     """The distinct values of a low-cardinality column (``state``, ``team``, 6 and 3 rows in the
     bench). Read once per filter compile — cheap, and it is what makes the derived-field
     expansion below exact."""
-    return [r[0] for r in conn.execute(
-        f"SELECT DISTINCT {column} FROM linear_issues WHERE {column} IS NOT NULL")]
+    return [
+        r[0]
+        for r in conn.execute(
+            f"SELECT DISTINCT {column} FROM linear_issues WHERE {column} IS NOT NULL"
+        )
+    ]
 
 
 def _derived_in(conn, column: str, derive, spec: dict) -> tuple[str, list]:
@@ -194,8 +209,10 @@ def _label_predicate(spec: dict) -> tuple[str, list]:
             frags = [f for f, _ in subs if f]
             for _, sp in subs:
                 params.extend(sp)
-            frag, p = (("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
-                       if frags else ""), []
+            frag, p = (
+                (("(" + (" AND " if key == "and" else " OR ").join(frags) + ")") if frags else ""),
+                [],
+            )
         else:
             raise GraphQLError(f"unsupported label filter field {key!r}")
         if frag:
@@ -215,8 +232,10 @@ def _labels_predicate(spec: dict, *, every: bool) -> tuple[str, list]:
         # into a full-corpus answer. Nothing legitimate produces one, so it is a client error.
         raise GraphQLError("a labels filter must constrain something (e.g. labels.some.name)")
     if every:
-        return (f"NOT EXISTS (SELECT 1 FROM json_each(COALESCE(labels, '[]')) "
-                f"WHERE NOT {inner})", params)
+        return (
+            f"NOT EXISTS (SELECT 1 FROM json_each(COALESCE(labels, '[]')) WHERE NOT {inner})",
+            params,
+        )
     return (f"EXISTS (SELECT 1 FROM json_each(COALESCE(labels, '[]')) WHERE {inner})", params)
 
 
@@ -267,38 +286,66 @@ def _issue_filter(conn, flt: dict) -> tuple[str, list]:
         elif key == "dueDate":
             add(*_Comparator("due_date").render(spec))
         elif key in ("createdAt", "updatedAt", "completedAt", "canceledAt"):
-            col = {"createdAt": "created_ts", "updatedAt": "updated_ts",
-                   "completedAt": "completed_ts", "canceledAt": "canceled_ts"}[key]
+            col = {
+                "createdAt": "created_ts",
+                "updatedAt": "updated_ts",
+                "completedAt": "completed_ts",
+                "canceledAt": "canceled_ts",
+            }[key]
             add(*_Comparator(col, epoch=True).render(spec))
         elif key == "state":
             # No `id` here on purpose: a workflow-state id is derived from (team, name), not
             # from the `state` column alone, so it cannot be expanded over one column's distinct
             # values the way `team.key` and `project.id` can. It is therefore absent from
             # `WorkflowStateFilter` in the SDL too — declared means implemented.
-            add(*_sub_filter(conn, spec, {
-                "name": ("col", "state"),
-                "type": ("derived", "state", synth.linear_state_type),
-            }))
+            add(
+                *_sub_filter(
+                    conn,
+                    spec,
+                    {
+                        "name": ("col", "state"),
+                        "type": ("derived", "state", synth.linear_state_type),
+                    },
+                )
+            )
         elif key in ("assignee", "creator"):
             email_col = "assignee_email" if key == "assignee" else "author_email"
             name_col = "assignee_display" if key == "assignee" else "owner_display"
-            add(*_sub_filter(conn, spec, {
-                "email": ("col", email_col),
-                "name": ("col", name_col),
-                "displayName": ("col", name_col),
-                "id": ("derived", email_col, synth.linear_user_id),
-            }))
+            add(
+                *_sub_filter(
+                    conn,
+                    spec,
+                    {
+                        "email": ("col", email_col),
+                        "name": ("col", name_col),
+                        "displayName": ("col", name_col),
+                        "id": ("derived", email_col, synth.linear_user_id),
+                    },
+                )
+            )
         elif key == "team":
-            add(*_sub_filter(conn, spec, {
-                "name": ("col", "team"),
-                "key": ("derived", "team", synth.linear_team_key),
-                "id": ("derived", "team", synth.linear_team_id),
-            }))
+            add(
+                *_sub_filter(
+                    conn,
+                    spec,
+                    {
+                        "name": ("col", "team"),
+                        "key": ("derived", "team", synth.linear_team_key),
+                        "id": ("derived", "team", synth.linear_team_id),
+                    },
+                )
+            )
         elif key == "project":
-            add(*_sub_filter(conn, spec, {
-                "name": ("col", "project"),
-                "id": ("derived", "project", synth.linear_project_id),
-            }))
+            add(
+                *_sub_filter(
+                    conn,
+                    spec,
+                    {
+                        "name": ("col", "project"),
+                        "id": ("derived", "project", synth.linear_project_id),
+                    },
+                )
+            )
         elif key == "labels":
             for sub, every in (("some", False), ("every", True)):
                 if sub in spec and spec[sub] is not None:
@@ -306,7 +353,8 @@ def _issue_filter(conn, flt: dict) -> tuple[str, list]:
             for sub in ("and", "or"):
                 if spec.get(sub):
                     raise GraphQLError(
-                        f"labels.{sub} is not supported by this mock; use labels.some / labels.every")
+                        f"labels.{sub} is not supported by this mock; use labels.some / labels.every"
+                    )
             # Key PRESENCE, not truthiness: `some: {}` is present-but-empty and deserves the
             # more precise "must constrain something" from _labels_predicate, not this one.
             if not any(k in spec for k in ("some", "every")):

@@ -3,6 +3,7 @@
 Startup opens the read-only SQLite DB, loads the ACL/token map, and builds reverse
 indexes (issue number / Jira key / Confluence id -> doc_id) for O(1) get-by-id.
 """
+
 from __future__ import annotations
 
 import http
@@ -20,16 +21,39 @@ from app import google_errors, openapi, store, synth
 from app.acl import Acl
 from app.config import get_settings
 from app.oauth import Oauth
-from app.routers import (atlassian, fireflies, github, google, hubspot, linear, notion, oauth, s3,
-                         slack)
+from app.routers import (
+    atlassian,
+    fireflies,
+    github,
+    google,
+    hubspot,
+    linear,
+    notion,
+    oauth,
+    s3,
+    slack,
+)
 
 
 def _build_index(conn) -> dict:
-    idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}, "s3": {}, "hubspot": {},
-           "gmail": {},
-           "linear": {}, "linear_teams": {}, "linear_users": {}, "linear_states": {},
-           "linear_projects": {}, "linear_cycles": {}, "linear_labels": {},
-           "linear_releases": {}, "fireflies_users": {}}
+    idx = {
+        "github": {},
+        "jira": {},
+        "confluence": {},
+        "notion": {},
+        "s3": {},
+        "hubspot": {},
+        "gmail": {},
+        "linear": {},
+        "linear_teams": {},
+        "linear_users": {},
+        "linear_states": {},
+        "linear_projects": {},
+        "linear_cycles": {},
+        "linear_labels": {},
+        "linear_releases": {},
+        "fireflies_users": {},
+    }
     # Gmail ids are 16-hex integers, not dsids, so the served id has to be reversed back to a row.
     # ONE map covers messages AND threads: a thread key is the root message's doc_id (verified on
     # the bench corpus -- 0 of 121,390 thread keys is anything else), which is also why real Gmail
@@ -39,11 +63,17 @@ def _build_index(conn) -> dict:
         idx["gmail"][synth.gmail_message_id(r["doc_id"])] = r["doc_id"]
     # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
     # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
-    for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container "
-                          f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file'"):
+    for r in conn.execute(
+        f"SELECT doc_id, {store.grouping_col('github')} AS container "
+        f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file'"
+    ):
         idx["github"][(r["container"], synth.github_number(r["doc_id"]))] = r["doc_id"]
-    for r in conn.execute(f"SELECT doc_id, {store.grouping_col('jira')} AS container FROM {store.table('jira')}"):
-        idx["jira"][synth.jira_key(r["doc_id"], synth.jira_project_key(r["container"]))] = r["doc_id"]
+    for r in conn.execute(
+        f"SELECT doc_id, {store.grouping_col('jira')} AS container FROM {store.table('jira')}"
+    ):
+        idx["jira"][synth.jira_key(r["doc_id"], synth.jira_project_key(r["container"]))] = r[
+            "doc_id"
+        ]
     for r in conn.execute(f"SELECT doc_id FROM {store.table('confluence')}"):
         idx["confluence"][synth.confluence_id(r["doc_id"])] = r["doc_id"]
     # Notion ids are dashed UUIDs; key the index by the dashless form so a client sending either
@@ -63,8 +93,9 @@ def _build_index(conn) -> dict:
     # mapping stays stable across restarts, while the UUID form always addresses a row exactly.
     # Exactly (doc_id, identifier), in that order: idx_linear_doc_ident covers it, so this is an
     # index-only scan and never touches the wide issue rows.
-    for r in conn.execute(f"SELECT doc_id, identifier FROM {store.table('linear')} "
-                          f"ORDER BY doc_id"):
+    for r in conn.execute(
+        f"SELECT doc_id, identifier FROM {store.table('linear')} ORDER BY doc_id"
+    ):
         idx["linear"][synth.linear_id(r["doc_id"])] = r["doc_id"]
         if r["identifier"]:
             idx["linear"].setdefault(r["identifier"], r["doc_id"])
@@ -117,9 +148,13 @@ async def lifespan(app: FastAPI):
             settings.org_name = data["org"]
         if data.get("org_domain"):
             settings.org_domain = data["org_domain"]
-    conn = store.connect_ro(settings.db_path, mmap_mb=settings.sqlite_mmap_mb,
-                            cache_mb=settings.sqlite_cache_mb, temp_memory=True,
-                            busy_ms=settings.sqlite_busy_ms)
+    conn = store.connect_ro(
+        settings.db_path,
+        mmap_mb=settings.sqlite_mmap_mb,
+        cache_mb=settings.sqlite_cache_mb,
+        temp_memory=True,
+        busy_ms=settings.sqlite_busy_ms,
+    )
     app.state.conn = conn
     app.state.acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     app.state.oauth = Oauth.load(settings.credentials_path)  # None if credentials.yaml absent
@@ -138,17 +173,24 @@ async def lifespan(app: FastAPI):
     app.state.channel_members = None
 
     def _warm_caches():
-        c = store.connect_ro(settings.db_path, mmap_mb=settings.sqlite_mmap_mb,
-                             cache_mb=settings.sqlite_cache_mb, temp_memory=True)
+        c = store.connect_ro(
+            settings.db_path,
+            mmap_mb=settings.sqlite_mmap_mb,
+            cache_mb=settings.sqlite_cache_mb,
+            temp_memory=True,
+        )
         try:
             cacl: dict[str, set] = {}
             for ch, pid in c.execute(
-                    "SELECT DISTINCT d.channel, a.principal_id "
-                    "FROM doc_acl a JOIN slack_messages d ON d.doc_id = a.doc_id"):
+                "SELECT DISTINCT d.channel, a.principal_id "
+                "FROM doc_acl a JOIN slack_messages d ON d.doc_id = a.doc_id"
+            ):
                 cacl.setdefault(ch, set()).add(pid)
             app.state.channel_acl = {k: frozenset(v) for k, v in cacl.items()}
-            app.state.doc_counts = {src: c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-                                    for src, tbl in store.SOURCE_TABLE.items()}
+            app.state.doc_counts = {
+                src: c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+                for src, tbl in store.SOURCE_TABLE.items()
+            }
             app.state.channel_members = store.slack_channel_member_counts(c)
         finally:
             c.close()
@@ -160,10 +202,13 @@ async def lifespan(app: FastAPI):
         conn.close()
 
 
-app = FastAPI(title="EnterpriseRAG-Bench Mock Server", lifespan=lifespan,
-              # NOT FastAPI's default, which derives the id's method suffix from a set and so
-              # changes between restarts — see openapi.unique_operation_id.
-              generate_unique_id_function=openapi.unique_operation_id)
+app = FastAPI(
+    title="EnterpriseRAG-Bench Mock Server",
+    lifespan=lifespan,
+    # NOT FastAPI's default, which derives the id's method suffix from a set and so
+    # changes between restarts — see openapi.unique_operation_id.
+    generate_unique_id_function=openapi.unique_operation_id,
+)
 
 
 # Atlassian clients (atlassian-python-api, used by mcp-atlassian) parse error bodies as Atlassian
@@ -172,14 +217,20 @@ app = FastAPI(title="EnterpriseRAG-Bench Mock Server", lifespan=lifespan,
 # client. For ``/atlassian`` paths, shape errors like Atlassian (message + statusCode, plus Jira's
 # errorMessages); every other prefix keeps FastAPI's default body.
 
+
 def _atlassian_error_body(status_code: int, detail) -> dict:
     try:
         reason = http.HTTPStatus(status_code).phrase
     except ValueError:
         reason = "Error"
     message = detail if isinstance(detail, str) else str(detail)
-    return {"statusCode": status_code, "message": message, "reason": reason,
-            "errorMessages": [message], "errors": {}}
+    return {
+        "statusCode": status_code,
+        "message": message,
+        "reason": reason,
+        "errorMessages": [message],
+        "errors": {},
+    }
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -187,13 +238,18 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     headers = getattr(exc, "headers", None)
     path = request.url.path
     if path.startswith("/atlassian"):
-        return JSONResponse(status_code=exc.status_code,
-                            content=_atlassian_error_body(exc.status_code, exc.detail),
-                            headers=headers)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_atlassian_error_body(exc.status_code, exc.detail),
+            headers=headers,
+        )
     if google_errors.family(path) is not None:
-        return JSONResponse(status_code=exc.status_code,
-                            content=google_errors.body(path, exc), headers=headers)
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=headers)
+        return JSONResponse(
+            status_code=exc.status_code, content=google_errors.body(path, exc), headers=headers
+        )
+    return JSONResponse(
+        status_code=exc.status_code, content={"detail": exc.detail}, headers=headers
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -251,17 +307,25 @@ async def mock_users():
     # Other people the corpus references are display-only: they appear as owners/authors on
     # documents, but aren't identities you can pick a token for here.
     users = [
-        {"email": u["email"], "name": u["display_name"], "token": tok[u["email"]],
-         "s3_access_key_id": synth.s3_access_key_id(tok[u["email"]]),
-         "s3_secret_access_key": synth.s3_secret_access_key(tok[u["email"]]),
-         "groups": store.user_group_ids(conn, u["email"])}
+        {
+            "email": u["email"],
+            "name": u["display_name"],
+            "token": tok[u["email"]],
+            "s3_access_key_id": synth.s3_access_key_id(tok[u["email"]]),
+            "s3_secret_access_key": synth.s3_secret_access_key(tok[u["email"]]),
+            "groups": store.user_group_ids(conn, u["email"]),
+        }
         for u in store.list_users(conn)
         if u["email"] in tok
     ]
-    return {"org": acl.org_name, "admin_token": acl.admin_token,
-            "admin_s3_access_key_id": synth.s3_access_key_id(acl.admin_token),
-            "admin_s3_secret_access_key": synth.s3_secret_access_key(acl.admin_token),
-            "count": len(users), "users": users}
+    return {
+        "org": acl.org_name,
+        "admin_token": acl.admin_token,
+        "admin_s3_access_key_id": synth.s3_access_key_id(acl.admin_token),
+        "admin_s3_secret_access_key": synth.s3_secret_access_key(acl.admin_token),
+        "count": len(users),
+        "users": users,
+    }
 
 
 @app.get("/_mock/credentials")
@@ -284,9 +348,12 @@ async def mock_credentials(request: Request):
     if not settings.expose_tokens or o is None:
         raise HTTPException(status_code=404, detail="Not Found")
     token_uri = f"{request.url.scheme}://{request.headers.get('host', 'localhost')}/oauth2/token"
-    return {"org": app.state.acl.org_name, "token_uri": token_uri,
-            "oauth_client": o.client_config(),
-            "service_account": o.service_account_json(token_uri)}
+    return {
+        "org": app.state.acl.org_name,
+        "token_uri": token_uri,
+        "oauth_client": o.client_config(),
+        "service_account": o.service_account_json(token_uri),
+    }
 
 
 @app.get("/_mock/openapi/{source}")
@@ -295,9 +362,10 @@ async def mock_openapi(source: str):
     source and with its GET/POST and v2/v3 fidelity aliases collapsed to one operation each, so an
     OpenAPI→MCP bridge can feed it straight to ``FastMCP.from_openapi()`` (see ``app.openapi``)."""
     if source not in openapi.SOURCE_PREFIXES:
-        raise HTTPException(status_code=404,
-                            detail=f"no MCP spec for {source!r}; "
-                                   f"one of {sorted(openapi.SOURCE_PREFIXES)}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"no MCP spec for {source!r}; one of {sorted(openapi.SOURCE_PREFIXES)}",
+        )
     return openapi.build_mcp_spec(app.openapi(), source)
 
 

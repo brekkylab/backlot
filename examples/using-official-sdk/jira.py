@@ -6,6 +6,7 @@
     python examples/using-official-sdk/jira.py --url http://localhost:8000 \
         --username <email> --password <usr-token>   # ACL-filtered to that user
 """
+
 import argparse
 
 from atlassian import Jira
@@ -13,19 +14,35 @@ from atlassian import Jira
 from _mockserver import serve_or_connect
 
 CORPUS = [
-    {"source_type": "jira", "project": "payments", "title": "SEV2: checkout latency spike",
-     "content": "p95 checkout latency jumped to 2.1s after the payments migration.",
-     "status": "In Progress", "issuetype": "Incident", "priority": "High"},
-    {"source_type": "jira", "project": "payments", "title": "Write the postmortem",
-     "content": "Draft the postmortem and action items.", "status": "To Do"},
+    {
+        "source_type": "jira",
+        "project": "payments",
+        "title": "SEV2: checkout latency spike",
+        "content": "p95 checkout latency jumped to 2.1s after the payments migration.",
+        "status": "In Progress",
+        "issuetype": "Incident",
+        "priority": "High",
+    },
+    {
+        "source_type": "jira",
+        "project": "payments",
+        "title": "Write the postmortem",
+        "content": "Draft the postmortem and action items.",
+        "status": "To Do",
+    },
 ]
 
 _p = argparse.ArgumentParser(description="Read Jira through atlassian-python-api against the mock.")
 _p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-_p.add_argument("--username", default="svc@example.com",
-                help="Atlassian Basic-auth username (email); the mock resolves the caller by the token/password")
-_p.add_argument("--password", help="api token used as the Basic-auth password "
-                                   "(default: --token, else the admin token)")
+_p.add_argument(
+    "--username",
+    default="svc@example.com",
+    help="Atlassian Basic-auth username (email); the mock resolves the caller by the token/password",
+)
+_p.add_argument(
+    "--password",
+    help="api token used as the Basic-auth password (default: --token, else the admin token)",
+)
 _p.add_argument("--token", help="alias for --password: a mock bearer token from GET /_mock/users")
 args = _p.parse_args()
 

@@ -12,6 +12,7 @@ per-doc ACL grants from the real people/scope fields (``grants_for``). Everythin
 
 Only ``curl`` is used to fetch (no ``gh`` / no auth).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,7 +33,7 @@ from pathlib import Path
 
 import yaml
 
-from app import store, synth
+from app import synth
 from app.config import get_settings, infer_org
 from app.importer import byo
 
@@ -40,11 +41,28 @@ from app.importer import byo
 # here is function-local, so neither module is half-built when the other is first touched.
 
 # ---------------------------------------------------------------- constants
-SUPPORTED = ("slack", "gmail", "google_drive", "github", "jira", "confluence", "hubspot",
-             "linear", "fireflies")
+SUPPORTED = (
+    "slack",
+    "gmail",
+    "google_drive",
+    "github",
+    "jira",
+    "confluence",
+    "hubspot",
+    "linear",
+    "fireflies",
+)
 
-INTERNAL_ROLES = {"owner", "author", "reviewer", "assignee", "reporter",
-                  "collaborator", "participant_internal", "mailbox_owner"}
+INTERNAL_ROLES = {
+    "owner",
+    "author",
+    "reviewer",
+    "assignee",
+    "reporter",
+    "collaborator",
+    "participant_internal",
+    "mailbox_owner",
+}
 EXTERNAL_ROLES = {"participant_external"}
 SLACK_ROLE = "slack_participant"
 EXTERNAL_DOMAIN = "external.example"  # placeholder when no counterparty domain is known
@@ -53,15 +71,31 @@ _NAME_EMAIL = re.compile(r"([^<>\n,:]+?)\s*<([^>@\s]+@[^>\s]+)>")
 _HDR = re.compile(r"^(From|To|Cc|Bcc|Reply-To|Date|Subject|Message-ID):\s*(.*)$")
 # US timezone abbreviations the bench uses in some gmail Date headers -> fixed UTC offset (hours).
 # DST-labeled variants carry their own offset; bare PT/ET/CT/MT default to standard time.
-_TZ = {"UTC": 0, "GMT": 0, "Z": 0, "EST": -5, "EDT": -4, "ET": -5, "CST": -6, "CDT": -5,
-       "CT": -6, "MST": -7, "MDT": -6, "MT": -7, "PST": -8, "PDT": -7, "PT": -8}
+_TZ = {
+    "UTC": 0,
+    "GMT": 0,
+    "Z": 0,
+    "EST": -5,
+    "EDT": -4,
+    "ET": -5,
+    "CST": -6,
+    "CDT": -5,
+    "CT": -6,
+    "MST": -7,
+    "MDT": -6,
+    "MT": -7,
+    "PST": -8,
+    "PDT": -7,
+    "PT": -8,
+}
 _ADDR = re.compile(r"<([^>@\s]+@[^>\s]+)>")
 _JIRA = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<name>[^:]+?):\s*(?P<body>.*)$", re.DOTALL)
 # Slack speaker: 1–3 name-ish words / handles ("Alex", "ops-bot", "Maria L", "IT Help"), an
 # optional "(Team)"/"(Role)" label some docs append ("Elena (CFO)", "Asha (FinanceOps)"), then
 # ": ". The parenthetical is dropped so only the bare name resolves against the directory.
 _SPEAKER = re.compile(
-    r"^@?(?P<name>[A-Za-z][\w.'\-]*(?: [A-Za-z0-9][\w.'\-]*){0,2})(?: *\([^)]*\))?: (?P<text>\S.*)$")
+    r"^@?(?P<name>[A-Za-z][\w.'\-]*(?: [A-Za-z0-9][\w.'\-]*){0,2})(?: *\([^)]*\))?: (?P<text>\S.*)$"
+)
 
 
 # ---------------------------------------------------------------- small helpers
@@ -87,9 +121,30 @@ def canonical(name: str) -> str:
 # A name token: starts with a letter (incl. accents), then letters/apostrophe/hyphen/dot only.
 _NAME_TOKEN = re.compile(r"^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’.\-]*$")
 # Words that mark a value as a team/placeholder/prose fragment, not a person.
-_NON_PERSON_WORDS = {"team", "teams", "group", "groups", "all", "everyone", "folks", "redacted",
-                     "unknown", "na", "tbd", "via", "support", "bot", "customer", "vendor",
-                     "channel", "oncall", "rotation", "admin", "system", "service"}
+_NON_PERSON_WORDS = {
+    "team",
+    "teams",
+    "group",
+    "groups",
+    "all",
+    "everyone",
+    "folks",
+    "redacted",
+    "unknown",
+    "na",
+    "tbd",
+    "via",
+    "support",
+    "bot",
+    "customer",
+    "vendor",
+    "channel",
+    "oncall",
+    "rotation",
+    "admin",
+    "system",
+    "service",
+}
 
 
 def _person_like(name: str) -> bool:
@@ -153,13 +208,16 @@ class Principals:
 
     def __init__(self, employees: list[dict], org_domain: str):
         self.org_domain = org_domain
-        self.users: dict[str, dict] = {}      # email -> {name, group, directory?}
+        self.users: dict[str, dict] = {}  # email -> {name, group, directory?}
         self.groups: set[str] = set()
-        self._by_canon: dict[str, str] = {}   # canonical name -> email
+        self._by_canon: dict[str, str] = {}  # canonical name -> email
         for e in employees:
             self._by_canon[canonical(e["name"])] = e["email"]
-            self.users[e["email"]] = {"name": e["name"], "group": e.get("dept_slug"),
-                                      "directory": True}
+            self.users[e["email"]] = {
+                "name": e["name"],
+                "group": e.get("dept_slug"),
+                "directory": True,
+            }
             if e.get("dept_slug"):
                 self.groups.add(e["dept_slug"])
 
@@ -181,9 +239,8 @@ class Principals:
         data = yaml.safe_load(open(employee_yaml).read())
         emps = []
         for dept, people in (data.get("departments") or {}).items():
-            for p in (people or []):
-                emps.append({"name": p["name"], "email": p["email"],
-                             "dept_slug": slugify(dept)})
+            for p in people or []:
+                emps.append({"name": p["name"], "email": p["email"], "dept_slug": slugify(dept)})
         return cls(emps, org_domain)
 
     def harvest_gmail_emails(self, records) -> None:
@@ -199,8 +256,12 @@ class Principals:
                     # key is already claimed (by the directory or an earlier header, possibly with
                     # a different dot/underscore email), don't mint a competing duplicate user.
                     # Gate on _person_like so header aliases ('On-Call (SRE) <oncall@…>') don't leak.
-                    if (c and _person_like(name) and email.endswith("@" + self.org_domain)
-                            and c not in self._by_canon):
+                    if (
+                        c
+                        and _person_like(name)
+                        and email.endswith("@" + self.org_domain)
+                        and c not in self._by_canon
+                    ):
                         self._by_canon[c] = email
                         self.users[email] = {"name": name, "group": None}
 
@@ -272,27 +333,46 @@ class Principals:
         return self._by_canon.get(c), (name or "")
 
     def install(self, conn, settings) -> None:
-        conn.execute("INSERT OR REPLACE INTO principals(id,type,display_name,email) VALUES (?,?,?,?)",
-                     (settings.org_name, "org", settings.org_name, None))
+        conn.execute(
+            "INSERT OR REPLACE INTO principals(id,type,display_name,email) VALUES (?,?,?,?)",
+            (settings.org_name, "org", settings.org_name, None),
+        )
         for g in sorted(self.groups):
-            conn.execute("INSERT OR REPLACE INTO principals(id,type,display_name,email) VALUES (?,?,?,?)",
-                         (g, "group", g, None))
+            conn.execute(
+                "INSERT OR REPLACE INTO principals(id,type,display_name,email) VALUES (?,?,?,?)",
+                (g, "group", g, None),
+            )
         for email, u in self.users.items():
-            conn.execute("INSERT OR REPLACE INTO principals(id,type,display_name,email) VALUES (?,?,?,?)",
-                         (email, "user", u["name"], email))
+            conn.execute(
+                "INSERT OR REPLACE INTO principals(id,type,display_name,email) VALUES (?,?,?,?)",
+                (email, "user", u["name"], email),
+            )
             if u["group"]:
-                conn.execute("INSERT OR REPLACE INTO group_members(group_id,user_id) VALUES (?,?)",
-                             (u["group"], email))
+                conn.execute(
+                    "INSERT OR REPLACE INTO group_members(group_id,user_id) VALUES (?,?)",
+                    (u["group"], email),
+                )
 
     def write_tokens(self, settings) -> None:
         # Only the employee directory are authenticating org users (realistic roster). Everyone
         # else the corpus references is display-only: they still appear as owners/authors/grantees
         # on documents (name derived from their email), but get no bearer token / /_mock/users entry.
-        users = [{"email": e, "name": u["name"], "token": _user_token(e)}
-                 for e, u in self.users.items() if u.get("directory")]
-        settings.tokens_path.write_text(yaml.safe_dump(
-            {"org": settings.org_name, "org_domain": settings.org_domain,
-             "admin_token": settings.admin_token, "users": users}, sort_keys=False))
+        users = [
+            {"email": e, "name": u["name"], "token": _user_token(e)}
+            for e, u in self.users.items()
+            if u.get("directory")
+        ]
+        settings.tokens_path.write_text(
+            yaml.safe_dump(
+                {
+                    "org": settings.org_name,
+                    "org_domain": settings.org_domain,
+                    "admin_token": settings.admin_token,
+                    "users": users,
+                },
+                sort_keys=False,
+            )
+        )
 
     def write_roster(self, path, settings) -> None:
         """Write the resolved roster as a BYO roster sidecar (see ``byo.load_roster``).
@@ -313,10 +393,18 @@ class Principals:
                 contacts.append({**entry, "group": u["group"]})
             else:
                 contacts.append(entry)
-        Path(path).write_text(yaml.safe_dump(
-            {"org": settings.org_name, "org_domain": settings.org_domain,
-             "departments": depts, "contacts": contacts},
-            sort_keys=False, allow_unicode=True))
+        Path(path).write_text(
+            yaml.safe_dump(
+                {
+                    "org": settings.org_name,
+                    "org_domain": settings.org_domain,
+                    "departments": depts,
+                    "contacts": contacts,
+                },
+                sort_keys=False,
+                allow_unicode=True,
+            )
+        )
 
 
 # ---------------------------------------------------------------- ACL derivation
@@ -410,8 +498,9 @@ def derive_title_content(raw: dict) -> tuple[str, str]:
     return title, "\n\n".join(p for p in parts if p).strip()
 
 
-def iter_records(sources_dir: Path, sources: tuple[str, ...] = SUPPORTED
-                 ) -> Iterator[tuple[str, str, dict]]:
+def iter_records(
+    sources_dir: Path, sources: tuple[str, ...] = SUPPORTED
+) -> Iterator[tuple[str, str, dict]]:
     for src in sources:
         base = sources_dir / src
         if not base.is_dir():
@@ -459,7 +548,8 @@ def fetch_generated_data(settings, *, ref: str = "main") -> Path:
                 continue
             rest = parts[2]  # e.g. "sources/gmail/x.json" or "employee_directory.yaml"
             keep = rest == "employee_directory.yaml" or any(
-                rest == p or rest.startswith(p + "/") for p in keep_sources)
+                rest == p or rest.startswith(p + "/") for p in keep_sources
+            )
             if not keep:
                 continue
             dest = out / rest
@@ -473,9 +563,19 @@ def fetch_generated_data(settings, *, ref: str = "main") -> Path:
     # generated_data, and the one tag (v1.0.0) predates that commit, so neither pins the data. The
     # tarball's digest does, and it is recorded here because this is the only moment the bytes that
     # produced this directory are still identifiable.
-    (out / SNAPSHOT_FILE).write_text(json.dumps(
-        {"repo": repo, "ref": ref, "tarball_sha256": _sha256(tar_path),
-         "tarball_bytes": tar_path.stat().st_size}, indent=1, sort_keys=True) + "\n")
+    (out / SNAPSHOT_FILE).write_text(
+        json.dumps(
+            {
+                "repo": repo,
+                "ref": ref,
+                "tarball_sha256": _sha256(tar_path),
+                "tarball_bytes": tar_path.stat().st_size,
+            },
+            indent=1,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     return out
 
 
@@ -508,12 +608,18 @@ def parse_gmail_thread(messages: list[str]) -> list[dict]:
             elif hdrs:
                 body_start = i
                 break
-        out.append({
-            "from_name": _name(hdrs.get("From")), "from_email": _addr(hdrs.get("From")),
-            "to": hdrs.get("To"), "cc": hdrs.get("Cc"), "date": hdrs.get("Date"),
-            "subject": hdrs.get("Subject"), "message_id": hdrs.get("Message-ID"),
-            "body": "\n".join(lines[body_start:]).strip(),
-        })
+        out.append(
+            {
+                "from_name": _name(hdrs.get("From")),
+                "from_email": _addr(hdrs.get("From")),
+                "to": hdrs.get("To"),
+                "cc": hdrs.get("Cc"),
+                "date": hdrs.get("Date"),
+                "subject": hdrs.get("Subject"),
+                "message_id": hdrs.get("Message-ID"),
+                "body": "\n".join(lines[body_start:]).strip(),
+            }
+        )
     return out
 
 
@@ -526,8 +632,13 @@ _ATT_MIME = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "ppt": "application/vnd.ms-powerpoint",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "csv": "text/csv", "txt": "text/plain", "png": "image/png", "jpg": "image/jpeg",
-    "jpeg": "image/jpeg", "zip": "application/zip", "json": "application/json",
+    "csv": "text/csv",
+    "txt": "text/plain",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "zip": "application/zip",
+    "json": "application/json",
 }
 
 
@@ -537,11 +648,19 @@ _ATT_MIME = {
 # ``application/octet-stream`` and the binary ``webViewLink`` shape, leaving nothing in the corpus
 # that exercises native-vs-binary handling, ``export`` vs ``alt=media``, or per-type links.
 _DRIVE_SUBTYPE = {
-    "doc": "document", "document": "document", "gdoc": "document", "notes": "document",
+    "doc": "document",
+    "document": "document",
+    "gdoc": "document",
+    "notes": "document",
     "memo": "document",
-    "sheet": "spreadsheet", "spreadsheet": "spreadsheet", "gsheet": "spreadsheet",
-    "slides": "presentation", "slide": "presentation", "deck": "presentation",
-    "presentation": "presentation", "gslides": "presentation",
+    "sheet": "spreadsheet",
+    "spreadsheet": "spreadsheet",
+    "gsheet": "spreadsheet",
+    "slides": "presentation",
+    "slide": "presentation",
+    "deck": "presentation",
+    "presentation": "presentation",
+    "gslides": "presentation",
     "folder": "folder",
 }
 
@@ -560,7 +679,9 @@ def _drive_type(raw: dict, title: str) -> tuple[str, str | None]:
     key = (raw.get("doc_type") or "").strip().lower()
     if key in _DRIVE_SUBTYPE:
         return _DRIVE_SUBTYPE[key], None
-    ext = key if key in _ATT_MIME else (_ext(title) or _ext(raw.get("path") or raw.get("file_path")))
+    ext = (
+        key if key in _ATT_MIME else (_ext(title) or _ext(raw.get("path") or raw.get("file_path")))
+    )
     if ext in _ATT_MIME:
         return ext, _ATT_MIME[ext]
     return "document", None
@@ -574,8 +695,11 @@ def _gmail_attachments(raw: dict) -> list[dict]:
     for a in raw.get("attachments") or []:
         if isinstance(a, dict):
             name = a.get("filename") or a.get("name") or ""
-            entry = {"filename": name, "mime": a.get("mime") or a.get("mimeType"),
-                     "size": a.get("size")}
+            entry = {
+                "filename": name,
+                "mime": a.get("mime") or a.get("mimeType"),
+                "size": a.get("size"),
+            }
         else:
             name, entry = str(a), {"filename": str(a), "mime": None, "size": None}
         if not name:
@@ -593,8 +717,13 @@ def parse_jira_comments(comments: list[str]) -> list[dict]:
     for c in comments or []:
         m = _JIRA.match(str(c).strip())
         if m:
-            out.append({"date": m.group("date"), "name": m.group("name").strip(),
-                        "body": m.group("body").strip()})
+            out.append(
+                {
+                    "date": m.group("date"),
+                    "name": m.group("name").strip(),
+                    "body": m.group("body").strip(),
+                }
+            )
     return out
 
 
@@ -606,7 +735,9 @@ def _canon_speaker(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
-def parse_slack_transcript(messages: str, participants: list | None = None) -> list[tuple[str, str]]:
+def parse_slack_transcript(
+    messages: str, participants: list | None = None
+) -> list[tuple[str, str]]:
     """Slack ``messages`` is ONE concatenated ``Speaker: text`` transcript. When ``participants`` is
     given, a line only starts a NEW turn if its speaker matches a known participant; otherwise it's
     body text of the current turn. This stops sentence fragments / section headers ("A couple
@@ -616,7 +747,7 @@ def parse_slack_transcript(messages: str, participants: list | None = None) -> l
     # ("a lex", "Ana Customs") collapse onto the real participant ("alex", "ana_customs") instead of
     # minting variant-duplicate authors.
     pmap: dict[str, str] = {}
-    for p in (participants or []):
+    for p in participants or []:
         pmap.setdefault(_canon_speaker(p), re.sub(r"\s*\([^)]*\)", "", str(p)).strip())
     pset = set(pmap)
     msgs: list[list] = []
@@ -673,15 +804,22 @@ def to_epoch(value) -> int | None:
     if mnum:
         sign = 1 if mnum.group(1)[0] == "+" else -1
         off = _dt.timedelta(minutes=sign * (abs(int(mnum.group(1))) * 60 + int(mnum.group(2))))
-        core = s[:mnum.start()]
+        core = s[: mnum.start()]
     elif mabbr and mabbr.group(1) in _TZ:
         off = _dt.timedelta(hours=_TZ[mabbr.group(1)])
-        core = s[:mabbr.start()]
+        core = s[: mabbr.start()]
     else:
         core = s
     core = re.sub(r"^[A-Za-z]{3},\s*", "", core.strip()).replace(" at ", " ")
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %I:%M %p", "%Y-%m-%d",
-                "%b %d, %Y %I:%M %p", "%b %d, %Y %H:%M", "%b %d, %Y"):
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %I:%M %p",
+        "%Y-%m-%d",
+        "%b %d, %Y %I:%M %p",
+        "%b %d, %Y %H:%M",
+        "%b %d, %Y",
+    ):
         try:
             base = _dt.datetime.strptime(core, fmt)
             return int(base.replace(tzinfo=_dt.timezone(off)).timestamp())
@@ -715,14 +853,6 @@ def _slug_mailbox(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_")
 
 
-
-
-
-
-
-
-
-
 # The bench's HubSpot docs are denormalized company (account) records — there are no contact/deal
 # objects in the corpus. These are the fields with a real HubSpot company property to map onto;
 # everything else becomes a custom property, which is what an actual portal looks like (a mix of
@@ -738,9 +868,17 @@ _HS_PROPERTY = {
 # become columns, the owner (which becomes author_email + owner_display), and the notes that become
 # their own rows. `se_assigned` / `csm_assigned` are deliberately NOT excluded — they feed the ACL
 # bundle *and* stay properties, since a real portal exposes the SE and CSM as fields on the record.
-_HS_NOT_A_PROPERTY = {"title_field_name", "content_field_names", "dataset_doc_uuid",
-                      "created_at", "updated_at", "owner", "notes", "crm_notes",
-                      "_erb_path"}  # injected by iter_records, not corpus data
+_HS_NOT_A_PROPERTY = {
+    "title_field_name",
+    "content_field_names",
+    "dataset_doc_uuid",
+    "created_at",
+    "updated_at",
+    "owner",
+    "notes",
+    "crm_notes",
+    "_erb_path",
+}  # injected by iter_records, not corpus data
 
 
 def _hs_notes(raw) -> list[str]:
@@ -751,19 +889,11 @@ def _hs_notes(raw) -> list[str]:
         v = raw.get(key)
         if isinstance(v, list):
             out = [str(n) for n in v if str(n).strip()]
-            if out:              # an empty list must not mask a populated `crm_notes`
+            if out:  # an empty list must not mask a populated `crm_notes`
                 return out
         elif isinstance(v, str) and v.strip():
             return [v]
     return []
-
-
-
-
-
-
-
-
 
 
 # ~35% of Slack `first_message_ts` values are the bench's opaque far-future "ordering keys", not
@@ -797,10 +927,10 @@ def build_slack_ts_remap(records) -> dict[str, int]:
     future.sort()
     n = len(future)
     start = in_range_max + 60  # seamless continuation, just after the newest real thread
-    return {dsid: start + (rank * _SLACK_TS_REMAP_SPAN // max(1, n - 1))
-            for rank, (ts, dsid) in enumerate(future)}
-
-
+    return {
+        dsid: start + (rank * _SLACK_TS_REMAP_SPAN // max(1, n - 1))
+        for rank, (ts, dsid) in enumerate(future)
+    }
 
 
 # ---------------------------------------------------------------- linear
@@ -816,9 +946,18 @@ def build_slack_ts_remap(records) -> dict[str, int]:
 # the API's scale (as the hubspot converter maps onto real HubSpot property names) rather than serving a
 # vocabulary no Linear client understands. Labels are accepted too, for a BYO corpus that already
 # speaks Linear.
-_LINEAR_PRIORITY = {"p0": 1, "p1": 2, "p2": 3, "p3": 4,
-                    "urgent": 1, "high": 2, "medium": 3, "low": 4,
-                    "none": 0, "no priority": 0}
+_LINEAR_PRIORITY = {
+    "p0": 1,
+    "p1": 2,
+    "p2": 3,
+    "p3": 4,
+    "urgent": 1,
+    "high": 2,
+    "medium": 3,
+    "low": 4,
+    "none": 0,
+    "no priority": 0,
+}
 
 
 def linear_priority(value) -> int | None:
@@ -870,8 +1009,13 @@ def _linear_parent(value) -> str | None:
 
 # The bench writes a dependency as a bare issue key, sometimes with a relation word attached
 # ("blocks ENG-123"). Linear's IssueRelation.type vocabulary is blocks | duplicate | related.
-_LINEAR_REL_WORDS = (("duplicate", "duplicate"), ("blocked by", "blocks"), ("blocks", "blocks"),
-                     ("depends", "blocks"), ("related", "related"))
+_LINEAR_REL_WORDS = (
+    ("duplicate", "duplicate"),
+    ("blocked by", "blocks"),
+    ("blocks", "blocks"),
+    ("depends", "blocks"),
+    ("related", "related"),
+)
 _LINEAR_KEY = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b")
 
 
@@ -883,7 +1027,7 @@ def parse_linear_relations(value) -> list[tuple[str, str]]:
     asserting a blocking relationship the data does not state would be inventing a dependency
     graph. A word that IS present is honoured."""
     out = []
-    for entry in (value if isinstance(value, (list, tuple)) else [value]):
+    for entry in value if isinstance(value, (list, tuple)) else [value]:
         text = str(entry or "")
         rel = next((t for word, t in _LINEAR_REL_WORDS if word in text.lower()), "related")
         for key in _LINEAR_KEY.findall(text):
@@ -909,7 +1053,7 @@ def parse_linear_attachments(*values) -> list[dict]:
     `Attachment`. Merged and de-duplicated on url, since a doc can list the same link in both."""
     out, seen = [], set()
     for value in values:
-        for entry in (value if isinstance(value, (list, tuple)) else [value]):
+        for entry in value if isinstance(value, (list, tuple)) else [value]:
             if not entry:
                 continue
             url, title = _linear_url_title(entry)
@@ -940,8 +1084,9 @@ def _linear_date(value) -> str | None:
 _LINEAR_C_DATE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s*(?:[-–—]\s*)?(?P<rest>.*)$", re.DOTALL)
 # The name must START WITH A LETTER. Without that, "2025-02-18 09:15: rolled back" parses as
 # author "09" with the body truncated to "15: rolled back" — inventing a person and losing text.
-_LINEAR_C_NAME = re.compile(r"^\(?(?P<name>[A-Za-zÀ-ÿ][^:\n()]{0,39}?)\)?:\s*(?P<body>.*)$",
-                            re.DOTALL)
+_LINEAR_C_NAME = re.compile(
+    r"^\(?(?P<name>[A-Za-zÀ-ÿ][^:\n()]{0,39}?)\)?:\s*(?P<body>.*)$", re.DOTALL
+)
 
 
 def parse_linear_comments(comments) -> list[dict]:
@@ -952,7 +1097,7 @@ def parse_linear_comments(comments) -> list[dict]:
     :func:`_byo_linear` takes ``body`` when the name resolves to somebody and ``body_with_name``
     when it does not.
     """
-    if isinstance(comments, str):          # 29 docs carry a single string instead of a list
+    if isinstance(comments, str):  # 29 docs carry a single string instead of a list
         comments = [comments]
     out = []
     for c in comments or []:
@@ -963,16 +1108,19 @@ def parse_linear_comments(comments) -> list[dict]:
         date, rest = (m.group("date"), m.group("rest")) if m else (None, s)
         n = _LINEAR_C_NAME.match(rest)
         if n:
-            out.append({"date": date, "name": n.group("name").strip(),
-                        "body": n.group("body").strip(), "body_with_name": rest.strip()})
+            out.append(
+                {
+                    "date": date,
+                    "name": n.group("name").strip(),
+                    "body": n.group("body").strip(),
+                    "body_with_name": rest.strip(),
+                }
+            )
         else:
-            out.append({"date": date, "name": None, "body": rest.strip(),
-                        "body_with_name": rest.strip()})
+            out.append(
+                {"date": date, "name": None, "body": rest.strip(), "body_with_name": rest.strip()}
+            )
     return out
-
-
-
-
 
 
 # ---------------------------------------------------------------- fireflies
@@ -990,23 +1138,59 @@ def parse_linear_comments(comments) -> list[dict]:
 _FF_CLOCK = r"\d{1,2}:\d{2}(?::\d{2})?"
 # A leading timestamp in any form the bench writes, optionally followed by a "-"/"–" separator.
 # The optional letter inside the brackets absorbs a quirk the corpus contains ("[S00:12]").
-_FF_TS = (rf"(?:\[[A-Za-z]?(?P<b>{_FF_CLOCK})\]|\((?P<p>{_FF_CLOCK})\)|(?P<r>{_FF_CLOCK}))"
-          r"\s*(?:[-–—]\s*)?")
+_FF_TS = (
+    rf"(?:\[[A-Za-z]?(?P<b>{_FF_CLOCK})\]|\((?P<p>{_FF_CLOCK})\)|(?P<r>{_FF_CLOCK}))"
+    r"\s*(?:[-–—]\s*)?"
+)
 # 1-4 name-ish words, optionally bracketed ("[Maya]"), with a trailing "(Role)" / ", Role" that
 # is stripped before matching ("Ari (Redwood AE)", "Mark, Sentinel CISO").
 _FF_WHO = r"[A-Za-z@][\w.'’\-]*(?: +[A-Za-z0-9][\w.'’\-]*){0,3}"
-_FF_UTT = re.compile(rf"^\s*(?:{_FF_TS})?(?:\[(?P<name>{_FF_WHO})\]|(?P<name2>{_FF_WHO}))"
-                     rf"(?: *[(,][^)]*\)?)?:[ \t]*(?P<text>.*)$")
+_FF_UTT = re.compile(
+    rf"^\s*(?:{_FF_TS})?(?:\[(?P<name>{_FF_WHO})\]|(?P<name2>{_FF_WHO}))"
+    rf"(?: *[(,][^)]*\)?)?:[ \t]*(?P<text>.*)$"
+)
 
 # Fireflies' own auto-notes header labels. Each looks exactly like a speaker line
 # ("Date: 2025-02-20", "Duration: ~52 minutes"), so none may ever mint a speaker.
 _FF_NOT_SPEAKER = {
-    "date", "duration", "attendees", "attendees present", "participants", "header",
-    "meeting header", "meeting", "meeting date", "meeting title", "meeting start", "title",
-    "time", "location", "host", "organizer", "recorded", "recording", "meeting recording",
-    "summary", "auto-summary", "summary (auto)", "auto-generated summary", "human summary",
-    "topics", "topics covered", "transcript", "transcript body", "action items", "next steps",
-    "questions", "notes", "notes on transcription", "agenda", "call type", "start", "end", "note",
+    "date",
+    "duration",
+    "attendees",
+    "attendees present",
+    "participants",
+    "header",
+    "meeting header",
+    "meeting",
+    "meeting date",
+    "meeting title",
+    "meeting start",
+    "title",
+    "time",
+    "location",
+    "host",
+    "organizer",
+    "recorded",
+    "recording",
+    "meeting recording",
+    "summary",
+    "auto-summary",
+    "summary (auto)",
+    "auto-generated summary",
+    "human summary",
+    "topics",
+    "topics covered",
+    "transcript",
+    "transcript body",
+    "action items",
+    "next steps",
+    "questions",
+    "notes",
+    "notes on transcription",
+    "agenda",
+    "call type",
+    "start",
+    "end",
+    "note",
 }
 
 
@@ -1045,8 +1229,9 @@ def _ff_resolve_speaker(label: str, pmap: dict[str, str]) -> str | None:
 
 def _ff_secs(clock: str) -> float:
     parts = [int(x) for x in clock.split(":")]
-    return float(parts[0] * 60 + parts[1] if len(parts) == 2
-                 else parts[0] * 3600 + parts[1] * 60 + parts[2])
+    return float(
+        parts[0] * 60 + parts[1] if len(parts) == 2 else parts[0] * 3600 + parts[1] * 60 + parts[2]
+    )
 
 
 def parse_fireflies_transcript(text, attendees: list | None = None) -> list[dict]:
@@ -1078,8 +1263,9 @@ def parse_fireflies_transcript(text, attendees: list | None = None) -> list[dict
                 out.append(cur)
             elif cur is not None:
                 cur[1].append(line)  # continuation (incl. a non-speaker "phrase: text" line)
-        return [{"speaker_name": s, "text": "\n".join(ls).rstrip(), "start_time": t}
-                for s, ls, t in out]
+        return [
+            {"speaker_name": s, "text": "\n".join(ls).rstrip(), "start_time": t} for s, ls, t in out
+        ]
 
     sentences = (run(True) if pmap else []) or run(False)
     if sentences:
@@ -1109,6 +1295,7 @@ def _ff_summary(raw) -> dict:
     `sentences`, so putting summary prose in the sentence text would both break the sentence
     round-trip and make `scope: sentences` match words nobody said.
     """
+
     def lines(*keys):
         for k in keys:
             v = raw.get(k)
@@ -1140,13 +1327,31 @@ def _ff_summary(raw) -> dict:
 # Where the transcript body lives. `transcript` covers 99.1% of the corpus; the rest of this
 # list is the long tail of ad-hoc key names the bench also uses, and the `*_continued` keys are
 # docs whose body is split across several fields (they are appended, not treated as alternatives).
-_FF_BODY_KEYS = ("transcript", "transcript_text", "transcript_body", "full_transcript",
-                 "meeting_transcript", "Transcript", "transcript_full", "detailed_transcript",
-                 "transcription", "full_transcript_body", "transcript_final", "body_transcript",
-                 "body", "content")
-_FF_BODY_MORE = ("transcript_continued", "transcript_continued_2", "transcript_continued_3",
-                 "additional_transcript", "additional_transcript_part2", "continued_transcript",
-                 "tail_transcript")
+_FF_BODY_KEYS = (
+    "transcript",
+    "transcript_text",
+    "transcript_body",
+    "full_transcript",
+    "meeting_transcript",
+    "Transcript",
+    "transcript_full",
+    "detailed_transcript",
+    "transcription",
+    "full_transcript_body",
+    "transcript_final",
+    "body_transcript",
+    "body",
+    "content",
+)
+_FF_BODY_MORE = (
+    "transcript_continued",
+    "transcript_continued_2",
+    "transcript_continued_3",
+    "additional_transcript",
+    "additional_transcript_part2",
+    "continued_transcript",
+    "tail_transcript",
+)
 
 
 def _ff_transcript_text(raw) -> str:
@@ -1176,8 +1381,16 @@ def _ff_speaker_stats(sentences) -> list[dict]:
     agg: dict[str, dict] = {}
     for s in sentences:
         name = s.get("speaker_name") or None
-        a = agg.setdefault(name or "", {"name": name, "duration_secs": 0.0, "word_count": 0,
-                                        "monologues_count": 0, "longest_monologue": 0.0})
+        a = agg.setdefault(
+            name or "",
+            {
+                "name": name,
+                "duration_secs": 0.0,
+                "word_count": 0,
+                "monologues_count": 0,
+                "longest_monologue": 0.0,
+            },
+        )
         span = max(0.0, float(s.get("end_time") or 0) - float(s.get("start_time") or 0))
         a["duration_secs"] += span
         a["word_count"] += len((s.get("text") or "").split())
@@ -1194,16 +1407,19 @@ def _ff_meeting_attendees(raw, internal: list[str], external: list[str], P) -> l
     names people without emails, so each is resolved the way its side allows: Redwood attendees to
     org identities, customer attendees to external contacts."""
     out = []
-    for name, role in [(n, "participant_internal") for n in internal] + \
-                      [(n, "participant_external") for n in external]:
-        out.append({"displayName": name, "email": P.resolve(name, role=role),
-                    "phoneNumber": None, "name": name,
-                    "location": raw.get("customer_company") if role in EXTERNAL_ROLES else None})
+    for name, role in [(n, "participant_internal") for n in internal] + [
+        (n, "participant_external") for n in external
+    ]:
+        out.append(
+            {
+                "displayName": name,
+                "email": P.resolve(name, role=role),
+                "phoneNumber": None,
+                "name": name,
+                "location": raw.get("customer_company") if role in EXTERNAL_ROLES else None,
+            }
+        )
     return out
-
-
-
-
 
 
 # ---------------------------------------------------------------- ERB -> BYO records
@@ -1227,7 +1443,8 @@ def build_linear_key_index(records) -> dict[str, str]:
     out: dict[str, str] = {}
     for _src, dsid, raw in sorted((r for r in records if r[0] == "linear"), key=lambda r: r[1]):
         identifier = str(raw.get("key") or "").strip() or synth.linear_identifier(
-            dsid, synth.linear_team_key(str(raw.get("team") or "engineering")))
+            dsid, synth.linear_team_key(str(raw.get("team") or "engineering"))
+        )
         out.setdefault(identifier, dsid)
     return out
 
@@ -1268,15 +1485,29 @@ def _byo_confluence(dsid, raw, P):
     author = raw.get("author", "")
     author_email = P.resolve(author, role="author", group_hint=group) if author else None
     reviewers = _resolved(P, raw.get("reviewers"), role="reviewer")
-    rec = _rec(source_type="confluence", doc_id=dsid, space=space, title=title, content=content,
-               author_email=author_email, author_name=author, subtype="page",
-               labels=_names(raw.get("labels")), reviewers=reviewers,
-               confidentiality=raw.get("confidentiality"), owner_team=raw.get("owner_team"),
-               created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
-               updated=to_epoch(raw.get("last_updated")))
+    rec = _rec(
+        source_type="confluence",
+        doc_id=dsid,
+        space=space,
+        title=title,
+        content=content,
+        author_email=author_email,
+        author_name=author,
+        subtype="page",
+        labels=_names(raw.get("labels")),
+        reviewers=reviewers,
+        confidentiality=raw.get("confidentiality"),
+        owner_team=raw.get("owner_team"),
+        created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
+        updated=to_epoch(raw.get("last_updated")),
+    )
     rec["group"] = group
-    return [rec], {"owner": author_email, "people": reviewers, "group": group,
-                   "confidentiality": raw.get("confidentiality")}
+    return [rec], {
+        "owner": author_email,
+        "people": reviewers,
+        "group": group,
+        "confidentiality": raw.get("confidentiality"),
+    }
 
 
 def _byo_drive(dsid, raw, P):
@@ -1289,17 +1520,24 @@ def _byo_drive(dsid, raw, P):
     # Workspace subtype or a binary's mime, and re-deriving it on load would need `_ATT_MIME` and the
     # title's extension inside `byo.py`. So the converted record carries the resolved pair.
     subtype, mime_type = _drive_type(raw, title)
-    rec = _rec(source_type="google_drive", doc_id=dsid,
-               folder=(raw.get("drive_area") or group or "drive"), title=title, content=content,
-               author_email=owner_email, author_name=owner,
-               subtype=subtype, mime_type=mime_type, collaborators=collabs,
-               created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
-               updated=to_epoch(raw.get("last_modified")))
+    rec = _rec(
+        source_type="google_drive",
+        doc_id=dsid,
+        folder=(raw.get("drive_area") or group or "drive"),
+        title=title,
+        content=content,
+        author_email=owner_email,
+        author_name=owner,
+        subtype=subtype,
+        mime_type=mime_type,
+        collaborators=collabs,
+        created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
+        updated=to_epoch(raw.get("last_modified")),
+    )
     # A doc with no team owns no group, and `"group": null` is how BYO says so — inferring one from
     # the folder name would invent a grantable principal the direct import does not have.
     rec["group"] = group
-    return [rec], {"owner": owner_email, "people": collabs, "group": group,
-                   "confidentiality": None}
+    return [rec], {"owner": owner_email, "people": collabs, "group": group, "confidentiality": None}
 
 
 def _byo_github(dsid, raw, P):
@@ -1308,16 +1546,28 @@ def _byo_github(dsid, raw, P):
     author_email = P.resolve(author, role="author", group_hint=raw.get("repo")) if author else None
     reviewers = _resolved(P, raw.get("reviewers"), role="reviewer")
     repo = raw.get("repo") or "repo"
-    rec = _rec(source_type="github", doc_id=dsid, repo=repo, title=title, content=content,
-               author_email=author_email, author_name=author,
-               subtype=("pull_request" if raw.get("pr_number") else "issue"),
-               state=raw.get("state"), labels=_names(raw.get("labels")),
-               requested_reviewers=reviewers,
-               created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
-               updated=to_epoch(raw.get("updated_at")))
+    rec = _rec(
+        source_type="github",
+        doc_id=dsid,
+        repo=repo,
+        title=title,
+        content=content,
+        author_email=author_email,
+        author_name=author,
+        subtype=("pull_request" if raw.get("pr_number") else "issue"),
+        state=raw.get("state"),
+        labels=_names(raw.get("labels")),
+        requested_reviewers=reviewers,
+        created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
+        updated=to_epoch(raw.get("updated_at")),
+    )
     rec["group"] = repo
-    return [rec], {"owner": author_email, "people": reviewers, "group": repo,
-                   "confidentiality": None}
+    return [rec], {
+        "owner": author_email,
+        "people": reviewers,
+        "group": repo,
+        "confidentiality": None,
+    }
 
 
 def _byo_jira(dsid, raw, P):
@@ -1329,22 +1579,44 @@ def _byo_jira(dsid, raw, P):
     assignee_email = P.resolve(assignee, role="assignee", group_hint=group) if assignee else None
     project = raw.get("project") or "JIRA"
     comments = [
-        _rec(id=f"{dsid}::c{seq}", content=c["body"],
-             author_email=P.resolve(c["name"], role="author"), created_ts=to_epoch(c["date"]))
-        for seq, c in enumerate(parse_jira_comments(raw.get("comments", [])), start=1)]
-    rec = _rec(source_type="jira", doc_id=dsid, project=project, title=title, content=content,
-               author_email=reporter_email, author_name=reporter, status=raw.get("status"),
-               issuetype=raw.get("issue_type"), priority=raw.get("priority"),
-               labels=_names(raw.get("labels")), components=_names(raw.get("components")),
-               assignee=assignee_email, reporter=reporter_email, severity=raw.get("severity"),
-               squad=raw.get("squad"), duedate=raw.get("due_date"),
-               comments=(comments or None),
-               created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
-               updated=to_epoch(raw.get("updated_at")))
+        _rec(
+            id=f"{dsid}::c{seq}",
+            content=c["body"],
+            author_email=P.resolve(c["name"], role="author"),
+            created_ts=to_epoch(c["date"]),
+        )
+        for seq, c in enumerate(parse_jira_comments(raw.get("comments", [])), start=1)
+    ]
+    rec = _rec(
+        source_type="jira",
+        doc_id=dsid,
+        project=project,
+        title=title,
+        content=content,
+        author_email=reporter_email,
+        author_name=reporter,
+        status=raw.get("status"),
+        issuetype=raw.get("issue_type"),
+        priority=raw.get("priority"),
+        labels=_names(raw.get("labels")),
+        components=_names(raw.get("components")),
+        assignee=assignee_email,
+        reporter=reporter_email,
+        severity=raw.get("severity"),
+        squad=raw.get("squad"),
+        duedate=raw.get("due_date"),
+        comments=(comments or None),
+        created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
+        updated=to_epoch(raw.get("updated_at")),
+    )
     rec["group"] = group
     people = [p for p in (assignee_email, reporter_email) if p]
-    return [rec], {"owner": reporter_email, "people": people, "group": group,
-                   "confidentiality": None}
+    return [rec], {
+        "owner": reporter_email,
+        "people": people,
+        "group": group,
+        "confidentiality": None,
+    }
 
 
 def _byo_gmail(dsid, raw, P):
@@ -1362,24 +1634,39 @@ def _byo_gmail(dsid, raw, P):
     # A date-less one carries the hour-per-position time the loader gives it, since the artifact has
     # to be explicit about a value it computed rather than read.
     messages = [
-        _rec(doc_id=f"{dsid}::m{seq}", content=m.get("body", ""),
-             author_email=m.get("from_email"), title=(m.get("subject") or title),
-             to=m.get("to"), cc=m.get("cc"), message_id=m.get("message_id"),
-             created=(to_epoch(m.get("date")) or (root_ts + seq * 3600)))
-        for seq, m in enumerate(msgs[1:], start=1)]
-    rec = _rec(source_type="gmail", doc_id=dsid, mailbox=mailbox,
-               title=(title or root.get("subject") or ""),
-               content=(root.get("body") or (content if not msgs else "")),
-               author_email=(root.get("from_email") or owner_email),
-               mailbox_owner=owner_name, thread=dsid, to=root.get("to"), cc=root.get("cc"),
-               message_id=root.get("message_id"), attachments=(attachments or None),
-               messages=(messages or None), created=root_ts)
+        _rec(
+            doc_id=f"{dsid}::m{seq}",
+            content=m.get("body", ""),
+            author_email=m.get("from_email"),
+            title=(m.get("subject") or title),
+            to=m.get("to"),
+            cc=m.get("cc"),
+            message_id=m.get("message_id"),
+            created=(to_epoch(m.get("date")) or (root_ts + seq * 3600)),
+        )
+        for seq, m in enumerate(msgs[1:], start=1)
+    ]
+    rec = _rec(
+        source_type="gmail",
+        doc_id=dsid,
+        mailbox=mailbox,
+        title=(title or root.get("subject") or ""),
+        content=(root.get("body") or (content if not msgs else "")),
+        author_email=(root.get("from_email") or owner_email),
+        mailbox_owner=owner_name,
+        thread=dsid,
+        to=root.get("to"),
+        cc=root.get("cc"),
+        message_id=root.get("message_id"),
+        attachments=(attachments or None),
+        messages=(messages or None),
+        created=root_ts,
+    )
     # A mailbox has no ACL group: a thread is private to its participants, which `readers` states
     # per document (see grants_for).
     rec["group"] = None
     people = [p for p in (owner_email, *internal) if p]
-    return [rec], {"owner": owner_email, "people": people, "group": None,
-                   "confidentiality": None}
+    return [rec], {"owner": owner_email, "people": people, "group": None, "confidentiality": None}
 
 
 def _byo_slack(dsid, raw, P):
@@ -1388,16 +1675,29 @@ def _byo_slack(dsid, raw, P):
     participants = _names(raw.get("participants"))
     turns = parse_slack_transcript(content, participants)
     root_author = P.resolve(turns[0][0], role="slack_participant") if turns else None
-    root_ts = _SLACK_TS_REMAP.get(dsid) or to_epoch(raw.get("first_message_ts")) or synth.epoch(dsid)
-    replies = [_rec(doc_id=f"{dsid}::m{seq}", content=text,
-                    author_email=P.resolve(spk, role="slack_participant"))
-               for seq, (spk, text) in enumerate(turns[1:], start=1)]
-    rec = _rec(source_type="slack", doc_id=dsid, channel=channel,
-               content=(turns[0][1] if turns else content), author_email=root_author,
-               participants=participants, replies=(replies or None),
-               # The remapped value, NOT the source `first_message_ts`: the remap is rank-based over
-               # every slack thread, so it cannot be recomputed from this record.
-               created=root_ts)
+    root_ts = (
+        _SLACK_TS_REMAP.get(dsid) or to_epoch(raw.get("first_message_ts")) or synth.epoch(dsid)
+    )
+    replies = [
+        _rec(
+            doc_id=f"{dsid}::m{seq}",
+            content=text,
+            author_email=P.resolve(spk, role="slack_participant"),
+        )
+        for seq, (spk, text) in enumerate(turns[1:], start=1)
+    ]
+    rec = _rec(
+        source_type="slack",
+        doc_id=dsid,
+        channel=channel,
+        content=(turns[0][1] if turns else content),
+        author_email=root_author,
+        participants=participants,
+        replies=(replies or None),
+        # The remapped value, NOT the source `first_message_ts`: the remap is rank-based over
+        # every slack thread, so it cannot be recomputed from this record.
+        created=root_ts,
+    )
     rec["group"] = channel
     # Slack speakers are display labels rather than org identities, so the doc is org-visible and
     # `people` stays empty — same as the loader's bundle.
@@ -1409,8 +1709,11 @@ def _byo_hubspot(dsid, raw, P):
     object_type = group = "companies"
     owner = raw.get("owner", "")
     owner_email = P.resolve(owner, role="owner", group_hint=group) if owner else None
-    people = [P.resolve(n, role="collaborator")
-              for n in (raw.get("se_assigned"), raw.get("csm_assigned")) if n]
+    people = [
+        P.resolve(n, role="collaborator")
+        for n in (raw.get("se_assigned"), raw.get("csm_assigned"))
+        if n
+    ]
     props = {_HS_PROPERTY.get(k, k): v for k, v in raw.items() if k not in _HS_NOT_A_PROPERTY}
     created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
     # A note is its own CRM object associated with the company, so it converts to its own record —
@@ -1419,21 +1722,39 @@ def _byo_hubspot(dsid, raw, P):
     for i, body in enumerate(_hs_notes(raw), start=1):
         note_id = f"{dsid}::n{i}"
         links.append({"to": note_id, "to_type": "notes"})
-        note = _rec(source_type="hubspot", doc_id=note_id, object_type="notes", title="",
-                    content=body, author_email=owner_email,
-                    properties={"hs_note_body": body,
-                                "hs_timestamp": synth.rfc3339(created + i)},
-                    created=created + i)
+        note = _rec(
+            source_type="hubspot",
+            doc_id=note_id,
+            object_type="notes",
+            title="",
+            content=body,
+            author_email=owner_email,
+            properties={"hs_note_body": body, "hs_timestamp": synth.rfc3339(created + i)},
+            created=created + i,
+        )
         # The notes object type hangs off the COMPANY's group, not off its own name.
         note["group"] = group
         notes.append(note)
-    rec = _rec(source_type="hubspot", doc_id=dsid, object_type=object_type, title=title,
-               content=content, author_email=owner_email, author_name=owner, properties=props,
-               associations=(links or None), created=created,
-               updated=to_epoch(raw.get("updated_at")))
+    rec = _rec(
+        source_type="hubspot",
+        doc_id=dsid,
+        object_type=object_type,
+        title=title,
+        content=content,
+        author_email=owner_email,
+        author_name=owner,
+        properties=props,
+        associations=(links or None),
+        created=created,
+        updated=to_epoch(raw.get("updated_at")),
+    )
     rec["group"] = group
-    return [rec, *notes], {"owner": owner_email, "people": [p for p in people if p],
-                           "group": group, "confidentiality": None}
+    return [rec, *notes], {
+        "owner": owner_email,
+        "people": [p for p in people if p],
+        "group": group,
+        "confidentiality": None,
+    }
 
 
 def _byo_linear(dsid, raw, P):
@@ -1444,10 +1765,12 @@ def _byo_linear(dsid, raw, P):
     assignee = raw.get("assignee", "")
     creator_email = P.resolve(creator, role="author", group_hint=group) if creator else None
     assignee_name = assignee if str(assignee).strip().lower() != "unassigned" else ""
-    assignee_email = (P.resolve(assignee_name, role="assignee", group_hint=group)
-                      if assignee_name else None)
+    assignee_email = (
+        P.resolve(assignee_name, role="assignee", group_hint=group) if assignee_name else None
+    )
     identifier = str(raw.get("key") or "").strip() or synth.linear_identifier(
-        dsid, synth.linear_team_key(team))
+        dsid, synth.linear_team_key(team)
+    )
     state = raw.get("status")
     created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
     updated = to_epoch(raw.get("updated_at"))
@@ -1459,44 +1782,67 @@ def _byo_linear(dsid, raw, P):
         author = P.display_email(c["name"])[0] if c["name"] else None
         ts = to_epoch(c["date"]) or (prev_ts + 1)
         prev_ts = max(prev_ts, ts)
-        comments.append(_rec(id=f"{dsid}::c{seq}",
-                             content=(c["body"] if author else c["body_with_name"]),
-                             author_email=author, created_ts=ts))
+        comments.append(
+            _rec(
+                id=f"{dsid}::c{seq}",
+                content=(c["body"] if author else c["body_with_name"]),
+                author_email=author,
+                created_ts=ts,
+            )
+        )
     # A relation names its target by doc_id in BYO, so the bench's issue KEY is resolved here —
     # dropping a dangling, self- or duplicate reference, and keeping the original position in the
     # id so a re-conversion of the same corpus agrees row for row.
     relations, seen = [], set()
     for seq, (rel_type, rel_key) in enumerate(
-            parse_linear_relations(raw.get("dependencies")), start=1):
+        parse_linear_relations(raw.get("dependencies")), start=1
+    ):
         target = _LINEAR_KEY_TO_DOC.get(rel_key)
         if not target or target == dsid or (rel_type, target) in seen:
             continue
         seen.add((rel_type, target))
         relations.append({"id": f"{dsid}::r{seq}", "to": target, "type": rel_type})
 
-    rec = _rec(source_type="linear", doc_id=dsid, team=team, title=title, content=content,
-               author_email=creator_email, author_name=creator, identifier=identifier,
-               state=state, priority=linear_priority(raw.get("priority")),
-               estimate=_linear_int(raw.get("estimate")), labels=_names(raw.get("labels")),
-               project=raw.get("project"), cycle=raw.get("cycle"),
-               branchName=synth.linear_branch_name(identifier, title, assignee_email),
-               dueDate=_linear_date(raw.get("due_date")),
-               assignee=assignee_email, assigneeName=(assignee_name or None),
-               # The parent's own identifier, as the corpus wrote it — BYO resolves it to a doc_id
-               # on load with the same first-match rule.
-               parent=_linear_parent(raw.get("parent_issue")),
-               release=_linear_release(raw.get("release")),
-               completedAt=(ended if state_type == "completed" else None),
-               canceledAt=(ended if state_type == "canceled" else None),
-               startedAt=(created if state_type in ("started", "completed") else None),
-               attachments=(parse_linear_attachments(raw.get("links"),
-                                                    raw.get("attachments")) or None),
-               comments=(comments or None), relations=(relations or None),
-               created=created, updated=updated)
+    rec = _rec(
+        source_type="linear",
+        doc_id=dsid,
+        team=team,
+        title=title,
+        content=content,
+        author_email=creator_email,
+        author_name=creator,
+        identifier=identifier,
+        state=state,
+        priority=linear_priority(raw.get("priority")),
+        estimate=_linear_int(raw.get("estimate")),
+        labels=_names(raw.get("labels")),
+        project=raw.get("project"),
+        cycle=raw.get("cycle"),
+        branchName=synth.linear_branch_name(identifier, title, assignee_email),
+        dueDate=_linear_date(raw.get("due_date")),
+        assignee=assignee_email,
+        assigneeName=(assignee_name or None),
+        # The parent's own identifier, as the corpus wrote it — BYO resolves it to a doc_id
+        # on load with the same first-match rule.
+        parent=_linear_parent(raw.get("parent_issue")),
+        release=_linear_release(raw.get("release")),
+        completedAt=(ended if state_type == "completed" else None),
+        canceledAt=(ended if state_type == "canceled" else None),
+        startedAt=(created if state_type in ("started", "completed") else None),
+        attachments=(parse_linear_attachments(raw.get("links"), raw.get("attachments")) or None),
+        comments=(comments or None),
+        relations=(relations or None),
+        created=created,
+        updated=updated,
+    )
     rec["group"] = group
     people = [p for p in (creator_email, assignee_email) if p]
-    return [rec], {"owner": creator_email, "people": people, "group": group,
-                   "confidentiality": None}
+    return [rec], {
+        "owner": creator_email,
+        "people": people,
+        "group": group,
+        "confidentiality": None,
+    }
 
 
 def _byo_fireflies(dsid, raw, P):
@@ -1507,8 +1853,12 @@ def _byo_fireflies(dsid, raw, P):
     group = channel
     owner_display = _ff_role_stripped(raw.get("redwood_owner") or "")
     host_email = P.resolve(owner_display, role="owner") if owner_display else None
-    internal_emails = [e for e in (P.resolve(n, role="participant_internal") for n in internal) if e]
-    external_emails = [e for e in (P.resolve(n, role="participant_external") for n in external) if e]
+    internal_emails = [
+        e for e in (P.resolve(n, role="participant_internal") for n in internal) if e
+    ]
+    external_emails = [
+        e for e in (P.resolve(n, role="participant_external") for n in external) if e
+    ]
 
     # Parsed HERE (the parse needs attendee fields the record does not carry) but deliberately NOT
     # timed here: `synth.fireflies_fill_times` REWRITES start_time, spreading a run of sentences that
@@ -1521,39 +1871,66 @@ def _byo_fireflies(dsid, raw, P):
     for s in sentences:
         ordinals.setdefault(s["speaker_name"] or "", len(ordinals))
     byo_sentences = [
-        _rec(text=s["text"], speaker_name=s["speaker_name"],
-             speaker_id=ordinals.get(s["speaker_name"] or ""), start_time=s["start_time"],
-             # A speaker resolves to an identity only when the label names a DECLARED INTERNAL
-             # attendee — an anonymous "Speaker 3" or a customer stays unattributed, as the loader
-             # leaves it.
-             author_email=(P.resolve(s["speaker_name"], role="participant_internal")
-                           if s["speaker_name"] in internal else None))
-        for s in sentences]
+        _rec(
+            text=s["text"],
+            speaker_name=s["speaker_name"],
+            speaker_id=ordinals.get(s["speaker_name"] or ""),
+            start_time=s["start_time"],
+            # A speaker resolves to an identity only when the label names a DECLARED INTERNAL
+            # attendee — an anonymous "Speaker 3" or a customer stays unattributed, as the loader
+            # leaves it.
+            author_email=(
+                P.resolve(s["speaker_name"], role="participant_internal")
+                if s["speaker_name"] in internal
+                else None
+            ),
+        )
+        for s in sentences
+    ]
     duration = _ff_duration(raw.get("duration_minutes"))
 
-    rec = _rec(source_type="fireflies", doc_id=dsid, channel=channel, title=title,
-               host_email=host_email, host_name=(owner_display or None),
-               calendar_id=raw.get("meeting_id"), calendar_type="google_calendar",
-               duration=duration, summary=_ff_summary(raw),
-               # `participants` is the attendee roster (internal + external), NOT the set of
-               # speakers the loader would fall back to — a customer who never spoke is still a
-               # participant — so it has to be stated.
-               participants=(internal_emails + external_emails),
-               meeting_attendees=_ff_meeting_attendees(raw, internal, external, P),
-               sentences=byo_sentences,
-               created=(to_epoch(raw.get("recorded_at")) or synth.epoch(dsid)))
+    rec = _rec(
+        source_type="fireflies",
+        doc_id=dsid,
+        channel=channel,
+        title=title,
+        host_email=host_email,
+        host_name=(owner_display or None),
+        calendar_id=raw.get("meeting_id"),
+        calendar_type="google_calendar",
+        duration=duration,
+        summary=_ff_summary(raw),
+        # `participants` is the attendee roster (internal + external), NOT the set of
+        # speakers the loader would fall back to — a customer who never spoke is still a
+        # participant — so it has to be stated.
+        participants=(internal_emails + external_emails),
+        meeting_attendees=_ff_meeting_attendees(raw, internal, external, P),
+        sentences=byo_sentences,
+        created=(to_epoch(raw.get("recorded_at")) or synth.epoch(dsid)),
+    )
     rec["group"] = group
     # `transcript_id`, the three media/web URLs, `meeting_link` and `analytics` are all derived
     # from the doc_id and the sentences by the very same synth functions on load, so they are left
     # out rather than restated — unlike the values above, nothing about them needs a global view.
-    return [rec], {"owner": host_email, "people": internal_emails, "group": group,
-                   "confidentiality": None}
+    return [rec], {
+        "owner": host_email,
+        "people": internal_emails,
+        "group": group,
+        "confidentiality": None,
+    }
 
 
-_BYO_CONVERTERS = {"google_drive": _byo_drive, "github": _byo_github,
-                   "confluence": _byo_confluence, "jira": _byo_jira, "gmail": _byo_gmail,
-                   "slack": _byo_slack, "hubspot": _byo_hubspot, "linear": _byo_linear,
-                   "fireflies": _byo_fireflies}
+_BYO_CONVERTERS = {
+    "google_drive": _byo_drive,
+    "github": _byo_github,
+    "confluence": _byo_confluence,
+    "jira": _byo_jira,
+    "gmail": _byo_gmail,
+    "slack": _byo_slack,
+    "hubspot": _byo_hubspot,
+    "linear": _byo_linear,
+    "fireflies": _byo_fireflies,
+}
 
 
 def to_byo(src: str, dsid: str, raw: dict, P: "Principals", org: str) -> list[dict]:
@@ -1595,7 +1972,7 @@ class _ByoWriter:
         self.out_dir = Path(out_dir)
         self.shard_records = shard_records
         self.shards: dict[str, list[dict]] = {}
-        self._open: dict[str, tuple] = {}          # source -> (path, fh, records_written)
+        self._open: dict[str, tuple] = {}  # source -> (path, fh, records_written)
         self._plain = None
         if shard_records is None:
             self._plain = open(self.out_dir / "corpus.jsonl", "w")
@@ -1619,17 +1996,21 @@ class _ByoWriter:
         path = d / f"part-{len(self.shards.get(src, [])):05d}.jsonl.gz"
         # GzipFile, not gzip.open: only the former takes `mtime`, and the default header would
         # stamp the current time into every shard and change its digest run to run.
-        fh = io.TextIOWrapper(gzip.GzipFile(path, "wb", compresslevel=9, mtime=0),
-                              encoding="utf-8")
+        fh = io.TextIOWrapper(gzip.GzipFile(path, "wb", compresslevel=9, mtime=0), encoding="utf-8")
         self._open[src] = (path, fh, 0)
         return self._open[src]
 
     def _close_shard(self, src: str, path: Path, fh, n: int) -> None:
         fh.close()
         self._open.pop(src, None)
-        self.shards.setdefault(src, []).append({
-            "path": str(path.relative_to(self.out_dir)), "records": n,
-            "bytes": path.stat().st_size, "sha256": _sha256(path)})
+        self.shards.setdefault(src, []).append(
+            {
+                "path": str(path.relative_to(self.out_dir)),
+                "records": n,
+                "bytes": path.stat().st_size,
+                "sha256": _sha256(path),
+            }
+        )
 
     def close(self, *, counts: dict, documents: int, layer: dict | None = None) -> None:
         if self._plain is not None:
@@ -1643,25 +2024,34 @@ class _ByoWriter:
             "documents": documents,
             "records": sum(s["records"] for v in self.shards.values() for s in v),
             "shard_records": self.shard_records,
-            "sources": {src: {"documents": counts.get(src, 0),
-                              "records": sum(s["records"] for s in shards),
-                              "shards": shards}
-                        for src, shards in sorted(self.shards.items())},
+            "sources": {
+                src: {
+                    "documents": counts.get(src, 0),
+                    "records": sum(s["records"] for s in shards),
+                    "shards": shards,
+                }
+                for src, shards in sorted(self.shards.items())
+            },
         }
         if roster.exists():
-            manifest["roster"] = {"path": "roster.yaml", "sha256": _sha256(roster),
-                                  "bytes": roster.stat().st_size}
+            manifest["roster"] = {
+                "path": "roster.yaml",
+                "sha256": _sha256(roster),
+                "bytes": roster.stat().st_size,
+            }
         if layer is not None:
             # Keyed per layer rather than flat: a tool that folds another layer in rewrites the
             # top-level `documents` to the combined total, so a flat `source_documents` beside it
             # would describe a whole the converted layer is only part of.
             manifest["layers"] = {"converted": layer}
         (self.out_dir / "manifest.json").write_text(
-            json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+            json.dumps(manifest, indent=1, sort_keys=True) + "\n"
+        )
 
 
-def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=None,
-               allow_excluded=0) -> dict:
+def export_byo(
+    settings, gen_dir, out_dir, *, question_ids=None, shard_records=None, allow_excluded=0
+) -> dict:
     """Convert ERB to a BYO-JSONL artifact: ``corpus.jsonl`` + ``roster.yaml``, or per-source gzip
     shards plus ``manifest.json`` when ``shard_records`` is set (what the full 512k-document corpus
     needs to be distributable).
@@ -1672,8 +2062,9 @@ def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=N
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    P, records, excluded = _resolve_roster(settings, gen_dir, question_ids=question_ids,
-                                           allow_excluded=allow_excluded)
+    P, records, excluded = _resolve_roster(
+        settings, gen_dir, question_ids=question_ids, allow_excluded=allow_excluded
+    )
     _precompute_globals(records)
     # The same resolve-then-convert order import_structured uses, and for the same reason: without
     # it the artifact's content depends on which document was read first, and it stops matching a
@@ -1690,11 +2081,17 @@ def export_byo(settings, gen_dir, out_dir, *, question_ids=None, shard_records=N
         except Exception as e:  # one bad doc must not sink the conversion
             failures.append((dsid, src, repr(e)))
         if i % 25000 == 0:
-            print(f"  converted {i}/{len(records)} ({len(failures)} skipped)",
-                  file=sys.stderr, flush=True)
+            print(
+                f"  converted {i}/{len(records)} ({len(failures)} skipped)",
+                file=sys.stderr,
+                flush=True,
+            )
     if failures:
-        print(f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
-              file=sys.stderr, flush=True)
+        print(
+            f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
+            file=sys.stderr,
+            flush=True,
+        )
     P.write_roster(out_dir / "roster.yaml", settings)
     # Successes, not attempts — `documents` is what was written, so it cannot contradict its own
     # per-source sum when a document is skipped. `source_documents` is what the bench offered, so the
@@ -1719,10 +2116,16 @@ def parse_employees(path: Path) -> list[dict]:
     employees: list[dict] = []
     for dept, people in data.get("departments", {}).items():
         for p in people or []:
-            employees.append({
-                "name": p["name"], "email": p["email"], "title": p.get("title", ""),
-                "department": dept, "dept_slug": slugify(dept), "mailbox": snake(p["name"]),
-            })
+            employees.append(
+                {
+                    "name": p["name"],
+                    "email": p["email"],
+                    "title": p.get("title", ""),
+                    "department": dept,
+                    "dept_slug": slugify(dept),
+                    "mailbox": snake(p["name"]),
+                }
+            )
     return employees
 
 
@@ -1738,8 +2141,9 @@ KNOWN_EMPTY_DOCS = {
 }
 
 
-def select_records(gen_dir: Path, question_ids: set[str] | None = None,
-                   excluded: list | None = None):
+def select_records(
+    gen_dir: Path, question_ids: set[str] | None = None, excluded: list | None = None
+):
     """Yield ``(source_type, dsid, raw_json)`` records under ``gen_dir/sources``, or only those
     whose ``dsid`` is in ``question_ids``. A selected doc's container is NOT expanded to its
     siblings, so a sliced corpus can leave a container sparse.
@@ -1754,11 +2158,16 @@ def select_records(gen_dir: Path, question_ids: set[str] | None = None,
             continue
         if not (derive_title_content(raw)[1] or "").strip():
             if excluded is not None:
-                excluded.append({"source": src, "doc_id": dsid,
-                                 "path": raw.get("_erb_path", ""),
-                                 # The mechanical rule, not a diagnosis: the same damage also
-                                 # produces near-empty bodies that this test does not catch.
-                                 "reason": "content empty after strip"})
+                excluded.append(
+                    {
+                        "source": src,
+                        "doc_id": dsid,
+                        "path": raw.get("_erb_path", ""),
+                        # The mechanical rule, not a diagnosis: the same damage also
+                        # produces near-empty bodies that this test does not catch.
+                        "reason": "content empty after strip",
+                    }
+                )
             continue
         yield src, dsid, raw
 
@@ -1783,16 +2192,23 @@ def _resolve_roster(settings, gen_dir, *, question_ids=None, allow_excluded=0):
     # list because this gate bounds how long it can get.
     undeclared = [e for e in excluded if e["doc_id"] not in KNOWN_EMPTY_DOCS]
     if len(undeclared) > allow_excluded:
-        print(f"{len(undeclared)} document(s) excluded that KNOWN_EMPTY_DOCS does not name:",
-              file=sys.stderr)
+        print(
+            f"{len(undeclared)} document(s) excluded that KNOWN_EMPTY_DOCS does not name:",
+            file=sys.stderr,
+        )
         for e in undeclared:
             print(f"  {e['source']}/{e['path']}  ({e['doc_id']}) — {e['reason']}", file=sys.stderr)
-        print(f"Read them, then declare them or pass --allow-excluded {len(undeclared)}.",
-              file=sys.stderr)
+        print(
+            f"Read them, then declare them or pass --allow-excluded {len(undeclared)}.",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
     if excluded:
-        print("  excluded " + ", ".join(f"{e['source']}/{e['path']}" for e in excluded),
-              file=sys.stderr, flush=True)
+        print(
+            "  excluded " + ", ".join(f"{e['source']}/{e['path']}" for e in excluded),
+            file=sys.stderr,
+            flush=True,
+        )
     print(f"  materialized {len(records)} records; loading...", file=sys.stderr, flush=True)
     # (Gmail-header email harvesting was dropped: it scanned every message body — minutes of CPU —
     # for marginal value under the directory-only roster. Message senders come straight from the
@@ -1821,8 +2237,11 @@ def _convert_all(records, P, settings, counts: dict, failures: list):
             yield f"{src}/{dsid}", rec
         counts[src] += 1
         if i % 25000 == 0:
-            print(f"  converted {i}/{len(records)} ({len(failures)} skipped)",
-                  file=sys.stderr, flush=True)
+            print(
+                f"  converted {i}/{len(records)} ({len(failures)} skipped)",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 def _populate_principals(records, P, settings) -> None:
@@ -1842,8 +2261,9 @@ def dump_tokens(settings, gen_dir, *, question_ids=None, allow_excluded=0) -> in
     """Resolve principals and write ``tokens.yaml`` WITHOUT building the DB — a fast roster preview.
     Returns the tokened-user count. Runs the real converter and discards its records, so the roster
     matches a full import exactly."""
-    P, records, _ = _resolve_roster(settings, gen_dir, question_ids=question_ids,
-                                    allow_excluded=allow_excluded)
+    P, records, _ = _resolve_roster(
+        settings, gen_dir, question_ids=question_ids, allow_excluded=allow_excluded
+    )
     _precompute_globals(records)
     _populate_principals(records, P, settings)
     P.write_tokens(settings)
@@ -1859,12 +2279,17 @@ def import_structured(settings, gen_dir, *, question_ids=None, allow_excluded=0)
     redistributed artifact takes, where ``export_byo`` writes the identical records to JSONL. One
     mapping per source, so a direct import and the artifact cannot disagree.
     """
-    P, records, _ = _resolve_roster(settings, gen_dir, question_ids=question_ids,
-                                    allow_excluded=allow_excluded)
+    P, records, _ = _resolve_roster(
+        settings, gen_dir, question_ids=question_ids, allow_excluded=allow_excluded
+    )
     _precompute_globals(records)
     if _SLACK_TS_REMAP:
-        print(f"  slack: remapped {len(_SLACK_TS_REMAP)} future-dated threads into a realistic "
-              f"window (order-preserving)", file=sys.stderr, flush=True)
+        print(
+            f"  slack: remapped {len(_SLACK_TS_REMAP)} future-dated threads into a realistic "
+            f"window (order-preserving)",
+            file=sys.stderr,
+            flush=True,
+        )
     counts: dict[str, int] = {}
     failures: list[tuple[str, str, str]] = []
 
@@ -1881,35 +2306,70 @@ def import_structured(settings, gen_dir, *, question_ids=None, allow_excluded=0)
 
     # validate=False: these records come from `to_byo`, i.e. from code the schemas describe, and
     # `test_erb_to_byo_output_validates_against_the_byo_schemas` already holds it to them.
-    byo.load_records(lambda: _convert_all(records, P, settings, counts, failures),
-                     settings, reset=True, roster=roster_path, validate=False)
+    byo.load_records(
+        lambda: _convert_all(records, P, settings, counts, failures),
+        settings,
+        reset=True,
+        roster=roster_path,
+        validate=False,
+    )
     if failures:
-        print(f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
-              file=sys.stderr, flush=True)
+        print(
+            f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
+            file=sys.stderr,
+            flush=True,
+        )
     return counts
 
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(
-        description="Import EnterpriseRAG-Bench (faithful, structured) into the mock DB.")
-    ap.add_argument("--slice-questions", type=Path, default=None,
-                    help="only import docs referenced (expected_doc_ids) by this questions JSONL")
-    ap.add_argument("--ref", default="main",
-                    help="EnterpriseRAG-Bench branch/ref to fetch (default: main)")
-    ap.add_argument("--no-download", action="store_true",
-                    help="reuse cached data/raw/generated_data; skip fetching")
-    ap.add_argument("--tokens-only", action="store_true",
-                    help="resolve the roster and write tokens.yaml WITHOUT building the DB (fast)")
-    ap.add_argument("--export-byo", type=Path, default=None, metavar="DIR",
-                    help="write a BYO-JSONL artifact into DIR instead of building the DB: "
-                         "corpus.jsonl + roster.yaml, or shards + manifest.json with "
-                         "--shard-records; `app.importer.byo` loads either to an equivalent DB")
-    ap.add_argument("--shard-records", type=int, default=None, metavar="N",
-                    help="with --export-byo: write data/<source>/part-*.jsonl.gz shards of N "
-                         "records each plus manifest.json, instead of one corpus.jsonl")
-    ap.add_argument("--allow-excluded", type=int, default=0, metavar="N",
-                    help="proceed with up to N empty-content documents that KNOWN_EMPTY_DOCS does "
-                         "not name (default 0: any undeclared exclusion stops the run)")
+        description="Import EnterpriseRAG-Bench (faithful, structured) into the mock DB."
+    )
+    ap.add_argument(
+        "--slice-questions",
+        type=Path,
+        default=None,
+        help="only import docs referenced (expected_doc_ids) by this questions JSONL",
+    )
+    ap.add_argument(
+        "--ref", default="main", help="EnterpriseRAG-Bench branch/ref to fetch (default: main)"
+    )
+    ap.add_argument(
+        "--no-download",
+        action="store_true",
+        help="reuse cached data/raw/generated_data; skip fetching",
+    )
+    ap.add_argument(
+        "--tokens-only",
+        action="store_true",
+        help="resolve the roster and write tokens.yaml WITHOUT building the DB (fast)",
+    )
+    ap.add_argument(
+        "--export-byo",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="write a BYO-JSONL artifact into DIR instead of building the DB: "
+        "corpus.jsonl + roster.yaml, or shards + manifest.json with "
+        "--shard-records; `app.importer.byo` loads either to an equivalent DB",
+    )
+    ap.add_argument(
+        "--shard-records",
+        type=int,
+        default=None,
+        metavar="N",
+        help="with --export-byo: write data/<source>/part-*.jsonl.gz shards of N "
+        "records each plus manifest.json, instead of one corpus.jsonl",
+    )
+    ap.add_argument(
+        "--allow-excluded",
+        type=int,
+        default=0,
+        metavar="N",
+        help="proceed with up to N empty-content documents that KNOWN_EMPTY_DOCS does "
+        "not name (default 0: any undeclared exclusion stops the run)",
+    )
     args = ap.parse_args(argv)
     if args.shard_records is not None and args.shard_records < 1:
         # 0 makes `n >= shard_records` always true: one shard per record, 600k files for the bench,
@@ -1935,29 +2395,43 @@ def main(argv: list[str]) -> int:
             question_ids.update(json.loads(line).get("expected_doc_ids", []))
 
     if args.export_byo:
-        counts = export_byo(settings, gen_dir, args.export_byo, question_ids=question_ids,
-                            shard_records=args.shard_records,
-                            allow_excluded=args.allow_excluded)
-        dest = (f"{args.export_byo}/data/<source>/part-*.jsonl.gz + manifest.json"
-                if args.shard_records else f"{args.export_byo}/corpus.jsonl")
+        counts = export_byo(
+            settings,
+            gen_dir,
+            args.export_byo,
+            question_ids=question_ids,
+            shard_records=args.shard_records,
+            allow_excluded=args.allow_excluded,
+        )
+        dest = (
+            f"{args.export_byo}/data/<source>/part-*.jsonl.gz + manifest.json"
+            if args.shard_records
+            else f"{args.export_byo}/corpus.jsonl"
+        )
         print(f"Converted {sum(counts.values())} documents -> {dest}")
         for src, n in counts.items():
             print(f"  {src:14s} {n}")
-        print(f"Roster -> {args.export_byo}/roster.yaml "
-              f"(org {settings.org_name}, domain {settings.org_domain})")
-        print(f"Load it with: python -m app.importer.byo {args.export_byo}/corpus.jsonl "
-              f"--roster {args.export_byo}/roster.yaml")
+        print(
+            f"Roster -> {args.export_byo}/roster.yaml "
+            f"(org {settings.org_name}, domain {settings.org_domain})"
+        )
+        print(
+            f"Load it with: python -m app.importer.byo {args.export_byo}/corpus.jsonl "
+            f"--roster {args.export_byo}/roster.yaml"
+        )
         return 0
 
     if args.tokens_only:
-        n = dump_tokens(settings, gen_dir, question_ids=question_ids,
-                        allow_excluded=args.allow_excluded)
+        n = dump_tokens(
+            settings, gen_dir, question_ids=question_ids, allow_excluded=args.allow_excluded
+        )
         print(f"Wrote {n} users to {settings.tokens_path} (roster only; no DB built)")
         print(f"Org: {settings.org_name} ({settings.org_domain})")
         return 0
 
-    counts = import_structured(settings, gen_dir, question_ids=question_ids,
-                               allow_excluded=args.allow_excluded)
+    counts = import_structured(
+        settings, gen_dir, question_ids=question_ids, allow_excluded=args.allow_excluded
+    )
     print(f"Loaded {sum(counts.values())} documents into {settings.db_path}")
     for src, n in counts.items():
         print(f"  {src:14s} {n}")

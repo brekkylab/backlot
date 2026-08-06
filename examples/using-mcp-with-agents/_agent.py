@@ -10,6 +10,7 @@ Each service example (`atlassian.py`, `notion.py`, `s3.py`) builds its own
 
 The SDKs are imported lazily inside each runner, so you only need the one you use.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -89,6 +90,8 @@ def run_agent(agent: str | None, params, question: str) -> None:
     # Fail early with a clear message rather than a cryptic SDK auth error mid-run.
     if not os.environ.get(_API_KEYS[choice]):
         other = "openai" if choice == "anthropic" else "anthropic"
-        sys.exit(f"{_API_KEYS[choice]} is not set — the --agent {choice} run needs it. "
-                 f"Export {_API_KEYS[choice]}=…, or use --agent {other} (needs {_API_KEYS[other]}).")
+        sys.exit(
+            f"{_API_KEYS[choice]} is not set — the --agent {choice} run needs it. "
+            f"Export {_API_KEYS[choice]}=…, or use --agent {other} (needs {_API_KEYS[other]})."
+        )
     asyncio.run(runners[choice](params, question))

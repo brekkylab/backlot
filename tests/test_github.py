@@ -4,6 +4,7 @@ codebase serving.
 One file per router, so a provider's shape assertions live in one place whether they go over HTTP
 or call the response builder directly.
 """
+
 from __future__ import annotations
 
 import base64
@@ -12,12 +13,14 @@ import yaml
 
 import pytest
 
-from app import store, synth
+from app import store
 from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
 
 
 def test_admin_github_crawls_all(client, admin_h, ro_conn, org):
-    repos = client.get(f"/github/orgs/{org}/repos", headers=admin_h, params={"per_page": 100}).json()
+    repos = client.get(
+        f"/github/orgs/{org}/repos", headers=admin_h, params={"per_page": 100}
+    ).json()
     seen = []
     for r in repos:
         seen += crawl_github_repo(client, admin_h, org, r["name"])
@@ -27,6 +30,7 @@ def test_admin_github_crawls_all(client, admin_h, ro_conn, org):
 def test_github_body_roundtrip(client, admin_h, ro_conn, org):
     doc = ro_conn.execute("SELECT * FROM github_items LIMIT 1").fetchone()
     from app import synth
+
     num = synth.github_number(doc["doc_id"])
     issue = client.get(f"/github/repos/{org}/{doc['repo']}/issues/{num}", headers=admin_h).json()
     assert issue["body"] == doc["content"] and issue["title"] == doc["title"]
@@ -34,16 +38,21 @@ def test_github_body_roundtrip(client, admin_h, ro_conn, org):
 
 def test_github_issues_filtered_by_state(client, admin_h, org):
     # gateway repo: gh-issue-1 is open, gh-pr-1 is a closed PR (both surface via /issues)
-    open_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h,
-                           params={"state": "open"}).json()
+    open_body = client.get(
+        f"/github/repos/{org}/gateway/issues", headers=admin_h, params={"state": "open"}
+    ).json()
     assert [i["title"] for i in open_body] == ["Rate limiter drops bursts under 50ms"]
-    closed_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h,
-                             params={"state": "closed"}).json()
+    closed_body = client.get(
+        f"/github/repos/{org}/gateway/issues", headers=admin_h, params={"state": "closed"}
+    ).json()
     assert [i["title"] for i in closed_body] == ["Fix token-bucket refill off-by-one"]
-    all_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h,
-                          params={"state": "all"}).json()
-    assert {i["title"] for i in all_body} == {"Rate limiter drops bursts under 50ms",
-                                              "Fix token-bucket refill off-by-one"}
+    all_body = client.get(
+        f"/github/repos/{org}/gateway/issues", headers=admin_h, params={"state": "all"}
+    ).json()
+    assert {i["title"] for i in all_body} == {
+        "Rate limiter drops bursts under 50ms",
+        "Fix token-bucket refill off-by-one",
+    }
     # default (no state param) behaves like real GitHub: open only
     default_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h).json()
     assert default_body == open_body
@@ -51,14 +60,17 @@ def test_github_issues_filtered_by_state(client, admin_h, org):
 
 def test_github_pulls_filtered_by_state(client, admin_h, org):
     # gateway repo's only PR (gh-pr-1) is closed
-    open_body = client.get(f"/github/repos/{org}/gateway/pulls", headers=admin_h,
-                           params={"state": "open"}).json()
+    open_body = client.get(
+        f"/github/repos/{org}/gateway/pulls", headers=admin_h, params={"state": "open"}
+    ).json()
     assert open_body == []
-    closed_body = client.get(f"/github/repos/{org}/gateway/pulls", headers=admin_h,
-                             params={"state": "closed"}).json()
+    closed_body = client.get(
+        f"/github/repos/{org}/gateway/pulls", headers=admin_h, params={"state": "closed"}
+    ).json()
     assert [p["title"] for p in closed_body] == ["Fix token-bucket refill off-by-one"]
-    all_body = client.get(f"/github/repos/{org}/gateway/pulls", headers=admin_h,
-                          params={"state": "all"}).json()
+    all_body = client.get(
+        f"/github/repos/{org}/gateway/pulls", headers=admin_h, params={"state": "all"}
+    ).json()
     assert [p["title"] for p in all_body] == ["Fix token-bucket refill off-by-one"]
 
 
@@ -69,37 +81,90 @@ def test_github_pulls_filtered_by_state(client, admin_h, org):
 # small DB — SAMPLE plus a 'codebase' repo of file docs — the same way conftest._build() does.
 
 _GH_FILE_DOCS = [
-    {"source_type": "github", "doc_id": "gh-file-readme", "repo": "codebase", "subtype": "file",
-     "path": "README.md", "title": "README.md",
-     "content": "# codebase\n\nCore service source, browsable via the tree/contents API.\n",
-     "group": "engineering", "visibility": "public",
-     "author_email": "ava@acme.com", "author_groups": ["engineering"]},
-    {"source_type": "github", "doc_id": "gh-file-main", "repo": "codebase", "subtype": "file",
-     "path": "src/main.py", "title": "main.py", "content": "def main():\n    return 1\n",
-     "group": "engineering", "visibility": "public",
-     "author_email": "ava@acme.com", "author_groups": ["engineering"]},
-    {"source_type": "github", "doc_id": "gh-file-utils", "repo": "codebase", "subtype": "file",
-     "path": "src/pkg/utils.py", "title": "utils.py", "content": "def helper():\n    return 2\n",
-     "group": "engineering", "visibility": "public",
-     "author_email": "ava@acme.com", "author_groups": ["engineering"]},
-    {"source_type": "github", "doc_id": "gh-file-secret", "repo": "codebase", "subtype": "file",
-     "path": "config/secret.yaml", "title": "secret.yaml", "content": "api_key: shh\n",
-     "group": "people", "visibility": "group",
-     "author_email": "hana@acme.com", "author_groups": ["people"]},
+    {
+        "source_type": "github",
+        "doc_id": "gh-file-readme",
+        "repo": "codebase",
+        "subtype": "file",
+        "path": "README.md",
+        "title": "README.md",
+        "content": "# codebase\n\nCore service source, browsable via the tree/contents API.\n",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
+    {
+        "source_type": "github",
+        "doc_id": "gh-file-main",
+        "repo": "codebase",
+        "subtype": "file",
+        "path": "src/main.py",
+        "title": "main.py",
+        "content": "def main():\n    return 1\n",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
+    {
+        "source_type": "github",
+        "doc_id": "gh-file-utils",
+        "repo": "codebase",
+        "subtype": "file",
+        "path": "src/pkg/utils.py",
+        "title": "utils.py",
+        "content": "def helper():\n    return 2\n",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
+    {
+        "source_type": "github",
+        "doc_id": "gh-file-secret",
+        "repo": "codebase",
+        "subtype": "file",
+        "path": "config/secret.yaml",
+        "title": "secret.yaml",
+        "content": "api_key: shh\n",
+        "group": "people",
+        "visibility": "group",
+        "author_email": "hana@acme.com",
+        "author_groups": ["people"],
+    },
     # a separate repo (not 'codebase') so this doesn't perturb the exact tree/contents sets the
     # 'codebase' tests assert against
-    {"source_type": "github", "doc_id": "gh-file-unicode", "repo": "unicode-repo", "subtype": "file",
-     "path": "docs/unicode.md", "title": "unicode.md", "content": "héllo wörld 世界\n",
-     "group": "engineering", "visibility": "public",
-     "author_email": "ava@acme.com", "author_groups": ["engineering"]},
+    {
+        "source_type": "github",
+        "doc_id": "gh-file-unicode",
+        "repo": "unicode-repo",
+        "subtype": "file",
+        "path": "docs/unicode.md",
+        "title": "unicode.md",
+        "content": "héllo wörld 世界\n",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
     # a file doc, deliberately chosen (by brute force over the doc_id) so its synthesized
     # `number` collides with gh-issue-1's in the SAME repo ('gateway') -- reproduces the
     # (repo, number) index-shadowing bug: a file's number must never be able to hide a
     # real issue/PR at that number.
-    {"source_type": "github", "doc_id": "gh-file-collide-88814", "repo": "gateway", "subtype": "file",
-     "path": "src/collide.py", "title": "collide.py", "content": "# unrelated file content\n",
-     "group": "engineering", "visibility": "public",
-     "author_email": "ava@acme.com", "author_groups": ["engineering"]},
+    {
+        "source_type": "github",
+        "doc_id": "gh-file-collide-88814",
+        "repo": "gateway",
+        "subtype": "file",
+        "path": "src/collide.py",
+        "title": "collide.py",
+        "content": "# unrelated file content\n",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
 ]
 
 
@@ -132,12 +197,22 @@ def gh_admin_h(gh_user_tokens):
 
 def test_github_tree_recursive(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
-    body = c.get(f"/github/repos/{gh_org}/codebase/git/trees/main",
-                headers=gh_admin_h, params={"recursive": "1"}).json()
+    body = c.get(
+        f"/github/repos/{gh_org}/codebase/git/trees/main",
+        headers=gh_admin_h,
+        params={"recursive": "1"},
+    ).json()
     assert body["truncated"] is False
     paths = {e["path"] for e in body["tree"]}
-    assert paths == {"README.md", "src", "src/main.py", "src/pkg", "src/pkg/utils.py",
-                     "config", "config/secret.yaml"}
+    assert paths == {
+        "README.md",
+        "src",
+        "src/main.py",
+        "src/pkg",
+        "src/pkg/utils.py",
+        "config",
+        "config/secret.yaml",
+    }
     content = "def main():\n    return 1\n"
     blob = next(e for e in body["tree"] if e["path"] == "src/main.py")
     assert blob["mode"] == "100644" and blob["type"] == "blob"
@@ -200,7 +275,9 @@ def test_github_branch_and_commit_resolve_tree(gh_client, gh_admin_h, gh_org):
     branch = c.get(f"/github/repos/{gh_org}/codebase/branches/main", headers=gh_admin_h).json()
     tree_sha = branch["commit"]["commit"]["tree"]["sha"]
     commit_sha = branch["commit"]["sha"]
-    commit = c.get(f"/github/repos/{gh_org}/codebase/commits/{commit_sha}", headers=gh_admin_h).json()
+    commit = c.get(
+        f"/github/repos/{gh_org}/codebase/commits/{commit_sha}", headers=gh_admin_h
+    ).json()
     assert commit["commit"]["tree"]["sha"] == tree_sha
     # the tree sha resolved from branch/commit is itself a valid `ref` for git/trees
     tree = c.get(f"/github/repos/{gh_org}/codebase/git/trees/{tree_sha}", headers=gh_admin_h).json()
@@ -224,11 +301,13 @@ def test_github_readme_stub_when_no_readme_file(client, admin_h, org):
 
 def test_github_file_excluded_from_issues_and_pulls(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
-    issues = c.get(f"/github/repos/{gh_org}/codebase/issues", headers=gh_admin_h,
-                   params={"state": "all"}).json()
+    issues = c.get(
+        f"/github/repos/{gh_org}/codebase/issues", headers=gh_admin_h, params={"state": "all"}
+    ).json()
     assert issues == []  # 'codebase' has only file docs, no issues/PRs
-    pulls = c.get(f"/github/repos/{gh_org}/codebase/pulls", headers=gh_admin_h,
-                  params={"state": "all"}).json()
+    pulls = c.get(
+        f"/github/repos/{gh_org}/codebase/pulls", headers=gh_admin_h, params={"state": "all"}
+    ).json()
     assert pulls == []
 
 
@@ -274,12 +353,17 @@ def test_github_size_is_utf8_byte_length(gh_client, gh_admin_h, gh_org):
     nbytes = len(content.encode())
     assert nbytes > len(content)  # sanity: the two would only coincidentally match otherwise
 
-    tree = c.get(f"/github/repos/{gh_org}/unicode-repo/git/trees/main", headers=gh_admin_h,
-                params={"recursive": "1"}).json()
+    tree = c.get(
+        f"/github/repos/{gh_org}/unicode-repo/git/trees/main",
+        headers=gh_admin_h,
+        params={"recursive": "1"},
+    ).json()
     entry = next(e for e in tree["tree"] if e["path"] == "docs/unicode.md")
     assert entry["size"] == nbytes
 
-    body = c.get(f"/github/repos/{gh_org}/unicode-repo/contents/docs/unicode.md", headers=gh_admin_h).json()
+    body = c.get(
+        f"/github/repos/{gh_org}/unicode-repo/contents/docs/unicode.md", headers=gh_admin_h
+    ).json()
     assert body["size"] == nbytes
 
     sha = hashlib.sha1(content.encode()).hexdigest()
@@ -289,12 +373,15 @@ def test_github_size_is_utf8_byte_length(gh_client, gh_admin_h, gh_org):
 
 def test_github_file_acl_scoped(gh_client, gh_admin_h, gh_org, gh_user_tokens):
     c, _ = gh_client
-    member_h = {"Authorization": f"Bearer {gh_user_tokens['hana@acme.com']}"}       # in 'people'
-    nonmember_h = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}     # not in 'people'
+    member_h = {"Authorization": f"Bearer {gh_user_tokens['hana@acme.com']}"}  # in 'people'
+    nonmember_h = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}  # not in 'people'
 
     def has_secret(headers):
-        body = c.get(f"/github/repos/{gh_org}/codebase/git/trees/main", headers=headers,
-                     params={"recursive": "1"}).json()
+        body = c.get(
+            f"/github/repos/{gh_org}/codebase/git/trees/main",
+            headers=headers,
+            params={"recursive": "1"},
+        ).json()
         return any(e["path"] == "config/secret.yaml" for e in body["tree"])
 
     assert has_secret(gh_admin_h)
@@ -303,11 +390,14 @@ def test_github_file_acl_scoped(gh_client, gh_admin_h, gh_org, gh_user_tokens):
 
     ok = c.get(f"/github/repos/{gh_org}/codebase/contents/config/secret.yaml", headers=member_h)
     assert ok.status_code == 200
-    hidden = c.get(f"/github/repos/{gh_org}/codebase/contents/config/secret.yaml", headers=nonmember_h)
+    hidden = c.get(
+        f"/github/repos/{gh_org}/codebase/contents/config/secret.yaml", headers=nonmember_h
+    )
     assert hidden.status_code == 404
 
 
 # --- OpenAPI enrichment: github response fidelity ------------------------------------------
+
 
 def test_github_list_issues_documents_state_param(client):
     op = client.get("/openapi.json").json()["paths"]["/github/repos/{owner}/{repo}/issues"]["get"]
@@ -326,9 +416,26 @@ def test_github_responses_unchanged_by_enrichment(client, admin_h):
     body = client.get("/github/search/issues", params={"q": ""}, headers=admin_h).json()
     assert body["items"], "SAMPLE should have github issues"
     item = body["items"][0]
-    for key in ("id", "node_id", "number", "title", "body", "state", "user", "labels",
-                "assignees", "milestone", "comments", "reactions", "author_association",
-                "created_at", "updated_at", "html_url", "url", "repository_url"):
+    for key in (
+        "id",
+        "node_id",
+        "number",
+        "title",
+        "body",
+        "state",
+        "user",
+        "labels",
+        "assignees",
+        "milestone",
+        "comments",
+        "reactions",
+        "author_association",
+        "created_at",
+        "updated_at",
+        "html_url",
+        "url",
+        "repository_url",
+    ):
         assert key in item, f"missing {key} (fidelity regression)"
 
 
@@ -341,28 +448,58 @@ def test_github_issue_search_has_typed_response_schema(client):
 
 def test_github_operation_ids_unique(client):
     spec = client.get("/openapi.json").json()
-    ids = [op["operationId"]
-           for p, item in spec["paths"].items() if p.startswith("/github")
-           for m, op in item.items() if isinstance(op, dict) and "operationId" in op]
+    ids = [
+        op["operationId"]
+        for p, item in spec["paths"].items()
+        if p.startswith("/github")
+        for m, op in item.items()
+        if isinstance(op, dict) and "operationId" in op
+    ]
     assert len(ids) == len(set(ids))
 
 
 # --- GitHub ---------------------------------------------------------------------
 
+
 def test_github_issue_shape(tmp_path):
     from app.routers.github import _issue_obj, _pr_obj
-    s = tiny_corpus(tmp_path, [
-        {"source_type": "github", "doc_id": "gh1", "repo": "gw", "title": "Bug", "content": "x",
-         "author_email": "a@x.com", "state": "closed", "closed_at": "2026-02-01T00:00:00Z",
-         "closed_by": "b@x.com", "assignees": ["a@x.com"], "milestone": "v2",
-         "reactions": {"+1": 3, "heart": 1},
-         "comments": [{"content": "c", "author_email": "b@x.com", "reactions": {"+1": 1}}]},
-        {"source_type": "github", "doc_id": "pr1", "repo": "gw", "title": "PR", "content": "y",
-         "author_email": "a@x.com", "subtype": "pull_request", "merged_at": "2026-02-02T00:00:00Z",
-         "merged_by": "b@x.com", "requested_reviewers": ["c@x.com"]},
-    ])
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "gh1",
+                "repo": "gw",
+                "title": "Bug",
+                "content": "x",
+                "author_email": "a@x.com",
+                "state": "closed",
+                "closed_at": "2026-02-01T00:00:00Z",
+                "closed_by": "b@x.com",
+                "assignees": ["a@x.com"],
+                "milestone": "v2",
+                "reactions": {"+1": 3, "heart": 1},
+                "comments": [{"content": "c", "author_email": "b@x.com", "reactions": {"+1": 1}}],
+            },
+            {
+                "source_type": "github",
+                "doc_id": "pr1",
+                "repo": "gw",
+                "title": "PR",
+                "content": "y",
+                "author_email": "a@x.com",
+                "subtype": "pull_request",
+                "merged_at": "2026-02-02T00:00:00Z",
+                "merged_by": "b@x.com",
+                "requested_reviewers": ["c@x.com"],
+            },
+        ],
+    )
     conn = store.connect_ro(s.db_path)
-    iss = _issue_obj(conn, "org", "gw", store.get_document(conn, "github", "gh1"), "http://m/github")
+    iss = _issue_obj(
+        conn, "org", "gw", store.get_document(conn, "github", "gh1"), "http://m/github"
+    )
     # numeric id present and distinct from number (real connectors dedupe on id)
     assert iss["id"] != iss["number"] and isinstance(iss["id"], int)
     assert iss["node_id"]
@@ -382,10 +519,22 @@ def test_github_issue_shape(tmp_path):
 
 def test_github_comment_reactions(tmp_path):
     from app.routers.github import _gh_comment
-    s = tiny_corpus(tmp_path, [
-        {"source_type": "github", "doc_id": "gh2", "repo": "gw", "title": "T", "content": "x",
-         "comments": [{"content": "hi", "author_email": "a@x.com", "reactions": {"heart": 2}}]},
-    ])
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "gh2",
+                "repo": "gw",
+                "title": "T",
+                "content": "x",
+                "comments": [
+                    {"content": "hi", "author_email": "a@x.com", "reactions": {"heart": 2}}
+                ],
+            },
+        ],
+    )
     conn = store.connect_ro(s.db_path)
     c = store.doc_comments(conn, "github", "gh2")[0]
     obj = _gh_comment("org", "gw", 1, c, "http://m/github")

@@ -11,6 +11,7 @@ Object model: a bucket is the grouping/ACL unit (``s3_buckets``); an object is o
 (``s3_objects``), ``key`` is its address and ``content`` its verbatim body. "Folders" are pure
 key-prefix convention surfaced via ListObjectsV2's ``delimiter``/``CommonPrefixes``.
 """
+
 from __future__ import annotations
 
 import base64
@@ -31,24 +32,39 @@ router = APIRouter(prefix="/s3", tags=["s3"])
 
 NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 _MAX_KEYS = 1000
-_ERR_STATUS = {"MissingSecurityHeader": 403, "AuthorizationHeaderMalformed": 400,
-               "InvalidAccessKeyId": 403, "SignatureDoesNotMatch": 403,
-               "RequestTimeTooSkewed": 403,
-               "AccessDenied": 403, "NoSuchBucket": 404, "NoSuchKey": 404,
-               "InvalidRange": 416, "InvalidArgument": 400}
+_ERR_STATUS = {
+    "MissingSecurityHeader": 403,
+    "AuthorizationHeaderMalformed": 400,
+    "InvalidAccessKeyId": 403,
+    "SignatureDoesNotMatch": 403,
+    "RequestTimeTooSkewed": 403,
+    "AccessDenied": 403,
+    "NoSuchBucket": 404,
+    "NoSuchKey": 404,
+    "InvalidRange": 416,
+    "InvalidArgument": 400,
+}
 
 
 # --------------------------------------------------------------------------- helpers
 
+
 def _xml(body: str, status: int = 200, headers: dict | None = None) -> Response:
-    return Response(content='<?xml version="1.0" encoding="UTF-8"?>\n' + body,
-                    media_type="application/xml", status_code=status, headers=headers)
+    return Response(
+        content='<?xml version="1.0" encoding="UTF-8"?>\n' + body,
+        media_type="application/xml",
+        status_code=status,
+        headers=headers,
+    )
 
 
-def _error(code: str, message: str, resource: str = "", extra: str = "",
-           headers: dict | None = None) -> Response:
-    body = (f'<Error><Code>{code}</Code><Message>{escape(message)}</Message>'
-            f'<Resource>{escape(resource)}</Resource>{extra}</Error>')
+def _error(
+    code: str, message: str, resource: str = "", extra: str = "", headers: dict | None = None
+) -> Response:
+    body = (
+        f"<Error><Code>{code}</Code><Message>{escape(message)}</Message>"
+        f"<Resource>{escape(resource)}</Resource>{extra}</Error>"
+    )
     return _xml(body, status=_ERR_STATUS.get(code, 400), headers=headers)
 
 
@@ -115,6 +131,7 @@ def _decode_token(token: str) -> tuple[str, str] | None:
 
 # --------------------------------------------------------------------------- endpoints
 
+
 @router.get("")
 @router.get("/")
 async def list_buckets(request: Request):
@@ -122,14 +139,20 @@ async def list_buckets(request: Request):
     if err:
         return err
     conn = auth.conn(request)
-    buckets = [b["name"] for b in store.list_containers(conn, "s3")
-               if _bucket_visible(conn, b["name"], visible)]
+    buckets = [
+        b["name"]
+        for b in store.list_containers(conn, "s3")
+        if _bucket_visible(conn, b["name"], visible)
+    ]
     items = "".join(
         f"<Bucket><Name>{escape(b)}</Name>"
         f"<CreationDate>{synth.s3_iso(synth.epoch('s3-bucket:' + b))}</CreationDate></Bucket>"
-        for b in buckets)
-    return _xml(f'<ListAllMyBucketsResult xmlns="{NS}">{_owner_xml(request)}'
-                f'<Buckets>{items}</Buckets></ListAllMyBucketsResult>')
+        for b in buckets
+    )
+    return _xml(
+        f'<ListAllMyBucketsResult xmlns="{NS}">{_owner_xml(request)}'
+        f"<Buckets>{items}</Buckets></ListAllMyBucketsResult>"
+    )
 
 
 @router.head("/{bucket}")
@@ -191,10 +214,17 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
     # tell, below, whether a trailing rolled-up group extends past this page) — no separate
     # COUNT(*) query. max_keys=0: the LIMIT is still 1 (so IsTruncated is still computed), but
     # `rows` ends up empty after trimming, and every access below is guarded on it.
-    rows = store.list_s3_objects(conn, bucket, prefix=prefix, start_after=after, start_at=at,
-                                 visible_ids=visible, limit=max_keys + 1)
+    rows = store.list_s3_objects(
+        conn,
+        bucket,
+        prefix=prefix,
+        start_after=after,
+        start_at=at,
+        visible_ids=visible,
+        limit=max_keys + 1,
+    )
     is_truncated = len(rows) > max_keys
-    overflow_row = rows[max_keys] if is_truncated else None   # first not-yet-returned raw row
+    overflow_row = rows[max_keys] if is_truncated else None  # first not-yet-returned raw row
     rows = rows[:max_keys]
     by_key = {r["key"]: r for r in rows}
 
@@ -212,10 +242,10 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
     for r in rows:
         k = r["key"]
         if delimiter:
-            rest = k[len(prefix):]
+            rest = k[len(prefix) :]
             idx = rest.find(delimiter)
             if idx != -1:
-                cp = prefix + rest[:idx + len(delimiter)]
+                cp = prefix + rest[: idx + len(delimiter)]
                 if cp not in seen_prefix:
                     seen_prefix.add(cp)
                     entries.append(("cp", cp))
@@ -234,35 +264,41 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
     next_token = None
     if is_truncated and rows:
         last_kind, last_val = entries[-1] if entries else (None, None)
-        if last_kind == "cp" and overflow_row is not None and \
-                overflow_row["key"].startswith(last_val):
+        if (
+            last_kind == "cp"
+            and overflow_row is not None
+            and overflow_row["key"].startswith(last_val)
+        ):
             next_token = _encode_group_token(store.key_successor(last_val))
         else:
             next_token = _encode_key_token(rows[-1]["key"])
 
-    body = [f'<ListBucketResult xmlns="{NS}"><Name>{escape(bucket)}</Name>',
-            f'<Prefix>{escape(prefix)}</Prefix>',
-            f'<KeyCount>{len(entries)}</KeyCount><MaxKeys>{max_keys}</MaxKeys>',
-            f'<Delimiter>{escape(delimiter)}</Delimiter>' if delimiter else '',
-            f'<StartAfter>{escape(start_after)}</StartAfter>' if start_after else '',
-            f'<IsTruncated>{"true" if is_truncated else "false"}</IsTruncated>']
+    body = [
+        f'<ListBucketResult xmlns="{NS}"><Name>{escape(bucket)}</Name>',
+        f"<Prefix>{escape(prefix)}</Prefix>",
+        f"<KeyCount>{len(entries)}</KeyCount><MaxKeys>{max_keys}</MaxKeys>",
+        f"<Delimiter>{escape(delimiter)}</Delimiter>" if delimiter else "",
+        f"<StartAfter>{escape(start_after)}</StartAfter>" if start_after else "",
+        f"<IsTruncated>{'true' if is_truncated else 'false'}</IsTruncated>",
+    ]
     if continuation:
-        body.append(f'<ContinuationToken>{escape(continuation)}</ContinuationToken>')
+        body.append(f"<ContinuationToken>{escape(continuation)}</ContinuationToken>")
     if next_token:
-        body.append(f'<NextContinuationToken>{next_token}</NextContinuationToken>')
+        body.append(f"<NextContinuationToken>{next_token}</NextContinuationToken>")
     for kind, val in entries:
         if kind == "cp":
-            body.append(f'<CommonPrefixes><Prefix>{escape(val)}</Prefix></CommonPrefixes>')
+            body.append(f"<CommonPrefixes><Prefix>{escape(val)}</Prefix></CommonPrefixes>")
         else:
             r = by_key[val]
             ts = r["updated_ts"] or r["created_ts"]
             body.append(
-                f'<Contents><Key>{escape(val)}</Key>'
-                f'<LastModified>{synth.s3_iso(ts)}</LastModified>'
-                f'<ETag>{escape(synth.s3_etag(r["doc_id"], r["content"]))}</ETag>'
-                f'<Size>{len(r["content"].encode())}</Size>'
-                f'<StorageClass>{escape(r["subtype"] or "STANDARD")}</StorageClass></Contents>')
-    body.append('</ListBucketResult>')
+                f"<Contents><Key>{escape(val)}</Key>"
+                f"<LastModified>{synth.s3_iso(ts)}</LastModified>"
+                f"<ETag>{escape(synth.s3_etag(r['doc_id'], r['content']))}</ETag>"
+                f"<Size>{len(r['content'].encode())}</Size>"
+                f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Contents>"
+            )
+    body.append("</ListBucketResult>")
     return _xml("".join(body))
 
 
@@ -300,12 +336,14 @@ async def object_get(request: Request, bucket: str, key: str):
         if parsed is None:
             range_headers = {**headers, "Content-Range": f"bytes */{total}"}
             if request.method == "GET":
-                return _error("InvalidRange", "The requested range is not satisfiable",
-                              f"/{bucket}/{key}",
-                              extra=f"<ActualObjectSize>{total}</ActualObjectSize>",
-                              headers={"Content-Range": f"bytes */{total}"})
-            return Response(status_code=416,
-                             headers={**range_headers, "Content-Length": "0"})
+                return _error(
+                    "InvalidRange",
+                    "The requested range is not satisfiable",
+                    f"/{bucket}/{key}",
+                    extra=f"<ActualObjectSize>{total}</ActualObjectSize>",
+                    headers={"Content-Range": f"bytes */{total}"},
+                )
+            return Response(status_code=416, headers={**range_headers, "Content-Length": "0"})
         start, end = parsed
         status = 206
         headers["Content-Range"] = f"bytes {start}-{end}/{total}"
@@ -314,17 +352,17 @@ async def object_get(request: Request, bucket: str, key: str):
     headers["Content-Length"] = str(length)
     if request.method == "HEAD":
         return Response(status_code=200 if status == 200 else 206, headers=headers)
-    return Response(content=data[start:end + 1], status_code=status, headers=headers)
+    return Response(content=data[start : end + 1], status_code=status, headers=headers)
 
 
 def _parse_range(header: str, total: int):
     """Parse a single-range ``bytes=…`` header -> (start, end) inclusive, or None if unsatisfiable."""
     if not header.startswith("bytes="):
         return None
-    spec = header[len("bytes="):].split(",")[0].strip()
+    spec = header[len("bytes=") :].split(",")[0].strip()
     lo, _, hi = spec.partition("-")
     try:
-        if lo == "":                          # suffix: bytes=-N (last N bytes)
+        if lo == "":  # suffix: bytes=-N (last N bytes)
             n = int(hi)
             if n <= 0:
                 return None

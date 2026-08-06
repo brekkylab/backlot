@@ -19,6 +19,7 @@ use `examples/using-official-sdk/github.py` for those.
 With ``--fuse`` the tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read with
 plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
 """
+
 import argparse
 import json
 import os
@@ -33,23 +34,43 @@ from _mirage import FUSE_HELP, lines, point_github_at, run_mirage, serve_or_conn
 OWNER = "acme"  # the mock echoes back whatever owner is asked for; any org works
 REPO = "gateway"
 CORPUS = [
-    {"source_type": "github", "repo": REPO, "title": "Rate limiter drops bursts under 50ms",
-     "content": "The token-bucket refill is off by one tick.", "subtype": "issue"},
-    {"source_type": "github", "repo": REPO, "subtype": "file", "path": "README.md",
-     "title": "README.md", "content": "# gateway\n\nToken-bucket rate limiter for inbound requests.\n"},
-    {"source_type": "github", "repo": REPO, "subtype": "file", "path": "src/ratelimiter.py",
-     "title": "ratelimiter.py",
-     "content": "class TokenBucket:\n"
-                "    def __init__(self, rate, burst):\n"
-                "        self.rate = rate\n"
-                "        self.tokens = burst\n\n"
-                "    def refill(self, elapsed):\n"
-                "        # BUG: off-by-one tick drops the last burst token\n"
-                "        self.tokens = min(self.tokens + elapsed * self.rate, self.tokens)\n"},
-    {"source_type": "github", "repo": REPO, "subtype": "file", "path": "src/utils/tokens.py",
-     "title": "tokens.py",
-     "content": "def clamp(value, low, high):\n"
-                "    return max(low, min(value, high))\n"},
+    {
+        "source_type": "github",
+        "repo": REPO,
+        "title": "Rate limiter drops bursts under 50ms",
+        "content": "The token-bucket refill is off by one tick.",
+        "subtype": "issue",
+    },
+    {
+        "source_type": "github",
+        "repo": REPO,
+        "subtype": "file",
+        "path": "README.md",
+        "title": "README.md",
+        "content": "# gateway\n\nToken-bucket rate limiter for inbound requests.\n",
+    },
+    {
+        "source_type": "github",
+        "repo": REPO,
+        "subtype": "file",
+        "path": "src/ratelimiter.py",
+        "title": "ratelimiter.py",
+        "content": "class TokenBucket:\n"
+        "    def __init__(self, rate, burst):\n"
+        "        self.rate = rate\n"
+        "        self.tokens = burst\n\n"
+        "    def refill(self, elapsed):\n"
+        "        # BUG: off-by-one tick drops the last burst token\n"
+        "        self.tokens = min(self.tokens + elapsed * self.rate, self.tokens)\n",
+    },
+    {
+        "source_type": "github",
+        "repo": REPO,
+        "subtype": "file",
+        "path": "src/utils/tokens.py",
+        "title": "tokens.py",
+        "content": "def clamp(value, low, high):\n    return max(low, min(value, high))\n",
+    },
 ]
 
 
@@ -133,20 +154,31 @@ def main_fuse(resource) -> None:
             if first_file:
                 rel = os.path.relpath(first_file, mnt)
                 print(f"\n$ head -c 200 {rel}")
-                print("  " + open(first_file).read(200).replace("\n", " "))  # a genuine open() via FUSE
+                print(
+                    "  " + open(first_file).read(200).replace("\n", " ")
+                )  # a genuine open() via FUSE
             count = subprocess.run(["grep", "-rc", "BUG", mnt], capture_output=True, text=True)
-            print(f"\n$ grep -rc BUG {mnt}   # a separate process reads the mount → {count.stdout.strip()}")
+            print(
+                f"\n$ grep -rc BUG {mnt}   # a separate process reads the mount → {count.stdout.strip()}"
+            )
             print(f"\nexplore it live in another terminal:  ls -R {mnt}")
     except (ImportError, RuntimeError, OSError) as e:
         raise SystemExit(FUSE_HELP.format(err=e))
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Read a GitHub repo's code through mirage against the mock.")
+    p = argparse.ArgumentParser(
+        description="Read a GitHub repo's code through mirage against the mock."
+    )
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
-    p.add_argument("--token", help="mock bearer token from GET /_mock/users "
-                                   "(default: the admin token, which sees everything)")
-    p.add_argument("--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)")
+    p.add_argument(
+        "--token",
+        help="mock bearer token from GET /_mock/users "
+        "(default: the admin token, which sees everything)",
+    )
+    p.add_argument(
+        "--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)"
+    )
     return p.parse_args()
 
 
@@ -165,7 +197,9 @@ if __name__ == "__main__":
         if discovered:
             print(f"discovered repo with files: {owner}/{repo}")
         else:
-            print(f"no repo with files discovered — falling back to the throwaway corpus's {owner}/{repo}")
+            print(
+                f"no repo with files discovered — falling back to the throwaway corpus's {owner}/{repo}"
+            )
 
         resource = build(mock, token, owner, repo)
         if args.fuse:

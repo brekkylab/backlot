@@ -15,6 +15,7 @@ says what seam it uses and why that one:
 Also re-exports the serve/credential helpers from `examples/_common/mockserver.py`, so every
 example shares one `--url` / `--token` behaviour and one local fallback.
 """
+
 from __future__ import annotations
 
 import sys
@@ -31,11 +32,23 @@ from _common.mockserver import (  # noqa: E402
 )
 
 __all__ = [
-    "serve_or_connect", "google_oauth_user", "google_service_account_info",
-    "slack_base_url", "slack_reader_at", "notion_base_url", "s3_base_url", "github_base_url",
-    "atlassian_base_url", "linear_base_url", "drop_self_from_syspath",
-    "point_gmail_at", "point_drive_at", "patch_notion_at", "patch_s3fs_walk",
-    "point_hubspot_at", "patch_linear_at",
+    "serve_or_connect",
+    "google_oauth_user",
+    "google_service_account_info",
+    "slack_base_url",
+    "slack_reader_at",
+    "notion_base_url",
+    "s3_base_url",
+    "github_base_url",
+    "atlassian_base_url",
+    "linear_base_url",
+    "drop_self_from_syspath",
+    "point_gmail_at",
+    "point_drive_at",
+    "patch_notion_at",
+    "patch_s3fs_walk",
+    "point_hubspot_at",
+    "patch_linear_at",
 ]
 
 
@@ -155,7 +168,9 @@ def point_gmail_at(base_url: str) -> None:
 
     base = base_url.rstrip("/")
     if not hasattr(discovery, "build"):
-        raise RuntimeError("point_gmail_at: googleapiclient.discovery.build is gone — update the shim")
+        raise RuntimeError(
+            "point_gmail_at: googleapiclient.discovery.build is gone — update the shim"
+        )
     if getattr(discovery.build, "_points_at_mock", False):
         return
 
@@ -191,7 +206,9 @@ def point_drive_at(base_url: str) -> None:
 
     base = base_url.rstrip("/")
     if not hasattr(discovery, "build"):
-        raise RuntimeError("point_drive_at: googleapiclient.discovery.build is gone — update the shim")
+        raise RuntimeError(
+            "point_drive_at: googleapiclient.discovery.build is gone — update the shim"
+        )
     if getattr(discovery.build, "_points_at_mock", False):
         return
 
@@ -231,8 +248,10 @@ def patch_notion_at(base_url: str) -> None:
             setattr(nb, name, val.replace("https://api.notion.com", base))
             patched += 1
     if patched == 0:
-        raise RuntimeError("patch_notion_at found no Notion URL constants to rebind — reader layout "
-                           "changed; update the shim before it silently hits api.notion.com")
+        raise RuntimeError(
+            "patch_notion_at found no Notion URL constants to rebind — reader layout "
+            "changed; update the shim before it silently hits api.notion.com"
+        )
 
 
 def point_hubspot_at(base_url: str) -> None:
@@ -248,7 +267,7 @@ def point_hubspot_at(base_url: str) -> None:
 
     base = base_url.rstrip("/")
     real = getattr(hubspot, "_enterprise_mock_real_HubSpot", hubspot.HubSpot)
-    hubspot._enterprise_mock_real_HubSpot = real   # idempotent across repeated calls
+    hubspot._enterprise_mock_real_HubSpot = real  # idempotent across repeated calls
 
     def _at_mock(*a, **kw):
         kw.setdefault("host", base)
@@ -259,7 +278,8 @@ def point_hubspot_at(base_url: str) -> None:
         if kw["host"] not in host:
             raise RuntimeError(
                 f"the HubSpot SDK is configured for {host!r}, not {kw['host']!r} — the `host` kwarg "
-                f"was ignored. Upgrade: pip install -U 'hubspot-api-client>=12'")
+                f"was ignored. Upgrade: pip install -U 'hubspot-api-client>=12'"
+            )
         return client
 
     hubspot.HubSpot = _at_mock
@@ -287,8 +307,10 @@ def patch_linear_at(base_url: str) -> None:
     base = base_url.rstrip("/")
     real = getattr(lb, "_enterprise_mock_real_requests", None) or getattr(lb, "requests", None)
     if real is None:
-        raise RuntimeError("patch_linear_at: llama_index.readers.linear.base no longer imports "
-                           "`requests` — update the shim before it hits api.linear.app")
+        raise RuntimeError(
+            "patch_linear_at: llama_index.readers.linear.base no longer imports "
+            "`requests` — update the shim before it hits api.linear.app"
+        )
     lb._enterprise_mock_real_requests = real  # idempotent across repeated calls
 
     class _RequestsAtMock:

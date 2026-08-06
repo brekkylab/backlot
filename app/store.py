@@ -10,6 +10,7 @@ plus its grouping column, which is what keeps listing / ACL / pagination uniform
 ``GROUPING`` registry. Every listing takes ``visible_ids``: ``None`` = admin, otherwise results
 are filtered to docs whose ACL grants intersect it. JSON columns are TEXT — read with :func:`jcol`.
 """
+
 from __future__ import annotations
 
 import json
@@ -409,10 +410,12 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # idx_github_repo_path ON github_items(repo, path)` guards only the index NAME and still
     # raises if the referenced column is missing.) Each ALTER is idempotent: it no-ops on a fresh
     # DB (table absent) and on a DB that already has the column.
-    for table, column, decl in (("github_items", "path", "TEXT"),
-                                ("linear_issues", "parent_key", "TEXT"),
-                                ("linear_issues", "parent_doc_id", "TEXT"),
-                                ("linear_issues", "release", "TEXT")):
+    for table, column, decl in (
+        ("github_items", "path", "TEXT"),
+        ("linear_issues", "parent_key", "TEXT"),
+        ("linear_issues", "parent_doc_id", "TEXT"),
+        ("linear_issues", "release", "TEXT"),
+    ):
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
         except sqlite3.OperationalError:
@@ -421,8 +424,9 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     return conn
 
 
-def connect_ro(path: Path, *, mmap_mb: int = 0, cache_mb: int = 0,
-               temp_memory: bool = False, busy_ms: int = 0) -> sqlite3.Connection:
+def connect_ro(
+    path: Path, *, mmap_mb: int = 0, cache_mb: int = 0, temp_memory: bool = False, busy_ms: int = 0
+) -> sqlite3.Connection:
     """Open a read-only connection. The tuning knobs default to off, so tests and small corpora are
     unaffected; the serving path passes config values to keep the big DB warm.
 
@@ -457,6 +461,7 @@ def jcol(row: sqlite3.Row, key: str, default=None):
 
 # --- ACL-aware document queries -------------------------------------------------
 
+
 def _like_escape(needle: str | None) -> str:
     """Neutralize LIKE wildcards in a user-supplied needle so they match literally. Use with
     ``LIKE ? ESCAPE '\\'``; without it a search for ``100%`` matches everything."""
@@ -473,12 +478,21 @@ def _acl_clause(tbl: str, visible_ids: set[str] | None, col: str = "doc_id") -> 
     if not ids:
         return " AND 0", []
     marks = ",".join("?" for _ in ids)
-    return (f" AND EXISTS (SELECT 1 FROM doc_acl a WHERE a.doc_id = {tbl}.{col} "
-            f"AND a.principal_id IN ({marks}))", ids)
+    return (
+        f" AND EXISTS (SELECT 1 FROM doc_acl a WHERE a.doc_id = {tbl}.{col} "
+        f"AND a.principal_id IN ({marks}))",
+        ids,
+    )
 
 
-def _scope(sql: str, params: list, gcol: str, container: str | None, author_email: str | None,
-           not_author_email: str | None = None) -> str:
+def _scope(
+    sql: str,
+    params: list,
+    gcol: str,
+    container: str | None,
+    author_email: str | None,
+    not_author_email: str | None = None,
+) -> str:
     if container is not None:
         sql += f" AND {gcol} = ?"
         params.append(container)
@@ -494,9 +508,17 @@ def _scope(sql: str, params: list, gcol: str, container: str | None, author_emai
     return sql
 
 
-def list_documents(conn, source_type, container=None, visible_ids=None, limit=100,
-                   offset=0, author_email=None, state=None,
-                   not_author_email=None) -> list[sqlite3.Row]:
+def list_documents(
+    conn,
+    source_type,
+    container=None,
+    visible_ids=None,
+    limit=100,
+    offset=0,
+    author_email=None,
+    state=None,
+    not_author_email=None,
+) -> list[sqlite3.Row]:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError.
     tbl = table(source_type)
@@ -520,8 +542,9 @@ def key_successor(s: str) -> str:
     return s[:-1] + chr(ord(s[-1]) + 1)
 
 
-def list_s3_objects(conn, bucket, *, prefix="", start_after=None, start_at=None, visible_ids=None,
-                    limit=1000) -> list[sqlite3.Row]:
+def list_s3_objects(
+    conn, bucket, *, prefix="", start_after=None, start_at=None, visible_ids=None, limit=1000
+) -> list[sqlite3.Row]:
     """One page of ListObjectsV2: prefix filter, keyset pagination and ACL scoping, all in SQL.
 
     The prefix is a half-open byte range (``key >= prefix AND key < key_successor(prefix)``), NOT a
@@ -549,8 +572,17 @@ def list_s3_objects(conn, bucket, *, prefix="", start_after=None, start_at=None,
     return conn.execute(sql, params).fetchall()
 
 
-def list_hubspot_objects(conn, object_type, *, after_doc_id=None, visible_ids=None, limit=100,
-                         archived=False, columns="*", prefilter=None) -> list[sqlite3.Row]:
+def list_hubspot_objects(
+    conn,
+    object_type,
+    *,
+    after_doc_id=None,
+    visible_ids=None,
+    limit=100,
+    archived=False,
+    columns="*",
+    prefilter=None,
+) -> list[sqlite3.Row]:
     """One page of a CRM object type, keyset-paginated by ``doc_id``.
 
     HubSpot's ``after`` cursor is a record id, which the router maps back to a doc_id, so the bound
@@ -592,17 +624,20 @@ def list_hubspot_objects(conn, object_type, *, after_doc_id=None, visible_ids=No
 # offset by one and a mid-crawl cursor silently re-reads a row. `doc_id` breaks ties into a
 # total order either way, which offset paging requires.
 LINEAR_DEFAULT_ORDER_BY = "createdAt"
-LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts",
-                        "updatedAt": "COALESCE(updated_ts, created_ts)"}
+LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": "COALESCE(updated_ts, created_ts)"}
 
 
 # `IssueSortInput` key -> the column it sorts on. `updatedAt` uses the same COALESCE the field
 # itself is served with (an issue with no recorded edit reports its creation time), so a client
 # crawling "newest first until older than X" sees a monotonic sequence rather than one that
 # disagrees with the `updatedAt` it is reading.
-LINEAR_SORT_COLUMNS = {"title": "title", "priority": "priority", "estimate": "estimate",
-                       "createdAt": "created_ts",
-                       "updatedAt": "COALESCE(updated_ts, created_ts)"}
+LINEAR_SORT_COLUMNS = {
+    "title": "title",
+    "priority": "priority",
+    "estimate": "estimate",
+    "createdAt": "created_ts",
+    "updatedAt": "COALESCE(updated_ts, created_ts)",
+}
 
 
 def _linear_order(order_by: str | None, descending: bool, sort=None) -> str:
@@ -637,9 +672,19 @@ def _linear_archived(archived: bool) -> str:
     return "" if archived else " AND archived_ts IS NULL"
 
 
-def list_linear_issues(conn, team=None, *, visible_ids=None, limit=50, offset=0,
-                       order_by=None, descending=False, prefilter=None, sort=None,
-                       archived=False) -> list[sqlite3.Row]:
+def list_linear_issues(
+    conn,
+    team=None,
+    *,
+    visible_ids=None,
+    limit=50,
+    offset=0,
+    order_by=None,
+    descending=False,
+    prefilter=None,
+    sort=None,
+    archived=False,
+) -> list[sqlite3.Row]:
     """One page of Linear issues, optionally scoped to a team. ``prefilter`` is a necessary
     condition pushed into SQL, so an ``issues(filter:)`` query is an indexed scan rather than a
     full materialize-then-filter in Python."""
@@ -659,8 +704,9 @@ def list_linear_issues(conn, team=None, *, visible_ids=None, limit=50, offset=0,
     return conn.execute(sql, params).fetchall()
 
 
-def count_linear_issues(conn, team=None, *, visible_ids=None, prefilter=None,
-                        archived=False) -> int:
+def count_linear_issues(
+    conn, team=None, *, visible_ids=None, prefilter=None, archived=False
+) -> int:
     """Total matching issues — what ``pageInfo.hasNextPage`` is decided against."""
     sql = "SELECT COUNT(*) FROM linear_issues WHERE 1=1"
     params: list = []
@@ -686,8 +732,9 @@ def linear_issue_by_identifier(conn, identifier, visible_ids=None) -> sqlite3.Ro
     return conn.execute(sql + clause + " ORDER BY doc_id LIMIT 1", params + cparams).fetchone()
 
 
-def list_linear_comments(conn, *, doc_id=None, visible_ids=None, limit=50, offset=0,
-                         prefilter=None) -> list[sqlite3.Row]:
+def list_linear_comments(
+    conn, *, doc_id=None, visible_ids=None, limit=50, offset=0, prefilter=None
+) -> list[sqlite3.Row]:
     """Comments on one issue, or across the corpus when ``doc_id`` is None (``Query.comments``).
 
     A comment row carries no ACL grant of its own; visibility is the parent issue's, so the ACL
@@ -724,8 +771,9 @@ def count_linear_comments(conn, *, doc_id=None, visible_ids=None, prefilter=None
     return conn.execute(sql + clause, params + cparams).fetchone()[0]
 
 
-def linear_children(conn, parent_doc_id, *, visible_ids=None, limit=50, offset=0,
-                    prefilter=None) -> list[sqlite3.Row]:
+def linear_children(
+    conn, parent_doc_id, *, visible_ids=None, limit=50, offset=0, prefilter=None
+) -> list[sqlite3.Row]:
     """Sub-issues of an issue — every row whose resolved ``parent_doc_id`` is this one.
 
     An indexed equality on a doc_id, NOT a join on ``identifier``: bench identifiers repeat, so a
@@ -742,8 +790,9 @@ def linear_children(conn, parent_doc_id, *, visible_ids=None, limit=50, offset=0
     return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
 
 
-def linear_relations(conn, doc_id, *, inverse=False, visible_ids=None, limit=50,
-                     offset=0) -> list[sqlite3.Row]:
+def linear_relations(
+    conn, doc_id, *, inverse=False, visible_ids=None, limit=50, offset=0
+) -> list[sqlite3.Row]:
     """One page of an issue's relations: ``Issue.relations`` (rows it declared) or, with
     ``inverse``, ``Issue.inverseRelations`` (rows pointing at it) — two ends of one stored row.
 
@@ -751,13 +800,16 @@ def linear_relations(conn, doc_id, *, inverse=False, visible_ids=None, limit=50,
     entirely, since surfacing its id would disclose that issue."""
     mine, other = ("to_doc_id", "from_doc_id") if inverse else ("from_doc_id", "to_doc_id")
     clause, cparams = _acl_clause("i", visible_ids)
-    sql = (f"SELECT r.* FROM linear_relations r JOIN linear_issues i ON i.doc_id = r.{other} "
-           f"WHERE r.{mine} = ?{clause} ORDER BY r.created_ts, r.id LIMIT ? OFFSET ?")
+    sql = (
+        f"SELECT r.* FROM linear_relations r JOIN linear_issues i ON i.doc_id = r.{other} "
+        f"WHERE r.{mine} = ?{clause} ORDER BY r.created_ts, r.id LIMIT ? OFFSET ?"
+    )
     return conn.execute(sql, [doc_id, *cparams, limit, offset]).fetchall()
 
 
-def linear_attachments(conn, doc_id, *, visible_ids=None, limit=50, offset=0,
-                       url=None, prefilter=None) -> list[sqlite3.Row]:
+def linear_attachments(
+    conn, doc_id, *, visible_ids=None, limit=50, offset=0, url=None, prefilter=None
+) -> list[sqlite3.Row]:
     """An issue's attachments. Visibility is the parent issue's — an attachment carries no grant
     of its own — so the ACL is applied through a join, as it is for comments. ``url`` is Linear's
     own exact-match argument on this connection."""
@@ -782,6 +834,7 @@ def linear_attachment_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | 
     No reverse index (attachments are only reached through their issue), so the id is matched by
     re-deriving it over visible rows — an attachment on a hidden issue is simply not found."""
     from app import synth
+
     join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = a.doc_id"
     clause, cparams = _acl_clause("i", visible_ids)
     rows = conn.execute(f"SELECT a.* FROM linear_attachments a{join} WHERE 1=1{clause}", cparams)
@@ -795,6 +848,7 @@ def linear_relation_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | No
     """Same for a relation, scoped on BOTH ends: a relation is only visible to a caller who can
     read the issues at each side of it."""
     from app import synth
+
     if visible_ids is None:
         rows = conn.execute("SELECT * FROM linear_relations")
     else:
@@ -804,7 +858,8 @@ def linear_relation_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | No
             f"SELECT r.* FROM linear_relations r "
             f"JOIN linear_issues a ON a.doc_id = r.from_doc_id "
             f"JOIN linear_issues b ON b.doc_id = r.to_doc_id WHERE 1=1{clause_a}{clause_b}",
-            [*pa, *pb])
+            [*pa, *pb],
+        )
     for row in rows:
         if synth.linear_relation_id(row["id"]) == served_id:
             return row
@@ -820,9 +875,14 @@ def linear_distinct_values(conn) -> dict[str, list]:
     Users come back as ``(email, display_name)`` so a user reached by id is named like one reached
     inline on an issue.
     """
+
     def col(name):
-        return [r[0] for r in conn.execute(
-            f"SELECT DISTINCT {name} FROM linear_issues WHERE {name} IS NOT NULL AND {name} != ''")]
+        return [
+            r[0]
+            for r in conn.execute(
+                f"SELECT DISTINCT {name} FROM linear_issues WHERE {name} IS NOT NULL AND {name} != ''"
+            )
+        ]
 
     def per_team(name, default=None):
         # Workflow states and cycles are per-team entities in Linear, so their reverse map is
@@ -836,15 +896,20 @@ def linear_distinct_values(conn) -> dict[str, list]:
         expr = f"COALESCE({name}, ?)" if default is not None else name
         params = [default] if default is not None else []
         where = "" if default is not None else f" WHERE {name} IS NOT NULL AND {name} != ''"
-        return [tuple(r) for r in conn.execute(
-            f"SELECT DISTINCT team, {expr} FROM linear_issues{where}", params)]
+        return [
+            tuple(r)
+            for r in conn.execute(f"SELECT DISTINCT team, {expr} FROM linear_issues{where}", params)
+        ]
 
     people: dict[str, str | None] = {}
-    for email_col, name_col in (("author_email", "owner_display"),
-                                ("assignee_email", "assignee_display")):
+    for email_col, name_col in (
+        ("author_email", "owner_display"),
+        ("assignee_email", "assignee_display"),
+    ):
         for email, display in conn.execute(
-                f"SELECT DISTINCT {email_col}, {name_col} FROM linear_issues "
-                f"WHERE {email_col} IS NOT NULL AND {email_col} != ''"):
+            f"SELECT DISTINCT {email_col}, {name_col} FROM linear_issues "
+            f"WHERE {email_col} IS NOT NULL AND {email_col} != ''"
+        ):
             # Keep the first NON-EMPTY display name: a person can appear as an author with no
             # recorded name and as an assignee with one, and the named form must win whichever
             # order the two passes see them in.
@@ -853,8 +918,12 @@ def linear_distinct_values(conn) -> dict[str, list]:
         "states": per_team("state", default=LINEAR_DEFAULT_STATE),
         "projects": col("project"),
         "cycles": per_team("cycle"),
-        "labels": [r[0] for r in conn.execute(
-            "SELECT DISTINCT value FROM linear_issues, json_each(COALESCE(labels, '[]'))")],
+        "labels": [
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT value FROM linear_issues, json_each(COALESCE(labels, '[]'))"
+            )
+        ],
         "releases": col("release"),
         "users": sorted(people.items()),
     }
@@ -866,8 +935,12 @@ def linear_team_has_visible(conn, team, visible_ids=None) -> bool:
     of an ACL-filtered ``GROUP BY`` over every issue in the corpus. Same shape as
     :func:`drive_folder_has_visible`."""
     clause, params = _acl_clause("linear_issues", visible_ids)
-    return conn.execute(f"SELECT 1 FROM linear_issues WHERE team = ?{clause} LIMIT 1",
-                        [team, *params]).fetchone() is not None
+    return (
+        conn.execute(
+            f"SELECT 1 FROM linear_issues WHERE team = ?{clause} LIMIT 1", [team, *params]
+        ).fetchone()
+        is not None
+    )
 
 
 # `Issue.state` is non-null in Linear, so a row with no recorded state is served this name (see
@@ -882,15 +955,19 @@ LINEAR_DEFAULT_STATE = "Todo"
 # Keyed exactly as app.main._build_index keys its reverse maps.
 _LINEAR_ENTITY_PREDICATES = {
     "project": lambda v: ("project = ?", [v]),
-    "cycle": lambda v: ("cycle = ? AND team = ?", [v[1], v[0]]),          # v = (team, name)
+    "cycle": lambda v: ("cycle = ? AND team = ?", [v[1], v[0]]),  # v = (team, name)
     # COALESCE, to match the synthesized default above: a caller reading an issue with no state
     # must be able to resolve the state id that issue served them.
-    "state": lambda v: (f"COALESCE(state, '{LINEAR_DEFAULT_STATE}') = ? AND team = ?",
-                        [v[1], v[0]]),                                    # v = (team, name)
+    "state": lambda v: (
+        f"COALESCE(state, '{LINEAR_DEFAULT_STATE}') = ? AND team = ?",
+        [v[1], v[0]],
+    ),  # v = (team, name)
     # A person is reachable as either end of an issue.
     "user": lambda v: ("(author_email = ? OR assignee_email = ?)", [v[0], v[0]]),  # v = (email, _)
     "label": lambda v: (
-        "EXISTS (SELECT 1 FROM json_each(COALESCE(labels, '[]')) WHERE value = ?)", [v]),
+        "EXISTS (SELECT 1 FROM json_each(COALESCE(labels, '[]')) WHERE value = ?)",
+        [v],
+    ),
     "release": lambda v: ("release = ?", [v]),
 }
 
@@ -906,8 +983,12 @@ def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
         raise ValueError(f"unknown linear entity kind {kind!r}")
     frag, params = build(value)
     clause, cparams = _acl_clause("linear_issues", visible_ids)
-    return conn.execute(f"SELECT 1 FROM linear_issues WHERE {frag}{clause} LIMIT 1",
-                        [*params, *cparams]).fetchone() is not None
+    return (
+        conn.execute(
+            f"SELECT 1 FROM linear_issues WHERE {frag}{clause} LIMIT 1", [*params, *cparams]
+        ).fetchone()
+        is not None
+    )
 
 
 def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:
@@ -915,12 +996,14 @@ def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:
     teams without a COUNT(*) per team."""
     clause, cparams = _acl_clause("linear_issues", visible_ids)
     rows = conn.execute(
-        f"SELECT team, COUNT(*) FROM linear_issues WHERE 1=1{clause} GROUP BY team", cparams)
+        f"SELECT team, COUNT(*) FROM linear_issues WHERE 1=1{clause} GROUP BY team", cparams
+    )
     return {r[0]: r[1] for r in rows}
 
 
-def hubspot_associations(conn, from_doc_id, to_type, *, after_to_doc_id=None, visible_ids=None,
-                         limit=500) -> list[sqlite3.Row]:
+def hubspot_associations(
+    conn, from_doc_id, to_type, *, after_to_doc_id=None, visible_ids=None, limit=500
+) -> list[sqlite3.Row]:
     """One page of associations from a CRM record to records of ``to_type``, ACL-scoped on the
     target. Keyset-paginated by ``to_doc_id`` for the same reason the listings are: the API's
     cursor is the last record id the caller saw, and a record past the first page must stay
@@ -949,8 +1032,9 @@ def list_drive_folder(conn, folder, visible_ids=None, limit=100, offset=0) -> li
     return conn.execute(sql, params).fetchall()
 
 
-def list_drive_by_name(conn, name_substr, container=None, visible_ids=None,
-                       limit=100_000, offset=0) -> list[sqlite3.Row]:
+def list_drive_by_name(
+    conn, name_substr, container=None, visible_ids=None, limit=100_000, offset=0
+) -> list[sqlite3.Row]:
     """Non-trashed Drive files whose title contains ``name_substr`` (Drive's ``name contains 'X'``),
     optionally within a folder — the SQL path for a name lookup. Without it the endpoint listed the
     WHOLE corpus (~25k rows, ~1.6s) then substring-matched in Python; a title LIKE builds only the
@@ -958,8 +1042,7 @@ def list_drive_by_name(conn, name_substr, container=None, visible_ids=None,
     needle = _like_escape(name_substr)
     # SQLite LIKE is case-insensitive for ASCII by default (matching Drive's case-insensitive
     # `name contains`); no lower() wrapper, which would force a per-row scan.
-    sql = ("SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 "
-           "AND title LIKE ? ESCAPE '\\'")
+    sql = "SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 AND title LIKE ? ESCAPE '\\'"
     params: list = [f"%{needle}%"]
     if container is not None:
         sql += " AND folder = ?"
@@ -996,16 +1079,19 @@ def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
     Without the cast a corpus holding any non-ASCII text reports a quota smaller than the sum of
     the sizes the same caller reads out of ``files.list`` — a divergence no client could explain."""
     nbytes = "length(CAST(content AS BLOB))"
-    sql = (f"SELECT COALESCE(SUM({nbytes}), 0), "
-           f"COALESCE(SUM(CASE WHEN COALESCE(trashed, 0) = 1 THEN {nbytes} ELSE 0 END), 0) "
-           "FROM gdrive_files WHERE 1=1")
+    sql = (
+        f"SELECT COALESCE(SUM({nbytes}), 0), "
+        f"COALESCE(SUM(CASE WHEN COALESCE(trashed, 0) = 1 THEN {nbytes} ELSE 0 END), 0) "
+        "FROM gdrive_files WHERE 1=1"
+    )
     clause, params = _acl_clause("gdrive_files", visible_ids)
     total, trashed = conn.execute(sql + clause, params).fetchone()
     return int(total), int(trashed)
 
 
-def count_documents(conn, source_type, container=None, visible_ids=None, author_email=None,
-                    state=None) -> int:
+def count_documents(
+    conn, source_type, container=None, visible_ids=None, author_email=None, state=None
+) -> int:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError.
     tbl = table(source_type)
@@ -1045,9 +1131,18 @@ def fireflies_scope_columns(scope: str | None) -> tuple[str, ...] | None:
     return _FF_SCOPE_COLS.get((scope or "all").lower())
 
 
-def _fireflies_where(*, channel=None, host_email=None, organizers=None, participants=None,
-                     from_ts=None, to_ts=None, keyword=None, scope=None,
-                     visible_ids=None) -> tuple[str, list]:
+def _fireflies_where(
+    *,
+    channel=None,
+    host_email=None,
+    organizers=None,
+    participants=None,
+    from_ts=None,
+    to_ts=None,
+    keyword=None,
+    scope=None,
+    visible_ids=None,
+) -> tuple[str, list]:
     sql = " WHERE 1=1"
     params: list = []
     if channel is not None:
@@ -1061,13 +1156,15 @@ def _fireflies_where(*, channel=None, host_email=None, organizers=None, particip
         # the filter has to consider both — otherwise organizing a meeting you also hosted would
         # not match your own address.
         marks = ", ".join("?" for _ in organizers)
-        sql += (f" AND lower(COALESCE(organizer_email, author_email)) IN ({marks})")
+        sql += f" AND lower(COALESCE(organizer_email, author_email)) IN ({marks})"
         params += [o.lower() for o in organizers]
     for email in participants or []:
         # `participants` is a JSON array column; json_each is the exact membership test (a LIKE on
         # the serialized text would match an address that is merely a substring of another).
-        sql += (" AND EXISTS (SELECT 1 FROM json_each(fireflies_transcripts.participants) "
-                "WHERE lower(json_each.value) = ?)")
+        sql += (
+            " AND EXISTS (SELECT 1 FROM json_each(fireflies_transcripts.participants) "
+            "WHERE lower(json_each.value) = ?)"
+        )
         params.append(email.lower())
     if from_ts is not None:
         sql += " AND created_ts >= ?"
@@ -1083,10 +1180,21 @@ def _fireflies_where(*, channel=None, host_email=None, organizers=None, particip
     return sql + clause, params + cparams
 
 
-def list_fireflies_transcripts(conn, *, channel=None, host_email=None, organizers=None,
-                               participants=None, from_ts=None, to_ts=None, keyword=None,
-                               scope=None, visible_ids=None, limit=50, offset=0
-                               ) -> list[sqlite3.Row]:
+def list_fireflies_transcripts(
+    conn,
+    *,
+    channel=None,
+    host_email=None,
+    organizers=None,
+    participants=None,
+    from_ts=None,
+    to_ts=None,
+    keyword=None,
+    scope=None,
+    visible_ids=None,
+    limit=50,
+    offset=0,
+) -> list[sqlite3.Row]:
     """One page of transcripts, newest first — the order the real API returns them in.
 
     The ORDER BY carries its ``doc_id`` tiebreak so it is TOTAL, and the tiebreak runs DESC WITH the
@@ -1094,11 +1202,21 @@ def list_fireflies_transcripts(conn, *, channel=None, host_email=None, organizer
     uniform one is a backwards index scan while a mixed one is a temp b-tree over the whole table.
     """
     where, params = _fireflies_where(
-        channel=channel, host_email=host_email, organizers=organizers, participants=participants,
-        from_ts=from_ts, to_ts=to_ts, keyword=keyword, scope=scope, visible_ids=visible_ids)
+        channel=channel,
+        host_email=host_email,
+        organizers=organizers,
+        participants=participants,
+        from_ts=from_ts,
+        to_ts=to_ts,
+        keyword=keyword,
+        scope=scope,
+        visible_ids=visible_ids,
+    )
     return conn.execute(
         f"SELECT * FROM fireflies_transcripts{where} ORDER BY created_ts DESC, doc_id DESC "
-        f"LIMIT ? OFFSET ?", params + [limit, offset]).fetchall()
+        f"LIMIT ? OFFSET ?",
+        params + [limit, offset],
+    ).fetchall()
 
 
 def count_fireflies_transcripts(conn, **kw) -> int:
@@ -1117,14 +1235,16 @@ def fireflies_transcript_by_id(conn, transcript_id, visible_ids=None) -> sqlite3
 def fireflies_sentences(conn, doc_id) -> list[sqlite3.Row]:
     """A transcript's sentences in order. No ACL clause: the caller has already been cleared for
     the parent transcript, and a sentence is not independently addressable."""
-    return conn.execute("SELECT * FROM fireflies_sentences WHERE doc_id = ? ORDER BY seq",
-                        (doc_id,)).fetchall()
+    return conn.execute(
+        "SELECT * FROM fireflies_sentences WHERE doc_id = ? ORDER BY seq", (doc_id,)
+    ).fetchall()
 
 
 # --- full-text search (FTS5) ----------------------------------------------------
 # A single FTS5 index over every source's title+content, so search is fast even on the
 # millions-of-rows augmented corpus (a LIKE scan would be a full-table scan). Built by the
 # importers via build_fts(); search falls back to LIKE if the index/FTS5 isn't present.
+
 
 def _fts5_ok(conn) -> bool:
     try:
@@ -1141,8 +1261,12 @@ def _fts5_ok(conn) -> bool:
 
 
 def _has_fts(conn) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='docs_fts'").fetchone() is not None
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='docs_fts'"
+        ).fetchone()
+        is not None
+    )
 
 
 def _src_tag(source_type: str) -> str:
@@ -1165,14 +1289,18 @@ def build_fts(conn) -> bool:
     # Slack/Gmail search do — "deletion" finds "deletions", "embedding" finds "embeddings". The
     # tokenizer applies to every column including the src tag, but that is safe: the stored tag and
     # the src: query term stem identically, and the 6 tags don't collide under porter.
-    conn.execute("CREATE VIRTUAL TABLE docs_fts USING fts5("
-                 "doc_id UNINDEXED, src, title, content, tokenize='porter unicode61')")
+    conn.execute(
+        "CREATE VIRTUAL TABLE docs_fts USING fts5("
+        "doc_id UNINDEXED, src, title, content, tokenize='porter unicode61')"
+    )
     # Commit per source rather than once at the end: on an in-place rebuild of a large DB this
     # keeps each writer lock window to one source's index, so a concurrent reader (the live
     # server, with a busy_timeout) rides through instead of blocking on a single multi-GB commit.
     for src, tbl in SOURCE_TABLE.items():
-        conn.execute(f"INSERT INTO docs_fts(doc_id, src, title, content) "
-                     f"SELECT doc_id, '{_src_tag(src)}', title, content FROM {tbl}")
+        conn.execute(
+            f"INSERT INTO docs_fts(doc_id, src, title, content) "
+            f"SELECT doc_id, '{_src_tag(src)}', title, content FROM {tbl}"
+        )
         conn.commit()
     return True
 
@@ -1186,12 +1314,14 @@ def fts_add_docs(conn, source_type: str, doc_ids: list[str]) -> int:
     tbl, tag = table(source_type), _src_tag(source_type)
     n = 0
     for i in range(0, len(doc_ids), 900):
-        chunk = doc_ids[i:i + 900]
+        chunk = doc_ids[i : i + 900]
         marks = ",".join("?" for _ in chunk)
         conn.execute(f"DELETE FROM docs_fts WHERE doc_id IN ({marks})", chunk)
-        conn.execute(f"INSERT INTO docs_fts(doc_id, src, title, content) "
-                     f"SELECT doc_id, '{tag}', title, content FROM {tbl} WHERE doc_id IN ({marks})",
-                     chunk)
+        conn.execute(
+            f"INSERT INTO docs_fts(doc_id, src, title, content) "
+            f"SELECT doc_id, '{tag}', title, content FROM {tbl} WHERE doc_id IN ({marks})",
+            chunk,
+        )
         n += len(chunk)
     conn.commit()
     return n
@@ -1215,15 +1345,27 @@ def _fts_match(query: str, source_type: str | None, has_src: bool, phrase: bool 
     toks = re.findall(r"\w+", (query or "").lower())
     if not toks:
         return ""
-    body = ('"' + " ".join(toks) + '"') if (phrase and len(toks) > 1) \
+    body = (
+        ('"' + " ".join(toks) + '"')
+        if (phrase and len(toks) > 1)
         else " AND ".join(f'"{t}"' for t in toks)
+    )
     if has_src and source_type:
         return f"src:{_src_tag(source_type)} AND ({body})"
     return body
 
 
-def search_documents(conn, query, source_type=None, visible_ids=None, limit=25, offset=0,
-                     container=None, phrase=False, order_by=None) -> list[sqlite3.Row]:
+def search_documents(
+    conn,
+    query,
+    source_type=None,
+    visible_ids=None,
+    limit=25,
+    offset=0,
+    container=None,
+    phrase=False,
+    order_by=None,
+) -> list[sqlite3.Row]:
     """Keyword search over title + content within one source (FTS5-ranked; LIKE fallback), optionally
     scoped to one grouping unit. ``phrase=True`` matches the tokens adjacently and ranks a literal
     substring hit above a coincidental one. ``order_by``: ``None`` = relevance (bm25, Slack's
@@ -1262,14 +1404,17 @@ def search_documents(conn, query, source_type=None, visible_ids=None, limit=25, 
         # over tens of thousands of matches, so the punctuation test gates them out. Only for
         # relevance ordering — sort=timestamp is a pure recency order.
         elif lit and re.search(r"\w[^\w\s]\w", lit):
-            order_sql = ("(instr(lower(t.content), lower(?)) > 0 "
-                         "OR instr(lower(t.title), lower(?)) > 0) DESC, docs_fts.rank")
+            order_sql = (
+                "(instr(lower(t.content), lower(?)) > 0 "
+                "OR instr(lower(t.title), lower(?)) > 0) DESC, docs_fts.rank"
+            )
             order_p = [lit, lit]
-        sql = (f"SELECT t.* FROM docs_fts JOIN {tbl} t ON t.doc_id = docs_fts.doc_id "
-               f"WHERE docs_fts MATCH ?{src_sql}{cont_sql.format(a='t')}{clause} "
-               f"ORDER BY {order_sql} LIMIT ? OFFSET ?")
-        return conn.execute(
-            sql, [m, *src_p, *cont_p, *cparams, *order_p, limit, offset]).fetchall()
+        sql = (
+            f"SELECT t.* FROM docs_fts JOIN {tbl} t ON t.doc_id = docs_fts.doc_id "
+            f"WHERE docs_fts MATCH ?{src_sql}{cont_sql.format(a='t')}{clause} "
+            f"ORDER BY {order_sql} LIMIT ? OFFSET ?"
+        )
+        return conn.execute(sql, [m, *src_p, *cont_p, *cparams, *order_p, limit, offset]).fetchall()
     like = f"%{query}%"
     sql = f"SELECT * FROM {tbl} WHERE (title LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
     params: list = [like, like, *cont_p]
@@ -1279,8 +1424,9 @@ def search_documents(conn, query, source_type=None, visible_ids=None, limit=25, 
     return conn.execute(sql, params).fetchall()
 
 
-def count_search(conn, query, source_type, visible_ids=None, cap=1000, container=None,
-                 phrase=False) -> int:
+def count_search(
+    conn, query, source_type, visible_ids=None, cap=1000, container=None, phrase=False
+) -> int:
     """Count matches for a search (ACL-filtered), bounded by ``cap`` so a very common term
     doesn't scan the whole corpus — mirrors real search APIs capping the reported total.
     ``phrase`` must match the corresponding ``search_documents`` call so the reported total is
@@ -1297,18 +1443,24 @@ def count_search(conn, query, source_type, visible_ids=None, cap=1000, container
         clause, cparams = _acl_clause("t", visible_ids)
         src_sql = "" if has_src else " AND docs_fts.source_type = ?"
         src_p = [] if has_src else [source_type]
-        sql = (f"SELECT COUNT(*) FROM (SELECT t.doc_id FROM docs_fts JOIN {tbl} t "
-               f"ON t.doc_id = docs_fts.doc_id WHERE docs_fts MATCH ?{src_sql}"
-               f"{cont_sql.format(a='t')}{clause} LIMIT ?)")
+        sql = (
+            f"SELECT COUNT(*) FROM (SELECT t.doc_id FROM docs_fts JOIN {tbl} t "
+            f"ON t.doc_id = docs_fts.doc_id WHERE docs_fts MATCH ?{src_sql}"
+            f"{cont_sql.format(a='t')}{clause} LIMIT ?)"
+        )
         return conn.execute(sql, [m, *src_p, *cont_p, *cparams, cap]).fetchone()[0]
     like = f"%{query}%"
     clause, cparams = _acl_clause(tbl, visible_ids)
-    sql = (f"SELECT COUNT(*) FROM (SELECT doc_id FROM {tbl} WHERE (title LIKE ? OR content LIKE ?)"
-           f"{cont_sql.format(a=tbl)}{clause} LIMIT ?)")
+    sql = (
+        f"SELECT COUNT(*) FROM (SELECT doc_id FROM {tbl} WHERE (title LIKE ? OR content LIKE ?)"
+        f"{cont_sql.format(a=tbl)}{clause} LIMIT ?)"
+    )
     return conn.execute(sql, [like, like, *cont_p, *cparams, cap]).fetchone()[0]
 
 
-def children(conn, source_type, parent_id, visible_ids=None, limit=1000, offset=0) -> list[sqlite3.Row]:
+def children(
+    conn, source_type, parent_id, visible_ids=None, limit=1000, offset=0
+) -> list[sqlite3.Row]:
     """Child documents (jira subtasks / confluence child pages) of a parent doc."""
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE parent_id = ?"
@@ -1321,17 +1473,21 @@ def children(conn, source_type, parent_id, visible_ids=None, limit=1000, offset=
 
 # --- slack threading ------------------------------------------------------------
 
+
 def slack_created_bounds(conn, channel) -> sqlite3.Row:
     """Cheap aggregate for a channel's ``created`` (see routers.slack._channel_created): the
     earliest explicit ``created_ts``, the row count, and how many rows carry a ``created_ts``.
     A single indexed aggregate — no per-row transfer — so it stays fast on huge channels."""
     return conn.execute(
         "SELECT MIN(created_ts) AS min_ts, COUNT(*) AS total, COUNT(created_ts) AS have "
-        "FROM slack_messages WHERE channel = ?", (channel,)).fetchone()
+        "FROM slack_messages WHERE channel = ?",
+        (channel,),
+    ).fetchone()
 
 
-def list_slack_top_level(conn, channel, visible_ids=None, limit=100, offset=0,
-                         ts_lo=None, ts_hi=None) -> list[sqlite3.Row]:
+def list_slack_top_level(
+    conn, channel, visible_ids=None, limit=100, offset=0, ts_lo=None, ts_hi=None
+) -> list[sqlite3.Row]:
     """Top-level (thread-root/standalone) messages in a channel. ``ts_lo``/``ts_hi`` bound
     ``created_ts`` for a time-windowed conversations.history, so a day window is an indexed range
     rather than the whole channel filtered in Python. Widen the bounds by ±1s — the public ts
@@ -1370,8 +1526,9 @@ def list_slack_channel_messages(conn, channel, visible_ids=None) -> list[sqlite3
     return conn.execute(sql, params).fetchall()
 
 
-def list_gmail_in_range(conn, mailbox, ts_lo, ts_hi, visible_ids=None,
-                        limit=100_000, offset=0) -> list[sqlite3.Row]:
+def list_gmail_in_range(
+    conn, mailbox, ts_lo, ts_hi, visible_ids=None, limit=100_000, offset=0
+) -> list[sqlite3.Row]:
     """Gmail messages whose ``created_ts`` is in ``[ts_lo, ts_hi)`` (either bound may be None for
     open-ended), newest first. The SQL date filter for a date-scoped listing (``ls /gmail/<label>/
     <date>``): without it the endpoint materialized the WHOLE mailbox (~100k rows) and filtered in
@@ -1427,7 +1584,9 @@ def slack_channels_for_principals(conn, principals) -> set[str]:
     marks = ",".join("?" for _ in principals)
     rows = conn.execute(
         f"SELECT DISTINCT d.channel FROM doc_acl a JOIN slack_messages d ON d.doc_id = a.doc_id "
-        f"WHERE a.principal_id IN ({marks})", principals)
+        f"WHERE a.principal_id IN ({marks})",
+        principals,
+    )
     return {r[0] for r in rows}
 
 
@@ -1466,61 +1625,75 @@ def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
 
 # --- GitHub file items (kind='file') ----------------------------------------
 
+
 def list_repo_files(conn, repo, visible_ids=None, limit=10_000, offset=0) -> list[sqlite3.Row]:
     clause, cp = _acl_clause("github_items", visible_ids)
-    sql = ("SELECT * FROM github_items WHERE repo = ? AND kind = 'file'" + clause +
-           " ORDER BY path LIMIT ? OFFSET ?")
+    sql = (
+        "SELECT * FROM github_items WHERE repo = ? AND kind = 'file'"
+        + clause
+        + " ORDER BY path LIMIT ? OFFSET ?"
+    )
     return conn.execute(sql, [repo, *cp, limit, offset]).fetchall()
 
 
 def count_repo_files(conn, repo, visible_ids=None) -> int:
     clause, cp = _acl_clause("github_items", visible_ids)
-    return conn.execute("SELECT COUNT(*) FROM github_items WHERE repo = ? AND kind = 'file'" + clause,
-                        [repo, *cp]).fetchone()[0]
+    return conn.execute(
+        "SELECT COUNT(*) FROM github_items WHERE repo = ? AND kind = 'file'" + clause, [repo, *cp]
+    ).fetchone()[0]
 
 
 def get_repo_file(conn, repo, path, visible_ids=None) -> sqlite3.Row | None:
     clause, cp = _acl_clause("github_items", visible_ids)
-    return conn.execute("SELECT * FROM github_items WHERE repo = ? AND kind = 'file' AND path = ?" + clause,
-                        [repo, path, *cp]).fetchone()
+    return conn.execute(
+        "SELECT * FROM github_items WHERE repo = ? AND kind = 'file' AND path = ?" + clause,
+        [repo, path, *cp],
+    ).fetchone()
 
 
 # --- grouping units (channels/mailboxes/folders/repos/projects/spaces) & principals ---
 
+
 def list_containers(conn, source_type) -> list[sqlite3.Row]:
     """List a service's grouping units as rows with `name` + `group_id` (uniform API)."""
     gtable, gcol = grouping_table(source_type), grouping_col(source_type)
-    return conn.execute(
-        f"SELECT {gcol} AS name, group_id FROM {gtable} ORDER BY {gcol}").fetchall()
+    return conn.execute(f"SELECT {gcol} AS name, group_id FROM {gtable} ORDER BY {gcol}").fetchall()
 
 
 def get_container(conn, source_type, name) -> sqlite3.Row | None:
     gtable, gcol = grouping_table(source_type), grouping_col(source_type)
     return conn.execute(
-        f"SELECT {gcol} AS name, group_id FROM {gtable} WHERE {gcol} = ?", (name,)).fetchone()
+        f"SELECT {gcol} AS name, group_id FROM {gtable} WHERE {gcol} = ?", (name,)
+    ).fetchone()
 
 
 def list_users(conn) -> list[sqlite3.Row]:
     return conn.execute(
-        "SELECT id, display_name, email FROM principals WHERE type = 'user' ORDER BY id").fetchall()
+        "SELECT id, display_name, email FROM principals WHERE type = 'user' ORDER BY id"
+    ).fetchall()
 
 
 def get_user(conn, email) -> sqlite3.Row | None:
     return conn.execute(
-        "SELECT id, display_name, email FROM principals WHERE type = 'user' AND id = ?",
-        (email,)).fetchone()
+        "SELECT id, display_name, email FROM principals WHERE type = 'user' AND id = ?", (email,)
+    ).fetchone()
 
 
 def user_group_ids(conn, email) -> list[str]:
-    return [r[0] for r in conn.execute(
-        "SELECT group_id FROM group_members WHERE user_id = ?", (email,)).fetchall()]
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT group_id FROM group_members WHERE user_id = ?", (email,)
+        ).fetchall()
+    ]
 
 
 def group_members(conn, group_id) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT p.id, p.display_name, p.email FROM group_members gm "
         "JOIN principals p ON p.id = gm.user_id WHERE gm.group_id = ? ORDER BY p.id",
-        (group_id,)).fetchall()
+        (group_id,),
+    ).fetchall()
 
 
 def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]:
@@ -1530,22 +1703,32 @@ def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]
     the corpus carries. It replaces answering every public channel with the whole roster, which is
     a shape real Slack cannot produce (its membership differs per channel). Index-only on
     idx_slack_channel_author, so a page costs a seek rather than a scan of the channel."""
-    return [r[0] for r in conn.execute(
-        "SELECT DISTINCT author_email FROM slack_messages WHERE channel = ? "
-        "ORDER BY author_email LIMIT ? OFFSET ?", (channel, limit, offset))]
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT author_email FROM slack_messages WHERE channel = ? "
+            "ORDER BY author_email LIMIT ? OFFSET ?",
+            (channel, limit, offset),
+        )
+    ]
 
 
 def slack_channel_member_counts(conn) -> dict[str, int]:
     """Every channel's member count in one pass. Per-channel COUNT(DISTINCT) is ~1.9s on the bench
     corpus's biggest channel, and conversations.list shapes every channel in the page, so counting
     them one at a time would be minutes per request; this is 12.2s once."""
-    return {r[0]: r[1] for r in conn.execute(
-        "SELECT channel, COUNT(DISTINCT author_email) FROM slack_messages GROUP BY channel")}
+    return {
+        r[0]: r[1]
+        for r in conn.execute(
+            "SELECT channel, COUNT(DISTINCT author_email) FROM slack_messages GROUP BY channel"
+        )
+    }
 
 
 def count_slack_channel_members(conn, channel) -> int:
-    return conn.execute("SELECT COUNT(DISTINCT author_email) FROM slack_messages WHERE channel = ?",
-                        (channel,)).fetchone()[0]
+    return conn.execute(
+        "SELECT COUNT(DISTINCT author_email) FROM slack_messages WHERE channel = ?", (channel,)
+    ).fetchone()[0]
 
 
 def all_user_emails(conn) -> list[str]:
@@ -1561,24 +1744,34 @@ def distinct_slack_author_emails(conn) -> list[str]:
 
 # --- ACL grants (container/doc scoped) ------------------------------------------
 
+
 def container_grants(conn, source_type, container) -> list[sqlite3.Row]:
     tbl, gcol = table(source_type), grouping_col(source_type)
     return conn.execute(
         f"SELECT DISTINCT a.principal_type, a.principal_id FROM doc_acl a "
-        f"JOIN {tbl} d ON d.doc_id = a.doc_id WHERE d.{gcol} = ?", (container,)).fetchall()
+        f"JOIN {tbl} d ON d.doc_id = a.doc_id WHERE d.{gcol} = ?",
+        (container,),
+    ).fetchall()
 
 
 def container_has_public(conn, source_type, container) -> bool:
     tbl, gcol = table(source_type), grouping_col(source_type)
-    return conn.execute(
-        f"SELECT 1 FROM doc_acl a JOIN {tbl} d ON d.doc_id = a.doc_id "
-        f"WHERE d.{gcol} = ? AND a.principal_type = 'org' LIMIT 1", (container,)).fetchone() is not None
+    return (
+        conn.execute(
+            f"SELECT 1 FROM doc_acl a JOIN {tbl} d ON d.doc_id = a.doc_id "
+            f"WHERE d.{gcol} = ? AND a.principal_type = 'org' LIMIT 1",
+            (container,),
+        ).fetchone()
+        is not None
+    )
 
 
 def doc_grants(conn, doc_id) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT principal_type, principal_id FROM doc_acl WHERE doc_id = ? "
-        "ORDER BY principal_type, principal_id", (doc_id,)).fetchall()
+        "ORDER BY principal_type, principal_id",
+        (doc_id,),
+    ).fetchall()
 
 
 def docs_with_grants(conn, doc_ids: list[str]) -> set[str]:
@@ -1586,10 +1779,14 @@ def docs_with_grants(conn, doc_ids: list[str]) -> set[str]:
     under SQLite's variable limit) instead of a per-doc ``doc_grants`` call when building a list."""
     out: set[str] = set()
     for i in range(0, len(doc_ids), 900):
-        chunk = doc_ids[i:i + 900]
+        chunk = doc_ids[i : i + 900]
         marks = ",".join("?" for _ in chunk)
-        out.update(r[0] for r in conn.execute(
-            f"SELECT DISTINCT doc_id FROM doc_acl WHERE doc_id IN ({marks})", chunk).fetchall())
+        out.update(
+            r[0]
+            for r in conn.execute(
+                f"SELECT DISTINCT doc_id FROM doc_acl WHERE doc_id IN ({marks})", chunk
+            ).fetchall()
+        )
     return out
 
 
@@ -1616,10 +1813,13 @@ def doc_member_emails(conn, doc_id) -> set[str] | None:
 
 # --- comments -------------------------------------------------------------------
 
+
 def doc_comments(conn, source_type, doc_id) -> list[sqlite3.Row]:
     tbl = COMMENT_TABLE.get(source_type)
     if tbl is None:
         return []
     return conn.execute(
         f"SELECT id, seq, author_email, body, created_ts, reactions FROM {tbl} "
-        "WHERE doc_id = ? ORDER BY seq", (doc_id,)).fetchall()
+        "WHERE doc_id = ? ORDER BY seq",
+        (doc_id,),
+    ).fetchall()

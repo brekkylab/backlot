@@ -4,6 +4,7 @@ Base URL for a client: ``http://<host>/slack/api/`` (methods live under ``/api/`
 Slack always returns HTTP 200 with an ``{"ok": bool}`` envelope, so auth failures are
 signalled as ``{"ok": false, "error": "not_authed"}`` rather than a 401 status.
 """
+
 from __future__ import annotations
 
 import re
@@ -25,6 +26,7 @@ router = APIRouter(prefix="/slack/api", tags=["slack"])
 # Params are read query-or-form via _param/_int, so we document them with openapi_extra instead
 # of changing the handler signatures (which would break the form-body read path). Response models
 # use extra="allow" so the builders' full field set passes through unfiltered.
+
 
 class _SlackOk(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -66,12 +68,23 @@ class SlackSearch(_SlackOk):
 
 _P_LIST = [qp("limit", "integer"), qp("cursor")]
 _P_CHANNEL = [qp("channel", required=True)]
-_P_HISTORY = [qp("channel", required=True), qp("limit", "integer"), qp("cursor"),
-              qp("oldest"), qp("latest"), qp("inclusive", "boolean")]
+_P_HISTORY = [
+    qp("channel", required=True),
+    qp("limit", "integer"),
+    qp("cursor"),
+    qp("oldest"),
+    qp("latest"),
+    qp("inclusive", "boolean"),
+]
 _P_REPLIES = [qp("channel", required=True), qp("ts", required=True)]
 _P_USER = [qp("user", required=True)]
-_P_SEARCH = [qp("query", required=True), qp("count", "integer"), qp("page", "integer"),
-             qp("sort"), qp("sort_dir")]
+_P_SEARCH = [
+    qp("query", required=True),
+    qp("count", "integer"),
+    qp("page", "integer"),
+    qp("sort"),
+    qp("sort_dir"),
+]
 _P_SEARCH_FILES = [qp("query", required=True), qp("count", "integer")]
 
 # conversations.history page cap (thread roots). Slack recommends limit<=200; capping here bounds
@@ -123,15 +136,28 @@ def _full_channel(request: Request, conn, name: str) -> dict:
     num = _member_count(request, conn, name)
     created = _channel_created(request, conn, name)
     return {
-        "id": synth.slack_channel_id(name), "name": name, "name_normalized": name,
-        "is_channel": True, "is_group": False, "is_im": False, "is_mpim": False,
-        "is_private": is_private, "is_member": True, "is_archived": False,
+        "id": synth.slack_channel_id(name),
+        "name": name,
+        "name_normalized": name,
+        "is_channel": True,
+        "is_group": False,
+        "is_im": False,
+        "is_mpim": False,
+        "is_private": is_private,
+        "is_member": True,
+        "is_archived": False,
         "is_general": name in ("general", "announcements"),
-        "is_shared": False, "is_ext_shared": False, "is_org_shared": False,
-        "unlinked": 0, "created": created, "updated": created * 1000, "creator": "USERVICE0",
+        "is_shared": False,
+        "is_ext_shared": False,
+        "is_org_shared": False,
+        "unlinked": 0,
+        "created": created,
+        "updated": created * 1000,
+        "creator": "USERVICE0",
         "topic": {"value": f"#{name}", "creator": "USERVICE0", "last_set": created},
         "purpose": {"value": f"Channel for {name}", "creator": "USERVICE0", "last_set": created},
-        "previous_names": [], "num_members": num,
+        "previous_names": [],
+        "num_members": num,
     }
 
 
@@ -146,20 +172,39 @@ def _user_obj(conn, email: str) -> dict:
     updated = synth.epoch("user:" + email)
     is_bot = not u and email.split("@")[0].endswith("bot")  # display-only "*bot" speakers
     return {
-        "id": synth.slack_user_id(email), "team_id": "T0000MOCK",
+        "id": synth.slack_user_id(email),
+        "team_id": "T0000MOCK",
         "name": email.split("@")[0].replace(".", ""),
-        "real_name": display, "deleted": False, "is_bot": is_bot, "is_app_user": is_bot,
-        "is_admin": False, "is_owner": False, "is_primary_owner": False,
-        "is_restricted": False, "is_ultra_restricted": False, "has_2fa": False,
-        "tz": "America/Los_Angeles", "tz_label": "Pacific Time", "tz_offset": -28800,
-        "color": synth._digest(email)[:6], "updated": updated,
-        "profile": {"real_name": display, "display_name": display,
-                    "real_name_normalized": display, "display_name_normalized": display,
-                    "first_name": parts[0] if parts else display,
-                    "last_name": parts[-1] if len(parts) > 1 else "",
-                    "email": email, "title": "", "phone": "", "skype": "",
-                    "status_text": "", "status_emoji": "",
-                    "avatar_hash": synth._digest(email)[:12]},
+        "real_name": display,
+        "deleted": False,
+        "is_bot": is_bot,
+        "is_app_user": is_bot,
+        "is_admin": False,
+        "is_owner": False,
+        "is_primary_owner": False,
+        "is_restricted": False,
+        "is_ultra_restricted": False,
+        "has_2fa": False,
+        "tz": "America/Los_Angeles",
+        "tz_label": "Pacific Time",
+        "tz_offset": -28800,
+        "color": synth._digest(email)[:6],
+        "updated": updated,
+        "profile": {
+            "real_name": display,
+            "display_name": display,
+            "real_name_normalized": display,
+            "display_name_normalized": display,
+            "first_name": parts[0] if parts else display,
+            "last_name": parts[-1] if len(parts) > 1 else "",
+            "email": email,
+            "title": "",
+            "phone": "",
+            "skype": "",
+            "status_text": "",
+            "status_emoji": "",
+            "avatar_hash": synth._digest(email)[:12],
+        },
     }
 
 
@@ -186,13 +231,22 @@ async def auth_test(request: Request):
     if caller is None:
         return _err("not_authed")
     who = "service-account" if caller.is_admin else caller.email
-    return {"ok": True, "url": f"https://{get_settings().org_name}.slack.com/",
-            "team": get_settings().org_name, "user": who, "user_id": "USERVICE0",
-            "team_id": "T0000MOCK"}
+    return {
+        "ok": True,
+        "url": f"https://{get_settings().org_name}.slack.com/",
+        "team": get_settings().org_name,
+        "user": who,
+        "user_id": "USERVICE0",
+        "team_id": "T0000MOCK",
+    }
 
 
-@router.api_route("/conversations.list", methods=["GET", "POST"],
-                  response_model=SlackConversationsList, openapi_extra={"parameters": _P_LIST})
+@router.api_route(
+    "/conversations.list",
+    methods=["GET", "POST"],
+    response_model=SlackConversationsList,
+    openapi_extra={"parameters": _P_LIST},
+)
 async def conversations_list(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -216,17 +270,22 @@ async def conversations_list(request: Request):
         else:  # cache not warm yet — principal-indexed query (public channels + granted ones)
             org = auth.acl(request).org_name
             granted = store.slack_channels_for_principals(conn, [p for p in ids if p != org])
-            names = [n for n in names
-                     if store.container_has_public(conn, "slack", n) or n in granted]
+            names = [
+                n for n in names if store.container_has_public(conn, "slack", n) or n in granted
+            ]
 
     limit = _int(request, "limit", get_settings().default_page_size)
-    page = [_full_channel(request, conn, n) for n in names[offset:offset + limit]]
+    page = [_full_channel(request, conn, n) for n in names[offset : offset + limit]]
     cursor = next_cursor(offset, len(page), len(names))
     return {"ok": True, "channels": page, "response_metadata": {"next_cursor": cursor}}
 
 
-@router.api_route("/conversations.info", methods=["GET", "POST"],
-                  response_model=SlackConversationInfo, openapi_extra={"parameters": _P_CHANNEL})
+@router.api_route(
+    "/conversations.info",
+    methods=["GET", "POST"],
+    response_model=SlackConversationInfo,
+    openapi_extra={"parameters": _P_CHANNEL},
+)
 async def conversations_info(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -238,8 +297,12 @@ async def conversations_info(request: Request):
     return {"ok": True, "channel": _full_channel(request, conn, name)}
 
 
-@router.api_route("/conversations.history", methods=["GET", "POST"],
-                  response_model=SlackHistory, openapi_extra={"parameters": _P_HISTORY})
+@router.api_route(
+    "/conversations.history",
+    methods=["GET", "POST"],
+    response_model=SlackHistory,
+    openapi_extra={"parameters": _P_HISTORY},
+)
 async def conversations_history(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -284,11 +347,15 @@ async def conversations_history(request: Request):
         # the exact float window in Python — so a day window scans the day, not the whole channel.
         ts_lo = int(lo) - 1 if lo is not None else None
         ts_hi = int(hi) + 1 if hi is not None else None
-        matched = [r for r in store.list_slack_top_level(conn, name, ids, limit=10**9,
-                                                         ts_lo=ts_lo, ts_hi=ts_hi)
-                   if _in_window(r)]
+        matched = [
+            r
+            for r in store.list_slack_top_level(
+                conn, name, ids, limit=10**9, ts_lo=ts_lo, ts_hi=ts_hi
+            )
+            if _in_window(r)
+        ]
         total = len(matched)
-        rows = matched[offset:offset + limit]
+        rows = matched[offset : offset + limit]
     else:
         total = store.count_slack_top_level(conn, name, ids)
         rows = store.list_slack_top_level(conn, name, ids, limit=limit, offset=offset)
@@ -298,15 +365,27 @@ async def conversations_history(request: Request):
         latest = _latest_reply(r, rc) if rc else None
         ru = store.slack_reply_authors(conn, r["doc_id"], ids) if rc else []
         ruids = [synth.slack_user_id(e) for e in ru[:5]]
-        messages.append(_message(r, reply_count=rc, latest_reply=latest,
-                                 reply_users=ruids, reply_users_count=len(ru)))
+        messages.append(
+            _message(
+                r, reply_count=rc, latest_reply=latest, reply_users=ruids, reply_users_count=len(ru)
+            )
+        )
     cursor = next_cursor(offset, len(rows), total)
-    return {"ok": True, "messages": messages, "has_more": bool(cursor),
-            "pin_count": 0, "response_metadata": {"next_cursor": cursor}}
+    return {
+        "ok": True,
+        "messages": messages,
+        "has_more": bool(cursor),
+        "pin_count": 0,
+        "response_metadata": {"next_cursor": cursor},
+    }
 
 
-@router.api_route("/conversations.replies", methods=["GET", "POST"],
-                  response_model=SlackHistory, openapi_extra={"parameters": _P_REPLIES})
+@router.api_route(
+    "/conversations.replies",
+    methods=["GET", "POST"],
+    response_model=SlackHistory,
+    openapi_extra={"parameters": _P_REPLIES},
+)
 async def conversations_replies(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -352,18 +431,25 @@ async def conversations_replies(request: Request):
     ruids = [synth.slack_user_id(e) for e in ru[:5]]
     parent_uid = synth.slack_user_id(root["author_email"])
     messages = [
-        _message(x, reply_count=(rc if x["thread_seq"] == 0 else 0),
-                 latest_reply=(latest if x["thread_seq"] == 0 else None),
-                 reply_users=(ruids if x["thread_seq"] == 0 else None),
-                 reply_users_count=(len(ru) if x["thread_seq"] == 0 else 0),
-                 parent_user_id=(parent_uid if x["thread_seq"] > 0 else None))
+        _message(
+            x,
+            reply_count=(rc if x["thread_seq"] == 0 else 0),
+            latest_reply=(latest if x["thread_seq"] == 0 else None),
+            reply_users=(ruids if x["thread_seq"] == 0 else None),
+            reply_users_count=(len(ru) if x["thread_seq"] == 0 else 0),
+            parent_user_id=(parent_uid if x["thread_seq"] > 0 else None),
+        )
         for x in rows
     ]
     return {"ok": True, "messages": messages, "has_more": False}
 
 
-@router.api_route("/conversations.members", methods=["GET", "POST"],
-                  response_model=SlackMembers, openapi_extra={"parameters": _P_CHANNEL})
+@router.api_route(
+    "/conversations.members",
+    methods=["GET", "POST"],
+    response_model=SlackMembers,
+    openapi_extra={"parameters": _P_CHANNEL},
+)
 async def conversations_members(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -386,8 +472,12 @@ async def conversations_members(request: Request):
     return {"ok": True, "members": members, "response_metadata": {"next_cursor": cursor}}
 
 
-@router.api_route("/users.list", methods=["GET", "POST"],
-                  response_model=SlackUsersList, openapi_extra={"parameters": _P_LIST})
+@router.api_route(
+    "/users.list",
+    methods=["GET", "POST"],
+    response_model=SlackUsersList,
+    openapi_extra={"parameters": _P_LIST},
+)
 async def users_list(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -411,14 +501,18 @@ async def users_list(request: Request):
         return _err("invalid_cursor")
     emails = store.all_user_emails(conn)
     limit = _int(request, "limit", get_settings().default_page_size)
-    page = emails[offset:offset + limit]
+    page = emails[offset : offset + limit]
     members = [_user_obj(conn, e) for e in page]
     cursor = next_cursor(offset, len(page), len(emails))
     return {"ok": True, "members": members, "response_metadata": {"next_cursor": cursor}}
 
 
-@router.api_route("/users.info", methods=["GET", "POST"],
-                  response_model=SlackUserInfo, openapi_extra={"parameters": _P_USER})
+@router.api_route(
+    "/users.info",
+    methods=["GET", "POST"],
+    response_model=SlackUserInfo,
+    openapi_extra={"parameters": _P_USER},
+)
 async def users_info(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -499,23 +593,42 @@ def _messages_block(request: Request):
     order_by = None
     if sort == "timestamp":
         order_by = "recency_asc" if sort_dir == "asc" else "recency"
-    rows = store.search_documents(conn, terms, "slack", ids, limit=count, offset=offset,
-                                  container=container, phrase=phrase, order_by=order_by)
+    rows = store.search_documents(
+        conn,
+        terms,
+        "slack",
+        ids,
+        limit=count,
+        offset=offset,
+        container=container,
+        phrase=phrase,
+        order_by=order_by,
+    )
     total = store.count_search(conn, terms, "slack", ids, container=container, phrase=phrase)
     matches = [_search_match(conn, r) for r in rows]
     pages = (total + count - 1) // count if count else 1
     block = {
         "total": total,
-        "pagination": {"total_count": total, "page": page, "per_page": count,
-                       "page_count": pages, "first": offset + 1, "last": offset + len(matches)},
+        "pagination": {
+            "total_count": total,
+            "page": page,
+            "per_page": count,
+            "page_count": pages,
+            "first": offset + 1,
+            "last": offset + len(matches),
+        },
         "paging": {"count": count, "total": total, "page": page, "pages": pages},
         "matches": matches,
     }
     return query, block
 
 
-@router.api_route("/search.messages", methods=["GET", "POST"],
-                  response_model=SlackSearch, openapi_extra={"parameters": _P_SEARCH})
+@router.api_route(
+    "/search.messages",
+    methods=["GET", "POST"],
+    response_model=SlackSearch,
+    openapi_extra={"parameters": _P_SEARCH},
+)
 async def search_messages(request: Request):
     query, block = _messages_block(request)
     if block is None:
@@ -523,8 +636,12 @@ async def search_messages(request: Request):
     return {"ok": True, "query": query, "messages": block}
 
 
-@router.api_route("/search.files", methods=["GET", "POST"],
-                  response_model=SlackSearch, openapi_extra={"parameters": _P_SEARCH_FILES})
+@router.api_route(
+    "/search.files",
+    methods=["GET", "POST"],
+    response_model=SlackSearch,
+    openapi_extra={"parameters": _P_SEARCH_FILES},
+)
 async def search_files(request: Request):
     """Slack file search. The mock has no uploaded-file corpus (files exist only as message
     attachments), so matches are always empty — but the endpoint must exist and return ok=True:
@@ -537,29 +654,52 @@ async def search_files(request: Request):
     if not query.strip():
         return _err("missing_query")
     count = _int(request, "count", 20)
-    empty = {"total": 0, "matches": [],
-             "pagination": {"total_count": 0, "page": 1, "per_page": count,
-                            "page_count": 0, "first": 0, "last": 0},
-             "paging": {"count": count, "total": 0, "page": 1, "pages": 0}}
+    empty = {
+        "total": 0,
+        "matches": [],
+        "pagination": {
+            "total_count": 0,
+            "page": 1,
+            "per_page": count,
+            "page_count": 0,
+            "first": 0,
+            "last": 0,
+        },
+        "paging": {"count": count, "total": 0, "page": 1, "pages": 0},
+    }
     return {"ok": True, "query": query, "files": empty}
 
 
-@router.api_route("/search.all", methods=["GET", "POST"],
-                  response_model=SlackSearch, openapi_extra={"parameters": _P_SEARCH})
+@router.api_route(
+    "/search.all",
+    methods=["GET", "POST"],
+    response_model=SlackSearch,
+    openapi_extra={"parameters": _P_SEARCH},
+)
 async def search_all(request: Request):
     """Slack's combined search (the slack-go SDK's Search()/SearchContext() hits this). The mock
     has no file corpus, so ``files`` is always empty; ``messages`` matches search.messages."""
     query, block = _messages_block(request)
     if block is None:
         return query  # error dict
-    empty = {"total": 0, "matches": [],
-             "pagination": {"total_count": 0, "page": 1, "per_page": block["paging"]["count"],
-                            "page_count": 0, "first": 0, "last": 0},
-             "paging": {"count": block["paging"]["count"], "total": 0, "page": 1, "pages": 0}}
+    empty = {
+        "total": 0,
+        "matches": [],
+        "pagination": {
+            "total_count": 0,
+            "page": 1,
+            "per_page": block["paging"]["count"],
+            "page_count": 0,
+            "first": 0,
+            "last": 0,
+        },
+        "paging": {"count": block["paging"]["count"], "total": 0, "page": 1, "pages": 0},
+    }
     return {"ok": True, "query": query, "messages": block, "files": empty}
 
 
 # --- helpers --------------------------------------------------------------------
+
 
 def _search_match(conn, row) -> dict:
     """A search.messages `matches[]` entry for a slack row."""
@@ -568,17 +708,25 @@ def _search_match(conn, row) -> dict:
     text = f"*{row['title']}*\n{row['content']}" if row["title"] else row["content"]
     ts = _msg_ts(row)
     m = {
-        "type": "message", "team": "T0000MOCK",
-        "channel": {"id": cid, "name": ch,
-                    "is_private": not store.container_has_public(conn, "slack", ch)},
+        "type": "message",
+        "team": "T0000MOCK",
+        "channel": {
+            "id": cid,
+            "name": ch,
+            "is_private": not store.container_has_public(conn, "slack", ch),
+        },
         "user": synth.slack_user_id(row["author_email"]),
         "username": row["author_email"].split("@")[0],
-        "ts": ts, "text": text,
+        "ts": ts,
+        "text": text,
         "permalink": f"https://{get_settings().org_name}.slack.com/archives/{cid}/p{ts.replace('.', '')}",
     }
-    if row["thread_id"]:  # a hit inside a thread carries its root ts so the client can fetch replies
+    if row[
+        "thread_id"
+    ]:  # a hit inside a thread carries its root ts so the client can fetch replies
         m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(row), row["thread_id"])
     return m
+
 
 def _root_epoch(row) -> int:
     """The thread root's base second — the caller-supplied `created` (with the reply's
@@ -602,9 +750,9 @@ def _compute_channel_created(conn, name: str) -> int:
     if not b["total"]:
         return synth.epoch(name)
     candidates = []
-    if b["have"]:                       # rows with an explicit created_ts
+    if b["have"]:  # rows with an explicit created_ts
         candidates.append(b["min_ts"])
-    if b["have"] < b["total"]:          # rows whose ts is synthesized as epoch(doc_id)
+    if b["have"] < b["total"]:  # rows whose ts is synthesized as epoch(doc_id)
         candidates.append(synth.BASE_EPOCH)
     return min(candidates)
 
@@ -643,16 +791,26 @@ def _latest_reply(root_row, reply_count: int) -> str:
     return synth.slack_fmt_ts(_root_epoch(root_row) + reply_count, root_row["doc_id"])
 
 
-def _message(row, reply_count: int = 0, latest_reply: str | None = None,
-             reply_users: list[str] | None = None, reply_users_count: int = 0,
-             parent_user_id: str | None = None) -> dict:
+def _message(
+    row,
+    reply_count: int = 0,
+    latest_reply: str | None = None,
+    reply_users: list[str] | None = None,
+    reply_users_count: int = 0,
+    parent_user_id: str | None = None,
+) -> dict:
     # Slack messages have no title; only prepend one as a lead line when present
     # (bench docs carry a title, BYO slack records typically don't).
     title = row["title"]
     text = f"*{title}*\n{row['content']}" if title else row["content"]
-    m = {"type": "message", "user": synth.slack_user_id(row["author_email"]),
-         "text": text, "ts": _msg_ts(row), "team": "T0000MOCK",
-         "client_msg_id": synth.gmail_id(row["doc_id"], salt="cmid")}
+    m = {
+        "type": "message",
+        "user": synth.slack_user_id(row["author_email"]),
+        "text": text,
+        "ts": _msg_ts(row),
+        "team": "T0000MOCK",
+        "client_msg_id": synth.gmail_id(row["doc_id"], salt="cmid"),
+    }
     reactions = store.jcol(row, "reactions")
     if reactions:
         m["reactions"] = reactions
@@ -667,10 +825,15 @@ def _message(row, reply_count: int = 0, latest_reply: str | None = None,
     if row["thread_id"]:  # part of a thread
         m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(row), row["thread_id"])
         if row["thread_seq"] == 0 and reply_count > 0:  # thread root
-            m.update({"reply_count": reply_count,
-                      "reply_users_count": reply_users_count or len(reply_users or []),
-                      "reply_users": reply_users or [], "latest_reply": latest_reply,
-                      "subscribed": False})
+            m.update(
+                {
+                    "reply_count": reply_count,
+                    "reply_users_count": reply_users_count or len(reply_users or []),
+                    "reply_users": reply_users or [],
+                    "latest_reply": latest_reply,
+                    "subscribed": False,
+                }
+            )
         elif row["thread_seq"] > 0 and parent_user_id:  # a reply
             m["parent_user_id"] = parent_user_id
     return m

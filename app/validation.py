@@ -5,6 +5,7 @@ the record shape the loader accepts — they define the app's ingest contract, s
 the application side. ``app/importer/byo.py`` calls :func:`record_errors` to fail fast on load, and its
 ``--dry-run`` validates a whole file via :func:`validate_file` without touching the DB.
 """
+
 from __future__ import annotations
 
 import json

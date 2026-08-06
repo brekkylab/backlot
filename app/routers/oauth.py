@@ -7,6 +7,7 @@ impersonated user under domain-wide delegation). A bare service account with no 
 the admin/service token — a full-crawl identity, the pragmatic mock stand-in for a service
 principal. See :mod:`app.oauth` for how the credentials are generated and verified.
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
@@ -53,6 +54,12 @@ async def token(request: Request):
         return _err("invalid_grant")
     # static access token (the caller's bearer token); expiry is cosmetic — a re-refresh just
     # returns the same token, so a long-lived crawl never breaks.
-    return JSONResponse({"access_token": access, "token_type": "Bearer", "expires_in": 3599,
-                         "scope": form.get("scope", "")},
-                        headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {
+            "access_token": access,
+            "token_type": "Bearer",
+            "expires_in": 3599,
+            "scope": form.get("scope", ""),
+        },
+        headers={"Cache-Control": "no-store"},
+    )

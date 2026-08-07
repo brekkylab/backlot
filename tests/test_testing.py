@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import urllib.request
 
 import backlot
+from backlot.testing import _terminate
 
 
 def _get(url: str) -> dict:
@@ -54,3 +57,17 @@ def test_two_servers_get_different_ports():
 def test_serve_or_connect_falls_back_when_the_url_is_unreachable():
     with backlot.serve_or_connect(url="http://127.0.0.1:1/") as m:
         assert _get(f"{m.base_url}/health")["status"] == "ok"
+
+
+def test_teardown_reaps_a_process_that_ignores_sigterm():
+    """A bare kill() with no following wait() can leave a zombie — this would pass silently
+    without a test that checks the process was actually reaped, not just signalled."""
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+        ]
+    )
+    _terminate(proc, timeout=0.2)
+    assert proc.poll() is not None

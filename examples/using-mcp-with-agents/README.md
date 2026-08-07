@@ -36,7 +36,7 @@ helpers:
 | File | What it is |
 |---|---|
 | `_agent.py` | The agent loop for both backends: `--agent anthropic` (default, Anthropic SDK + its beta MCP tool runner) or `--agent openai` (OpenAI Agents SDK) |
-| `_mockserver.py` | Starts the mock (`backlot.main`) on a small corpus, or connects to a `--url` one |
+| `backlot.serve_or_connect` | Starts the mock (`backlot.main`) on a small corpus, or connects to a `--url` one |
 
 Each service file declares its own CLI options with `argparse` — run `python <file> --help` to see
 exactly what that provider takes (e.g. `s3.py` takes `--access-key`/`--secret-key`, required with

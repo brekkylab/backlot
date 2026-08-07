@@ -18,11 +18,17 @@ hand back the mock-issued credential instead of touching disk.
 """
 
 import argparse
+import sys
+from pathlib import Path
 
 from google.oauth2.credentials import Credentials
 from llama_index.readers.google import GmailReader
 
-from _llamaindex import google_oauth_user, point_gmail_at, serve_or_connect
+from backlot import serve_or_connect
+from backlot.integrations.llamaindex import point_gmail_at
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _common.google_creds import google_oauth_user
 
 CORPUS = [
     {

@@ -1,32 +1,17 @@
-"""Example-runner helpers for the mirage examples.
+"""Example-runner plumbing shared by the mirage examples.
 
 The base-URL helpers (``slack_base_url``, ``notion_base_url``, ``s3_base_url``) and the
-monkeypatchers for Google/GitHub (``point_google_at`` / ``point_github_at``) have moved to
-``backlot.integrations.mirage`` — import them from there. What's left here is example-runner
-plumbing: re-exports of the serve/credential helpers from ``examples/_common/mockserver.py``, so
-every example shares one ``--url`` / ``--user`` / ``--token`` behaviour and one local fallback.
+monkeypatchers for Google/GitHub (``point_google_at`` / ``point_github_at``) live in
+``backlot.integrations.mirage`` — import them from there. ``serve_or_connect`` lives in
+``backlot`` itself. What's left here is plumbing that isn't API at all: FUSE-unavailable
+guidance text and the shared-connector wrapper the scripts use for ``--url`` performance.
 """
 
 from __future__ import annotations
 
 import asyncio
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from _common.mockserver import (  # noqa: E402
-    google_oauth_user,
-    serve_or_connect,
-)
-
-__all__ = [
-    "serve_or_connect",
-    "google_oauth_user",
-    "lines",
-    "run_mirage",
-    "FUSE_HELP",
-]
+__all__ = ["lines", "run_mirage", "FUSE_HELP"]
 
 
 # Shown when a --fuse run can't mount, so the example exits with guidance instead of a traceback.

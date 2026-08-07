@@ -25,11 +25,17 @@ never leaks into another reader or another test, unlike a class-level patch.
 """
 
 import argparse
+import sys
+from pathlib import Path
 
 from google.oauth2 import service_account
 from llama_index.readers.google import GoogleDriveReader
 
-from _llamaindex import google_service_account_info, point_drive_at, serve_or_connect
+from backlot import serve_or_connect
+from backlot.integrations.llamaindex import point_drive_at
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _common.google_creds import google_service_account_info
 
 CORPUS = [
     {

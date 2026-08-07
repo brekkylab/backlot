@@ -5,7 +5,8 @@ Mirage mounts a repo's git file tree as a filesystem — read it with plain ``ls
 ``grep``, same as the S3/Notion examples. Unlike Slack/Notion/S3, ``GitHubConfig`` (mirage 0.0.3)
 has no ``base_url`` knob: the connector hardcodes ``mirage.core.github._client.API_BASE =
 "https://api.github.com"``, so ``point_github_at`` monkeypatches that module constant before the
-resource is built (mirrors ``point_google_at``'s approach for Google — see ``_mirage.py``).
+resource is built (mirrors ``point_google_at``'s approach for Google — see
+``backlot.integrations.mirage``).
 
 mirage's GitHub connector only mirrors the *file tree* (git ``trees``/``blobs``), not issues/PRs —
 use `examples/using-official-sdk/github.py` for those.
@@ -29,7 +30,10 @@ import urllib.request
 from mirage import MountMode, Workspace
 from mirage.resource.github import GitHubConfig, GitHubResource
 
-from _mirage import FUSE_HELP, lines, point_github_at, run_mirage, serve_or_connect
+from backlot import serve_or_connect
+from backlot.integrations.mirage import point_github_at
+
+from _helpers import FUSE_HELP, lines, run_mirage
 
 OWNER = "acme"  # the mock echoes back whatever owner is asked for; any org works
 REPO = "gateway"

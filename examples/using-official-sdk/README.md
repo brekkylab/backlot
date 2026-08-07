@@ -1,8 +1,8 @@
 # Using official SDKs against the mock
 
 One runnable, **self-contained** script per service — each spins up its own mock (via
-`_mockserver`) on a tiny in-code corpus, points the official SDK at it, and prints what it read.
-The only change from talking to the real service is the base URL.
+`backlot.serve_or_connect`) on a tiny in-code corpus, points the official SDK at it, and prints
+what it read. The only change from talking to the real service is the base URL.
 
 ```bash
 pip install -e ".[examples]"

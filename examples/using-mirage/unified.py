@@ -14,21 +14,21 @@ authorized-user credential). Point them all at the same mock.
 import argparse
 import os
 import subprocess
+import sys
+from pathlib import Path
 
 from mirage import MountMode, Workspace
 from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
 from mirage.resource.gmail import GmailConfig, GmailResource
 from mirage.resource.slack import SlackConfig, SlackResource
 
-from _mirage import (
-    FUSE_HELP,
-    google_oauth_user,
-    lines,
-    point_google_at,
-    run_mirage,
-    serve_or_connect,
-    slack_base_url,
-)
+from backlot import serve_or_connect
+from backlot.integrations.mirage import point_google_at, slack_base_url
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _common.google_creds import google_oauth_user
+
+from _helpers import FUSE_HELP, lines, run_mirage
 
 # One term — "Q1" — deliberately threads through all three sources.
 CORPUS = [

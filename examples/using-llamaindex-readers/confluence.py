@@ -10,7 +10,8 @@ import argparse
 
 from llama_index.readers.confluence import ConfluenceReader
 
-from _llamaindex import atlassian_base_url, serve_or_connect
+from backlot import serve_or_connect
+from backlot.integrations.llamaindex import atlassian_base_url
 
 CORPUS = [
     {

@@ -24,7 +24,10 @@ import subprocess
 from mirage import MountMode, Workspace
 from mirage.resource.notion import NotionConfig, NotionResource
 
-from _mirage import FUSE_HELP, lines, notion_base_url, run_mirage, serve_or_connect
+from backlot import serve_or_connect
+from backlot.integrations.mirage import notion_base_url
+
+from _helpers import FUSE_HELP, lines, run_mirage
 
 CORPUS = [
     {

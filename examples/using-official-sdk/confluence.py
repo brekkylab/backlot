@@ -11,7 +11,7 @@ import argparse
 
 from atlassian import Confluence
 
-from _mockserver import serve_or_connect
+from backlot import serve_or_connect
 
 CORPUS = [
     {

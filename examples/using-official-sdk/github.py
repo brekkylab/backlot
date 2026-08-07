@@ -13,7 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from _mockserver import serve_or_connect
+from backlot import serve_or_connect
 
 # This file is named github.py, so its own directory would shadow PyGithub's `github`
 # package. Drop that directory now that the local helper is imported.

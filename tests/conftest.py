@@ -15,22 +15,17 @@ exercise, plus public/group/private docs for the ACL tests. It is deliberately i
 from __future__ import annotations
 
 import json
-import os
-import socket
-import subprocess
-import sys
-import time
-import urllib.request
 from pathlib import Path
 
 import pytest
 import yaml
 
+import backlot
 from backlot import store
 from backlot.acl import Acl
 from backlot.config import Settings
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent  # used by test_schema.py to find the BYO example
 
 # One corpus for every test. Explicit doc_ids on the docs the ACL tests assert against.
 SAMPLE = [
@@ -812,46 +807,16 @@ def ro_conn(sample_settings):
     conn.close()
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 @pytest.fixture(scope="module")
 def live_server(sample_settings):
-    """The SAMPLE DB served by a real uvicorn subprocess; yields ``(base_url, settings)``."""
-    port = _free_port()
-    env = {**os.environ, "BACKLOT_DATA_DIR": str(sample_settings.data_dir)}
-    proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "backlot.main:app",
-            "--port",
-            str(port),
-            "--log-level",
-            "warning",
-        ],
-        cwd=REPO_ROOT,
-        env=env,
-    )
-    base = f"http://127.0.0.1:{port}"
-    try:
-        for _ in range(100):
-            try:
-                with urllib.request.urlopen(f"{base}/health", timeout=0.5) as r:
-                    if r.status == 200:
-                        break
-            except Exception:  # noqa: BLE001
-                time.sleep(0.1)
-        else:
-            raise RuntimeError("mock server did not become ready")
-        yield base, sample_settings
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+    """SAMPLE served by a real uvicorn subprocess (via ``backlot.mock_server``); yields
+    ``(base_url, settings)`` for the official SDKs and the Dockerised MCP server, which make real
+    HTTP calls rather than going through the in-process ``TestClient``.
+
+    A separate build from ``sample_settings``'s own tempdir, but from the identical SAMPLE list —
+    doc ids and per-user tokens are deterministic hashes of the record content (see
+    ``backlot.importer.byo``), so the two builds agree on everything the tests read from
+    ``settings`` (``admin_token``, ``tokens_path``) even though they're different directories.
+    """
+    with backlot.mock_server(SAMPLE) as m:
+        yield m.base_url, sample_settings

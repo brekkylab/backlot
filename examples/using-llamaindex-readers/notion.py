@@ -13,7 +13,8 @@ import argparse
 
 from llama_index.readers.notion import NotionPageReader
 
-from _llamaindex import notion_base_url, patch_notion_at, serve_or_connect
+from backlot import serve_or_connect
+from backlot.integrations.llamaindex import notion_base_url, patch_notion_at
 
 CORPUS = [
     {

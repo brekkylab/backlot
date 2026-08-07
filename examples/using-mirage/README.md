@@ -50,7 +50,8 @@ both, together).
 **Slack** and **Notion** take a `base_url` config, so you point them straight at the mock — no glue:
 
 ```python
-from _mirage import slack_base_url, serve_or_connect
+from backlot import serve_or_connect
+from backlot.integrations.mirage import slack_base_url
 with serve_or_connect(CORPUS) as mock:
     resource = SlackResource(SlackConfig(token=mock.token,
                                          base_url=slack_base_url(mock.base_url)))
@@ -71,21 +72,21 @@ uses an AWS keypair (not a bearer token): `--access-key`/`--secret-key` are **re
 accepts); without `--url` the local throwaway mock uses its own admin keypair.
 
 **Google** has no such knob — its connectors read the API host from module constants that the
-base helpers return verbatim. So `_mirage.py` exposes `point_google_at(base_url)`, which rewrites
-those constants to the mock before the Google resources are built:
+base helpers return verbatim. So `backlot.integrations.mirage` exposes `point_google_at(base_url)`,
+which rewrites those constants to the mock before the Google resources are built:
 
 ```python
-from _mirage import point_google_at
+from backlot.integrations.mirage import point_google_at
 point_google_at(mock.base_url)              # googleapis.com  ->  the mock
 gmail = GmailResource(GmailConfig(**creds))
 ```
 
 It redirects the OAuth token endpoint, the Drive API, and the Docs/Sheets/Slides APIs (mirage
 reads native Google docs structurally through those, not via Drive export) — each to a distinct
-mock path, so Docs and Slides don't collide. `_mirage.py` also re-exports `serve_or_connect` /
-`google_oauth_user` from
-[`../using-official-sdk/_mockserver.py`](../using-official-sdk/_mockserver.py), so the `--url` /
-`--user` / `--token` flags behave exactly as in those examples.
+mock path, so Docs and Slides don't collide. The `--url` / `--user` / `--token` flags behave
+exactly as in the `using-official-sdk` examples: `serve_or_connect` comes from `backlot` itself,
+and `google_oauth_user` (mock-specific OAuth glue, not general API) from
+[`examples/_common/google_creds.py`](../_common/google_creds.py).
 
 **GitHub** is the same shape as Google, but with one constant: `GitHubConfig` has no `base_url`
 field, and mirage hardcodes `mirage.core.github._client.API_BASE = "https://api.github.com"`.
@@ -93,7 +94,7 @@ field, and mirage hardcodes `mirage.core.github._client.API_BASE = "https://api.
 resource is built:
 
 ```python
-from _mirage import point_github_at
+from backlot.integrations.mirage import point_github_at
 point_github_at(mock.base_url)                       # api.github.com  ->  the mock
 repo = GitHubResource(GitHubConfig(token=T, owner="acme", repo="gateway"))
 ```

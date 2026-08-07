@@ -10,7 +10,8 @@ first step of any LlamaIndex ingestion / RAG pipeline. Each script is self-conta
     python examples/using-llamaindex-readers/github.py --url http://localhost:8000 --token <usr-token>
 
 The only difference from talking to the real SaaS is where the reader points. Four readers take a
-host argument directly; five hardcode the host, so a small shim in `_llamaindex.py` redirects them.
+host argument directly; five hardcode the host, so the helpers in `backlot.integrations.llamaindex`
+redirect them.
 
 | Source | Reader class | How it's pointed at the mock |
 |--------|--------------|------------------------------|
@@ -70,9 +71,9 @@ exactly as against the real API.
   has existed since at least the 2023.x releases of both libraries and reproduces on every
   version installable today (including fsspec/s3fs 2026.6.0) and against real AWS S3 too — it's
   independent of the mock, and no released version avoids it, so pinning to an older release isn't
-  a workaround. `s3.py` calls `_llamaindex.patch_s3fs_walk()` (a small, self-disabling monkeypatch
-  scoped to `S3FileSystem._walk`) before constructing the reader; `tests/test_llamaindex.py`
-  duplicates the same patch inline.
+  a workaround. `s3.py` calls `backlot.integrations.llamaindex.patch_s3fs_walk()` (a small,
+  self-disabling monkeypatch scoped to `S3FileSystem._walk`) before constructing the reader;
+  `tests/test_llamaindex.py` imports and exercises the same function.
 - **Confluence** (`confluence.py`): the installed `atlassian-python-api` (4.0.7) does **not**
   append `/wiki` to the base URL itself, regardless of `cloud=` — `cloud` only toggles
   cloud-specific API shapes elsewhere — so `base_url` must spell out `.../atlassian/wiki`

@@ -16,7 +16,8 @@ import urllib.request
 
 from llama_index.readers.s3 import S3Reader
 
-from _llamaindex import patch_s3fs_walk, s3_base_url, serve_or_connect
+from backlot import serve_or_connect
+from backlot.integrations.llamaindex import patch_s3fs_walk, s3_base_url
 
 BUCKET = "eng-artifacts"
 CORPUS = [
@@ -40,7 +41,7 @@ CORPUS = [
 
 
 def build(mock, access_key, secret_key):
-    patch_s3fs_walk()  # fsspec/s3fs compat bug workaround; see _llamaindex.py docstring
+    patch_s3fs_walk()  # fsspec/s3fs compat bug workaround; see backlot.integrations.llamaindex
     return S3Reader(
         bucket=BUCKET,
         s3_endpoint_url=s3_base_url(mock.base_url),

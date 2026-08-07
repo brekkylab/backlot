@@ -50,7 +50,7 @@ exactly as against the real API.
   the module attribute. Note the reader returns **three** Documents — one per object type, each the
   `str()` of a list of SDK objects — not one Document per record.
 - **Linear** (`linear.py`): the hardest one to point. `LinearReader.load_data` sets
-  `graphql_endpoint = "https://api.linear.backlot/graphql"` as a **local variable inside the method** —
+  `graphql_endpoint = "https://api.linear.app/graphql"` as a **local variable inside the method** —
   there is no constructor argument and no module-level constant, so the rebind-a-URL-constant
   approach Notion uses has nothing to rebind. The only seam is the module's `import requests`,
   which `patch_linear_at()` swaps for a proxy that rewrites Linear's host and forwards everything

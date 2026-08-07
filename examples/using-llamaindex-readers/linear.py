@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Load Linear issues through the official llama-index Linear reader. Self-contained.
 
-`LinearReader` hardcodes `graphql_endpoint = "https://api.linear.backlot/graphql"` as a **local
+`LinearReader` hardcodes `graphql_endpoint = "https://api.linear.app/graphql"` as a **local
 variable inside `load_data`** — no constructor argument, no module-level constant — so the
 rebind-a-URL-constant trick that `patch_notion_at` uses has nothing to rebind. The one seam left
 is the reader module's `import requests`, which `patch_linear_at()` swaps for a proxy that

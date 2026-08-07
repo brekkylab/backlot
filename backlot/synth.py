@@ -451,9 +451,9 @@ def linear_branch_name(identifier: str, title: str, assignee_email: str | None =
 
 
 def linear_url(identifier: str, title: str, org: str = "org") -> str:
-    """The issue's web URL. Real Linear is ``https://linear.backlot/<workspace>/issue/<ID>/<slug>``."""
+    """The issue's web URL. Real Linear is ``https://linear.app/<workspace>/issue/<ID>/<slug>``."""
     slug = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", (title or "").lower())).strip("-")[:60]
-    return f"https://linear.backlot/{org}/issue/{identifier}/{slug}".rstrip("/")
+    return f"https://linear.app/{org}/issue/{identifier}/{slug}".rstrip("/")
 
 
 # --- Fireflies ------------------------------------------------------------------

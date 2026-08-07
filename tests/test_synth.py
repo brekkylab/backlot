@@ -124,3 +124,11 @@ def test_gmail_message_id_stays_in_range_across_many_docs():
     ids = [synth.gmail_message_id(f"dsid_{i:032x}") for i in range(2000)]
     assert all(int(m, 16) < 2**63 for m in ids)
     assert len(set(ids)) == len(ids)
+
+
+def test_linear_url_is_the_real_vendor_domain():
+    """Regression: a rename's blind substitution once turned this into `linear.backlot`. The
+    domain is real Linear infrastructure, not the mock's own name, and must never move."""
+    assert synth.linear_url("ENG-1", "fix the thing", org="acme").startswith(
+        "https://linear.app/acme/issue/"
+    )

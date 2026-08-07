@@ -393,7 +393,7 @@ follow the org (`<org>.atlassian.net`, and the owner echoed from the request pat
   example in the repo and a dedicated CI job runs it. `LinearClient` has no base-URL option, so it
   is pointed at the mock by extending `LinearSdk` with a custom request function — Linear's own
   documented pattern. There is also no MCP story: Linear's official MCP server is remote-hosted at
-  `https://mcp.linear.backlot/mcp` with no URL override, so no mock can substitute for it.
+  `https://mcp.linear.app/mcp` with no URL override, so no mock can substitute for it.
 - Fireflies is **GraphQL-only** and, like Linear, read-only — no `Mutation` type at all. Two
   things set it apart from every other GraphQL source here and clients depend on both: pagination
   is **offset-based** (`limit`, capped at 50 and *clamped* rather than rejected, plus `skip`) and

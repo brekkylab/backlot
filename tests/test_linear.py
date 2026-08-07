@@ -109,6 +109,13 @@ def test_linear_issue_by_uuid_and_by_identifier(client, admin_h):
     assert by_uuid.json()["data"]["issue"]["identifier"] == "ENG-101"
 
 
+def test_linear_issue_url_is_the_real_vendor_domain(client, admin_h):
+    """Regression: a rename's blind substitution once turned every served `url` field into
+    `linear.backlot`. The domain is real Linear infrastructure, not the mock's own name."""
+    issue = gql(client, '{ issue(id: "ENG-101") { url } }', admin_h).json()["data"]["issue"]
+    assert issue["url"].startswith("https://linear.app/")
+
+
 def test_linear_missing_issue_is_a_field_error_not_a_400(client, admin_h):
     """Linear declares `issue` non-null, so a miss nulls `data` and reports an error — but the
     request itself was fine, so the status stays 200."""

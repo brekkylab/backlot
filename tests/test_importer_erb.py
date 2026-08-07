@@ -1032,6 +1032,73 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+def test_import_structured_persists_source_documents_including_excluded(tmp_path, monkeypatch):
+    """`source_documents == documents + excluded + failed` (see export_byo's layer). The `+
+    excluded` term is the one this task's erb-side fix introduced (`len(records) + len(excluded)`),
+    and it was otherwise only exercised in `export_byo`'s manifest.json, never against the database
+    `import_structured` actually builds — so a real document plus a deliberately empty-content one
+    (which `select_records` drops into `excluded`) has to add up to 2 offered, not 1."""
+    data = tmp_path / "data"
+    data.mkdir()
+    gen = tmp_path / "gen"
+    (gen / "sources" / "google_drive").mkdir(parents=True)
+    (gen / "employee_directory.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "departments": {
+                    "Engineering": [
+                        {
+                            "name": "Real Dev",
+                            "email": "real.dev@redwoodinference.com",
+                            "title": "Eng",
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    (gen / "sources" / "google_drive" / "real.json").write_text(
+        json.dumps(
+            {
+                "title_field_name": "title",
+                "content_field_names": ["body"],
+                "dataset_doc_uuid": "dsid_real",
+                "title": "Doc",
+                "body": "x",
+                "owner": "Real Dev",
+                "created_at": "2025-01-01",
+            }
+        )
+    )
+    # Whitespace-only body -> empty after strip -> select_records drops it into `excluded` rather
+    # than yielding it to the converter.
+    (gen / "sources" / "google_drive" / "empty.json").write_text(
+        json.dumps(
+            {
+                "title_field_name": "title",
+                "content_field_names": ["body"],
+                "dataset_doc_uuid": "dsid_empty",
+                "title": "Empty",
+                "body": "   ",
+                "owner": "Real Dev",
+                "created_at": "2025-01-01",
+            }
+        )
+    )
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
+    get_settings.cache_clear()
+    settings = get_settings()
+    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    # dsid_empty isn't in KNOWN_EMPTY_DOCS, so allow_excluded=1 is needed or _resolve_roster refuses.
+    res = erb.import_structured(settings, gen, allow_excluded=1)
+
+    assert res["google_drive"] == 1  # only the real document converts and is written
+    c = sqlite3.connect(settings.db_path)
+    assert store.read_meta(c, "source_documents") == "2"  # 1 written + 1 excluded
+    c.close()
+    get_settings.cache_clear()
+
+
 def _import_gen(tmp_path, monkeypatch, source: str, filename: str, raw: dict, employees: list):
     """Run the real import over a one-document generated_data tree; returns the built settings."""
     data = tmp_path / "data"
@@ -2195,6 +2262,23 @@ def test_erb_to_byo_round_trip_builds_an_equivalent_database(tmp_path):
             f"  only via byo:  {[r for r in b[t] if r not in a[t]]}"
         )
 
+    # meta.source_documents is excluded from _dump_db on purpose (see its docstring) — the two
+    # sides count a different unit — so it is not silently left unchecked; it gets its own pinned
+    # assertion instead. RT_DOCS holds 15 bench documents (2 confluence + 2 google_drive + 1 jira +
+    # 1 github + 2 gmail + 2 slack + 1 hubspot + 2 fireflies + 2 linear), none excluded (every one
+    # has real content), so:
+    #   direct:  source_documents = 15 documents + 0 excluded = 15
+    # Only `_byo_hubspot` fans a bench document out into more than one top-level BYO record (the
+    # company plus its 2 notes in HS_RAW); every other converter returns exactly one. So the
+    # exported-and-reloaded corpus holds 15 - 1 + 3 = 17 top-level BYO documents, and `byo.load()`
+    # counts one per document at ITS OWN granularity (a JSONL line):
+    #   via byo: source_documents = 17
+    conn_direct, conn_viabyo = sqlite3.connect(direct.db_path), sqlite3.connect(viabyo.db_path)
+    assert store.read_meta(conn_direct, "source_documents") == "15"
+    assert store.read_meta(conn_viabyo, "source_documents") == "17"
+    conn_direct.close()
+    conn_viabyo.close()
+
 
 def test_erb_to_byo_round_trip_writes_the_same_tokens(tmp_path):
     """`tokens.yaml` is the roster a caller authenticates with, so the converted artifact has to
@@ -2747,3 +2831,16 @@ def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
             f"table {t} differs\n  only in direct: {[r for r in a[t] if r not in b[t]]}\n"
             f"  only via byo:  {[r for r in b[t] if r not in a[t]]}"
         )
+
+    # Same pinned check as test_erb_to_byo_round_trip_builds_an_equivalent_database, adjusted for
+    # the 2 extra bench FILES this test adds on top of RT_DOCS's 15 (zz-repeat.json, zz-shared.json
+    # — both duplicate an existing doc_id, but `select_records` counts by file, not by doc_id, so
+    # both still add to the offered total; neither is excluded and neither is hubspot, so they add
+    # 1 each to both sides):
+    #   direct:  source_documents = 17 documents + 0 excluded = 17
+    #   via byo: source_documents = 17 - 1 (hubspot company) + 3 (company + 2 notes) = 19
+    conn_direct, conn_viabyo = sqlite3.connect(direct.db_path), sqlite3.connect(viabyo.db_path)
+    assert store.read_meta(conn_direct, "source_documents") == "17"
+    assert store.read_meta(conn_viabyo, "source_documents") == "19"
+    conn_direct.close()
+    conn_viabyo.close()

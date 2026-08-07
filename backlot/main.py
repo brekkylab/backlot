@@ -160,6 +160,11 @@ async def lifespan(app: FastAPI):
     app.state.oauth = Oauth.load(settings.credentials_path)  # None if credentials.yaml absent
     app.state.index = _build_index(conn)
 
+    # One indexed lookup, not a background warm-up like doc_counts below — the value can't
+    # change while the server runs. None on a DB built before the meta table existed.
+    _src = store.read_meta(conn, "source_documents")
+    app.state.source_documents = int(_src) if _src is not None else None
+
     # Per-source COUNT(*) can be slow on a very large / cold DB, so compute it once in a
     # background thread (its own RO connection) and cache it — /health then stays O(1) and never
     # blocks the ALB health check, even right after a cold start.
@@ -195,7 +200,10 @@ async def lifespan(app: FastAPI):
         finally:
             c.close()
 
-    threading.Thread(target=_warm_caches, daemon=True).start()
+    # Kept on app.state (rather than fire-and-forget) so a caller — namely tests — can wait for
+    # it deterministically instead of polling /health and hoping doc_counts landed in time.
+    app.state.warm_thread = threading.Thread(target=_warm_caches, daemon=True)
+    app.state.warm_thread.start()
     try:
         yield
     finally:
@@ -274,8 +282,12 @@ async def parse_slack_form(request: Request, call_next):
 async def health():
     # O(1): return the cached per-source counts (see lifespan). `by_source` is {} for the brief
     # window after a cold start until the background count finishes.
+    #
+    # Two counts, deliberately. `documents` is rows — what the APIs serve. `source_documents` is
+    # what the corpus offered, which is smaller because faithful parsing turns one Slack transcript
+    # into many message rows. Publishing only the larger number reads as inflation.
     counts = getattr(app.state, "doc_counts", None)
-    body = {"status": "ok"}
+    body = {"status": "ok", "source_documents": getattr(app.state, "source_documents", None)}
     if counts is not None:
         body["documents"] = sum(counts.values())
         body["by_source"] = counts

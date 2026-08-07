@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from backlot.config import Settings
-from tests._helpers import crawl_confluence, db_count
+from tests._helpers import build_corpus, client_for, crawl_confluence, db_count
 
 
 def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
@@ -138,4 +138,69 @@ def test_mock_openapi_spec_endpoint(client):
         "served spec must have unique operationIds (bridge-ready)"
     )
     assert client.get("/_mock/openapi/s3").status_code == 404  # SigV4 — intentionally no bridge
+
+
+# --- /health: source_documents beside documents ---------------------------------------------
+
+
+def _join_warm_thread(main_module) -> None:
+    """Wait for the background per-source COUNT(*) cache (see lifespan._warm_caches) to land,
+    deterministically — /health's `documents`/`by_source` are None/{} until it does, and a
+    fresh-process cold start loses that race against an immediate request 100% of the time (no
+    poll budget is safe on a slower CI runner), so the test has to join the thread, not wait on it."""
+    warm = main_module.app.state.warm_thread
+    warm.join(timeout=10)
+    assert not warm.is_alive(), "cache warm-up did not finish within 10s"
+
+
+def test_health_reports_both_counts(tmp_path):
+    """Both numbers, always: the row count alone reads as inflated."""
+    from backlot import main as main_module
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "author_email": "bob@acme.com",
+                "content": "Anyone seeing 502s?",
+                "replies": [{"content": "Looking.", "author_email": "ava@acme.com"}],
+            },
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        _join_warm_thread(main_module)
+        body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert body["source_documents"] == 1
+    assert body["documents"] == 2
+
+
+def test_health_source_documents_is_null_without_the_meta_key(tmp_path):
+    """A DB built before the meta table must still answer /health."""
+    from backlot import main as main_module
+    from backlot import store
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "space": "h",
+                "title": "A",
+                "content": "a",
+                "author_email": "ava@acme.com",
+            },
+        ],
+    )
+    conn = store.connect_rw(settings.db_path)
+    conn.execute("DELETE FROM meta WHERE key = 'source_documents'")
+    conn.commit()
+    conn.close()
+    with client_for(settings, reload=True) as client:
+        _join_warm_thread(main_module)
+        body = client.get("/health").json()
+    assert body["source_documents"] is None
+    assert body["documents"] == 1
     assert client.get("/_mock/openapi/nope").status_code == 404

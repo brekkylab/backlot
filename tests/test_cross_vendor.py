@@ -138,6 +138,7 @@ def test_mock_openapi_spec_endpoint(client):
         "served spec must have unique operationIds (bridge-ready)"
     )
     assert client.get("/_mock/openapi/s3").status_code == 404  # SigV4 — intentionally no bridge
+    assert client.get("/_mock/openapi/nope").status_code == 404
 
 
 # --- /health: source_documents beside documents ---------------------------------------------
@@ -203,4 +204,3 @@ def test_health_source_documents_is_null_without_the_meta_key(tmp_path):
         body = client.get("/health").json()
     assert body["source_documents"] is None
     assert body["documents"] == 1
-    assert client.get("/_mock/openapi/nope").status_code == 404

@@ -448,7 +448,7 @@ def confluence():
 # ------------------------------------------------------------------ Notion
 def notion():
     from notion_client import Client
-    from app import synth
+    from backlot import synth
 
     c = Client(auth=ADMIN, base_url=f"{BASE}/notion")
     check("Notion", "search")(
@@ -499,7 +499,7 @@ def test_sdk_read_coverage(live_server):
 def _s3_client(base_url, token):
     boto3 = pytest.importorskip("boto3")
     from botocore.config import Config
-    from app import synth
+    from backlot import synth
 
     return boto3.client(
         "s3",

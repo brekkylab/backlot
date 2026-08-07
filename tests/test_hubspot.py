@@ -6,7 +6,7 @@ or call the response builder directly.
 
 from __future__ import annotations
 
-from app import store
+from backlot import store
 from tests._helpers import crawl_hubspot, db_count, tiny_corpus
 
 
@@ -287,7 +287,7 @@ def test_hubspot_search_prefilter_cannot_change_results(client, admin_h, monkeyp
     anyway. Every query is run twice — once with the pushdown, once with it disabled — and the
     results and totals must be identical, so a pre-filter that is not a *necessary* condition fails
     here rather than silently dropping matches."""
-    from app.routers import hubspot as hs
+    from backlot.routers import hubspot as hs
 
     bodies = [
         {
@@ -495,8 +495,8 @@ def _hubspot_conn(tmp_path):
 
 
 def test_hubspot_record_shape(tmp_path):
-    from app import synth
-    from app.routers.hubspot import _record
+    from backlot import synth
+    from backlot.routers.hubspot import _record
 
     conn = _hubspot_conn(tmp_path)
     obj = _record(store.get_document(conn, "hubspot", "hf-co"))
@@ -512,7 +512,7 @@ def test_hubspot_record_shape(tmp_path):
 
 
 def test_hubspot_properties_projection(tmp_path):
-    from app.routers.hubspot import _record
+    from backlot.routers.hubspot import _record
 
     conn = _hubspot_conn(tmp_path)
     row = store.get_document(conn, "hubspot", "hf-co")
@@ -521,7 +521,7 @@ def test_hubspot_properties_projection(tmp_path):
 
 
 def test_hubspot_association_shape(tmp_path):
-    from app import synth
+    from backlot import synth
 
     conn = _hubspot_conn(tmp_path)
     rows = store.hubspot_associations(conn, "hf-ct", "companies")
@@ -539,7 +539,7 @@ def test_hubspot_association_shape(tmp_path):
 def test_hubspot_page_omits_paging_next_on_last_page(tmp_path):
     """The termination contract at the builder level: `paging.next` appears only when a further page
     exists, because the official client's fetch_all stops on its absence."""
-    from app.routers.hubspot import _page
+    from backlot.routers.hubspot import _page
 
     conn = _hubspot_conn(tmp_path)
     rows = store.list_hubspot_objects(conn, "companies", limit=3)  # 1 non-archived company

@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "enterprise-mock"
+name = "backlot"
 version = "0.1.0"
-description = "Read-only mock server serving EnterpriseRAG-Bench data in the shape of real Slack/Gmail/Drive/GitHub/Jira/Confluence/Notion/S3/HubSpot/Linear APIs"
+description = "Enterprise SaaS read APIs (Slack, Gmail, Drive, GitHub, Jira, Confluence, Notion, S3, HubSpot, Linear, Fireflies) over your own corpus, with per-document ACLs"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -32,7 +32,7 @@ dependencies = [
     "jsonschema>=4.20",
     "pyjwt[crypto]>=2.8",
     "httpx>=0.27",  # /batch self-dispatches sub-requests in-process via httpx.ASGITransport
-    # GraphQL sources (app/graphql). The GraphQL.js port, pure Python with no transitive deps:
+    # GraphQL sources (backlot/graphql). The GraphQL.js port, pure Python with no transitive deps:
     # parsing, validation, and error envelopes land close to what the real servers return, and
     # introspection — which Linear's API supports — comes free.
     "graphql-core>=3.2",
@@ -104,9 +104,9 @@ llamaindex = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/brekkylab/enterprise-mock"
-Repository = "https://github.com/brekkylab/enterprise-mock"
-Issues = "https://github.com/brekkylab/enterprise-mock/issues"
+Homepage = "https://github.com/brekkylab/backlot"
+Repository = "https://github.com/brekkylab/backlot"
+Issues = "https://github.com/brekkylab/backlot/issues"
 
 [tool.ruff]
 # 100, not ruff's default 88: the code was hand-wrapped to ~100 columns long before ruff was
@@ -116,19 +116,19 @@ line-length = 100
 [tool.ruff.lint]
 # Ruff's defaults (E4/E7/E9 + F). Deliberately NOT E501: `ruff format` already keeps code inside
 # the limit, and the lines that remain over it are long string literals and comment tables (the
-# measured-behaviour tables in app/google_errors.py and app/store.py) that reflowing would ruin.
+# measured-behaviour tables in backlot/google_errors.py and backlot/store.py) that reflowing would ruin.
 ignore = ["E402"]  # module-level import not at top: the examples must set sys.path first
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-# The app silences this at import (app/openapi.py), but pytest resets warning filters per test,
+# The app silences this at import (backlot/openapi.py), but pytest resets warning filters per test,
 # so suppress it the pytest-native way too. The mock serves several routes on multiple methods
 # for vendor fidelity (Slack GET+POST, Jira v2/v3, S3 GET+HEAD); FastAPI warns about the resulting
-# duplicate operationIds when building /openapi.json — expected, and collapsed by app.openapi.
+# duplicate operationIds when building /openapi.json — expected, and collapsed by backlot.openapi.
 filterwarnings = [
     "ignore:Duplicate Operation ID:UserWarning",
 ]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["backlot*"]

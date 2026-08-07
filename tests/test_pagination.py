@@ -1,6 +1,6 @@
 import pytest
 
-from app import pagination as pg
+from backlot import pagination as pg
 
 
 def test_cursor_roundtrip():
@@ -91,7 +91,7 @@ def test_confluence_next_link():
 
 from graphql import GraphQLError  # noqa: E402
 
-from app.graphql.linear_resolvers import (  # noqa: E402
+from backlot.graphql.linear_resolvers import (  # noqa: E402
     PAGE_DEFAULT,
     PAGE_MAX,
     _connection,
@@ -187,7 +187,7 @@ def test_linear_empty_page_has_no_cursors():
 
 
 def test_fireflies_limit_clamps_at_fifty():
-    from app.graphql.fireflies_resolvers import PAGE_DEFAULT, PAGE_MAX, clamp_limit
+    from backlot.graphql.fireflies_resolvers import PAGE_DEFAULT, PAGE_MAX, clamp_limit
 
     assert PAGE_MAX == 50
     assert clamp_limit(1) == 1
@@ -201,7 +201,7 @@ def test_fireflies_limit_clamps_at_fifty():
 
 
 def test_fireflies_skip_is_never_negative():
-    from app.graphql.fireflies_resolvers import clamp_skip
+    from backlot.graphql.fireflies_resolvers import clamp_skip
 
     assert clamp_skip(0) == 0
     assert clamp_skip(7) == 7
@@ -213,7 +213,7 @@ def test_fireflies_skip_is_never_negative():
 def test_fireflies_datetime_arguments_accept_iso_and_epoch():
     """Fireflies documents these as ISO 8601 but returns `date` as epoch MILLISECONDS, and
     clients pass back what they were handed — so both have to coerce to the same instant."""
-    from app.graphql.fireflies_resolvers import to_epoch_seconds
+    from backlot.graphql.fireflies_resolvers import to_epoch_seconds
 
     assert to_epoch_seconds("2026-04-02T15:00:00Z") == 1775142000
     assert to_epoch_seconds("2026-04-02T15:00:00+00:00") == 1775142000
@@ -225,7 +225,7 @@ def test_fireflies_datetime_arguments_accept_iso_and_epoch():
 
 
 def test_fireflies_offset_walk_visits_every_transcript_once(db):
-    from app import store
+    from backlot import store
 
     total = store.count_fireflies_transcripts(db)
     seen = []

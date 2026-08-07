@@ -6,7 +6,7 @@ or call the response builder directly.
 
 from __future__ import annotations
 
-from app import store
+from backlot import store
 from tests._helpers import client_for, corpus_client, gql, tiny_corpus
 
 
@@ -49,7 +49,7 @@ def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_
 def test_fireflies_transcript_content_round_trips_through_the_api(client, admin_h, ro_conn):
     """The sentences the API serves must rebuild the stored `content` byte for byte — that is the
     whole point of defining content as the concatenation."""
-    from app import synth
+    from backlot import synth
 
     r = ff_gql(
         client, "{ transcripts(limit: 50) { id title sentences { speaker_name text } } }", admin_h
@@ -451,7 +451,7 @@ def test_fireflies_speaker_shares_sum_to_one_hundred(tmp_path):
 def test_fireflies_no_openapi_entry_for_the_graphql_route(tmp_path):
     """Describing one POST that accepts an arbitrary query tells an OpenAPI->MCP bridge nothing,
     so the route is deliberately absent from the document (and from SOURCE_PREFIXES)."""
-    from app import openapi
+    from backlot import openapi
 
     with _fireflies_client(tmp_path) as (client, settings):
         spec = client.get("/openapi.json").json()
@@ -469,7 +469,7 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
     an account would serve `user: null`.
     """
 
-    from app import store, synth
+    from backlot import store, synth
 
     settings = tiny_corpus(tmp_path, FIREFLIES_CORPUS)
     # A principal the corpus names but who has no token — what an ERB append creates. Inserted

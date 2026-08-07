@@ -5,10 +5,10 @@ Downloads the bench's ``generated_data/``, resolves display names to real emails
 per-doc ACL grants from the real people/scope fields (``grants_for``). Everything the import needs
 — fetch, parse, principal resolution, ACL derivation, orchestration — lives in this one module.
 
-    python -m app.importer.erb                                   # full corpus: download -> load -> ACL
-    python -m app.importer.erb --slice-questions extra_questions.jsonl   # only the docs a slice needs
-    python -m app.importer.erb --no-download                     # reuse whatever is already in data/raw
-    python -m app.importer.erb --ref some-branch                 # fetch a non-default branch/ref
+    python -m backlot.importer.erb                                   # full corpus: download -> load -> ACL
+    python -m backlot.importer.erb --slice-questions extra_questions.jsonl   # only the docs a slice needs
+    python -m backlot.importer.erb --no-download                     # reuse whatever is already in data/raw
+    python -m backlot.importer.erb --ref some-branch                 # fetch a non-default branch/ref
 
 Only ``curl`` is used to fetch (no ``gh`` / no auth).
 """
@@ -33,9 +33,9 @@ from pathlib import Path
 
 import yaml
 
-from app import synth
-from app.config import get_settings, infer_org
-from app.importer import byo
+from backlot import synth
+from backlot.config import get_settings, infer_org
+from backlot.importer import byo
 
 # Safe at module level despite byo needing this module back: every one of byo's imports from
 # here is function-local, so neither module is half-built when the other is first touched.
@@ -643,7 +643,7 @@ _ATT_MIME = {
 
 
 # The bench's Drive ``doc_type`` vocabulary -> the mock's Drive subtype vocabulary (the keys
-# ``app.routers.google._NATIVE`` recognises as Workspace types). The bench says "doc"/"sheet"/
+# ``backlot.routers.google._NATIVE`` recognises as Workspace types). The bench says "doc"/"sheet"/
 # "slides", none of which are native keys — unmapped, every row falls back to
 # ``application/octet-stream`` and the binary ``webViewLink`` shape, leaving nothing in the corpus
 # that exercises native-vs-binary handling, ``export`` vs ``alt=media``, or per-type links.
@@ -2352,7 +2352,7 @@ def main(argv: list[str]) -> int:
         metavar="DIR",
         help="write a BYO-JSONL artifact into DIR instead of building the DB: "
         "corpus.jsonl + roster.yaml, or shards + manifest.json with "
-        "--shard-records; `app.importer.byo` loads either to an equivalent DB",
+        "--shard-records; `backlot.importer.byo` loads either to an equivalent DB",
     )
     ap.add_argument(
         "--shard-records",
@@ -2416,7 +2416,7 @@ def main(argv: list[str]) -> int:
             f"(org {settings.org_name}, domain {settings.org_domain})"
         )
         print(
-            f"Load it with: python -m app.importer.byo {args.export_byo}/corpus.jsonl "
+            f"Load it with: python -m backlot.importer.byo {args.export_byo}/corpus.jsonl "
             f"--roster {args.export_byo}/roster.yaml"
         )
         return 0

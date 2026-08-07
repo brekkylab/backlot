@@ -28,7 +28,7 @@ CORPUS = Path(__file__).resolve().parent / "sample_corpus.jsonl"
 
 # 1. Validate the corpus against schemas/ before serving anything (the same CLI you'd run by hand).
 if subprocess.run(
-    [sys.executable, "-m", "app.importer.byo", str(CORPUS), "--dry-run"], cwd=ROOT
+    [sys.executable, "-m", "backlot.importer.byo", str(CORPUS), "--dry-run"], cwd=ROOT
 ).returncode:
     raise SystemExit("corpus is invalid")
 

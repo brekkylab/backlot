@@ -3,7 +3,7 @@
 The API is **polymorphic over ``{objectType}``** — one set of routes serves contacts, companies,
 deals, notes, and any custom object — so this router dispatches on a path variable rather than
 having a route per type, and the store keeps one table with the typed fields in a ``properties``
-JSON column (see ``app/store.py``).
+JSON column (see ``backlot/store.py``).
 
 Paths and shapes follow what the official ``hubspot-api-client`` actually calls: **v3 for objects,
 v4 for associations**. HubSpot also publishes a newer date-versioned scheme
@@ -26,9 +26,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
-from app import auth, store, synth
-from app.routers import json_body
-from app.openapi import qp
+from backlot import auth, store, synth
+from backlot.routers import json_body
+from backlot.openapi import qp
 
 router = APIRouter(prefix="/hubspot", tags=["hubspot"])
 

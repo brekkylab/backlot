@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from app import store, synth
+from backlot import store, synth
 from tests._helpers import crawl_slack, db_count, tiny_corpus
 
 
@@ -308,7 +308,7 @@ def test_slack_api_test_has_typed_response_schema(client):
 
 
 def test_slack_reply_users_and_num_members(tmp_path):
-    from app.routers.slack import _message, _full_channel
+    from backlot.routers.slack import _message, _full_channel
 
     s = tiny_corpus(
         tmp_path,

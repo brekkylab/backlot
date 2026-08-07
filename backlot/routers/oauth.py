@@ -5,7 +5,7 @@ understands (the user's ``usr-`` token): a ``refresh_token`` grant (authorized-u
 signed service-account JWT assertion (``jwt-bearer`` grant, with the ``sub`` claim selecting the
 impersonated user under domain-wide delegation). A bare service account with no ``sub`` maps to
 the admin/service token — a full-crawl identity, the pragmatic mock stand-in for a service
-principal. See :mod:`app.oauth` for how the credentials are generated and verified.
+principal. See :mod:`backlot.oauth` for how the credentials are generated and verified.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app.oauth import JWT_BEARER_GRANT
+from backlot.oauth import JWT_BEARER_GRANT
 
 router = APIRouter(tags=["oauth"])
 

@@ -1,6 +1,6 @@
 """ACL resolution + visibility, asserted against the SAMPLE corpus's generated ACL."""
 
-from app import store
+from backlot import store
 from tests._helpers import client_for, gql
 
 
@@ -86,7 +86,7 @@ def test_linear_admin_sees_every_issue(db, acl):
 def test_linear_comments_inherit_the_parent_issues_acl(db, acl, tokens):
     """A comment row has no ACL grant of its own — visibility is the issue's. Without the join in
     `list_linear_comments` a hidden issue's comments would leak through `Query.comments`."""
-    from app import store as st
+    from backlot import store as st
 
     ids = acl.visible_ids(db, acl.resolve(tokens["mia@acme.com"]))
     # mia sees the public issues, so she sees their comments...
@@ -96,7 +96,7 @@ def test_linear_comments_inherit_the_parent_issues_acl(db, acl, tokens):
 
 
 def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
-    from app import store as st
+    from backlot import store as st
 
     ava = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
     assert st.linear_team_issue_counts(db, visible_ids=ava) == {"engineering": 2, "design": 1}
@@ -112,7 +112,7 @@ def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
 # roots read a reverse index built at startup from an UNFILTERED `DISTINCT` over every issue, and
 # the entities have no table of their own — a project/cycle/state/label/assignee exists only as a
 # column value on some issue. Left unscoped they hand a caller field values off rows they are
-# denied, and because the ids are pure functions of the name (app/synth.py), they are computable
+# denied, and because the ids are pure functions of the name (backlot/synth.py), they are computable
 # offline: an enumerable oracle, not merely a confirmable one.
 
 
@@ -124,7 +124,7 @@ def test_linear_by_id_roots_do_not_leak_entities_off_hidden_issues(sample_settin
     """`lin-secret` is granted to hana only. Its state ("Backlog") is shared with nothing else in
     the corpus, so resolving it by id must fail for ava exactly as an absent id would — and must
     still work for hana, proving the id is real and the difference is the ACL."""
-    from app import synth
+    from backlot import synth
 
     with client_for(sample_settings) as client:
         state_id = synth.linear_state_id("Backlog", "engineering")
@@ -151,7 +151,7 @@ def test_linear_by_id_roots_do_not_leak_entities_off_hidden_issues(sample_settin
 def test_linear_by_id_roots_still_answer_for_visible_entities(sample_settings, tokens):
     """The scoping must not break the SDK: its lazy accessors only fire these for entities hanging
     off an issue it just read, so every one of them has to keep resolving."""
-    from app import synth
+    from backlot import synth
 
     with client_for(sample_settings) as client:
         ava = tokens["ava@acme.com"]  # can read lin-rl (public)
@@ -233,7 +233,7 @@ def test_linear_every_by_id_predicate_is_scoped_not_just_the_dispatch(sample_set
     `lin-secret` carries a project, cycle, label and assignee that exist on no other issue, so a
     predicate that matches too broadly (or drops half its condition) is caught here. Previously
     only `state` and `creator` were reachable, and the other four could be broken silently."""
-    from app import synth
+    from backlot import synth
 
     with client_for(sample_settings) as client:
         ava, hana = tokens["ava@acme.com"], tokens["hana@acme.com"]
@@ -270,7 +270,7 @@ def test_linear_every_by_id_predicate_is_scoped_not_just_the_dispatch(sample_set
 def test_linear_hidden_assignee_is_not_nameable_by_id(sample_settings, tokens):
     """The sharpest form: a person who appears ONLY as the assignee of a hidden issue is absent
     from the caller's `users` directory, so `user(id:)` must not name them either."""
-    from app import synth
+    from backlot import synth
 
     with client_for(sample_settings) as client:
         ava = tokens["ava@acme.com"]
@@ -327,9 +327,9 @@ def test_fireflies_transcripts_list_hides_denied_meetings(sample_settings, token
 
 def test_fireflies_transcript_by_id_denies_rather_than_reveals(sample_settings, tokens):
     """A transcript the caller may not read must be indistinguishable from one that does not
-    exist — the id is a pure function of the doc_id (app/synth.py), so it is computable offline
+    exist — the id is a pure function of the doc_id (backlot/synth.py), so it is computable offline
     and a different error would confirm the meeting exists."""
-    from app import synth
+    from backlot import synth
 
     with client_for(sample_settings) as client:
         q = "query($i:String!){ transcript(id:$i) { title } }"

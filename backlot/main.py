@@ -17,11 +17,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import google_errors, openapi, store, synth
-from app.acl import Acl
-from app.config import get_settings
-from app.oauth import Oauth
-from app.routers import (
+from backlot import google_errors, openapi, store, synth
+from backlot.acl import Acl
+from backlot.config import get_settings
+from backlot.oauth import Oauth
+from backlot.routers import (
     atlassian,
     fireflies,
     github,
@@ -137,7 +137,7 @@ async def lifespan(app: FastAPI):
     if not settings.db_path.exists():
         raise RuntimeError(
             f"DB not found at {settings.db_path}. Build it first: "
-            "python -m app.importer.erb  (or: python -m app.importer.byo <corpus.jsonl>)"
+            "python -m backlot.importer.erb  (or: python -m backlot.importer.byo <corpus.jsonl>)"
         )
     # A BYO import records the corpus-derived org in tokens.yaml; adopt it so the routers
     # (which read get_settings().org_name/org_domain) stay consistent with the ACL. An erb
@@ -295,7 +295,7 @@ async def mock_users():
     S3 doesn't use bearer tokens — it uses AWS SigV4 — so each user (and the admin) also
     carries an ``s3_access_key_id`` / ``s3_secret_access_key`` pair (derived from the token,
     which is what the SigV4 verifier resolves) to hand straight to boto3 / the AWS CLI.
-    Disable with ``MOCK_EXPOSE_TOKENS=false``. The admin/service token bypasses all filtering.
+    Disable with ``BACKLOT_EXPOSE_TOKENS=false``. The admin/service token bypasses all filtering.
     """
     settings = get_settings()
     if not settings.expose_tokens:
@@ -340,7 +340,7 @@ async def mock_credentials(request: Request):
     ``token_uri``. ``token_uri`` points back at this mock's ``/oauth2/token``, so the client's
     refresh / JWT-bearer exchange lands here. Impersonate a user with the service account by
     setting ``subject=<email>``; a bare service account (no subject) resolves to the
-    admin/service token. Mock-only affordance; disable with ``MOCK_EXPOSE_TOKENS=false``. See
+    admin/service token. Mock-only affordance; disable with ``BACKLOT_EXPOSE_TOKENS=false``. See
     ``examples/using-official-sdk/gmail.py``.
     """
     settings = get_settings()
@@ -360,7 +360,7 @@ async def mock_credentials(request: Request):
 async def mock_openapi(source: str):
     """An MCP-ready OpenAPI spec for one source: the app's own ``/openapi.json`` sliced to that
     source and with its GET/POST and v2/v3 fidelity aliases collapsed to one operation each, so an
-    OpenAPI→MCP bridge can feed it straight to ``FastMCP.from_openapi()`` (see ``app.openapi``)."""
+    OpenAPI→MCP bridge can feed it straight to ``FastMCP.from_openapi()`` (see ``backlot.openapi``)."""
     if source not in openapi.SOURCE_PREFIXES:
         raise HTTPException(
             status_code=404,

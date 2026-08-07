@@ -152,9 +152,9 @@ def mock_server(records: list[dict]):
     with tempfile.TemporaryDirectory() as data_dir:
         corpus = Path(data_dir) / "corpus.jsonl"
         corpus.write_text("\n".join(json.dumps(r) for r in records))
-        env = {**os.environ, "MOCK_DATA_DIR": data_dir}
+        env = {**os.environ, "BACKLOT_DATA_DIR": data_dir}
         subprocess.run(
-            [sys.executable, "-m", "app.importer.byo", str(corpus)],
+            [sys.executable, "-m", "backlot.importer.byo", str(corpus)],
             cwd=ROOT,
             env=env,
             check=True,
@@ -166,7 +166,7 @@ def mock_server(records: list[dict]):
                 sys.executable,
                 "-m",
                 "uvicorn",
-                "app.main:app",
+                "backlot.main:app",
                 "--port",
                 str(port),
                 "--log-level",

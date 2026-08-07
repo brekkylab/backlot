@@ -14,11 +14,11 @@ os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 import pytest
 import yaml
 
-from app import store, synth
-from app.config import Settings, get_settings
-from app.importer import byo, erb
+from backlot import store, synth
+from backlot.config import Settings, get_settings
+from backlot.importer import byo, erb
 from tests._helpers import client_for
-from app.importer.erb import Principals, canonical, grants_for
+from backlot.importer.erb import Principals, canonical, grants_for
 
 C = erb
 
@@ -148,7 +148,7 @@ def test_dump_tokens_returns_the_number_it_actually_wrote(tmp_path):
     resolved principal instead reported 679 for a file holding 167."""
     import shutil
 
-    from app.config import Settings
+    from backlot.config import Settings
 
     gen = _write_generated_data(tmp_path)
     data = tmp_path / "tok"
@@ -541,7 +541,7 @@ def test_drive_doc_type_maps_onto_drive_mime_types():
     """The bench's `doc_type` vocabulary (doc/sheet/slides/pdf) is not the mock's native subtype
     vocabulary, so every imported row used to fall back to `application/octet-stream` — making
     anything that branches on mimeType untestable against the bench corpus (issue #23)."""
-    from app.routers.google import _drive_file
+    from backlot.routers.google import _drive_file
 
     conn = _conn()
     P = Principals([], "redwoodinference.com")
@@ -569,7 +569,7 @@ def test_drive_doc_type_maps_onto_drive_mime_types():
 
 
 def test_drive_unknown_doc_type_falls_back_to_the_title_extension():
-    from app.routers.google import _drive_file
+    from backlot.routers.google import _drive_file
 
     conn = _conn()
     P = Principals([], "redwoodinference.com")
@@ -959,7 +959,7 @@ def test_synthesized_users_installed_after_load(tmp_path, monkeypatch):
             }
         )
     )
-    monkeypatch.setenv("MOCK_DATA_DIR", str(data))
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
     shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
@@ -1002,7 +1002,7 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
     (gen / "sources" / "hubspot" / "company-acacia-loop-services.json").write_text(
         json.dumps({**HS_RAW, "dataset_doc_uuid": "dsid_hs_e2e"})
     )
-    monkeypatch.setenv("MOCK_DATA_DIR", str(data))
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
     shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
@@ -1036,7 +1036,7 @@ def _import_gen(tmp_path, monkeypatch, source: str, filename: str, raw: dict, em
         yaml.safe_dump({"departments": {"Team": employees}})
     )
     (gen / "sources" / source / filename).write_text(json.dumps(raw))
-    monkeypatch.setenv("MOCK_DATA_DIR", str(data))
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
     shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
@@ -1130,9 +1130,9 @@ def test_qst_0001_owner_is_maya_chen(tmp_path):
     data_dir = tmp_path / "data"
     qfile = Path(tmp_path) / "extra_questions.jsonl"
     _extra_questions(tmp_path)
-    env = {**os.environ, "MOCK_DATA_DIR": str(data_dir)}
+    env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir)}
     subprocess.run(
-        [sys.executable, "-m", "app.importer.erb", "--slice-questions", str(qfile)],
+        [sys.executable, "-m", "backlot.importer.erb", "--slice-questions", str(qfile)],
         check=True,
         env=env,
     )
@@ -2139,7 +2139,7 @@ def _dump_db(path) -> dict[str, list]:
 
 
 def _import_erb_directly(gen: Path, data_dir: Path):
-    from app.config import Settings
+    from backlot.config import Settings
 
     data_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(data_dir=data_dir)
@@ -2149,8 +2149,8 @@ def _import_erb_directly(gen: Path, data_dir: Path):
 
 
 def _import_via_byo(gen: Path, data_dir: Path, out_dir: Path):
-    from app.config import Settings
-    from app.importer import byo
+    from backlot.config import Settings
+    from backlot.importer import byo
 
     data_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2199,8 +2199,8 @@ def test_erb_to_byo_round_trip_writes_the_same_tokens(tmp_path):
 def test_erb_to_byo_output_validates_against_the_byo_schemas(tmp_path):
     """--dry-run has to still catch a bad corpus, so the converted artifact must pass the very
     same validator a hand-written corpus does — no private back door into the loader."""
-    from app.validation import validate_file
-    from app.config import Settings
+    from backlot.validation import validate_file
+    from backlot.config import Settings
 
     gen = _write_generated_data(tmp_path)
     data = tmp_path / "data"
@@ -2222,7 +2222,7 @@ def test_byo_drive_subtypes_are_all_accepted_by_the_schema():
     """`_drive_type` is the mock's Drive subtype vocabulary (#23), and a converted record has to
     carry its output — so the BYO drive schema must accept every value it can produce, or an
     artifact fails validation on a file type the importer itself created."""
-    from app.validation import record_errors
+    from backlot.validation import record_errors
 
     for doc_type, title in (
         ("doc", "Runbook"),
@@ -2283,7 +2283,7 @@ def test_unresolvable_principals_are_dropped_not_stored_as_nulls():
     """`P.resolve` returns None for a reference that is not a person. Such a name must not hold a
     slot in a list of principals — `requested_reviewers` is rendered per entry into a GitHub user,
     so a null 500s the pull-request endpoint (8 bench documents carry one)."""
-    from app.routers.github import _gh_user
+    from backlot.routers.github import _gh_user
 
     with pytest.raises(AttributeError):
         _gh_user(None)  # the crash the null caused
@@ -2384,7 +2384,7 @@ def test_export_byo_writes_a_roster_carrying_names_and_who_may_authenticate(tmp_
     P.resolve("Zoe Newperson", role="owner", group_hint="research-applied-ml")
     P.resolve("Ravi Other", role="collaborator")
 
-    from app.config import Settings
+    from backlot.config import Settings
 
     settings = Settings(data_dir=tmp_path, org_name="redwood", org_domain="redwoodinference.com")
     out = tmp_path / "roster.yaml"
@@ -2402,7 +2402,7 @@ def test_export_byo_writes_a_roster_carrying_names_and_who_may_authenticate(tmp_
     assert "group" not in contacts["ravi.other@redwoodinference.com"]
 
     # ...and byo reads exactly this back
-    from app.importer.byo import load_roster
+    from backlot.importer.byo import load_roster
 
     parsed = load_roster(out)
     assert parsed["users"]["tomas.rre@redwoodinference.com"] == {
@@ -2423,7 +2423,7 @@ def test_conversion_does_not_depend_on_document_order():
     Measured on a 2,555-document bench slice, that order sensitivity moved 27 doc_acl grants and
     one comment attribution. `_populate_principals` resolves everything before anything is
     converted, so the corpus converts to the same records either way."""
-    from app.config import Settings
+    from backlot.config import Settings
 
     settings = Settings(data_dir=Path("/nonexistent"))
     settings.org_name, settings.org_domain = "redwood", "redwoodinference.com"
@@ -2477,7 +2477,7 @@ def test_every_supported_source_has_a_byo_converter_and_a_round_trip_fixture():
 def test_export_byo_converts_every_document_it_was_given(tmp_path):
     """The counts `export_byo` returns must account for every record, per source — the guard on the
     soft failure above actually firing."""
-    from app.config import Settings
+    from backlot.config import Settings
 
     gen = _write_generated_data(tmp_path)
     data = tmp_path / "data"
@@ -2530,7 +2530,7 @@ def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
     header would put the current time in every shard."""
     import gzip as _gzip
     import json as _json
-    from app.config import Settings
+    from backlot.config import Settings
 
     gen = _write_generated_data(tmp_path)
     data = tmp_path / "data"
@@ -2613,7 +2613,7 @@ def _with_empty_thread(tmp_path, dsid="dsid_empty_thread"):
 
 
 def _settings_for(tmp_path, gen):
-    from app.config import Settings
+    from backlot.config import Settings
 
     data = tmp_path / "data"
     data.mkdir()

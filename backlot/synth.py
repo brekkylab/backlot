@@ -451,9 +451,9 @@ def linear_branch_name(identifier: str, title: str, assignee_email: str | None =
 
 
 def linear_url(identifier: str, title: str, org: str = "org") -> str:
-    """The issue's web URL. Real Linear is ``https://linear.app/<workspace>/issue/<ID>/<slug>``."""
+    """The issue's web URL. Real Linear is ``https://linear.backlot/<workspace>/issue/<ID>/<slug>``."""
     slug = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", (title or "").lower())).strip("-")[:60]
-    return f"https://linear.app/{org}/issue/{identifier}/{slug}".rstrip("/")
+    return f"https://linear.backlot/{org}/issue/{identifier}/{slug}".rstrip("/")
 
 
 # --- Fireflies ------------------------------------------------------------------
@@ -468,7 +468,7 @@ def linear_url(identifier: str, title: str, org: str = "org") -> str:
 def fireflies_transcript_text(sentences) -> str:
     """The stored ``content`` for a transcript: its sentences, one per line, ``Speaker: text``.
 
-    Inverse of :func:`app.importer.erb.parse_fireflies_transcript` — re-parsing this text yields
+    Inverse of :func:`backlot.importer.erb.parse_fireflies_transcript` — re-parsing this text yields
     the same sentences, so the pair is a fixed point (the ``notion_blocks`` /
     ``notion_blocks_to_text`` relationship, same problem, same solution).
 
@@ -656,7 +656,7 @@ def fireflies_analytics(
 
 # --- S3 -------------------------------------------------------------------------
 # Credentials are derived deterministically from a caller's bearer token so the verifying
-# router (app.auth.resolve_sigv4) and the signing clients (examples/tests) agree on the
+# router (backlot.auth.resolve_sigv4) and the signing clients (examples/tests) agree on the
 # access-key/secret pair without any stored keypair. ETag is the real single-part MD5.
 
 _B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"  # RFC 4648 base32 alphabet (AK is [A-Z2-7])

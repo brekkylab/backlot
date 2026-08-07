@@ -2,7 +2,7 @@
 
 Path-style endpoint for a client: ``http://<host>/s3`` (boto3: ``endpoint_url=".../s3"`` with
 ``addressing_style=path``; mirage: ``S3Config(endpoint_url=".../s3", path_style=True)``). Auth is
-full AWS SigV4 (``app.auth.resolve_sigv4``) against a per-caller access-key/secret derived from a
+full AWS SigV4 (``backlot.auth.resolve_sigv4``) against a per-caller access-key/secret derived from a
 bearer token; the admin/service token's key sees everything, a user's key is ACL-filtered.
 Responses are S3 XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw object bytes;
 errors use the S3 ``<Error>`` envelope.
@@ -20,7 +20,7 @@ from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Request, Response
 
-from app import auth, store, synth
+from backlot import auth, store, synth
 
 router = APIRouter(prefix="/s3", tags=["s3"])
 # A signed S3 request's canonical path is exact; letting Starlette 307-redirect a bare "/s3" ->

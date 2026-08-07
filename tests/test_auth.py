@@ -1,4 +1,4 @@
-"""Unit tests for the shared credential resolvers in :mod:`app.auth`.
+"""Unit tests for the shared credential resolvers in :mod:`backlot.auth`.
 
 The bearer/basic resolvers are covered end-to-end by the per-source endpoint tests; this
 file covers the ones with a contract worth pinning on their own — currently the API-key
@@ -14,7 +14,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from app import auth
+from backlot import auth
 
 
 def _request(authorization: str | None = None, app=None) -> Request:

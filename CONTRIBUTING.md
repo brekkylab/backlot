@@ -23,12 +23,12 @@ uv pip install -e ".[dev]"               # or: pip install -e ".[dev]"
 The server itself needs no data or API keys to start:
 
 ```bash
-python -m app.main                       # serves on http://localhost:8000
+python -m backlot.main                   # serves on http://localhost:8000
 curl -s localhost:8000/health
 ```
 
-To exercise it against a real corpus, build one first (`python -m app.importer.erb`
-for a bench slice, or `python -m app.importer.byo mycorpus.jsonl` for your own — see
+To exercise it against a real corpus, build one first (`python -m backlot.importer.erb`
+for a bench slice, or `python -m backlot.importer.byo mycorpus.jsonl` for your own — see
 the README).
 
 ## Running tests

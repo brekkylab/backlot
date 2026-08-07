@@ -289,7 +289,7 @@ def patch_linear_at(base_url: str) -> None:
     """Redirect LinearReader at the mock.
 
     Harder than the other shims, and the reason is worth stating: `LinearReader.load_data` sets
-    ``graphql_endpoint = "https://api.linear.app/graphql"`` as a **local variable inside the
+    ``graphql_endpoint = "https://api.linear.backlot/graphql"`` as a **local variable inside the
     method**. There is no constructor argument and no module-level constant, so the
     `patch_notion_at` trick — rebind a module attribute — has nothing to rebind.
 

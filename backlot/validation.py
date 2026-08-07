@@ -2,7 +2,7 @@
 
 The schemas (``schemas/<source_type>.schema.json``, Draft 2020-12) are the source of truth for
 the record shape the loader accepts — they define the app's ingest contract, so this lives on
-the application side. ``app/importer/byo.py`` calls :func:`record_errors` to fail fast on load, and its
+the application side. ``backlot/importer/byo.py`` calls :func:`record_errors` to fail fast on load, and its
 ``--dry-run`` validates a whole file via :func:`validate_file` without touching the DB.
 """
 
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
 
-from app.config import REPO_ROOT
+from backlot.config import REPO_ROOT
 
 SCHEMA_DIR = REPO_ROOT / "schemas"
 

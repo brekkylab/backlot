@@ -29,8 +29,8 @@ import yaml
 
 pytest.importorskip("mcp")
 
-from app import store, synth  # noqa: E402
-from app.acl import Acl  # noqa: E402
+from backlot import store, synth  # noqa: E402
+from backlot.acl import Acl  # noqa: E402
 
 
 def _docker_available() -> bool:
@@ -227,7 +227,7 @@ def test_mcp_s3_lists_objects(live_server):
 def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None) -> bool:
     """Exercise the OpenAPI→MCP bridge path WITHOUT touching ``examples/``.
 
-    Fetches the mock's MCP-ready spec (``GET /_mock/openapi/<source>`` — produced by ``app.openapi``,
+    Fetches the mock's MCP-ready spec (``GET /_mock/openapi/<source>`` — produced by ``backlot.openapi``,
     which owns the slice/dedupe logic) and serves it via an in-memory FastMCP client over an auth'd
     httpx client. That is the whole of what the example bridge does; the meaningful logic lives in
     the app and is unit-tested in ``tests/test_openapi.py``. Returns ``ok_pred`` over the tool's
@@ -367,7 +367,7 @@ def test_mcp_gmail_bridge_acl_enforced(live_server):
     assert row is not None, f"no Gmail message is ACL-restricted from {email} in the sample corpus"
     # Gmail serves hex ids, not dsids (#39) — the bridge forwards whatever the caller passes, so a
     # dsid here would be refused as an invalid id value before the ACL was ever consulted.
-    from app import synth
+    from backlot import synth
 
     msg_id = synth.gmail_message_id(row["doc_id"])
 

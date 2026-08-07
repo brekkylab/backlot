@@ -1,7 +1,7 @@
 """Google APIs over HTTP: Gmail, Drive, and the Workspace editor reads (Docs/Sheets/Slides).
 
-One file because they are one router (``app/routers/google.py``) and one error envelope
-(``app/google_errors.py``) — Drive and Gmail share ``_gerr`` and the per-family status table, so
+One file because they are one router (``backlot/routers/google.py``) and one error envelope
+(``backlot/google_errors.py``) — Drive and Gmail share ``_gerr`` and the per-family status table, so
 splitting them would put two halves of the same contract in two places.
 """
 
@@ -16,8 +16,8 @@ import httpx
 import jwt
 import pytest
 
-from app import oauth, store
-from app.config import Settings
+from backlot import oauth, store
+from backlot.config import Settings
 from tests._helpers import crawl_drive, crawl_gmail, db_count, tiny_corpus, tok
 
 
@@ -87,7 +87,7 @@ def test_gmail_messages_list_serves_hex_ids(client, admin_h):
 def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     """The hex id maps back to its dsid, so the body a client reads by hex is the stored body. A
     one-way id would make every message unreadable."""
-    from app import synth
+    from backlot import synth
 
     row = _a_gmail_row(ro_conn)
     hexid = synth.gmail_message_id(row["doc_id"])
@@ -101,7 +101,7 @@ def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
 def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin_h, ro_conn):
     """Threads share the message id space in real Gmail, so a message that is its own thread root
     reports the same value twice — and `threads.get` resolves it."""
-    from app import synth
+    from backlot import synth
 
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE COALESCE(thread_id, '') = '' LIMIT 1"
@@ -119,7 +119,7 @@ def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin
 
 
 def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
-    from app import synth
+    from backlot import synth
 
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE COALESCE(thread_id,'') != '' "
@@ -134,7 +134,7 @@ def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
 
 
 def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_conn):
-    from app import synth
+    from backlot import synth
 
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
@@ -193,7 +193,7 @@ def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_co
     """Resolving through the index must not become a way around the ACL. The index is global — it
     maps every hex id, visible or not — so the ACL read after it is the only thing standing between
     a scoped caller and someone else's mail. The CFO's comp review is granted to cfo alone."""
-    from app import synth
+    from backlot import synth
 
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
@@ -209,7 +209,7 @@ def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_co
 
 
 def test_gmail_body_roundtrip(client, admin_h, ro_conn):
-    from app import synth
+    from backlot import synth
 
     doc = ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
     m = client.get(
@@ -232,7 +232,7 @@ def test_gmail_messages_list_ordered_by_internaldate_desc(client, admin_h, ro_co
     got = [m["id"] for m in listed]
     # the stable total order the endpoint must produce: created_ts DESC, doc_id ASC as tie-break
     # the served ids are hex (#39), so the expectation is the hex of that stable order
-    from app import synth
+    from backlot import synth
 
     expected = [
         synth.gmail_message_id(r["doc_id"])
@@ -285,7 +285,7 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
     ).fetchone()
     if row is None:
         pytest.skip("no gmail message with an attachment in this subset")
-    from app import synth
+    from backlot import synth
 
     hexid = synth.gmail_message_id(row["doc_id"])
     m = client.get(
@@ -446,7 +446,7 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
     ).fetchone()
     if doc is None:
         pytest.skip("no gmail doc for user B in this subset")
-    from app import synth
+    from backlot import synth
 
     hexid = synth.gmail_message_id(doc["doc_id"])  # served ids are hex, not dsids (#39)
     ah = {"Authorization": f"Bearer {user_a['token']}"}
@@ -1879,7 +1879,7 @@ def test_history_honors_oldest_latest(base, admin_h):
 
 
 def test_drive_permissions_and_trashed(tmp_path):
-    from app.routers.google import _drive_permissions, _drive_q_match
+    from backlot.routers.google import _drive_permissions, _drive_q_match
 
     s = tiny_corpus(
         tmp_path,
@@ -1924,7 +1924,7 @@ def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
     """Google: `size` "is populated for files with binary content stored in Google Drive AND for
     Docs Editors files; it is not populated for shortcuts or folders." The mock set it only in the
     binary branch, so it taught implementors that native Docs have no byte size (issue #23)."""
-    from app.routers.google import _drive_file
+    from backlot.routers.google import _drive_file
 
     s = tiny_corpus(
         tmp_path,
@@ -1963,7 +1963,7 @@ def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
 
 
 def test_gmail_raw_and_headers(tmp_path):
-    from app.routers.google import _gmail_message
+    from backlot.routers.google import _gmail_message
 
     s = tiny_corpus(
         tmp_path,
@@ -2008,7 +2008,7 @@ def test_gmail_raw_and_headers(tmp_path):
 
 
 def test_gmail_raw_with_attachment_is_valid_mime(tmp_path):
-    from app.routers.google import _gmail_message
+    from backlot.routers.google import _gmail_message
 
     s = tiny_corpus(
         tmp_path,
@@ -2041,7 +2041,7 @@ def test_gmail_raw_with_attachment_is_valid_mime(tmp_path):
     assert "notes.txt" in filenames
 
 
-# --- OAuth credentials (app/oauth.py) — the /oauth2/token exchange Google's SDKs refresh against -----
+# --- OAuth credentials (backlot/oauth.py) — the /oauth2/token exchange Google's SDKs refresh against -----
 
 
 @pytest.fixture

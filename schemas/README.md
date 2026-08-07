@@ -1,7 +1,7 @@
 # BYO corpus JSON Schemas
 
 One [Draft 2020-12](https://json-schema.org/) schema per served source type — **the source of
-truth** for the JSONL record that `app/importer/byo.py` accepts:
+truth** for the JSONL record that `backlot/importer/byo.py` accepts:
 
 | File | `source_type` | grouping-unit field |
 |---|---|---|
@@ -17,7 +17,7 @@ truth** for the JSONL record that `app/importer/byo.py` accepts:
 | `linear.schema.json` | `linear` | `team` |
 | `fireflies.schema.json` | `fireflies` | `channel` |
 
-Edit these files directly to change the accepted record shape. `app/validation.py`
+Edit these files directly to change the accepted record shape. `backlot/validation.py`
 loads them at runtime (keyed by each schema's `properties.source_type.const`), so a new source
 type is just a new `*.schema.json` file here.
 
@@ -46,12 +46,12 @@ and the per-sentence API can never disagree.
 ## Validate a corpus
 
 ```bash
-python -m app.importer.byo path/to/corpus.jsonl --dry-run
+python -m backlot.importer.byo path/to/corpus.jsonl --dry-run
 ```
 
 Each JSONL line is dispatched to its `source_type` schema; problems are reported with a line
 number and JSON path, and the exit code is non-zero on any failure (CI / pre-commit friendly).
-`app.importer.byo` runs the same validation, so an invalid corpus never half-loads.
+`backlot.importer.byo` runs the same validation, so an invalid corpus never half-loads.
 
 ## Generating a dataset with an LLM
 
@@ -83,7 +83,7 @@ record = msg.content  # already conforms to the schema
 Generate per service (one schema at a time), append each record to a `.jsonl`, then:
 
 ```bash
-python -m app.importer.byo generated.jsonl --dry-run && python -m app.importer.byo generated.jsonl
+python -m backlot.importer.byo generated.jsonl --dry-run && python -m backlot.importer.byo generated.jsonl
 ```
 
 ## What the schemas enforce
@@ -136,7 +136,7 @@ existing dataset already knows its people — and knows that only some of them a
 ships a roster alongside:
 
 ```bash
-python -m app.importer.byo corpus.jsonl --roster roster.yaml
+python -m backlot.importer.byo corpus.jsonl --roster roster.yaml
 ```
 
 ```yaml
@@ -157,12 +157,12 @@ EnterpriseRAG-Bench's `employee_directory.yaml`, so that file works as a roster 
 
 ## Round-tripping an existing dataset
 
-`app.importer.erb` can write a BYO artifact instead of a database, which is how the bench is
+`backlot.importer.erb` can write a BYO artifact instead of a database, which is how the bench is
 redistributed in this schema:
 
 ```bash
-python -m app.importer.erb --export-byo out/   # -> out/corpus.jsonl + out/roster.yaml
-python -m app.importer.byo out/corpus.jsonl --roster out/roster.yaml
+python -m backlot.importer.erb --export-byo out/   # -> out/corpus.jsonl + out/roster.yaml
+python -m backlot.importer.byo out/corpus.jsonl --roster out/roster.yaml
 ```
 
 The result is a database **equivalent** to importing the bench directly — same rows, same column

@@ -1,4 +1,4 @@
-"""Tests for the read-only SQLite store layer (`app.store`).
+"""Tests for the read-only SQLite store layer (`backlot.store`).
 
 The store is shared by every router, search, and the importers, so it gets its own file rather
 than being verified incidentally through a load/route test. Registry wiring is checked across
@@ -13,7 +13,7 @@ import sqlite3
 
 import pytest
 
-from app import store
+from backlot import store
 
 ALL_SOURCES = [
     "slack",
@@ -56,7 +56,7 @@ def test_grouping_cols_per_source():
     assert store.grouping_col("notion") == "teamspace"
     assert store.grouping_col("s3") == "bucket"
     # HubSpot has no channel/space concept; the API is polymorphic over `{objectType}`, so the
-    # object type is the grouping unit (see app/store.py GROUPING).
+    # object type is the grouping unit (see backlot/store.py GROUPING).
     assert store.grouping_col("hubspot") == "object_type"
     assert store.grouping_col("linear") == "team"
     # Fireflies groups meetings into channels, its own concept and a documented filter.
@@ -71,7 +71,7 @@ def test_comment_tables_only_where_supported():
     assert store.comment_table("notion") == "notion_comments"
     assert store.comment_table("linear") == "linear_comments"
     # Fireflies' child rows are SENTENCES, not comments; the slot is "the child rows of a doc in
-    # this source", so it is reused rather than duplicated (see app/store.py COMMENT_TABLE).
+    # this source", so it is reused rather than duplicated (see backlot/store.py COMMENT_TABLE).
     assert store.comment_table("fireflies") == "fireflies_sentences"
     # HubSpot models notes/emails/meetings as their own object types, not as comments on a record.
     for src in ("slack", "gmail", "google_drive", "s3", "hubspot"):

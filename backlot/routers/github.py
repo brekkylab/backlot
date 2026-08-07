@@ -15,10 +15,10 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
-from app import auth, store, synth
-from app.acl import Caller
-from app.config import get_settings
-from app.pagination import clamp_page, github_link_header
+from backlot import auth, store, synth
+from backlot.acl import Caller
+from backlot.config import get_settings
+from backlot.pagination import clamp_page, github_link_header
 
 router = APIRouter(prefix="/github", tags=["github"])
 

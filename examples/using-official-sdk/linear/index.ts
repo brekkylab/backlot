@@ -153,9 +153,9 @@ async function serveOrConnect(url: string | undefined): Promise<Mock> {
   const dataDir = mkdtempSync(join(tmpdir(), "enterprise-mock-linear-"));
   const corpus = join(dataDir, "corpus.jsonl");
   writeFileSync(corpus, CORPUS.map((r) => JSON.stringify(r)).join("\n"));
-  const env = { ...process.env, MOCK_DATA_DIR: dataDir };
+  const env = { ...process.env, BACKLOT_DATA_DIR: dataDir };
 
-  const imported = spawnSync(python, ["-m", "app.importer.byo", corpus], {
+  const imported = spawnSync(python, ["-m", "backlot.importer.byo", corpus], {
     cwd: REPO_ROOT, env, stdio: ["ignore", "ignore", "inherit"],
   });
   if (imported.status !== 0) {
@@ -169,7 +169,7 @@ async function serveOrConnect(url: string | undefined): Promise<Mock> {
   const port = await freePort();
   const proc: ChildProcess = spawn(
     python,
-    ["-m", "uvicorn", "app.main:app", "--port", String(port), "--log-level", "warning"],
+    ["-m", "uvicorn", "backlot.main:app", "--port", String(port), "--log-level", "warning"],
     { cwd: REPO_ROOT, env, stdio: ["ignore", "ignore", "inherit"] },
   );
   const baseUrl = `http://127.0.0.1:${port}`;

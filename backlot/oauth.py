@@ -25,7 +25,7 @@ from pathlib import Path
 import yaml
 
 # NOTE: pyjwt + cryptography (pyjwt[crypto]) are imported lazily inside the functions that need
-# them, not at module load. The server bind-mounts app/ over an image whose deps are baked in, so
+# them, not at module load. The server bind-mounts backlot/ over an image whose deps are baked in, so
 # a code update can outrun a dependency install; keeping these imports lazy means the app still
 # boots and the refresh_token flow (no crypto needed) still works even if the dep is missing —
 # only service-account JWT verification / key generation require it.
@@ -148,7 +148,7 @@ if __name__ == "__main__":
     # Regenerate credentials.yaml (client + service account) — for a deployed DB built before this
     # feature, so no full re-import is needed. Run after restart to load it. Reads only the org
     # from tokens.yaml; refresh tokens are the users' existing bearer tokens, nothing to store.
-    from app.config import get_settings
+    from backlot.config import get_settings
 
     s = get_settings()
     org = (

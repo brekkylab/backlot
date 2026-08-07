@@ -8,14 +8,14 @@ it into the per-service tables, derives the ACL from the real people/scope field
 ``tokens.yaml`` for the resolved roster:
 
 ```bash
-python -m app.importer.erb                                           # full corpus: download -> load -> ACL
-python -m app.importer.erb --slice-questions extra_questions.jsonl    # only the docs a slice needs
-python -m app.importer.erb --no-download                              # reuse whatever is already in data/raw
-python -m app.importer.erb --ref some-branch                          # fetch a non-default branch/ref
+python -m backlot.importer.erb                                           # full corpus: download -> load -> ACL
+python -m backlot.importer.erb --slice-questions extra_questions.jsonl    # only the docs a slice needs
+python -m backlot.importer.erb --no-download                              # reuse whatever is already in data/raw
+python -m backlot.importer.erb --ref some-branch                          # fetch a non-default branch/ref
 ```
 
 This is faithful representation, not synthesis: names are resolved to real emails via the
-employee directory (``app.importer.principals``), and **every import parses the real
+employee directory (``backlot.importer.principals``), and **every import parses the real
 conversations embedded in the content** (Slack transcripts → threads, GitHub PR reviews / Jira
 comments → real comments, Gmail threads → per-email messages, Fireflies transcripts →
 per-sentence utterances with speakers and timings).

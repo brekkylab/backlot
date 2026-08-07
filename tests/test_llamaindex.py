@@ -59,7 +59,7 @@ def test_jira(live_server):
 
     # container scoping: an unresolvable project must yield zero issues, not the unfiltered
     # corpus (the same silent-no-op fidelity gap found & fixed for Confluence's space= handling
-    # applied identically to Jira's project= handling -- see app/routers/atlassian.py).
+    # applied identically to Jira's project= handling -- see backlot/routers/atlassian.py).
     empty = reader.load_data(query="project = NOPE_DOES_NOT_EXIST")
     assert empty == []
 
@@ -76,7 +76,7 @@ def _slack_reader_at(base: str, token: str):
     `from slack_sdk import WebClient` on every call, so temporarily swapping the `slack_sdk`
     module's `WebClient` attribute for a subclass that defaults to the mock's base_url — for the
     duration of construction only — redirects that eager call to the mock instead (which now
-    serves `api.test`, see `app/routers/slack.py`). Restored in `finally` so nothing leaks past
+    serves `api.test`, see `backlot/routers/slack.py`). Restored in `finally` so nothing leaks past
     this one construction. Duplicated from `examples/using-llamaindex-readers/slack.py` (tests
     don't import from examples).
     """
@@ -156,7 +156,7 @@ def test_s3(live_server):
     pytest.importorskip("llama_index.readers.s3")
     pytest.importorskip("s3fs")
     from llama_index.readers.s3 import S3Reader
-    from app import synth
+    from backlot import synth
 
     _patch_s3fs_walk()
     base, admin = _base_token(live_server)
@@ -209,7 +209,7 @@ def _patch_notion_at(base_url: str) -> None:
 def test_notion(live_server):
     pytest.importorskip("llama_index.readers.notion")
     from llama_index.readers.notion import NotionPageReader
-    from app import synth
+    from backlot import synth
 
     base, admin = _base_token(live_server)
     _patch_notion_at(f"{base}/notion")

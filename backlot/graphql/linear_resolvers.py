@@ -1,4 +1,4 @@
-"""Bind ``linear.graphql`` to :mod:`app.store`.
+"""Bind ``linear.graphql`` to :mod:`backlot.store`.
 
 Resolvers return plain dicts and let graphql-core's default resolver pick the selected keys off
 them, so an unasked-for field costs nothing to build. Only the ones taking arguments and hitting
@@ -9,15 +9,15 @@ the DB are bound explicitly.
   rather than an invented value.
 - **ACL comes from the context**: ``info.context["visible_ids"]`` is threaded into every store
   call, so a resolver never makes an access decision of its own.
-- **Cursors are the repo's opaque offset cursor** (``app.pagination``) — Linear's are opaque too.
+- **Cursors are the repo's opaque offset cursor** (``backlot.pagination``) — Linear's are opaque too.
 """
 
 from __future__ import annotations
 
 from graphql import GraphQLError
 
-from app import pagination, store, synth
-from app.graphql.linear_filters import compile_comment_filter, compile_issue_filter
+from backlot import pagination, store, synth
+from backlot.graphql.linear_filters import compile_comment_filter, compile_issue_filter
 
 # Linear's own page defaults: 50 per page, hard-capped at 250.
 PAGE_DEFAULT = 50
@@ -106,7 +106,7 @@ def _page(rows: list, limit: int) -> tuple[list, bool]:
 
 def _match_string(value, spec: dict | None) -> bool:
     """A ``StringComparator`` against one Python value; mirrors the SQL comparator in
-    app/graphql/linear_filters.py, operator for operator."""
+    backlot/graphql/linear_filters.py, operator for operator."""
     if not spec:
         return True
     v = "" if value is None else str(value)
@@ -240,7 +240,7 @@ def _user(email: str | None, display: str | None, info) -> dict | None:
         "displayName": handle,
         "email": email,
         "initials": initials,
-        "url": f"https://linear.app/{_org(info)}/profiles/{handle}",
+        "url": f"https://linear.backlot/{_org(info)}/profiles/{handle}",
         "active": True,
         "isAssignable": True,
         "guest": False,
@@ -305,7 +305,7 @@ def _project(name: str | None, info) -> dict | None:
         "id": synth.linear_project_id(name),
         "name": name,
         "slugId": slug,
-        "url": f"https://linear.app/{_org(info)}/project/{slug}",
+        "url": f"https://linear.backlot/{_org(info)}/project/{slug}",
         "description": "",
         "content": None,
         "color": "#5e6ad2",
@@ -474,7 +474,7 @@ def _release(name: str | None, info) -> dict | None:
         "id": synth.linear_release_id(name),
         "name": name,
         "slugId": slug,
-        "url": f"https://linear.app/{_org(info)}/release/{slug}",
+        "url": f"https://linear.backlot/{_org(info)}/release/{slug}",
         "issueCount": 0.0,
         "currentProgress": {},
         "progressHistory": {},
@@ -539,7 +539,7 @@ def _team(container: str, info) -> dict:
         "cycleIssueAutoAssignStarted": False,
         "cycleLockToActive": False,
         "upcomingCycleCount": 0.0,
-        "cycleCalenderUrl": f"https://linear.app/{_org(info)}/team/{key}/cycles.ics",
+        "cycleCalenderUrl": f"https://linear.backlot/{_org(info)}/team/{key}/cycles.ics",
         "autoArchivePeriod": 6.0,
         "autoClosePeriod": None,
         "autoCloseStateId": None,
@@ -680,7 +680,7 @@ def _comment(row, info) -> dict:
         "body": row["body"],
         "createdAt": ts,
         "updatedAt": ts,
-        "url": f"https://linear.app/{_org(info)}/issue/#comment-{synth.linear_comment_id(row['id'])}",
+        "url": f"https://linear.backlot/{_org(info)}/issue/#comment-{synth.linear_comment_id(row['id'])}",
         "reactionData": {},
         "reactions": [],
         "user": _user(row["author_email"], None, info),
@@ -884,7 +884,7 @@ def resolve_users(
 # --- by-id roots for the SDK's lazy relation accessors ------------------------------------
 # `await issue.state` does NOT read the state off the issue the SDK already has — it fires
 # `workflowState(id:)`. Each id is a one-way hash of a name, so each root reads the reverse map
-# the app built at startup (see app.main._build_index). All five are declared non-null in Linear,
+# the app built at startup (see backlot.main._build_index). All five are declared non-null in Linear,
 # so a miss is an "Entity not found" error, matching the real API.
 #
 # THE INDEX IS NOT ACL-SCOPED, so the lookup alone is not enough. It is an unfiltered DISTINCT
@@ -1207,7 +1207,7 @@ RESOLVERS = {
 
 def build_engine():
     """The Linear engine, over the SDL beside this module."""
-    from app.graphql import engine
+    from backlot.graphql import engine
 
     return engine.from_sdl(__file__, "linear", RESOLVERS)
 

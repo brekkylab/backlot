@@ -1,6 +1,6 @@
 """Runtime configuration for the mock server.
 
-All settings are overridable via environment variables (prefix ``MOCK_``) so the
+All settings are overridable via environment variables (prefix ``BACKLOT_``) so the
 server and the offline build scripts read the same values.
 """
 
@@ -15,21 +15,21 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="MOCK_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="BACKLOT_", env_file=".env", extra="ignore")
 
     # --- paths ---
     data_dir: Path = REPO_ROOT / "data"
     # ERB download cache (the bench `generated_data` tarball + its extraction). Pinned to a STABLE
     # location independent of ``data_dir`` so re-imports into a fresh build dir
-    # (``MOCK_DATA_DIR=/tmp/... python -m app.importer.erb``) REUSE the already-downloaded JSONs
-    # instead of re-fetching from GitHub every time. Override with ``MOCK_RAW_DIR``.
+    # (``BACKLOT_DATA_DIR=/tmp/... python -m backlot.importer.erb``) REUSE the already-downloaded JSONs
+    # instead of re-fetching from GitHub every time. Override with ``BACKLOT_RAW_DIR``.
     raw_dir: Path = REPO_ROOT / "data" / "raw"
 
     # --- identity / org ---
     # The org name/domain are derived at import time from the data's dominant email domain —
-    # the BYO corpus (app.importer.byo) or the bench employee directory (app.importer.erb), via
+    # the BYO corpus (backlot.importer.byo) or the bench employee directory (backlot.importer.erb), via
     # infer_org() below. These are only the last-resort fallback for data that carries no emails;
-    # MOCK_ORG_NAME / MOCK_ORG_DOMAIN override the derivation entirely.
+    # BACKLOT_ORG_NAME / BACKLOT_ORG_DOMAIN override the derivation entirely.
     org_name: str = "example"
     org_domain: str = "example.com"
     # Fallback host for Jira/Confluence ``self`` URLs when a request carries no Host header
@@ -87,13 +87,13 @@ def get_settings() -> Settings:
 def infer_org(emails, settings: Settings) -> tuple[str, str]:
     """Derive ``(org_name, org_domain)`` from the dominant email domain in ``emails`` — so a
     ``@acme.com`` dataset serves as org ``acme`` rather than a hardcoded brand. An explicit
-    ``MOCK_ORG_NAME`` / ``MOCK_ORG_DOMAIN`` env var wins; data with no emails keeps the
+    ``BACKLOT_ORG_NAME`` / ``BACKLOT_ORG_DOMAIN`` env var wins; data with no emails keeps the
     settings fallback. ``org_name`` is the domain's first label (``acme.com`` -> ``acme``)."""
     import os
     from collections import Counter
 
-    name_set = "MOCK_ORG_NAME" in os.environ
-    domain_set = "MOCK_ORG_DOMAIN" in os.environ
+    name_set = "BACKLOT_ORG_NAME" in os.environ
+    domain_set = "BACKLOT_ORG_DOMAIN" in os.environ
     counts: Counter = Counter()
     for e in emails:
         if isinstance(e, str) and "@" in e:

@@ -17,9 +17,9 @@ import pytest
 import yaml
 from starlette.requests import Request
 
-from app import auth, synth
-from app.acl import Acl, Caller
-from app.sigv4 import (
+from backlot import auth, synth
+from backlot.acl import Acl, Caller
+from backlot.sigv4 import (
     expected_signature,
     is_skewed,
     parse_amz_date,
@@ -39,11 +39,11 @@ def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None):
     from botocore.awsrequest import AWSRequest
     from botocore.credentials import Credentials
     from urllib.parse import parse_qsl, quote, urlencode
-    from app import synth
+    from backlot import synth
 
     # URL-encode the path: split on ? to preserve the path part, then properly encode query params.
     # Use quote_via=quote (not the default quote_plus) so a space becomes %20, matching the server's
-    # canonicalization (app.sigv4._canonical_query uses quote); quote_plus would emit '+' and mismatch.
+    # canonicalization (backlot.sigv4._canonical_query uses quote); quote_plus would emit '+' and mismatch.
     if "?" in path:
         path_part, query_part = path.split("?", 1)
         params = parse_qsl(query_part, keep_blank_values=True)
@@ -186,8 +186,8 @@ def _s3_big_corpus(n=3000):
 @pytest.fixture(scope="module")
 def big_bucket_settings(tmp_path_factory):
     """A DB of its own (not the shared SAMPLE) holding one bucket with ~3000 S3 objects."""
-    from app.importer.byo import load
-    from app.config import Settings
+    from backlot.importer.byo import load
+    from backlot.config import Settings
 
     data_dir = tmp_path_factory.mktemp("s3_big")
     settings = Settings(data_dir=data_dir)
@@ -219,7 +219,7 @@ def _s3_get(client, path, token):
     from botocore.awsrequest import AWSRequest
     from botocore.credentials import Credentials
     from urllib.parse import parse_qsl, quote, urlencode
-    from app import synth
+    from backlot import synth
 
     if "?" in path:
         path_part, query_part = path.split("?", 1)
@@ -289,7 +289,7 @@ def test_s3_large_bucket_delimiter_returns_common_prefixes(big_bucket_client, bi
     pytest.importorskip("botocore")
     # Under a single month (250 objects, well within one SQL page) every "day" folder rolls up
     # into one CommonPrefixes entry, computed over that bounded page — see the comment on
-    # app.routers.s3._list_objects_v2 for why this only holds a page's worth of raw rows at once.
+    # backlot.routers.s3._list_objects_v2 for why this only holds a page's worth of raw rows at once.
     r = _s3_get(
         big_bucket_client,
         "/s3/big-bucket?list-type=2&prefix=logs/2026/01/&delimiter=/&max-keys=1000",
@@ -421,7 +421,7 @@ def test_list_objects_v2_delimiter_common_prefixes(live_server):
     assert {"runbooks/", "design/"} <= prefixes
 
 
-# --- the SigV4 verifier (app/sigv4.py) — S3 is its only caller ------------------------------------
+# --- the SigV4 verifier (backlot/sigv4.py) — S3 is its only caller ------------------------------------
 botocore = pytest.importorskip("botocore")
 from botocore.auth import S3SigV4Auth  # noqa: E402
 from botocore.awsrequest import AWSRequest  # noqa: E402

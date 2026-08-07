@@ -2,7 +2,7 @@
 
 Each vendor carries credentials differently (Slack bearer/query token, Google/GitHub
 bearer, Atlassian Basic email:api_token, Linear a scheme-less API key). These helpers
-extract the raw token, resolve it to a :class:`~app.acl.Caller` via the app's ACL, and
+extract the raw token, resolve it to a :class:`~backlot.acl.Caller` via the app's ACL, and
 compute the caller's visible principal set. Error *shaping* (Slack's ``ok:false`` vs a
 real 401) stays in the routers.
 """
@@ -16,8 +16,8 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException, Request
 
-from app import sigv4
-from app.acl import Acl, Caller
+from backlot import sigv4
+from backlot.acl import Acl, Caller
 
 
 def conn(request: Request) -> sqlite3.Connection:
@@ -127,7 +127,7 @@ def resolve_basic(request: Request) -> Caller | None:
         return caller
     # allow username=email as an identity shortcut (mock convenience)
     if user and "@" in user:
-        from app import store
+        from backlot import store
 
         if store.get_user(conn(request), user):
             return Caller(email=user, is_admin=False)

@@ -55,7 +55,7 @@ a converted corpus carries a roster it already knows.
 Every record is validated against its per-service JSON Schema first, so a bad corpus never
 half-loads; ``--dry-run`` reports problems without touching the DB.
 
-Usage:  python -m app.importer.byo path/to/corpus.jsonl [--append | --dry-run] [--roster r.yaml]
+Usage:  python -m backlot.importer.byo path/to/corpus.jsonl [--append | --dry-run] [--roster r.yaml]
 """
 
 from __future__ import annotations
@@ -71,9 +71,9 @@ from pathlib import Path  # noqa: F401  (kept for typing/backcompat)
 
 import yaml
 
-from app import store, synth
-from app.config import Settings, get_settings, infer_org
-from app.validation import record_errors
+from backlot import store, synth
+from backlot.config import Settings, get_settings, infer_org
+from backlot.validation import record_errors
 
 
 def slugify(text: str) -> str:
@@ -300,7 +300,7 @@ def _service_columns(
         # Keys are Linear's own (camelCase `branchName`/`dueDate`, `state` not status), so a
         # corpus written against the Linear API needs no renaming. `identifier` and `branchName`
         # are both derivable, so an omitted one is synthesized at serve time rather than stored.
-        from app.importer.erb import linear_priority
+        from backlot.importer.erb import linear_priority
 
         return {
             "identifier": ex.get("identifier"),
@@ -597,7 +597,7 @@ class _Loader:
         fts_ids, hs_types, hs_links = self.fts_ids, self.hs_types, self.hs_links
         lin_links = self.lin_links
         # Schema pre-validation: source_type/content/title, enums, comment/reply shapes,
-        # and unknown-key rejection all come from schemas/ (see app.validation).
+        # and unknown-key rejection all come from schemas/ (see backlot.validation).
         errors = record_errors(rec) if validate else []
         if errors:
             raise SystemExit(f"{where}: " + "; ".join(errors))
@@ -615,7 +615,7 @@ class _Loader:
         if src == "fireflies":
             # The same parser the ERB loader uses, so a BYO transcript and a bench transcript are
             # stored identically.
-            from app.importer.erb import parse_fireflies_transcript
+            from backlot.importer.erb import parse_fireflies_transcript
 
             given = rec.get("sentences")
             if not given and not (rec.get("content") or "").strip():
@@ -842,7 +842,7 @@ class _Loader:
         if src == "fireflies":
             # Needs the doc_id (analytics is seeded from it), so it can only run here — the
             # sentences themselves were built before `_doc_id`, above.
-            from app.importer.erb import _ff_speaker_stats
+            from backlot.importer.erb import _ff_speaker_stats
 
             secs = (_ff_minutes(rec.get("duration")) or 0) * 60 or None
             extras["analytics"] = extras.get("analytics") or synth.fireflies_analytics(
@@ -1210,7 +1210,7 @@ def load_records(
     def _scanned():
         """Just what `_emails` reads, one record at a time.
 
-        `infer_org` consumes the addresses exactly once (app/config.py), so nothing needs to be held:
+        `infer_org` consumes the addresses exactly once (backlot/config.py), so nothing needs to be held:
         yielding keeps the memory constant where a list would build one dict per document plus one
         per child row — millions of them at bench scale, in a pass whose whole point is to stream.
         """
@@ -1311,7 +1311,7 @@ def load_records(
         "users": [users_rows[k] for k in sorted(users_rows)],
     }
     settings.tokens_path.write_text(yaml.safe_dump(tokens, sort_keys=False))
-    from app import oauth
+    from backlot import oauth
 
     oauth.generate(settings, org=org_name)
     conn.close()

@@ -1,14 +1,14 @@
-"""BYO corpus JSON Schema validation (schemas/ + app.validation)."""
+"""BYO corpus JSON Schema validation (schemas/ + backlot.validation)."""
 
 import json
 from datetime import datetime
 
 import pytest
 
-from app import store, validation
-from app.config import Settings
-from app.validation import record_errors, validate_file
-from app.importer.byo import load
+from backlot import store, validation
+from backlot.config import Settings
+from backlot.validation import record_errors, validate_file
+from backlot.importer.byo import load
 
 
 def test_schema_per_service_matches_store():
@@ -155,7 +155,7 @@ def test_schema_files_are_valid_json_schemas():
 
 
 def test_s3_schema_registered():
-    from app.validation import record_errors
+    from backlot.validation import record_errors
 
     assert (
         record_errors(
@@ -585,7 +585,7 @@ def test_readers_accept_typed_principal_ids():
 
 
 def _example_corpus():
-    from app.config import REPO_ROOT
+    from backlot.config import REPO_ROOT
 
     return REPO_ROOT / "examples" / "bring-your-own-corpus" / "sample_corpus.jsonl"
 

@@ -26,9 +26,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from app import store
-from app.acl import Acl
-from app.config import Settings
+from backlot import store
+from backlot.acl import Acl
+from backlot.config import Settings
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -727,7 +727,7 @@ SAMPLE = [
 
 
 def _build(data_dir: Path) -> Settings:
-    from app.importer.byo import load
+    from backlot.importer.byo import load
 
     settings = Settings(data_dir=data_dir)
     corpus = data_dir / "_corpus.jsonl"
@@ -776,7 +776,7 @@ def client(sample_settings):
 
     Module-scoped, so each vendor's test file gets its own — a lifespan over SAMPLE costs ~5ms once
     the corpus is built, and sharing one session-wide would collide with the tests that reload
-    ``app.main`` to serve a different DB."""
+    ``backlot.main`` to serve a different DB."""
     from tests._helpers import client_for
 
     with client_for(sample_settings) as c:
@@ -822,13 +822,13 @@ def _free_port() -> int:
 def live_server(sample_settings):
     """The SAMPLE DB served by a real uvicorn subprocess; yields ``(base_url, settings)``."""
     port = _free_port()
-    env = {**os.environ, "MOCK_DATA_DIR": str(sample_settings.data_dir)}
+    env = {**os.environ, "BACKLOT_DATA_DIR": str(sample_settings.data_dir)}
     proc = subprocess.Popen(
         [
             sys.executable,
             "-m",
             "uvicorn",
-            "app.main:app",
+            "backlot.main:app",
             "--port",
             str(port),
             "--log-level",

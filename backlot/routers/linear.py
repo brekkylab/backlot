@@ -1,13 +1,13 @@
 """Linear's GraphQL API, served at ``POST /linear/graphql``.
 
 Linear is **GraphQL only** — there is no REST surface to emulate — so this router is one
-endpoint. The schema and the resolvers live in ``app/graphql/`` (``linear.graphql`` +
+endpoint. The schema and the resolvers live in ``backlot/graphql/`` (``linear.graphql`` +
 ``linear_resolvers.py``); everything here is HTTP: credentials in, a GraphQL envelope out.
 
 Auth is the one place Linear differs from every other source in this repo. A personal API key
 travels as the **bare** header value (``Authorization: lin_api_…``, no scheme) while an OAuth
 access token travels as ``Authorization: Bearer <token>`` — the same header, two shapes, both
-accepted by the real API. :func:`app.auth.api_key_token` handles both.
+accepted by the real API. :func:`backlot.auth.api_key_token` handles both.
 
 Status codes follow the GraphQL-over-HTTP split the engine already draws: a **request** error
 (unparseable document, failed validation, uncoercible variables) is a 400 with no ``data`` key,
@@ -20,9 +20,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app import auth
-from app.config import get_settings
-from app.graphql.linear_resolvers import build_engine
+from backlot import auth
+from backlot.config import get_settings
+from backlot.graphql.linear_resolvers import build_engine
 
 router = APIRouter(prefix="/linear", tags=["linear"])
 
@@ -36,7 +36,7 @@ async def graphql(request: Request):
     """The single Linear endpoint. Not in the OpenAPI document on purpose: this is a GraphQL
     service, and describing one POST route that accepts an arbitrary query would tell an
     OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
-    ``app/openapi.py``). Introspection is the schema description for this endpoint."""
+    ``backlot/openapi.py``). Introspection is the schema description for this endpoint."""
     caller = auth.resolve_api_key(request)
     if caller is None:
         # Real Linear answers a bad credential with a GraphQL error envelope and a 401, not a
@@ -64,7 +64,7 @@ async def graphql(request: Request):
         # service identity's address is built from (an org NAME is not a domain).
         "org": getattr(state.acl, "org_name", None),
         "org_domain": get_settings().org_domain,
-        # uuid/identifier -> doc_id and uuid/key -> team, built once at startup (app.main).
+        # uuid/identifier -> doc_id and uuid/key -> team, built once at startup (backlot.main).
         "index": state.index.get("linear", {}),
         "team_index": state.index.get("linear_teams", {}),
         # Reverse maps for the by-id roots the SDK's lazy relation accessors call.

@@ -30,9 +30,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
-from app import auth, pagination, store, synth
-from app.routers import json_body
-from app.openapi import qp
+from backlot import auth, pagination, store, synth
+from backlot.routers import json_body
+from backlot.openapi import qp
 
 router = APIRouter(prefix="/notion/v1", tags=["notion"])
 

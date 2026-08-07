@@ -1,6 +1,6 @@
 """Vendor-agnostic GraphQL execution: SDL + resolvers -> response envelope.
 
-Knows nothing about any vendor and nothing about :mod:`app.store`. A vendor builds one
+Knows nothing about any vendor and nothing about :mod:`backlot.store`. A vendor builds one
 :class:`Engine` at import time from its SDL and resolver map; its router hands raw request
 bodies to :meth:`Engine.execute_request` along with a context dict (connection, caller,
 ``visible_ids``) that every resolver receives as ``info.context``.

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from app import store, synth
+from backlot import store, synth
 
 
 @dataclass(frozen=True)

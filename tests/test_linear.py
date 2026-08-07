@@ -2,7 +2,7 @@
 
 The filter tests were their own file once. They are still their own SECTION below, and the reason
 they exist in this shape is worth keeping: a mutation review found 16 of 17 injected faults in
-`app/graphql/linear_filters.py` surviving the rest of the suite. A wrong filter returns
+`backlot/graphql/linear_filters.py` surviving the rest of the suite. A wrong filter returns
 plausible-looking data rather than an error, so every comparator pins its BOUNDARY (`lte` vs `lt`),
 not merely that it filters something.
 """
@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from app import synth
+from backlot import synth
 from tests._helpers import build_corpus, client_for, corpus_client, db_count
 
 
@@ -477,7 +477,7 @@ def test_linear_parent_and_children_read_the_same_column(client, admin_h, ro_con
 
     Also a performance contract: `@linear/sdk`'s Issue fragment selects `parent { id }` on every
     node, so resolving it by identifier cost ~45ms on a 50-issue page."""
-    # `ro_conn` is the SAMPLE db; a fresh get_settings() would follow whatever MOCK_DATA_DIR
+    # `ro_conn` is the SAMPLE db; a fresh get_settings() would follow whatever BACKLOT_DATA_DIR
     # another module last set, which is why this reads the fixture instead.
     row = ro_conn.execute(
         "SELECT doc_id, parent_doc_id, parent_key FROM linear_issues WHERE doc_id = 'lin-batch'"
@@ -491,7 +491,7 @@ def test_linear_parent_and_children_read_the_same_column(client, admin_h, ro_con
     assert served["identifier"] == "ENG-103"
 
 
-# --- the filter compiler (app/graphql/linear_filters.py) --------------------------------------
+# --- the filter compiler (backlot/graphql/linear_filters.py) --------------------------------------
 
 CORPUS = [
     {
@@ -687,7 +687,7 @@ def test_negated_derived_filter_keeps_null_column_rows(fclient):
     by_id = ids(
         fclient,
         '{project: {id: {neq: "%s"}}}'
-        % __import__("app.synth", fromlist=["x"]).linear_project_id("runtime"),
+        % __import__("backlot.synth", fromlist=["x"]).linear_project_id("runtime"),
     )
     assert by_name == by_id == ["DES-1"]
 

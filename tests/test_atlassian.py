@@ -10,7 +10,7 @@ from starlette.requests import Request
 import re
 
 
-from app import store
+from backlot import store
 from tests._helpers import bare_request, crawl_confluence, crawl_jira, db_count, tiny_corpus
 
 
@@ -25,7 +25,7 @@ def test_admin_confluence_crawls_all(client, admin_h, ro_conn):
 def test_atlassian_401_keeps_the_atlassian_error_envelope(client):
     """Atlassian clients parse the error body as Atlassian Cloud's envelope (Confluence's
     raise_for_status reads ``response.json()["message"]``), so a 401 there is not FastAPI's
-    ``{"detail": ...}`` — see app.main._atlassian_error_body."""
+    ``{"detail": ...}`` — see backlot.main._atlassian_error_body."""
     # NOT serverInfo: the jira PyPI client probes that on connect, so it answers unauthenticated
     # on purpose. project/search is the first call that actually needs a credential.
     r = client.get("/atlassian/rest/api/3/project/search")
@@ -46,7 +46,7 @@ def test_jira_serverinfo_v2_alias_matches_v3(client, admin_h):
 
 
 def test_jira_search_filtered_by_project(client, admin_h):
-    from app import synth
+    from backlot import synth
 
     # literal project name (a legitimate JQL project= token) narrows to that project's issues
     by_name = client.get(
@@ -82,7 +82,7 @@ def test_jira_search_filtered_by_project(client, admin_h):
 
 
 def test_confluence_content_filtered_by_space_key(client, admin_h):
-    from app import synth
+    from backlot import synth
 
     # literal container name (the natural spaceKey value) narrows to that space only
     by_name = client.get(
@@ -139,7 +139,7 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
 
 def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
     doc = ro_conn.execute("SELECT * FROM confluence_pages LIMIT 1").fetchone()
-    from app import synth
+    from backlot import synth
 
     cid = synth.confluence_id(doc["doc_id"])
     page = client.get(
@@ -226,7 +226,7 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
 
 
 def test_jira_status_category_and_fields(tmp_path):
-    from app.routers.atlassian import _jira_issue
+    from backlot.routers.atlassian import _jira_issue
 
     s = tiny_corpus(
         tmp_path,
@@ -277,7 +277,7 @@ def test_jira_status_category_and_fields(tmp_path):
 
 
 def test_confluence_body_and_version(tmp_path):
-    from app.routers.atlassian import _confluence_page
+    from backlot.routers.atlassian import _confluence_page
 
     s = tiny_corpus(
         tmp_path,
@@ -324,9 +324,9 @@ def test_confluence_restrictions_has_update(tmp_path):
     # restrictions/byOperation must return BOTH read and update operations
     import asyncio
     import types
-    from app import synth
-    from app.acl import Acl
-    from app.routers.atlassian import confluence_restrictions
+    from backlot import synth
+    from backlot.acl import Acl
+    from backlot.routers.atlassian import confluence_restrictions
 
     s = tiny_corpus(
         tmp_path,

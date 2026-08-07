@@ -1,6 +1,6 @@
 import hashlib
 
-from app import synth
+from backlot import synth
 
 DOC = "dsid_00908a2dda4b4d359194a091019e8367"
 DOC2 = "dsid_f9591843028149bdb47f7c3a70b3baa1"

@@ -1,4 +1,4 @@
-"""app.importer.byo: load an arbitrary BYO JSONL corpus -> DB, honoring per-doc ACL."""
+"""backlot.importer.byo: load an arbitrary BYO JSONL corpus -> DB, honoring per-doc ACL."""
 
 import gzip
 import hashlib
@@ -9,12 +9,12 @@ import sqlite3
 import pytest
 import yaml
 
-from app import store
-from app.acl import Acl
-from app.config import Settings, get_settings
-from app.routers.slack import _message
-from app.importer import byo
-from app.importer.byo import load
+from backlot import store
+from backlot.acl import Acl
+from backlot.config import Settings, get_settings
+from backlot.routers.slack import _message
+from backlot.importer import byo
+from backlot.importer.byo import load
 
 
 def _write(tmp_path, records):
@@ -311,7 +311,7 @@ def test_byo_slack_threads(tmp_path):
     thread = store.slack_thread(conn, root["doc_id"])
     assert [r["thread_seq"] for r in thread] == [0, 1, 2]
     # replies share the root's thread_ts and sort strictly after it
-    from app.routers.slack import _msg_ts
+    from backlot.routers.slack import _msg_ts
 
     ts = [_msg_ts(r) for r in thread]
     assert ts == sorted(ts) and ts[0] < ts[1] < ts[2]
@@ -356,7 +356,7 @@ def test_byo_created_updated_times(tmp_path):
 
     # and reach the router response
     from starlette.requests import Request
-    from app.routers.atlassian import _jira_issue
+    from backlot.routers.atlassian import _jira_issue
 
     req = Request(
         {
@@ -396,7 +396,7 @@ def test_byo_gmail_created_and_to(tmp_path):
         Settings(data_dir=tmp_path),
     )
     conn = store.connect_ro(tmp_path / "mock.sqlite")
-    from app.routers.google import _gmail_message
+    from backlot.routers.google import _gmail_message
 
     msg = _gmail_message(store.get_document(conn, "gmail", "m1"), "metadata")
     assert msg["internalDate"] == str(_epoch("2026-04-01T12:00:00Z") * 1000)
@@ -430,7 +430,7 @@ def test_byo_slack_rich_replies(tmp_path):
         Settings(data_dir=tmp_path),
     )
     conn = store.connect_ro(tmp_path / "mock.sqlite")
-    from app.routers.slack import _message, _msg_ts
+    from backlot.routers.slack import _message, _msg_ts
 
     thread = store.slack_thread(conn, "s-root")
     root, reply = thread[0], thread[1]
@@ -501,7 +501,7 @@ def test_notion_byo_load(tmp_path):
 
 
 def test_notion_byo_rejects_bad_subtype():
-    from app.validation import record_errors
+    from backlot.validation import record_errors
 
     errs = record_errors({"source_type": "notion", "title": "x", "content": "y", "subtype": "wiki"})
     assert any("subtype" in e for e in errs)
@@ -563,8 +563,8 @@ def test_s3_byo_load(tmp_path):
 
 
 def test_github_file_byo_load(tmp_path, monkeypatch):
-    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path))
-    from app.config import get_settings
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path))
+    from backlot.config import get_settings
 
     get_settings.cache_clear()
     s = get_settings()
@@ -593,7 +593,7 @@ def test_github_file_byo_load(tmp_path, monkeypatch):
 
 def test_github_file_byo_requires_path(tmp_path):
     # a file record without `path` must be rejected by schema validation
-    from app.validation import record_errors
+    from backlot.validation import record_errors
 
     errs = record_errors(
         {"source_type": "github", "subtype": "file", "title": "x", "content": "y", "repo": "r"}
@@ -709,8 +709,8 @@ def test_hubspot_byo_association_infers_missing_target_type(tmp_path):
 
 
 def test_append_preserves_prior_roster_and_org(tmp_path, monkeypatch):
-    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path))
-    from app.config import get_settings
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path))
+    from backlot.config import get_settings
 
     get_settings.cache_clear()
     s = get_settings()
@@ -794,8 +794,8 @@ def test_append_preserves_prior_roster_and_org(tmp_path, monkeypatch):
 
 
 def test_append_incremental_fts_finds_new_and_keeps_old(tmp_path, monkeypatch):
-    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path))
-    from app.config import get_settings
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path))
+    from backlot.config import get_settings
 
     get_settings.cache_clear()
     s = get_settings()
@@ -944,7 +944,7 @@ def test_fireflies_byo_parses_sentences_out_of_a_plain_body(tmp_path):
 def test_fireflies_byo_content_and_sentences_always_round_trip(tmp_path):
     """The invariant that makes `content` a safe definition rather than a duplicate, checked for
     both the supplied-sentences and the parsed-body path."""
-    from app import synth
+    from backlot import synth
 
     corpus = _write(
         tmp_path,
@@ -1074,7 +1074,7 @@ def test_fireflies_byo_org_is_inferred_from_host_email_and_sentence_authors(tmp_
 
 def test_byo_emails_includes_every_author_alias():
     """The generator behind org inference. A new per-source author alias must be added here too."""
-    from app.importer.byo import _emails
+    from backlot.importer.byo import _emails
 
     rec = {
         "source_type": "fireflies",
@@ -1460,7 +1460,7 @@ def test_byo_jsonl_records_split_only_on_newline(tmp_path):
     # guards the test itself: without a character splitlines() breaks on, it proves nothing
     assert len(corpus.read_text().splitlines()) == 3
 
-    from app.validation import validate_file
+    from backlot.validation import validate_file
 
     assert validate_file(corpus) == []
     settings = Settings(data_dir=tmp_path)
@@ -1737,7 +1737,7 @@ def test_import_refuses_a_shard_that_does_not_match_the_manifest(tmp_path, monke
         fh.writelines(kept)
 
     data = tmp_path / "data-refused"
-    monkeypatch.setenv("MOCK_DATA_DIR", str(data))
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     with pytest.raises(SystemExit) as e:
         byo.main([str(out)])
@@ -1746,7 +1746,7 @@ def test_import_refuses_a_shard_that_does_not_match_the_manifest(tmp_path, monke
 
 
 def test_a_single_gzipped_corpus_file_loads(tmp_path):
-    """The README documents `python -m app.importer.byo corpus.jsonl.gz`; every other test reaches a
+    """The README documents `python -m backlot.importer.byo corpus.jsonl.gz`; every other test reaches a
     `.gz` through a shard directory, so the plain single-file case had no coverage."""
     corpus = tmp_path / "corpus.jsonl.gz"
     with io.TextIOWrapper(gzip.GzipFile(corpus, "wb", mtime=0), encoding="utf-8") as fh:

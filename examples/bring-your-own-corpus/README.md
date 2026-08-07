@@ -4,9 +4,9 @@ Serve **any** document set through all eleven mock APIs — provide a JSONL wher
 document, validate it, and load it:
 
 ```bash
-python -m app.importer.byo mycorpus.jsonl              # validate + load -> data/
-python -m app.importer.byo mycorpus.jsonl --dry-run    # validate only, no DB writes
-python -m uvicorn app.main:app --port 8000
+python -m backlot.importer.byo mycorpus.jsonl              # validate + load -> data/
+python -m backlot.importer.byo mycorpus.jsonl --dry-run    # validate only, no DB writes
+python -m uvicorn backlot.main:app --port 8000
 ```
 
 `run.py` here is a self-contained walkthrough — it validates `sample_corpus.jsonl`, starts a
@@ -60,8 +60,8 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   `data/tokens.yaml` — the same token-scoped ACL then applies across every one of them and MCP.
 - **Org:** the org name + domain are inferred from the corpus's dominant author email domain
   (a `@acme.com` corpus serves as org `acme`, so Slack `auth.test`, `/_mock/users`, and default
-  emails all say `acme` — not a hardcoded default). Override with `MOCK_ORG_NAME` /
-  `MOCK_ORG_DOMAIN`. The chosen values are persisted to `data/tokens.yaml`.
+  emails all say `acme` — not a hardcoded default). Override with `BACKLOT_ORG_NAME` /
+  `BACKLOT_ORG_DOMAIN`. The chosen values are persisted to `data/tokens.yaml`.
 - **Slack threads:** a slack record may carry a `replies` array. Each reply is a full message
   (`content`, optional `author_email`/`author_name`/`subtype`/`reactions`/`files`/`edited`), not
   just text. It becomes a thread — the record is the root, each reply a threaded reply. Only the

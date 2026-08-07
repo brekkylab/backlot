@@ -287,7 +287,7 @@ CREATE INDEX IF NOT EXISTS idx_linear_release ON linear_issues(release);
 -- `issue(id: "ENG-123")` resolves an identifier straight to its row; the bench's keys are NOT
 -- unique (5,055 of them repeat), so this is a lookup index, never a unique constraint.
 CREATE INDEX IF NOT EXISTS idx_linear_identifier ON linear_issues(identifier);
--- COVERING index for the startup reverse-index build (app.main._build_index), which reads
+-- COVERING index for the startup reverse-index build (backlot.main._build_index), which reads
 -- (doc_id, identifier) for every issue. Without it each wide row is fetched from a scattered page and
 -- the scan dominates server startup; as an index-only scan it is negligible.
 CREATE INDEX IF NOT EXISTS idx_linear_doc_ident ON linear_issues(doc_id, identifier);
@@ -610,7 +610,7 @@ def list_hubspot_objects(
 
 # --- Linear: issues, their comments, and the identifier lookup ---------------------
 # Linear pages a Relay connection, and the mock's `after` is the same opaque offset cursor every
-# other source's page token is (see app/pagination.py), so these take an offset. The ORDER BY is
+# other source's page token is (see backlot/pagination.py), so these take an offset. The ORDER BY is
 # always total — the sort column plus `doc_id` as the tiebreak — because an offset page over a
 # non-total order can silently repeat or skip a row between pages.
 
@@ -833,7 +833,7 @@ def linear_attachment_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | 
 
     No reverse index (attachments are only reached through their issue), so the id is matched by
     re-deriving it over visible rows — an attachment on a hidden issue is simply not found."""
-    from app import synth
+    from backlot import synth
 
     join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = a.doc_id"
     clause, cparams = _acl_clause("i", visible_ids)
@@ -847,7 +847,7 @@ def linear_attachment_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | 
 def linear_relation_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
     """Same for a relation, scoped on BOTH ends: a relation is only visible to a caller who can
     read the issues at each side of it."""
-    from app import synth
+    from backlot import synth
 
     if visible_ids is None:
         rows = conn.execute("SELECT * FROM linear_relations")
@@ -871,7 +871,7 @@ def linear_distinct_values(conn) -> dict[str, list]:
 
     ``@linear/sdk`` resolves relations lazily (``await issue.state`` fires a fresh
     ``workflowState(id:)``) and those uuids are one-way hashes of a name, so the app builds a reverse
-    index at startup — see ``app.main._build_index``. Each entry is a DISTINCT over one column.
+    index at startup — see ``backlot.main._build_index``. Each entry is a DISTINCT over one column.
     Users come back as ``(email, display_name)`` so a user reached by id is named like one reached
     inline on an issue.
     """
@@ -952,7 +952,7 @@ LINEAR_DEFAULT_STATE = "Todo"
 # The by-id roots (`project(id:)`, `workflowState(id:)`, …) resolve an entity that has no table
 # of its own: it exists only as a column value on some issue. So "can the caller see it" means
 # "can the caller see any issue carrying it", and each kind names the predicate that asks.
-# Keyed exactly as app.main._build_index keys its reverse maps.
+# Keyed exactly as backlot.main._build_index keys its reverse maps.
 _LINEAR_ENTITY_PREDICATES = {
     "project": lambda v: ("project = ?", [v]),
     "cycle": lambda v: ("cycle = ? AND team = ?", [v[1], v[0]]),  # v = (team, name)

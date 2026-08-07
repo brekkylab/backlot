@@ -18,14 +18,14 @@
 FROM python:3.13-slim AS serve
 
 ENV PATH="/opt/venv/bin:$PATH" \
-    MOCK_DATA_DIR=/app/data \
+    BACKLOT_DATA_DIR=/app/data \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 RUN python -m venv /opt/venv
 # pyproject declares `readme`, so README.md has to be present for the install to resolve.
 COPY pyproject.toml README.md ./
-COPY app ./app
+COPY backlot ./backlot
 RUN pip install --no-cache-dir .
 
 EXPOSE 8000
@@ -33,7 +33,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
 # --proxy-headers + --forwarded-allow-ips=* so that, behind a TLS-terminating proxy/ALB, the
 # app honors X-Forwarded-Proto/Host and emits https self-URLs (PyGithub follows those URLs).
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
+CMD ["python", "-m", "uvicorn", "backlot.main:app", "--host", "0.0.0.0", "--port", "8000", \
      "--proxy-headers", "--forwarded-allow-ips", "*"]
 
 
@@ -46,7 +46,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 ARG BUILD_ARGS=""
-RUN python -m app.importer.erb ${BUILD_ARGS}
+RUN python -m backlot.importer.erb ${BUILD_ARGS}
 
 
 # ---------------------------------------------------------------- full (default target)

@@ -1,4 +1,4 @@
-"""Bind ``fireflies.graphql`` to :mod:`app.store`.
+"""Bind ``fireflies.graphql`` to :mod:`backlot.store`.
 
 Every resolver returns plain dicts and lets graphql-core's default resolver pick the selected
 keys off them, so a field the client didn't ask for costs nothing to have built. The ones bound
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import datetime as _dt
 
-from app import store, synth
+from backlot import store, synth
 
 # Fireflies' own page size and its documented hard cap.
 PAGE_DEFAULT = 25
@@ -341,7 +341,7 @@ RESOLVERS = {
 
 def build_engine():
     """The Fireflies engine, over the SDL beside this module."""
-    from app.graphql import engine
+    from backlot.graphql import engine
 
     return engine.from_sdl(__file__, "fireflies", RESOLVERS)
 

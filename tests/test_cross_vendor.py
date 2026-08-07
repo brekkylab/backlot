@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.config import Settings
+from backlot.config import Settings
 from tests._helpers import crawl_confluence, db_count
 
 
@@ -40,7 +40,7 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens_yaml, ro_conn, sample
     user_conf = len(crawl_confluence(client, uh))
     assert user_conf < admin_conf  # some confluence docs are group/private-restricted
     # matches exactly the ACL-computed visible count
-    from app.acl import Acl
+    from backlot.acl import Acl
 
     acl = Acl.load(
         sample_settings.tokens_path, sample_settings.admin_token, sample_settings.org_name
@@ -51,7 +51,7 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens_yaml, ro_conn, sample
 
 def test_mock_users_directory(client, tokens_yaml, org):
     # the /_mock/users directory lists every user + token (for testing per-user ACL)
-    from app import synth
+    from backlot import synth
 
     body = client.get("/_mock/users").json()
     assert body["admin_token"] == tokens_yaml["admin_token"]
@@ -79,7 +79,7 @@ def test_mock_users_directory(client, tokens_yaml, org):
 
 
 def test_mock_users_can_be_disabled(client, monkeypatch):
-    from app import main
+    from backlot import main
 
     monkeypatch.setattr(main, "get_settings", lambda: Settings(expose_tokens=False))
     assert client.get("/_mock/users").status_code == 404

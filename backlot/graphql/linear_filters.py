@@ -2,13 +2,13 @@
 
 Linear's filter inputs are comparator objects nested under field names —
 ``{state: {name: {eq: "Done"}}, priority: {lte: 2}}`` — combined with ``and`` / ``or``. This
-turns one into ``("(...)", [params])`` that :mod:`app.store` pushes into the WHERE clause, so a
+turns one into ``("(...)", [params])`` that :mod:`backlot.store` pushes into the WHERE clause, so a
 filtered query stays an indexed scan instead of materializing the whole team and filtering in
 Python.
 
 Two design rules make the result trustworthy rather than merely convenient:
 
-- **Declared means implemented.** ``schemas``-side, ``app/graphql/linear.graphql`` declares only
+- **Declared means implemented.** ``schemas``-side, ``backlot/graphql/linear.graphql`` declares only
   the filter fields compiled here, so anything Linear accepts and this does not is a GraphQL
   validation error naming the field — never a filter that is silently dropped and answered with
   a full, wrong result set. :func:`compile_issue_filter` still raises on an unknown key, so the
@@ -24,12 +24,12 @@ import datetime as _dt
 
 from graphql import GraphQLError
 
-from app import synth
+from backlot import synth
 
 
 def _to_epoch(value) -> int | None:
     """An ISO-8601 ``DateTime`` operand -> unix seconds, to compare against a ``*_ts`` column.
-    Deliberately NOT ``app.importer.erb.to_epoch``: that one exists to salvage the bench's messy
+    Deliberately NOT ``backlot.importer.erb.to_epoch``: that one exists to salvage the bench's messy
     human date strings and would drag the whole importer into the serving path. A filter operand
     comes from a GraphQL client, so ISO-8601 (or a bare epoch) is the whole contract."""
     if value is None or value == "":
@@ -423,7 +423,7 @@ def _map_comment_ids(conn, spec: dict) -> dict:
 
 def compile_comment_filter(conn, flt: dict | None) -> tuple[str, list] | None:
     """``CommentFilter`` -> ``(sql_fragment, params)``. Columns are on the aliased ``c`` table,
-    matching :func:`app.store.list_linear_comments`'s join."""
+    matching :func:`backlot.store.list_linear_comments`'s join."""
     sql, params = _comment_filter(conn, flt or {})
     return (sql, params) if sql else None
 

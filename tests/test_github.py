@@ -13,7 +13,7 @@ import yaml
 
 import pytest
 
-from app import store
+from backlot import store
 from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
 
 
@@ -29,7 +29,7 @@ def test_admin_github_crawls_all(client, admin_h, ro_conn, org):
 
 def test_github_body_roundtrip(client, admin_h, ro_conn, org):
     doc = ro_conn.execute("SELECT * FROM github_items LIMIT 1").fetchone()
-    from app import synth
+    from backlot import synth
 
     num = synth.github_number(doc["doc_id"])
     issue = client.get(f"/github/repos/{org}/{doc['repo']}/issues/{num}", headers=admin_h).json()
@@ -265,7 +265,7 @@ def test_github_blob_unknown_sha_404(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
     r = c.get(f"/github/repos/{gh_org}/codebase/git/blobs/{'0' * 40}", headers=gh_admin_h)
     assert r.status_code == 404
-    # matches the existing github 404 shape (app.main's shared exception handler wraps
+    # matches the existing github 404 shape (backlot.main's shared exception handler wraps
     # HTTPException(detail=...) as {"detail": ...} for every non-atlassian router)
     assert r.json() == {"detail": "Not Found"}
 
@@ -326,7 +326,7 @@ def test_github_file_number_index_excludes_files(gh_client, gh_admin_h, gh_org):
     (see gh-file-collide-88814, which deliberately collides with gh-issue-1's), and if the
     file's doc_id ends up as the map value, a real issue/PR 404s."""
     c, _ = gh_client
-    from app import synth
+    from backlot import synth
 
     file_doc_ids = {d["doc_id"] for d in _GH_FILE_DOCS}
     idx = c.app.state.index["github"]
@@ -462,7 +462,7 @@ def test_github_operation_ids_unique(client):
 
 
 def test_github_issue_shape(tmp_path):
-    from app.routers.github import _issue_obj, _pr_obj
+    from backlot.routers.github import _issue_obj, _pr_obj
 
     s = tiny_corpus(
         tmp_path,
@@ -518,7 +518,7 @@ def test_github_issue_shape(tmp_path):
 
 
 def test_github_comment_reactions(tmp_path):
-    from app.routers.github import _gh_comment
+    from backlot.routers.github import _gh_comment
 
     s = tiny_corpus(
         tmp_path,

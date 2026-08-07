@@ -6,7 +6,7 @@ or call the response builder directly.
 
 from __future__ import annotations
 
-from app import store, synth
+from backlot import store, synth
 from tests._helpers import tiny_corpus, tok
 
 
@@ -189,7 +189,7 @@ def _notion_conn(tmp_path):
 
 
 def test_notion_page_shape(tmp_path):
-    from app.routers.notion import _page_obj
+    from backlot.routers.notion import _page_obj
 
     conn = _notion_conn(tmp_path)
     obj = _page_obj(conn, store.get_document(conn, "notion", "nf-page"))
@@ -208,7 +208,7 @@ def test_notion_page_shape(tmp_path):
 
 
 def test_notion_database_and_data_source_shape(tmp_path):
-    from app.routers.notion import _data_source_obj, _database_obj
+    from backlot.routers.notion import _data_source_obj, _database_obj
 
     conn = _notion_conn(tmp_path)
     dbrow = store.get_document(conn, "notion", "nf-db")
@@ -224,7 +224,7 @@ def test_notion_database_and_data_source_shape(tmp_path):
 
 
 def test_notion_user_and_block_shape(tmp_path):
-    from app.routers.notion import _user_obj
+    from backlot.routers.notion import _user_obj
 
     conn = _notion_conn(tmp_path)
     u = _user_obj(conn, "ava@acme.com")

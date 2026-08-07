@@ -6,4 +6,4 @@ services:
       - "8000:8000"
     # Override the admin/service token if desired:
     # environment:
-    #   MOCK_ADMIN_TOKEN: my-service-token
+    #   BACKLOT_ADMIN_TOKEN: my-service-token

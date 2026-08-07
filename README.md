@@ -51,7 +51,7 @@ uv pip install -e ".[dev]"
 Then prepare a corpus (below) and start the server:
 
 ```bash
-python -m uvicorn app.main:app --port 8000
+python -m uvicorn backlot.main:app --port 8000
 curl -s localhost:8000/health
 ```
 
@@ -66,7 +66,7 @@ synthetic enterprise documents (flattened to `{doc_id, source_type, title, conte
 command downloads a slice, loads it, and generates the ACL:
 
 ```bash
-python -m app.importer.erb     # small slice; --all for the full corpus, --augment for +α
+python -m backlot.importer.erb     # small slice; --all for the full corpus, --augment for +α
 ```
 
 The bench carries only `{title, content}` — no structure, no access control — so the mock
@@ -84,11 +84,11 @@ Serve **any** document set: one JSONL document per line, validated against a per
 Schema (`schemas/`), then loaded.
 
 ```bash
-python -m app.importer.byo mycorpus.jsonl              # validate + load -> data/
-python -m app.importer.byo mycorpus.jsonl --dry-run    # validate only, no DB writes
-python -m app.importer.byo mycorpus.jsonl --roster roster.yaml   # state the principals, don't derive them
-python -m app.importer.byo corpus.jsonl.gz             # gzipped, read as a stream
-python -m app.importer.byo artifact-dir/               # a sharded corpus + its manifest (below)
+python -m backlot.importer.byo mycorpus.jsonl              # validate + load -> data/
+python -m backlot.importer.byo mycorpus.jsonl --dry-run    # validate only, no DB writes
+python -m backlot.importer.byo mycorpus.jsonl --roster roster.yaml   # state the principals, don't derive them
+python -m backlot.importer.byo corpus.jsonl.gz             # gzipped, read as a stream
+python -m backlot.importer.byo artifact-dir/               # a sharded corpus + its manifest (below)
 ```
 
 ```json
@@ -104,8 +104,8 @@ The schema is expressive enough to hold an **entire existing dataset losslessly*
 bench is redistributed in it:
 
 ```bash
-python -m app.importer.erb --export-byo out/     # ERB -> out/corpus.jsonl + out/roster.yaml
-python -m app.importer.byo out/corpus.jsonl --roster out/roster.yaml
+python -m backlot.importer.erb --export-byo out/     # ERB -> out/corpus.jsonl + out/roster.yaml
+python -m backlot.importer.byo out/corpus.jsonl --roster out/roster.yaml
 ```
 
 That produces a database *equivalent* to importing the bench directly — same rows, same column
@@ -117,12 +117,12 @@ owners.
 At bench scale one file is unwieldy — the whole of ERB is 581,294 records — so the export can shard:
 
 ```bash
-python -m app.importer.erb --export-byo out/ --shard-records 50000
+python -m backlot.importer.erb --export-byo out/ --shard-records 50000
 ```
 
 Each source becomes `out/data/<source>/part-NNNNN.jsonl.gz` alongside `out/manifest.json`, which
 records every shard's path, record count, byte size, and SHA-256, plus the same for `roster.yaml`.
-`python -m app.importer.byo out/` loads the whole thing in one command and checks every digest before
+`python -m backlot.importer.byo out/` loads the whole thing in one command and checks every digest before
 reading a record, so a damaged or swapped download fails up front instead of half-loading a database.
 The roster is checked with the shards, since importing a directory picks it up automatically and it
 decides who holds a token. Shards are gzipped with `mtime=0`, so the same input always produces the
@@ -135,7 +135,7 @@ digest tells you records are missing.
 ## Auth & tokens
 
 `data/tokens.yaml` holds one bearer token per user plus an **admin/service token**
-(`MOCK_ADMIN_TOKEN`, default `admin-service-token`). The admin token bypasses ACL filtering
+(`BACKLOT_ADMIN_TOKEN`, default `admin-service-token`). The admin token bypasses ACL filtering
 (use it for a full crawl); a user token sees only documents that user's ACL permits.
 
 - Slack: `Authorization: Bearer <token>` (also accepts `?token=` / form `token`)
@@ -151,7 +151,7 @@ To discover the tokens without opening `data/tokens.yaml`, hit **`GET /_mock/use
 mock-only directory of every user (email, name, token, groups) plus the `admin_token`. Pick a
 token, use it against any of these APIs, and you get that user's ACL-filtered view — the easy way
 to test per-user access. It hands out tokens in the clear (fine for a local test mock); disable
-with `MOCK_EXPOSE_TOKENS=false`.
+with `BACKLOT_EXPOSE_TOKENS=false`.
 
 ```bash
 curl -s localhost:8000/_mock/users | jq '.users[0]'
@@ -170,7 +170,7 @@ per-user data: a user's **refresh_token is simply their bearer token from `/_moc
 grants — returning that user's bearer token, so ACL enforcement is identical. `token_uri` points
 back at the mock, so the client library's own refresh call lands here. A bare service account
 (no `subject`) resolves to the admin/service token (a full-crawl identity). Same
-`MOCK_EXPOSE_TOKENS` gate as `/_mock/users`. The Gmail/Drive SDK examples
+`BACKLOT_EXPOSE_TOKENS` gate as `/_mock/users`. The Gmail/Drive SDK examples
 ([`gmail.py`](examples/using-official-sdk/gmail.py),
 [`gdrive.py`](examples/using-official-sdk/gdrive.py)) authenticate this way.
 
@@ -346,15 +346,15 @@ each spin up their own server; they run when those are available and skip otherw
 
 ## Configuration
 
-Env vars (prefix `MOCK_`): `MOCK_DATA_DIR`, `MOCK_RAW_DIR`, `MOCK_ADMIN_TOKEN`,
-`MOCK_ENFORCE_ACL`, `MOCK_EXPOSE_TOKENS`, `MOCK_DEFAULT_PAGE_SIZE`, `MOCK_MAX_PAGE_SIZE`,
-`MOCK_ORG_NAME`, `MOCK_ORG_DOMAIN`, `MOCK_ATLASSIAN_SITE`. See `app/config.py`.
+Env vars (prefix `BACKLOT_`): `BACKLOT_DATA_DIR`, `BACKLOT_RAW_DIR`, `BACKLOT_ADMIN_TOKEN`,
+`BACKLOT_ENFORCE_ACL`, `BACKLOT_EXPOSE_TOKENS`, `BACKLOT_DEFAULT_PAGE_SIZE`, `BACKLOT_MAX_PAGE_SIZE`,
+`BACKLOT_ORG_NAME`, `BACKLOT_ORG_DOMAIN`, `BACKLOT_ATLASSIAN_SITE`. See `backlot/config.py`.
 
 Document visibility is **not** configurable: it comes from the corpus itself — each record's
 `visibility` / `readers` for a BYO corpus, or the bench's own ownership fields for an ERB import
 (see "Auth & tokens").
 For a BYO corpus the org name/domain are inferred from the dominant author email domain unless
-`MOCK_ORG_NAME` / `MOCK_ORG_DOMAIN` are set; the Atlassian site host and GitHub repo owner then
+`BACKLOT_ORG_NAME` / `BACKLOT_ORG_DOMAIN` are set; the Atlassian site host and GitHub repo owner then
 follow the org (`<org>.atlassian.net`, and the owner echoed from the request path).
 
 ## Limitations (by design)
@@ -393,7 +393,7 @@ follow the org (`<org>.atlassian.net`, and the owner echoed from the request pat
   example in the repo and a dedicated CI job runs it. `LinearClient` has no base-URL option, so it
   is pointed at the mock by extending `LinearSdk` with a custom request function — Linear's own
   documented pattern. There is also no MCP story: Linear's official MCP server is remote-hosted at
-  `https://mcp.linear.app/mcp` with no URL override, so no mock can substitute for it.
+  `https://mcp.linear.backlot/mcp` with no URL override, so no mock can substitute for it.
 - Fireflies is **GraphQL-only** and, like Linear, read-only — no `Mutation` type at all. Two
   things set it apart from every other GraphQL source here and clients depend on both: pagination
   is **offset-based** (`limit`, capped at 50 and *clamped* rather than rejected, plus `skip`) and

@@ -1935,16 +1935,11 @@ def test_append_accumulates_source_documents(tmp_path):
 
 
 def test_hello_corpus_loads_and_covers_every_source(tmp_path):
-    """The wheel's built-in corpus must load and exercise all eleven sources."""
-    from backlot import store
-    from backlot.config import Settings
-    from backlot.importer.byo import load
+    """The wheel's built-in corpus must load and exercise all ten sources it covers.
 
-    hello = Path(__file__).resolve().parent.parent / "backlot" / "data" / "hello.jsonl"
-    settings = Settings(data_dir=tmp_path)
-    load(hello, settings)
-    conn = store.connect_ro(settings.db_path)
-    for src in (
+    Ten, not eleven: the hello-world corpus deliberately omits fireflies.
+    """
+    hello_sources = (
         "slack",
         "gmail",
         "google_drive",
@@ -1955,23 +1950,17 @@ def test_hello_corpus_loads_and_covers_every_source(tmp_path):
         "linear",
         "hubspot",
         "s3",
-    ):
-        n = conn.execute(f"SELECT COUNT(*) FROM {store.table(src)}").fetchone()[0]
+    )
+    hello = Path(__file__).resolve().parent.parent / "backlot" / "data" / "hello.jsonl"
+    settings = Settings(data_dir=tmp_path)
+    load(hello, settings)
+    conn = store.connect_ro(settings.db_path)
+    counts = {
+        src: conn.execute(f"SELECT COUNT(*) FROM {store.table(src)}").fetchone()[0]
+        for src in hello_sources
+    }
+    for src, n in counts.items():
         assert n > 0, f"hello corpus has no {src} rows"
     # The two counts must differ, or the corpus does not demonstrate the parsing layer.
-    assert int(store.read_meta(conn, "source_documents")) < sum(
-        conn.execute(f"SELECT COUNT(*) FROM {store.table(s)}").fetchone()[0]
-        for s in (
-            "slack",
-            "gmail",
-            "google_drive",
-            "github",
-            "jira",
-            "confluence",
-            "notion",
-            "linear",
-            "hubspot",
-            "s3",
-        )
-    )
+    assert int(store.read_meta(conn, "source_documents")) < sum(counts.values())
     conn.close()

@@ -66,6 +66,26 @@ def test_mock_server_token_reflects_a_custom_admin_token(monkeypatch):
             assert json.load(r)["ok"] is True
 
 
+def test_serve_or_connect_fetches_a_remote_servers_real_admin_token(monkeypatch):
+    """Regression: serve_or_connect's remote branch used to return the hardcoded Settings
+    default as a GUESS for any remote server, even though the server exposes its real
+    admin_token at GET /_mock/users (the same endpoint examples/using-official-sdk/s3.py already
+    points users at, for exactly this purpose). Start a server configured with a non-default
+    token, then connect to it via --url and confirm the returned token is the real one fetched
+    from the server, not the guess."""
+    monkeypatch.setenv("BACKLOT_ADMIN_TOKEN", "remote-real-token")
+    with backlot.mock_server() as server:
+        with backlot.serve_or_connect(url=server.base_url) as m:
+            assert m.token == "remote-real-token"
+            assert m.token != "admin-service-token"  # the old guess would have returned this
+            req = urllib.request.Request(
+                f"{m.base_url}/slack/api/auth.test",
+                headers={"Authorization": f"Bearer {m.token}"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                assert json.load(r)["ok"] is True
+
+
 def test_two_servers_get_different_ports():
     with backlot.mock_server() as a, backlot.mock_server() as b:
         assert a.base_url != b.base_url

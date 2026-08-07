@@ -148,6 +148,18 @@ def _ensure_google_build_wrapped() -> None:
     on the first call (checked via `_backlot_wrapped` on the symbol) and every call after that is
     a no-op here; the actual redirection happens through `_MOCK_SERVICE_ENDPOINTS`, updated by the
     caller after this returns.
+
+    Clears `_MOCK_SERVICE_ENDPOINTS` whenever it (re)installs — i.e. exactly when `discovery.build`
+    does NOT already carry the wrapper. That happens not just on the very first call, but also
+    whenever something has reset `discovery.build` back to a plain callable since the wrapper was
+    last installed — the tests in this repo do exactly that in a `finally:` block to undo a patch.
+    Without the clear, entries set by a wrapper that's since been discarded would outlive it: e.g.
+    `point_gmail_at(A)` installs the wrapper and registers "gmail"; something resets
+    `discovery.build` directly; `point_drive_at(B)` alone reinstalls the wrapper (a fresh symbol,
+    same dict) and registers "drive" — leaving a stale "gmail" -> A in the dict even though gmail
+    was never touched in this round, and the reinstalled wrapper would silently honour it. The dict
+    is process-global; the wrapper closure was not, before this function existed — reinstalling it
+    is the only observable signal that the previous installation is gone, so that's the signal used.
     """
     from google.api_core.client_options import ClientOptions
     from googleapiclient import discovery
@@ -155,6 +167,7 @@ def _ensure_google_build_wrapped() -> None:
     if getattr(discovery.build, "_backlot_wrapped", False):
         return
 
+    _MOCK_SERVICE_ENDPOINTS.clear()
     _real_build = discovery.build
 
     def _build(*args, **kwargs):

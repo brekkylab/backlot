@@ -110,6 +110,45 @@ def test_point_gmail_and_drive_at_each_redirect_their_own_service():
         discovery.build = original
 
 
+def test_google_build_registry_does_not_survive_a_direct_uninstall():
+    """Regression: `_MOCK_SERVICE_ENDPOINTS` is a module-level dict that could outlive the wrapper
+    reading it — unlike the old per-function closures, which were discarded whenever
+    `discovery.build` was reset. Reproduction: point_gmail_at(A) installs the wrapper and
+    registers "gmail" -> A; something resets `discovery.build` directly (exactly what this file's
+    own tests do in `finally:` to undo a patch); point_drive_at(B) ALONE reinstalls the wrapper and
+    registers "drive" -> B. Gmail must NOT still resolve to the stale A in this new round, since
+    gmail was never touched in it.
+    """
+    pytest.importorskip("googleapiclient")
+    from googleapiclient import discovery
+
+    from backlot.integrations.llamaindex import point_drive_at, point_gmail_at
+
+    calls = {}
+
+    def _fake_real_build(service_name, version, **kwargs):
+        calls[service_name] = kwargs.get("client_options")
+        return object()
+
+    original = discovery.build
+    discovery.build = _fake_real_build
+    try:
+        point_gmail_at("http://127.0.0.1:1111")
+        discovery.build = _fake_real_build  # direct uninstall, as this file's own tests do
+
+        point_drive_at("http://127.0.0.1:2222")
+        discovery.build("gmail", "v1")
+
+        resolved = calls.get("gmail")
+        endpoint = getattr(resolved, "api_endpoint", None)
+        assert endpoint is None, (
+            f"gmail should not be redirected in this round — it was never called after the "
+            f"uninstall — but resolved via a stale registry entry: {endpoint!r}"
+        )
+    finally:
+        discovery.build = original
+
+
 def test_patch_linear_at_only_rewrites_linear_urls():
     pytest.importorskip("llama_index.readers.linear")
     import llama_index.readers.linear.base as lb

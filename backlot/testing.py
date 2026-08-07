@@ -37,9 +37,11 @@ from pathlib import Path
 from backlot.config import Settings
 
 HELLO_CORPUS = Path(__file__).resolve().parent / "data" / "hello.jsonl"
-# Settings default; per-user tokens are in <data_dir>/tokens.yaml. Used as the last-resort GUESS
-# for serve_or_connect()'s remote branch (see MockServer.token's docstring) — mock_server() itself
-# reads the real value via Settings() below rather than trusting this constant.
+# Settings default; per-user tokens are in <data_dir>/tokens.yaml. Used only as the LAST-RESORT
+# fallback in serve_or_connect()'s remote branch, when that server's GET /_mock/users is disabled
+# (BACKLOT_EXPOSE_TOKENS=false — a legitimate configuration, not a failure this process can tell
+# apart from one any other way). mock_server() itself never falls back to this: it reads the real
+# value via Settings() below.
 TOKEN = "admin-service-token"
 
 # How long mock_server()'s local readiness poll waits for each attempt, and how many attempts it
@@ -54,14 +56,17 @@ _LOCAL_HEALTH_ATTEMPTS = 100
 class MockServer:
     """A reachable Backlot server. ``data_dir`` is None when connected to a remote one.
 
-    ``token`` is MEASURED, not assumed, when this process started the server itself
-    (``mock_server()``): it reads ``Settings().admin_token`` with the same environment / cwd
-    ``.env`` the subprocess inherits, so a caller's ``BACKLOT_ADMIN_TOKEN`` override is reflected
-    correctly. When instead connecting to an already-running remote server
-    (``serve_or_connect``'s remote-``url`` branch), this process never configured that server and
-    has no way to inspect it, so ``token`` there is only a GUESS — the ``Settings`` default — and
-    is wrong if that server's operator overrode ``BACKLOT_ADMIN_TOKEN``. Residual risk, not fixed
-    here: there is no way to ask a remote server what its admin token is.
+    ``token`` is MEASURED, not assumed, in both cases where that's possible. For a server this
+    process started (``mock_server()``), it reads ``Settings().admin_token`` with the same
+    environment / cwd ``.env`` the subprocess inherits, so a caller's ``BACKLOT_ADMIN_TOKEN``
+    override is reflected correctly. For an already-running remote server
+    (``serve_or_connect``'s remote-``url`` branch), it is fetched from that server's own
+    ``GET /_mock/users`` — a mock-only affordance (``backlot/main.py``) that already serves
+    ``admin_token`` for exactly this purpose (``examples/using-official-sdk/s3.py`` tells users to
+    get credentials from that endpoint for a remote server they didn't start). Only when that
+    endpoint is disabled (``BACKLOT_EXPOSE_TOKENS=false`` — a legitimate configuration) does
+    ``token`` fall back to the ``Settings`` default as a GUESS, wrong if that server's operator
+    also overrode ``BACKLOT_ADMIN_TOKEN``.
     """
 
     base_url: str
@@ -98,6 +103,23 @@ def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+
+
+def _admin_token_from_mock_users(url: str, timeout: float = 10) -> str | None:
+    """Fetch the real admin token from a remote server's own ``GET /_mock/users`` — the same
+    affordance ``examples/using-official-sdk/s3.py`` already points users at for a remote
+    server's credentials. Returns None (not raises) if the endpoint 404s
+    (``BACKLOT_EXPOSE_TOKENS=false``, a legitimate configuration, not an error) or the response
+    is otherwise unusable, so the caller can fall back to a guess rather than fail the connect."""
+    try:
+        with urllib.request.urlopen(f"{url.rstrip('/')}/_mock/users", timeout=timeout) as r:
+            if r.status != 200:
+                return None
+            data = json.loads(r.read())
+        token = data.get("admin_token")
+        return token if isinstance(token, str) else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _healthy(url: str, timeout: float = 10) -> bool:
@@ -186,11 +208,13 @@ def serve_or_connect(records: list[dict] | None = None, url: str | None = None):
         _ensure_cert_bundle()
         if _healthy(url):
             print(f"using Backlot at {url}")
-            # TOKEN is a GUESS here, not a measurement (see MockServer.token's docstring): this
-            # process didn't start `url`'s server and has no way to ask it what its admin token
-            # is. Correct only if that server is running with the Settings default; wrong if its
-            # operator set BACKLOT_ADMIN_TOKEN.
-            yield MockServer(base_url=url.rstrip("/"), token=TOKEN, data_dir=None)
+            # Fetched, not guessed, when possible (see MockServer.token's docstring): GET
+            # /_mock/users on the remote server reports its real admin_token. Falls back to the
+            # Settings-default GUESS only if that endpoint is disabled
+            # (BACKLOT_EXPOSE_TOKENS=false) — a legitimate configuration this process cannot tell
+            # apart from any other reason the endpoint might be unreachable.
+            token = _admin_token_from_mock_users(url) or TOKEN
+            yield MockServer(base_url=url.rstrip("/"), token=token, data_dir=None)
             return
         print(f"--url {url!r} is not reachable — falling back to a local server")
     with mock_server(records) as m:

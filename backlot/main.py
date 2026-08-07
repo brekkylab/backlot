@@ -283,9 +283,13 @@ async def health():
     # O(1): return the cached per-source counts (see lifespan). `by_source` is {} for the brief
     # window after a cold start until the background count finishes.
     #
-    # Two counts, deliberately. `documents` is rows — what the APIs serve. `source_documents` is
-    # what the corpus offered, which is smaller because faithful parsing turns one Slack transcript
-    # into many message rows. Publishing only the larger number reads as inflation.
+    # Two counts, deliberately. `documents` sums store.SOURCE_TABLE only — the 11 root-document
+    # tables. It does NOT include store.COMMENT_TABLE (jira/confluence/github/notion/linear
+    # comments, fireflies_sentences): those rows are served too, each with its own vendor
+    # endpoint, but they're children of a root doc rather than documents themselves, so they
+    # aren't counted here. `source_documents` is what the corpus offered, which is smaller than
+    # `documents` because faithful parsing turns one Slack transcript into many message rows.
+    # Publishing only the larger of the two reads as inflation, which is why both are reported.
     counts = getattr(app.state, "doc_counts", None)
     body = {"status": "ok", "source_documents": getattr(app.state, "source_documents", None)}
     if counts is not None:

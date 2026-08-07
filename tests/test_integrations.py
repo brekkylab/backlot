@@ -77,6 +77,39 @@ def test_point_gmail_at_is_idempotent():
         discovery.build = original
 
 
+def test_point_gmail_and_drive_at_each_redirect_their_own_service():
+    """Regression: point_gmail_at and point_drive_at used to wrap the same
+    googleapiclient.discovery.build behind one shared `_points_at_mock` flag, so whichever ran
+    second found the flag already set and silently no-opped — leaving its service pointed at the
+    OTHER function's endpoint. Confirmed failing on the pre-fix code: calling gmail@1111 then
+    drive@2222 left `build("drive", ...)` resolving to 1111, Gmail's endpoint, not 2222/drive/v3.
+    """
+    pytest.importorskip("googleapiclient")
+    from googleapiclient import discovery
+
+    from backlot.integrations.llamaindex import point_drive_at, point_gmail_at
+
+    calls = {}
+
+    def _fake_real_build(service_name, version, **kwargs):
+        calls[service_name] = kwargs["client_options"].api_endpoint
+        return object()
+
+    original = discovery.build
+    discovery.build = _fake_real_build
+    try:
+        point_gmail_at("http://127.0.0.1:1111")
+        point_drive_at("http://127.0.0.1:2222")
+
+        discovery.build("gmail", "v1")
+        discovery.build("drive", "v3")
+
+        assert calls["gmail"] == "http://127.0.0.1:1111", calls
+        assert calls["drive"] == "http://127.0.0.1:2222/drive/v3", calls
+    finally:
+        discovery.build = original
+
+
 def test_patch_linear_at_only_rewrites_linear_urls():
     pytest.importorskip("llama_index.readers.linear")
     import llama_index.readers.linear.base as lb

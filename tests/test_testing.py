@@ -49,6 +49,23 @@ def test_mock_server_token_authenticates():
             assert json.load(r)["ok"] is True
 
 
+def test_mock_server_token_reflects_a_custom_admin_token(monkeypatch):
+    """Regression: MockServer.token used to be the hardcoded Settings default even when the
+    caller's environment configured a different admin token — mock_server() passes os.environ
+    through to the subprocess, so the SERVER enforced "some-other-token" while the returned
+    MockServer.token still said "admin-service-token". The failure mode isn't an exception:
+    Slack fidelity means auth.test returns HTTP 200 with {"ok": false, "error": "not_authed"},
+    which reads as the caller's own mistake rather than a mock_server() bug."""
+    monkeypatch.setenv("BACKLOT_ADMIN_TOKEN", "some-other-token")
+    with backlot.mock_server() as m:
+        assert m.token == "some-other-token"
+        req = urllib.request.Request(
+            f"{m.base_url}/slack/api/auth.test", headers={"Authorization": f"Bearer {m.token}"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert json.load(r)["ok"] is True
+
+
 def test_two_servers_get_different_ports():
     with backlot.mock_server() as a, backlot.mock_server() as b:
         assert a.base_url != b.base_url

@@ -1,14 +1,18 @@
-"""Guard the packaging-data class of bug, not just one instance of it.
+"""Guard one shape of the packaging-data class of bug: a file inside the package with no matching
+package-data glob.
 
-``backlot/config.py``'s ``data_dir`` default, then ``backlot/validation.py``'s ``SCHEMA_DIR``,
-then ``backlot/graphql/{linear,fireflies}.graphql`` all resolved to a location that a wheel never
-actually contained — each one shipped fine from a checkout and broke only once installed, because
-nothing here runs a real build. This test enumerates every non-``.py`` file ``git`` tracks under
-``backlot/`` and asserts ``pyproject.toml``'s ``[tool.setuptools.package-data]`` covers it, so the
-next asset added under ``backlot/`` without a matching glob fails in the normal suite instead of
-waiting for someone to install a wheel outside this repo. It deliberately reads tracked files, not
-a directory walk: ``backlot/.DS_Store`` (editor cruft, untracked, ``.gitignore``d) must not fail
-this on a colleague's machine.
+``backlot/validation.py``'s ``SCHEMA_DIR`` and ``backlot/graphql/{linear,fireflies}.graphql`` both
+resolved to a location that a wheel never actually contained — each one shipped fine from a
+checkout and broke only once installed, because nothing here runs a real build. This test
+enumerates every non-``.py`` file ``git`` tracks under ``backlot/`` and asserts ``pyproject.toml``'s
+``[tool.setuptools.package-data]`` covers it, so the next asset added under ``backlot/`` without a
+matching glob fails in the normal suite instead of waiting for someone to install a wheel outside
+this repo. It deliberately reads tracked files, not a directory walk: ``backlot/.DS_Store`` (editor
+cruft, untracked, ``.gitignore``d) must not fail this on a colleague's machine.
+
+A third instance from the same bug hunt, ``backlot/config.py``'s ``data_dir`` default, is a
+different shape — a path resolving *outside* the package entirely — which enumerating files
+*inside* the package cannot catch. ``tests/test_config.py`` guards that one.
 """
 
 from __future__ import annotations

@@ -128,6 +128,47 @@ def patch_s3fs_walk() -> None:
     S3FileSystem._walk = _walk
 
 
+# googleapiclient serviceName ("gmail" / "drive") -> the api_endpoint it should be built with.
+# Consulted, at call time, by the ONE shared wrapper `_ensure_google_build_wrapped` installs.
+#
+# point_gmail_at and point_drive_at used to each wrap `discovery.build` independently, guarded by
+# the same `_points_at_mock` flag on the symbol. That flag records only THAT a wrapper is
+# installed, not which function installed it or which endpoint it points at — so whichever ran
+# second found the flag already set, returned immediately, and left its service silently pointed
+# at the OTHER function's endpoint (Drive traffic hitting Gmail's `api_endpoint`, or vice versa).
+# A per-service registry keyed by the `serviceName` `build()` is actually invoked with — llama-index
+# calls `build("gmail", "v1", ...)` / `build("drive", "v3", ...)`, confirmed by reading both
+# readers' source — lets both stay active at once, in either order, through one wrapper.
+_MOCK_SERVICE_ENDPOINTS: dict[str, str] = {}
+
+
+def _ensure_google_build_wrapped() -> None:
+    """Install the shared `googleapiclient.discovery.build` wrapper, once. Safe to call from both
+    `point_gmail_at` and `point_drive_at`, in either order, any number of times — it only wraps
+    on the first call (checked via `_backlot_wrapped` on the symbol) and every call after that is
+    a no-op here; the actual redirection happens through `_MOCK_SERVICE_ENDPOINTS`, updated by the
+    caller after this returns.
+    """
+    from google.api_core.client_options import ClientOptions
+    from googleapiclient import discovery
+
+    if getattr(discovery.build, "_backlot_wrapped", False):
+        return
+
+    _real_build = discovery.build
+
+    def _build(*args, **kwargs):
+        service_name = args[0] if args else kwargs.get("serviceName")
+        endpoint = _MOCK_SERVICE_ENDPOINTS.get(service_name)
+        if endpoint is not None:
+            kwargs.setdefault("static_discovery", True)
+            kwargs["client_options"] = ClientOptions(api_endpoint=endpoint)
+        return _real_build(*args, **kwargs)
+
+    _build._backlot_wrapped = True
+    discovery.build = _build
+
+
 def point_gmail_at(base_url: str) -> None:
     """Redirect GmailReader at the mock.
 
@@ -140,29 +181,21 @@ def point_gmail_at(base_url: str) -> None:
     effect as patching `gm.build` would. Injects `client_options(api_endpoint=...)` +
     `static_discovery=True`, same as `examples/using-official-sdk/gmail.py` (for Gmail the api_endpoint is
     the base itself, NOT `base + /gmail/v1` — the bundled discovery doc's rootUrl is replaced and
-    the client appends `/gmail/v1`). Idempotent; fails loudly if the target `build` symbol is
-    gone rather than silently letting the reader hit real googleapis.com.
+    the client appends `/gmail/v1`).
+
+    The wrap point is SHARED with `point_drive_at` (see `_ensure_google_build_wrapped`) — both can
+    be active at once, in either order, and each redirects only its own service. Idempotent for
+    repeated calls with the same URL; fails loudly if the target `build` symbol is gone rather
+    than silently letting the reader hit real googleapis.com.
     """
-    from google.api_core.client_options import ClientOptions
     from googleapiclient import discovery
 
-    base = base_url.rstrip("/")
     if not hasattr(discovery, "build"):
         raise RuntimeError(
             "point_gmail_at: googleapiclient.discovery.build is gone — update the shim"
         )
-    if getattr(discovery.build, "_points_at_mock", False):
-        return
-
-    _real_build = discovery.build
-
-    def _build(*args, **kwargs):
-        kwargs.setdefault("static_discovery", True)
-        kwargs["client_options"] = ClientOptions(api_endpoint=base)  # gmail: rootUrl replaced
-        return _real_build(*args, **kwargs)
-
-    _build._points_at_mock = True
-    discovery.build = _build
+    _ensure_google_build_wrapped()
+    _MOCK_SERVICE_ENDPOINTS["gmail"] = base_url.rstrip("/")  # gmail: rootUrl replaced as-is
 
 
 def point_drive_at(base_url: str) -> None:
@@ -178,29 +211,21 @@ def point_drive_at(base_url: str) -> None:
     currently is at call time. KEY DIFFERENCE from Gmail: Drive's bundled discovery doc's rootUrl
     already carries the `/drive/v3` service path, so the replacement `api_endpoint` must include
     it (`base + "/drive/v3"`); Gmail's api_endpoint is the base with no suffix (see
-    `examples/using-official-sdk/gdrive.py` vs `gmail.py`). Idempotent; fails loudly if the target `build`
-    symbol is gone rather than silently letting the reader hit real googleapis.com.
+    `examples/using-official-sdk/gdrive.py` vs `gmail.py`).
+
+    The wrap point is SHARED with `point_gmail_at` (see `_ensure_google_build_wrapped`) — both can
+    be active at once, in either order, and each redirects only its own service. Idempotent for
+    repeated calls with the same URL; fails loudly if the target `build` symbol is gone rather
+    than silently letting the reader hit real googleapis.com.
     """
-    from google.api_core.client_options import ClientOptions
     from googleapiclient import discovery
 
-    base = base_url.rstrip("/")
     if not hasattr(discovery, "build"):
         raise RuntimeError(
             "point_drive_at: googleapiclient.discovery.build is gone — update the shim"
         )
-    if getattr(discovery.build, "_points_at_mock", False):
-        return
-
-    _real_build = discovery.build
-
-    def _build(*args, **kwargs):
-        kwargs.setdefault("static_discovery", True)
-        kwargs["client_options"] = ClientOptions(api_endpoint=f"{base}/drive/v3")
-        return _real_build(*args, **kwargs)
-
-    _build._points_at_mock = True
-    discovery.build = _build
+    _ensure_google_build_wrapped()
+    _MOCK_SERVICE_ENDPOINTS["drive"] = f"{base_url.rstrip('/')}/drive/v3"
 
 
 def patch_notion_at(base_url: str) -> None:

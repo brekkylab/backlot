@@ -34,8 +34,13 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from backlot.config import Settings
+
 HELLO_CORPUS = Path(__file__).resolve().parent / "data" / "hello.jsonl"
-TOKEN = "admin-service-token"  # Settings default; per-user tokens are in <data_dir>/tokens.yaml
+# Settings default; per-user tokens are in <data_dir>/tokens.yaml. Used as the last-resort GUESS
+# for serve_or_connect()'s remote branch (see MockServer.token's docstring) — mock_server() itself
+# reads the real value via Settings() below rather than trusting this constant.
+TOKEN = "admin-service-token"
 
 # How long mock_server()'s local readiness poll waits for each attempt, and how many attempts it
 # makes. A subprocess that hasn't bound its port yet refuses the connection almost instantly, so
@@ -47,7 +52,17 @@ _LOCAL_HEALTH_ATTEMPTS = 100
 
 @dataclass(frozen=True)
 class MockServer:
-    """A reachable Backlot server. ``data_dir`` is None when connected to a remote one."""
+    """A reachable Backlot server. ``data_dir`` is None when connected to a remote one.
+
+    ``token`` is MEASURED, not assumed, when this process started the server itself
+    (``mock_server()``): it reads ``Settings().admin_token`` with the same environment / cwd
+    ``.env`` the subprocess inherits, so a caller's ``BACKLOT_ADMIN_TOKEN`` override is reflected
+    correctly. When instead connecting to an already-running remote server
+    (``serve_or_connect``'s remote-``url`` branch), this process never configured that server and
+    has no way to inspect it, so ``token`` there is only a GUESS — the ``Settings`` default — and
+    is wrong if that server's operator overrode ``BACKLOT_ADMIN_TOKEN``. Residual risk, not fixed
+    here: there is no way to ask a remote server what its admin token is.
+    """
 
     base_url: str
     token: str
@@ -106,6 +121,13 @@ def mock_server(records: list[dict] | None = None):
             corpus = Path(data_dir) / "corpus.jsonl"
             corpus.write_text("\n".join(json.dumps(r) for r in records))
         env = {**os.environ, "BACKLOT_DATA_DIR": data_dir}
+        # Read with the SAME env + cwd the subprocess below inherits (only BACKLOT_DATA_DIR
+        # differs, and that doesn't affect admin_token), so this resolves to whatever token the
+        # server will actually enforce — a caller's BACKLOT_ADMIN_TOKEN env var or a .env in
+        # their cwd both change it (Settings declares env_file=".env"), and the returned
+        # MockServer.token must track that: otherwise a caller's first authenticated call fails
+        # with HTTP 200 / {"ok": false} (Slack fidelity), which reads as the caller's own mistake.
+        token = Settings().admin_token
         # No cwd= : the modules resolve through the installed package, so this works from
         # site-packages exactly as it does from a checkout.
         subprocess.run(
@@ -148,7 +170,7 @@ def mock_server(records: list[dict] | None = None):
                 time.sleep(0.1)
             else:
                 raise RuntimeError(f"Backlot did not become ready on {base}")
-            yield MockServer(base_url=base, token=TOKEN, data_dir=Path(data_dir))
+            yield MockServer(base_url=base, token=token, data_dir=Path(data_dir))
         finally:
             _terminate(proc)
 
@@ -164,6 +186,10 @@ def serve_or_connect(records: list[dict] | None = None, url: str | None = None):
         _ensure_cert_bundle()
         if _healthy(url):
             print(f"using Backlot at {url}")
+            # TOKEN is a GUESS here, not a measurement (see MockServer.token's docstring): this
+            # process didn't start `url`'s server and has no way to ask it what its admin token
+            # is. Correct only if that server is running with the Settings default; wrong if its
+            # operator set BACKLOT_ADMIN_TOKEN.
             yield MockServer(base_url=url.rstrip("/"), token=TOKEN, data_dir=None)
             return
         print(f"--url {url!r} is not reachable — falling back to a local server")

@@ -10,6 +10,7 @@ not merely that it filters something.
 from __future__ import annotations
 
 import json
+from urllib.parse import urlparse
 
 import pytest
 
@@ -111,9 +112,18 @@ def test_linear_issue_by_uuid_and_by_identifier(client, admin_h):
 
 def test_linear_issue_url_is_the_real_vendor_domain(client, admin_h):
     """Regression: a rename's blind substitution once turned every served `url` field into
-    `linear.backlot`. The domain is real Linear infrastructure, not the mock's own name."""
+    `linear.backlot`. Asserted on the parsed host (no trailing slash) rather than a URL literal,
+    because the vulnerable pattern is the literal characters `app` immediately followed by a
+    slash — spelling that combination anywhere, even in a comment, makes a repeat of the bug
+    rewrite it right alongside the code it guards. A bare `"linear.app"` with nothing appended
+    has no slash for the pattern to land on, so it survives. The `"backlot" not in host` half is
+    the one that actually matters: a rename can only ever INTRODUCE the mock's own name into a
+    vendor domain, never remove it, so no mechanical substitution can turn that assertion from
+    failing into passing."""
     issue = gql(client, '{ issue(id: "ENG-101") { url } }', admin_h).json()["data"]["issue"]
-    assert issue["url"].startswith("https://linear.app/")
+    host = urlparse(issue["url"]).netloc
+    assert host == "linear.app"
+    assert "backlot" not in host
 
 
 def test_linear_missing_issue_is_a_field_error_not_a_400(client, admin_h):

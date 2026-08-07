@@ -1,4 +1,5 @@
 import hashlib
+from urllib.parse import urlparse
 
 from backlot import synth
 
@@ -127,8 +128,14 @@ def test_gmail_message_id_stays_in_range_across_many_docs():
 
 
 def test_linear_url_is_the_real_vendor_domain():
-    """Regression: a rename's blind substitution once turned this into `linear.backlot`. The
-    domain is real Linear infrastructure, not the mock's own name, and must never move."""
-    assert synth.linear_url("ENG-1", "fix the thing", org="acme").startswith(
-        "https://linear.app/acme/issue/"
-    )
+    """Regression: a rename's blind substitution once turned this into `linear.backlot`. Asserted
+    on the parsed host (no trailing slash) rather than a URL literal, because the vulnerable
+    pattern is the literal characters `app` immediately followed by a slash — spelling that
+    combination anywhere, even in a comment, makes a repeat of the bug rewrite it right alongside
+    the code it guards. A bare `"linear.app"` with nothing appended has no slash for the pattern
+    to land on, so it survives. The `"backlot" not in host` half is the one that actually
+    matters: a rename can only ever INTRODUCE the mock's own name into a vendor domain, never
+    remove it, so no mechanical substitution can turn that assertion from failing into passing."""
+    host = urlparse(synth.linear_url("ENG-1", "fix the thing", org="acme")).netloc
+    assert host == "linear.app"
+    assert "backlot" not in host

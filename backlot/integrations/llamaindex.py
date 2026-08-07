@@ -1,4 +1,4 @@
-"""Point official LlamaIndex readers at an enterprise-mock server.
+"""Point official LlamaIndex readers at a Backlot server.
 
 Each `llama-index-readers-*` package normally targets a real SaaS host. Four take a custom host
 via constructor args (GitHub `base_url`, Jira `PATauth.server_url`, Confluence `base_url`, S3
@@ -11,30 +11,11 @@ says what seam it uses and why that one:
     `client_options(api_endpoint=...)`.
   - Notion: `patch_notion_at` — rebind the module-level URL constants.
   - Linear: `patch_linear_at` — swap the module's `requests` for a URL-rewriting proxy.
-
-Also re-exports the serve/credential helpers from `examples/_common/mockserver.py`, so every
-example shares one `--url` / `--token` behaviour and one local fallback.
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-# examples/ on sys.path, for the shared mock plumbing in _common/.
-_EXAMPLES = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_EXAMPLES))
-
-from _common.mockserver import (  # noqa: E402
-    google_oauth_user,
-    google_service_account_info,
-    serve_or_connect,
-)
-
 __all__ = [
-    "serve_or_connect",
-    "google_oauth_user",
-    "google_service_account_info",
     "slack_base_url",
     "slack_reader_at",
     "notion_base_url",
@@ -42,7 +23,6 @@ __all__ = [
     "github_base_url",
     "atlassian_base_url",
     "linear_base_url",
-    "drop_self_from_syspath",
     "point_gmail_at",
     "point_drive_at",
     "patch_notion_at",
@@ -128,7 +108,7 @@ def patch_s3fs_walk() -> None:
 
     from s3fs.core import S3FileSystem
 
-    if getattr(S3FileSystem._walk, "_mock_patched", False):
+    if getattr(S3FileSystem._walk, "_backlot_patched", False):
         return
 
     ls_params = inspect.signature(S3FileSystem._ls).parameters
@@ -144,7 +124,7 @@ def patch_s3fs_walk() -> None:
         async for item in _original_walk(self, path, *args, **kwargs):
             yield item
 
-    _walk._mock_patched = True
+    _walk._backlot_patched = True
     S3FileSystem._walk = _walk
 
 
@@ -158,7 +138,7 @@ def point_gmail_at(base_url: str) -> None:
     Wrap `googleapiclient.discovery.build` itself instead — the local import re-reads whatever
     that symbol currently is at call time, so patching it one level up the chain has the same
     effect as patching `gm.build` would. Injects `client_options(api_endpoint=...)` +
-    `static_discovery=True`, same as `using-official-sdk/gmail.py` (for Gmail the api_endpoint is
+    `static_discovery=True`, same as `examples/using-official-sdk/gmail.py` (for Gmail the api_endpoint is
     the base itself, NOT `base + /gmail/v1` — the bundled discovery doc's rootUrl is replaced and
     the client appends `/gmail/v1`). Idempotent; fails loudly if the target `build` symbol is
     gone rather than silently letting the reader hit real googleapis.com.
@@ -198,7 +178,7 @@ def point_drive_at(base_url: str) -> None:
     currently is at call time. KEY DIFFERENCE from Gmail: Drive's bundled discovery doc's rootUrl
     already carries the `/drive/v3` service path, so the replacement `api_endpoint` must include
     it (`base + "/drive/v3"`); Gmail's api_endpoint is the base with no suffix (see
-    `using-official-sdk/gdrive.py` vs `gmail.py`). Idempotent; fails loudly if the target `build`
+    `examples/using-official-sdk/gdrive.py` vs `gmail.py`). Idempotent; fails loudly if the target `build`
     symbol is gone rather than silently letting the reader hit real googleapis.com.
     """
     from google.api_core.client_options import ClientOptions
@@ -266,8 +246,8 @@ def point_hubspot_at(base_url: str) -> None:
     import hubspot
 
     base = base_url.rstrip("/")
-    real = getattr(hubspot, "_enterprise_mock_real_HubSpot", hubspot.HubSpot)
-    hubspot._enterprise_mock_real_HubSpot = real  # idempotent across repeated calls
+    real = getattr(hubspot, "_backlot_real_HubSpot", hubspot.HubSpot)
+    hubspot._backlot_real_HubSpot = real  # idempotent across repeated calls
 
     def _at_mock(*a, **kw):
         kw.setdefault("host", base)
@@ -305,13 +285,13 @@ def patch_linear_at(base_url: str) -> None:
     import llama_index.readers.linear.base as lb
 
     base = base_url.rstrip("/")
-    real = getattr(lb, "_enterprise_mock_real_requests", None) or getattr(lb, "requests", None)
+    real = getattr(lb, "_backlot_real_requests", None) or getattr(lb, "requests", None)
     if real is None:
         raise RuntimeError(
             "patch_linear_at: llama_index.readers.linear.base no longer imports "
             "`requests` — update the shim before it hits api.linear.app"
         )
-    lb._enterprise_mock_real_requests = real  # idempotent across repeated calls
+    lb._backlot_real_requests = real  # idempotent across repeated calls
 
     class _RequestsAtMock:
         """Forwards everything to the real `requests`, rewriting only Linear's hardcoded URL."""
@@ -330,10 +310,3 @@ def patch_linear_at(base_url: str) -> None:
 def linear_base_url(base_url: str) -> str:
     """Linear GraphQL base for `patch_linear_at` — the reader appends `/graphql` itself."""
     return f"{base_url.rstrip('/')}/linear"
-
-
-def drop_self_from_syspath(file: str) -> None:
-    """Remove a script's own directory from sys.path so a file named `jira.py` / `github.py`
-    doesn't shadow the third-party `jira` / `github` package it (transitively) imports."""
-    here = Path(file).resolve().parent
-    sys.path[:] = [p for p in sys.path if p and Path(p).resolve() != here]

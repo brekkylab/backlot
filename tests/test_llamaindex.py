@@ -126,7 +126,7 @@ def _patch_s3fs_walk() -> None:
     Scoped to `S3FileSystem`, idempotent, and self-verifying — it no-ops if a future s3fs accepts
     `topdown`, so a fixed library's kwarg is never dropped.
 
-    Duplicated from `examples/using-llamaindex-readers/_llamaindex.py:patch_s3fs_walk` (tests
+    Duplicated from `backlot/integrations/llamaindex.py:patch_s3fs_walk` (tests
     don't import from examples)."""
     import inspect
 
@@ -177,7 +177,7 @@ def _patch_notion_at(base_url: str) -> None:
     URL constants (no base_url arg); rebind every one that points at api.notion.com. Fails loudly
     if the expected constants are gone (a reader upgrade), rather than hitting the real host.
 
-    Duplicated from `examples/using-llamaindex-readers/_llamaindex.py:patch_notion_at` (tests
+    Duplicated from `backlot/integrations/llamaindex.py:patch_notion_at` (tests
     don't import from examples)."""
     import llama_index.readers.notion.base as nb
 
@@ -272,7 +272,7 @@ def _point_gmail_at(base_url: str) -> None:
     rootUrl is replaced and the client appends the version. Fails loudly if the symbol is gone
     rather than letting the reader reach real googleapis.com.
 
-    Duplicated from `examples/using-llamaindex-readers/_llamaindex.py:point_gmail_at` (tests
+    Duplicated from `backlot/integrations/llamaindex.py:point_gmail_at` (tests
     don't import from examples)."""
     from google.api_core.client_options import ClientOptions
     from googleapiclient import discovery
@@ -365,7 +365,7 @@ def _point_drive_at(base_url: str) -> None:
     suffix. Idempotent; fails loudly if the target `build` symbol is gone rather than silently
     letting the reader hit real googleapis.com.
 
-    Duplicated from `examples/using-llamaindex-readers/_llamaindex.py:point_drive_at` (tests
+    Duplicated from `backlot/integrations/llamaindex.py:point_drive_at` (tests
     don't import from examples)."""
     from google.api_core.client_options import ClientOptions
     from googleapiclient import discovery
@@ -429,7 +429,7 @@ def test_gdrive(live_server):
 def test_linear(live_server):
     """`LinearReader` hardcodes `graphql_endpoint` as a LOCAL VARIABLE inside `load_data`, so the
     only seam is the module's `requests` import — swapped here for a URL-rewriting proxy (the same
-    thing `examples/.../_llamaindex.py:patch_linear_at` does; not imported, per the repo rule).
+    thing `backlot/integrations/llamaindex.py:patch_linear_at` does; not imported, per the repo rule).
 
     The reader subscripts every `extra_info` field directly, so a missing one is a KeyError. That
     is the whole point of the test.

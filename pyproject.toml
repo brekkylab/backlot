@@ -58,10 +58,11 @@ examples = [
 # Mirage examples (examples/using-mirage/): drive the mock through mirage's virtual filesystem.
 # The [fuse] extra (mfusepy) powers the optional `--fuse` real-OS-mount path; mounting also needs
 # an OS FUSE driver (macFUSE / fuse3), but the pure-Python dep installs fine everywhere.
-# Installed from GitHub (package under python/): the examples use SlackConfig.base_url, which
-# PyPI 0.0.3 predates. Pinned to a commit for reproducibility.
+# Pinned to a compatible release for reproducibility. The examples use SlackConfig.base_url,
+# which PyPI 0.0.3 predated a direct-URL git dependency for; 0.0.4 carries it (and declares
+# this same [fuse] extra), so a released version now covers what a git pin used to.
 mirage = [
-    "mirage-ai[fuse] @ git+https://github.com/strukto-ai/mirage.git@6846ffbe#subdirectory=python",
+    "mirage-ai[fuse]~=0.0.4",
 ]
 # MCP agent examples (examples/using-mcp-with-agents/): drive the mock through a real MCP server.
 mcp = [

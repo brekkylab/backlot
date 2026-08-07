@@ -19,6 +19,129 @@ jobs:
         # e2e tests self-skip when the data DB is absent; unit tests need no data.
         run: pytest -q
 
+  # The `test` job above installs editable (`pip install -e`), which leaves the source tree
+  # importable — so for any question about what the *wheel* actually contains, that job is
+  # indistinguishable from a plain checkout. Several defects only surfaced once the package was
+  # installed for real: a data-dir default that resolved inside site-packages, JSON Schemas and
+  # `.graphql` SDL files that sat outside `backlot/` and so no wheel could contain them (the
+  # latter made a bare `import backlot.main` raise `FileNotFoundError`), and a direct-URL
+  # dependency that PyPI rejects but `twine check` does not flag. This job builds the wheel,
+  # installs it into a venv OUTSIDE the checkout, and runs every subsequent check from a working
+  # directory the checkout cannot shadow — an editable install or a cwd inside the repo would
+  # prove nothing here, which is the entire point of a separate job.
+  wheel-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # ruff is not in the `dev` extra (nothing else in CI runs it), so install it explicitly
+      # alongside `build`.
+      - name: Install build tooling and ruff
+        run: pip install build ruff
+
+      # 1. Build the wheel.
+      - name: Build the wheel
+        run: python -m build --wheel
+
+      # 2. Read the built METADATA and fail on any direct-URL Requires-Dist. This is the PyPI
+      #    upload-policy check `twine check` does NOT perform — it validates metadata
+      #    well-formedness and README rendering, not this rule — which is why it must run here
+      #    rather than being assumed covered elsewhere.
+      - name: Reject direct-URL dependencies in the wheel's metadata
+        run: |
+          python - <<'PYEOF'
+          import glob
+          import sys
+          import zipfile
+
+          wheel = sorted(glob.glob("dist/*.whl"))[-1]
+          with zipfile.ZipFile(wheel) as zf:
+              name = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+              metadata = zf.read(name).decode()
+
+          bad = [
+              line for line in metadata.splitlines()
+              if line.startswith("Requires-Dist:") and " @ " in line
+          ]
+          if bad:
+              print("PyPI rejects direct-URL dependencies (twine check does not catch this):")
+              for line in bad:
+                  print(f"  {line}")
+              sys.exit(1)
+          print("No direct-URL Requires-Dist entries found.")
+          PYEOF
+
+      # 3. Install that wheel into a venv OUTSIDE the checkout (under $RUNNER_TEMP, not
+      #    $GITHUB_WORKSPACE). Steps 4-6 below also set working-directory to $RUNNER_TEMP, so
+      #    nothing that follows can silently resolve `backlot` back to the source tree.
+      - name: Install the wheel into a venv outside the checkout
+        run: |
+          python -m venv "${RUNNER_TEMP}/wheel-venv"
+          "${RUNNER_TEMP}/wheel-venv/bin/pip" install "$(ls dist/*.whl)"
+
+      # 4. A bare import. This is what the missing `.graphql` SDL files broke: `import
+      #    backlot.main` raised FileNotFoundError outright on a clean install.
+      - name: Import backlot.main outside the checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          "${RUNNER_TEMP}/wheel-venv/bin/python" -c "import backlot.main"
+
+      # 5. backlot.mock_server() with no arguments, one authenticated request through
+      #    MockServer.token, and /health reporting both document counts.
+      - name: Run the packaged mock server and authenticate against it
+        working-directory: ${{ runner.temp }}
+        run: |
+          "${RUNNER_TEMP}/wheel-venv/bin/python" - <<'PYEOF'
+          import json
+          import urllib.request
+
+          import backlot
+
+          with backlot.mock_server() as m:
+              req = urllib.request.Request(
+                  f"{m.base_url}/slack/api/auth.test",
+                  headers={"Authorization": f"Bearer {m.token}"},
+              )
+              with urllib.request.urlopen(req, timeout=10) as r:
+                  assert json.load(r)["ok"] is True, "auth.test did not authenticate"
+
+              with urllib.request.urlopen(f"{m.base_url}/health", timeout=10) as r:
+                  health = json.load(r)
+
+          assert "source_documents" in health, health
+          assert "documents" in health, health
+          print("health:", health)
+          PYEOF
+
+      # 6. Validate a BYO record through backlot.importer.byo, so the packaged JSON Schemas
+      #    (backlot/schemas/*.json) are exercised rather than assumed present.
+      - name: Validate a BYO record against the packaged JSON Schemas
+        working-directory: ${{ runner.temp }}
+        run: |
+          "${RUNNER_TEMP}/wheel-venv/bin/python" - <<'PYEOF'
+          from backlot.importer.byo import record_errors
+
+          record = {
+              "source_type": "confluence",
+              "space": "handbook",
+              "title": "CI smoke record",
+              "content": "Exercises the packaged JSON Schemas.",
+              "author_email": "ci@example.com",
+          }
+          errors = record_errors(record)
+          assert errors == [], errors
+          print("record_errors: []")
+          PYEOF
+
+      # 7. ruff — not run anywhere else in CI, despite the repo having a config for it.
+      - name: ruff format --check
+        run: ruff format --check .
+      - name: ruff check
+        run: ruff check .
+
   # The Linear example is the only non-Python client in the repo, because `@linear/sdk` is the
   # only client Linear publishes (there is no official Python SDK). pytest cannot drive it, so
   # this job is what keeps it honest — an unexecuted TypeScript example rots, and the reason for

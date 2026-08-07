@@ -132,3 +132,8 @@ filterwarnings = [
 
 [tool.setuptools.packages.find]
 include = ["backlot*"]
+
+[tool.setuptools.package-data]
+# The BYO corpus JSON Schemas (backlot/validation.py's SCHEMA_DIR) — the wheel must carry them or
+# every BYO record fails validation post-install. Task 6 extends this with `data/*.jsonl`.
+backlot = ["schemas/*.json"]

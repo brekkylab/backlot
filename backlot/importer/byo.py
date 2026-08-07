@@ -288,7 +288,7 @@ def _service_columns(
     if src == "hubspot":
         # The object type is the grouping column, so it is set by the caller like every other
         # container. HubSpot's typed fields stay in one JSON column because search filters may
-        # name any property (see schemas/hubspot.schema.json).
+        # name any property (see backlot/schemas/hubspot.schema.json).
         return {
             "properties": _j(ex.get("properties")),
             "archived": (1 if ex.get("archived") else None),
@@ -597,7 +597,7 @@ class _Loader:
         fts_ids, hs_types, hs_links = self.fts_ids, self.hs_types, self.hs_links
         lin_links = self.lin_links
         # Schema pre-validation: source_type/content/title, enums, comment/reply shapes,
-        # and unknown-key rejection all come from schemas/ (see backlot.validation).
+        # and unknown-key rejection all come from backlot/schemas/ (see backlot.validation).
         errors = record_errors(rec) if validate else []
         if errors:
             raise SystemExit(f"{where}: " + "; ".join(errors))

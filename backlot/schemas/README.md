@@ -65,7 +65,7 @@ import json
 from pathlib import Path
 import anthropic
 
-schema = json.loads(Path("schemas/confluence.schema.json").read_text())
+schema = json.loads(Path("backlot/schemas/confluence.schema.json").read_text())
 client = anthropic.Anthropic()
 
 msg = client.messages.parse(

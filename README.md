@@ -81,7 +81,7 @@ A runnable walkthrough (import → serve → query) is in
 ### Bring your own corpus
 
 Serve **any** document set: one JSONL document per line, validated against a per-service JSON
-Schema (`schemas/`), then loaded.
+Schema (`backlot/schemas/`), then loaded.
 
 ```bash
 python -m backlot.importer.byo mycorpus.jsonl              # validate + load -> data/
@@ -98,7 +98,7 @@ python -m backlot.importer.byo artifact-dir/               # a sharded corpus + 
 
 The record format (fields, ACL, Slack/Gmail threads), a runnable walkthrough (`run.py`), and a
 sample corpus are in [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus/); the
-schemas are in [`schemas/README.md`](schemas/README.md).
+schemas are in [`schemas/README.md`](backlot/schemas/README.md).
 
 The schema is expressive enough to hold an **entire existing dataset losslessly**, which is how the
 bench is redistributed in it:

@@ -12,13 +12,6 @@ from pathlib import Path
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Source-checkout root. NOT used for any Settings default below (those must resolve against the
-# CWD so an installed wheel — resolving here to site-packages — doesn't leak into them). Kept for
-# the handful of dev-only consumers that genuinely want a checkout-relative path to resources that
-# aren't shipped as package data: backlot.validation.SCHEMA_DIR (schemas/) and
-# tests/test_schema.py's shipped-example-corpus check (examples/).
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="BACKLOT_", env_file=".env", extra="ignore")

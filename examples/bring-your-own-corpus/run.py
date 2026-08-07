@@ -26,7 +26,7 @@ from _common.mockserver import ROOT, mock_server  # noqa: E402
 
 CORPUS = Path(__file__).resolve().parent / "sample_corpus.jsonl"
 
-# 1. Validate the corpus against schemas/ before serving anything (the same CLI you'd run by hand).
+# 1. Validate the corpus against backlot/schemas/ before serving anything (the same CLI you'd run by hand).
 if subprocess.run(
     [sys.executable, "-m", "backlot.importer.byo", str(CORPUS), "--dry-run"], cwd=ROOT
 ).returncode:

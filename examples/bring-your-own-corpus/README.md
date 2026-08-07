@@ -102,7 +102,7 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   `tokens.yaml` come from that file alone, instead of every `author_email` becoming a token-holding
   user. That is how a corpus converted from an existing dataset carries the people it already knows
   — including which of them are real accounts. See
-  [`schemas/README.md`](../../schemas/README.md).
+  [`schemas/README.md`](../../backlot/schemas/README.md).
 - **Timestamps:** every record accepts `created` (epoch seconds or ISO 8601) — it drives the
   Slack `ts` / Gmail `Date`+`internalDate` / Drive `createdTime` / GitHub `created_at` / Jira
   `created` / Confluence version time. Drive/GitHub/Jira/Confluence also accept `updated`
@@ -110,6 +110,6 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
 - **Gmail recipients:** `to` sets the `To` header (default `<mailbox>@<org_domain>`).
 
 Per-service extras (`subtype`, `labels`, `reactions`, `comments`, `issuelinks`, …) are
-described by the per-service JSON Schemas — see [`schemas/README.md`](../../schemas/README.md).
+described by the per-service JSON Schemas — see [`schemas/README.md`](../../backlot/schemas/README.md).
 Each record is validated against its schema before loading, so typos and shape errors fail fast
 with a line number; the schemas double as the contract for LLM dataset generation.

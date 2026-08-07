@@ -1,9 +1,10 @@
-"""Validate BYO corpus records against the per-service JSON Schemas in ``schemas/``.
+"""Validate BYO corpus records against the per-service JSON Schemas in ``backlot/schemas/``.
 
-The schemas (``schemas/<source_type>.schema.json``, Draft 2020-12) are the source of truth for
-the record shape the loader accepts — they define the app's ingest contract, so this lives on
-the application side. ``backlot/importer/byo.py`` calls :func:`record_errors` to fail fast on load, and its
-``--dry-run`` validates a whole file via :func:`validate_file` without touching the DB.
+The schemas (``backlot/schemas/<source_type>.schema.json``, Draft 2020-12) are the source of
+truth for the record shape the loader accepts — they define the app's ingest contract, so this
+lives on the application side. ``backlot/importer/byo.py`` calls :func:`record_errors` to fail
+fast on load, and its ``--dry-run`` validates a whole file via :func:`validate_file` without
+touching the DB.
 """
 
 from __future__ import annotations
@@ -14,18 +15,29 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
 
-from backlot.config import REPO_ROOT
-
-SCHEMA_DIR = REPO_ROOT / "schemas"
+# __file__-relative, not cwd-relative: these are resources the package SHIPS (see the
+# [tool.setuptools.package-data] entry in pyproject.toml), unlike backlot.config's data_dir/
+# raw_dir, which are user data and must resolve against the cwd instead. `.parent`, not
+# `.parent.parent` — schemas/ lives inside the backlot/ package, not the repo root, precisely so
+# it is included in the wheel.
+SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 
 
 def _load_schemas() -> dict[str, dict]:
-    """Load every ``schemas/*.schema.json``, keyed by its ``source_type`` const."""
+    """Load every ``*.schema.json`` in ``SCHEMA_DIR``, keyed by its ``source_type`` const."""
     schemas: dict[str, dict] = {}
     for p in sorted(SCHEMA_DIR.glob("*.schema.json")):
         schema = json.loads(p.read_text())
         const = schema.get("properties", {}).get("source_type", {}).get("const")
         schemas[const or p.name.split(".")[0]] = schema
+    if not schemas:
+        # Loading zero schemas is a packaging bug, not empty user data — every BYO record would
+        # then fail validation with a confusing "source_type must be one of []" that points at the
+        # data instead of the missing schemas/. Announce it here instead.
+        raise RuntimeError(
+            f"no *.schema.json files found under {SCHEMA_DIR} — the package is missing its "
+            "bundled schemas (check [tool.setuptools.package-data] in pyproject.toml)"
+        )
     return schemas
 
 

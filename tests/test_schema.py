@@ -1,4 +1,4 @@
-"""BYO corpus JSON Schema validation (schemas/ + backlot.validation)."""
+"""BYO corpus JSON Schema validation (backlot/schemas/ + backlot.validation)."""
 
 import json
 from datetime import datetime
@@ -585,7 +585,7 @@ def test_readers_accept_typed_principal_ids():
 
 
 def _example_corpus():
-    from backlot.config import REPO_ROOT
+    from tests.conftest import REPO_ROOT
 
     return REPO_ROOT / "examples" / "bring-your-own-corpus" / "sample_corpus.jsonl"
 

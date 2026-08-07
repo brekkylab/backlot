@@ -59,7 +59,7 @@ The whole point of this project is **fidelity to the real APIs**, so:
 
 - When you add or change an endpoint, mirror the real service's request/response shape,
   status codes, pagination, and error format as closely as practical.
-- Response shapes are validated against the JSON Schemas in [`schemas/`](schemas/); update
+- Response shapes are validated against the JSON Schemas in [`backlot/schemas/`](backlot/schemas/); update
   the relevant schema alongside any response-shape change.
 - ACL scoping is enforced per bearer token (the admin token bypasses). New endpoints that
   expose corpus content must respect the same ACL rules — add a test proving an

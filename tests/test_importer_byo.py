@@ -1836,3 +1836,98 @@ def test_two_sources_may_share_a_doc_id(tmp_path):
         conn.execute("SELECT title FROM gdrive_files WHERE doc_id='shared-1'").fetchone()[0]
         == "Sprint plan (doc)"
     )
+
+
+def test_load_records_source_documents_counts_documents_not_rows(tmp_path):
+    """One Slack record with two replies is 1 source document and 3 message rows."""
+    from backlot import store
+    from tests._helpers import build_corpus
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "author_email": "bob@acme.com",
+                "content": "Anyone seeing 502s from the gateway?",
+                "replies": [
+                    {"content": "Looking now.", "author_email": "ava@acme.com"},
+                    {"content": "Rolled back.", "author_email": "bob@acme.com"},
+                ],
+            },
+        ],
+    )
+    conn = store.connect_ro(settings.db_path)
+    assert store.read_meta(conn, "source_documents") == "1"
+    rows = conn.execute(f"SELECT COUNT(*) FROM {store.table('slack')}").fetchone()[0]
+    assert rows == 3
+    conn.close()
+
+
+def test_load_records_source_documents_sums_across_sources(tmp_path):
+    from backlot import store
+    from tests._helpers import build_corpus
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "space": "handbook",
+                "title": "Handbook",
+                "content": "How we build software.",
+                "author_email": "ava@acme.com",
+            },
+            {
+                "source_type": "gmail",
+                "mailbox": "ceo",
+                "title": "Q1 deck",
+                "content": "Draft narrative.",
+                "author_email": "ceo@acme.com",
+                "to": "ava@acme.com",
+            },
+        ],
+    )
+    conn = store.connect_ro(settings.db_path)
+    assert store.read_meta(conn, "source_documents") == "2"
+    conn.close()
+
+
+def test_append_accumulates_source_documents(tmp_path):
+    """reset=False appends, so the count adds rather than replaces."""
+    import json
+    from backlot import store
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    settings = Settings(data_dir=tmp_path)
+    first = tmp_path / "a.jsonl"
+    first.write_text(
+        json.dumps(
+            {
+                "source_type": "confluence",
+                "space": "h",
+                "title": "A",
+                "content": "a",
+                "author_email": "ava@acme.com",
+            }
+        )
+    )
+    second = tmp_path / "b.jsonl"
+    second.write_text(
+        json.dumps(
+            {
+                "source_type": "confluence",
+                "space": "h",
+                "title": "B",
+                "content": "b",
+                "author_email": "ava@acme.com",
+            }
+        )
+    )
+    load(first, settings)
+    load(second, settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    assert store.read_meta(conn, "source_documents") == "2"
+    conn.close()

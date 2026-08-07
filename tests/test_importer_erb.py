@@ -1020,6 +1020,12 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
         c.execute("SELECT COUNT(*) FROM hubspot_objects WHERE object_type='notes'").fetchone()[0]
         == 2
     )
+    # `source_documents` is the ERB-level count (this one bench document), not the 3
+    # `hubspot_objects` rows `to_byo` materializes for it (company + 2 notes) — the same distinction
+    # `byo.load_records`'s own counting makes for a Slack thread's replies, but at a different
+    # granularity: `_byo_hubspot` splits one bench document into several TOP-LEVEL BYO records, so
+    # counting `byo.load_records`'s `(where, record)` pairs would overcount it as 3.
+    assert store.read_meta(c, "source_documents") == "1"
     # the company is ACL-granted, so a non-admin can actually reach it
     assert c.execute("SELECT COUNT(*) FROM doc_acl WHERE doc_id='dsid_hs_e2e'").fetchone()[0] > 0
     c.close()
@@ -2116,7 +2122,14 @@ def _write_generated_data(root: Path) -> Path:
 
 
 def _dump_db(path) -> dict[str, list]:
-    """Every user table as sorted row tuples, so two DBs can be compared table by table."""
+    """Every servable table as sorted row tuples, so two DBs can be compared table by table.
+
+    Excludes ``meta``: it holds build-PROVENANCE facts, not servable content, and
+    ``source_documents`` in particular counts a different unit for the two round-trip sides on
+    purpose — a HubSpot company's notes are sub-parts of ONE bench document to a direct import, but
+    independently-addressable top-level documents to a BYO corpus that was exported and re-loaded
+    (see ``_byo_hubspot``). Forcing them equal would mean one side counting wrong.
+    """
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     try:
@@ -2124,7 +2137,8 @@ def _dump_db(path) -> dict[str, list]:
             r[0]
             for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name NOT LIKE 'docs_fts%' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                "AND name NOT LIKE 'docs_fts%' AND name NOT LIKE 'sqlite_%' AND name != 'meta' "
+                "ORDER BY name"
             )
         ]
         out = {}

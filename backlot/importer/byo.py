@@ -1250,7 +1250,9 @@ def load_records(
     org = org_name
 
     loader = _Loader(conn, org, org_domain, closed=closed, validate=validate)
+    source_docs = 0
     for lineno, rec in records_factory():
+        source_docs += 1
         loader.add(rec, f"line {lineno}")
     loader.resolve_cross_references()
     users, groups = loader.users, loader.groups
@@ -1314,6 +1316,14 @@ def load_records(
     from backlot import oauth
 
     oauth.generate(settings, org=org_name)
+
+    # `source_documents` is what the corpus OFFERED, not COUNT(*) of the rows it produced: faithful
+    # parsing promotes structure (a slack thread's replies, a gmail thread's later messages) into
+    # extra rows within the SAME source document, so the count is one per `records_factory()` item,
+    # taken from the load pass above rather than the earlier org-inference pass (which would double
+    # it — see the docstring). On append the prior value already reflects earlier loads.
+    prior = 0 if reset else int(store.read_meta(conn, "source_documents") or 0)
+    store.write_meta(conn, "source_documents", prior + source_docs)
     conn.close()
     return {
         "counts": counts,

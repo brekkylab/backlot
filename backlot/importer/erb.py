@@ -33,7 +33,7 @@ from pathlib import Path
 
 import yaml
 
-from backlot import synth
+from backlot import store, synth
 from backlot.config import get_settings, infer_org
 from backlot.importer import byo
 
@@ -2279,7 +2279,7 @@ def import_structured(settings, gen_dir, *, question_ids=None, allow_excluded=0)
     redistributed artifact takes, where ``export_byo`` writes the identical records to JSONL. One
     mapping per source, so a direct import and the artifact cannot disagree.
     """
-    P, records, _ = _resolve_roster(
+    P, records, excluded = _resolve_roster(
         settings, gen_dir, question_ids=question_ids, allow_excluded=allow_excluded
     )
     _precompute_globals(records)
@@ -2319,6 +2319,17 @@ def import_structured(settings, gen_dir, *, question_ids=None, allow_excluded=0)
             file=sys.stderr,
             flush=True,
         )
+
+    # `byo.load_records` counted `source_documents` at its own granularity — one per BYO record
+    # `_convert_all` handed it — which overcounts here: `to_byo` can split ONE ERB document into
+    # several top-level BYO records (a HubSpot company plus its notes, see `_byo_hubspot`), unlike a
+    # hand-written BYO corpus where a document's children (replies/comments) always ride inside a
+    # single record. The number this importer offers is `len(records) + len(excluded)` — the same
+    # arithmetic `export_byo`'s `layer` documents (`source_documents == documents + excluded +
+    # failed`) — so it is corrected here, after the load that wrote the wrong one.
+    conn = store.connect_rw(settings.db_path)
+    store.write_meta(conn, "source_documents", len(records) + len(excluded))
+    conn.close()
     return counts
 
 

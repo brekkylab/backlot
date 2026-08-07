@@ -789,3 +789,36 @@ def test_fireflies_counts_agree_with_the_pages(db):
     ]:
         total = store.count_fireflies_transcripts(db, keyword=kw, scope=scope)
         assert total == len(store.list_fireflies_transcripts(db, keyword=kw, scope=scope, limit=50))
+
+
+# --- meta table (build-time facts) -----------------------------------------------
+
+
+def test_meta_round_trips(tmp_path):
+    conn = store.connect_rw(tmp_path / "meta.sqlite")
+    store.write_meta(conn, "source_documents", 531248)
+    assert store.read_meta(conn, "source_documents") == "531248"
+    conn.close()
+
+
+def test_meta_absent_key_is_none(tmp_path):
+    conn = store.connect_rw(tmp_path / "meta.sqlite")
+    assert store.read_meta(conn, "never_written") is None
+    conn.close()
+
+
+def test_meta_overwrites(tmp_path):
+    conn = store.connect_rw(tmp_path / "meta.sqlite")
+    store.write_meta(conn, "source_documents", 1)
+    store.write_meta(conn, "source_documents", 2)
+    assert store.read_meta(conn, "source_documents") == "2"
+    conn.close()
+
+
+def test_read_meta_tolerates_a_db_without_the_table(tmp_path):
+    """A DB built before this change has no meta table; /health must still answer."""
+    path = tmp_path / "old.sqlite"
+    sqlite3.connect(path).close()
+    conn = sqlite3.connect(path)
+    assert store.read_meta(conn, "source_documents") is None
+    conn.close()

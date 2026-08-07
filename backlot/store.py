@@ -391,6 +391,11 @@ CREATE TABLE IF NOT EXISTS doc_acl (
 );
 CREATE INDEX IF NOT EXISTS idx_acl_doc ON doc_acl(doc_id);
 CREATE INDEX IF NOT EXISTS idx_acl_pid ON doc_acl(principal_id);
+
+-- Build-time facts that cannot be recomputed from the rows. `source_documents` is the count of
+-- documents the corpus OFFERED, which differs from COUNT(*) because faithful parsing promotes
+-- structure inside a document to first-class rows (one Slack transcript -> many messages).
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 
@@ -422,6 +427,22 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
             pass  # table absent (fresh DB) or column already present
     conn.executescript(SCHEMA)
     return conn
+
+
+def write_meta(conn: sqlite3.Connection, key: str, value) -> None:
+    """Persist a build-time fact. Values are stored as TEXT; the caller casts on read."""
+    conn.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (key, str(value)))
+    conn.commit()
+
+
+def read_meta(conn: sqlite3.Connection, key: str) -> str | None:
+    """A build-time fact, or None when absent — including on a DB built before the meta table
+    existed, which is why the missing-table error is swallowed rather than surfaced."""
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return row[0] if row else None
 
 
 def connect_ro(

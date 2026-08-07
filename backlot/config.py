@@ -9,21 +9,48 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Source-checkout root. NOT used for any Settings default below (those must resolve against the
+# CWD so an installed wheel — resolving here to site-packages — doesn't leak into them). Kept for
+# the handful of dev-only consumers that genuinely want a checkout-relative path to resources that
+# aren't shipped as package data: backlot.validation.SCHEMA_DIR (schemas/) and
+# tests/test_schema.py's shipped-example-corpus check (examples/).
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="BACKLOT_", env_file=".env", extra="ignore")
 
-    # --- paths ---
-    data_dir: Path = REPO_ROOT / "data"
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_path_defaults(cls, values):
+        """Fill the path defaults from the CURRENT working directory.
+
+        Not plain field defaults: those are evaluated at class-definition time, so the path would
+        be frozen to the cwd at import. Not `Path(__file__).parent.parent` either — installed from
+        a wheel that is `site-packages`, and a default of `site-packages/data` is never what
+        anyone means. `BACKLOT_DATA_DIR` / `BACKLOT_RAW_DIR` and explicit kwargs are already
+        present here, so `setdefault` leaves them alone.
+        """
+        if isinstance(values, dict):
+            cwd_data = Path("data").resolve()
+            values.setdefault("data_dir", cwd_data)
+            # The ERB download cache stays pinned to the DEFAULT data dir, not the configured one,
+            # so a re-import into a fresh build dir (`BACKLOT_DATA_DIR=/tmp/... python -m
+            # backlot.importer.erb`) REUSES the already-downloaded bench JSONs instead of
+            # re-fetching them from GitHub.
+            values.setdefault("raw_dir", cwd_data / "raw")
+        return values
+
+    # --- paths --- (defaults supplied by _resolve_path_defaults above)
+    data_dir: Path = Path("data")
     # ERB download cache (the bench `generated_data` tarball + its extraction). Pinned to a STABLE
     # location independent of ``data_dir`` so re-imports into a fresh build dir
     # (``BACKLOT_DATA_DIR=/tmp/... python -m backlot.importer.erb``) REUSE the already-downloaded JSONs
     # instead of re-fetching from GitHub every time. Override with ``BACKLOT_RAW_DIR``.
-    raw_dir: Path = REPO_ROOT / "data" / "raw"
+    raw_dir: Path = Path("data") / "raw"
 
     # --- identity / org ---
     # The org name/domain are derived at import time from the data's dominant email domain —

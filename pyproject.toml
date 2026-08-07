@@ -134,6 +134,12 @@ filterwarnings = [
 include = ["backlot*"]
 
 [tool.setuptools.package-data]
-# The BYO corpus JSON Schemas (backlot/validation.py's SCHEMA_DIR) — the wheel must carry them or
-# every BYO record fails validation post-install. Task 6 extends this with `data/*.jsonl`.
-backlot = ["schemas/*.json"]
+# Every non-.py file backlot/ ships, so a wheel actually contains what the checkout does.
+# tests/test_packaging.py enforces this list stays exhaustive — a new asset under backlot/ with
+# no matching glob here fails that test instead of surfacing later as a missing-file crash or a
+# confusingly empty schema/engine, only once someone installs the wheel outside this repo.
+#   schemas/*.json, schemas/*.md — backlot/validation.py's SCHEMA_DIR; every BYO record fails
+#     validation post-install without them. Task 6 extends this table with `data/*.jsonl`.
+#   graphql/*.graphql — backlot/graphql/engine.py's from_sdl(), read at import time by
+#     routers/linear.py and routers/fireflies.py; missing, `import backlot.main` crashes outright.
+backlot = ["schemas/*.json", "schemas/*.md", "graphql/*.graphql"]

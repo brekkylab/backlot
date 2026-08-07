@@ -430,17 +430,26 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
 
 
 def write_meta(conn: sqlite3.Connection, key: str, value) -> None:
-    """Persist a build-time fact. Values are stored as TEXT; the caller casts on read."""
+    """Persist a build-time fact. Values are stored as TEXT; the caller casts on read.
+
+    Commits the entire pending transaction on the connection, not just the meta row.
+    Matches the contract of build_fts and fts_add_docs, which also commit.
+    """
     conn.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (key, str(value)))
     conn.commit()
 
 
 def read_meta(conn: sqlite3.Connection, key: str) -> str | None:
     """A build-time fact, or None when absent — including on a DB built before the meta table
-    existed, which is why the missing-table error is swallowed rather than surfaced."""
+    existed. Only a missing-table error is swallowed; other OperationalErrors (e.g. database
+    locked) must surface, not masquerade as absent metadata."""
     try:
         row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as e:
+        # Only "no such table" means the meta table doesn't exist. A different OperationalError
+        # (e.g. "database is locked") must surface, not masquerade as metadata absence.
+        if "no such table" not in str(e).lower():
+            raise
         return None
     return row[0] if row else None
 

@@ -816,9 +816,42 @@ def test_meta_overwrites(tmp_path):
 
 
 def test_read_meta_tolerates_a_db_without_the_table(tmp_path):
-    """A DB built before this change has no meta table; /health must still answer."""
+    """A DB built before this change has no meta table; /health must still answer.
+
+    Simulates the deployed box's DB: created with the full pre-Task-3 schema, then the meta
+    table dropped to represent a pre-meta-table version."""
     path = tmp_path / "old.sqlite"
-    sqlite3.connect(path).close()
+    # Create a DB with the full schema, then drop the meta table to simulate the deployed box
+    conn = store.connect_rw(path)
+    conn.execute("DROP TABLE IF EXISTS meta")
+    conn.commit()
+    conn.close()
+    # Re-open and verify read_meta tolerates the missing table
     conn = sqlite3.connect(path)
     assert store.read_meta(conn, "source_documents") is None
     conn.close()
+
+
+def test_write_meta_commits_the_entire_transaction(tmp_path):
+    """write_meta commits the entire pending transaction, not just its own row.
+
+    This test verifies the contract documented in the docstring: when called from the importers
+    (Task 4), a write_meta call flushes any unrelated pending inserts."""
+    path = tmp_path / "committed.sqlite"
+    conn = store.connect_rw(path)
+    # Insert unrelated data without committing
+    conn.execute(
+        "INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts) "
+        "VALUES('n1','eng','a@x.com','Test','content',1)"
+    )
+    # write_meta commits the entire pending transaction
+    store.write_meta(conn, "test_key", "test_value")
+    conn.close()
+    # From a separate connection, verify both the unrelated row and the meta row are visible
+    check_conn = store.connect_ro(path)
+    assert (
+        check_conn.execute("SELECT COUNT(*) FROM notion_pages WHERE doc_id = 'n1'").fetchone()[0]
+        == 1
+    )
+    assert store.read_meta(check_conn, "test_key") == "test_value"
+    check_conn.close()

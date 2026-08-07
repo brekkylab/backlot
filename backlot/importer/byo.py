@@ -510,6 +510,8 @@ def load_roster(path) -> dict:
         departments:                      # authenticating users -> a bearer token each
           Engineering:
             - {name: Ava Chen, email: ava.chen@redwoodinference.com}
+            - {name: Bo Ryu, email: bo.ryu@redwoodinference.com,
+               groups: [proj-checkout-rework, res-emea-support]}
         contacts:                         # principals with NO token (display-only)
           - {name: Zoe Newperson, email: zoe.newperson@redwoodinference.com, group: engineering}
 
@@ -519,17 +521,29 @@ def load_roster(path) -> dict:
     ``contacts`` are people a corpus names who are not accounts — they own and read documents but
     cannot authenticate, the distinction ``tokens.yaml`` draws.
 
+    A person may belong to more than one group — a squad, a compliance register, a region-scoped
+    grant — which one department slot cannot say. An entry's ``groups`` list adds those memberships
+    on top of the department (or ``group``) one; it never replaces it, so a directory that only
+    knows departments and a roster that also states squads produce the same department rows.
+
     With a roster, `principals`, `group_members` and `tokens.yaml` come from it ALONE: a record's
     `author_email` / `readers` become references into it, and an address absent from it (a Slack
     handle, an outside sender) stays a plain address instead of becoming an account with a token.
     """
     data = yaml.safe_load(Path(path).read_text()) or {}
+
+    def _groups(entry: dict, primary: str | None) -> list[str]:
+        # The department (or `group`) membership first, then the entry's extra `groups`, each
+        # slugified once — dict.fromkeys keeps first occurrence so a repeat never doubles a row.
+        listed = [slugify(g) for g in (entry.get("groups") or []) if g]
+        return [g for g in dict.fromkeys(([primary] if primary else []) + listed) if g]
+
     users: dict[str, dict] = {}
     for dept, people in (data.get("departments") or {}).items():
         for p in people or []:
             users[p["email"]] = {
                 "name": p.get("name") or _display_name(p["email"]),
-                "group": slugify(dept) or None,
+                "groups": _groups(p, slugify(dept) or None),
                 "token": True,
             }
     for p in data.get("contacts") or []:
@@ -539,7 +553,7 @@ def load_roster(path) -> dict:
             p["email"],
             {
                 "name": p.get("name") or _display_name(p["email"]),
-                "group": (slugify(p["group"]) if p.get("group") else None),
+                "groups": _groups(p, slugify(p["group"]) if p.get("group") else None),
                 "token": False,
             },
         )
@@ -1263,8 +1277,8 @@ def load_records(
         # The roster IS the principal set: users, the groups they belong to, and the memberships
         # between them. Nothing the records referenced adds to it.
         users = {e: u["name"] for e, u in roster_data["users"].items()}
-        groups = {u["group"] for u in roster_data["users"].values() if u["group"]}
-        memberships = {(u["group"], e) for e, u in roster_data["users"].items() if u["group"]}
+        groups = {g for u in roster_data["users"].values() for g in u["groups"]}
+        memberships = {(g, e) for e, u in roster_data["users"].items() for g in u["groups"]}
 
     # principals: org, groups, users
     conn.execute("INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (org, "org", org, None))

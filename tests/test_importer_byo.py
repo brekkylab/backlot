@@ -1400,6 +1400,84 @@ def test_byo_roster_is_the_closed_principal_set(tmp_path):
         conn.close()
 
 
+def test_byo_roster_person_may_hold_many_groups(tmp_path):
+    """A person is rarely exactly one group: squads, compliance registers and region-scoped
+    grants sit on top of the department. An entry's `groups` list states those memberships;
+    the department membership stays, so a squad-less roster is unchanged by the feature."""
+    roster = tmp_path / "roster.yaml"
+    roster.write_text(
+        yaml.safe_dump(
+            {
+                "org": "redwood",
+                "org_domain": "redwoodinference.com",
+                "departments": {
+                    "Engineering": [
+                        {"name": "Ava Chen", "email": "ava.chen@redwoodinference.com"},
+                        {
+                            "name": "Bo Ryu",
+                            "email": "bo.ryu@redwoodinference.com",
+                            # a repeat of the department and an unslugged name, both normalized
+                            "groups": ["proj-checkout-rework", "Engineering", "res-emea-support"],
+                        },
+                    ]
+                },
+                "contacts": [
+                    {
+                        "name": "Zoe Newperson",
+                        "email": "zoe.newperson@redwoodinference.com",
+                        "group": "engineering",
+                        "groups": ["comp-hr-investigations"],
+                    }
+                ],
+            }
+        )
+    )
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "doc_id": "c1",
+                "space": "ENG",
+                "group": "proj-checkout-rework",
+                "visibility": "group",
+                "title": "t",
+                "content": "c",
+                "author_email": "ava.chen@redwoodinference.com",
+            }
+        ],
+    )
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings, roster=roster)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        members = {
+            (r["group_id"], r["user_id"]) for r in conn.execute("SELECT * FROM group_members")
+        }
+        assert members == {
+            ("engineering", "ava.chen@redwoodinference.com"),
+            ("engineering", "bo.ryu@redwoodinference.com"),
+            ("proj-checkout-rework", "bo.ryu@redwoodinference.com"),
+            ("res-emea-support", "bo.ryu@redwoodinference.com"),
+            ("engineering", "zoe.newperson@redwoodinference.com"),
+            ("comp-hr-investigations", "zoe.newperson@redwoodinference.com"),
+        }
+        assert {r["id"] for r in conn.execute("SELECT id FROM principals WHERE type='group'")} == {
+            "engineering",
+            "proj-checkout-rework",
+            "res-emea-support",
+            "comp-hr-investigations",
+        }
+        # the extra memberships change who a group-scoped clause admits, nothing about tokens
+        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        assert {u["email"] for u in tokens["users"]} == {
+            "ava.chen@redwoodinference.com",
+            "bo.ryu@redwoodinference.com",
+        }
+    finally:
+        conn.close()
+
+
 def test_byo_roster_departments_alone_is_an_employee_directory(tmp_path):
     """The bench's `employee_directory.yaml` is usable as a roster verbatim, which is what lets a
     converted corpus ship the directory it was resolved against."""

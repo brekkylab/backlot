@@ -206,6 +206,7 @@ def _service_columns(
         return {
             "kind": subtype or "issue",
             "path": ex.get("path"),
+            "number": ex.get("number"),
             "state": ex.get("state"),
             "labels": _j(ex.get("labels")),
             "assignees": _j(ex.get("assignees")),
@@ -245,6 +246,7 @@ def _service_columns(
             # `squad` is the owning team, which need not be the project's ACL group.
             "severity": ex.get("severity"),
             "squad": ex.get("squad"),
+            "key": ex.get("key"),
             "owner_display": owner_display,
         }
     if src == "confluence":
@@ -809,6 +811,7 @@ class _Loader:
             "merged_by",
             "milestone",
             "requested_reviewers",
+            "number",
             "resolution",
             "resolutiondate",
             "duedate",
@@ -941,6 +944,16 @@ class _Loader:
                 # the API had just handed the caller that exact string. Deterministic, so the
                 # served value is unchanged; it is just written down now.
                 cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
+            if src == "jira" and not cols.get("key"):
+                # Same materialization as Linear's identifier: a corpus that writes its own issue
+                # keys into document text needs the API to serve those exact strings, and one that
+                # writes none keeps today's synthesized value — now stored instead of re-derived
+                # per request.
+                cols["key"] = synth.jira_key(did, synth.jira_project_key(container))
+            if src == "github" and cols.get("kind") != "file" and not cols.get("number"):
+                # file rows stay NULL: they are excluded from the issue-number reverse index, so
+                # a stored number would only invite a collision with a real issue or PR.
+                cols["number"] = synth.github_number(did)
             names = list(cols)
             conn.execute(
                 f"INSERT OR REPLACE INTO {store.table(src)} ({', '.join(names)}) "

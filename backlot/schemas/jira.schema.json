@@ -220,6 +220,11 @@
     "squad": {
       "type": "string",
       "description": "The squad that owns the issue, which need not be the project."
+    },
+    "key": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Issue key as the corpus writes it (PAY-101). Stored and served verbatim; synthesized from the doc_id when omitted."
     }
   },
   "required": [

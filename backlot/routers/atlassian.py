@@ -525,7 +525,7 @@ def _jira_ref(row, site: str = "") -> dict:
     status = row["status"] or "To Do"
     return {
         "id": str(synth.jira_numeric_id(row["doc_id"])),
-        "key": synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"])),
+        "key": row["key"] or synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"])),
         "self": f"{site}/rest/api/3/issue/{synth.jira_numeric_id(row['doc_id'])}" if site else None,
         "fields": {
             "summary": row["title"],
@@ -651,7 +651,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
     nid = synth.jira_numeric_id(row["doc_id"])
     issue = {
         "id": str(nid),
-        "key": synth.jira_key(row["doc_id"], pkey),
+        "key": row["key"] or synth.jira_key(row["doc_id"], pkey),
         "self": f"{site}/rest/api/3/issue/{nid}",
         "fields": fields,
     }

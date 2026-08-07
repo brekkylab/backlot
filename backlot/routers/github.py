@@ -301,7 +301,7 @@ async def pull_reviews(owner: str, repo: str, number: int, request: Request):
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
-    number = synth.github_number(row["doc_id"])
+    number = row["number"] or synth.github_number(row["doc_id"])
     sha = hashlib.sha1(row["doc_id"].encode()).hexdigest()[:40]
     out = []
     for i, rv in enumerate(store.jcol(row, "reviews"), start=1):
@@ -770,7 +770,7 @@ def _milestone(row, owner, repo, api_base):
 def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "") -> dict:
     created = row["created_ts"] or synth.epoch(row["doc_id"])
     updated = row["updated_ts"] or created + 3600
-    number = synth.github_number(row["doc_id"])
+    number = row["number"] or synth.github_number(row["doc_id"])
     iid = synth.jira_numeric_id(row["doc_id"])  # a stable large numeric db id (≠ number)
     is_pr = row["kind"] == "pull_request"
     kind = "pull" if is_pr else "issues"

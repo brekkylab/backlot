@@ -1314,6 +1314,83 @@ def test_byo_typed_reader_principals(tmp_path):
         conn.close()
 
 
+def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
+    """A corpus that writes its own issue keys and PR numbers into document text needs the API to
+    serve those exact strings, or every citation a document makes dangles on the served surface.
+    A provided jira `key` / github `number` is stored at load and wins; a record without one keeps
+    the synthesized value (now materialized, same reasoning as Linear's `identifier`); a github
+    `file` row never takes a number, so it cannot shadow a real issue or PR."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    records = [
+        {
+            "source_type": "jira",
+            "doc_id": "j-key",
+            "project": "payments",
+            "title": "t",
+            "content": "c",
+            "key": "PAY-7",
+            "author_email": "ava@acme.com",
+        },
+        {
+            "source_type": "jira",
+            "doc_id": "j-plain",
+            "project": "payments",
+            "title": "t2",
+            "content": "c2",
+            "author_email": "ava@acme.com",
+        },
+        {
+            "source_type": "github",
+            "doc_id": "g-num",
+            "repo": "core",
+            "subtype": "pull_request",
+            "title": "t",
+            "content": "c",
+            "number": 4242,
+            "author_email": "ava@acme.com",
+        },
+        {
+            "source_type": "github",
+            "doc_id": "g-file",
+            "repo": "core",
+            "subtype": "file",
+            "path": "src/a.py",
+            "title": "a.py",
+            "content": "print()",
+            "author_email": "ava@acme.com",
+        },
+    ]
+    settings = build_corpus(tmp_path, records)
+
+    conn = store.connect_ro(settings.db_path)
+    try:
+        jira = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
+        assert jira["j-key"] == "PAY-7"
+        assert jira["j-plain"] == synth.jira_key("j-plain", synth.jira_project_key("payments"))
+        gh = {r["doc_id"]: r["number"] for r in conn.execute("SELECT doc_id, number FROM github_items")}
+        assert gh["g-num"] == 4242
+        assert gh["g-file"] is None
+    finally:
+        conn.close()
+
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    with client_for(settings, reload=True) as c:
+        got = c.get("/atlassian/rest/api/3/issue/PAY-7", headers=hdr)
+        assert got.status_code == 200 and got.json()["key"] == "PAY-7"
+        # the synthesized spelling still resolves for the record that wrote none
+        assert (
+            c.get(f"/atlassian/rest/api/3/issue/{jira['j-plain']}", headers=hdr).status_code == 200
+        )
+        pull = c.get("/github/repos/acme/core/pulls/4242", headers=hdr)
+        assert pull.status_code == 200 and pull.json()["number"] == 4242
+
+
 # --- roster sidecar ---------------------------------------------------------------
 
 

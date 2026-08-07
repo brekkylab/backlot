@@ -225,6 +225,11 @@
         ],
         "additionalProperties": false
       }
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Issue/PR number as the corpus writes it. Stored and served verbatim; synthesized from the doc_id when omitted. Ignored on subtype: file rows."
     }
   },
   "required": [

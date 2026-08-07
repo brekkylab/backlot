@@ -63,17 +63,23 @@ def _build_index(conn) -> dict:
         idx["gmail"][synth.gmail_message_id(r["doc_id"])] = r["doc_id"]
     # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
     # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
+    # Numbers and Jira keys are read from the stored column (the importer materializes a
+    # synthesized value when the corpus wrote none); the synth fallback below only covers a DB
+    # built before the column existed. A corpus-provided value is not required to be unique, so
+    # both indexes scan in doc_id order and setdefault — the first row wins and the mapping stays
+    # stable across restarts, the same contract Linear's repeated identifiers have.
     for r in conn.execute(
-        f"SELECT doc_id, {store.grouping_col('github')} AS container "
-        f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file'"
+        f"SELECT doc_id, {store.grouping_col('github')} AS container, number "
+        f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file' ORDER BY doc_id"
     ):
-        idx["github"][(r["container"], synth.github_number(r["doc_id"]))] = r["doc_id"]
+        num = r["number"] or synth.github_number(r["doc_id"])
+        idx["github"].setdefault((r["container"], num), r["doc_id"])
     for r in conn.execute(
-        f"SELECT doc_id, {store.grouping_col('jira')} AS container FROM {store.table('jira')}"
+        f"SELECT doc_id, {store.grouping_col('jira')} AS container, key "
+        f"FROM {store.table('jira')} ORDER BY doc_id"
     ):
-        idx["jira"][synth.jira_key(r["doc_id"], synth.jira_project_key(r["container"]))] = r[
-            "doc_id"
-        ]
+        key = r["key"] or synth.jira_key(r["doc_id"], synth.jira_project_key(r["container"]))
+        idx["jira"].setdefault(key, r["doc_id"])
     for r in conn.execute(f"SELECT doc_id FROM {store.table('confluence')}"):
         idx["confluence"][synth.confluence_id(r["doc_id"])] = r["doc_id"]
     # Notion ids are dashed UUIDs; key the index by the dashless form so a client sending either

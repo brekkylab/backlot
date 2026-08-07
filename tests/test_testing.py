@@ -86,6 +86,32 @@ def test_serve_or_connect_fetches_a_remote_servers_real_admin_token(monkeypatch)
                 assert json.load(r)["ok"] is True
 
 
+def test_serve_or_connect_does_not_fetch_the_token_over_plain_http_to_a_non_loopback_host(
+    monkeypatch,
+):
+    """Hardening: fetching a credential from an unauthenticated plaintext response is the wrong
+    default once the host isn't loopback. Only https or loopback should trigger the
+    GET /_mock/users fetch at all — a plain-http non-loopback URL must fall back to the guess
+    WITHOUT the fetch ever being attempted. Asserted by spying on
+    `_admin_token_from_mock_users` and requiring it was never called, which is a stronger claim
+    than just checking the returned token (that could coincidentally match)."""
+    import backlot.testing as testing_mod
+
+    monkeypatch.setattr(testing_mod, "_healthy", lambda url, timeout=10: True)
+
+    calls = []
+    monkeypatch.setattr(
+        testing_mod,
+        "_admin_token_from_mock_users",
+        lambda url, timeout=10: calls.append(url) or "should-never-be-used",
+    )
+
+    with backlot.serve_or_connect(url="http://example.com:8000") as m:
+        assert m.token == testing_mod.TOKEN
+
+    assert calls == [], f"token fetch must not run against a plain-http non-loopback host: {calls}"
+
+
 def test_two_servers_get_different_ports():
     with backlot.mock_server() as a, backlot.mock_server() as b:
         assert a.base_url != b.base_url

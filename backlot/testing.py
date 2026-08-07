@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,10 +39,12 @@ from backlot.config import Settings
 
 HELLO_CORPUS = Path(__file__).resolve().parent / "data" / "hello.jsonl"
 # Settings default; per-user tokens are in <data_dir>/tokens.yaml. Used only as the LAST-RESORT
-# fallback in serve_or_connect()'s remote branch, when that server's GET /_mock/users is disabled
-# (BACKLOT_EXPOSE_TOKENS=false — a legitimate configuration, not a failure this process can tell
-# apart from one any other way). mock_server() itself never falls back to this: it reads the real
-# value via Settings() below.
+# fallback in serve_or_connect()'s remote branch, when the real token can't be fetched — either
+# GET /_mock/users is disabled (BACKLOT_EXPOSE_TOKENS=false, a legitimate configuration) or the
+# URL doesn't clear _trusted_for_token_fetch's bar (plain HTTP to a non-loopback host: treating an
+# unauthenticated plaintext response as a credential there is the wrong default, not merely
+# unavailable). mock_server() itself never falls back to this: it reads the real value via
+# Settings() below.
 TOKEN = "admin-service-token"
 
 # How long mock_server()'s local readiness poll waits for each attempt, and how many attempts it
@@ -63,10 +66,13 @@ class MockServer:
     (``serve_or_connect``'s remote-``url`` branch), it is fetched from that server's own
     ``GET /_mock/users`` — a mock-only affordance (``backlot/main.py``) that already serves
     ``admin_token`` for exactly this purpose (``examples/using-official-sdk/s3.py`` tells users to
-    get credentials from that endpoint for a remote server they didn't start). Only when that
-    endpoint is disabled (``BACKLOT_EXPOSE_TOKENS=false`` — a legitimate configuration) does
-    ``token`` fall back to the ``Settings`` default as a GUESS, wrong if that server's operator
-    also overrode ``BACKLOT_ADMIN_TOKEN``.
+    get credentials from that endpoint for a remote server they didn't start) — but only when
+    ``url`` clears ``_trusted_for_token_fetch`` (``https``, or a loopback host): a plaintext
+    response from an arbitrary non-loopback host is never treated as a credential, independent of
+    whether the endpoint would have answered. In either case the fetch doesn't happen — the
+    endpoint disabled (``BACKLOT_EXPOSE_TOKENS=false``) or the URL not meeting that bar — ``token``
+    falls back to the ``Settings`` default as a GUESS, wrong if that server's operator also
+    overrode ``BACKLOT_ADMIN_TOKEN``.
     """
 
     base_url: str
@@ -103,6 +109,25 @@ def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+
+
+def _trusted_for_token_fetch(url: str) -> bool:
+    """Whether it's safe to treat a plaintext ``GET /_mock/users`` response from ``url`` as a
+    credential.
+
+    Gates the token FETCH in ``serve_or_connect``'s remote branch only — not the connection
+    itself; we already talk to whatever ``--url`` the caller passes, that's the whole feature. But
+    fetching a token turns that response into this process's own credential, so it gets a higher
+    bar than merely being reachable: ``https`` (transport-protected) or a loopback host (this
+    project's two real remote callers, ``http://localhost:8000`` and
+    ``https://backlot.brekkylab.com``, both already clear it). Parses the host with
+    :mod:`urllib.parse` rather than string-matching, so ``https://evil.example/?x=localhost``
+    can't slip through by merely containing the substring.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme == "https":
+        return True
+    return parsed.hostname in ("localhost", "127.0.0.1", "::1")
 
 
 def _admin_token_from_mock_users(url: str, timeout: float = 10) -> str | None:
@@ -208,12 +233,16 @@ def serve_or_connect(records: list[dict] | None = None, url: str | None = None):
         _ensure_cert_bundle()
         if _healthy(url):
             print(f"using Backlot at {url}")
-            # Fetched, not guessed, when possible (see MockServer.token's docstring): GET
-            # /_mock/users on the remote server reports its real admin_token. Falls back to the
-            # Settings-default GUESS only if that endpoint is disabled
-            # (BACKLOT_EXPOSE_TOKENS=false) — a legitimate configuration this process cannot tell
-            # apart from any other reason the endpoint might be unreachable.
-            token = _admin_token_from_mock_users(url) or TOKEN
+            # Fetched, not guessed, when possible AND safe (see MockServer.token's docstring): GET
+            # /_mock/users on the remote server reports its real admin_token. Gated by
+            # _trusted_for_token_fetch — this is about not treating an unauthenticated plaintext
+            # response from an arbitrary host as a credential, NOT about `url`'s server being
+            # untrustworthy in general (we already talk to it either way). Falls back to the
+            # Settings-default GUESS whenever the fetch doesn't happen at all: the endpoint
+            # disabled (BACKLOT_EXPOSE_TOKENS=false) or the URL not clearing that bar.
+            token = TOKEN
+            if _trusted_for_token_fetch(url):
+                token = _admin_token_from_mock_users(url) or TOKEN
             yield MockServer(base_url=url.rstrip("/"), token=token, data_dir=None)
             return
         print(f"--url {url!r} is not reachable — falling back to a local server")

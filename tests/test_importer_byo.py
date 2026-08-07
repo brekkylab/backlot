@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 import yaml
@@ -1930,4 +1931,47 @@ def test_append_accumulates_source_documents(tmp_path):
     load(second, settings, reset=False)
     conn = store.connect_ro(settings.db_path)
     assert store.read_meta(conn, "source_documents") == "2"
+    conn.close()
+
+
+def test_hello_corpus_loads_and_covers_every_source(tmp_path):
+    """The wheel's built-in corpus must load and exercise all eleven sources."""
+    from backlot import store
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    hello = Path(__file__).resolve().parent.parent / "backlot" / "data" / "hello.jsonl"
+    settings = Settings(data_dir=tmp_path)
+    load(hello, settings)
+    conn = store.connect_ro(settings.db_path)
+    for src in (
+        "slack",
+        "gmail",
+        "google_drive",
+        "github",
+        "jira",
+        "confluence",
+        "notion",
+        "linear",
+        "hubspot",
+        "s3",
+    ):
+        n = conn.execute(f"SELECT COUNT(*) FROM {store.table(src)}").fetchone()[0]
+        assert n > 0, f"hello corpus has no {src} rows"
+    # The two counts must differ, or the corpus does not demonstrate the parsing layer.
+    assert int(store.read_meta(conn, "source_documents")) < sum(
+        conn.execute(f"SELECT COUNT(*) FROM {store.table(s)}").fetchone()[0]
+        for s in (
+            "slack",
+            "gmail",
+            "google_drive",
+            "github",
+            "jira",
+            "confluence",
+            "notion",
+            "linear",
+            "hubspot",
+            "s3",
+        )
+    )
     conn.close()

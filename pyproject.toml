@@ -142,4 +142,6 @@ include = ["backlot*"]
 #     validation post-install without them. Task 6 extends this table with `data/*.jsonl`.
 #   graphql/*.graphql — backlot/graphql/engine.py's from_sdl(), read at import time by
 #     routers/linear.py and routers/fireflies.py; missing, `import backlot.main` crashes outright.
-backlot = ["schemas/*.json", "schemas/*.md", "graphql/*.graphql"]
+#   data/*.jsonl — the hello-world corpus backlot.mock_server() loads with no arguments (Task 7);
+#     missing, `pip install backlot` + call it has nothing to serve.
+backlot = ["schemas/*.json", "schemas/*.md", "graphql/*.graphql", "data/*.jsonl"]

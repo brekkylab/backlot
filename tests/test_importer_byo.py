@@ -1317,9 +1317,12 @@ def test_byo_typed_reader_principals(tmp_path):
 def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
     """A corpus that writes its own issue keys and PR numbers into document text needs the API to
     serve those exact strings, or every citation a document makes dangles on the served surface.
-    A provided jira `key` / github `number` is stored at load and wins; a record without one keeps
-    the synthesized value (now materialized, same reasoning as Linear's `identifier`); a github
-    `file` row never takes a number, so it cannot shadow a real issue or PR."""
+    A provided jira `key` / github `number` is stored at load and wins. A github record without a
+    number keeps the synthesized one, materialized for the same reason as Linear's `identifier`; a
+    jira record without a key stores nothing, because a key's prefix belongs to the project rather
+    than to the row (see the loader's comment) — it is served and indexed from the container's
+    spelling instead. A github `file` row never takes a number, so it cannot shadow a real issue
+    or PR."""
     from backlot import synth
     from tests._helpers import build_corpus, client_for
 
@@ -1371,7 +1374,7 @@ def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
     try:
         jira = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
         assert jira["j-key"] == "PAY-7"
-        assert jira["j-plain"] == synth.jira_key("j-plain", synth.jira_project_key("payments"))
+        assert jira["j-plain"] is None
         gh = {
             r["doc_id"]: r["number"]
             for r in conn.execute("SELECT doc_id, number FROM github_items")
@@ -1389,10 +1392,10 @@ def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
     with client_for(settings, reload=True) as c:
         got = c.get("/atlassian/rest/api/3/issue/PAY-7", headers=hdr)
         assert got.status_code == 200 and got.json()["key"] == "PAY-7"
-        # the synthesized spelling still resolves for the record that wrote none
-        assert (
-            c.get(f"/atlassian/rest/api/3/issue/{jira['j-plain']}", headers=hdr).status_code == 200
-        )
+        # the synthesized spelling still resolves for the record that wrote none — under the
+        # prefix its project's provided key carries, which is the string the API serves for it
+        plain = synth.jira_key("j-plain", "PAY")
+        assert c.get(f"/atlassian/rest/api/3/issue/{plain}", headers=hdr).status_code == 200
         pull = c.get("/github/repos/acme/core/pulls/4242", headers=hdr)
         assert pull.status_code == 200 and pull.json()["number"] == 4242
 
@@ -1431,6 +1434,50 @@ def test_byo_provided_key_prefix_is_the_project_key(tmp_path):
         assert [i["key"] for i in found["issues"]] == ["PAY-7"]
         projects = c.get("/atlassian/rest/api/3/project/search", headers=hdr).json()
         assert "PAY" in [p["key"] for p in projects["values"]]
+
+
+def test_byo_one_provided_key_sets_the_prefix_for_its_keyless_siblings(tmp_path):
+    """A project whose issues carry a MIX of provided and absent keys is the normal case for a
+    corpus that cites keys in document text: only the cited issues need to spell one out. Every
+    issue in such a project must still answer at one prefix — two spellings at once (the provided
+    `PAY-7` beside a sibling's `PAYMENTS<hash>-<n>`) would leave `project = PAY` returning a subset
+    of its own project and the picker naming a key half the issues do not use.
+
+    The keyless row is why the loader stores no synthesized key: whichever row sorted first by
+    `doc_id` would otherwise decide the prefix, and here that row is the keyless one."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    def issue(did):
+        return {
+            "source_type": "jira",
+            "doc_id": did,
+            "project": "payments",
+            "title": did,
+            "content": "c",
+            "author_email": "ava@acme.com",
+        }
+
+    # 'j-aaa' sorts before 'j-zzz': the keyless row is the one the index reaches first.
+    settings = build_corpus(tmp_path, [issue("j-aaa"), {**issue("j-zzz"), "key": "PAY-7"}])
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    keyless = synth.jira_key("j-aaa", "PAY")
+    assert keyless.startswith("PAY-")
+    with client_for(settings, reload=True) as c:
+        served = c.get(f"/atlassian/rest/api/3/issue/{keyless}", headers=hdr)
+        assert served.status_code == 200
+        assert served.json()["key"] == keyless
+        assert served.json()["fields"]["project"]["key"] == "PAY"
+        found = c.get(
+            "/atlassian/rest/api/3/search/jql", headers=hdr, params={"jql": "project = PAY"}
+        ).json()
+        assert sorted(i["key"] for i in found["issues"]) == sorted([keyless, "PAY-7"])
+        projects = c.get("/atlassian/rest/api/3/project/search", headers=hdr).json()
+        assert [p["key"] for p in projects["values"] if p["key"].startswith("PAY")] == ["PAY"]
 
 
 def test_byo_colliding_provided_id_claims_the_spelling_and_keeps_its_alias(tmp_path):
@@ -1478,6 +1525,67 @@ def test_byo_colliding_provided_id_claims_the_spelling_and_keeps_its_alias(tmp_p
         alias = synth.github_number("g-a-thief")
         got2 = c.get(f"/github/repos/acme/core/pulls/{alias}", headers=hdr)
         assert got2.status_code == 200 and got2.json()["title"] == "t"
+        listing = c.get(
+            "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
+        ).json()
+        assert "v" in {i["title"] for i in listing}
+
+
+def test_byo_a_provided_number_wins_whichever_doc_id_sorts_first(tmp_path):
+    """The contract above cannot depend on doc_id order, and it did: both index passes read one
+    column, so a synthesized number written into it at load was indistinguishable from a provided
+    one, and the provider lost its own number to a row that merely hashed to it and sorted earlier
+    — a 404 at the number the corpus had asked for. The victim doc_id sorts FIRST here; only a
+    corpus that stores nothing for an absent number can keep the provider's claim.
+
+    A keyless row therefore holds NULL, and the number it serves comes from the reverse index's
+    second pass — same value, decided after every provided one is already registered."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    stolen = synth.github_number("g-a-victim")
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "g-a-victim",
+                "repo": "core",
+                "title": "v",
+                "content": "v",
+                "author_email": "ava@acme.com",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "g-thief",
+                "repo": "core",
+                "subtype": "pull_request",
+                "title": "t",
+                "content": "t",
+                "author_email": "ava@acme.com",
+                "number": stolen,
+            },
+        ],
+    )
+    conn = store.connect_ro(settings.db_path)
+    try:
+        stored = {
+            r["doc_id"]: r["number"]
+            for r in conn.execute("SELECT doc_id, number FROM github_items")
+        }
+        assert stored == {"g-a-victim": None, "g-thief": stolen}
+    finally:
+        conn.close()
+
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    with client_for(settings, reload=True) as c:
+        got = c.get(f"/github/repos/acme/core/pulls/{stolen}", headers=hdr)
+        assert got.status_code == 200 and got.json()["title"] == "t"
+        assert got.json()["number"] == stolen
         listing = c.get(
             "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
         ).json()

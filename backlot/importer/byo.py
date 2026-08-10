@@ -944,19 +944,31 @@ class _Loader:
                 # the API had just handed the caller that exact string. Deterministic, so the
                 # served value is unchanged; it is just written down now.
                 cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
-            if src == "jira" and not cols.get("key"):
-                # Same materialization (and reasoning) as Linear's identifier above; a
-                # corpus-provided key wins.
-                cols["key"] = synth.jira_key(did, synth.jira_project_key(container))
-            if src == "github":
-                if cols.get("kind") == "file":
-                    # The schema says a file row's number is ignored — make that true in
-                    # the table too, not only in the reverse index: file rows stay NULL,
-                    # provided or not, so a stored number can never shadow a real
-                    # issue or PR.
-                    cols["number"] = None
-                elif not cols.get("number"):
-                    cols["number"] = synth.github_number(did)
+            # A jira key and a github number are deliberately NOT materialized the way Linear's
+            # identifier is: the column holds what the CORPUS wrote and nothing else, so "provided"
+            # means exactly "non-NULL" everywhere downstream. Two things depend on that.
+            #
+            # A key carries the PROJECT's key as its prefix — a fact about the container, not about
+            # this row. Written here the prefix would be the synthesized one, since the record
+            # cannot know whether a sibling issue in the same project provides `PAY-7`, and a
+            # project mixing provided and absent keys would then serve two spellings at once.
+            #
+            # And the reverse indexes let a provided id claim its spelling ahead of every
+            # synthesized one (main._build_index scans in two passes). A synthesized value written
+            # into the same column is indistinguishable from a provided one, which put the passes
+            # in doc_id order instead: a record that provided number N lost it to whichever row
+            # synthesized N and sorted first, and answered 404 at the number it had asked for.
+            #
+            # Nothing needs either value stored. Unlike Linear, whose identifier is resolvable ONLY
+            # from its column, the index registers each row's synthesized spelling as an alias at
+            # build time, and the routers read through synth.stored() with that same value as the
+            # fallback — so an absent id stays absent and is derived where the whole container is
+            # visible, once.
+            if src == "github" and cols.get("kind") == "file":
+                # The schema says a file row's number is ignored — make that true in the table
+                # too, not only in the reverse index: file rows stay NULL, provided or not, so a
+                # stored number can never shadow a real issue or PR.
+                cols["number"] = None
             names = list(cols)
             conn.execute(
                 f"INSERT OR REPLACE INTO {store.table(src)} ({', '.join(names)}) "

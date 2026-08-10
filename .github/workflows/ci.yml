@@ -1,4 +1,4 @@
-name: tests
+name: CI
 
 on:
   push:
@@ -13,20 +13,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Unit tests
+        run: pytest -q
+
       # Node is for the Linear example at the end of this job: `@linear/sdk` is the only client
       # Linear publishes and there is no official Python one, so pytest cannot drive it.
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install
-        run: pip install -e ".[dev]"
-      - name: Unit tests
-        # e2e tests self-skip when the data DB is absent; unit tests need no data.
-        run: pytest -q
-
-      # Runs after the suite and shares its editable install, because the example spawns its own
-      # mock exactly as the Python examples do. An unexecuted TypeScript example rots, and getting
-      # it verified is why it exists as a real project rather than a README snippet.
       - name: Install the Linear example's dependencies
         working-directory: examples/using-official-sdk/linear
         run: npm install
@@ -39,8 +35,6 @@ jobs:
           PYTHON: python
         run: npx tsx index.ts
 
-  # Separate from `test` so a formatting nit and a broken test report independently, and so neither
-  # waits on the other's install.
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -48,10 +42,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      # The version comes out of pyproject's `dev` extra, where it is pinned, so this cannot drift
-      # from a local run — an unpinned `pip install ruff` once picked up a release that changed both
-      # the formatter's and the linter's defaults and reddened the job with no code change behind
-      # it. Just ruff, not the `dev` extra: linting needs no runtime dependencies.
       - name: Install ruff
         run: pip install "$(grep -oE 'ruff~=[0-9.]+' pyproject.toml)"
       - name: ruff format --check

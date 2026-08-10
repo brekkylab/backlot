@@ -1,9 +1,11 @@
 """backlot.cli: the `backlot` console script — dispatch, --type routing, and help.
 
-The tests here call ``cli.main`` in-process. What they deliberately do NOT cover is whether the
-console script is REGISTERED (`[project.scripts]` in pyproject.toml): an entry point only exists in
-an installed distribution, so the wheel-install CI job runs the script itself. Both halves are
-needed — a correct `cli.py` behind a missing entry point still leaves `backlot` not found.
+The tests here call ``cli.main`` in-process, which is everything except one thing: whether the
+console script is REGISTERED. `[project.scripts]` only takes effect in an installed distribution, so
+a correct `cli.py` behind a missing or misspelled entry point still leaves `backlot` not found, and
+nothing here would notice. Check that by hand when touching packaging — build a wheel, install it
+into a venv outside the checkout, and run `backlot --version` from a directory the source tree
+cannot shadow.
 """
 
 from __future__ import annotations

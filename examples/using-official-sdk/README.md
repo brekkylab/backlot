@@ -29,8 +29,8 @@ Every script here is Python except [`linear/`](linear/), which is a small TypeSc
 That is not a stylistic choice: **`@linear/sdk` is the only client Linear publishes, and there is
 no official Python SDK at all.** Documenting a snippet would have been cheaper and was rejected —
 an example nobody executes cannot back the claim that the mock works with the real client — so it
-is a real project, and a dedicated CI job (`linear-sdk-example` in `.github/workflows/ci.yml`)
-installs and runs it on every push.
+is a real project that CI installs, typechecks and runs on every push, at the end of the `test`
+job in `.github/workflows/ci.yml`.
 
 ```bash
 cd examples/using-official-sdk/linear

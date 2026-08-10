@@ -269,9 +269,6 @@ One runnable script per source is in [`examples/using-llamaindex-readers/`](exam
 [mirage](https://github.com/strukto-ai/mirage) mounts a SaaS backend as a **virtual
 filesystem** an agent reads with shell commands (`ls`, `cat`, `grep`, `find`). Point its resources at the mock and you can drive a mirage agent over your corpus offline.
 
-Slack, Notion and S3 take a base URL through their own config, so pointing them at the mock is an
-argument:
-
 ```python
 from mirage import MountMode, Workspace
 from mirage.resource.slack import SlackConfig, SlackResource
@@ -281,13 +278,8 @@ ws = Workspace({"/slack": resource}, mode=MountMode.READ)
 await ws.execute("ls /slack/channels/")        # then cat a channel's dated chat.jsonl
 ```
 
-Google and GitHub hardcode their host instead, so `backlot.integrations.mirage` rebinds those
-constants — `point_google_at()` / `point_github_at()`, called before the resource is built (see
-`gdrive.py`, which pairs it with a Google credential assembled from `/_mock/credentials` and
-`/_mock/users`).
-
 One runnable script per source plus a `unified.py` that greps
-across Slack/Gmail/Drive at once are in [`examples/using-mirage/`](examples/using-mirage/).
+across Slack/Gmail/Google Drive at once are in [`examples/using-mirage/`](examples/using-mirage/).
 
 
 ## Endpoints (read-only)

@@ -1360,6 +1360,9 @@ def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
             "title": "a.py",
             "content": "print()",
             "author_email": "ava@acme.com",
+            # provided or not, a file row's number stays NULL — the schema says
+            # "ignored", and a stored one could only shadow a real issue or PR
+            "number": 9,
         },
     ]
     settings = build_corpus(tmp_path, records)
@@ -1389,6 +1392,96 @@ def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
         )
         pull = c.get("/github/repos/acme/core/pulls/4242", headers=hdr)
         assert pull.status_code == 200 and pull.json()["number"] == 4242
+
+
+def test_byo_provided_key_prefix_is_the_project_key(tmp_path):
+    """An agent that reads PAY-7 out of a document navigates by PAY: the issue's
+    `fields.project.key`, the project picker and JQL `project = PAY` must all speak the
+    provided prefix, or the corpus cites keys its own API cannot navigate."""
+    from tests._helpers import build_corpus, client_for
+
+    settings = build_corpus(tmp_path, [{
+        "source_type": "jira", "doc_id": "j-key", "project": "payments",
+        "title": "t", "content": "c", "key": "PAY-7", "author_email": "ava@acme.com",
+    }])
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {"Authorization": "Bearer "
+           + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")}
+    with client_for(settings, reload=True) as c:
+        issue = c.get("/atlassian/rest/api/3/issue/PAY-7", headers=hdr).json()
+        assert issue["fields"]["project"]["key"] == "PAY"
+        found = c.get("/atlassian/rest/api/3/search/jql", headers=hdr,
+                      params={"jql": "project = PAY"}).json()
+        assert [i["key"] for i in found["issues"]] == ["PAY-7"]
+        projects = c.get("/atlassian/rest/api/3/project/search", headers=hdr).json()
+        assert "PAY" in [p["key"] for p in projects["values"]]
+
+
+def test_byo_colliding_provided_id_claims_the_spelling_and_keeps_its_alias(tmp_path):
+    """Provided ids claim their spelling first; every row's synthesized spelling then
+    registers as an alias. The contract when a provided number equals another doc's
+    synthesized number: the provider answers at both its provided spelling and its own
+    synthesized alias, and the other document — whose only spelling was taken — stays
+    visible through ACL-scoped listing and search. Losing by-id reachability requires
+    another record to provide YOUR hash, which a corpus controls end to end."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    stolen = synth.github_number("g-victim")
+    settings = build_corpus(tmp_path, [
+        {"source_type": "github", "doc_id": "g-victim", "repo": "core",
+         "title": "v", "content": "v", "author_email": "ava@acme.com"},
+        {"source_type": "github", "doc_id": "g-a-thief", "repo": "core",
+         "subtype": "pull_request", "title": "t", "content": "t",
+         "author_email": "ava@acme.com", "number": stolen},
+    ])
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {"Authorization": "Bearer "
+           + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")}
+    with client_for(settings, reload=True) as c:
+        got = c.get(f"/github/repos/acme/core/pulls/{stolen}", headers=hdr).json()
+        assert got["title"] == "t"          # the provided id wins the spelling
+        alias = synth.github_number("g-a-thief")
+        got2 = c.get(f"/github/repos/acme/core/pulls/{alias}", headers=hdr)
+        assert got2.status_code == 200 and got2.json()["title"] == "t"
+        listing = c.get("/github/repos/acme/core/issues", headers=hdr,
+                        params={"state": "open"}).json()
+        assert "v" in {i["title"] for i in listing}
+
+
+def test_byo_server_boots_read_only_on_a_pre_column_db(tmp_path):
+    """The serving path opens the DB read-only — no migration can run there. A DB built
+    before the key/number columns existed must boot and serve the synthesized spellings
+    exactly as that version did, not crash in lifespan."""
+    import sqlite3 as _sq
+
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    settings = build_corpus(tmp_path, [
+        {"source_type": "jira", "doc_id": "j-old", "project": "payments",
+         "title": "t", "content": "c", "author_email": "ava@acme.com"},
+        {"source_type": "github", "doc_id": "g-old", "repo": "core",
+         "title": "t", "content": "c", "author_email": "ava@acme.com"},
+    ])
+    conn = _sq.connect(settings.db_path)
+    conn.executescript(
+        "DROP INDEX IF EXISTS idx_jira_doc_key;"
+        "DROP INDEX IF EXISTS idx_github_doc_number;"
+        "ALTER TABLE jira_issues DROP COLUMN key;"
+        "ALTER TABLE github_items DROP COLUMN number;")
+    conn.commit()
+    conn.close()
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {"Authorization": "Bearer "
+           + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")}
+    with client_for(settings, reload=True) as c:
+        jkey = synth.jira_key("j-old", synth.jira_project_key("payments"))
+        assert c.get(f"/atlassian/rest/api/3/issue/{jkey}",
+                     headers=hdr).status_code == 200
+        num = synth.github_number("g-old")
+        assert c.get(f"/github/repos/acme/core/issues/{num}",
+                     headers=hdr).status_code == 200
 
 
 # --- roster sidecar ---------------------------------------------------------------

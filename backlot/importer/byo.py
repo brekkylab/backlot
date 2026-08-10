@@ -945,15 +945,18 @@ class _Loader:
                 # served value is unchanged; it is just written down now.
                 cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
             if src == "jira" and not cols.get("key"):
-                # Same materialization as Linear's identifier: a corpus that writes its own issue
-                # keys into document text needs the API to serve those exact strings, and one that
-                # writes none keeps today's synthesized value — now stored instead of re-derived
-                # per request.
+                # Same materialization (and reasoning) as Linear's identifier above; a
+                # corpus-provided key wins.
                 cols["key"] = synth.jira_key(did, synth.jira_project_key(container))
-            if src == "github" and cols.get("kind") != "file" and not cols.get("number"):
-                # file rows stay NULL: they are excluded from the issue-number reverse index, so
-                # a stored number would only invite a collision with a real issue or PR.
-                cols["number"] = synth.github_number(did)
+            if src == "github":
+                if cols.get("kind") == "file":
+                    # The schema says a file row's number is ignored — make that true in
+                    # the table too, not only in the reverse index: file rows stay NULL,
+                    # provided or not, so a stored number can never shadow a real
+                    # issue or PR.
+                    cols["number"] = None
+                elif not cols.get("number"):
+                    cols["number"] = synth.github_number(did)
             names = list(cols)
             conn.execute(
                 f"INSERT OR REPLACE INTO {store.table(src)} ({', '.join(names)}) "

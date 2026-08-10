@@ -145,8 +145,12 @@ CREATE TABLE IF NOT EXISTS github_items (
 CREATE INDEX IF NOT EXISTS idx_github_repo ON github_items(repo);
 CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path);
 -- (doc_id, kind, repo, number) in that order: the issue-number reverse index scans exactly these
--- four, so the build stays an index-only scan and never touches the wide rows (see main._build_index).
-CREATE INDEX IF NOT EXISTS idx_github_doc_number ON github_items(doc_id, kind, repo, number);
+-- four, so the build stays an index-only scan and never touches the wide rows (see
+-- main._build_index). Partial, because that scan excludes kind='file' rows — in a code-heavy
+-- corpus they dominate the table, and indexing them would only pay write and disk cost for rows
+-- the one consumer filters out. `kind` must stay among the columns or the plan loses COVERING.
+CREATE INDEX IF NOT EXISTS idx_github_doc_number ON github_items(doc_id, kind, repo, number)
+    WHERE kind IS NULL OR kind != 'file';
 
 CREATE TABLE IF NOT EXISTS jira_issues (
     doc_id TEXT PRIMARY KEY, project TEXT NOT NULL, author_email TEXT NOT NULL,

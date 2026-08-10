@@ -8,7 +8,7 @@ glue is ``point_google_at`` (mirage's Google connectors have no host config, so 
 module constants; the mock's ``/oauth2/token`` honors the refresh).
 
     pip install -e ".[examples,mirage]"
-    python examples/using-mirage/gmail.py                                  # first user, locally
+    python examples/using-mirage/gmail.py                                  # the mailbox owner
     python examples/using-mirage/gmail.py --url http://localhost:8000 --user ceo@acme.com
     python examples/using-mirage/gmail.py --url http://localhost:8000 --fuse   # real OS mount
 
@@ -33,17 +33,23 @@ from _common.google_creds import google_oauth_user
 
 from _helpers import FUSE_HELP, lines, run_mirage
 
+# `users/me/messages` serves the CALLER's mailbox, as real Gmail does — so the identity this runs
+# as has to own the mailbox the corpus seeds, or the mount is legitimately empty. Both come from
+# MAILBOX; `--user` overrides the identity (try `--user ava@acme.com` to see an empty mailbox).
+MAILBOX = "ceo"
+MAILBOX_OWNER = f"{MAILBOX}@acme.com"
+
 CORPUS = [
     {
         "source_type": "gmail",
-        "mailbox": "ceo",
+        "mailbox": MAILBOX,
         "title": "Q1 board deck draft",
         "content": "Draft narrative for the Q1 board meeting. Please review before Thursday.",
-        "author_email": "ceo@acme.com",
+        "author_email": MAILBOX_OWNER,
     },
     {
         "source_type": "gmail",
-        "mailbox": "ceo",
+        "mailbox": MAILBOX,
         "title": "Re: Q1 board deck draft",
         "content": "Looks good — one tweak to the revenue slide.",
         "author_email": "ava@acme.com",
@@ -125,7 +131,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
     p.add_argument(
         "--user",
-        help="which user's OAuth token to use, from GET /_mock/users (default: the first user)",
+        help="which user's OAuth token to use, from GET /_mock/users "
+        f"(default: {MAILBOX_OWNER}, who owns the mailbox this corpus seeds)",
     )
     p.add_argument(
         "--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)"
@@ -136,7 +143,7 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     with serve_or_connect(CORPUS, url=args.url) as mock:
-        resource = build(mock, args.user)
+        resource = build(mock, args.user or MAILBOX_OWNER)
         if args.fuse:
             main_fuse(resource)
         else:

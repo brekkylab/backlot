@@ -224,7 +224,7 @@
     "key": {
       "type": "string",
       "minLength": 1,
-      "description": "Issue key as the corpus writes it (PAY-101). Stored and served verbatim; synthesized from the doc_id when omitted."
+      "description": "Issue key as the corpus writes it (PAY-101). Stored and served verbatim. An omitted key is synthesized from the doc_id, under the prefix this project's provided keys carry — one issue spelling out PAY-101 makes the whole project answer at PAY, so a corpus need only write the keys its documents actually cite."
     }
   },
   "required": [

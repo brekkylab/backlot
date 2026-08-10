@@ -48,7 +48,7 @@ def generate(settings, org: str | None = None) -> dict:
     org = org or settings.org_name
     client_id = _h("client", org)[:32] + ".apps.googleusercontent.com"
     client_secret = "GOCSPX-" + _h("secret", org)[:28]
-    sa_email = f"enterprise-mock@{org}.iam.gserviceaccount.com"
+    sa_email = f"backlot@{org}.iam.gserviceaccount.com"
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_pem = key.private_bytes(
@@ -97,7 +97,7 @@ class Oauth:
 
     @property
     def client_email(self) -> str | None:
-        """The service account's email (``enterprise-mock@<org>.iam.gserviceaccount.com``)."""
+        """The service account's email (``backlot@<org>.iam.gserviceaccount.com``)."""
         return self._sa.get("client_email")
 
     def verify_assertion(self, assertion: str | None) -> str | tuple[None, str] | None:

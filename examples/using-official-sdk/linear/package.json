@@ -1,9 +1,9 @@
 {
-  "name": "enterprise-mock-linear-example",
+  "name": "backlot-linear-example",
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Drive the official @linear/sdk against an enterprise-mock server.",
+  "description": "Drive the official @linear/sdk against a Backlot server.",
   "scripts": {
     "start": "tsx index.ts",
     "typecheck": "tsc --noEmit"

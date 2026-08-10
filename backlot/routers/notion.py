@@ -474,9 +474,9 @@ async def get_me(request: Request):
     # admin/service token → the integration's bot user
     return {
         "object": "user",
-        "id": synth.notion_user_id("bot:enterprise-mock"),
+        "id": synth.notion_user_id("bot:backlot"),
         "type": "bot",
-        "name": "enterprise-mock",
+        "name": "backlot",
         "avatar_url": None,
         "bot": {
             "owner": {"type": "workspace", "workspace": True},

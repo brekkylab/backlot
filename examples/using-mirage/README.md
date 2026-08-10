@@ -2,7 +2,7 @@
 
 [mirage](https://github.com/strukto-ai/mirage) (`mirage-ai`) is a **virtual filesystem for AI
 agents**: it mounts a SaaS backend and lets you read it with plain bash — `ls`, `cat`, `grep`,
-`find`, `jq`. These scripts point mirage at enterprise-mock, so you can exercise a mirage-based
+`find`, `jq`. These scripts point mirage at Backlot, so you can exercise a mirage-based
 agent over a corpus **you** supply, entirely offline.
 
 ```bash

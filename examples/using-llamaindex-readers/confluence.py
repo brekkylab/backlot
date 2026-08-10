@@ -11,7 +11,6 @@ import argparse
 from llama_index.readers.confluence import ConfluenceReader
 
 from backlot import serve_or_connect
-from backlot.integrations.llamaindex import atlassian_base_url
 
 CORPUS = [
     {
@@ -34,7 +33,7 @@ def build(mock, token):
     # only toggles cloud-specific API shapes elsewhere, not the URL), so the mock's
     # `/atlassian/wiki/rest/api` root must be spelled out in `base_url`.
     return ConfluenceReader(
-        base_url=f"{atlassian_base_url(mock.base_url)}/wiki", cloud=False, api_token=token
+        base_url=f"{mock.base_url}/atlassian/wiki", cloud=False, api_token=token
     )
 
 

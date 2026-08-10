@@ -275,9 +275,8 @@ argument:
 ```python
 from mirage import MountMode, Workspace
 from mirage.resource.slack import SlackConfig, SlackResource
-from backlot.integrations.mirage import slack_base_url
 
-resource = SlackResource(SlackConfig(token=TOKEN, base_url=slack_base_url("http://localhost:8000")))
+resource = SlackResource(SlackConfig(token=TOKEN, base_url="http://localhost:8000/slack/api"))
 ws = Workspace({"/slack": resource}, mode=MountMode.READ)
 await ws.execute("ls /slack/channels/")        # then cat a channel's dated chat.jsonl
 ```

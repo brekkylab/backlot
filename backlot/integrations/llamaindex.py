@@ -16,13 +16,7 @@ says what seam it uses and why that one:
 from __future__ import annotations
 
 __all__ = [
-    "slack_base_url",
     "slack_reader_at",
-    "notion_base_url",
-    "s3_base_url",
-    "github_base_url",
-    "atlassian_base_url",
-    "linear_base_url",
     "point_gmail_at",
     "point_drive_at",
     "patch_notion_at",
@@ -30,12 +24,6 @@ __all__ = [
     "point_hubspot_at",
     "patch_linear_at",
 ]
-
-
-def slack_base_url(base_url: str) -> str:
-    """Slack Web API base for `reader._client.base_url` — trailing slash required (slack_sdk
-    builds request URLs as `base_url + method`, e.g. `conversations.history`)."""
-    return f"{base_url.rstrip('/')}/slack/api/"
 
 
 def slack_reader_at(base_url: str, token: str):
@@ -53,7 +41,9 @@ def slack_reader_at(base_url: str, token: str):
     import slack_sdk
     from llama_index.readers.slack import SlackReader
 
-    mocked_url = slack_base_url(base_url)
+    mocked_url = (
+        f"{base_url.rstrip('/')}/slack/api/"  # trailing slash: slack_sdk joins base + method
+    )
     real_web_client = slack_sdk.WebClient
 
     class _WebClientAtMock(real_web_client):
@@ -68,29 +58,6 @@ def slack_reader_at(base_url: str, token: str):
         slack_sdk.WebClient = real_web_client
     reader._client.base_url = mocked_url
     return reader
-
-
-def notion_base_url(base_url: str) -> str:
-    """Notion base for `patch_notion_at` — the reader appends the `/v1/...` path itself."""
-    return f"{base_url.rstrip('/')}/notion"
-
-
-def s3_base_url(base_url: str) -> str:
-    """S3 endpoint for `S3Reader(s3_endpoint_url=...)` (path-style under `/s3`)."""
-    return f"{base_url.rstrip('/')}/s3"
-
-
-def github_base_url(base_url: str) -> str:
-    """GitHub REST base for `GitHubIssuesClient(base_url=...)`."""
-    return f"{base_url.rstrip('/')}/github"
-
-
-def atlassian_base_url(base_url: str) -> str:
-    """Atlassian base for Jira `PATauth.server_url` / `ConfluenceReader(base_url=...)`. The
-    Jira client appends `/rest/api/<ver>` itself. atlassian-python-api 4.0.7 never appends
-    `/wiki` regardless of `cloud`, so the Confluence example spells `/wiki` out explicitly on
-    top of this base (with `cloud=False`) rather than relying on the client to add it."""
-    return f"{base_url.rstrip('/')}/atlassian"
 
 
 def patch_s3fs_walk() -> None:
@@ -343,8 +310,3 @@ def patch_linear_at(base_url: str) -> None:
             return real.post(url, *args, **kwargs)
 
     lb.requests = _RequestsAtMock()
-
-
-def linear_base_url(base_url: str) -> str:
-    """Linear GraphQL base for `patch_linear_at` — the reader appends `/graphql` itself."""
-    return f"{base_url.rstrip('/')}/linear"

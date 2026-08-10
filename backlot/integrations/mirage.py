@@ -3,9 +3,10 @@
 Mirage (https://github.com/strukto-ai/mirage) is a virtual filesystem for AI agents: you mount a
 SaaS backend and read it with bash-style commands (``ls``, ``cat``, ``grep``, ``find``).
 
-Slack, Notion and S3 take the host as a config field, so they just get pointed at the mock. Google
-and GitHub do not — they read it from module-level constants in ``mirage.core.*._client``, which is
-why this module monkeypatches (see ``point_google_at`` / ``point_github_at``).
+Slack, Notion and S3 take the host as a config field, so they need nothing from here — pass the
+mock's URL for that resource straight in (``f"{base_url}/slack/api"``, ``…/notion/v1``, ``…/s3``).
+Google and GitHub do not expose one: they read the host from module-level constants in
+``mirage.core.*._client``, which is what ``point_google_at`` / ``point_github_at`` rebind.
 """
 
 from __future__ import annotations
@@ -28,33 +29,7 @@ except Exception:  # noqa: BLE001
 __all__ = [
     "point_google_at",
     "point_github_at",
-    "slack_base_url",
-    "notion_base_url",
-    "s3_base_url",
 ]
-
-
-def slack_base_url(base_url: str) -> str:
-    """The mock's Slack Web API base, for ``SlackConfig(base_url=...)``.
-
-    NOT interchangeable with the same-named helper in ``backlot.integrations.llamaindex``: that
-    one ends in a slash because slack_sdk builds URLs as ``base_url + method``. Each client's
-    URL-joining rule is its own, which is why these are per-client rather than shared."""
-    return f"{base_url.rstrip('/')}/slack/api"
-
-
-def notion_base_url(base_url: str) -> str:
-    """The mock's Notion API base, for ``NotionConfig(base_url=...)``.
-
-    mirage sends ``Notion-Version: 2022-06-28``, which the mock's version-aware router answers with
-    the legacy inline-properties / ``databases.query`` shape."""
-    return f"{base_url.rstrip('/')}/notion/v1"
-
-
-def s3_base_url(base_url: str) -> str:
-    """The mock's S3 endpoint, for ``S3Config(endpoint_url=...)``. Path-style: the bucket is the
-    first path segment under ``/s3`` (S3Config(path_style=True) keeps it out of the hostname)."""
-    return f"{base_url.rstrip('/')}/s3"
 
 
 def _rebind_mirage_constants(source_module: str, overrides: dict[str, str]) -> None:

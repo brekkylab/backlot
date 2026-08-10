@@ -51,21 +51,20 @@ both, together).
 
 ```python
 from backlot import serve_or_connect
-from backlot.integrations.mirage import slack_base_url
 with serve_or_connect(CORPUS) as mock:
     resource = SlackResource(SlackConfig(token=mock.token,
-                                         base_url=slack_base_url(mock.base_url)))
+                                         base_url=f"{mock.base_url}/slack/api"))
     ws = Workspace({"/slack": resource}, mode=MountMode.READ)
     print(await (await ws.execute("ls /slack/channels/")).stdout_str())
 ```
 
-**Notion** is the same one-liner — `NotionConfig(base_url=notion_base_url(mock.base_url))`, no
+**Notion** is the same one-liner — `NotionConfig(base_url=f"{mock.base_url}/notion/v1")`, no
 monkeypatch. mirage sends `Notion-Version: 2022-06-28`, which the mock's version-aware router
 serves (the legacy inline-`properties` / `databases.query` shape), so pages and databases both
 read correctly.
 
 **S3** is also plain config, no monkeypatch and no pin bump: `S3Config(endpoint_url=
-s3_base_url(mock.base_url), path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
+f"{mock.base_url}/s3", path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
 `path_style=True` keeps the bucket in the path (`/s3/<bucket>/...`) rather than the hostname. S3
 uses an AWS keypair (not a bearer token): `--access-key`/`--secret-key` are **required with
 `--url`** (real AWS keys, or a pair from `GET <url>/_mock/users` — the keys the SigV4 verifier

@@ -29,7 +29,7 @@ import argparse
 from llama_index.readers.linear import LinearReader
 
 from backlot import serve_or_connect
-from backlot.integrations.llamaindex import linear_base_url, patch_linear_at
+from backlot.integrations.llamaindex import patch_linear_at
 
 CORPUS = [
     {
@@ -120,7 +120,7 @@ query Team {
 
 
 def build(mock, token):
-    patch_linear_at(linear_base_url(mock.base_url))
+    patch_linear_at(f"{mock.base_url}/linear")
     return LinearReader(api_key=token)
 
 

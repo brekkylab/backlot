@@ -23,7 +23,7 @@ from mirage.resource.gmail import GmailConfig, GmailResource
 from mirage.resource.slack import SlackConfig, SlackResource
 
 from backlot import serve_or_connect
-from backlot.integrations.mirage import point_google_at, slack_base_url
+from backlot.integrations.mirage import point_google_at
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _common.google_creds import google_oauth_user
@@ -96,7 +96,7 @@ def build(mock, token, user) -> dict:
     client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url, user)
     google = dict(client_id=client_id, client_secret=client_secret, refresh_token=refresh_token)
     return {  # three backends, one filesystem
-        "/slack": SlackResource(SlackConfig(token=token, base_url=slack_base_url(mock.base_url))),
+        "/slack": SlackResource(SlackConfig(token=token, base_url=f"{mock.base_url}/slack/api")),
         "/gmail": GmailResource(GmailConfig(**google)),
         "/gdrive": GoogleDriveResource(GoogleDriveConfig(**google)),
     }

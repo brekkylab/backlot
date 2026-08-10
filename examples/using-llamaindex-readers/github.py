@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 from backlot import serve_or_connect
-from backlot.integrations.llamaindex import github_base_url
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _common.syspath import drop_self_from_syspath
@@ -45,7 +44,7 @@ CORPUS = [
 
 def build(mock, token):
     client = GitHubIssuesClient(
-        github_token=token, base_url=github_base_url(mock.base_url), verbose=False
+        github_token=token, base_url=f"{mock.base_url}/github", verbose=False
     )
     return GitHubRepositoryIssuesReader(client, owner="acme", repo="gateway", verbose=False)
 

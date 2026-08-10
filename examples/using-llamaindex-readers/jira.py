@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 from backlot import serve_or_connect
-from backlot.integrations.llamaindex import atlassian_base_url
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _common.syspath import drop_self_from_syspath
@@ -43,7 +42,7 @@ CORPUS = [
 
 
 def build(mock, token):
-    return JiraReader(PATauth={"server_url": atlassian_base_url(mock.base_url), "api_token": token})
+    return JiraReader(PATauth={"server_url": f"{mock.base_url}/atlassian", "api_token": token})
 
 
 def main(reader):

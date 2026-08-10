@@ -1,8 +1,11 @@
 """Surface (b): official clients that hardcode a vendor host, redirected at Backlot.
 
-The URL helpers are pure and need no server. The monkeypatchers are checked for their observable
-effect — a constructed client actually addressing the mock — because a shim that silently no-ops
-would otherwise send a "mock" run to the real vendor.
+What lives in ``backlot.integrations`` is only what a caller cannot write themselves: the
+monkeypatchers, and the one reader that must be built already-redirected. A client that takes a base
+URL as an argument gets ``f"{mock.base_url}/<prefix>"`` at the call site instead — see the examples.
+
+The patchers are checked for their observable effect — a constructed client actually addressing the
+mock — because a shim that silently no-ops would otherwise send a "mock" run to the real vendor.
 """
 
 from __future__ import annotations
@@ -12,37 +15,18 @@ import pytest
 import backlot
 
 
-def test_url_helpers_are_pure_and_prefixed():
-    from backlot.integrations import llamaindex as li
-
-    base = "http://127.0.0.1:9999"
-    assert li.slack_base_url(base) == f"{base}/slack/api/"  # trailing slash: slack_sdk joins
-    assert li.github_base_url(base) == f"{base}/github"
-    assert li.notion_base_url(base) == f"{base}/notion"
-    assert li.s3_base_url(base) == f"{base}/s3"
-    assert li.atlassian_base_url(base) == f"{base}/atlassian"
-    assert li.linear_base_url(base) == f"{base}/linear"
-    # A trailing slash on the input must not double up.
-    assert li.github_base_url(base + "/") == f"{base}/github"
-
-
-def test_mirage_slack_base_url_differs_from_the_llamaindex_one():
-    """Not a copy-paste slip: slack_sdk appends the method to base_url, mirage does not."""
-    from backlot.integrations import llamaindex as li
-    from backlot.integrations import mirage as mg
-
-    base = "http://127.0.0.1:9999"
-    assert li.slack_base_url(base).endswith("/")
-    assert not mg.slack_base_url(base).endswith("/")
-
-
 def test_slack_reader_is_constructed_against_the_mock():
     pytest.importorskip("llama_index.readers.slack")
     from backlot.integrations.llamaindex import slack_reader_at
 
     with backlot.mock_server() as m:
         reader = slack_reader_at(m.base_url, m.token)
-        assert m.base_url in str(reader._client.base_url)
+        built = str(reader._client.base_url)
+        assert m.base_url in built
+        # The TRAILING SLASH is the whole reason this URL is built inside the helper rather than
+        # passed in: slack_sdk joins `base_url + method`, so without it every call would address
+        # `/slackconversations.history`.
+        assert built.endswith("/slack/api/"), built
 
 
 def test_patch_notion_at_rebinds_every_hardcoded_host():

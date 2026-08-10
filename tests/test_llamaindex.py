@@ -255,12 +255,12 @@ def test_linear(live_server):
     import llama_index.readers.linear.base as lb
     from llama_index.readers.linear import LinearReader
 
-    from backlot.integrations.llamaindex import linear_base_url, patch_linear_at
+    from backlot.integrations.llamaindex import patch_linear_at
 
     base, admin = _base_token(live_server)
     real_requests = lb.requests
     try:
-        patch_linear_at(linear_base_url(base))
+        patch_linear_at(f"{base}/linear")
         # The caller supplies the document; this is the reader's own documented field set.
         query = """
         query Team {
@@ -325,7 +325,7 @@ def test_linear_acl_scoped_by_token(live_server):
     import yaml
     from llama_index.readers.linear import LinearReader
 
-    from backlot.integrations.llamaindex import linear_base_url, patch_linear_at
+    from backlot.integrations.llamaindex import patch_linear_at
 
     base, settings = live_server
     tokens = {
@@ -341,7 +341,7 @@ def test_linear_acl_scoped_by_token(live_server):
         "labels { nodes { name } } } } } }"
     )
     try:
-        patch_linear_at(linear_base_url(base))
+        patch_linear_at(f"{base}/linear")
         titles = {
             t: {d.metadata["title"] for d in LinearReader(api_key=tok).load_data(query)}
             for t, tok in (("ava", tokens["ava@acme.com"]), ("hana", tokens["hana@acme.com"]))
@@ -367,12 +367,12 @@ def test_linear_reader_crashes_on_a_null_relation(live_server):
     import llama_index.readers.linear.base as lb
     from llama_index.readers.linear import LinearReader
 
-    from backlot.integrations.llamaindex import linear_base_url, patch_linear_at
+    from backlot.integrations.llamaindex import patch_linear_at
 
     base, admin = _base_token(live_server)
     real_requests = lb.requests
     try:
-        patch_linear_at(linear_base_url(base))
+        patch_linear_at(f"{base}/linear")
         # No filter: the corpus has unassigned issues, so the reader hits its own bug.
         with pytest.raises(AttributeError, match="NoneType"):
             LinearReader(api_key=admin).load_data(

@@ -1514,13 +1514,16 @@ def test_byo_roster_duplicate_entries_union_their_groups(tmp_path):
     parsed = load_roster(roster)
     bo = parsed["users"]["bo@redwoodinference.com"]
     assert bo["token"] is True  # the contact entry never demoted the account
-    assert bo["groups"] == [
+    # A set, not a list: downstream this becomes group membership, and the rendered order
+    # rides on `yaml.safe_dump`'s key sorting rather than on anything this code decides.
+    assert set(bo["groups"]) == {
         "engineering",
         "security",
         "res-emea-support",
         "comp-hr-investigations",
         "2024",
-    ]
+    }
+    assert len(bo["groups"]) == 5  # deduplicated, so no membership row is doubled
 
 
 def test_byo_roster_departments_alone_is_an_employee_directory(tmp_path):
@@ -2087,3 +2090,77 @@ def test_hello_corpus_loads_and_covers_every_source(tmp_path):
         n = conn.execute(f"SELECT COUNT(*) FROM {gtable}").fetchone()[0]
         assert n >= 2, f"hello corpus has only {n} {gcol}(s) for {src}"
     conn.close()
+
+
+def test_byo_roster_a_stated_name_beats_a_derived_one(tmp_path):
+    """Memberships union, but names do not, so first-seen-wins is wrong for them: `name`
+    always has a fallback derived from the address and therefore never looks absent. An
+    entry stating "Tomás Rré" lost to an earlier entry that stated nothing, and the corpus
+    served "Tomas Rre" — a name the address cannot round-trip back to."""
+    from backlot.importer.byo import load_roster
+
+    email = "tomas.rre@redwoodinference.com"
+
+    def roster(name, departments):
+        p = tmp_path / f"{name}.yaml"
+        p.write_text(
+            yaml.safe_dump({"departments": departments}, allow_unicode=True), encoding="utf-8"
+        )
+        return load_roster(p)["users"][email]
+
+    # Derived first, stated second — the case that used to lose the accent.
+    assert (
+        roster(
+            "a",
+            {
+                "Engineering": [{"email": email}],
+                "Security": [{"name": "Tomás Rré", "email": email}],
+            },
+        )["name"]
+        == "Tomás Rré"
+    )
+    # Stated first, derived second — unchanged.
+    assert (
+        roster(
+            "b",
+            {
+                "Aaa": [{"name": "Tomás Rré", "email": email}],
+                "Bbb": [{"email": email}],
+            },
+        )["name"]
+        == "Tomás Rré"
+    )
+    # Two stated names: the first still wins, as memberships do.
+    assert (
+        roster(
+            "c",
+            {
+                "Aaa": [{"name": "First Stated", "email": email}],
+                "Bbb": [{"name": "Second Stated", "email": email}],
+            },
+        )["name"]
+        == "First Stated"
+    )
+
+
+def test_byo_roster_a_list_under_the_singular_group_key_is_read_not_crashed(tmp_path):
+    """`groups:` accepts a scalar because the sibling field is one; adding the plural makes
+    the mirror slip likelier. A list under `group:` reached `slugify` and raised
+    `AttributeError: 'list' object has no attribute 'lower'`, naming neither the file nor
+    the key. Every entry is kept — trading the crash for a silent loss would be no better."""
+    from backlot.importer.byo import load_roster
+
+    roster = tmp_path / "roster.yaml"
+    roster.write_text(
+        yaml.safe_dump(
+            {
+                "contacts": [
+                    {"name": "A", "email": "a@x.com", "group": ["engineering", "security"]},
+                    {"name": "B", "email": "b@x.com", "group": "engineering"},
+                ]
+            }
+        )
+    )
+    users = load_roster(roster)["users"]
+    assert set(users["a@x.com"]["groups"]) == {"engineering", "security"}
+    assert users["b@x.com"]["groups"] == ["engineering"]  # the scalar path is unchanged

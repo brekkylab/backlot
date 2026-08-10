@@ -532,6 +532,18 @@ def load_roster(path) -> dict:
     """
     data = yaml.safe_load(Path(path).read_text()) or {}
 
+    def _primary(raw) -> str | None:
+        """A contact's singular ``group:``, tolerating the plural shape.
+
+        ``groups:`` accepts a scalar because the sibling field is one, and adding the plural
+        makes the mirror slip likelier — a list under ``group:`` reached ``slugify`` and
+        raised ``AttributeError: 'list' object has no attribute 'lower'``, which names
+        neither the file nor the key. A list here means its first entry, and the rest are
+        read as extra memberships by the caller."""
+        if isinstance(raw, (list, tuple)):
+            raw = next((g for g in raw if g), None)
+        return slugify(str(raw)) if raw else None
+
     def _groups(entry: dict, primary: str | None) -> list[str]:
         # The department (or `group`) membership first, then the entry's extra `groups`, each
         # slugified once — dict.fromkeys keeps first occurrence so a repeat never doubles a row.
@@ -539,23 +551,41 @@ def load_roster(path) -> dict:
         # is a scalar, so the shape is a natural slip), and a bare number slugifies as text.
         raw = entry.get("groups")
         raw = [raw] if isinstance(raw, str) else (raw or [])
+        # A list written under the singular `group:` keeps every entry: `_primary` took the
+        # first as the primary membership, and dropping the rest silently would trade one
+        # crash for one quiet loss.
+        singular = entry.get("group")
+        if isinstance(singular, (list, tuple)):
+            raw = list(raw) + list(singular)
         listed = [slugify(str(g)) for g in raw if g]
         return [g for g in dict.fromkeys(([primary] if primary else []) + listed) if g]
 
     users: dict[str, dict] = {}
 
-    def _merge(email: str, name: str, groups: list[str], token: bool) -> None:
+    def _merge(email: str, name: str, groups: list[str], token: bool, *, stated: bool) -> None:
         # A person may appear more than once — two departments, or a department entry plus a
         # contact carrying extra register memberships. Membership is the UNION: replacing the
         # entry silently dropped the earlier groups, and a `readers: [group:...]` clause then
-        # wrongly denied the person the feature was written for. The first-seen name stays;
-        # a contact never upgrades an account, but it never demotes one either.
+        # wrongly denied the person the feature was written for. A contact never upgrades an
+        # account, but it never demotes one either.
+        #
+        # Names do not union, so first-seen-wins is wrong for them: `name` always has a
+        # fallback — one derived from the address — and so never looks absent. An entry that
+        # states "Tomás Rré" lost to an earlier entry that stated nothing, and the corpus
+        # served "Tomas Rre". A stated name wins over a derived one, whichever is seen first;
+        # between two stated names the first still wins, as for groups.
         cur = users.get(email)
         if cur is None:
-            users[email] = {"name": name, "groups": groups, "token": token}
+            users[email] = {"name": name, "groups": groups, "token": token, "_stated": stated}
             return
-        cur["groups"] = [g for g in dict.fromkeys(cur["groups"] + groups) if g]
+        # No empty-string filter here: both operands came from `_groups`, which drops them
+        # already. Inside `_groups` the filter is load-bearing — it catches a name whose slug
+        # collapses to "" — and repeating it here only suggested it could still happen.
+        cur["groups"] = list(dict.fromkeys(cur["groups"] + groups))
         cur["token"] = cur["token"] or token
+        if stated and not cur["_stated"]:
+            cur["name"] = name
+            cur["_stated"] = True
 
     for dept, people in (data.get("departments") or {}).items():
         for p in people or []:
@@ -564,14 +594,18 @@ def load_roster(path) -> dict:
                 p.get("name") or _display_name(p["email"]),
                 _groups(p, slugify(dept) or None),
                 True,
+                stated=bool(p.get("name")),
             )
     for p in data.get("contacts") or []:
         _merge(
             p["email"],
             p.get("name") or _display_name(p["email"]),
-            _groups(p, slugify(p["group"]) if p.get("group") else None),
+            _groups(p, _primary(p.get("group"))),
             False,
+            stated=bool(p.get("name")),
         )
+    for u in users.values():
+        u.pop("_stated", None)
     return {"org": data.get("org"), "org_domain": data.get("org_domain"), "users": users}
 
 

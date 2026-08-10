@@ -54,12 +54,18 @@ UNREGISTERED_CALLER_MESSAGE = (
 
 
 def family(path: str) -> str | None:
-    """Which envelope a request path takes, or ``None`` for a non-Google route (which keeps
-    FastAPI's ``{"detail": …}``)."""
+    """Which of the three envelopes a request path takes, or ``None`` for a non-Google route."""
     for prefix, fam in _PREFIX_FAMILY:
         if path.startswith(prefix):
             return fam
     return None
+
+
+def owns(path: str) -> bool:
+    """Whether this module shapes errors for ``path`` — the question ``backlot.errors`` asks every
+    envelope. Google is the one vendor where the answer is more than a prefix test, because the
+    five API families it serves live under five different ones."""
+    return family(path) is not None
 
 
 class GoogleError(HTTPException):
@@ -189,11 +195,14 @@ def no_credentials(path: str) -> GoogleError:
     return missing_credentials()
 
 
-def body(path: str, exc: HTTPException) -> dict:
+def http_body(path: str, exc: HTTPException) -> dict:
     """Render an exception into its family's envelope.
 
-    A plain ``HTTPException`` raised on a Google path still renders — it just carries no reason —
-    so a route that has not been migrated degrades instead of 500ing."""
+    The EXCEPTION, not its ``detail``: a :class:`GoogleError` carries the reason / location / status
+    as attributes on itself, and reading them off the detail string would silently flatten every
+    error to a bare message. A plain ``HTTPException`` raised on a Google path still renders — it
+    just carries no reason — so a route that has not been migrated degrades instead of 500ing.
+    """
     message = getattr(exc, "message", None)
     if message is None:
         detail = exc.detail
@@ -213,3 +222,9 @@ def body(path: str, exc: HTTPException) -> dict:
     if status:
         err["status"] = status
     return {"error": err}
+
+
+def validation_body(errors) -> None:
+    """None: keep FastAPI's own 422 body. A bad parameter on a Google route is refused by the router
+    with a :class:`GoogleError`, so FastAPI's validator is not the path that reports it."""
+    return None

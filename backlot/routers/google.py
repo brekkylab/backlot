@@ -20,7 +20,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, google_errors as gerr, store, synth
+from backlot import auth, store, synth
+from backlot.errors import google as gerr
 from backlot.openapi import qp
 from backlot.acl import Caller
 from backlot.config import get_settings

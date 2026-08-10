@@ -1,7 +1,7 @@
 """Google APIs over HTTP: Gmail, Drive, and the Workspace editor reads (Docs/Sheets/Slides).
 
 One file because they are one router (``backlot/routers/google.py``) and one error envelope
-(``backlot/google_errors.py``) — Drive and Gmail share ``_gerr`` and the per-family status table, so
+(``backlot/errors/google.py``) — Drive and Gmail share ``_gerr`` and the per-family status table, so
 splitting them would put two halves of the same contract in two places.
 """
 

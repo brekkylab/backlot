@@ -6,7 +6,6 @@ indexes (issue number / Jira key / Confluence id -> doc_id) for O(1) get-by-id.
 
 from __future__ import annotations
 
-import http
 import threading
 from contextlib import asynccontextmanager
 
@@ -17,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backlot import google_errors, openapi, store, synth
+from backlot import errors, openapi, store, synth
 from backlot.acl import Acl
 from backlot.config import get_settings
 from backlot.oauth import Oauth
@@ -224,53 +223,27 @@ app = FastAPI(
 )
 
 
-# Atlassian clients (atlassian-python-api, used by mcp-atlassian) parse error bodies as Atlassian
-# Cloud's envelope — Confluence's raise_for_status does ``response.json()["message"]`` — so
-# FastAPI's default ``{"detail": ...}`` makes every error a cryptic ``KeyError: 'message'`` in the
-# client. For ``/atlassian`` paths, shape errors like Atlassian (message + statusCode, plus Jira's
-# errorMessages); every other prefix keeps FastAPI's default body.
-
-
-def _atlassian_error_body(status_code: int, detail) -> dict:
-    try:
-        reason = http.HTTPStatus(status_code).phrase
-    except ValueError:
-        reason = "Error"
-    message = detail if isinstance(detail, str) else str(detail)
-    return {
-        "statusCode": status_code,
-        "message": message,
-        "reason": reason,
-        "errorMessages": [message],
-        "errors": {},
-    }
+# A vendor whose clients parse error bodies gets its own envelope, and each lives in
+# ``backlot/errors/`` with the reasoning for its shape. Both handlers below ask that package and fall
+# back to FastAPI's ``{"detail": ...}`` — so neither carries a branch per vendor, and neither has to
+# be edited to add one.
 
 
 @app.exception_handler(StarletteHTTPException)
 async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
     headers = getattr(exc, "headers", None)
-    path = request.url.path
-    if path.startswith("/atlassian"):
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=_atlassian_error_body(exc.status_code, exc.detail),
-            headers=headers,
-        )
-    if google_errors.family(path) is not None:
-        return JSONResponse(
-            status_code=exc.status_code, content=google_errors.body(path, exc), headers=headers
-        )
-    return JSONResponse(
-        status_code=exc.status_code, content={"detail": exc.detail}, headers=headers
-    )
+    body = errors.http_body(request.url.path, exc)
+    if body is None:
+        body = {"detail": exc.detail}
+    return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
 
 
 @app.exception_handler(RequestValidationError)
 async def _validation_exception_handler(request: Request, exc: RequestValidationError):
-    if request.url.path.startswith("/atlassian"):
-        msg = "; ".join(e.get("msg", "invalid request") for e in exc.errors()) or "Invalid request"
-        return JSONResponse(status_code=422, content=_atlassian_error_body(422, msg))
-    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
+    body = errors.validation_body(request.url.path, exc.errors())
+    if body is None:
+        body = {"detail": jsonable_encoder(exc.errors())}
+    return JSONResponse(status_code=422, content=body)
 
 
 @app.middleware("http")

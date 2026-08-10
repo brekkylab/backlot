@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://brekkylab.dev/schemas/s3.schema.json",
+  "$id": "https://github.com/brekkylab/backlot/schemas/s3.schema.json",
   "title": "BYO corpus record — s3",
   "description": "An S3 object. content -> the object body (served verbatim by GetObject). `bucket` is the grouping/ACL unit; `key` is the object key/path within the bucket.",
   "type": "object",

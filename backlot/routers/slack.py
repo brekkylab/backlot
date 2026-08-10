@@ -487,7 +487,7 @@ async def users_list(request: Request):
     # authors. Slack transcript speakers are NOT added, and that is a limitation of the upstream
     # dataset rather than a modelling choice, so it is stated plainly here and in the README (#33).
     #
-    # The speakers are NOT "mostly external": measured on the bench corpus, of 74,138 distinct
+    # The speakers are NOT "mostly external": measured on a real corpus, of 74,138 distinct
     # speakers only 3,971 (5.4%) are principals and ALL 70,167 of the rest are on the org's own
     # domain. The two populations are generated independently upstream, and 74k speakers against an
     # 11,913-person directory is not a headcount any real workspace has — so neither set can be
@@ -800,7 +800,7 @@ def _message(
     parent_user_id: str | None = None,
 ) -> dict:
     # Slack messages have no title; only prepend one as a lead line when present
-    # (bench docs carry a title, BYO slack records typically don't).
+    # (a converted corpus's messages may carry a title, hand-written slack records typically don't).
     title = row["title"]
     text = f"*{title}*\n{row['content']}" if title else row["content"]
     m = {

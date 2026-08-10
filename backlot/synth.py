@@ -1,6 +1,6 @@
 """Deterministic synthesis of structural metadata.
 
-The published dataset only carries ``{doc_id, source_type, title, content}``. Every
+A corpus may carry no more than ``{doc_id, source_type, title, content}``. Every
 structural field a real API returns (ids, timestamps, users, keys, ...) is derived
 here from ``sha256(doc_id)`` so responses are stable and self-consistent across calls
 and across paginated fetches.
@@ -109,7 +109,7 @@ def gmail_id(doc_id: str, salt: str = "msg") -> str:
 # Gmail parses a message id as a signed 64-bit integer, so 2**63 is the ceiling. Measured against
 # the live API: `7fffffffffffffff` resolves (404, a real id shape) while `8000000000000000` and
 # `ffffffffffffffff` are refused with 400 "Invalid id value". Unmasked, half of any digest-derived
-# id lands above the line — 278,278 of the bench corpus's 556,238 messages.
+# id lands above the line — measured, 278,278 of one corpus's 556,238 messages.
 GMAIL_ID_MAX = 2**63
 
 
@@ -405,6 +405,41 @@ def linear_priority_label(priority) -> str:
     return LINEAR_PRIORITY_LABELS.get(priority if isinstance(priority, int) else 0, "No priority")
 
 
+# The spellings a corpus may use for a priority, mapped onto the scale above. `P0`-`P3` is included
+# because it is what issue trackers outside Linear write, and the BYO schema accepts it.
+_LINEAR_PRIORITY_VALUES = {
+    "p0": 1,
+    "p1": 2,
+    "p2": 3,
+    "p3": 4,
+    "urgent": 1,
+    "high": 2,
+    "medium": 3,
+    "low": 4,
+    "none": 0,
+    "no priority": 0,
+}
+
+
+def linear_priority(value) -> int | None:
+    """Normalize a corpus's priority onto Linear's 0-4 scale.
+
+    Unrecognized text becomes 0 ("No priority"), which is what Linear itself stores for an unset
+    priority; a missing value stays None. Lives here, beside the labels it is the inverse of, so
+    both importers normalize identically without either depending on the other.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value) if 0 <= int(value) <= 4 else 0
+    s = str(value).strip().lower()
+    if s.isdigit() and 0 <= int(s) <= 4:
+        return int(s)
+    return _LINEAR_PRIORITY_VALUES.get(s, 0)
+
+
 # Which of Linear's state *categories* a state name belongs to. Linear groups every workflow
 # state into one of these six, and clients branch on the category rather than the name.
 _LINEAR_STATE_TYPES = (
@@ -457,18 +492,78 @@ def linear_url(identifier: str, title: str, org: str = "org") -> str:
 
 
 # --- Fireflies ------------------------------------------------------------------
-# The bench ships a transcript as ONE flat text blob with speaker-labeled, timestamped lines —
-# not as structured per-sentence records — so the importer parses it (erb.parse_fireflies_
-# transcript, which sits with the other conversation parsers) and the concatenation below is the
+# A corpus may carry a transcript as ONE flat text blob with speaker-labeled, timestamped lines
+# rather than as structured per-sentence records, in which case the importer parses it (each
+# importer keeps its own parser, with the rest of its conversation parsing) and the text below is the
 # EXACT inverse: `content` is DEFINED as fireflies_transcript_text(sentences), so full-text search
 # and any RAG consumer read the meeting as one document while the sentence rows stay the single
-# source of truth. Verified round-trip-exact over all 10,173 bench transcripts.
+# source of truth. Verified round-trip-exact over all 10,173 transcripts of a real corpus.
+
+
+# A speaker label: 1-4 name-ish words, optionally bracketed ("[Maya]"), with a trailing "(Role)" or
+# ", Role" stripped off ("Ari (Redwood AE)"). A line whose prefix is not this shape is continuation
+# text, which is what keeps a sentence containing a colon from minting a speaker.
+_SPEAKER = r"[A-Za-z@][\w.'’\-]*(?: +[A-Za-z0-9][\w.'’\-]*){0,3}"
+_CLOCK = r"\d{1,2}:\d{2}(?::\d{2})?"
+# An optional leading timestamp in the forms transcripts conventionally use — "[00:12] ", "(00:12) ",
+# "00:12 - " — then the speaker, then the colon.
+_TRANSCRIPT_LINE = re.compile(
+    rf"^\s*(?:(?:\[(?P<b>{_CLOCK})\]|\((?P<p>{_CLOCK})\)|(?P<r>{_CLOCK}))\s*(?:[-–—]\s*)?)?"
+    rf"(?:\[(?P<name>{_SPEAKER})\]|(?P<name2>{_SPEAKER}))(?: *[(,][^)]*\)?)?:[ \t]*(?P<text>.*)$"
+)
+
+
+def _clock_secs(clock: str) -> float:
+    p = [int(x) for x in clock.split(":")]
+    return float(p[0] * 60 + p[1] if len(p) == 2 else p[0] * 3600 + p[1] * 60 + p[2])
+
+
+def parse_transcript_text(text: str) -> list[dict]:
+    """A ``Speaker: text`` transcript body -> ``[{speaker_name, text, start_time}]``.
+
+    The inverse of :func:`fireflies_transcript_text`, and defined as such: `content` is DEFINED as
+    the concatenation of the sentences, so whichever of the two a corpus supplies, the pair has to
+    agree. A line that names no speaker continues the sentence above it (and a body that opens with
+    one becomes an unattributed sentence rather than being dropped, or re-deriving the text would
+    lose it). A leading clock, if present, becomes ``start_time``.
+
+    Only the conventions the record format documents are recognized. An importer whose source
+    dataset writes transcripts some other way parses them itself — see
+    ``backlot.importer.erb.parse_fireflies_transcript``, which adds that dataset's own line formats
+    and its auto-notes preamble, neither of which belongs in a shared inverse.
+    """
+    if not (text or "").strip():
+        return []
+    out: list[dict] = []
+    for line in text.split("\n"):
+        m = _TRANSCRIPT_LINE.match(line)
+        # A `scheme://` is not a speaker: the label pattern happily matches "see https" in
+        # "see https://example.com", which would split a sentence at a URL and mint a speaker
+        # nobody said. The text after a real speaker's colon never opens with a slash pair.
+        if m and m.group("text").startswith("//"):
+            m = None
+        if m:
+            clock = m.group("b") or m.group("p") or m.group("r")
+            out.append(
+                {
+                    "speaker_name": (m.group("name") or m.group("name2")).strip(),
+                    "text": m.group("text"),
+                    "start_time": _clock_secs(clock) if clock else None,
+                }
+            )
+        elif out:
+            out[-1]["text"] += "\n" + line
+        else:
+            out.append({"speaker_name": None, "text": line, "start_time": None})
+    for s in out:
+        s["text"] = s["text"].rstrip()
+    return out
 
 
 def fireflies_transcript_text(sentences) -> str:
     """The stored ``content`` for a transcript: its sentences, one per line, ``Speaker: text``.
 
-    Inverse of :func:`backlot.importer.erb.parse_fireflies_transcript` — re-parsing this text yields
+    Inverse of an importer's transcript parser — re-parsing this text yields
     the same sentences, so the pair is a fixed point (the ``notion_blocks`` /
     ``notion_blocks_to_text`` relationship, same problem, same solution).
 
@@ -485,7 +580,7 @@ def fireflies_transcript_text(sentences) -> str:
 
 # ~150 words/minute is ordinary conversational speech; used only to give a sentence an end_time
 # when the transcript's own timestamps don't bound it (the last line of a meeting, or the 0.09%
-# of bench sentences that carry no timestamp at all).
+# of real sentences measured to carry no timestamp at all).
 _WORDS_PER_SEC = 2.5
 
 
@@ -573,8 +668,8 @@ def fireflies_fill_times(sentences, duration_secs: float | None = None) -> None:
 def fireflies_id(doc_id: str) -> str:
     """A transcript's API-facing id: the 24-character lowercase hex Fireflies serves.
 
-    Synthesized rather than taken from the bench's ``meeting_id`` because that value is not
-    unique and ``transcript(id:)`` looks a meeting up by this one (see the store schema).
+    Synthesized rather than reused from a corpus's own meeting id, which is not required to be
+    unique — ``transcript(id:)`` looks a meeting up by this one (see the store schema).
     """
     return _digest("fireflies:" + doc_id)[:24]
 
@@ -603,11 +698,39 @@ def fireflies_media_url(transcript_id: str, kind: str) -> str:
 
 def fireflies_meeting_link(doc_id: str) -> str:
     """The conferencing link the meeting was recorded from. Google Meet's code shape (xxx-xxxx-xxx)
-    since `calendar_type` is google_calendar for a meeting the bench does not say otherwise about."""
+    since `calendar_type` is google_calendar for a meeting the corpus does not say otherwise about."""
     d = _digest("fireflies-meet:" + doc_id)
     letters = "abcdefghijklmnopqrstuvwxyz"
     code = "".join(letters[int(d[i : i + 2], 16) % 26] for i in range(0, 20, 2))
     return f"https://meet.google.com/{code[:3]}-{code[3:7]}-{code[7:10]}"
+
+
+def fireflies_speaker_stats(sentences) -> list[dict]:
+    """Per-speaker talk time and word counts, computed from the sentences themselves — the only
+    part of `analytics` a transcript actually supports (sentiment is not derivable, see
+    :func:`fireflies_analytics`, which consumes this). Shared by both importers."""
+    agg: dict[str, dict] = {}
+    for s in sentences:
+        name = s.get("speaker_name") or None
+        a = agg.setdefault(
+            name or "",
+            {
+                "name": name,
+                "duration_secs": 0.0,
+                "word_count": 0,
+                "monologues_count": 0,
+                "longest_monologue": 0.0,
+            },
+        )
+        span = max(0.0, float(s.get("end_time") or 0) - float(s.get("start_time") or 0))
+        a["duration_secs"] += span
+        a["word_count"] += len((s.get("text") or "").split())
+        a["monologues_count"] += 1
+        a["longest_monologue"] = max(a["longest_monologue"], span)
+    for a in agg.values():
+        a["duration_secs"] = round(a["duration_secs"], 2)
+        a["longest_monologue"] = round(a["longest_monologue"], 2)
+    return list(agg.values())
 
 
 # Fireflies' own sentiment buckets and the analytics envelope shape. Out of scope to COMPUTE
@@ -622,7 +745,7 @@ def fireflies_analytics(
     ``duration_pct`` is each speaker's share of the TALK TIME, not of the meeting's declared
     length. In real Fireflies the two are near-identical (a transcript covers its whole meeting)
     and the shares sum to ~100. A corpus transcript often does not span its declared duration —
-    the bench's own timestamps stop early on most meetings — so dividing by the declared length
+    real transcripts' timestamps stop early on most meetings — so dividing by the declared length
     would emit a set of shares summing to 4%, which reads as a bug in every consumer that charts
     it. Sharing out the talk time keeps the field's meaning and its arithmetic.
     """

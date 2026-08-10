@@ -43,10 +43,24 @@ text: supply `sentences` and `content` is derived from them, or supply only `con
 sentences are parsed back out of it. Either way the two round-trip exactly, so full-text search
 and the per-sentence API can never disagree.
 
+## Which corpus is which
+
+Three corpora live in this repo. They look similar — one fictional company, every source covered —
+so here is the question each one answers, and the test that keeps it answering only that one:
+
+| Corpus | Answers | Shipped? | Pinned by |
+|---|---|---|---|
+| `examples/bring-your-own-corpus/sample_corpus.jsonl` | *"What may a record contain?"* Every field these schemas declare, populated at least once, so nothing in a response has to be synthesized. | no (dev only) | `test_schema.py::test_example_corpus_populates_every_field_the_schemas_declare` — derived from the schemas, so a new field fails until the example carries it |
+| `backlot/data/hello.jsonl` | *"What does a served corpus look like?"* Volume and several containers per source, cross-referenced like a real company's. Deliberately leaves optional fields OUT — it is not the field reference. | yes, in the wheel | `test_importer_byo.py::test_hello_corpus_loads_and_covers_every_source` — every source, every child-row table, ≥2 containers each |
+| `tests/conftest.py::SAMPLE` | *"Does the server behave?"* The in-code fixture the HTTP/ACL/SDK tests run against. | no | the suite |
+
+If you are writing your own corpus, read the first one. If you want a server to poke at,
+`backlot.mock_server()` serves the second with no arguments.
+
 ## Validate a corpus
 
 ```bash
-python -m backlot.importer.byo path/to/corpus.jsonl --dry-run
+backlot import path/to/corpus.jsonl --dry-run
 ```
 
 Each JSONL line is dispatched to its `source_type` schema; problems are reported with a line
@@ -83,7 +97,7 @@ record = msg.content  # already conforms to the schema
 Generate per service (one schema at a time), append each record to a `.jsonl`, then:
 
 ```bash
-python -m backlot.importer.byo generated.jsonl --dry-run && python -m backlot.importer.byo generated.jsonl
+backlot import generated.jsonl --dry-run && backlot import generated.jsonl
 ```
 
 ## What the schemas enforce
@@ -136,7 +150,7 @@ existing dataset already knows its people — and knows that only some of them a
 ships a roster alongside:
 
 ```bash
-python -m backlot.importer.byo corpus.jsonl --roster roster.yaml
+backlot import corpus.jsonl --roster roster.yaml
 ```
 
 ```yaml
@@ -161,8 +175,8 @@ EnterpriseRAG-Bench's `employee_directory.yaml`, so that file works as a roster 
 redistributed in this schema:
 
 ```bash
-python -m backlot.importer.erb --export-byo out/   # -> out/corpus.jsonl + out/roster.yaml
-python -m backlot.importer.byo out/corpus.jsonl --roster out/roster.yaml
+backlot import -t erb --export-byo out/   # -> out/corpus.jsonl + out/roster.yaml
+backlot import out/corpus.jsonl --roster out/roster.yaml
 ```
 
 The result is a database **equivalent** to importing the bench directly — same rows, same column

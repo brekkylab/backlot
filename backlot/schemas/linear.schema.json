@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://brekkylab.dev/schemas/linear.schema.json",
+  "$id": "https://github.com/brekkylab/backlot/schemas/linear.schema.json",
   "title": "BYO corpus record — linear",
   "description": "A Linear issue. `team` is the grouping unit, because `data.team.issues` is how both the GraphQL API and the official clients reach issues and because an issue's identifier prefix (ENG-123) IS the team key. Field names are Linear's own — `state` (not status), `estimate`, camelCase `branchName`/`dueDate` — so a corpus written against the real API needs no renaming. `identifier` and `branchName` are derived when omitted. Comments are served through the `Issue.comments` connection.",
   "type": "object",

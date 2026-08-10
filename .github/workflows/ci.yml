@@ -37,10 +37,12 @@ jobs:
         with:
           python-version: "3.13"
 
-      # ruff is not in the `dev` extra (nothing else in CI runs it), so install it explicitly
-      # alongside `build`.
+      # ruff is declared in the `dev` extra with a pinned version (see pyproject.toml) precisely
+      # so this step can't drift from a local run: an unpinned `pip install ruff` here once
+      # picked up a release that changed both the formatter's and the linter's defaults, and the
+      # job went red on this branch with no code change behind it.
       - name: Install build tooling and ruff
-        run: pip install build ruff
+        run: pip install build ".[dev]"
 
       # 1. Build the wheel.
       - name: Build the wheel
@@ -116,7 +118,35 @@ jobs:
           print("health:", health)
           PYEOF
 
-      # 6. Validate a BYO record through backlot.importer.byo, so the packaged JSON Schemas
+      # 6. The `backlot` console script, end to end: build a corpus and serve it through the CLI
+      #    every doc now tells people to use. An entry point exists ONLY in an installed
+      #    distribution, so tests/test_cli.py — which calls cli.main in-process — cannot catch a
+      #    missing or misspelled [project.scripts] target. This is the only place that can.
+      - name: Import and serve through the installed console script
+        working-directory: ${{ runner.temp }}
+        run: |
+          BIN="${RUNNER_TEMP}/wheel-venv/bin"
+          "${BIN}/backlot" --version
+          "${BIN}/backlot" import --help > /dev/null
+          printf '%s\n' '{"source_type":"slack","channel":"general","author_email":"ci@example.com","content":"Served through the CLI."}' > cli-corpus.jsonl
+          export BACKLOT_DATA_DIR="${RUNNER_TEMP}/cli-data"
+          "${BIN}/backlot" import cli-corpus.jsonl --dry-run
+          "${BIN}/backlot" import cli-corpus.jsonl
+          "${BIN}/backlot" serve --port 8123 &
+          server=$!
+          for _ in $(seq 1 40); do
+            sleep 0.5
+            curl -sf http://127.0.0.1:8123/health -o health.json && break
+          done
+          kill "${server}"
+          "${BIN}/python" -c "
+          import json
+          health = json.load(open('health.json'))
+          assert health['documents'] == 1, health
+          print('health:', health)
+          "
+
+      # 7. Validate a BYO record through backlot.importer.byo, so the packaged JSON Schemas
       #    (backlot/schemas/*.json) are exercised rather than assumed present.
       - name: Validate a BYO record against the packaged JSON Schemas
         working-directory: ${{ runner.temp }}

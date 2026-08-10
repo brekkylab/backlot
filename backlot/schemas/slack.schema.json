@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://brekkylab.dev/schemas/slack.schema.json",
+  "$id": "https://github.com/brekkylab/backlot/schemas/slack.schema.json",
   "title": "BYO corpus record — slack",
   "description": "A Slack message. Title is optional (messages have no title). A record with `replies` becomes a thread root; each reply is served via conversations.replies and only the root shows in conversations.history.",
   "type": "object",

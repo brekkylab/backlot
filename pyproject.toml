@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "backlot"
-version = "0.1.0"
+version = "0.0.1"
 description = "Enterprise SaaS read APIs (Slack, Gmail, Drive, GitHub, Jira, Confluence, Notion, S3, HubSpot, Linear, Fireflies) over your own corpus, with per-document ACLs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,6 +42,13 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
+    # Pinned, not a bare lower bound: 0.16 changed both the formatter (Markdown fenced code
+    # blocks, previously experimental-only, are now formatted by default — see the
+    # [tool.ruff] extend-exclude comment) and the lint defaults (0.16.1 reports 265 new
+    # findings on this repo under an unpinned install that 0.15.22 does not). Nothing else in
+    # this repo declares ruff, so this is the one place its version is decided; CI installs it
+    # from here rather than a bare `pip install ruff` precisely so local and CI can't drift.
+    "ruff~=0.15.22",
 ]
 # Official SDKs used by examples/using-official-sdk/, tests/test_sdk.py (one per service) + the ACL demo.
 examples = [
@@ -104,12 +111,26 @@ llamaindex = [
     "s3fs>=2026.6",
 ]
 
+[project.scripts]
+# `backlot serve` / `backlot import` — see backlot/cli.py. Declared here rather than only as
+# `python -m backlot`, because an entry point is the spelling every doc and example now uses and
+# it only exists in an installed distribution: tests/test_cli.py covers the dispatch, and the
+# wheel-install CI job runs the installed script itself, which is the only place a broken
+# [project.scripts] target can actually surface.
+backlot = "backlot.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/brekkylab/backlot"
 Repository = "https://github.com/brekkylab/backlot"
 Issues = "https://github.com/brekkylab/backlot/issues"
 
 [tool.ruff]
+# Same reasoning as the line-length choice below, applied to Markdown: `examples/*/README.md`
+# hand-wrap fenced code snippets and hand-align trailing comments for a reader (e.g.
+# `point_google_at(mock.base_url)  # googleapis.com  ->  the mock`), and ruff's Markdown
+# formatter (default since 0.16, see the `dev` extra's pin) would collapse and re-indent them
+# to no benefit. Formatting is out of scope for `.md`; ruff's lint rules never applied to it.
+extend-exclude = ["*.md"]
 # 100, not ruff's default 88: the code was hand-wrapped to ~100 columns long before ruff was
 # introduced, and 88 would rewrap 5,317 otherwise-fine lines to no benefit.
 line-length = 100

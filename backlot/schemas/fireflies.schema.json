@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://brekkylab.dev/schemas/fireflies.schema.json",
+  "$id": "https://github.com/brekkylab/backlot/schemas/fireflies.schema.json",
   "title": "BYO corpus record — fireflies",
   "description": "A Fireflies.ai meeting transcript. `channel` is the grouping unit, because a channel is Fireflies' own way of grouping meetings and is what `transcripts(channel_id:)` filters on. Field names are the API's own — `host_email`, `organizer_email`, `duration` (MINUTES), `meeting_attendees`, `summary`, `analytics` — so a corpus written against the real API needs no renaming. A transcript's `sentences` are its child rows, NOT `replies` (which is Slack-only): a transcript should read like a transcript. `content` and `sentences` are two views of the same text and are never allowed to disagree — supply `sentences` and `content` is derived from them; supply only `content` and the sentences are parsed back out of it, so a plain \"Speaker: text\" body still yields per-sentence rows. `transcript_id`, the media/web URLs, `speaker_id` ordinals and any missing sentence timings are derived when omitted.",
   "type": "object",

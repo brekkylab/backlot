@@ -75,7 +75,7 @@ def _connection(nodes: list, offset: int, has_next: bool) -> dict:
 
     ``has_next`` comes from a limit+1 probe, NOT from a COUNT of the whole result set. The
     connection types this schema serves expose no ``totalCount`` — `@linear/sdk`'s fragments do
-    not select one — so a COUNT would be a full scan run only to derive a boolean, and on the bench
+    not select one — so a COUNT would be a full scan run only to derive a boolean, and at scale
     corpus that doubled the cost of every filtered query.
     """
     end = offset + len(nodes)
@@ -597,7 +597,7 @@ def _issue(row, info) -> dict:
         "identifier": identifier,
         "number": float(synth.linear_issue_number(identifier)),
         "title": title,
-        # `content` is the doc's full retrieval text (the bench concatenates description +
+        # `content` is the doc's full retrieval text (a converted corpus concatenates description +
         # comments + whatever else its content_field_names names), which is exactly what an
         # issue's markdown description is.
         "description": row["content"],
@@ -832,7 +832,7 @@ def resolve_teams(
     # router applies to channels, and it keeps `teams` consistent with what `team.issues` returns.
     # An EXISTS probe per team, NOT the grouped count: `issueCount` is a bound field that only
     # runs when selected, and computing every team's total just to test visibility cost 22ms of
-    # ACL-filtered scan on the bench corpus for a question `LIMIT 1` answers.
+    # ACL-filtered scan of a large corpus for a question `LIMIT 1` answers.
     names = [
         r["name"]
         for r in store.list_containers(ctx["conn"], "linear")
@@ -1042,7 +1042,7 @@ def resolve_issue_children(
     issue, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
 ) -> dict:
     """``Issue.children`` — the exact inverse of ``Issue.parent``, read off the ``parent_doc_id``
-    resolved at import. Not a join on ``identifier``: bench keys repeat, so that would attach one
+    resolved at import. Not a join on ``identifier``: keys repeat, so that would attach one
     issue's children to every issue sharing its key."""
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]

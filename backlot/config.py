@@ -2,6 +2,10 @@
 
 All settings are overridable via environment variables (prefix ``BACKLOT_``) so the
 server and the offline build scripts read the same values.
+
+Corpus-specific knobs do NOT belong here — this is what every layer reads, and a setting only one
+importer uses would put that importer's dataset in front of everyone. A downloading importer keeps
+its own settings beside itself (see ``backlot.importer.erb.BenchSettings``), on the same env prefix.
 """
 
 from __future__ import annotations
@@ -24,32 +28,20 @@ class Settings(BaseSettings):
         Not plain field defaults: those are evaluated at class-definition time, so the path would
         be frozen to the cwd at import. Not `Path(__file__).parent.parent` either — installed from
         a wheel that is `site-packages`, and a default of `site-packages/data` is never what
-        anyone means. `BACKLOT_DATA_DIR` / `BACKLOT_RAW_DIR` and explicit kwargs are already
-        present here, so `setdefault` leaves them alone.
+        anyone means. `BACKLOT_DATA_DIR` and an explicit kwarg are already present here, so
+        `setdefault` leaves them alone.
         """
         if isinstance(values, dict):
-            cwd_data = Path("data").resolve()
-            values.setdefault("data_dir", cwd_data)
-            # The ERB download cache stays pinned to the DEFAULT data dir, not the configured one,
-            # so a re-import into a fresh build dir (`BACKLOT_DATA_DIR=/tmp/... python -m
-            # backlot.importer.erb`) REUSES the already-downloaded bench JSONs instead of
-            # re-fetching them from GitHub.
-            values.setdefault("raw_dir", cwd_data / "raw")
+            values.setdefault("data_dir", Path("data").resolve())
         return values
 
-    # --- paths --- (defaults supplied by _resolve_path_defaults above)
+    # --- paths --- (default supplied by _resolve_path_defaults above)
     data_dir: Path = Path("data")
-    # ERB download cache (the bench `generated_data` tarball + its extraction). Pinned to a STABLE
-    # location independent of ``data_dir`` so re-imports into a fresh build dir
-    # (``BACKLOT_DATA_DIR=/tmp/... python -m backlot.importer.erb``) REUSE the already-downloaded JSONs
-    # instead of re-fetching from GitHub every time. Override with ``BACKLOT_RAW_DIR``.
-    raw_dir: Path = Path("data") / "raw"
 
     # --- identity / org ---
-    # The org name/domain are derived at import time from the data's dominant email domain —
-    # the BYO corpus (backlot.importer.byo) or the bench employee directory (backlot.importer.erb), via
-    # infer_org() below. These are only the last-resort fallback for data that carries no emails;
-    # BACKLOT_ORG_NAME / BACKLOT_ORG_DOMAIN override the derivation entirely.
+    # The org name/domain are derived at import time from the dominant email domain in whatever
+    # was loaded, via infer_org() below. These are only the last-resort fallback for data that
+    # carries no emails; BACKLOT_ORG_NAME / BACKLOT_ORG_DOMAIN override the derivation entirely.
     org_name: str = "example"
     org_domain: str = "example.com"
     # Fallback host for Jira/Confluence ``self`` URLs when a request carries no Host header
@@ -73,14 +65,11 @@ class Settings(BaseSettings):
     # Memory-map the DB so reads are served from the OS page cache instead of per-read
     # syscalls — the main lever against the "slow first request after idle" cold-read hit on a
     # large DB. Set >= the DB size to map it fully (SQLite caps to its compile-time max).
-    sqlite_mmap_mb: int = 12288  # ~12 GiB, covers the full augmented corpus
+    sqlite_mmap_mb: int = 12288  # ~12 GiB, enough to map the largest corpus served so far
     sqlite_cache_mb: int = 256  # SQLite's own page cache
     # Wait (ms) for a lock instead of erroring, so reads ride through an in-place FTS rebuild's
     # commit rather than 500ing; only ever engages during such an out-of-band write.
     sqlite_busy_ms: int = 30000
-
-    # --- data build ---
-    dataset_repo: str = "onyx-dot-app/EnterpriseRAG-Bench"
 
     @property
     def db_path(self) -> Path:
@@ -93,10 +82,6 @@ class Settings(BaseSettings):
     @property
     def credentials_path(self) -> Path:
         return self.data_dir / "credentials.yaml"
-
-    @property
-    def employee_yaml(self) -> Path:
-        return self.data_dir / "employee_directory.yaml"
 
 
 @lru_cache

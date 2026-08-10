@@ -311,7 +311,7 @@ def resolve_users(_root, info, **_ignored):
 
     The real `users` query takes no pagination arguments, because a real workspace has tens or
     hundreds of members. The mock's `principals` table is much broader: every internal reference
-    across every source is registered there (16,034 of them on the deployed bench corpus, of whom
+    across every source is registered there (16,034 of them on the largest deployed corpus, of whom
     only 327 have a token). Serving all of those as workspace members would be both wrong — they
     have no Fireflies account — and a 1.6 MB unpaginated response, the same hazard Slack's
     `users.list` documents. Scoping to the roster is what bounds it, rather than inventing `limit`

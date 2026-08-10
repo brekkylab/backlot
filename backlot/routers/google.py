@@ -1389,9 +1389,16 @@ async def drive_files_list(request: Request):
         matched = _drive_q_rows(conn, q, container, ids, me)
         total_rows, fetch = len(matched), lambda o, n: matched[o : o + n]  # noqa: E731
     else:
-        total_rows = store.count_documents(conn, "google_drive", visible_ids=ids)
+        # exclude_trashed: with no `q` at all there is no clause for _drive_q_match to read, and
+        # real Drive leaves trashed files out of files.list unless `trashed = true` asks for them.
+        # The q-bearing paths already do this (_drive_q_match_facts' default branch,
+        # store.list_drive_folder's WHERE), so without it the DEFAULT listing was the one call that
+        # returned trash.
+        total_rows = store.count_documents(
+            conn, "google_drive", visible_ids=ids, exclude_trashed=True
+        )
         fetch = lambda o, n: store.list_documents(  # noqa: E731
-            conn, "google_drive", visible_ids=ids, limit=n, offset=o
+            conn, "google_drive", visible_ids=ids, limit=n, offset=o, exclude_trashed=True
         )
 
     stored: set[str] = set()  # ids that came from the row stream (vs. a synthesized folder)
@@ -1594,7 +1601,7 @@ def _sheets_grid(content: str | None) -> list[list[str]]:
     verbatim. Joined back with ``\\n`` this reproduces the stored content byte-for-byte, which is
     also what ``files.export`` serves — so the two cannot disagree.
 
-    NOT split on a delimiter. Measured over the bench's 1,875 ``doc_type: sheet`` records, none is
+    NOT split on a delimiter. Measured over 1,875 real spreadsheet records, none is
     delimiter-uniform CSV: 82.6% are prose, 17.4% prose wrapped around a PIPE-delimited table. So
     comma-splitting manufactures columns out of sentence punctuation. A line break is the only
     structure the stored text carries, so it is the only structure served — and choosing a column

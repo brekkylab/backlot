@@ -67,6 +67,25 @@ def test_supported_sources():
     )
 
 
+def test_the_download_cache_defaults_beside_the_cwd_not_the_configured_data_dir(
+    tmp_path, monkeypatch
+):
+    """Moved here with the setting itself: `raw_dir` is this importer's download cache, so it lives
+    on `erb.BenchSettings` rather than on the Settings every layer reads.
+
+    The default stays pinned to ./data/raw even when BACKLOT_DATA_DIR points elsewhere — that is
+    what lets a build into a throwaway dir reuse an existing ~1 GB download."""
+    monkeypatch.delenv("BACKLOT_RAW_DIR", raising=False)
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "elsewhere"))
+    monkeypatch.chdir(tmp_path)
+    assert erb.BenchSettings(_env_file=None).raw_dir == tmp_path / "data" / "raw"
+
+
+def test_the_download_cache_honours_its_env_var(tmp_path, monkeypatch):
+    monkeypatch.setenv("BACKLOT_RAW_DIR", str(tmp_path / "cache"))
+    assert erb.BenchSettings(_env_file=None).raw_dir == tmp_path / "cache"
+
+
 def test_erb_sources_are_registered_in_the_store():
     # every source the bench importer loads must have a table/grouping registered
     assert set(erb.SUPPORTED) <= set(store.SOURCE_TABLE)
@@ -154,7 +173,7 @@ def test_dump_tokens_returns_the_number_it_actually_wrote(tmp_path):
     data = tmp_path / "tok"
     data.mkdir(parents=True, exist_ok=True)
     settings = Settings(data_dir=data)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
 
     n = erb.dump_tokens(settings, gen)
     written = yaml.safe_load(settings.tokens_path.read_text())["users"]
@@ -962,7 +981,7 @@ def test_synthesized_users_installed_after_load(tmp_path, monkeypatch):
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     erb.import_structured(settings, gen)
 
     c = sqlite3.connect(settings.db_path)
@@ -1005,7 +1024,7 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     res = erb.import_structured(settings, gen)
 
     # import_structured returns the per-source counts directly; a company counts once even though
@@ -1088,7 +1107,7 @@ def test_import_structured_persists_source_documents_including_excluded(tmp_path
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     # dsid_empty isn't in KNOWN_EMPTY_DOCS, so allow_excluded=1 is needed or _resolve_roster refuses.
     res = erb.import_structured(settings, gen, allow_excluded=1)
 
@@ -1112,7 +1131,7 @@ def _import_gen(tmp_path, monkeypatch, source: str, filename: str, raw: dict, em
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     erb.import_structured(settings, gen)
     return settings
 
@@ -1205,7 +1224,16 @@ def test_qst_0001_owner_is_maya_chen(tmp_path):
     _extra_questions(tmp_path)
     env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir)}
     subprocess.run(
-        [sys.executable, "-m", "backlot.importer.erb", "--slice-questions", str(qfile)],
+        [
+            sys.executable,
+            "-m",
+            "backlot",
+            "import",
+            "-t",
+            "erb",
+            "--slice-questions",
+            str(qfile),
+        ],
         check=True,
         env=env,
     )
@@ -1490,14 +1518,6 @@ def test_linear_undated_comment_stays_on_the_issues_clock():
     """created_ts is NOT NULL, and a random per-comment time would shuffle the thread."""
     _conn_, row, comments = _load_linear({**LINEAR_RAW, "comments": ["no date here", "nor here"]})
     assert [c["created_ts"] for c in comments] == [row["created_ts"] + 1, row["created_ts"] + 2]
-
-
-def test_linear_priority_normalisation():
-    assert [erb.linear_priority(v) for v in ("P0", "P1", "P2", "P3")] == [1, 2, 3, 4]
-    assert [erb.linear_priority(v) for v in ("Urgent", "High", "Medium", "Low")] == [1, 2, 3, 4]
-    assert erb.linear_priority(3) == 3  # already Linear's scale
-    assert erb.linear_priority("unrecognised") == 0  # Linear's "No priority"
-    assert erb.linear_priority(None) is None
 
 
 def test_linear_grants_flow_through_the_shared_container_path():
@@ -2224,7 +2244,7 @@ def _import_erb_directly(gen: Path, data_dir: Path):
 
     data_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(data_dir=data_dir)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     erb.import_structured(settings, gen)
     return settings
 
@@ -2236,7 +2256,7 @@ def _import_via_byo(gen: Path, data_dir: Path, out_dir: Path):
     data_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(data_dir=data_dir)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     erb.export_byo(settings, gen, out_dir)
     byo.load(out_dir / "corpus.jsonl", settings, roster=out_dir / "roster.yaml")
     return settings
@@ -2304,7 +2324,7 @@ def test_erb_to_byo_output_validates_against_the_byo_schemas(tmp_path):
     data = tmp_path / "data"
     data.mkdir()
     settings = Settings(data_dir=data)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     out = tmp_path / "artifact"
     out.mkdir()
     erb.export_byo(settings, gen, out)
@@ -2581,7 +2601,7 @@ def test_export_byo_converts_every_document_it_was_given(tmp_path):
     data = tmp_path / "data"
     data.mkdir()
     settings = Settings(data_dir=data)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     out = tmp_path / "artifact"
     counts = erb.export_byo(settings, gen, out)
     assert counts == {src: len(docs) for src, docs in RT_DOCS.items()}
@@ -2634,7 +2654,7 @@ def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
     data = tmp_path / "data"
     data.mkdir()
     settings = Settings(data_dir=data)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
 
     out = tmp_path / "sharded"
     counts = erb.export_byo(settings, gen, out, shard_records=2)
@@ -2716,7 +2736,7 @@ def _settings_for(tmp_path, gen):
     data = tmp_path / "data"
     data.mkdir()
     settings = Settings(data_dir=data)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     return settings
 
 

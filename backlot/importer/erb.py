@@ -5,10 +5,13 @@ Downloads the bench's ``generated_data/``, resolves display names to real emails
 per-doc ACL grants from the real people/scope fields (``grants_for``). Everything the import needs
 — fetch, parse, principal resolution, ACL derivation, orchestration — lives in this one module.
 
-    python -m backlot.importer.erb                                   # full corpus: download -> load -> ACL
-    python -m backlot.importer.erb --slice-questions extra_questions.jsonl   # only the docs a slice needs
-    python -m backlot.importer.erb --no-download                     # reuse whatever is already in data/raw
-    python -m backlot.importer.erb --ref some-branch                 # fetch a non-default branch/ref
+    backlot import -t erb                                   # full corpus: download -> load -> ACL
+    backlot import -t erb --slice-questions extra.jsonl      # only the docs a slice needs
+    backlot import -t erb --no-download                      # reuse whatever is already in data/raw
+    backlot import -t erb --ref some-branch                  # fetch a non-default branch/ref
+
+``-t erb`` is short for ``--type enterpriserag-bench``; ``python -m backlot.importer.erb <flags>``
+runs this module directly with the same flags.
 
 Only ``curl`` is used to fetch (no ``gh`` / no auth).
 """
@@ -32,6 +35,8 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import yaml
+from pydantic import model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backlot import store, synth
 from backlot.config import get_settings, infer_org
@@ -525,16 +530,59 @@ def iter_records(
 SNAPSHOT_FILE = ".erb-source.json"
 
 
+class BenchSettings(BaseSettings):
+    """Settings only this importer has: where the bench came from and where its download lands.
+
+    Deliberately not fields on :class:`backlot.config.Settings`, which every layer reads — the
+    server, the BYO loader and the routers have no business carrying a knob for one dataset. Same
+    ``BACKLOT_`` prefix and same ``.env`` file, so ``BACKLOT_RAW_DIR`` /
+    ``BACKLOT_DATASET_REPO`` keep working exactly as before.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="BACKLOT_", env_file=".env", extra="ignore")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_raw_dir(cls, values):
+        """Default the cache to ``./data/raw`` — the DEFAULT data dir, not the configured one.
+
+        Pinning it to the cwd is the point: a re-import into a fresh build dir
+        (``BACKLOT_DATA_DIR=/tmp/… backlot import -t erb``) then REUSES the already-downloaded
+        source JSONs instead of fetching ~1 GB from GitHub again.
+        """
+        if isinstance(values, dict):
+            values.setdefault("raw_dir", Path("data").resolve() / "raw")
+        return values
+
+    # The download cache: the source tarball plus its extracted `generated_data`.
+    raw_dir: Path = Path("data") / "raw"
+    dataset_repo: str = "onyx-dot-app/EnterpriseRAG-Bench"
+
+
+def bench_settings() -> BenchSettings:
+    """Read the bench-only settings. NOT cached, unlike ``config.get_settings``: this is read a
+    handful of times per import run, and a cache would pin the first ``BACKLOT_RAW_DIR`` a process
+    ever saw — so a test (or a second import in one process) could download to the wrong cache."""
+    return BenchSettings()
+
+
+def employee_yaml(settings) -> Path:
+    """Where the bench's ``employee_directory.yaml`` is kept once imported — under the configured
+    data dir, beside the DB it produced, so a build dir holds everything that build read."""
+    return settings.data_dir / "employee_directory.yaml"
+
+
 def fetch_generated_data(settings, *, ref: str = "main") -> Path:
     """Download + extract generated_data (sources for SUPPORTED + employee_directory.yaml).
-    Returns the extracted ``generated_data`` directory. Cached under settings.raw_dir."""
-    settings.raw_dir.mkdir(parents=True, exist_ok=True)
-    out = settings.raw_dir / "generated_data"
+    Returns the extracted ``generated_data`` directory. Cached under ``BenchSettings.raw_dir``."""
+    raw_dir = bench_settings().raw_dir
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    out = raw_dir / "generated_data"
     if (out / "employee_directory.yaml").exists():
         return out
-    repo = settings.dataset_repo
+    repo = bench_settings().dataset_repo
     url = f"https://codeload.github.com/{repo}/tar.gz/refs/heads/{ref}"
-    tar_path = settings.raw_dir / f"erb-{ref}.tar.gz"
+    tar_path = raw_dir / f"erb-{ref}.tar.gz"
     if not tar_path.exists():
         print(f"downloading {url}", file=sys.stderr)
         subprocess.run(["curl", "-fsSL", url, "-o", str(tar_path)], check=True)
@@ -942,39 +990,11 @@ def build_slack_ts_remap(records) -> dict[str, int]:
 #     the ENG/PM/DES identifier prefixes and each maps onto a real directory department, so the
 #     ACL group actually has members.
 
+
 # The bench writes P0-P3; Linear's API has a 0-4 integer scale with 1 the most urgent. Map onto
 # the API's scale (as the hubspot converter maps onto real HubSpot property names) rather than serving a
 # vocabulary no Linear client understands. Labels are accepted too, for a BYO corpus that already
 # speaks Linear.
-_LINEAR_PRIORITY = {
-    "p0": 1,
-    "p1": 2,
-    "p2": 3,
-    "p3": 4,
-    "urgent": 1,
-    "high": 2,
-    "medium": 3,
-    "low": 4,
-    "none": 0,
-    "no priority": 0,
-}
-
-
-def linear_priority(value) -> int | None:
-    """A bench priority -> Linear's 0-4. Unrecognized text becomes 0 ("No priority"), which is
-    what Linear itself stores for an unset priority; a missing value stays None."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return int(value) if 0 <= int(value) <= 4 else 0
-    s = str(value).strip().lower()
-    if s.isdigit() and 0 <= int(s) <= 4:
-        return int(s)
-    return _LINEAR_PRIORITY.get(s, 0)
-
-
 def _linear_int(value) -> int | None:
     """An estimate: the bench writes it as a numeric string, occasionally as an int, twice as
     null. Anything non-numeric is dropped rather than coerced to 0 — a wrong estimate is worse
@@ -1372,34 +1392,6 @@ def _ff_duration(value) -> float | None:
         return float(value)
     m = re.search(r"\d+(?:\.\d+)?", str(value))
     return float(m.group()) if m else None
-
-
-def _ff_speaker_stats(sentences) -> list[dict]:
-    """Per-speaker talk time and word counts, computed from the sentences themselves — the only
-    part of `analytics` the transcript actually supports (sentiment is not derivable, see
-    synth.fireflies_analytics)."""
-    agg: dict[str, dict] = {}
-    for s in sentences:
-        name = s.get("speaker_name") or None
-        a = agg.setdefault(
-            name or "",
-            {
-                "name": name,
-                "duration_secs": 0.0,
-                "word_count": 0,
-                "monologues_count": 0,
-                "longest_monologue": 0.0,
-            },
-        )
-        span = max(0.0, float(s.get("end_time") or 0) - float(s.get("start_time") or 0))
-        a["duration_secs"] += span
-        a["word_count"] += len((s.get("text") or "").split())
-        a["monologues_count"] += 1
-        a["longest_monologue"] = max(a["longest_monologue"], span)
-    for a in agg.values():
-        a["duration_secs"] = round(a["duration_secs"], 2)
-        a["longest_monologue"] = round(a["longest_monologue"], 2)
-    return list(agg.values())
 
 
 def _ff_meeting_attendees(raw, internal: list[str], external: list[str], P) -> list[dict]:
@@ -1813,7 +1805,7 @@ def _byo_linear(dsid, raw, P):
         author_name=creator,
         identifier=identifier,
         state=state,
-        priority=linear_priority(raw.get("priority")),
+        priority=synth.linear_priority(raw.get("priority")),
         estimate=_linear_int(raw.get("estimate")),
         labels=_names(raw.get("labels")),
         project=raw.get("project"),
@@ -2178,9 +2170,9 @@ def _resolve_roster(settings, gen_dir, *, question_ids=None, allow_excluded=0):
     Returns ``(P, records, excluded)``. Every consumer of the corpus goes through here, so this is
     also where an exclusion ``KNOWN_EMPTY_DOCS`` does not name stops the run.
     """
-    emails = [e["email"] for e in parse_employees(settings.employee_yaml)]
+    emails = [e["email"] for e in parse_employees(employee_yaml(settings))]
     settings.org_name, settings.org_domain = infer_org(emails, settings)
-    P = Principals.from_directory(settings.employee_yaml, settings.org_domain)
+    P = Principals.from_directory(employee_yaml(settings), settings.org_domain)
     records, excluded = [], []
     for rec in select_records(gen_dir, question_ids, excluded):
         records.append(rec)
@@ -2333,9 +2325,16 @@ def import_structured(settings, gen_dir, *, question_ids=None, allow_excluded=0)
     return counts
 
 
-def main(argv: list[str]) -> int:
+def build_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    """This importer's own argument parser.
+
+    Split out from :func:`main` so ``backlot.cli`` can render ``backlot import --type erb --help`` —
+    the flags below plus its own ``--type`` — as ONE help screen, without redeclaring any of them
+    there. ``prog`` names the command in usage and error messages.
+    """
     ap = argparse.ArgumentParser(
-        description="Import EnterpriseRAG-Bench (faithful, structured) into the mock DB."
+        prog=prog,
+        description="Import EnterpriseRAG-Bench (faithful, structured) into the mock DB.",
     )
     ap.add_argument(
         "--slice-questions",
@@ -2363,7 +2362,7 @@ def main(argv: list[str]) -> int:
         metavar="DIR",
         help="write a BYO-JSONL artifact into DIR instead of building the DB: "
         "corpus.jsonl + roster.yaml, or shards + manifest.json with "
-        "--shard-records; `backlot.importer.byo` loads either to an equivalent DB",
+        "--shard-records; `backlot import` loads either to an equivalent DB",
     )
     ap.add_argument(
         "--shard-records",
@@ -2381,6 +2380,11 @@ def main(argv: list[str]) -> int:
         help="proceed with up to N empty-content documents that KNOWN_EMPTY_DOCS does "
         "not name (default 0: any undeclared exclusion stops the run)",
     )
+    return ap
+
+
+def main(argv: list[str], prog: str | None = None) -> int:
+    ap = build_parser(prog)
     args = ap.parse_args(argv)
     if args.shard_records is not None and args.shard_records < 1:
         # 0 makes `n >= shard_records` always true: one shard per record, 600k files for the bench,
@@ -2389,12 +2393,12 @@ def main(argv: list[str]) -> int:
     settings = get_settings()
 
     if args.no_download:
-        gen_dir = settings.raw_dir / "generated_data"
+        gen_dir = bench_settings().raw_dir / "generated_data"
     else:
         gen_dir = fetch_generated_data(settings, ref=args.ref)
 
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(gen_dir / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen_dir / "employee_directory.yaml", employee_yaml(settings))
 
     question_ids = None
     if args.slice_questions:
@@ -2427,7 +2431,7 @@ def main(argv: list[str]) -> int:
             f"(org {settings.org_name}, domain {settings.org_domain})"
         )
         print(
-            f"Load it with: python -m backlot.importer.byo {args.export_byo}/corpus.jsonl "
+            f"Load it with: backlot import {args.export_byo}/corpus.jsonl "
             f"--roster {args.export_byo}/roster.yaml"
         )
         return 0
@@ -2451,4 +2455,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main(sys.argv[1:], prog="python -m backlot.importer.erb"))

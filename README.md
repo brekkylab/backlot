@@ -48,10 +48,12 @@ uv venv && source .venv/bin/activate     # or: python -m venv .venv
 uv pip install -e ".[dev]"
 ```
 
-Then prepare a corpus (below) and start the server:
+Installing puts the `backlot` command on PATH — `backlot import` builds the corpus and
+`backlot serve` serves it (`python -m backlot` is the same CLI if the venv isn't activated).
+Prepare a corpus (below), then start the server:
 
 ```bash
-python -m uvicorn backlot.main:app --port 8000
+backlot serve --port 8000
 curl -s localhost:8000/health
 ```
 
@@ -63,18 +65,19 @@ The server reads a corpus from `data/` (`mock.sqlite` + `tokens.yaml`). Build it
 
 [EnterpriseRAG-Bench](https://github.com/onyx-dot-app/EnterpriseRAG-Bench) ships ~500k
 synthetic enterprise documents (flattened to `{doc_id, source_type, title, content}`). One
-command downloads a slice, loads it, and generates the ACL:
+command downloads it, loads it, and generates the ACL (`--slice-questions` for only the
+documents a question set needs):
 
 ```bash
-python -m backlot.importer.erb     # small slice; --all for the full corpus, --augment for +α
+backlot import --type enterpriserag-bench    # download -> load -> ACL (-t erb for short)
 ```
 
 The bench carries only `{title, content}` — no structure, no access control — so the mock
 synthesizes the structural metadata and generates the ACL. Every import also **parses the real
 conversations embedded in the content** (this is faithful representation, not synthesis, so it's
 always on): Slack transcripts → threads, GitHub PR reviews and Jira comments → real comments,
-Gmail threads → per-email messages. `--augment` then layers only the genuinely-absent,
-*synthesized* structure on top: doc types, issue/PR split, status/labels, hierarchy, reactions.
+Gmail threads → per-email messages. On top of that it layers only the genuinely-absent,
+*synthesized* structure: doc types, issue/PR split, status/labels, hierarchy, reactions.
 A runnable walkthrough (import → serve → query) is in
 [`examples/import-enterpriserag-bench/`](examples/import-enterpriserag-bench/).
 
@@ -84,11 +87,11 @@ Serve **any** document set: one JSONL document per line, validated against a per
 Schema (`backlot/schemas/`), then loaded.
 
 ```bash
-python -m backlot.importer.byo mycorpus.jsonl              # validate + load -> data/
-python -m backlot.importer.byo mycorpus.jsonl --dry-run    # validate only, no DB writes
-python -m backlot.importer.byo mycorpus.jsonl --roster roster.yaml   # state the principals, don't derive them
-python -m backlot.importer.byo corpus.jsonl.gz             # gzipped, read as a stream
-python -m backlot.importer.byo artifact-dir/               # a sharded corpus + its manifest (below)
+backlot import mycorpus.jsonl              # validate + load -> data/
+backlot import mycorpus.jsonl --dry-run    # validate only, no DB writes
+backlot import mycorpus.jsonl --roster roster.yaml   # state the principals, don't derive them
+backlot import corpus.jsonl.gz             # gzipped, read as a stream
+backlot import artifact-dir/               # a sharded corpus + its manifest (below)
 ```
 
 ```json
@@ -104,8 +107,8 @@ The schema is expressive enough to hold an **entire existing dataset losslessly*
 bench is redistributed in it:
 
 ```bash
-python -m backlot.importer.erb --export-byo out/     # ERB -> out/corpus.jsonl + out/roster.yaml
-python -m backlot.importer.byo out/corpus.jsonl --roster out/roster.yaml
+backlot import -t erb --export-byo out/     # ERB -> out/corpus.jsonl + out/roster.yaml
+backlot import out/corpus.jsonl --roster out/roster.yaml
 ```
 
 That produces a database *equivalent* to importing the bench directly — same rows, same column
@@ -117,12 +120,12 @@ owners.
 At bench scale one file is unwieldy — the whole of ERB is 581,294 records — so the export can shard:
 
 ```bash
-python -m backlot.importer.erb --export-byo out/ --shard-records 50000
+backlot import -t erb --export-byo out/ --shard-records 50000
 ```
 
 Each source becomes `out/data/<source>/part-NNNNN.jsonl.gz` alongside `out/manifest.json`, which
 records every shard's path, record count, byte size, and SHA-256, plus the same for `roster.yaml`.
-`python -m backlot.importer.byo out/` loads the whole thing in one command and checks every digest before
+`backlot import out/` loads the whole thing in one command and checks every digest before
 reading a record, so a damaged or swapped download fails up front instead of half-loading a database.
 The roster is checked with the shards, since importing a directory picks it up automatically and it
 decides who holds a token. Shards are gzipped with `mtime=0`, so the same input always produces the
@@ -346,9 +349,12 @@ each spin up their own server; they run when those are available and skip otherw
 
 ## Configuration
 
-Env vars (prefix `BACKLOT_`): `BACKLOT_DATA_DIR`, `BACKLOT_RAW_DIR`, `BACKLOT_ADMIN_TOKEN`,
-`BACKLOT_ENFORCE_ACL`, `BACKLOT_EXPOSE_TOKENS`, `BACKLOT_DEFAULT_PAGE_SIZE`, `BACKLOT_MAX_PAGE_SIZE`,
-`BACKLOT_ORG_NAME`, `BACKLOT_ORG_DOMAIN`, `BACKLOT_ATLASSIAN_SITE`. See `backlot/config.py`.
+Env vars (prefix `BACKLOT_`): `BACKLOT_DATA_DIR`, `BACKLOT_ADMIN_TOKEN`, `BACKLOT_ENFORCE_ACL`,
+`BACKLOT_EXPOSE_TOKENS`, `BACKLOT_DEFAULT_PAGE_SIZE`, `BACKLOT_MAX_PAGE_SIZE`, `BACKLOT_ORG_NAME`,
+`BACKLOT_ORG_DOMAIN`, `BACKLOT_ATLASSIAN_SITE`. See `backlot/config.py`.
+
+`BACKLOT_RAW_DIR` and `BACKLOT_DATASET_REPO` configure the bench importer's download only, so they
+live with it (`backlot.importer.erb.BenchSettings`) rather than in the settings every layer reads.
 
 Document visibility is **not** configurable: it comes from the corpus itself — each record's
 `visibility` / `readers` for a BYO corpus, or the bench's own ownership fields for an ERB import

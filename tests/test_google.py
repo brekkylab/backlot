@@ -1920,6 +1920,53 @@ def test_drive_permissions_and_trashed(tmp_path):
     assert _drive_q_match(d2, "trashed = true") is True
 
 
+def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
+    """Real Drive leaves trashed files out of `files.list` unless `trashed = true` asks for them.
+
+    Every `q`-bearing path honored that (the matcher's default branch, and list_drive_folder's own
+    WHERE), so the ONE call that returned trash was the plainest possible one: `files.list` with no
+    `q`, which went straight to the generic listing helper and had no trashed notion. Asserted over
+    HTTP rather than on the matcher, since the matcher was never reached on this path — and on the
+    reported total too, because a count that includes rows the listing drops makes nextPageToken
+    promise a page that does not exist."""
+    from tests._helpers import corpus_client
+
+    records = [
+        {
+            "source_type": "google_drive",
+            "doc_id": "live",
+            "folder": "mk",
+            "title": "Current Deck",
+            "content": "x",
+            "author_email": "a@x.com",
+            "visibility": "public",
+        },
+        {
+            "source_type": "google_drive",
+            "doc_id": "gone",
+            "folder": "mk",
+            "title": "Old Deck",
+            "content": "y",
+            "author_email": "a@x.com",
+            "visibility": "public",
+            "trashed": True,
+        },
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        body = client.get("/drive/v3/files", headers=h, params={"pageSize": 100}).json()
+        ids = [f["id"] for f in body["files"]]
+        assert "live" in ids
+        assert "gone" not in ids, "a trashed file must not appear in an unfiltered files.list"
+        assert "nextPageToken" not in body, "the total counted a row the listing dropped"
+
+        # ...and it is still reachable when the caller asks for it, as in real Drive.
+        asked = client.get(
+            "/drive/v3/files", headers=h, params={"q": "trashed = true", "pageSize": 100}
+        ).json()
+        assert [f["id"] for f in asked["files"]] == ["gone"]
+
+
 def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
     """Google: `size` "is populated for files with binary content stored in Google Drive AND for
     Docs Editors files; it is not populated for shortcuts or folders." The mock set it only in the

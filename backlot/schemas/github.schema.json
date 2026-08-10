@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://brekkylab.dev/schemas/github.schema.json",
+  "$id": "https://github.com/brekkylab/backlot/schemas/github.schema.json",
   "title": "BYO corpus record — github",
   "description": "A GitHub issue or pull request. Title -> title, content -> body markdown. `container` is the repo name.",
   "type": "object",

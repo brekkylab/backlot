@@ -1747,7 +1747,7 @@ def test_import_refuses_a_shard_that_does_not_match_the_manifest(tmp_path, monke
 
 
 def test_a_single_gzipped_corpus_file_loads(tmp_path):
-    """The README documents `python -m backlot.importer.byo corpus.jsonl.gz`; every other test reaches a
+    """The README documents `backlot import corpus.jsonl.gz`; every other test reaches a
     `.gz` through a shard directory, so the plain single-file case had no coverage."""
     corpus = tmp_path / "corpus.jsonl.gz"
     with io.TextIOWrapper(gzip.GzipFile(corpus, "wb", mtime=0), encoding="utf-8") as fh:
@@ -1935,32 +1935,32 @@ def test_append_accumulates_source_documents(tmp_path):
 
 
 def test_hello_corpus_loads_and_covers_every_source(tmp_path):
-    """The wheel's built-in corpus must load and exercise all ten sources it covers.
+    """The wheel's built-in corpus must load and exercise ALL ELEVEN sources.
 
-    Ten, not eleven: the hello-world corpus deliberately omits fireflies.
+    Driven off `store.SOURCE_TABLE` rather than a list written out here, so adding a twelfth source
+    fails this test until the packaged corpus covers it too — which is how fireflies came to be
+    missing from the corpus while every other source had rows.
     """
-    hello_sources = (
-        "slack",
-        "gmail",
-        "google_drive",
-        "github",
-        "jira",
-        "confluence",
-        "notion",
-        "linear",
-        "hubspot",
-        "s3",
-    )
     hello = Path(__file__).resolve().parent.parent / "backlot" / "data" / "hello.jsonl"
     settings = Settings(data_dir=tmp_path)
     load(hello, settings)
     conn = store.connect_ro(settings.db_path)
     counts = {
         src: conn.execute(f"SELECT COUNT(*) FROM {store.table(src)}").fetchone()[0]
-        for src in hello_sources
+        for src in store.SOURCE_TABLE
     }
     for src, n in counts.items():
         assert n > 0, f"hello corpus has no {src} rows"
     # The two counts must differ, or the corpus does not demonstrate the parsing layer.
     assert int(store.read_meta(conn, "source_documents")) < sum(counts.values())
+    # Every child-row table is exercised too: a comment API with nothing behind it teaches a
+    # reader that the mock has no comments rather than that this corpus has none.
+    for src, tbl in store.COMMENT_TABLE.items():
+        n = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+        assert n > 0, f"hello corpus has no {src} child rows ({tbl})"
+    # More than one container per source, so a listing endpoint has something to page.
+    for src in store.SOURCE_TABLE:
+        gtable, gcol = store.GROUPING[src]
+        n = conn.execute(f"SELECT COUNT(*) FROM {gtable}").fetchone()[0]
+        assert n >= 2, f"hello corpus has only {n} {gcol}(s) for {src}"
     conn.close()

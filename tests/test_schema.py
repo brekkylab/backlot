@@ -581,13 +581,29 @@ def test_readers_accept_typed_principal_ids():
     )
 
 
-# --- the shipped example corpus ---------------------------------------------------
+# --- the BYO example corpus: the FIELD REFERENCE ----------------------------------
+#
+# Three corpora live in this repo and each answers a different question (see
+# backlot/schemas/README.md, "Which corpus is which"). This one's job is field coverage: every
+# field the schemas declare, populated at least once, so a reader can see that none of a response
+# has to be synthesized. `backlot/data/hello.jsonl` is the DEMO corpus (volume and containers, and
+# it deliberately leaves optional fields out); `tests/conftest.py::SAMPLE` is the test fixture.
+#
+# Until the test below existed, the only property pinned here was "covers every source" — which
+# hello.jsonl also satisfies, so nothing distinguished the two and the README's "fills in every
+# field" was a claim rather than a fact (68 declared fields were unused when it was written).
 
 
 def _example_corpus():
     from tests.conftest import REPO_ROOT
 
     return REPO_ROOT / "examples" / "bring-your-own-corpus" / "sample_corpus.jsonl"
+
+
+def _example_records():
+    import json
+
+    return [json.loads(line) for line in _example_corpus().read_text().split("\n") if line.strip()]
 
 
 def test_example_corpus_is_valid():
@@ -601,9 +617,24 @@ def test_example_corpus_covers_every_served_source():
     """It is documented as "a fully-populated record of every source type", so a source missing
     from it is a broken promise — and one that goes unnoticed: `linear` was absent for two
     releases after its loader landed, because only a human running `run.py` ever read this file."""
-    import json
+    assert {r["source_type"] for r in _example_records()} == set(store.SOURCE_TABLE)
 
-    records = [
-        json.loads(line) for line in _example_corpus().read_text().split("\n") if line.strip()
-    ]
-    assert {r["source_type"] for r in records} == set(store.SOURCE_TABLE)
+
+def test_example_corpus_populates_every_field_the_schemas_declare():
+    """This corpus's whole job: show every field a record may carry, so a reader can see that none
+    of a response has to be synthesized.
+
+    Derived from the schemas rather than a list kept here, so adding a field to a schema fails this
+    test until the example carries it — the same way a new SOURCE already fails the test above.
+    Coverage is the UNION over one source's records, because some fields are alternatives (a
+    `visibility` record and a `readers` record; a fireflies transcript written as `sentences` and
+    one written as `content`) and no single record can hold both sides.
+    """
+    used: dict[str, set[str]] = {}
+    for r in _example_records():
+        used.setdefault(r["source_type"], set()).update(r)
+    missing = {
+        src: sorted((set(schema["properties"]) - {"source_type"}) - used.get(src, set()))
+        for src, schema in validation.SERVICE_SCHEMAS.items()
+    }
+    assert {s: m for s, m in missing.items() if m} == {}

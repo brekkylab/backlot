@@ -2,8 +2,11 @@
 
 ``SAMPLE`` is the single source of test data — it carries the +α surface (threads, reactions,
 comments, attachments, doc types, issue links/subtasks, child pages) that the SDK/MCP tests
-exercise, plus public/group/private docs for the ACL tests. It is deliberately independent of
-``examples/bring-your-own-corpus/sample_corpus.jsonl`` (which belongs to the BYO example).
+exercise, plus public/group/private docs for the ACL tests. It is deliberately independent of the
+repo's other two corpora, which answer different questions (see "Which corpus is which" in
+``backlot/schemas/README.md``): ``examples/bring-your-own-corpus/sample_corpus.jsonl`` is the field
+reference, and ``backlot/data/hello.jsonl`` is the demo corpus the wheel ships. A fixture is free to
+stay small and odd in ways neither of those may be, which is why it is not one of them.
 
 - ``db``   — a read-only connection to the built DB.
 - ``acl`` / ``tokens`` — the generated ACL and email->token map for that DB.

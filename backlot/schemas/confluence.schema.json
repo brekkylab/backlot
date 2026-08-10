@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://brekkylab.dev/schemas/confluence.schema.json",
+  "$id": "https://github.com/brekkylab/backlot/schemas/confluence.schema.json",
   "title": "BYO corpus record — confluence",
   "description": "A Confluence page or blogpost. Title -> title, content -> body.storage. `container` is the space. Use `parent` for child pages.",
   "type": "object",

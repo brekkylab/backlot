@@ -155,7 +155,9 @@ async function serveOrConnect(url: string | undefined): Promise<Mock> {
   writeFileSync(corpus, CORPUS.map((r) => JSON.stringify(r)).join("\n"));
   const env = { ...process.env, BACKLOT_DATA_DIR: dataDir };
 
-  const imported = spawnSync(python, ["-m", "backlot.importer.byo", corpus], {
+  // `-m backlot import` — the same CLI as `backlot import <corpus>`, run through the interpreter
+  // we already resolved (PYTHON / python3), so no activated venv has to be on PATH.
+  const imported = spawnSync(python, ["-m", "backlot", "import", corpus], {
     cwd: REPO_ROOT, env, stdio: ["ignore", "ignore", "inherit"],
   });
   if (imported.status !== 0) {

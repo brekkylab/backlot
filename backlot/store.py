@@ -249,7 +249,8 @@ CREATE TABLE IF NOT EXISTS linear_issues (
     canceled_ts INTEGER, completed_ts INTEGER, started_ts INTEGER,
     assignee_email TEXT, assignee_display TEXT, owner_display TEXT,
     -- The parent's identifier as the corpus wrote it, plus the doc_id it RESOLVED to at import. Both,
-    -- because bench identifiers are NOT unique (one key is the identifier of 107 issues), so a
+    -- because identifiers are NOT required to be unique (measured: one key is the identifier of
+    -- 107 issues), so a
     -- serve-time join on `identifier` would invent edges. Resolving once — first match by doc_id, the
     -- rule linear_issue_by_identifier applies — makes Issue.parent and Issue.children exact inverses.
     parent_key TEXT, parent_doc_id TEXT,
@@ -284,8 +285,8 @@ CREATE INDEX IF NOT EXISTS idx_linear_author ON linear_issues(author_email);
 -- on the non-unique identifier text.
 CREATE INDEX IF NOT EXISTS idx_linear_parent_doc ON linear_issues(parent_doc_id);
 CREATE INDEX IF NOT EXISTS idx_linear_release ON linear_issues(release);
--- `issue(id: "ENG-123")` resolves an identifier straight to its row; the bench's keys are NOT
--- unique (5,055 of them repeat), so this is a lookup index, never a unique constraint.
+-- `issue(id: "ENG-123")` resolves an identifier straight to its row; identifiers are NOT unique
+-- (5,055 of them repeat in one real corpus), so this is a lookup index, never a unique constraint.
 CREATE INDEX IF NOT EXISTS idx_linear_identifier ON linear_issues(identifier);
 -- COVERING index for the startup reverse-index build (backlot.main._build_index), which reads
 -- (doc_id, identifier) for every issue. Without it each wide row is fetched from a scattered page and
@@ -298,7 +299,7 @@ CREATE TABLE IF NOT EXISTS linear_comments (
 );
 CREATE INDEX IF NOT EXISTS idx_linear_comments_doc ON linear_comments(doc_id, seq);
 -- `Query.comments` pages the whole corpus ordered by time; without this the ORDER BY
--- re-sorts all 165k bench comments in a temp b-tree on every page.
+-- re-sorts every comment in a temp b-tree on every page (165k of them at the scale measured).
 CREATE INDEX IF NOT EXISTS idx_linear_comments_ts ON linear_comments(created_ts, id);
 
 -- Linear's IssueRelation, `type` in (blocks | duplicate | related). ONE row per relation, not per
@@ -311,7 +312,7 @@ CREATE TABLE IF NOT EXISTS linear_relations (
 CREATE INDEX IF NOT EXISTS idx_linear_rel_from ON linear_relations(from_doc_id);
 CREATE INDEX IF NOT EXISTS idx_linear_rel_to ON linear_relations(to_doc_id);
 
--- Linear's model for any external link on an issue (the bench's `links` and `attachments` both).
+-- Linear's model for any external link on an issue (a corpus's `links` and `attachments` alike).
 -- `title` is non-null in Linear, so a bare URL gets one derived from its last path segment.
 CREATE TABLE IF NOT EXISTS linear_attachments (
     id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
@@ -328,8 +329,9 @@ CREATE INDEX IF NOT EXISTS idx_linear_attach_doc ON linear_attachments(doc_id, s
 CREATE TABLE IF NOT EXISTS fireflies_transcripts (
     doc_id TEXT PRIMARY KEY, channel TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
-    -- The API-facing id, synthesized rather than taken from the bench's `meeting_id`, which is NOT
-    -- unique — and `transcript(id:)` looks a meeting up by it, so a duplicate would make that ambiguous.
+    -- The API-facing id, synthesized rather than reused from a corpus's own meeting id, which is NOT
+    -- required to be unique — `transcript(id:)` looks a meeting up by it, so a duplicate would make
+    -- that ambiguous.
     -- The corpus's own value is kept as `calendar_id`, where a real transcript carries it.
     transcript_id TEXT, calendar_id TEXT, calendar_type TEXT,
     organizer_email TEXT, duration REAL,
@@ -548,9 +550,11 @@ def list_documents(
     author_email=None,
     state=None,
     not_author_email=None,
+    exclude_trashed=False,
 ) -> list[sqlite3.Row]:
     # state: only valid for source_type="github" — it's the only items table with a `state`
-    # column; passing it for any other source_type raises sqlite3.OperationalError.
+    # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
+    # exclude_trashed, which only gdrive_files has a column for.
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE 1=1"
     params: list = []
@@ -558,6 +562,8 @@ def list_documents(
     if state is not None:
         sql += " AND COALESCE(state, 'open') = ?"
         params.append(state)
+    if exclude_trashed:
+        sql += " AND COALESCE(trashed, 0) = 0"
     clause, cparams = _acl_clause(tbl, visible_ids)
     sql += clause + " ORDER BY doc_id LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
@@ -753,8 +759,8 @@ def count_linear_issues(
 
 
 def linear_issue_by_identifier(conn, identifier, visible_ids=None) -> sqlite3.Row | None:
-    """Resolve a human identifier (``ENG-123``) to its issue. The bench's keys are not unique
-    (5,055 repeat), so this deliberately returns the first by ``doc_id`` rather than pretending
+    """Resolve a human identifier (``ENG-123``) to its issue. Identifiers are not unique (5,055
+    repeat in one real corpus), so this deliberately returns the first by ``doc_id`` rather than pretending
     the lookup is unambiguous — the UUID form of ``issue(id:)`` is the exact one."""
     sql = "SELECT * FROM linear_issues WHERE identifier = ?"
     params: list = [identifier]
@@ -770,7 +776,7 @@ def list_linear_comments(
     A comment row carries no ACL grant of its own; visibility is the parent issue's, so the ACL
     is applied to ``linear_issues`` through a join rather than to the comment table."""
     # The join exists ONLY to reach the parent issue's ACL, so an admin read (visible_ids None)
-    # skips it: over 165k bench comments the join cost ~40ms per page for nothing.
+    # skips it: measured over 165k comments, the join cost ~40ms per page for nothing.
     join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = c.doc_id"
     sql = f"SELECT c.* FROM linear_comments c{join} WHERE 1=1"
     params: list = []
@@ -806,7 +812,7 @@ def linear_children(
 ) -> list[sqlite3.Row]:
     """Sub-issues of an issue — every row whose resolved ``parent_doc_id`` is this one.
 
-    An indexed equality on a doc_id, NOT a join on ``identifier``: bench identifiers repeat, so a
+    An indexed equality on a doc_id, NOT a join on ``identifier``: identifiers repeat, so a
     join would attach one issue's children to every issue sharing its key. Resolved once at import,
     which is what makes this the exact inverse of ``Issue.parent``."""
     sql = "SELECT * FROM linear_issues WHERE parent_doc_id = ?"
@@ -1120,10 +1126,18 @@ def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
 
 
 def count_documents(
-    conn, source_type, container=None, visible_ids=None, author_email=None, state=None
+    conn,
+    source_type,
+    container=None,
+    visible_ids=None,
+    author_email=None,
+    state=None,
+    exclude_trashed=False,
 ) -> int:
     # state: only valid for source_type="github" — it's the only items table with a `state`
-    # column; passing it for any other source_type raises sqlite3.OperationalError.
+    # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
+    # exclude_trashed, which only gdrive_files has a column for. It has to track
+    # list_documents': a count that includes rows the listing drops makes nextPageToken lie.
     tbl = table(source_type)
     sql = f"SELECT COUNT(*) FROM {tbl} WHERE 1=1"
     params: list = []
@@ -1131,6 +1145,8 @@ def count_documents(
     if state is not None:
         sql += " AND COALESCE(state, 'open') = ?"
         params.append(state)
+    if exclude_trashed:
+        sql += " AND COALESCE(trashed, 0) = 0"
     clause, cparams = _acl_clause(tbl, visible_ids)
     sql += clause
     params += cparams
@@ -1744,8 +1760,8 @@ def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]
 
 
 def slack_channel_member_counts(conn) -> dict[str, int]:
-    """Every channel's member count in one pass. Per-channel COUNT(DISTINCT) is ~1.9s on the bench
-    corpus's biggest channel, and conversations.list shapes every channel in the page, so counting
+    """Every channel's member count in one pass. Per-channel COUNT(DISTINCT) is ~1.9s on the
+    biggest channel measured, and conversations.list shapes every channel in the page, so counting
     them one at a time would be minutes per request; this is 12.2s once."""
     return {
         r[0]: r[1]

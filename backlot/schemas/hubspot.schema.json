@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://brekkylab.dev/schemas/hubspot.schema.json",
+  "$id": "https://github.com/brekkylab/backlot/schemas/hubspot.schema.json",
   "title": "BYO corpus record — hubspot",
   "description": "A HubSpot CRM record (contact, company, deal, ticket, note, …). `object_type` is the grouping unit, because the CRM API is polymorphic over `{objectType}` and supports custom objects. HubSpot's typed fields live in `properties` and are searchable by name; `title`/`content` are the retrieval-facing text a record has no natural body for (a contact is properties, not prose). `associations` link records by doc_id — declare each link once and the loader materialises the reverse direction too.",
   "type": "object",

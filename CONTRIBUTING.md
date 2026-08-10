@@ -20,16 +20,18 @@ uv venv && source .venv/bin/activate     # or: python -m venv .venv && source .v
 uv pip install -e ".[dev]"               # or: pip install -e ".[dev]"
 ```
 
-The server itself needs no data or API keys to start:
+That puts the `backlot` command on PATH. The server needs no API keys, but it does need a
+corpus — the packaged 10-record hello-world one is enough to get a live server:
 
 ```bash
-python -m backlot.main                   # serves on http://localhost:8000
+backlot import backlot/data/hello.jsonl   # -> data/mock.sqlite + data/tokens.yaml
+backlot serve                             # serves on http://127.0.0.1:8000
 curl -s localhost:8000/health
 ```
 
-To exercise it against a real corpus, build one first (`python -m backlot.importer.erb`
-for a bench slice, or `python -m backlot.importer.byo mycorpus.jsonl` for your own — see
-the README).
+For a real corpus use `backlot import --type enterpriserag-bench` (the bench) or
+`backlot import mycorpus.jsonl` (your own) — see the README. Every `backlot import` flag is the
+importer module's own, so `python -m backlot.importer.{byo,erb}` still takes exactly the same ones.
 
 ## Running tests
 

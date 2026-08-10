@@ -1,6 +1,6 @@
 """Load a Bring-Your-Own (BYO) corpus from JSONL into the mock DB.
 
-Serve *any* document set through all eleven vendor APIs — not just EnterpriseRAG-Bench.
+Serve *any* document set through all eleven vendor APIs.
 Each line is one document:
 
     {
@@ -55,7 +55,8 @@ a converted corpus carries a roster it already knows.
 Every record is validated against its per-service JSON Schema first, so a bad corpus never
 half-loads; ``--dry-run`` reports problems without touching the DB.
 
-Usage:  python -m backlot.importer.byo path/to/corpus.jsonl [--append | --dry-run] [--roster r.yaml]
+Usage:  backlot import path/to/corpus.jsonl [--append | --dry-run] [--roster r.yaml]
+        (or run this module directly: ``python -m backlot.importer.byo`` takes the same flags)
 """
 
 from __future__ import annotations
@@ -257,7 +258,7 @@ def _service_columns(
             "version_message": ex.get("version_message"),
             "minor_edit": (1 if ex.get("minor_edit") else None),
             # Confluence's own confidentiality label, free text and stored verbatim rather
-            # than forced into an enum: the bench writes "restricted (customer-sensitive)" and
+            # than forced into an enum: real corpora write "restricted (customer-sensitive)" and
             # "restricted (finance/customer-sensitive)" alongside plain "internal". It is a
             # served label only — ACL still comes from `visibility`/`readers`, so a corpus that
             # wants a restricted page group-scoped says so there too.
@@ -300,12 +301,10 @@ def _service_columns(
         # Keys are Linear's own (camelCase `branchName`/`dueDate`, `state` not status), so a
         # corpus written against the Linear API needs no renaming. `identifier` and `branchName`
         # are both derivable, so an omitted one is synthesized at serve time rather than stored.
-        from backlot.importer.erb import linear_priority
-
         return {
             "identifier": ex.get("identifier"),
             "state": ex.get("state"),
-            "priority": linear_priority(ex.get("priority")),
+            "priority": synth.linear_priority(ex.get("priority")),
             "estimate": ex.get("estimate"),
             "labels": _j(ex.get("labels")),
             "project": ex.get("project"),
@@ -324,8 +323,8 @@ def _service_columns(
             "assignee_display": ex.get("assigneeName"),
             "owner_display": owner_display,
             # `parent` is the generic hierarchy field; for Linear it holds the parent's
-            # human identifier (ENG-123), not a doc_id, because that is how Linear and the
-            # bench both name a parent.
+            # human identifier (ENG-123), not a doc_id, because that is how Linear itself names
+            # a parent.
             "parent_key": parent_id,
             "release": ex.get("release"),
         }
@@ -514,8 +513,9 @@ def load_roster(path) -> dict:
         contacts:                         # principals with NO token (display-only)
           - {name: Zoe Newperson, email: zoe.newperson@redwoodinference.com, group: engineering}
 
-    ``departments`` is exactly the shape of the bench's ``employee_directory.yaml``, so that file
-    works as a roster verbatim; a department name becomes its group id via ``slugify``.
+    ``departments`` is exactly the shape of an ``employee_directory.yaml``, so a dataset that
+    already ships one works as a roster verbatim; a department name becomes its group id via
+    ``slugify``.
     ``contacts`` are people a corpus names who are not accounts — they own and read documents but
     cannot authenticate, the distinction ``tokens.yaml`` draws.
 
@@ -550,8 +550,9 @@ class _Loader:
     """Inserts BYO records into an open DB, accumulating the corpus-level state the principal, ACL
     and cross-reference passes need afterwards.
 
-    A class rather than one long loop because a whole corpus and a single document (the ERB
-    importer's unit) have to go through ONE implementation or they drift. Cross-record work — a
+    A class rather than one long loop because a whole corpus and a single document (the unit a
+    converting importer feeds in) have to go through ONE implementation or they drift.
+    Cross-record work — a
     HubSpot association's target, a Linear parent's identifier — is deferred to
     :meth:`resolve_cross_references`, since the target may arrive on a later record.
     """
@@ -581,7 +582,7 @@ class _Loader:
         self.hs_types = {}
         self.hs_links = []  # (from_doc_id, from_type, declaration)
         # Linear relations name a target by doc_id and are resolved after the whole corpus is read,
-        # since a target may appear on a later line — the same second pass the ERB importer runs.
+        # since a target may appear on a later line.
         self.lin_links = []
 
     def add(self, rec: dict, where: str = "record") -> None:
@@ -609,14 +610,10 @@ class _Loader:
         # allowed to disagree. A record that supplies `sentences` has its content derived from
         # them; one that supplies only `content` has its sentences parsed back out of it, so a BYO
         # author can write a plain "Speaker: text" transcript and still get per-sentence rows.
-        # Either way the round-trip holds, exactly as it does for an ERB import. This runs before
-        # `_doc_id`, which hashes the content — so the id covers the transcript either way.
+        # Either way the round-trip holds. This runs before `_doc_id`, which hashes the content —
+        # so the id covers the transcript either way.
         sentences = None
         if src == "fireflies":
-            # The same parser the ERB loader uses, so a BYO transcript and a bench transcript are
-            # stored identically.
-            from backlot.importer.erb import parse_fireflies_transcript
-
             given = rec.get("sentences")
             if not given and not (rec.get("content") or "").strip():
                 # Stated here rather than as a schema `anyOf`, whose error ("is not valid under
@@ -638,7 +635,12 @@ class _Loader:
                     for s in given
                 ]
             else:
-                sentences = parse_fireflies_transcript(rec.get("content") or "")
+                # `synth.parse_transcript_text` and not an importer's own parser: it is the declared
+                # inverse of the `fireflies_transcript_text` two lines below, so the pair that
+                # defines `content` is one module's fixed point rather than two modules agreeing by
+                # convention. A record format documents the forms it accepts; salvaging some other
+                # dataset's transcript layout is that importer's job, not this loader's.
+                sentences = synth.parse_transcript_text(rec.get("content") or "")
             ff_minutes = _ff_minutes(rec.get("duration"))
             synth.fireflies_fill_times(sentences, (ff_minutes * 60) if ff_minutes else None)
             ordinals: dict[str, int] = {}
@@ -652,7 +654,7 @@ class _Loader:
         # Recorded, not deduplicated: `seen` answers "is this document in the corpus" for the
         # cross-reference resolution further down. Two records sharing a (source, doc_id) are both
         # written, and the row-level `INSERT OR REPLACE` leaves the later one — which is what a
-        # direct ERB import of the same documents produces. The bench has four such pairs (three
+        # direct import of the same documents produces. One real corpus has four such pairs (three
         # across sources, one within jira); skipping the repeat instead would keep the earlier
         # document and diverge.
         seen.add((src, doc_id))
@@ -842,11 +844,9 @@ class _Loader:
         if src == "fireflies":
             # Needs the doc_id (analytics is seeded from it), so it can only run here — the
             # sentences themselves were built before `_doc_id`, above.
-            from backlot.importer.erb import _ff_speaker_stats
-
             secs = (_ff_minutes(rec.get("duration")) or 0) * 60 or None
             extras["analytics"] = extras.get("analytics") or synth.fireflies_analytics(
-                doc_id, _ff_speaker_stats(sentences), secs
+                doc_id, synth.fireflies_speaker_stats(sentences), secs
             )
             extras["participants"] = extras.get("participants") or [
                 e for e in dict.fromkeys(s.get("author_email") for s in sentences) if e
@@ -1124,7 +1124,7 @@ class _Loader:
                 if target is None:
                     # A parent names an IDENTIFIER, not a doc_id, and an identifier that is not in this
                     # corpus is a normal property of a real dataset rather than a corpus error: a slice
-                    # of an issue tracker references issues outside it (24.8% of the bench's parent
+                    # of an issue tracker references issues outside it (24.8% of one real corpus's parent
                     # references do). So keep `parent_key` — it is what the corpus said — and leave
                     # `parent_doc_id` NULL, which is exactly what `Issue.parent` serving null means.
                     # `relations` stay strict by contrast: those name a doc_id, so a miss is a typo.
@@ -1195,8 +1195,8 @@ def load_records(
     ``records_factory`` returns a FRESH iterator of ``(where, record)`` pairs and may be called
     twice — the org has to be inferred from every author's address before the first grant is
     written, so a corpus is re-read rather than held in memory. ``where`` names the record in an
-    error message. ``validate=False`` skips the JSON Schema check, and is only for records this repo
-    generated itself (``erb.to_byo``); a corpus from OUTSIDE always validates, which is why
+    error message. ``validate=False`` skips the JSON Schema check, and is only for records an
+    importer in this repo generated itself; a corpus from OUTSIDE always validates, which is why
     ``load`` does not expose the flag.
     """
     settings = settings or get_settings()
@@ -1212,7 +1212,7 @@ def load_records(
 
         `infer_org` consumes the addresses exactly once (backlot/config.py), so nothing needs to be held:
         yielding keeps the memory constant where a list would build one dict per document plus one
-        per child row — millions of them at bench scale, in a pass whose whole point is to stream.
+        per child row — millions of them on a large corpus, in a pass whose whole point is to stream.
         """
         for _no, _rec in records_factory():
             yield {
@@ -1234,7 +1234,7 @@ def load_records(
     # — which a converted corpus can get wrong, since its documents also carry outside senders and
     # display-only handles. When it states BOTH, the inference pass is pure cost: every value it
     # would produce is about to be overwritten. Skipping it also halves the passes an in-memory
-    # caller makes over a corpus it generates on the fly (see erb.import_structured).
+    # caller makes over a corpus it generates on the fly.
     stated = bool(roster_data and roster_data.get("org") and roster_data.get("org_domain"))
     if stated:
         org_name, org_domain = roster_data["org"], roster_data["org_domain"]
@@ -1335,8 +1335,16 @@ def load_records(
     }
 
 
-def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description="Import (load) a BYO JSONL corpus into the mock DB.")
+def build_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    """This importer's own argument parser.
+
+    Split out from :func:`main` so ``backlot.cli`` can render ``backlot import --help`` — the flags
+    below plus its own ``--type`` — as ONE help screen, without redeclaring any of them there.
+    ``prog`` names the command in usage and error messages ("backlot import" vs the module path).
+    """
+    ap = argparse.ArgumentParser(
+        prog=prog, description="Import (load) a BYO JSONL corpus into the mock DB."
+    )
     ap.add_argument(
         "corpus",
         help="a JSONL corpus file, a .jsonl.gz, or a directory holding "
@@ -1355,7 +1363,11 @@ def main(argv: list[str]) -> int:
         help="roster YAML naming the corpus's principals (see load_roster); with it, "
         "principals/groups/tokens come from the file instead of from the records",
     )
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv: list[str], prog: str | None = None) -> int:
+    args = build_parser(prog).parse_args(argv)
     corpus = Path(args.corpus)
 
     if args.dry_run:
@@ -1384,8 +1396,8 @@ def main(argv: list[str]) -> int:
 
     # The same check `--dry-run` makes, on the path that actually writes a database. A shard that is
     # short but validly terminated — what a resumed or re-uploaded download looks like — otherwise
-    # loads as a quietly incomplete corpus and reports success. Measured at 0.67 s of sha256 over the
-    # 1.0 GB bench artifact, in front of an import that writes 14 GB.
+    # loads as a quietly incomplete corpus and reports success. Measured at 0.67 s of sha256 over a
+    # 1.0 GB artifact, in front of an import that writes 14 GB.
     _verify_or_die(corpus)
 
     settings = get_settings()
@@ -1405,4 +1417,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main(sys.argv[1:], prog="python -m backlot.importer.byo"))

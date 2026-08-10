@@ -139,3 +139,51 @@ def test_linear_url_is_the_real_vendor_domain():
     host = urlparse(synth.linear_url("ENG-1", "fix the thing", org="acme")).netloc
     assert host == "linear.app"
     assert "backlot" not in host
+
+
+def test_linear_priority_normalisation():
+    """Both importers normalize through this, so however a corpus spells a priority — a label, a
+    `P0`-style key, or Linear's own number — it reaches the same stored value."""
+    assert [synth.linear_priority(v) for v in ("P0", "P1", "P2", "P3")] == [1, 2, 3, 4]
+    assert [synth.linear_priority(v) for v in ("Urgent", "High", "Medium", "Low")] == [1, 2, 3, 4]
+    assert synth.linear_priority(3) == 3  # already Linear's scale
+    assert synth.linear_priority("unrecognised") == 0  # Linear's "No priority"
+    assert synth.linear_priority(None) is None
+
+
+def test_parse_transcript_text_is_the_inverse_of_the_writer():
+    """`content` is DEFINED as the sentence concatenation, so this pair has to be a fixed point —
+    the same relationship notion_blocks / notion_blocks_to_text have."""
+    text = "Hana: numbers first.\nMia: design shipped.\nAnd cleared the backlog."
+    sentences = synth.parse_transcript_text(text)
+    assert [s["speaker_name"] for s in sentences] == ["Hana", "Mia"]
+    assert sentences[1]["text"] == "design shipped.\nAnd cleared the backlog."
+    assert synth.fireflies_transcript_text(sentences) == text
+
+
+def test_parse_transcript_text_reads_a_leading_clock_as_the_start_time():
+    sentences = synth.parse_transcript_text("[00:00] A: one\n(01:30) B: two\n02:00 - C: three")
+    assert [s["start_time"] for s in sentences] == [0.0, 90.0, 120.0]
+    assert [s["speaker_name"] for s in sentences] == ["A", "B", "C"]
+
+
+def test_an_unattributed_opening_line_becomes_a_sentence_rather_than_vanishing():
+    """Dropping it would break the fixed point above: the stored content is re-derived from the
+    sentences, so a line no sentence holds is a line the transcript loses."""
+    sentences = synth.parse_transcript_text("(recording starts)\nA: hello")
+    assert [(s["speaker_name"], s["text"]) for s in sentences] == [
+        (None, "(recording starts)"),
+        ("A", "hello"),
+    ]
+    assert synth.fireflies_transcript_text(sentences) == "(recording starts)\nA: hello"
+
+
+def test_a_colon_inside_a_sentence_does_not_mint_a_speaker():
+    sentences = synth.parse_transcript_text("A: the dashboard\nsee https://example.com for detail")
+    assert len(sentences) == 1
+    assert sentences[0]["text"] == "the dashboard\nsee https://example.com for detail"
+
+
+def test_parse_transcript_text_of_an_empty_body_is_empty():
+    assert synth.parse_transcript_text("") == []
+    assert synth.parse_transcript_text("   \n  ") == []

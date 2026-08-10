@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://brekkylab.dev/schemas/notion.schema.json",
+  "$id": "https://github.com/brekkylab/backlot/schemas/notion.schema.json",
   "title": "BYO corpus record — notion",
   "description": "A Notion page or database. Title -> the title property; content -> the page block tree (served verbatim). `teamspace` is the grouping unit. A database row is a page with `parent` set to the database's doc_id.",
   "type": "object",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://brekkylab.dev/schemas/gmail.schema.json",
+  "$id": "https://github.com/brekkylab/backlot/schemas/gmail.schema.json",
   "title": "BYO corpus record — gmail",
   "description": "A Gmail message. Title maps to the Subject header; content to the body. Recipients (readers) determine who can read the mailbox item.",
   "type": "object",

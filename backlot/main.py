@@ -56,8 +56,8 @@ def _build_index(conn) -> dict:
     }
     # Gmail ids are 16-hex integers, not dsids, so the served id has to be reversed back to a row.
     # ONE map covers messages AND threads: a thread key is the root message's doc_id (verified on
-    # the bench corpus -- 0 of 121,390 thread keys is anything else), which is also why real Gmail
-    # reports id == threadId for a lone message. Measured cost on the 556,238-message bench corpus:
+    # a real corpus -- 0 of 121,390 thread keys is anything else), which is also why real Gmail
+    # reports id == threadId for a lone message. Measured cost on a 556,238-message corpus:
     # +2.2s and +88 MiB, taking this whole function from 6.4s to ~8.6s, with 0 collisions.
     for r in conn.execute(f"SELECT doc_id FROM {store.table('gmail')}"):
         idx["gmail"][synth.gmail_message_id(r["doc_id"])] = r["doc_id"]
@@ -88,8 +88,9 @@ def _build_index(conn) -> dict:
         idx["hubspot"][synth.hubspot_record_id(r["doc_id"])] = r["doc_id"]
     # Linear's `issue(id:)` accepts the UUID *or* the human identifier (ENG-123), and `team(id:)`
     # the team UUID or its key — so one dict per entity resolves either spelling back to the row.
-    # The bench's identifiers are NOT unique (5,055 keys repeat) and two containers can reduce to
-    # one team key, so both use setdefault: the first row in doc_id/name order wins and the
+    # Identifiers are NOT required to be unique (5,055 keys repeat in one real corpus) and two
+    # containers can reduce to one team key, so both use setdefault: the first row in doc_id/name
+    # order wins and the
     # mapping stays stable across restarts, while the UUID form always addresses a row exactly.
     # Exactly (doc_id, identifier), in that order: idx_linear_doc_ident covers it, so this is an
     # index-only scan and never touches the wide issue rows.
@@ -137,11 +138,12 @@ async def lifespan(app: FastAPI):
     if not settings.db_path.exists():
         raise RuntimeError(
             f"DB not found at {settings.db_path}. Build it first: "
-            "python -m backlot.importer.erb  (or: python -m backlot.importer.byo <corpus.jsonl>)"
+            "backlot import <corpus.jsonl>  (see `backlot import --help` for the other sources)"
         )
     # A BYO import records the corpus-derived org in tokens.yaml; adopt it so the routers
-    # (which read get_settings().org_name/org_domain) stay consistent with the ACL. An erb
-    # (bench) tokens.yaml has no org, so the settings defaults stand.
+    # (which read get_settings().org_name/org_domain) stay consistent with the ACL. A tokens.yaml
+    # written from a stated roster instead of a corpus's own addresses has no org, so the settings
+    # defaults stand.
     if settings.tokens_path.exists():
         data = yaml.safe_load(settings.tokens_path.read_text()) or {}
         if data.get("org"):
@@ -211,7 +213,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="EnterpriseRAG-Bench Mock Server",
+    # The server's name, not a corpus's: it serves whatever was imported, so naming one dataset
+    # here would put it in /openapi.json, every generated client, and every MCP bridge's tool
+    # descriptions.
+    title="Backlot Mock Server",
     lifespan=lifespan,
     # NOT FastAPI's default, which derives the id's method suffix from a set and so
     # changes between restarts — see openapi.unique_operation_id.

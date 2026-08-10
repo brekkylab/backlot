@@ -16,8 +16,8 @@ from pathlib import Path
 from jsonschema import Draft202012Validator, FormatChecker
 
 # __file__-relative, not cwd-relative: these are resources the package SHIPS (see the
-# [tool.setuptools.package-data] entry in pyproject.toml), unlike backlot.config's data_dir/
-# raw_dir, which are user data and must resolve against the cwd instead. `.parent`, not
+# [tool.setuptools.package-data] entry in pyproject.toml), unlike backlot.config's data_dir,
+# which is user data and must resolve against the cwd instead. `.parent`, not
 # `.parent.parent` — schemas/ lives inside the backlot/ package, not the repo root, precisely so
 # it is included in the wheel.
 SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
@@ -69,8 +69,8 @@ def jsonl_lines(text: str) -> list[str]:
     Not ``str.splitlines()``, which also breaks on U+2028/U+2029, U+0085 and the vertical tab.
     Those are ordinary characters inside a JSON string, and JSON Lines separates records by ``\\n``,
     so splitting on them tears one valid record into two invalid halves. Real text contains them:
-    one U+2028 shows up in the bench corpus, and it was enough to make a converted artifact fail
-    to load with "Unterminated string"."""
+    one U+2028 showed up in a real 500k-document corpus, and it was enough to make a converted
+    artifact fail to load with "Unterminated string"."""
     return text.split("\n")
 
 

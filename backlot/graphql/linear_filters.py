@@ -29,7 +29,7 @@ from backlot import synth
 
 def _to_epoch(value) -> int | None:
     """An ISO-8601 ``DateTime`` operand -> unix seconds, to compare against a ``*_ts`` column.
-    Deliberately NOT ``backlot.importer.erb.to_epoch``: that one exists to salvage the bench's messy
+    Deliberately NOT an importer's own date coercion: that exists to salvage a corpus's messy
     human date strings and would drag the whole importer into the serving path. A filter operand
     comes from a GraphQL client, so ISO-8601 (or a bare epoch) is the whole contract."""
     if value is None or value == "":
@@ -136,7 +136,7 @@ def _join(parts: list[str], op: str) -> str:
 
 def _distinct(conn, column: str) -> list[str]:
     """The distinct values of a low-cardinality column (``state``, ``team``, 6 and 3 rows in the
-    bench). Read once per filter compile — cheap, and it is what makes the derived-field
+    corpora). Read once per filter compile — cheap, and it is what makes the derived-field
     expansion below exact."""
     return [
         r[0]
@@ -156,7 +156,7 @@ def _derived_in(conn, column: str, derive, spec: dict) -> tuple[str, list]:
     # A NEGATIVE predicate ("not this project") must keep rows whose column is NULL — they have
     # no value, so they cannot be the excluded one. The SQL comparator's own `neq` already spells
     # this out (`IS NULL OR <> ?`); an IN-list over distinct non-NULL names silently dropped them,
-    # so `project:{id:{neq:X}}` and `project:{name:{neq:X}}` disagreed on 24 real bench rows.
+    # so `project:{id:{neq:X}}` and `project:{name:{neq:X}}` disagreed on 24 real rows.
     negative = any(op in spec for op in ("neq", "nin", "neqIgnoreCase"))
     null_ok = f" OR {column} IS NULL" if negative else ""
     if not matched:
@@ -401,7 +401,7 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
 def _map_comment_ids(conn, spec: dict) -> dict:
     """Rewrite a comparator over ``Comment.id`` from served UUIDs back to stored row ids.
 
-    Unlike an issue, a comment has no app-level reverse index (there are 165k in the bench and
+    Unlike an issue, a comment has no app-level reverse index (there are 165k at the scale measured and
     they are only ever reached through their parent), so the mapping is built on demand for just
     the ids the comparator names. An unresolvable id becomes a sentinel that matches nothing,
     which is what "no such comment" should return."""

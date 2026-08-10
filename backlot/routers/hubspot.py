@@ -342,7 +342,7 @@ def _sorted(rows, sorts):
         return rows
     name = spec["propertyName"]
     # Decorate once: the properties JSON is parsed per row here, and re-parsing it inside the sort
-    # key would double that over the whole match set (15k+ rows on the bench corpus).
+    # key would double that over the whole match set (15k+ rows at the scale measured).
     decorated = [(_props(r).get(name), r) for r in rows]
     vals = [v for v, _ in decorated]
     numeric = any(v is not None for v in vals) and all(

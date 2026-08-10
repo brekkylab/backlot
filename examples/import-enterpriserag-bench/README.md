@@ -8,10 +8,10 @@ it into the per-service tables, derives the ACL from the real people/scope field
 ``tokens.yaml`` for the resolved roster:
 
 ```bash
-python -m backlot.importer.erb                                           # full corpus: download -> load -> ACL
-python -m backlot.importer.erb --slice-questions extra_questions.jsonl    # only the docs a slice needs
-python -m backlot.importer.erb --no-download                              # reuse whatever is already in data/raw
-python -m backlot.importer.erb --ref some-branch                          # fetch a non-default branch/ref
+backlot import -t erb                                          # full corpus: download -> load -> ACL
+backlot import -t erb --slice-questions extra_questions.jsonl   # only the docs a slice needs
+backlot import -t erb --no-download                             # reuse whatever is already in data/raw
+backlot import -t erb --ref some-branch                         # fetch a non-default branch/ref
 ```
 
 This is faithful representation, not synthesis: names are resolved to real emails via the

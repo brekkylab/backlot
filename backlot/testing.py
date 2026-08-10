@@ -9,11 +9,21 @@ Pass ``records`` (BYO-JSONL dicts) to serve your own corpus instead. ``serve_or_
 an already-running server when one is reachable, which is what lets an example run against the
 hosted deployment or a local one without changing code.
 
-The packaged hello-world corpus (``HELLO_CORPUS``) has 10 records, one for every source except
-fireflies (which ships with none) — so ``source_documents`` is 10 even though the schema, and
-``/health``'s ``documents`` total, cover all eleven root-document tables. Two of the ten records
-(github, jira) carry ``comments``, which exercise the real per-vendor comment APIs but are not
-counted in ``documents`` either: that number sums only root documents, not their children.
+The packaged hello-world corpus (``HELLO_CORPUS``) is 136 records covering all ELEVEN sources, with
+several containers each (4 Slack channels, 3 Gmail mailboxes, 3 Drive folders, 2 repos, 2 Jira
+projects, 2 Confluence spaces, 2 Notion teamspaces, 2 buckets, 2 Linear teams, 2 Fireflies
+channels, 4 HubSpot object types) so a listing has more than one of anything to page through.
+
+Two counts, and they differ on purpose. ``source_documents`` is 136 — what the corpus offered.
+``/health``'s ``documents`` is 167, because parsing promotes structure into rows of the same table:
+Slack ``replies`` and Gmail ``messages`` are messages in their own right. Child rows in the
+per-vendor comment tables (Jira/Confluence/GitHub/Notion/Linear comments, and Fireflies sentences)
+are in neither number — ``documents`` sums root documents only.
+
+It is a demo corpus, not a fixture: assert on shapes and relationships, not on these totals. It also
+leaves optional fields out on purpose — to see what a record MAY carry, read
+``examples/bring-your-own-corpus/sample_corpus.jsonl`` instead ("Which corpus is which" in
+``backlot/schemas/README.md`` lays out the three and what each is for).
 
 Deliberately a subprocess and a real port, not an in-process ASGI transport: the official vendor
 SDKs, the MCP servers, and the mirage mounts all make real HTTP calls, and a fake transport would
@@ -175,10 +185,11 @@ def mock_server(records: list[dict] | None = None):
         # MockServer.token must track that: otherwise a caller's first authenticated call fails
         # with HTTP 200 / {"ok": false} (Slack fidelity), which reads as the caller's own mistake.
         token = Settings().admin_token
-        # No cwd= : the modules resolve through the installed package, so this works from
-        # site-packages exactly as it does from a checkout.
+        # `-m backlot` rather than the `backlot` script: same CLI, but resolved through THIS
+        # interpreter, so it works in an environment whose bin/ is not on PATH. No cwd= either —
+        # the package resolves from site-packages exactly as it does from a checkout.
         subprocess.run(
-            [sys.executable, "-m", "backlot.importer.byo", str(corpus)],
+            [sys.executable, "-m", "backlot", "import", str(corpus)],
             env=env,
             check=True,
             stdout=subprocess.DEVNULL,
@@ -193,8 +204,8 @@ def mock_server(records: list[dict] | None = None):
                 [
                     sys.executable,
                     "-m",
-                    "uvicorn",
-                    "backlot.main:app",
+                    "backlot",
+                    "serve",
                     "--port",
                     str(port),
                     "--log-level",

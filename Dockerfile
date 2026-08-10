@@ -7,7 +7,10 @@
 #                                           corpus is downloaded, imported, shipped and then
 #                                           discarded at startup. Builds in a minute instead of
 #                                           downloading ~1GB and importing half a million docs.
-#   docker build --build-arg BUILD_ARGS=--all .   -> bake the full corpus rather than a slice.
+#   docker build --build-arg BUILD_ARGS=... .     -> extra flags for the bench importer, e.g.
+#                                           `--slice-questions q.jsonl` to bake only the documents
+#                                           a question set needs. Empty (the default) bakes the
+#                                           whole bench: see `backlot import -t erb --help`.
 #
 # Dependencies come from pyproject.toml, NOT a list repeated here. A hand-kept copy silently went
 # stale every time a runtime dep was added — the image ended up missing jsonschema, pyjwt and
@@ -31,10 +34,11 @@ RUN pip install --no-cache-dir .
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
-# --proxy-headers + --forwarded-allow-ips=* so that, behind a TLS-terminating proxy/ALB, the
-# app honors X-Forwarded-Proto/Host and emits https self-URLs (PyGithub follows those URLs).
-CMD ["python", "-m", "uvicorn", "backlot.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+# `backlot serve` is the console script `pip install .` above put on PATH; it passes these through
+# to uvicorn unchanged. --forwarded-allow-ips=* so that, behind a TLS-terminating proxy/ALB, the app
+# honors X-Forwarded-Proto/Host and emits https self-URLs (PyGithub follows those URLs). Proxy
+# headers are honoured by default, so there is no flag for them here.
+CMD ["backlot", "serve", "--host", "0.0.0.0", "--port", "8000", "--forwarded-allow-ips", "*"]
 
 
 # ---------------------------------------------------------------- builder (bakes a corpus)
@@ -46,7 +50,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 ARG BUILD_ARGS=""
-RUN python -m backlot.importer.erb ${BUILD_ARGS}
+RUN backlot import --type enterpriserag-bench ${BUILD_ARGS}
 
 
 # ---------------------------------------------------------------- full (default target)

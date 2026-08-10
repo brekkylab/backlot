@@ -559,11 +559,19 @@ def load_roster(path) -> dict:
 
     for dept, people in (data.get("departments") or {}).items():
         for p in people or []:
-            _merge(p["email"], p.get("name") or _display_name(p["email"]),
-                   _groups(p, slugify(dept) or None), True)
+            _merge(
+                p["email"],
+                p.get("name") or _display_name(p["email"]),
+                _groups(p, slugify(dept) or None),
+                True,
+            )
     for p in data.get("contacts") or []:
-        _merge(p["email"], p.get("name") or _display_name(p["email"]),
-               _groups(p, slugify(p["group"]) if p.get("group") else None), False)
+        _merge(
+            p["email"],
+            p.get("name") or _display_name(p["email"]),
+            _groups(p, slugify(p["group"]) if p.get("group") else None),
+            False,
+        )
     return {"org": data.get("org"), "org_domain": data.get("org_domain"), "users": users}
 
 

@@ -1497,7 +1497,7 @@ def test_byo_roster_duplicate_entries_union_their_groups(tmp_path):
                         {
                             "name": "Bo Ryu",
                             "email": "bo@redwoodinference.com",
-                            "groups": "res-emea-support",   # scalar: one group
+                            "groups": "res-emea-support",  # scalar: one group
                         }
                     ],
                 },
@@ -1513,9 +1513,14 @@ def test_byo_roster_duplicate_entries_union_their_groups(tmp_path):
     )
     parsed = load_roster(roster)
     bo = parsed["users"]["bo@redwoodinference.com"]
-    assert bo["token"] is True                 # the contact entry never demoted the account
-    assert bo["groups"] == ["engineering", "security", "res-emea-support",
-                            "comp-hr-investigations", "2024"]
+    assert bo["token"] is True  # the contact entry never demoted the account
+    assert bo["groups"] == [
+        "engineering",
+        "security",
+        "res-emea-support",
+        "comp-hr-investigations",
+        "2024",
+    ]
 
 
 def test_byo_roster_departments_alone_is_an_employee_directory(tmp_path):

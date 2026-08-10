@@ -545,12 +545,30 @@ def _jira_actor(email: str, site: str = "") -> dict:
     }
 
 
+def _issue_key(request: Request, row) -> str:
+    """The key this issue answers to, as the reverse index resolved it.
+
+    Deriving it here instead would disagree with the index whenever the derived key was
+    already held by an issue that provided it: the row then advertised a key that fetched
+    somebody else, and was reachable at nothing."""
+    provided = synth.stored(row, "key")
+    if provided:
+        return str(provided)
+    # Shape tests call the builders with a bare Request that carries no app, and they only
+    # read the derived spelling — so reach the index through the scope rather than the
+    # `app` property, which raises there.
+    state = getattr(request.scope.get("app"), "state", None)
+    resolved = (getattr(state, "index", None) or {}).get("jira_key") or {}
+    return resolved.get(row["doc_id"]) or synth.jira_key(
+        row["doc_id"], _project_key(request, row["project"])
+    )
+
+
 def _jira_ref(request: Request, row, site: str = "") -> dict:
     status = row["status"] or "To Do"
     return {
         "id": str(synth.jira_numeric_id(row["doc_id"])),
-        "key": synth.stored(row, "key")
-        or synth.jira_key(row["doc_id"], _project_key(request, row["project"])),
+        "key": _issue_key(request, row),
         "self": f"{site}/rest/api/3/issue/{synth.jira_numeric_id(row['doc_id'])}" if site else None,
         "fields": {
             "summary": row["title"],
@@ -676,7 +694,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
     nid = synth.jira_numeric_id(row["doc_id"])
     issue = {
         "id": str(nid),
-        "key": synth.stored(row, "key") or synth.jira_key(row["doc_id"], pkey),
+        "key": _issue_key(request, row),
         "self": f"{site}/rest/api/3/issue/{nid}",
         "fields": fields,
     }

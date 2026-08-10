@@ -645,6 +645,12 @@ class _Loader:
         # Linear relations name a target by doc_id and are resolved after the whole corpus is read,
         # since a target may appear on a later line.
         self.lin_links = []
+        # Tracker ids the corpus provided, so a second record claiming one is refused here.
+        # Two records providing the same github number or jira key used to load without a
+        # word: one of them then owned the id in the reverse index and the other was
+        # unreachable at the only id it advertised. The loader is the one place that sees
+        # every row, so it is the only place the claim can be checked at all.
+        self.tracker_ids = {}  # (source_type, container, id) -> doc_id
 
     def add(self, rec: dict, where: str = "record") -> None:
         """Insert one BYO record's row(s). ``where`` names the record in an error message.
@@ -969,6 +975,24 @@ class _Loader:
                 # too, not only in the reverse index: file rows stay NULL, provided or not, so a
                 # stored number can never shadow a real issue or PR.
                 cols["number"] = None
+            # A provided id is a claim on one spelling, and two records cannot hold the same
+            # one: whichever the index gave it to, the other would be unreachable at the only
+            # id it advertises. A github number is per repository, a jira key per instance.
+            provided_id = (
+                cols.get("number")
+                if src == "github"
+                else (cols.get("key") if src == "jira" else None)
+            )
+            if provided_id is not None:
+                scope = container if src == "github" else ""
+                claim = (src, scope, str(provided_id))
+                if claim in self.tracker_ids:
+                    label = "number" if src == "github" else "key"
+                    raise SystemExit(
+                        f"{where}: {label} {provided_id!r} is already claimed by "
+                        f"{self.tracker_ids[claim]!r}" + (f" in repo {scope!r}" if scope else "")
+                    )
+                self.tracker_ids[claim] = did
             names = list(cols)
             conn.execute(
                 f"INSERT OR REPLACE INTO {store.table(src)} ({', '.join(names)}) "

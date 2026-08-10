@@ -1480,13 +1480,12 @@ def test_byo_one_provided_key_sets_the_prefix_for_its_keyless_siblings(tmp_path)
         assert [p["key"] for p in projects["values"] if p["key"].startswith("PAY")] == ["PAY"]
 
 
-def test_byo_colliding_provided_id_claims_the_spelling_and_keeps_its_alias(tmp_path):
-    """Provided ids claim their spelling first; every row's synthesized spelling then
-    registers as an alias. The contract when a provided number equals another doc's
-    synthesized number: the provider answers at both its provided spelling and its own
-    synthesized alias, and the other document — whose only spelling was taken — stays
-    visible through ACL-scoped listing and search. Losing by-id reachability requires
-    another record to provide YOUR hash, which a corpus controls end to end."""
+def test_byo_colliding_provided_id_claims_the_spelling_and_the_other_row_moves(tmp_path):
+    """Provided ids claim their spelling first, and a row whose derived id was taken moves
+    to the next free one — it does not merely stay listable. Left as an alias that
+    setdefault silently dropped, that row advertised a number which fetched the provider
+    and was reachable at nothing: the index and the serving path disagreed about the same
+    document. Both now read the number the index resolved."""
     from backlot import synth
     from tests._helpers import build_corpus, client_for
 
@@ -1528,7 +1527,13 @@ def test_byo_colliding_provided_id_claims_the_spelling_and_keeps_its_alias(tmp_p
         listing = c.get(
             "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
         ).json()
-        assert "v" in {i["title"] for i in listing}
+        served = {i["title"]: i["number"] for i in listing}
+        assert "v" in served
+        # The displaced row advertises a number that is not the provider's, and fetching
+        # that number returns the displaced row itself.
+        assert served["v"] != stolen
+        back = c.get(f"/github/repos/acme/core/issues/{served['v']}", headers=hdr)
+        assert back.status_code == 200 and back.json()["title"] == "v"
 
 
 def test_byo_a_provided_number_wins_whichever_doc_id_sorts_first(tmp_path):
@@ -2527,3 +2532,148 @@ def test_byo_roster_group_and_groups_read_the_same_in_every_shape(tmp_path):
     assert users["d@x.com"]["groups"] == users["c@x.com"]["groups"]
     # Naming one group across both fields still yields one row.
     assert users["e@x.com"]["groups"] == ["engineering", "squad-checkout"]
+
+
+def test_byo_two_records_cannot_claim_one_tracker_id(tmp_path):
+    """Two records providing the same github number, or the same jira key, used to load
+    without a word: the reverse index gave the id to one of them and the other was
+    unreachable at the only id it advertised. The loader is the one place that sees every
+    row, so it is the only place the claim can be checked — and a corpus stating a fact
+    twice is the corpus's mistake to hear about, not a silent loss."""
+    import pytest
+
+    from tests._helpers import build_corpus
+
+    def rows(*extra):
+        return list(extra)
+
+    with pytest.raises(SystemExit) as e:
+        build_corpus(
+            tmp_path / "gh",
+            rows(
+                {
+                    "source_type": "github",
+                    "doc_id": "g-a",
+                    "repo": "core",
+                    "subtype": "issue",
+                    "title": "A",
+                    "content": "one",
+                    "author_email": "ava@acme.com",
+                    "number": 500,
+                },
+                {
+                    "source_type": "github",
+                    "doc_id": "g-b",
+                    "repo": "core",
+                    "subtype": "issue",
+                    "title": "B",
+                    "content": "two",
+                    "author_email": "ava@acme.com",
+                    "number": 500,
+                },
+            ),
+        )
+    assert "500" in str(e.value) and "g-a" in str(e.value)
+
+    with pytest.raises(SystemExit) as e:
+        build_corpus(
+            tmp_path / "jira",
+            rows(
+                {
+                    "source_type": "jira",
+                    "doc_id": "j-a",
+                    "project": "payments",
+                    "title": "JA",
+                    "content": "x",
+                    "author_email": "ava@acme.com",
+                    "meta": {"key": "PAY-1"},
+                },
+                {
+                    "source_type": "jira",
+                    "doc_id": "j-b",
+                    "project": "payments",
+                    "title": "JB",
+                    "content": "y",
+                    "author_email": "ava@acme.com",
+                    "meta": {"key": "PAY-1"},
+                },
+            ),
+        )
+    assert "PAY-1" in str(e.value) and "j-a" in str(e.value)
+
+    # The same number in a DIFFERENT repository is a different id, and loads.
+    build_corpus(
+        tmp_path / "ok",
+        rows(
+            {
+                "source_type": "github",
+                "doc_id": "g-c",
+                "repo": "core",
+                "subtype": "issue",
+                "title": "C",
+                "content": "one",
+                "author_email": "ava@acme.com",
+                "number": 500,
+            },
+            {
+                "source_type": "github",
+                "doc_id": "g-d",
+                "repo": "gateway",
+                "subtype": "issue",
+                "title": "D",
+                "content": "two",
+                "author_email": "ava@acme.com",
+                "number": 500,
+            },
+        ),
+    )
+
+
+def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
+    """The jira half of the collision contract: an issue whose derived key was claimed by
+    an issue that provided it moves to the next free sequence number in the same project,
+    and answers there. Serving and the index read one authority, so the key an issue
+    advertises is the key that fetches it."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    # 'j-keyless' derives PAY-<n>; the second record provides exactly that key.
+    stolen = synth.jira_key("j-keyless", "PAY")
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-keyless",
+                "project": "payments",
+                "title": "derived",
+                "content": "one",
+                "author_email": "ava@acme.com",
+            },
+            {
+                "source_type": "jira",
+                "doc_id": "j-provider",
+                "project": "payments",
+                "title": "provided",
+                "content": "two",
+                "author_email": "ava@acme.com",
+                "meta": {"key": stolen},
+            },
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    with client_for(settings, reload=True) as c:
+        found = c.get(
+            "/atlassian/rest/api/3/search/jql", headers=hdr, params={"jql": "project = PAY"}
+        ).json()
+        served = {i["fields"]["summary"]: i["key"] for i in found["issues"]}
+        assert served["provided"] == stolen
+        assert served["derived"] != stolen
+        for summary, key in served.items():
+            got = c.get(f"/atlassian/rest/api/3/issue/{key}", headers=hdr)
+            assert got.status_code == 200, (summary, key)
+            assert got.json()["fields"]["summary"] == summary

@@ -145,7 +145,10 @@ async def search_issues(
     start = (page - 1) * per_page
     ab = _api_base(request)
     owner = get_settings().org_name
-    items = [_issue_obj(conn, owner, r["repo"], r, ab) for r in matched[start : start + per_page]]
+    idx = request.app.state.index
+    items = [
+        _issue_obj(conn, owner, r["repo"], r, ab, idx) for r in matched[start : start + per_page]
+    ]
     return {"total_count": len(matched), "incomplete_results": False, "items": items}
 
 
@@ -222,7 +225,8 @@ async def list_issues(
     rows = all_rows[start : start + per_page]
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
-    body = [_issue_obj(conn, owner, repo, r, ab) for r in rows]
+    idx = request.app.state.index
+    body = [_issue_obj(conn, owner, repo, r, ab, idx) for r in rows]
     return _paged(request, len(all_rows), {"state": state}, body, page, per_page)
 
 
@@ -234,7 +238,7 @@ async def get_issue(owner: str, repo: str, number: int, request: Request):
     row = _resolve(request, conn, repo, number, ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    return _issue_obj(conn, owner, repo, row, _api_base(request))
+    return _issue_obj(conn, owner, repo, row, _api_base(request), request.app.state.index)
 
 
 @router.get("/repos/{owner}/{repo}/issues/{number}/comments")
@@ -277,7 +281,8 @@ async def list_pulls(
     )
     start = (page - 1) * per_page
     ab = _api_base(request)
-    body = [_pr_obj(conn, owner, repo, r, ab) for r in prs[start : start + per_page]]
+    idx = request.app.state.index
+    body = [_pr_obj(conn, owner, repo, r, ab, idx) for r in prs[start : start + per_page]]
     return _paged(request, len(prs), {"state": state}, body, page, per_page)
 
 
@@ -289,7 +294,7 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
     row = _resolve(request, conn, repo, number, ids)
     if row is None or row["kind"] != "pull_request":
         raise HTTPException(status_code=404, detail="Not Found")
-    return _pr_obj(conn, owner, repo, row, _api_base(request))
+    return _pr_obj(conn, owner, repo, row, _api_base(request), request.app.state.index)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/reviews")
@@ -767,10 +772,24 @@ def _milestone(row, owner, repo, api_base):
     }
 
 
-def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "") -> dict:
+def _issue_number(index, row) -> int:
+    """The number this document answers to, as the reverse index resolved it.
+
+    Deriving it here instead would disagree with the index whenever the derived number
+    was already held by a document that provided it: the row then advertised a number
+    that fetched somebody else, and was reachable at nothing. The index resolves that
+    once, where the whole repository is visible."""
+    provided = synth.stored(row, "number")
+    if provided:
+        return int(provided)
+    resolved = (index or {}).get("github_number") or {}
+    return resolved.get(row["doc_id"]) or synth.github_number(row["doc_id"])
+
+
+def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "", index=None) -> dict:
     created = row["created_ts"] or synth.epoch(row["doc_id"])
     updated = row["updated_ts"] or created + 3600
-    number = synth.stored(row, "number") or synth.github_number(row["doc_id"])
+    number = _issue_number(index, row)
     iid = synth.jira_numeric_id(row["doc_id"])  # a stable large numeric db id (≠ number)
     is_pr = row["kind"] == "pull_request"
     kind = "pull" if is_pr else "issues"
@@ -834,8 +853,8 @@ def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "") -> dict:
     return obj
 
 
-def _pr_obj(conn, owner: str, repo: str, row, api_base: str = "") -> dict:
-    obj = _issue_obj(conn, owner, repo, row, api_base)
+def _pr_obj(conn, owner: str, repo: str, row, api_base: str = "", index=None) -> dict:
+    obj = _issue_obj(conn, owner, repo, row, api_base, index)
     sha = hashlib.sha1(row["doc_id"].encode()).hexdigest()
     number = obj["number"]
     reviewers = [_gh_user(e, api_base) for e in store.jcol(row, "requested_reviewers")]

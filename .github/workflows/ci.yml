@@ -29,6 +29,10 @@ jobs:
   # installs it into a venv OUTSIDE the checkout, and runs every subsequent check from a working
   # directory the checkout cannot shadow — an editable install or a cwd inside the repo would
   # prove nothing here, which is the entire point of a separate job.
+  #
+  # The checks themselves live in `tests/e2e/` rather than inline here, because a workflow is a bad
+  # place to keep assertions: a heredoc cannot be run by hand, linted, or read with its own
+  # comments — and running them by hand is how every defect they cover was found.
   wheel-install:
     runs-on: ubuntu-latest
     steps:
@@ -44,129 +48,27 @@ jobs:
       - name: Install build tooling and ruff
         run: pip install build ".[dev]"
 
-      # 1. Build the wheel.
       - name: Build the wheel
         run: python -m build --wheel
 
-      # 2. Read the built METADATA and fail on any direct-URL Requires-Dist. This is the PyPI
-      #    upload-policy check `twine check` does NOT perform — it validates metadata
-      #    well-formedness and README rendering, not this rule — which is why it must run here
-      #    rather than being assumed covered elsewhere.
-      - name: Reject direct-URL dependencies in the wheel's metadata
-        run: |
-          python - <<'PYEOF'
-          import glob
-          import sys
-          import zipfile
+      # The artifact's metadata, read out of the zip. Includes the PyPI upload rule `twine check`
+      # does NOT enforce (direct-URL Requires-Dist), which is why it runs here and not there.
+      - name: Check the wheel's metadata
+        run: python tests/e2e/wheel_metadata.py
 
-          wheel = sorted(glob.glob("dist/*.whl"))[-1]
-          with zipfile.ZipFile(wheel) as zf:
-              name = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
-              metadata = zf.read(name).decode()
-
-          bad = [
-              line for line in metadata.splitlines()
-              if line.startswith("Requires-Dist:") and " @ " in line
-          ]
-          if bad:
-              print("PyPI rejects direct-URL dependencies (twine check does not catch this):")
-              for line in bad:
-                  print(f"  {line}")
-              sys.exit(1)
-          print("No direct-URL Requires-Dist entries found.")
-          PYEOF
-
-      # 3. Install that wheel into a venv OUTSIDE the checkout (under $RUNNER_TEMP, not
-      #    $GITHUB_WORKSPACE). Steps 4-6 below also set working-directory to $RUNNER_TEMP, so
-      #    nothing that follows can silently resolve `backlot` back to the source tree.
+      # Install the wheel into a venv OUTSIDE the checkout, then run every check from a working
+      # directory the source tree cannot shadow. `wheel_smoke.py` asserts that itself — run from the
+      # repo root it refuses rather than silently testing the source tree.
       - name: Install the wheel into a venv outside the checkout
         run: |
           python -m venv "${RUNNER_TEMP}/wheel-venv"
           "${RUNNER_TEMP}/wheel-venv/bin/pip" install "$(ls dist/*.whl)"
 
-      # 4. A bare import. This is what the missing `.graphql` SDL files broke: `import
-      #    backlot.main` raised FileNotFoundError outright on a clean install.
-      - name: Import backlot.main outside the checkout
+      - name: Exercise the installed wheel
         working-directory: ${{ runner.temp }}
-        run: |
-          "${RUNNER_TEMP}/wheel-venv/bin/python" -c "import backlot.main"
+        run: '"${RUNNER_TEMP}/wheel-venv/bin/python" "${GITHUB_WORKSPACE}/tests/e2e/wheel_smoke.py"'
 
-      # 5. backlot.mock_server() with no arguments, one authenticated request through
-      #    MockServer.token, and /health reporting both document counts.
-      - name: Run the packaged mock server and authenticate against it
-        working-directory: ${{ runner.temp }}
-        run: |
-          "${RUNNER_TEMP}/wheel-venv/bin/python" - <<'PYEOF'
-          import json
-          import urllib.request
-
-          import backlot
-
-          with backlot.mock_server() as m:
-              req = urllib.request.Request(
-                  f"{m.base_url}/slack/api/auth.test",
-                  headers={"Authorization": f"Bearer {m.token}"},
-              )
-              with urllib.request.urlopen(req, timeout=10) as r:
-                  assert json.load(r)["ok"] is True, "auth.test did not authenticate"
-
-              with urllib.request.urlopen(f"{m.base_url}/health", timeout=10) as r:
-                  health = json.load(r)
-
-          assert "source_documents" in health, health
-          assert "documents" in health, health
-          print("health:", health)
-          PYEOF
-
-      # 6. The `backlot` console script, end to end: build a corpus and serve it through the CLI
-      #    every doc now tells people to use. An entry point exists ONLY in an installed
-      #    distribution, so tests/test_cli.py — which calls cli.main in-process — cannot catch a
-      #    missing or misspelled [project.scripts] target. This is the only place that can.
-      - name: Import and serve through the installed console script
-        working-directory: ${{ runner.temp }}
-        run: |
-          BIN="${RUNNER_TEMP}/wheel-venv/bin"
-          "${BIN}/backlot" --version
-          "${BIN}/backlot" import --help > /dev/null
-          printf '%s\n' '{"source_type":"slack","channel":"general","author_email":"ci@example.com","content":"Served through the CLI."}' > cli-corpus.jsonl
-          export BACKLOT_DATA_DIR="${RUNNER_TEMP}/cli-data"
-          "${BIN}/backlot" import cli-corpus.jsonl --dry-run
-          "${BIN}/backlot" import cli-corpus.jsonl
-          "${BIN}/backlot" serve --port 8123 &
-          server=$!
-          for _ in $(seq 1 40); do
-            sleep 0.5
-            curl -sf http://127.0.0.1:8123/health -o health.json && break
-          done
-          kill "${server}"
-          "${BIN}/python" -c "
-          import json
-          health = json.load(open('health.json'))
-          assert health['documents'] == 1, health
-          print('health:', health)
-          "
-
-      # 7. Validate a BYO record through backlot.importer.byo, so the packaged JSON Schemas
-      #    (backlot/schemas/*.json) are exercised rather than assumed present.
-      - name: Validate a BYO record against the packaged JSON Schemas
-        working-directory: ${{ runner.temp }}
-        run: |
-          "${RUNNER_TEMP}/wheel-venv/bin/python" - <<'PYEOF'
-          from backlot.importer.byo import record_errors
-
-          record = {
-              "source_type": "confluence",
-              "space": "handbook",
-              "title": "CI smoke record",
-              "content": "Exercises the packaged JSON Schemas.",
-              "author_email": "ci@example.com",
-          }
-          errors = record_errors(record)
-          assert errors == [], errors
-          print("record_errors: []")
-          PYEOF
-
-      # 7. ruff — not run anywhere else in CI, despite the repo having a config for it.
+      # ruff — not run anywhere else in CI, despite the repo having a config for it.
       - name: ruff format --check
         run: ruff format --check .
       - name: ruff check

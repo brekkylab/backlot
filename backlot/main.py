@@ -68,6 +68,7 @@ def _build_index(conn) -> dict:
     # +2.2s and +88 MiB, taking this whole function from 6.4s to ~8.6s, with 0 collisions.
     for r in conn.execute(f"SELECT doc_id FROM {store.table('gmail')}"):
         idx["gmail"][synth.gmail_message_id(r["doc_id"])] = r["doc_id"]
+
     # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
     # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
     # Two passes each: corpus-provided ids claim their spelling first, then every row's
@@ -85,18 +86,19 @@ def _build_index(conn) -> dict:
     gh_rows = _scan(
         f"SELECT doc_id, {store.grouping_col('github')} AS container, number ",
         f"SELECT doc_id, {store.grouping_col('github')} AS container, NULL AS number ",
-        f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file' ORDER BY doc_id")
+        f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file' ORDER BY doc_id",
+    )
     for r in gh_rows:
         if r["number"]:
             idx["github"].setdefault((r["container"], r["number"]), r["doc_id"])
     for r in gh_rows:
-        idx["github"].setdefault(
-            (r["container"], synth.github_number(r["doc_id"])), r["doc_id"])
+        idx["github"].setdefault((r["container"], synth.github_number(r["doc_id"])), r["doc_id"])
 
     j_rows = _scan(
         f"SELECT doc_id, {store.grouping_col('jira')} AS container, key ",
         f"SELECT doc_id, {store.grouping_col('jira')} AS container, NULL AS key ",
-        f"FROM {store.table('jira')} ORDER BY doc_id")
+        f"FROM {store.table('jira')} ORDER BY doc_id",
+    )
     for r in j_rows:
         if r["key"]:
             idx["jira"].setdefault(r["key"], r["doc_id"])
@@ -108,8 +110,9 @@ def _build_index(conn) -> dict:
         # The synthesized alias carries the container's provided prefix when one exists,
         # so a keyless row in a keyed project still serves `<PAY>-<n>` — real Jira
         # guarantees an issue key's prefix IS its project's key.
-        pkey = (idx["jira_project_keys"].get(r["container"])
-                or synth.jira_project_key(r["container"]))
+        pkey = idx["jira_project_keys"].get(r["container"]) or synth.jira_project_key(
+            r["container"]
+        )
         idx["jira"].setdefault(synth.jira_key(r["doc_id"], pkey), r["doc_id"])
     for r in conn.execute(f"SELECT doc_id FROM {store.table('confluence')}"):
         idx["confluence"][synth.confluence_id(r["doc_id"])] = r["doc_id"]

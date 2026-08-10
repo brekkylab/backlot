@@ -129,8 +129,9 @@ def _project_key(request: Request, container: str) -> str:
     synthesized key. One spelling for the issue prefix, the project payload, JQL and the
     picker — real Jira guarantees an issue key's prefix IS its project's key, and an agent
     that reads PAY-7 out of a document will navigate by PAY."""
-    return (_index_maps(request).get("jira_project_keys") or {}).get(container) \
-        or synth.jira_project_key(container)
+    return (_index_maps(request).get("jira_project_keys") or {}).get(
+        container
+    ) or synth.jira_project_key(container)
 
 
 def _index_maps(request: Request) -> dict:
@@ -149,8 +150,7 @@ def _jira_container_for_key(conn, token: str, request: Request | None = None) ->
     pickers accept both key and name. Anything else is unresolvable -> None (callers must
     treat this as "0 results", never silently fall back to the unfiltered corpus)."""
     if request is not None:
-        aliased = (_index_maps(request).get("jira_project_containers") or {}) \
-            .get(token.upper())
+        aliased = (_index_maps(request).get("jira_project_containers") or {}).get(token.upper())
         if aliased is not None:
             return aliased
     for r in store.list_containers(conn, "jira"):

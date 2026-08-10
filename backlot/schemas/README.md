@@ -166,9 +166,16 @@ org_domain: redwoodinference.com  # optional
 departments:                      # authenticating users -> a bearer token each
   Engineering:
     - {name: Ava Chen, email: ava.chen@redwoodinference.com}
+    - {name: Bo Ryu, email: bo.ryu@redwoodinference.com,
+       groups: [proj-checkout-rework, res-emea-support]}
 contacts:                         # principals with NO token (display-only)
   - {name: Zoe Newperson, email: zoe.newperson@redwoodinference.com, group: engineering}
 ```
+
+A person is rarely exactly one group: an entry's `groups` list adds squad, compliance-register or
+region-scoped memberships on top of the department (or `group`) one — it never replaces it. An
+email appearing in more than one entry holds the union of all of them, and a `contacts` entry
+never upgrades (or demotes) a `departments` account.
 
 With a roster, `principals` / `group_members` / `tokens.yaml` come from it **alone**: a record's
 `author_email` and `readers` are references into it, and an address that is not in it — a Slack

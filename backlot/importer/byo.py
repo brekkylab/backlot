@@ -535,28 +535,35 @@ def load_roster(path) -> dict:
     def _groups(entry: dict, primary: str | None) -> list[str]:
         # The department (or `group`) membership first, then the entry's extra `groups`, each
         # slugified once — dict.fromkeys keeps first occurrence so a repeat never doubles a row.
-        listed = [slugify(g) for g in (entry.get("groups") or []) if g]
+        # A scalar `groups:` is one group, not a character sequence (the sibling `group:` field
+        # is a scalar, so the shape is a natural slip), and a bare number slugifies as text.
+        raw = entry.get("groups")
+        raw = [raw] if isinstance(raw, str) else (raw or [])
+        listed = [slugify(str(g)) for g in raw if g]
         return [g for g in dict.fromkeys(([primary] if primary else []) + listed) if g]
 
     users: dict[str, dict] = {}
+
+    def _merge(email: str, name: str, groups: list[str], token: bool) -> None:
+        # A person may appear more than once — two departments, or a department entry plus a
+        # contact carrying extra register memberships. Membership is the UNION: replacing the
+        # entry silently dropped the earlier groups, and a `readers: [group:...]` clause then
+        # wrongly denied the person the feature was written for. The first-seen name stays;
+        # a contact never upgrades an account, but it never demotes one either.
+        cur = users.get(email)
+        if cur is None:
+            users[email] = {"name": name, "groups": groups, "token": token}
+            return
+        cur["groups"] = [g for g in dict.fromkeys(cur["groups"] + groups) if g]
+        cur["token"] = cur["token"] or token
+
     for dept, people in (data.get("departments") or {}).items():
         for p in people or []:
-            users[p["email"]] = {
-                "name": p.get("name") or _display_name(p["email"]),
-                "groups": _groups(p, slugify(dept) or None),
-                "token": True,
-            }
+            _merge(p["email"], p.get("name") or _display_name(p["email"]),
+                   _groups(p, slugify(dept) or None), True)
     for p in data.get("contacts") or []:
-        # A contact never upgrades an account: `departments` is the authenticating roster, so a
-        # duplicated email keeps its token rather than losing it to listing order.
-        users.setdefault(
-            p["email"],
-            {
-                "name": p.get("name") or _display_name(p["email"]),
-                "groups": _groups(p, slugify(p["group"]) if p.get("group") else None),
-                "token": False,
-            },
-        )
+        _merge(p["email"], p.get("name") or _display_name(p["email"]),
+               _groups(p, slugify(p["group"]) if p.get("group") else None), False)
     return {"org": data.get("org"), "org_domain": data.get("org_domain"), "users": users}
 
 

@@ -1478,6 +1478,46 @@ def test_byo_roster_person_may_hold_many_groups(tmp_path):
         conn.close()
 
 
+def test_byo_roster_duplicate_entries_union_their_groups(tmp_path):
+    """A person listed under two departments — or as a contact carrying an extra register
+    on top of their department entry — holds the UNION of the memberships. Replacing the
+    entry dropped the earlier groups, and a group-scoped document then wrongly denied the
+    person. A scalar `groups:` is one group, not a character sequence."""
+    from backlot.importer.byo import load_roster
+
+    roster = tmp_path / "roster.yaml"
+    roster.write_text(
+        yaml.safe_dump(
+            {
+                "org": "redwood",
+                "org_domain": "redwoodinference.com",
+                "departments": {
+                    "Engineering": [{"name": "Bo Ryu", "email": "bo@redwoodinference.com"}],
+                    "Security": [
+                        {
+                            "name": "Bo Ryu",
+                            "email": "bo@redwoodinference.com",
+                            "groups": "res-emea-support",   # scalar: one group
+                        }
+                    ],
+                },
+                "contacts": [
+                    {
+                        "name": "Bo Ryu",
+                        "email": "bo@redwoodinference.com",
+                        "groups": ["comp-hr-investigations", 2024],
+                    }
+                ],
+            }
+        )
+    )
+    parsed = load_roster(roster)
+    bo = parsed["users"]["bo@redwoodinference.com"]
+    assert bo["token"] is True                 # the contact entry never demoted the account
+    assert bo["groups"] == ["engineering", "security", "res-emea-support",
+                            "comp-hr-investigations", "2024"]
+
+
 def test_byo_roster_departments_alone_is_an_employee_directory(tmp_path):
     """The bench's `employee_directory.yaml` is usable as a roster verbatim, which is what lets a
     converted corpus ship the directory it was resolved against."""

@@ -6,7 +6,6 @@ indexes (issue number / Jira key / Confluence id -> doc_id) for O(1) get-by-id.
 
 from __future__ import annotations
 
-import http
 import logging
 import sqlite3
 import threading
@@ -119,7 +118,13 @@ def _build_index(conn) -> dict:
     def _scan(with_cols: str, without_cols: str, tail: str):
         try:
             return list(conn.execute(with_cols + tail))
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as e:
+            # Only a missing column means "a DB from before these columns existed". Any
+            # other OperationalError — a locked database, a corrupt page — must surface:
+            # swallowed, it boots a server that ignores every corpus-provided id and 404s
+            # at all of them, with nothing said. Same narrowing as `store.read_meta`.
+            if "no such column" not in str(e).lower():
+                raise
             return list(conn.execute(without_cols + tail))
 
     gh_rows = _scan(

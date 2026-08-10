@@ -782,6 +782,14 @@ class _Loader:
 
         # structured extras: rec.meta merged with convenience top-level keys
         extras = dict(rec.get("meta") or {})
+        # A tracker id is read from the field the schema declares it in, and from nowhere
+        # else. `meta` is documented free-form, so seeding `extras` from it let
+        # `meta: {"number": 3}` claim issue 3 in a repository just as a top-level `number`
+        # would — a spelling no schema describes, that shadows a real issue, and that the
+        # uniqueness check below would then refuse an import over. Both ids are ordinary
+        # `meta` content again: carried through, never promoted to the served column.
+        for reserved in ("number", "key"):
+            extras.pop(reserved, None)
         for k in (
             "labels",
             "reactions",

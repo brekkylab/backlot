@@ -224,7 +224,8 @@
     "key": {
       "type": "string",
       "minLength": 1,
-      "description": "Issue key as the corpus writes it (PAY-101). Stored and served verbatim. An omitted key is synthesized from the doc_id, under the prefix this project's provided keys carry — one issue spelling out PAY-101 makes the whole project answer at PAY, so a corpus need only write the keys its documents actually cite."
+      "pattern": "^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$",
+      "description": "Issue key as the corpus writes it (PAY-101). Stored and served verbatim. An omitted key is synthesized from the doc_id, under the prefix this project's provided keys carry — one issue spelling out PAY-101 makes the whole project answer at PAY, so a corpus need only write the keys its documents actually cite. The shape is real Jira's, and it is enforced because the prefix is a fact about the whole project: a single mistyped key would otherwise rename it for every one of its issues."
     }
   },
   "required": [

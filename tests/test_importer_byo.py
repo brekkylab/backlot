@@ -2586,7 +2586,7 @@ def test_byo_two_records_cannot_claim_one_tracker_id(tmp_path):
                     "title": "JA",
                     "content": "x",
                     "author_email": "ava@acme.com",
-                    "meta": {"key": "PAY-1"},
+                    "key": "PAY-1",
                 },
                 {
                     "source_type": "jira",
@@ -2595,7 +2595,7 @@ def test_byo_two_records_cannot_claim_one_tracker_id(tmp_path):
                     "title": "JB",
                     "content": "y",
                     "author_email": "ava@acme.com",
-                    "meta": {"key": "PAY-1"},
+                    "key": "PAY-1",
                 },
             ),
         )
@@ -2657,7 +2657,7 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
                 "title": "provided",
                 "content": "two",
                 "author_email": "ava@acme.com",
-                "meta": {"key": stolen},
+                "key": stolen,
             },
         ],
     )
@@ -2677,3 +2677,46 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
             got = c.get(f"/atlassian/rest/api/3/issue/{key}", headers=hdr)
             assert got.status_code == 200, (summary, key)
             assert got.json()["fields"]["summary"] == summary
+
+
+def test_byo_meta_cannot_smuggle_a_tracker_id(tmp_path):
+    """A tracker id is read from the field its schema declares and from nowhere else.
+    `meta` is documented free-form, so seeding the extras from it let
+    `meta: {"number": 3}` claim issue 3 in a repository exactly as a top-level `number`
+    would — a spelling no schema describes, that shadows a real issue, and that the
+    uniqueness check would then refuse an import over."""
+    import sqlite3
+
+    from backlot import store
+    from tests._helpers import build_corpus
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "smug",
+                "repo": "core",
+                "subtype": "issue",
+                "title": "t",
+                "content": "c",
+                "author_email": "ava@acme.com",
+                "meta": {"number": 777},
+            },
+            {
+                "source_type": "jira",
+                "doc_id": "j-smug",
+                "project": "payments",
+                "title": "t",
+                "content": "c",
+                "author_email": "ava@acme.com",
+                "meta": {"key": "PAY-777"},
+            },
+        ],
+    )
+    conn = sqlite3.connect(settings.db_path)
+    conn.row_factory = sqlite3.Row
+    gh = conn.execute(f"SELECT number FROM {store.table('github')}").fetchone()
+    jira = conn.execute(f"SELECT key FROM {store.table('jira')}").fetchone()
+    assert gh["number"] is None, "meta must not populate the served number column"
+    assert jira["key"] is None, "meta must not populate the served key column"

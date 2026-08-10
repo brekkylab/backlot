@@ -101,7 +101,7 @@ library's own token exchange runs against the mock's `POST /oauth2/token` in bot
 
 - **`gmail.py` → authorized-user (3-legged OAuth)**: `client_id`/`client_secret` + a
   `refresh_token`. The shared `oauth_client` comes from
-  [`GET /_mock/credentials`](../../README.md#oauth-client-config-google-style); the
+  [`GET /_mock/credentials`](../../README.md#auth--tokens); the
   `refresh_token` is a user's token from `GET /_mock/users`. `--user <email>` picks the user
   (default: the first); there is no admin in this flow.
 - **`gdrive.py` → service account**: the key from `/_mock/credentials` (standing in for the JSON

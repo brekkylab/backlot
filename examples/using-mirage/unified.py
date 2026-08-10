@@ -129,7 +129,7 @@ def main_fuse(resources: dict) -> None:
     real command across them. Needs macFUSE/fuse3.
 
     ``grep -r`` walks the whole mount, so it's meant for the small default corpus; against a
-    large ``--url`` use the per-provider scripts (their bounded navigation)."""
+    large ``--url`` use the per-source scripts (their bounded navigation)."""
     try:
         with Workspace(resources, mode=MountMode.READ) as ws:
             mnt = ws.add_fuse_mount("/")  # the workspace root is now one real directory

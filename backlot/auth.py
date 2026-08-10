@@ -96,7 +96,7 @@ def require_bearer(request: Request, detail: str) -> Caller:
 
     ``detail`` is a parameter rather than something this function picks, because the message is
     part of the emulated surface: GitHub says "Bad credentials", Google "Invalid Credentials",
-    Atlassian "Unauthorized", and a client that string-matches its provider's error has to keep
+    Atlassian "Unauthorized", and a client that string-matches its vendor's error has to keep
     matching. Each router states its own once (see ``tests/test_endpoints.py``).
     """
     caller = resolve_bearer(request)

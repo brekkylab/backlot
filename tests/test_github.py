@@ -1,7 +1,7 @@
 """GitHub's REST surface: issues, PRs, comments, and the git tree/contents/blobs
 codebase serving.
 
-One file per router, so a provider's shape assertions live in one place whether they go over HTTP
+One file per router, so a source's shape assertions live in one place whether they go over HTTP
 or call the response builder directly.
 """
 

@@ -18,10 +18,10 @@ already-running mock instead (it falls back to a local one if that's unreachable
 python examples/using-mirage/unified.py --url https://your-mock-host.example.com
 ```
 
-Add **`--fuse`** to any provider script to expose the mount as a **real OS filesystem** instead
-of driving it in-process (see [FUSE mode](#fuse-mode-fuse) below).
+Add **`--fuse`** to any source's script to expose the mount as a **real OS filesystem** instead
+of driving it in-process (see [FUSE mode](#fuse-mode---fuse) below).
 
-## Providers
+## Sources
 
 | Script | mirage resource | mount | what it shows |
 |---|---|---|---|
@@ -173,4 +173,4 @@ history): Drive's root is navigable (`'root' in parents` returns folder objects;
 enumeration is present-but-empty), the Docs/Sheets/Slides read APIs serve native-doc content, a
 Slack channel's `created` never postdates its messages, and `conversations.history` honors
 `oldest`/`latest` so a per-day fetch returns only that day (not the whole channel). Coverage
-lives in [`tests/test_editor_apis.py`](../../tests/test_editor_apis.py).
+lives in [`tests/test_google.py`](../../tests/test_google.py).

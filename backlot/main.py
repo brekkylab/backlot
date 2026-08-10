@@ -290,7 +290,7 @@ async def health():
     #
     # Two counts, deliberately. `documents` sums store.SOURCE_TABLE only — the 11 root-document
     # tables. It does NOT include store.COMMENT_TABLE (jira/confluence/github/notion/linear
-    # comments, fireflies_sentences): those rows are served too, each with its own vendor
+    # comments, fireflies_sentences): those rows are served too, each with its own
     # endpoint, but they're children of a root doc rather than documents themselves, so they
     # aren't counted here. `source_documents` is what the corpus offered, which is smaller than
     # `documents` because faithful parsing turns one Slack transcript into many message rows.

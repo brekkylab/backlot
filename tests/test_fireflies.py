@@ -1,6 +1,6 @@
 """Fireflies' meeting-transcript GraphQL API at /fireflies/graphql.
 
-One file per router, so a provider's shape assertions live in one place whether they go over HTTP
+One file per router, so a source's shape assertions live in one place whether they go over HTTP
 or call the response builder directly.
 """
 

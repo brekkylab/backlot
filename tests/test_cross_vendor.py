@@ -19,7 +19,7 @@ from tests._helpers import build_corpus, client_for, crawl_confluence, db_count
 
 
 def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
-    """The message is part of the emulated surface — a client that string-matches its provider's
+    """The message is part of the emulated surface — a client that string-matches its vendor's
     error has to keep matching — which is why the shared guard takes it as a parameter.
 
     GitHub only: Google no longer goes through `auth.require_bearer`, because its answer is not one
@@ -100,7 +100,7 @@ def test_unauthenticated_is_rejected(client):
 # --- OpenAPI enrichment: the params each router advertises ---------------------------------
 # The routers read query params off the raw request rather than through FastAPI signatures, so
 # each has to declare what it honours by hand (openapi.qp). One table rather than a test per
-# vendor: the assertion is identical and only the path and the expected names differ.
+# router: the assertion is identical and only the path and the expected names differ.
 
 
 @pytest.mark.parametrize(

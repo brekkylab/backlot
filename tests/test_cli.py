@@ -13,7 +13,18 @@ import json
 import pytest
 
 from backlot import cli
+from backlot.config import get_settings
 from backlot.importer import byo, erb
+
+
+@pytest.fixture(autouse=True)
+def _fresh_settings():
+    """`get_settings` is lru_cached, so a test that points BACKLOT_DATA_DIR at its own tmp_path is
+    otherwise served the FIRST test's directory and writes its corpus there. Clear on the way in and
+    again on the way out, the same contract tests/_helpers.py keeps for the HTTP tests."""
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _record() -> dict:
@@ -45,6 +56,33 @@ def test_import_dry_run_validates_without_writing_a_db(tmp_path, monkeypatch, ca
     assert cli.main(["import", str(corpus), "--dry-run"]) == 0
     assert "OK: 1 records valid." in capsys.readouterr().out
     assert not (tmp_path / "data" / "mock.sqlite").exists()
+
+
+def test_import_bundled_loads_the_corpus_bundled_with_the_package(tmp_path, monkeypatch):
+    """The only corpus an install from a wheel can serve with no data to hand — so a path into the
+    checkout (`backlot/data/hello.jsonl`) is exactly what a pip-installed user does NOT have."""
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "data"))
+
+    assert cli.main(["import", "--bundled"]) == 0
+    from backlot import store
+    from backlot.config import Settings
+
+    conn = store.connect_ro(Settings(data_dir=tmp_path / "data").db_path)
+    # every source, since that is what makes the bundled corpus worth shipping
+    for src in store.SOURCE_TABLE:
+        assert conn.execute(f"SELECT COUNT(*) FROM {store.table(src)}").fetchone()[0] > 0, src
+    conn.close()
+
+
+@pytest.mark.parametrize("argv", [["import"], ["import", "--bundled", "some.jsonl"]])
+def test_a_corpus_path_and_bundled_are_mutually_required(argv, capsys):
+    """Neither "no corpus at all" nor "both" is usable, and one message names both mistakes —
+    argparse's own would say "required" for one and "not allowed with" for the other, and neither
+    mentions --bundled as the way out."""
+    with pytest.raises(SystemExit) as e:
+        cli.main(argv)
+    assert e.value.code == 2
+    assert "--bundled" in capsys.readouterr().err
 
 
 def test_a_dry_run_of_an_invalid_corpus_exits_non_zero(tmp_path, monkeypatch):

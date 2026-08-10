@@ -9,7 +9,7 @@ Pass ``records`` (BYO-JSONL dicts) to serve your own corpus instead. ``serve_or_
 an already-running server when one is reachable, which is what lets an example run against the
 hosted deployment or a local one without changing code.
 
-The packaged hello-world corpus (``HELLO_CORPUS``) is 136 records covering all ELEVEN sources, with
+The bundled hello-world corpus (``HELLO_CORPUS``) is 136 records covering EVERY served source, with
 several containers each (4 Slack channels, 3 Gmail mailboxes, 3 Drive folders, 2 repos, 2 Jira
 projects, 2 Confluence spaces, 2 Notion teamspaces, 2 buckets, 2 Linear teams, 2 Fireflies
 channels, 4 HubSpot object types) so a listing has more than one of anything to page through.
@@ -170,7 +170,7 @@ def _healthy(url: str, timeout: float = 10) -> bool:
 
 @contextlib.contextmanager
 def mock_server(records: list[dict] | None = None):
-    """Serve ``records`` (or the packaged hello-world corpus) on a free local port."""
+    """Serve ``records`` (or the bundled hello-world corpus) on a free local port."""
     with tempfile.TemporaryDirectory() as data_dir:
         if records is None:
             corpus = HELLO_CORPUS

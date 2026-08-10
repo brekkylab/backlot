@@ -1,10 +1,10 @@
 """Load a Bring-Your-Own (BYO) corpus from JSONL into the mock DB.
 
-Serve *any* document set through all eleven vendor APIs.
+Serve *any* document set through every vendor API this mock speaks.
 Each line is one document:
 
     {
-      "source_type": "confluence",        # required: one of the eleven served sources
+      "source_type": "confluence",        # required: one of the served source types
                                           #   (slack|gmail|google_drive|github|jira|confluence|
                                           #    notion|s3|hubspot|linear|fireflies)
       "title": "Onboarding guide",         # required except for slack (messages have no title)
@@ -1347,8 +1347,15 @@ def build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     ap.add_argument(
         "corpus",
+        nargs="?",
         help="a JSONL corpus file, a .jsonl.gz, or a directory holding "
         "manifest.json + data/<source>/part-*.jsonl.gz shards",
+    )
+    ap.add_argument(
+        "--bundled",
+        action="store_true",
+        help="load the hello-world corpus bundled with the package instead of a path of your own — "
+        "the one thing an install from a wheel can serve with no data to hand",
     )
     ap.add_argument(
         "--append", action="store_true", help="add to the existing DB instead of resetting"
@@ -1367,8 +1374,21 @@ def build_parser(prog: str | None = None) -> argparse.ArgumentParser:
 
 
 def main(argv: list[str], prog: str | None = None) -> int:
-    args = build_parser(prog).parse_args(argv)
-    corpus = Path(args.corpus)
+    ap = build_parser(prog)
+    args = ap.parse_args(argv)
+    if args.bundled == bool(args.corpus):
+        # Exactly one source, checked here rather than with a mutually-exclusive group so the
+        # message names both mistakes: `argparse` would say "not allowed with" for one and
+        # "required" for the other, and neither mentions --bundled as the way out.
+        ap.error("give a corpus path or --bundled (the corpus bundled with the package), not both")
+    if args.bundled:
+        # Local import: the constant lives with `mock_server`, which serves the same corpus, and
+        # nothing else in this module needs that module.
+        from backlot.testing import HELLO_CORPUS
+
+        corpus = HELLO_CORPUS
+    else:
+        corpus = Path(args.corpus)
 
     if args.dry_run:
         # A sharded artifact is checked against its manifest first: a truncated download is a

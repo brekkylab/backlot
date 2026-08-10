@@ -1,16 +1,14 @@
 # Multi-stage build.
 #
-#   docker build .                       -> `full`: the server WITH a corpus baked in, so
-#                                           `docker run -p 8000:8000 <image>` serves immediately.
-#   docker build --target serve .        -> the server WITHOUT any corpus. For a deployment that
-#                                           mounts its own data dir over /app/data, where a baked
-#                                           corpus is downloaded, imported, shipped and then
-#                                           discarded at startup. Builds in a minute instead of
-#                                           downloading ~1GB and importing half a million docs.
-#   docker build --build-arg BUILD_ARGS=... .     -> extra flags for the bench importer, e.g.
-#                                           `--slice-questions q.jsonl` to bake only the documents
-#                                           a question set needs. Empty (the default) bakes the
-#                                           whole bench: see `backlot import -t erb --help`.
+#   docker build .                  -> `full`: the server WITH the bundled corpus baked in, so
+#                                      `docker run -p 8000:8000 <image>` serves immediately. The
+#                                      corpus ships inside the wheel, so this needs no network and
+#                                      adds seconds, not minutes, to the build.
+#   docker build --target serve .   -> the server WITHOUT any corpus, for a deployment that mounts
+#                                      its own data dir over /app/data. Build that corpus on the
+#                                      host with `backlot import …` — importing anything the image
+#                                      does not already contain belongs there, not in a build arg,
+#                                      since the COPYs below are all this build can see.
 #
 # Dependencies come from pyproject.toml, NOT a list repeated here. A hand-kept copy silently went
 # stale every time a runtime dep was added — the image ended up missing jsonschema, pyjwt and
@@ -41,21 +39,19 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
 CMD ["backlot", "serve", "--host", "0.0.0.0", "--port", "8000", "--forwarded-allow-ips", "*"]
 
 
-# ---------------------------------------------------------------- builder (bakes a corpus)
+# ---------------------------------------------------------------- builder (bakes the corpus)
 FROM serve AS builder
 
-USER root
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-ARG BUILD_ARGS=""
-RUN backlot import --type enterpriserag-bench ${BUILD_ARGS}
+# `--bundled` is the corpus that ships inside the wheel, so this needs no path of its own and
+# cannot drift from wherever the install puts the file. Its own stage so the final image starts from
+# a clean `serve` and carries only the two runtime files the COPY below names.
+RUN backlot import --bundled
 
 
 # ---------------------------------------------------------------- full (default target)
 FROM serve AS full
 
-# Only the runtime data (baked DB + rosters); the raw tarball stays in the builder.
+# Only the runtime data (the DB + the roster it generated); everything else the import wrote stays
+# behind in the builder.
 COPY --from=builder /app/data/mock.sqlite /app/data/mock.sqlite
 COPY --from=builder /app/data/tokens.yaml /app/data/tokens.yaml

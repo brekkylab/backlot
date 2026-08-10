@@ -97,8 +97,17 @@ def _require(request: Request) -> Caller:
 
 
 def _site(request: Request) -> str:
+    """The base of every ``self`` URL Jira/Confluence emit, from the REQUEST first.
+
+    Echoing the caller's own ``Host`` is what makes a returned URL usable: a client reaching the
+    mock through a proxy, a container alias or a tunnel gets links back to the host it actually
+    called, not to one this process was configured with. Every SDK sends the header, so the
+    ``<org>.atlassian.net`` fallback is only for a hand-rolled HTTP/1.0 request — which is also why
+    there is no setting here to override it. The org half is already configurable
+    (``BACKLOT_ORG_NAME``).
+    """
     s = get_settings()
-    host = request.headers.get("host") or s.atlassian_site or f"{s.org_name}.atlassian.net"
+    host = request.headers.get("host") or f"{s.org_name}.atlassian.net"
     return f"{request.url.scheme}://{host}"
 
 

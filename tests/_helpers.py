@@ -129,7 +129,7 @@ def epoch_of(iso: str) -> int:
 
 # --- per-vendor crawlers -----------------------------------------------------------------------
 # Small page sizes on purpose, so each one exercises its vendor's pagination. Shared because two
-# kinds of test need them: each provider's "an admin crawl reaches every stored document", and the
+# kinds of test need them: each source's "an admin crawl reaches every stored document", and the
 # cross-cutting check that a non-admin's crawl is a strict subset of the admin's.
 
 

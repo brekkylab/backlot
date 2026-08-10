@@ -30,6 +30,14 @@ service (like the other `examples/` dirs) — run the one you want:
   each work across every object type (list, read, search, batch-read, associations) rather than a set
   per type, so "find the account, then its notes" is two calls with the object type as an argument.
 
+**Two sources have no script here, and cannot.** Linear's official MCP server is **remote-hosted**
+at `https://mcp.linear.app/mcp` with no URL override, so nothing local can substitute for it — and
+the OpenAPI→MCP bridge is no help either, because Linear is GraphQL-only: the mock's `/openapi.json`
+describes one `POST /linear/graphql` operation, which would derive a single raw-document tool rather
+than a usable toolset. Fireflies is GraphQL-only for the same reason and publishes no MCP server at
+all. Both are still reachable from an agent the ordinary way — hand it the GraphQL endpoint and a
+token (see `examples/using-official-sdk/`).
+
 Each service file builds its own MCP `StdioServerParameters` and calls `run_agent(...)`. Two shared
 helpers:
 
@@ -39,7 +47,7 @@ helpers:
 | `backlot.serve_or_connect` | Starts the mock (`backlot.main`) on a small corpus, or connects to a `--url` one |
 
 Each service file declares its own CLI options with `argparse` — run `python <file> --help` to see
-exactly what that provider takes (e.g. `s3.py` takes `--access-key`/`--secret-key`, required with
+exactly what that source takes (e.g. `s3.py` takes `--access-key`/`--secret-key`, required with
 `--url`; `atlassian.py` takes `--token`/`--username`). All accept `--url` and `--agent {anthropic,openai}`.
 
 Each example spins up its own small mock by default, or pass `--url` to use an already-running one

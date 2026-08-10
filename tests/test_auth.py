@@ -40,7 +40,7 @@ def _app(acl) -> SimpleNamespace:
 
 def test_require_bearer_raises_401_carrying_the_vendors_own_detail(acl):
     """The detail string is the VENDOR's: GitHub says "Bad credentials", Google "Invalid
-    Credentials", Atlassian "Unauthorized". A client that string-matches its provider's error has
+    Credentials", Atlassian "Unauthorized". A client that string-matches its vendor's error has
     to keep matching, so the message is a parameter rather than something this helper invents."""
     with pytest.raises(HTTPException) as e:
         auth.require_bearer(_request(app=_app(acl)), "Bad credentials")

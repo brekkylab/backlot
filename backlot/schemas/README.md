@@ -185,3 +185,26 @@ values, same `doc_acl`, same `tokens.yaml`, for all nine bench sources.
 schemas lose fails a test instead of quietly producing a lossy artifact. It also asserts that every
 source in `erb.SUPPORTED` has a converter and a fixture, because the conversion fails soft: a source
 without one would be dropped from the artifact rather than raising.
+
+`roster.yaml` carries what the records cannot: display names (an address does not round-trip a name)
+and which people are real accounts rather than just document owners.
+
+### Sharding a large artifact
+
+At half a million records one file is unwieldy, so the export can split:
+
+```bash
+backlot import -t erb --export-byo out/ --shard-records 50000
+```
+
+Each source becomes `out/data/<source>/part-NNNNN.jsonl.gz` alongside `out/manifest.json`, which
+records every shard's path, record count, byte size and SHA-256, plus the same for `roster.yaml`.
+`backlot import out/` loads the whole thing in one command and verifies every digest **before**
+reading a record, so a damaged or swapped download fails up front instead of half-loading a
+database. A directory import picks up its own `roster.yaml` automatically, and that roster is
+verified with the shards because it decides who holds a token. Shards are gzipped with `mtime=0`, so
+the same input always produces the same checksums.
+
+The case the digests catch that nothing else would: a shard that is **short but validly
+terminated** — what a resumed or re-uploaded download looks like. The gzip stream reads cleanly to
+its end, so only the checksum reveals that records are missing.

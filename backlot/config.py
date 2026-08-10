@@ -44,9 +44,11 @@ class Settings(BaseSettings):
     # carries no emails; BACKLOT_ORG_NAME / BACKLOT_ORG_DOMAIN override the derivation entirely.
     org_name: str = "example"
     org_domain: str = "example.com"
-    # Fallback host for Jira/Confluence ``self`` URLs when a request carries no Host header
-    # (SDKs always send one). Empty -> derived from the org name (``<org>.atlassian.net``).
-    atlassian_site: str = ""
+    # No `atlassian_site` here on purpose: the host in a Jira/Confluence `self` URL comes from the
+    # REQUEST's own Host header, falling back to `<org_name>.atlassian.net`. Both rungs are already
+    # customizable — per call by the header every SDK sends, and globally by BACKLOT_ORG_NAME — so a
+    # third setting could only disagree with the caller about where the caller just reached us.
+    # See backlot.routers.atlassian._site.
 
     # --- auth ---
     # A caller presenting this token bypasses ACL filtering (full crawl / service account).
@@ -62,14 +64,23 @@ class Settings(BaseSettings):
     max_page_size: int = 1000
 
     # --- sqlite read tuning (serving connection; see store.connect_ro) ---
-    # Memory-map the DB so reads are served from the OS page cache instead of per-read
-    # syscalls — the main lever against the "slow first request after idle" cold-read hit on a
-    # large DB. Set >= the DB size to map it fully (SQLite caps to its compile-time max).
-    sqlite_mmap_mb: int = 12288  # ~12 GiB, enough to map the largest corpus served so far
-    sqlite_cache_mb: int = 256  # SQLite's own page cache
-    # Wait (ms) for a lock instead of erroring, so reads ride through an in-place FTS rebuild's
-    # commit rather than 500ing; only ever engages during such an out-of-band write.
-    sqlite_busy_ms: int = 30000
+    # Sized for the corpus most people serve — their own, or the bundled one, which is under a
+    # megabyte. A multi-GB corpus wants all three raised, and a deployment that serves one says so
+    # explicitly (see the `environment:` block in docker-compose.yml) rather than every laptop
+    # inheriting numbers picked for the biggest DB anyone has run here.
+    #
+    # Memory-map the DB so reads come from the OS page cache instead of a syscall each — the main
+    # lever against the "slow first request after idle" cold-read hit. SQLite maps
+    # min(this, db size), so a small DB costs only its own size in address space; raise it to at
+    # or above the DB size to map a big one fully.
+    sqlite_mmap_mb: int = 256
+    # SQLite's own page cache, per connection. 64 MiB is a real improvement on SQLite's ~2 MiB
+    # default without reserving a quarter gigabyte on a machine serving a 700 KB corpus.
+    sqlite_cache_mb: int = 64
+    # Wait (ms) for a lock instead of erroring, so a read rides through an out-of-band writer's
+    # commit (an in-place `build_fts`) rather than 500ing. Long enough to cover a commit, short
+    # enough that a genuinely stuck writer surfaces instead of hanging the client.
+    sqlite_busy_ms: int = 5000
 
     @property
     def db_path(self) -> Path:

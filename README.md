@@ -1,97 +1,112 @@
-# Enterprise Mock
+# Backlot
 
-> **LocalStack for enterprise SaaS knowledge APIs.** Point your RAG/search connectors at
-> read-only mock **Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3,
-> HubSpot, Linear, and Fireflies**
-> APIs — real response shapes, real pagination, real per-document ACLs — entirely offline: no
-> accounts, no OAuth, no rate limits.
-
-[![tests](https://github.com/brekkylab/enterprise-mock/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/enterprise-mock/actions/workflows/ci.yml)
+[![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A **read-only** mock server that stands in for ten enterprise SaaS knowledge sources at once.
+A **read-only** mock server that stands in for a whole stack of enterprise SaaS knowledge sources
+at once.
 It speaks each service's real read API — the exact response shapes, pagination schemes, auth,
 and native permission endpoints their official SDKs expect — over a corpus **you** supply, so a
 RAG/search connector built on those SDKs can be exercised **end-to-end** without the live
 services.
 
-## Quickstart (Docker)
+## Quickstart
 
 ```bash
-docker build -t enterprise-mock .          # bakes a small corpus + ACLs into the image
-docker run -p 8000:8000 enterprise-mock
+pip install backlot
+```
+
+That puts the `backlot` command on PATH. A server needs a corpus, and one is bundled with the
+package — 136 documents covering every source it serves — so there is nothing to fetch or write:
+
+```bash
+backlot import --bundled    # the bundled corpus -> data/mock.sqlite + data/tokens.yaml
+backlot serve               # http://127.0.0.1:8000
 curl -s localhost:8000/health
 ```
 
-The image ships with a small corpus and generated ACLs already built in (no accounts, no data
-download at runtime), so it's ready to crawl immediately.
+Or skip the CLI entirely and let a test spin one up on a free port, serving that same corpus
+(`pip install "backlot[examples]"` for the vendor SDKs the first snippet uses):
 
-## Why this exists
+```python
+import backlot
+from slack_sdk import WebClient
 
-Testing a knowledge connector end-to-end normally needs live SaaS accounts, OAuth, seeded data,
-and patience for rate limits. This server removes all of that: it serves whatever documents you
-give it through the services' real read APIs, offline and deterministically.
+with backlot.mock_server() as m:                       # no arguments: the bundled corpus
+    slack = WebClient(token=m.token, base_url=f"{m.base_url}/slack/api/")
+    print(slack.conversations_list()["channels"])
 
-You provide each document as `{title, content}` (plus optional structure). The server serves
-`title` + `content` **verbatim** and **deterministically synthesizes** everything else a real
-API response needs — ids, timestamps, users, channels/repos/spaces, keys, pagination cursors —
-from `sha256(doc_id)`, so responses are stable and self-consistent across calls and paginated
-fetches. It also generates a synthetic **org → group → user ACL** and both **exposes** it
-(native permission endpoints per service) and **enforces** it (responses are filtered to the
-calling user; an admin/service token sees everything).
-
-## Setup (from source)
-
-```bash
-uv venv && source .venv/bin/activate     # or: python -m venv .venv
-uv pip install -e ".[dev]"
+with backlot.mock_server(records=[                     # or your own records, inline
+    {"source_type": "confluence", "space": "handbook", "title": "On-call",
+     "content": "Page for Sev1 and Sev2 only.", "author_email": "ava@acme.com"},
+]) as m:
+    ...
 ```
 
-Installing puts the `backlot` command on PATH — `backlot import` builds the corpus and
-`backlot serve` serves it (`python -m backlot` is the same CLI if the venv isn't activated).
-Prepare a corpus (below), then start the server:
+`python -m backlot` is the same CLI as the `backlot` script, for when the venv is not activated.
+Working on Backlot itself instead of with it? [CONTRIBUTING.md](CONTRIBUTING.md) covers the
+from-source install.
+
+### Docker
 
 ```bash
-backlot serve --port 8000
+docker build -t backlot .                  # server + the bundled corpus baked in; no download
+docker run -p 8000:8000 backlot
 curl -s localhost:8000/health
 ```
 
-## Preparing data
+That image answers every endpoint of every source out of the box. Use
+`--target serve` for a server with **no** corpus, for a deployment that mounts its own
+`/app/data`.
 
-The server reads a corpus from `data/` (`mock.sqlite` + `tokens.yaml`). Build it either way:
+## Why you need this
 
-### Import from EnterpriseRAG-Bench
+Connectors are easy to write and hard to trust. Proving one works means an account with every
+vendor, an OAuth app per vendor, seeded data in each, and rate limits between you and every retry —
+so most of it
+gets tested against fixtures that agree with your assumptions instead of with the API. Backlot is
+the API: same shapes, same pagination, same permission endpoints, over documents you control.
 
-[EnterpriseRAG-Bench](https://github.com/onyx-dot-app/EnterpriseRAG-Bench) ships ~500k
-synthetic enterprise documents (flattened to `{doc_id, source_type, title, content}`). One
-command downloads it, loads it, and generates the ACL (`--slice-questions` for only the
-documents a question set needs):
+It is the right tool when you are:
 
-```bash
-backlot import --type enterpriserag-bench    # download -> load -> ACL (-t erb for short)
-```
+- **building or upgrading a connector** — crawl a source to exhaustion, then diff what you got
+  against what you loaded, on a corpus small enough to reason about
+- **testing ACL-scoped retrieval** — every document carries its own readers, and each user's token
+  sees only theirs, so "does this leak" is a test rather than an audit
+- **running that suite in CI** — no accounts, no secrets, no network, no flakes from someone else's
+  outage; a server starts in a second and dies with the test
+- **evaluating RAG or agents** — point an SDK, an MCP server, or a LlamaIndex reader at it and get
+  the same answers on every run, because ids and timestamps are derived, not random
+- **reproducing a bug you cannot reach** — a paginated edge case, an odd MIME type, an empty thread:
+  write the document that causes it and serve it in seconds
 
-The bench carries only `{title, content}` — no structure, no access control — so the mock
-synthesizes the structural metadata and generates the ACL. Every import also **parses the real
-conversations embedded in the content** (this is faithful representation, not synthesis, so it's
-always on): Slack transcripts → threads, GitHub PR reviews and Jira comments → real comments,
-Gmail threads → per-email messages. On top of that it layers only the genuinely-absent,
-*synthesized* structure: doc types, issue/PR split, status/labels, hierarchy, reactions.
-A runnable walkthrough (import → serve → query) is in
-[`examples/import-enterpriserag-bench/`](examples/import-enterpriserag-bench/).
+It is **not** a sandbox for writes, a rate-limit or latency simulator, or a source of realistic
+*content* — the documents are yours.
+
+## Preparing a corpus
+
+The server reads a corpus from `data/` (`mock.sqlite` + `tokens.yaml`). Build it from your own
+documents, or load a public dataset.
+
+You describe each document the way its own service would, and a per-source JSON Schema says what
+that record may carry. `title` and `content` are served verbatim; so is every other field you set —
+authors, timestamps, threads, comments, labels, states, ACLs — so no part of a response *has* to be
+synthesized. What you leave out is filled in **deterministically**, each value hashed from the
+stable key it belongs to (a document's `doc_id`, a container's name, an author's address), so ids
+never move between calls or pages.
 
 ### Bring your own corpus
 
-Serve **any** document set: one JSONL document per line, validated against a per-service JSON
-Schema (`backlot/schemas/`), then loaded.
+One JSONL document per line, validated against a per-service JSON Schema
+([`backlot/schemas/`](backlot/schemas/)), then loaded:
 
 ```bash
 backlot import mycorpus.jsonl              # validate + load -> data/
 backlot import mycorpus.jsonl --dry-run    # validate only, no DB writes
 backlot import mycorpus.jsonl --roster roster.yaml   # state the principals, don't derive them
 backlot import corpus.jsonl.gz             # gzipped, read as a stream
-backlot import artifact-dir/               # a sharded corpus + its manifest (below)
+backlot import artifact-dir/               # a sharded corpus + its manifest, digests verified
 ```
 
 ```json
@@ -99,95 +114,76 @@ backlot import artifact-dir/               # a sharded corpus + its manifest (be
 {"source_type": "gmail", "mailbox": "ceo", "title": "Q1 board deck draft", "content": "Draft narrative for the Q1 board meeting.", "author_email": "ceo@acme.com", "to": "ava@acme.com", "readers": ["ceo@acme.com", "ava@acme.com"]}
 ```
 
-The record format (fields, ACL, Slack/Gmail threads), a runnable walkthrough (`run.py`), and a
-sample corpus are in [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus/); the
-schemas are in [`schemas/README.md`](backlot/schemas/README.md).
+Only `source_type` and `content` are required (`title` too, for every source except Slack). Where
+to look next:
 
-The schema is expressive enough to hold an **entire existing dataset losslessly**, which is how the
-bench is redistributed in it:
+| To learn | Read |
+|---|---|
+| every field a record may carry | [`examples/bring-your-own-corpus/sample_corpus.jsonl`](examples/bring-your-own-corpus/sample_corpus.jsonl) — the field reference, and a test keeps it exhaustive |
+| the rules each source imposes | [`backlot/schemas/README.md`](backlot/schemas/README.md) |
+| import → serve → query, runnable | [`examples/bring-your-own-corpus/run.py`](examples/bring-your-own-corpus/run.py) |
+
+The schemas double as the contract for **LLM dataset generation**: hand one to a model as a
+structured-output schema, generate records, then `--dry-run` before loading. See
+[`backlot/schemas/README.md`](backlot/schemas/README.md).
+
+### Load a public dataset
+
+[EnterpriseRAG-Bench](https://github.com/onyx-dot-app/EnterpriseRAG-Bench) is ~500k synthetic
+enterprise documents across nine of the supported sources. One command downloads, loads and
+ACL-derives it:
 
 ```bash
-backlot import -t erb --export-byo out/     # ERB -> out/corpus.jsonl + out/roster.yaml
-backlot import out/corpus.jsonl --roster out/roster.yaml
+backlot import --type enterpriserag-bench    # -t erb for short
 ```
 
-That produces a database *equivalent* to importing the bench directly — same rows, same column
-values, same `doc_acl`, same `tokens.yaml`, asserted as a table-by-table diff in
-`tests/test_importer_erb.py`. `roster.yaml` carries what the records cannot: display names (an
-address does not round-trip a name) and which people are real accounts rather than just document
-owners.
-
-At bench scale one file is unwieldy — the whole of ERB is 581,294 records — so the export can shard:
-
-```bash
-backlot import -t erb --export-byo out/ --shard-records 50000
-```
-
-Each source becomes `out/data/<source>/part-NNNNN.jsonl.gz` alongside `out/manifest.json`, which
-records every shard's path, record count, byte size, and SHA-256, plus the same for `roster.yaml`.
-`backlot import out/` loads the whole thing in one command and checks every digest before
-reading a record, so a damaged or swapped download fails up front instead of half-loading a database.
-The roster is checked with the shards, since importing a directory picks it up automatically and it
-decides who holds a token. Shards are gzipped with `mtime=0`, so the same input always produces the
-same checksums.
-
-A shard that is short but validly terminated — what a resumed or re-uploaded download looks like — is
-the case this catches that nothing else would: the gzip stream reads cleanly to its end, so only the
-digest tells you records are missing.
+What that dataset does and does not carry, and how to redistribute it as BYO-JSONL, is in
+[`examples/import-enterpriserag-bench/`](examples/import-enterpriserag-bench/) — it is one corpus
+you can load, not part of this server's contract.
 
 ## Auth & tokens
 
-`data/tokens.yaml` holds one bearer token per user plus an **admin/service token**
-(`BACKLOT_ADMIN_TOKEN`, default `admin-service-token`). The admin token bypasses ACL filtering
-(use it for a full crawl); a user token sees only documents that user's ACL permits.
+Each service authenticates its own way, and the mock expects what the real one does: a bearer token
+for most, HTTP Basic for Jira/Confluence, a **bare** `Authorization` value for Linear's personal API
+keys, SigV4 for S3, and Google's OAuth token exchange for a connector carrying a client config.
 
-- Slack: `Authorization: Bearer <token>` (also accepts `?token=` / form `token`)
-- Gmail / Drive / GitHub / Notion / HubSpot / Fireflies: `Authorization: Bearer <token>`
-- Linear: `Authorization: <token>` — the **bare** token, no `Bearer` prefix, which is how Linear
-  carries a personal API key. `Authorization: Bearer <token>` is accepted too (Linear's OAuth
-  shape); anything else, including a stray scheme like `Token <t>`, is a 401 rather than being
-  quietly stripped — to the real API the whole header value *is* the key
-- Jira / Confluence: HTTP Basic `email:<token>` (the token is the password)
-- S3: AWS SigV4 — not the bearer token; use the `s3_access_key_id`/`s3_secret_access_key` pair from `GET /_mock/users` (derived from the token; per-user and an admin pair). See `examples/using-official-sdk/s3.py`
-
-To discover the tokens without opening `data/tokens.yaml`, hit **`GET /_mock/users`** — a
-mock-only directory of every user (email, name, token, groups) plus the `admin_token`. Pick a
-token, use it against any of these APIs, and you get that user's ACL-filtered view — the easy way
-to test per-user access. It hands out tokens in the clear (fine for a local test mock); disable
-with `BACKLOT_EXPOSE_TOKENS=false`.
+You construct none of it. Two mock-only endpoints hand out every credential the corpus generated —
+an admin/service token that bypasses the ACL (use it to crawl), plus one identity per person, each
+seeing only what their own ACL permits:
 
 ```bash
-curl -s localhost:8000/_mock/users | jq '.users[0]'
-# { "email": "ava@…", "name": "Ava Ng", "token": "usr-…", "groups": ["engineering"] }
+curl -s localhost:8000/_mock/users
+```
+```json
+{ "org": "acme", "admin_token": "admin-service-token", "count": 10,
+  "admin_s3_access_key_id": "AKIA732S…", "admin_s3_secret_access_key": "l4sz5sXT…",
+  "users": [{ "email": "ava.chen@acme.com", "name": "Ava Chen", "token": "usr-29b84da570…",
+              "s3_access_key_id": "AKIADNLO…", "s3_secret_access_key": "0FdhlUUQ…",
+              "groups": ["engineering", "handbook", "product", "design"] }] }
 ```
 
-### OAuth client config (Google-style)
-
-Real Gmail/Drive connectors usually carry an OAuth **client config** — an `authorized_user`
-bundle (client_id/secret + refresh_token) or a **service account** key that signs a JWT to
-impersonate a user — rather than a raw access token. The mock supports that flow so those
-connectors run unmodified: **`GET /_mock/credentials`** returns just the **shared** credentials —
-the single `oauth_client` (client_id/secret) and the org `service_account` JSON. There's no
-per-user data: a user's **refresh_token is simply their bearer token from `/_mock/users`**.
-**`POST /oauth2/token`** honors the `refresh_token` and JWT-bearer (`sub` = impersonated user)
-grants — returning that user's bearer token, so ACL enforcement is identical. `token_uri` points
-back at the mock, so the client library's own refresh call lands here. A bare service account
-(no `subject`) resolves to the admin/service token (a full-crawl identity). Same
-`BACKLOT_EXPOSE_TOKENS` gate as `/_mock/users`. The Gmail/Drive SDK examples
-([`gmail.py`](examples/using-official-sdk/gmail.py),
-[`gdrive.py`](examples/using-official-sdk/gdrive.py)) authenticate this way.
-
-```python
-oc = requests.get(f"{BASE}/_mock/credentials").json()["oauth_client"]  # one shared client
-rt = requests.get(f"{BASE}/_mock/users").json()["users"][0]["token"]   # a user's token = refresh_token
-Credentials(None, refresh_token=rt, token_uri=f"{BASE}/oauth2/token",
-            client_id=oc["client_id"], client_secret=oc["client_secret"])   # refreshes against the mock
+```bash
+curl -s localhost:8000/_mock/credentials    # for a Google client that wants a config, not a token
+```
+```json
+{ "org": "acme", "token_uri": "http://localhost:8000/oauth2/token",
+  "oauth_client": { "client_id": "e8ae7a….apps.googleusercontent.com", "client_secret": "GOCSPX-…" },
+  "service_account": { "type": "service_account", "client_email": "…", "private_key": "…" } }
 ```
 
-## Using official SDKs with the mock
+Use a user's `token` and every API filters to that user, which is what makes per-user access a test
+rather than an audit. `token_uri` points back at the mock, so a client library's own refresh lands
+here and resolves to the same ACL — a user's refresh_token is just their bearer token. Both
+endpoints serve credentials in the clear, so `BACKLOT_EXPOSE_TOKENS=false` closes them; the same
+values are in `data/tokens.yaml`. Per-service detail:
+[`examples/using-official-sdk/`](examples/using-official-sdk/).
 
-Point any official SDK at the mock's base URL — the only change from talking to the real
-service:
+## Example Usages
+
+Every one of these points a real client at the mock's base URL — that is the only change from
+talking to the live service.
+
+### Official SDKs
 
 ```python
 from slack_sdk import WebClient
@@ -218,50 +214,60 @@ boto3.client("s3", endpoint_url="http://localhost:8000/s3", aws_access_key_id=AK
 
 A runnable, self-contained script per service is in [`examples/using-official-sdk/`](examples/using-official-sdk/).
 
-## Using MCP with the mock
+### MCP
 
-Point an MCP server at the mock's base URL and an agent retrieves through it — the mock enforces
-the ACL for whatever token the MCP server authenticates with. Three servers are wired up in the
-examples: the community-official [`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian)
-(Jira + Confluence, over Docker), the **official**
-[`@notionhq/notion-mcp-server`](https://github.com/makenotion/notion-mcp-server) (Notion, over
-`npx` — it takes a first-class `BASE_URL` override: `BASE_URL=http://localhost:8000/notion`), and
-the **official** [`awslabs.aws-api-mcp-server`](https://github.com/awslabs/mcp/tree/main/src/aws-api-mcp-server)
-(S3, over `uvx` — it shells the AWS CLI, whose boto3 client honors a first-class
-`AWS_ENDPOINT_URL` override: `AWS_ENDPOINT_URL=http://localhost:8000/s3`). Sources with no
-base-URL-switchable vendor server — GitHub, Slack, Gmail, Drive and HubSpot — go through a generic
-**OpenAPI→MCP bridge** that turns the mock's own typed `/openapi.json` into MCP tools
-(`GET /_mock/openapi/<source>` serves the per-source slice).
-For example, connecting `mcp-atlassian` over stdio:
+An MCP server pointed at the mock retrieves through it, ACL-scoped to whatever token it
+authenticates with. Some vendors publish a server that takes a base URL — use it directly:
 
 ```python
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-
+# examples/using-mcp-with-agents/atlassian.py — the community-official mcp-atlassian, over Docker.
+# The host must end in .atlassian.net for the server's Cloud detection, so alias it at the mock.
 params = StdioServerParameters(command="docker", args=[
     "run", "-i", "--rm", "--add-host=mock.atlassian.net:host-gateway",
-    "-e", "MCP_ALLOWED_URL_DOMAINS=atlassian.net",
     "-e", "JIRA_URL=http://mock.atlassian.net:8000/atlassian",
-    "-e", "JIRA_USERNAME=svc@x",
-    "-e", "JIRA_API_TOKEN=<token from data/tokens.yaml>",   # resolved to a user; ACL enforced
-    "ghcr.io/sooperset/mcp-atlassian", "--transport", "stdio",
+    "-e", "CONFLUENCE_URL=http://mock.atlassian.net:8000/atlassian/wiki",
+    "-e", "JIRA_USERNAME=svc@example.com", "-e", "CONFLUENCE_USERNAME=svc@example.com",
+    "-e", f"JIRA_API_TOKEN={token}", "-e", f"CONFLUENCE_API_TOKEN={token}",  # a user token -> its ACL
+    "-e", "MCP_ALLOWED_URL_DOMAINS=atlassian.net", "-e", "READ_ONLY_MODE=true",
+    "ghcr.io/sooperset/mcp-atlassian:latest", "--transport", "stdio",
 ])
-async with stdio_client(params) as (reader, writer):
-    async with ClientSession(reader, writer) as session:
-        await session.initialize()
-        tools = await session.list_tools()   # your agent calls these; they hit the mock
 ```
 
-Runnable agents (Anthropic + OpenAI) and setup notes are in [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/).
+For the ones that don't — GitHub, Slack, Gmail, Drive, HubSpot — a generic **OpenAPI→MCP bridge**
+turns the mock's own typed `/openapi.json` into tools instead (`GET /_mock/openapi/<source>` serves
+the per-source slice):
 
-## Using mirage with the mock
+```python
+# examples/using-mcp-with-agents/github.py — no vendor SDK, no vendor MCP server
+params = StdioServerParameters(command=sys.executable, args=[
+    "examples/using-mcp-with-agents/_openapi_bridge.py",
+    "--source", "github", "--base-url", mock.base_url, "--token", mock.token,
+])
+```
+
+Either way an agent then calls `session.list_tools()` and retrieves. Runnable agents for both LLM backends (Anthropic + OpenAI), one file per service, are in [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/).
+
+### LlamaIndex readers
+
+Point official [LlamaIndex readers](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/)
+(`llama-index-readers-*`) at the mock and load an enterprise corpus as `Document` objects — the
+first step of a LlamaIndex ingestion/RAG pipeline.
+
+```python
+from llama_index.readers.github import GitHubIssuesClient
+GitHubIssuesClient(github_token=TOKEN, base_url="http://localhost:8000/github")
+
+from llama_index.readers.confluence import ConfluenceReader
+ConfluenceReader(base_url="http://localhost:8000/atlassian/wiki", cloud=False, api_token=TOKEN)
+```
+
+One runnable script per source is in [`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/).
+
+
+### Mirage
 
 [mirage](https://github.com/strukto-ai/mirage) mounts a SaaS backend as a **virtual
-filesystem** an agent reads with bash (`ls`, `cat`, `grep`, `find`). Point its
-Slack/Gmail/Drive/Notion/S3 resources at the mock and you can drive a mirage agent over your
-corpus offline. Slack, Notion, and S3 expose `base_url`/`endpoint_url` config fields (point them
-straight at the mock — S3's `S3Config` also takes `path_style=True`); Google hardcodes
-`googleapis.com`, so a one-line helper redirects those constants at the mock:
+filesystem** an agent reads with shell commands (`ls`, `cat`, `grep`, `find`). Point its resources at the mock and you can drive a mirage agent over your corpus offline.
 
 ```python
 from mirage import MountMode, Workspace
@@ -273,165 +279,63 @@ ws = Workspace({"/slack": SlackResource(SlackConfig(token=TOKEN))}, mode=MountMo
 await ws.execute("ls /slack/channels/")         # then cat a channel's dated chat.jsonl
 ```
 
-One runnable script per provider (Slack, Gmail, Drive, Notion, S3) plus a `unified.py` that greps
-across Slack/Gmail/Drive at once are in [`examples/using-mirage/`](examples/using-mirage/); add `--fuse` to expose a
-mount as a real OS filesystem (macFUSE/fuse3) that any tool can `cat`/`grep`. (Jira/Confluence
-and GitHub are out of scope — mirage has no Jira/Confluence connector, and its GitHub connector
-mirrors a repo's source-file tree rather than the issues/PRs the mock serves.)
+One runnable script per source plus a `unified.py` that greps
+across Slack/Gmail/Drive at once are in [`examples/using-mirage/`](examples/using-mirage/).
 
-## Using LlamaIndex readers with the mock
-
-Point official [LlamaIndex readers](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/)
-(`llama-index-readers-*`) at the mock and load an enterprise corpus as `Document` objects — the
-first step of a LlamaIndex ingestion/RAG pipeline. GitHub, S3, Confluence, and Jira readers take a
-host override directly; Slack, Notion, Gmail, and Drive hardcode their host, so a small shim in
-`_llamaindex.py` redirects each:
-
-```python
-from llama_index.readers.github import GitHubIssuesClient
-GitHubIssuesClient(github_token=TOKEN, base_url="http://localhost:8000/github")
-
-from llama_index.readers.confluence import ConfluenceReader
-ConfluenceReader(base_url="http://localhost:8000/atlassian/wiki", cloud=False, api_token=TOKEN)
-```
-
-One runnable script per source (GitHub, S3, Confluence, Jira, Slack, Notion, Gmail, Drive,
-HubSpot, Linear) is in [`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/).
-`LinearReader` needs a shim rather than a constructor argument — it hardcodes its endpoint as a
-local variable inside `load_data`, so `patch_linear_at()` swaps the module's `requests` for a
-URL-rewriting proxy.
 
 ## Endpoints (read-only)
 
 | Prefix | Service | Endpoints |
 |---|---|---|
-| `/slack/api` | Slack | `conversations.list` (+`types`; this corpus has no DMs, so `im`/`mpim` select nothing, and an unknown value is `invalid_types`), `conversations.history` (+`oldest`/`latest`/`inclusive`), `conversations.replies`, `conversations.members` (per-channel, paginated), `users.list`, `users.info`, `auth.test`, `api.test` (auth-free connectivity check), `search.messages`. A channel's members are the people who have spoken in it — see the roster caveat below |
+| `/slack/api` | Slack | `conversations.list` (+`types`; this corpus has no DMs, so `im`/`mpim` select nothing, and an unknown value is `invalid_types`), `conversations.history` (+`oldest`/`latest`/`inclusive`), `conversations.replies`, `conversations.members` (per-channel, paginated), `users.list`, `users.info`, `auth.test`, `api.test` (auth-free connectivity check), `search.messages` |
 | `/gmail/v1` | Gmail | `users/{u}/messages` (+`q`: free text / `from:` `to:` `subject:` `after:` `before:` `newer_than:` `older_than:` `label:` `has:attachment`), `messages/{id}` (`format=full\|metadata\|minimal`), `messages/{id}/attachments/{id}`, `threads` (+`q`), `threads/{id}`, `labels`, `profile`. Message and thread ids are Gmail-shaped — 16 lowercase hex under 2^63, sharing one id space as the real API does — and map back to the corpus document; an id the real API could not parse is refused the same way |
-| `/drive/v3` | Drive | `files` (`q`: `fullText contains`, `name contains`, `mimeType`, `… in parents` incl. `'root'`, `trashed`, `modifiedTime`, `sharedWithMe`, `… in owners`; `orderBy`: `name`/`name_natural`/`createdTime`/`modifiedTime`/`recency`/`folder`/`starred`/`quotaBytesUsed`/`sharedWithMeTime` (+` desc`); `fields` projection, validated), `files/{id}` (+`fields`), `files/{id}/export`, `files/{id}/permissions`, `drives`, `about` (`fields` **required**, as in real Drive; `storageQuota` is measured from the caller's visible corpus). Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like stored rows |
+| `/drive/v3` | Drive | `files` (`q`: `fullText contains`, `name contains`, `mimeType`, `… in parents` incl. `'root'`, `trashed`, `modifiedTime`, `sharedWithMe`, `… in owners`; `orderBy`: `name`/`name_natural`/`createdTime`/`modifiedTime`/`recency`/`folder`/`starred`/`quotaBytesUsed`/`sharedWithMeTime` (+` desc`); `fields` projection, validated), `files/{id}` (+`fields`), `files/{id}/export`, `files/{id}/permissions`, `drives`, `about` (`fields` **required**, as in real Drive; `storageQuota` is measured from the caller's visible corpus). Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like stored rows. Trashed files are excluded unless `trashed = true` asks for them |
 | `/docs/v1`, `/sheets/v4`, `/slides/v1` | Docs/Sheets/Slides | `documents/{id}`, `spreadsheets/{id}`, `presentations/{id}` — native-doc content for editor-aware clients (read structurally instead of via Drive export). `spreadsheets/{id}` returns structure only — cells need `includeGridData=true` (+ optional `ranges`), as in real Sheets. Sheets also serves `spreadsheets/{id}/values/{range}` and `spreadsheets/{id}/values:batchGet` (A1 ranges incl. `Sheet1!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not; `majorDimension`, `valueRenderOption`). A spreadsheet row is one stored **line**, held in a single cell verbatim — the mock picks no column delimiter, so splitting (CSV, pipes, …) stays the corpus owner's decision. Reading a file of the wrong type through any of the three APIs is refused, as real Google does, not reinterpreted |
-| `/github` | GitHub | `search/issues` (`q`: free text + `repo:` `is:` `state:` `type:` `label:` `author:`), `orgs/{org}`, `orgs/{org}/repos`, `repos/{o}/{r}`, `.../issues[/{n}]`, `.../issues/{n}/comments`, `.../pulls[/{n}]`, `.../pulls/{n}/reviews`, `.../readme`, `.../collaborators`, `.../teams`, `orgs/{org}/teams` |
+| `/github` | GitHub | `search/issues` (`q`: free text + `repo:` `is:` `state:` `type:` `label:` `author:`), `orgs/{org}`, `orgs/{org}/repos`, `repos/{o}/{r}`, `.../issues[/{n}]`, `.../issues/{n}/comments`, `.../pulls[/{n}]`, `.../pulls/{n}/reviews`, `.../readme`, `.../contents[/{path}]`, `.../git/trees/{ref}`, `.../git/blobs/{sha}`, `.../branches/{branch}`, `.../commits/{sha}`, `.../collaborators`, `.../teams`, `orgs/{org}/teams` |
 | `/atlassian/rest/api/3` | Jira | `search/jql` (JQL `project =`, `text\|summary\|description ~`), `issue/{key}`, `issue/{key}/comment`, `field`, `issueLinkType`, `project/search`, `project/{key}/role[/{id}]`, `serverInfo` (also under `rest/api/2`) |
-| `/atlassian/wiki/rest/api` | Confluence | `content`, `content/{id}`, `content/{id}/restriction/byOperation`, `space`, `space/{key}/permission` |
+| `/atlassian/wiki/rest/api` | Confluence | `content`, `content/{id}`, `content/{id}/child/comment`, `content/{id}/restriction/byOperation`, `search` (CQL), `space`, `space/{key}`, `space/{key}/permission` |
 | `/notion/v1` | Notion | `search`, `pages/{id}`, `blocks/{id}`, `blocks/{id}/children`, `databases/{id}` (version-aware), `data_sources/{id}`, `data_sources/{id}/query`, `databases/{id}/query` (legacy), `users[/{id}]`, `users/me`, `comments` |
 | `/hubspot/crm/v3`, `/hubspot/crm/v4` | HubSpot | `objects/{objectType}` (+`limit` max 100, `after`, `properties`, `archived`), `objects/{objectType}/{id}`, `objects/{objectType}/search` (`filterGroups` OR-ed, `filters` AND-ed, 13 operators over any property), `objects/{objectType}/batch/read`, `v4/objects/{type}/{id}/associations/{toType}` |
 | `/s3` | Amazon S3 | `ListBuckets`, `HeadBucket`, `GetBucketLocation`, `ListObjectsV2` (`prefix`/`delimiter`/`continuation-token`), `GetObject` (+`Range`), `HeadObject` |
 | `/linear/graphql` | Linear | **GraphQL only** (one `POST`): `issues`, `issue(id:)` (UUID *or* `ENG-123`), `team(id:)` (UUID, key, or name), `teams`, `comments`, `users`, `viewer`, plus the `Team.issues` / `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}` connections and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`, `release`, `attachment`, `issueRelation`) the official SDK's lazy relation accessors call. Relay pagination (`first`/`after`, `last`/`before` → `{nodes, pageInfo}`), server-side `filter` compiled into SQL, and full introspection |
 | `/fireflies/graphql` | Fireflies | **GraphQL only** (one `POST`): `transcripts`, `transcript(id:)`, `user[(id:)]`, `users`. Offset pagination — `limit` (**max 50**, clamped) / `skip`, returning a **bare list**, not a Relay connection — plus the documented filters: `keyword` × `scope` (`title`\|`sentences`\|`all`), `fromDate`/`toDate`, `host_email`, `organizers`, `participants`, `user_id`, `mine`, `channel_id`. Field names are snake_case, as Fireflies' own schema has them. Full introspection |
 
-### Known corpus limitation: Slack speakers are not in `users.list`
-
-The bench corpus generates Slack transcript speakers independently of the employee directory, so the
-two are largely disjoint: of **74,138** distinct message authors only **3,971 (5.4%)** are
-registered
-user principals, and all **70,167** of the rest are on the org's own domain. 74k speakers against an
-11,913-person directory is not a headcount any real workspace has.
-
-The mock does not paper over this. `users.list` serves the directory, so **an author outside it
-resolves through `users.info` but never appears in `users.list`** — a combination real Slack cannot
-produce, and the one place a client written against the mock will behave differently in production.
-
-What is available instead: `conversations.members` pages the channel's own speakers, so every author
-of a channel is discoverable there even when the roster omits them.
-
-Reconciling the two sets means either inventing ~70k colleagues or discarding the transcripts' own
-speakers, so it is a decision about the dataset rather than about this server.
-
+Mock-only endpoints: `/health`, `/_mock/users`, `/_mock/credentials`, `/_mock/openapi/<source>`,
+`/openapi.json`.
 
 ## Tests
 
 ```bash
-pytest              # unit (synth/pagination/acl/schema/erb-parsers) + HTTP endpoint tests
+pytest              # unit (synth/pagination/acl/schema/importer parsers) + HTTP endpoint tests
                     # (full-crawl completeness, content round-trip, ACL enforcement)
+ruff check . && ruff format --check .
 ```
-
-`tests/test_sdk.py` (needs `.[examples]`) and `tests/test_mcp.py` (needs Docker + `.[mcp]`)
-each spin up their own server; they run when those are available and skip otherwise.
 
 ## Configuration
 
-Env vars (prefix `BACKLOT_`): `BACKLOT_DATA_DIR`, `BACKLOT_ADMIN_TOKEN`, `BACKLOT_ENFORCE_ACL`,
-`BACKLOT_EXPOSE_TOKENS`, `BACKLOT_DEFAULT_PAGE_SIZE`, `BACKLOT_MAX_PAGE_SIZE`, `BACKLOT_ORG_NAME`,
-`BACKLOT_ORG_DOMAIN`, `BACKLOT_ATLASSIAN_SITE`. See `backlot/config.py`.
+Every setting is an env var with a `BACKLOT_` prefix, and a `.env` file in the working directory is
+read too. Defaults are what the server uses when the var is unset.
 
-`BACKLOT_RAW_DIR` and `BACKLOT_DATASET_REPO` configure the bench importer's download only, so they
-live with it (`backlot.importer.erb.BenchSettings`) rather than in the settings every layer reads.
+| Env var | Default | What it does |
+|---|---|---|
+| `BACKLOT_DATA_DIR` | `./data` (resolved against the cwd, **not** the install location) | Where the corpus lives: `mock.sqlite`, `tokens.yaml`, `credentials.yaml`. Both `backlot import` and `backlot serve` read it, which is how you keep several corpora side by side — `BACKLOT_DATA_DIR=/tmp/demo backlot import c.jsonl` |
+| `BACKLOT_ADMIN_TOKEN` | `admin-service-token` | The token that bypasses ACL filtering — a full-crawl / service identity. Set it to anything for a shared deployment |
+| `BACKLOT_ENFORCE_ACL` | `true` | When `false`, any well-formed token is treated as admin. The ACL is still *exposed* through each vendor's permission endpoints, just not *enforced* — useful for isolating whether a connector's gaps are permissions or parsing |
+| `BACKLOT_EXPOSE_TOKENS` | `true` | Serves `GET /_mock/users` and `GET /_mock/credentials`, which hand out every user's token in the clear. Fine for a local mock; set `false` to close both |
+| `BACKLOT_ORG_NAME` | inferred from the corpus (fallback `example`) | The org slug that shows up in `auth.test`, synthesized emails and self-URLs. Inferred from the dominant author email domain — `@acme.com` documents serve as org `acme` — so set it only to override that |
+| `BACKLOT_ORG_DOMAIN` | inferred from the corpus (fallback `example.com`) | The domain half of the same inference, e.g. `acme.com`. Used for addresses the corpus does not state |
+| `BACKLOT_DEFAULT_PAGE_SIZE` | `100` | Page size when a request names none |
+| `BACKLOT_MAX_PAGE_SIZE` | `1000` | Ceiling a request may ask for. Per-vendor caps still win where the real API has one (Fireflies clamps to 50, HubSpot to 100) |
+| `BACKLOT_SQLITE_MMAP_MB` | `256` | Memory-maps the DB so reads come from the OS page cache instead of a syscall each — the main lever against a slow first request after idle. SQLite maps `min(this, db size)`; raise it to at or above your DB size to map a big corpus fully |
+| `BACKLOT_SQLITE_CACHE_MB` | `64` | SQLite's own page cache, per serving connection |
+| `BACKLOT_SQLITE_BUSY_MS` | `5000` | How long a read waits for a lock instead of erroring, so reads ride through an out-of-band write (e.g. an in-place FTS rebuild) rather than 500ing |
 
-Document visibility is **not** configurable: it comes from the corpus itself — each record's
-`visibility` / `readers` for a BYO corpus, or the bench's own ownership fields for an ERB import
-(see "Auth & tokens").
-For a BYO corpus the org name/domain are inferred from the dominant author email domain unless
-`BACKLOT_ORG_NAME` / `BACKLOT_ORG_DOMAIN` are set; the Atlassian site host and GitHub repo owner then
-follow the org (`<org>.atlassian.net`, and the owner echoed from the request path).
+## Contributing
 
-## Limitations (by design)
+See [CONTRIBUTING.md](CONTRIBUTING.md). The short version: fidelity to the real APIs is the point,
+so a divergence is a bug — measure against the real service, and bring a test that fails without
+your fix.
 
-- **Synthetic, deterministic data** — ids, timestamps, and URLs are derived from
-  `sha256(doc_id)`: stable and self-consistent across calls, but fabricated (no real links).
-- Google Drive doc type comes from a record's `subtype`
-  (`document|spreadsheet|presentation|pdf`); unset, a document serves as a Google Doc
-  (`text/plain` export).
-- Notion is **BYO-only** (not in EnterpriseRAG-Bench). A record's `content` is served verbatim as
-  a synthesized block tree; `databases.retrieve` returns the `2025-09-03` data-sources shape by
-  default and the `2022-06-28` inline-`properties` shape when that `Notion-Version` header is sent.
-- HubSpot is **polymorphic over `{objectType}`** — one set of routes serves contacts, companies,
-  deals, notes and custom objects — so the object type is the grouping unit and a record's typed
-  fields live in `properties`, searchable by name. EnterpriseRAG-Bench ships HubSpot as **company
-  (account) records only**, whose CRM notes are imported as first-class `notes` objects associated
-  with the company; contacts/deals/tickets arrive via BYO. The bench's `linked_*` fields are
-  free-text stubs referencing other sources, so they stay properties rather than becoming
-  associations. **A listing's last page omits `paging.next`** — the official client's `fetch_all`
-  treats its absence as "done", so emitting it unconditionally would hang a real client.
-- Linear is **GraphQL-only** (there is no REST surface to emulate) and the mock is **read-only**,
-  so there is no `Mutation` type at all — introspection reports `mutationType: null` rather than
-  advertising writes that would fail. The schema is generated from `@linear/sdk`'s own documents
-  (`client.issues()` alone selects 171 field nodes across 11 fragments), so real SDK calls
-  validate; fields no document corpus can back — reactions, SLA timestamps, board/sort orders,
-  bot actors — resolve to `null`/`[]` rather than being invented. `IssueFilter` declares **only**
-  what the mock actually evaluates, so an unsupported key is a validation error naming the field
-  instead of a silently-dropped filter answered with a full, wrong result set. EnterpriseRAG-Bench
-  ships Linear as its third-largest source (35,308 issues); its `P0`-`P3` priorities are mapped
-  onto Linear's own 0-4 scale and its `status` onto `state`, so the served payload speaks Linear's
-  vocabulary rather than the bench's. The bench's issue keys are **not unique** (5,055 repeat), so
-  `issue(id: "ENG-123")` resolves a repeated identifier to the first match while the UUID form is
-  always exact.
-- **Linear's official SDK is TypeScript-only.** `@linear/sdk` is the only client Linear publishes;
-  there is no official Python SDK, so `examples/using-official-sdk/linear/` is the one non-Python
-  example in the repo and a dedicated CI job runs it. `LinearClient` has no base-URL option, so it
-  is pointed at the mock by extending `LinearSdk` with a custom request function — Linear's own
-  documented pattern. There is also no MCP story: Linear's official MCP server is remote-hosted at
-  `https://mcp.linear.app/mcp` with no URL override, so no mock can substitute for it.
-- Fireflies is **GraphQL-only** and, like Linear, read-only — no `Mutation` type at all. Two
-  things set it apart from every other GraphQL source here and clients depend on both: pagination
-  is **offset-based** (`limit`, capped at 50 and *clamped* rather than rejected, plus `skip`) and
-  `transcripts` returns a **bare list**, not a `{nodes, pageInfo}` connection; and field names are
-  **snake_case** (`host_email`, `audio_url`, `meeting_attendees`), which is Fireflies' own
-  convention, not a translation. Note the units differ within one response, as they do in the real
-  API: `duration` is **minutes**, sentence `start_time`/`end_time` are **seconds**.
-  EnterpriseRAG-Bench ships Fireflies as 10,173 transcripts, but as **one flat text blob per
-  meeting** — not structured per-sentence records — so the sentences the API serves are *parsed*
-  from it (~619k of them) across the six line formats the corpus uses, gated on each meeting's
-  declared attendees so a transcript's auto-notes header (`Date:`, `Duration:`) cannot mint a
-  speaker. `content` is **defined as** the sentence concatenation and is an exact inverse of the
-  sentence rows, so full-text search reads the meeting as one document that can never drift from
-  its parts. Only *start* times are in the data (99.9% of lines) — end times are derived, wall-clock
-  transcripts are rebased onto elapsed time, and a garbled reading is dropped rather than tearing a
-  50-hour hole in a 60-minute meeting. The bench's `meeting_id` is **not unique**, so it is served
-  as `calendar_id` and `Transcript.id` is synthesized (unique by construction, so `transcript(id:)`
-  is never ambiguous). Transcripts are **org-visible** plus a per-user grant for everyone who
-  resolves: the corpus names 1,104 distinct hosts of whom only the ~167 directory employees can
-  authenticate, so an owner-or-channel scope would leave ~91% of meetings readable by admin alone
-  (same arithmetic as HubSpot). `analytics.sentiments` and the classifier buckets are **synthesized
-  or null, never derived from the text**; per-speaker talk time and word counts *are* computed from
-  the sentences.
-- **Fireflies has no SDK, no LlamaIndex reader, and no MCP server** — and raw HTTP is the
-  *official* path, not a workaround. The vendor's own quickstart is four raw-HTTP examples (curl,
-  Python `requests.post`, JS `axios.post`, Java `HttpClient`) posting to one endpoint with a Bearer
-  key, so the base URL is just a variable in user code and there is nothing to shim:
-  `examples/using-official-sdk/fireflies.py` uses `httpx` directly.
-  `llama-index-readers-fireflies` does not exist on PyPI, so there is no reader script.
-- S3 is **BYO-only** (not in EnterpriseRAG-Bench). Requests are XML (not JSON) and SigV4-signed;
-  the mock verifies the signature against the access-key/secret derived from your bearer token
-  and only supports path-style addressing (the bucket stays in the path, not the hostname).
-  Read ops: `ListBuckets`, `HeadBucket`, `GetBucketLocation`, `ListObjectsV2`, `GetObject`
-  (+`Range`), `HeadObject`.
-- **Only read endpoints** are implemented.
+## License
+
+[MIT](LICENSE)

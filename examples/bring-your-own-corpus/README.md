@@ -1,6 +1,6 @@
 # Bring your own corpus
 
-Serve **any** document set through all eleven mock APIs — provide a JSONL where each line is one
+Serve **any** document set through every mock API — provide a JSONL where each line is one
 document, validate it, and load it:
 
 ```bash
@@ -17,7 +17,7 @@ python examples/bring-your-own-corpus/run.py
 ```
 
 `sample_corpus.jsonl` is **the field reference**: a runnable corpus for a fictional "Acme" that
-populates *every* field the schemas declare, at least once, across all eleven sources — so you can
+populates *every* field the schemas declare, at least once, across every source — so you can
 see that none of the response structure has to be synthesized. It can all be set from the corpus.
 
 That is not a claim, it is a test: `test_schema.py::test_example_corpus_populates_every_field_the_schemas_declare`

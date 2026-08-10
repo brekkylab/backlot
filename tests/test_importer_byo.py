@@ -1935,10 +1935,10 @@ def test_append_accumulates_source_documents(tmp_path):
 
 
 def test_hello_corpus_loads_and_covers_every_source(tmp_path):
-    """The wheel's built-in corpus must load and exercise ALL ELEVEN sources.
+    """The wheel's built-in corpus must load and exercise EVERY served source.
 
     Driven off `store.SOURCE_TABLE` rather than a list written out here, so adding a twelfth source
-    fails this test until the packaged corpus covers it too — which is how fireflies came to be
+    fails this test until the bundled corpus covers it too — which is how fireflies came to be
     missing from the corpus while every other source had rows.
     """
     hello = Path(__file__).resolve().parent.parent / "backlot" / "data" / "hello.jsonl"

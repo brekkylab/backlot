@@ -49,17 +49,84 @@ def _validator(source_type: str) -> Draft202012Validator:
     return Draft202012Validator(SERVICE_SCHEMAS[source_type], format_checker=FormatChecker())
 
 
+def _subschema(schema: dict, parts: list):
+    """Walk into ``schema`` by a schema-path prefix, through objects and arrays alike."""
+    node = schema
+    try:
+        for p in parts:
+            node = node[int(p)] if isinstance(node, list) else node[p]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return node
+
+
+def _when_clause(schema: dict, schema_path) -> str:
+    """`" when subtype is \\"file\\""` for a rule a condition put in force, else ``""``.
+
+    A conditional requirement reports at the document root with a bare message: a 23,000-record
+    corpus was rejected with dozens of identical ``<root>: 'path' is a required property`` lines,
+    none of which said that ``path`` is required of source files and of nothing else. The
+    condition is recoverable — the failing branch's schema path runs through a ``then`` (or an
+    ``else``), and the ``if`` beside it is the predicate — so it is stated instead of left for the
+    reader to find in the schema. Shapes this does not recognise add no clause rather than a
+    guessed one.
+    """
+    parts = list(schema_path)
+    branch = next((i for i, p in enumerate(parts) if p in ("then", "else")), None)
+    if branch is None:
+        return ""
+    owner = _subschema(schema, parts[:branch])
+    cond = owner.get("if") if isinstance(owner, dict) else None
+    if not isinstance(cond, dict):
+        return ""
+    negated = "not " if parts[branch] == "else" else ""
+    clauses = []
+    for field, spec in (cond.get("properties") or {}).items():
+        if not isinstance(spec, dict):
+            continue
+        if "const" in spec:
+            allowed = [spec["const"]]
+        elif isinstance(spec.get("enum"), list) and spec["enum"]:
+            allowed = spec["enum"]
+        else:
+            continue
+        shown = " or ".join(json.dumps(v, ensure_ascii=False) for v in allowed)
+        clauses.append(f"{field} is {negated}{shown}")
+    return " when " + " and ".join(clauses) if clauses else ""
+
+
+def _record_label(rec: dict) -> str:
+    """How the author finds this record again: the id it wrote, else its title.
+
+    A line number is not that on its own — a sharded artifact numbers each shard from one, and
+    the id is what the author's own build wrote down and can grep for.
+    """
+    for key in ("doc_id", "title"):
+        value = rec.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:60]
+    return ""
+
+
 def record_errors(rec: dict) -> list[str]:
-    """Return human-readable validation errors for one BYO record ([] if valid)."""
+    """Return human-readable validation errors for one BYO record ([] if valid).
+
+    Each message names the record, where in it the problem is, and — for a rule that only
+    applies to some records — the condition that put the rule in force.
+    """
     if not isinstance(rec, dict):
         return ["record must be a JSON object"]
     st = rec.get("source_type")
     if st not in SERVICE_SCHEMAS:
         return [f"source_type must be one of {list(SERVICE_SCHEMAS)}, got {st!r}"]
+    label = _record_label(rec)
     msgs: list[str] = []
     for err in sorted(_validator(st).iter_errors(rec), key=lambda e: list(e.path)):
-        loc = "/".join(str(p) for p in err.path) or "<root>"
-        msgs.append(f"{loc}: {err.message}")
+        loc = "/".join(str(p) for p in err.path)
+        # The record's own name says "the whole record" better than a placeholder does, so
+        # `<root>` is only there for a record that gave nothing to be called by.
+        head = " ".join(x for x in (label, loc) if x) or "<root>"
+        msgs.append(f"{head}: {err.message}{_when_clause(SERVICE_SCHEMAS[st], err.schema_path)}")
     return msgs
 
 

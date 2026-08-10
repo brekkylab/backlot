@@ -638,3 +638,66 @@ def test_example_corpus_populates_every_field_the_schemas_declare():
         for src, schema in validation.SERVICE_SCHEMAS.items()
     }
     assert {s: m for s, m in missing.items() if m} == {}
+
+
+def test_a_conditional_requirement_says_which_records_it_applies_to():
+    """`path` is required of source files and of nothing else, but the rule is an
+    `if`/`then`, so jsonschema reports it at the document root with a bare message. A
+    23,000-record corpus was rejected with dozens of identical
+    "<root>: 'path' is a required property" lines, and none of them said that only
+    subtype 'file' rows needed one — the condition sat in the schema for the reader to
+    go and find."""
+    errs = record_errors(
+        {
+            "source_type": "github",
+            "title": "settlement.py",
+            "content": "code",
+            "doc_id": "gh-1",
+            "subtype": "file",
+        }
+    )
+    assert errs == ["gh-1: 'path' is a required property when subtype is \"file\""]
+
+    # An issue is not a file, so the same schema asks nothing of it.
+    assert (
+        record_errors(
+            {
+                "source_type": "github",
+                "title": "t",
+                "content": "c",
+                "doc_id": "gh-2",
+                "subtype": "issue",
+            }
+        )
+        == []
+    )
+
+
+def test_a_validation_error_names_the_record_it_is_about():
+    """A line number is not an identifier: a sharded artifact numbers every shard from
+    one, and the id is what the author's own build wrote down and can grep for. Absent an
+    id, the title serves; absent both, the root placeholder is all there is."""
+    by_id = record_errors(
+        {"source_type": "github", "title": "t", "content": "c", "doc_id": "d1", "subtype": "nope"}
+    )
+    assert by_id and by_id[0].startswith("d1 subtype: ")
+
+    by_title = record_errors({"source_type": "linear", "title": "Cutover plan", "nope": 1})
+    assert by_title and all(e.startswith("Cutover plan") for e in by_title)
+
+    anonymous = record_errors({"source_type": "github", "content": "c"})
+    assert anonymous == ["<root>: 'title' is a required property"]
+
+
+def test_the_condition_clause_is_omitted_rather_than_guessed():
+    """An unconditional rule gets no clause, and a condition shape the renderer does not
+    recognise gets none either — a wrong "when" is worse than no "when"."""
+    plain = record_errors({"source_type": "github", "content": "c", "doc_id": "d"})
+    assert plain == ["d: 'title' is a required property"]
+    assert (
+        validation._when_clause(
+            {"allOf": [{"then": {"required": ["x"]}}]}, ["allOf", 0, "then", "required"]
+        )
+        == ""
+    )
+    assert validation._when_clause({}, ["required"]) == ""

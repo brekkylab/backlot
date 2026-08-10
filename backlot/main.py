@@ -6,6 +6,7 @@ indexes (issue number / Jira key / Confluence id -> doc_id) for O(1) get-by-id.
 
 from __future__ import annotations
 
+import logging
 import threading
 from contextlib import asynccontextmanager
 
@@ -178,28 +179,43 @@ async def lifespan(app: FastAPI):
     # for every channel in a page, and a per-channel COUNT(DISTINCT) is far too slow for that.
     app.state.channel_members = None
 
+    app.state.warm_error = None
+
     def _warm_caches():
-        c = store.connect_ro(
-            settings.db_path,
-            mmap_mb=settings.sqlite_mmap_mb,
-            cache_mb=settings.sqlite_cache_mb,
-            temp_memory=True,
-        )
+        """Fill the caches above, and RECORD a failure rather than dying quietly.
+
+        A daemon thread that raises takes its traceback with it: every cache stays None, which each
+        consumer treats as "not warm yet" — the Slack routes fall back to their per-request queries
+        and keep answering correctly, so nothing 500s and nothing retries. That is the right
+        behaviour for a warm-up, and exactly why the failure has to be reported: without this, a
+        broken warm-up is indistinguishable from a slow one forever, and /health goes on saying
+        `status: "ok"` with `documents: null` while a load balancer stays green.
+        """
         try:
-            cacl: dict[str, set] = {}
-            for ch, pid in c.execute(
-                "SELECT DISTINCT d.channel, a.principal_id "
-                "FROM doc_acl a JOIN slack_messages d ON d.doc_id = a.doc_id"
-            ):
-                cacl.setdefault(ch, set()).add(pid)
-            app.state.channel_acl = {k: frozenset(v) for k, v in cacl.items()}
-            app.state.doc_counts = {
-                src: c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-                for src, tbl in store.SOURCE_TABLE.items()
-            }
-            app.state.channel_members = store.slack_channel_member_counts(c)
-        finally:
-            c.close()
+            c = store.connect_ro(
+                settings.db_path,
+                mmap_mb=settings.sqlite_mmap_mb,
+                cache_mb=settings.sqlite_cache_mb,
+                temp_memory=True,
+            )
+            try:
+                cacl: dict[str, set] = {}
+                for ch, pid in c.execute(
+                    "SELECT DISTINCT d.channel, a.principal_id "
+                    "FROM doc_acl a JOIN slack_messages d ON d.doc_id = a.doc_id"
+                ):
+                    cacl.setdefault(ch, set()).add(pid)
+                app.state.channel_acl = {k: frozenset(v) for k, v in cacl.items()}
+                app.state.doc_counts = {
+                    src: c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+                    for src, tbl in store.SOURCE_TABLE.items()
+                }
+                app.state.channel_members = store.slack_channel_member_counts(c)
+            finally:
+                c.close()
+        except Exception as e:  # noqa: BLE001 — a warm-up must not be able to kill the server
+            app.state.warm_error = f"{type(e).__name__}: {e}"
+            logging.getLogger(__name__).exception("cache warm-up failed; /health will say degraded")
 
     # Kept on app.state (rather than fire-and-forget) so a caller — namely tests — can wait for
     # it deterministically instead of polling /health and hoping doc_counts landed in time.
@@ -269,13 +285,25 @@ async def health():
     # `documents` because faithful parsing turns one Slack transcript into many message rows.
     # Publishing only the larger of the two reads as inflation, which is why both are reported.
     counts = getattr(app.state, "doc_counts", None)
-    body = {"status": "ok", "source_documents": getattr(app.state, "source_documents", None)}
+    warm_error = getattr(app.state, "warm_error", None)
+    # `degraded`, not a non-200: the corpus is still served correctly — every consumer of the warm
+    # caches falls back to a per-request query — so failing the healthcheck would take down a server
+    # that works. What must not happen is `ok` alongside counts that will never arrive.
+    body = {
+        "status": "degraded" if warm_error else "ok",
+        "source_documents": getattr(app.state, "source_documents", None),
+    }
     if counts is not None:
         body["documents"] = sum(counts.values())
         body["by_source"] = counts
     else:
         body["documents"] = None
         body["by_source"] = {}
+    if warm_error:
+        # Set even when the counts DID land: the warm-up fills three caches in sequence, so a
+        # failure part-way leaves some of them populated. `degraded` without the reason is a worse
+        # answer than either "ok" or a plain failure.
+        body["warm_error"] = warm_error
     return body
 
 

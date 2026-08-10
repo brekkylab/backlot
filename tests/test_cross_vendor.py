@@ -12,6 +12,8 @@ these share are in ``tests/_helpers.py``.
 from __future__ import annotations
 
 
+import sqlite3
+
 import pytest
 
 from backlot.config import Settings
@@ -176,6 +178,76 @@ def test_health_reports_both_counts(tmp_path):
     assert body["status"] == "ok"
     assert body["source_documents"] == 1
     assert body["documents"] == 2
+
+
+def _one_slack_doc(tmp_path):
+    return build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "author_email": "bob@acme.com",
+                "content": "Anyone seeing 502s?",
+            },
+        ],
+    )
+
+
+def test_a_failing_warm_up_is_recorded_instead_of_dying_with_its_thread(tmp_path, monkeypatch):
+    """The warm-up runs in a daemon thread, so an exception inside it used to vanish with the thread.
+
+    Every cache then stayed None, which each consumer reads as "not warm yet" — the Slack routes fall
+    back to per-request queries and keep answering correctly — so nothing 500d, nothing retried, and
+    a broken warm-up was indistinguishable from a slow one for the life of the process.
+    """
+    from backlot import main as main_module
+    from backlot import store
+
+    settings = _one_slack_doc(tmp_path)
+    # The thread is the only caller of this, so patching it cannot disturb the serving path.
+    monkeypatch.setattr(
+        store,
+        "slack_channel_member_counts",
+        lambda conn: (_ for _ in ()).throw(sqlite3.OperationalError("no such table: whatever")),
+    )
+    with client_for(settings, reload=True) as client:
+        _join_warm_thread(main_module)
+        assert main_module.app.state.warm_error, "the failure was swallowed"
+        response = client.get("/health")
+        body = response.json()
+
+    assert response.status_code == 200, "a working server must not fail its own healthcheck"
+    assert body["status"] == "degraded", body
+    # Reported even though the earlier caches DID land: the warm-up fills three in sequence, and
+    # `degraded` without the reason is a worse answer than either "ok" or a plain failure.
+    assert "no such table" in body["warm_error"], body
+
+    # Still degraded rather than down — the corpus reads correctly through the fallback path.
+    admin = {"Authorization": f"Bearer {settings.admin_token}"}
+    with client_for(settings) as client:
+        listed = client.get("/slack/api/conversations.list", headers=admin).json()
+    assert [c["name"] for c in listed["channels"]] == ["incidents"]
+
+
+def test_health_reports_degraded_when_no_counts_ever_landed(tmp_path):
+    """The shape a total warm-up failure leaves: no counts, and an error to explain them.
+
+    Asserted on the rendering rather than by breaking the thread, because what a load balancer and
+    an operator see is this body — previously `status: "ok"` with `documents: null` forever.
+    """
+    from backlot import main as main_module
+
+    settings = _one_slack_doc(tmp_path)
+    with client_for(settings, reload=True) as client:
+        _join_warm_thread(main_module)
+        main_module.app.state.doc_counts = None
+        main_module.app.state.warm_error = "OperationalError: unable to open database file"
+        body = client.get("/health").json()
+
+    assert body["status"] == "degraded", body
+    assert body["documents"] is None and body["by_source"] == {}
+    assert body["warm_error"] == "OperationalError: unable to open database file"
 
 
 def test_health_source_documents_is_null_without_the_meta_key(tmp_path):

@@ -532,33 +532,29 @@ def load_roster(path) -> dict:
     """
     data = yaml.safe_load(Path(path).read_text()) or {}
 
-    def _primary(raw) -> str | None:
-        """A contact's singular ``group:``, tolerating the plural shape.
+    def _slugs(raw) -> list[str]:
+        """One roster field — ``group:`` or ``groups:`` — in any shape, as group ids.
 
-        ``groups:`` accepts a scalar because the sibling field is one, and adding the plural
-        makes the mirror slip likelier — a list under ``group:`` reached ``slugify`` and
-        raised ``AttributeError: 'list' object has no attribute 'lower'``, which names
-        neither the file nor the key. A list here means its first entry, and the rest are
-        read as extra memberships by the caller."""
-        if isinstance(raw, (list, tuple)):
-            raw = next((g for g in raw if g), None)
-        return slugify(str(raw)) if raw else None
+        The two fields differ only in which membership they NAME, never in how they are
+        written, so one reader serves both and neither shape can be a slip. A sequence is
+        each of its entries; anything else is a single group, so a scalar (a string, or a
+        bare ``2024`` that YAML hands over as an int) is one group rather than a character
+        sequence or a ``TypeError``. Slugified once here, so no caller does it twice."""
+        items = raw if isinstance(raw, (list, tuple)) else [raw]
+        return [s for s in (slugify(str(g)) for g in items if g) if s]
+
+    def _primary(raw) -> str | None:
+        # The membership an entry's own `group:` names. A list means its first entry; the rest
+        # are not dropped, `_groups` reads the whole field again as extra memberships.
+        return next(iter(_slugs(raw)), None)
 
     def _groups(entry: dict, primary: str | None) -> list[str]:
-        # The department (or `group`) membership first, then the entry's extra `groups`, each
-        # slugified once — dict.fromkeys keeps first occurrence so a repeat never doubles a row.
-        # A scalar `groups:` is one group, not a character sequence (the sibling `group:` field
-        # is a scalar, so the shape is a natural slip), and a bare number slugifies as text.
-        raw = entry.get("groups")
-        raw = [raw] if isinstance(raw, str) else (raw or [])
-        # A list written under the singular `group:` keeps every entry: `_primary` took the
-        # first as the primary membership, and dropping the rest silently would trade one
-        # crash for one quiet loss.
-        singular = entry.get("group")
-        if isinstance(singular, (list, tuple)):
-            raw = list(raw) + list(singular)
-        listed = [slugify(str(g)) for g in raw if g]
-        return [g for g in dict.fromkeys(([primary] if primary else []) + listed) if g]
+        # The primary membership first — a department entry's is its department, a contact's is
+        # its own `group:` — then everything either field names. dict.fromkeys keeps first
+        # occurrence, so a group repeated across the two fields never doubles a row, and a
+        # `group:` on a department entry is read rather than silently dropped.
+        listed = _slugs(entry.get("group")) + _slugs(entry.get("groups"))
+        return list(dict.fromkeys(([primary] if primary else []) + listed))
 
     users: dict[str, dict] = {}
 

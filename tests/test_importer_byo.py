@@ -2164,3 +2164,37 @@ def test_byo_roster_a_list_under_the_singular_group_key_is_read_not_crashed(tmp_
     users = load_roster(roster)["users"]
     assert set(users["a@x.com"]["groups"]) == {"engineering", "security"}
     assert users["b@x.com"]["groups"] == ["engineering"]  # the scalar path is unchanged
+
+
+def test_byo_roster_group_and_groups_read_the_same_in_every_shape(tmp_path):
+    """Neither field's meaning may depend on how it is written. A department entry's own
+    `group:` was read only as a list, so the scalar — the likelier spelling — vanished
+    without a word; and a `groups:` scalar was read only as a string, so a bare `2024`
+    raised while `[2024]` slugified. One reader for both fields makes the shapes uniform."""
+    from backlot.importer.byo import load_roster
+
+    roster = tmp_path / "roster.yaml"
+    roster.write_text(
+        yaml.safe_dump(
+            {
+                "departments": {
+                    "Engineering": [
+                        {"email": "a@x.com", "group": "squad-checkout"},
+                        {"email": "b@x.com", "group": ["squad-checkout", "squad-ledger"]},
+                        {"email": "c@x.com", "groups": 2024},
+                        {"email": "d@x.com", "groups": [2024]},
+                        {"email": "e@x.com", "group": "squad-checkout", "groups": "squad-checkout"},
+                    ]
+                }
+            }
+        )
+    )
+    users = load_roster(roster)["users"]
+    # A department entry's `group:` is an extra membership, whichever shape states it.
+    assert users["a@x.com"]["groups"] == ["engineering", "squad-checkout"]
+    assert users["b@x.com"]["groups"] == ["engineering", "squad-checkout", "squad-ledger"]
+    # A bare number is one group named "2024", not a TypeError and not its digits.
+    assert users["c@x.com"]["groups"] == ["engineering", "2024"]
+    assert users["d@x.com"]["groups"] == users["c@x.com"]["groups"]
+    # Naming one group across both fields still yields one row.
+    assert users["e@x.com"]["groups"] == ["engineering", "squad-checkout"]

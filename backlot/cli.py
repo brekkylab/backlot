@@ -1,32 +1,53 @@
-"""The ``backlot`` console script — one entry point for serving and for building ``data/``.
-
-Two commands, each a thin front end over code that already existed:
+"""The ``backlot`` console script — every command and every option it accepts, declared here.
 
     backlot serve                       # uvicorn backlot.main:app, with uvicorn's own defaults
     backlot import <corpus.jsonl>       # backlot.importer.byo   (--type byo, the default)
     backlot import --type erb           # backlot.importer.erb
+    backlot status                      # what the data dir currently holds
 
-``import`` dispatches on ``--type`` and then hands the REMAINING argv to that importer's own
-``main``, so every flag, default and message stays defined in exactly one place — the importer.
-Nothing is re-declared here, which is why ``backlot import --dry-run`` and
-``python -m backlot.importer.byo --dry-run`` cannot drift apart.
+This module is the ONE place the command line is defined. The importers used to declare their own
+flags in their own ``argparse`` parsers, which meant ``backlot import --help`` was assembled from
+three files and reading this one told you almost nothing. Each importer now exposes a plain
+``run(...)`` taking keyword arguments, and the flags that drive it are the parameters below.
 
-``python -m backlot.importer.{byo,erb}`` still work unchanged; this is a shorter spelling of them,
-not a replacement.
+``import`` is a single command rather than one per corpus type, so the two importers' options share
+a help screen; the ``rich_help_panel`` on each option is what keeps them legible as two groups.
+Since one command now accepts both sets, a mix that belongs to neither importer is rejected
+explicitly — see ``_reject_flags_for_the_other_importer``.
 """
 
 from __future__ import annotations
 
-import argparse
+import os
 import sys
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from typing import Annotated, Optional
 
-# Imported lazily inside each command, not here: `serve` must not pay for the importers' module
-# import (backlot.importer.erb alone is 2,400 lines), and `import` must not pull in uvicorn.
+import typer
 
-# --type value -> the module implementing it. `erb` is accepted beside the full bench name because
-# that is what the module, the tests and every existing doc call it.
-IMPORTER_TYPES = ("byo", "enterpriserag-bench", "erb")
+# The importers and uvicorn are imported inside each command, not here: `serve` must not pay for
+# `backlot.importer.erb` (2,400 lines) and `import` must not pull in uvicorn.
+
+# --type value -> the importer it selects. `erb` is accepted beside the full bench name because that
+# is what the module, the tests and every existing doc call it.
+BYO, BENCH, BENCH_ALIAS = "byo", "enterpriserag-bench", "erb"
+IMPORTER_TYPES = (BYO, BENCH, BENCH_ALIAS)
+
+_BYO_PANEL = "BYO corpus options (--type byo)"
+_BENCH_PANEL = "EnterpriseRAG-Bench options (--type enterpriserag-bench)"
+
+app = typer.Typer(
+    name="backlot",
+    # Bare `backlot` prints the command list instead of a usage error. A CLI whose whole surface is
+    # three commands has nothing to gain from making you type `--help` to see them.
+    no_args_is_help=True,
+    add_completion=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+    help="Enterprise SaaS read APIs (Slack, Gmail, Drive, GitHub, Jira, Confluence, Notion, S3, "
+    "HubSpot, Linear, Fireflies) over your own corpus, with per-document ACLs.",
+    epilog="Run `backlot <command> --help` for a command's own options.",
+)
 
 
 def _version() -> str:
@@ -36,128 +57,423 @@ def _version() -> str:
         return "unknown"
 
 
-def _type_arg(ap: argparse.ArgumentParser) -> None:
-    """Declare ``--type`` on ``ap``. Called for the dispatch parser and again for the parser that
-    renders ``--help``, so the flag is defined once and both spellings cannot disagree."""
-    ap.add_argument(
-        "--type",
-        "-t",
-        dest="corpus_type",
-        default="byo",
-        choices=IMPORTER_TYPES,
-        metavar="{byo,enterpriserag-bench}",
-        help="what kind of corpus to import: `byo` (default) reads a BYO-JSONL corpus, a "
-        "`.jsonl.gz`, or a sharded artifact directory; `enterpriserag-bench` (alias `erb`) "
-        "downloads and imports EnterpriseRAG-Bench. The remaining options are that "
-        "importer's own — see `backlot import --type <t> --help`",
-    )
+def _use_data_dir(data_dir: Path | None) -> None:
+    """Point this run's settings at ``data_dir``.
 
-
-def _serve(argv: list[str]) -> int:
-    """Run the ASGI app under uvicorn.
-
-    Every default here is uvicorn's own (127.0.0.1:8000, proxy headers on), so this is a shorter
-    spelling of `python -m uvicorn backlot.main:app` and not a second set of behaviour to keep in
-    step with it. The app is passed as an import STRING because that is what `--reload` requires.
+    Written through the environment and the settings cache rather than by passing a path down every
+    call: ``Settings`` reads ``BACKLOT_DATA_DIR`` and ``get_settings`` is ``lru_cache``d, so this is
+    the same mechanism the env var itself uses — and the same one the test suite uses to aim a run at
+    a tmp dir — instead of a second way for a data dir to arrive.
     """
-    ap = argparse.ArgumentParser(
-        prog="backlot serve",
-        description="Serve the mock APIs over the corpus in the data dir (BACKLOT_DATA_DIR). "
-        "The corpus has to exist — build one with `backlot import` first.",
-    )
-    ap.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
-    ap.add_argument("--port", type=int, default=8000, help="bind port (default: 8000)")
-    ap.add_argument("--reload", action="store_true", help="restart on source changes (development)")
-    ap.add_argument(
-        "--log-level",
-        default=None,
-        choices=("critical", "error", "warning", "info", "debug", "trace"),
-        help="uvicorn log level (default: info)",
-    )
-    # Behind a TLS-terminating proxy/ALB these two make the app honour X-Forwarded-Proto/Host and
-    # emit https self-URLs, which clients that follow returned URLs (PyGithub) need. On by default
-    # in uvicorn, so the flag that carries weight is the negative one.
-    ap.add_argument(
-        "--no-proxy-headers",
-        dest="proxy_headers",
-        action="store_false",
-        help="ignore X-Forwarded-* headers (uvicorn honours them by default)",
-    )
-    ap.add_argument(
-        "--forwarded-allow-ips",
-        default=None,
-        metavar="IPS",
-        help="comma-separated proxy IPs to trust X-Forwarded-* from, or * for any "
-        "(default: 127.0.0.1)",
-    )
-    args = ap.parse_args(argv)
+    if data_dir is None:
+        return
+    from backlot.config import get_settings
+
+    os.environ["BACKLOT_DATA_DIR"] = str(data_dir)
+    get_settings.cache_clear()
+
+
+DataDir = Annotated[
+    Optional[Path],
+    typer.Option(
+        "--data-dir",
+        metavar="DIR",
+        help="where the corpus lives (overrides BACKLOT_DATA_DIR) — how you keep several "
+        "corpora side by side  [default: ./data]",
+        rich_help_panel="Common",
+    ),
+]
+
+
+@app.callback(invoke_without_command=True)
+def _root(
+    version_: Annotated[
+        bool,
+        typer.Option("--version", help="show the installed version and exit", is_eager=True),
+    ] = False,
+) -> None:
+    if version_:
+        typer.echo(f"backlot {_version()}")
+        raise typer.Exit()
+
+
+# --------------------------------------------------------------------------- serve
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option(help="bind address")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="bind port")] = 8000,
+    # "--reload" spelled out, not left to typer: a bool option with no explicit name renders as a
+    # `--reload/--no-reload` pair, and `--no-reload` is a flag this CLI never had.
+    reload: Annotated[
+        bool, typer.Option("--reload", help="restart on source changes (development)")
+    ] = False,
+    log_level: Annotated[
+        Optional[str],
+        typer.Option(
+            help="uvicorn log level: critical|error|warning|info|debug|trace  [default: info]"
+        ),
+    ] = None,
+    # Behind a TLS-terminating proxy/ALB, proxy headers make the app honour X-Forwarded-Proto/Host
+    # and emit https self-URLs, which clients that follow returned URLs (PyGithub) need. uvicorn has
+    # them on by default, so the flag that carries weight is the negative one.
+    proxy_headers: Annotated[
+        bool,
+        typer.Option(
+            "--proxy-headers/--no-proxy-headers",
+            help="honour X-Forwarded-* headers (uvicorn's default is on)",
+        ),
+    ] = True,
+    forwarded_allow_ips: Annotated[
+        Optional[str],
+        typer.Option(
+            metavar="IPS",
+            help="comma-separated proxy IPs to trust X-Forwarded-* from, or * for any "
+            "[default: 127.0.0.1]",
+        ),
+    ] = None,
+    data_dir: DataDir = None,
+) -> None:
+    """Serve the mock APIs over the corpus in the data dir.
+
+    Every default here is uvicorn's own, so this is a shorter spelling of `python -m uvicorn backlot.main:app` rather than a second set of behaviour to keep in step with it.
+    """  # noqa: E501 — one source line per paragraph: typer renders a docstring newline as a line break, so a wrapped paragraph reaches the help screen broken mid-sentence.
+    _use_data_dir(data_dir)
+    from backlot.config import get_settings
+
+    settings = get_settings()
+    # Checked before uvicorn starts: without it the process prints its startup banner, binds the
+    # port, and only then fails inside the lifespan on a missing file — which reads as a broken
+    # install rather than an empty data dir.
+    if not settings.db_path.exists():
+        typer.echo(
+            f"no corpus in {settings.data_dir} ({settings.db_path.name} is missing).\n"
+            f"Build one first:  backlot import --bundled     # the corpus shipped in the package\n"
+            f"                  backlot import <corpus.jsonl>",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     import uvicorn
 
+    # The app is passed as an import STRING because that is what --reload requires.
     uvicorn.run(
         "backlot.main:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        log_level=args.log_level,
-        proxy_headers=args.proxy_headers,
-        forwarded_allow_ips=args.forwarded_allow_ips,
+        host=host,
+        port=port,
+        reload=reload,
+        log_level=log_level,
+        proxy_headers=proxy_headers,
+        forwarded_allow_ips=forwarded_allow_ips,
     )
-    return 0
 
 
-def _import(argv: list[str]) -> int:
-    """Dispatch to one importer's ``main`` with the rest of the argv untouched."""
-    # add_help=False and parse_known_args: everything that is not --type belongs to the importer,
-    # including -h, which is answered below against the CHOSEN importer's parser so one help
-    # screen shows both --type and that importer's own flags.
-    pre = argparse.ArgumentParser(prog="backlot import", add_help=False)
-    _type_arg(pre)
-    args, rest = pre.parse_known_args(argv)
+# --------------------------------------------------------------------------- import
 
-    if args.corpus_type == "byo":
-        from backlot.importer import byo as importer
-    else:
-        from backlot.importer import erb as importer
-
-    if any(a in ("-h", "--help") for a in rest):
-        ap = importer.build_parser(prog="backlot import")
-        _type_arg(ap)
-        ap.print_help()
-        return 0
-    return importer.main(rest, prog="backlot import")
-
-
-COMMANDS = {"serve": _serve, "import": _import}
+# Which options belong to which importer, and the default that means "not given". Kept as data so
+# the check below names the offending flags in the user's own spelling.
+_BYO_ONLY: dict[str, object] = {
+    "--bundled": False,
+    "--append": False,
+    "--dry-run": False,
+    "--roster": None,
+}
+_BENCH_ONLY: dict[str, object] = {
+    "--slice-questions": None,
+    "--ref": "main",
+    "--no-download": False,
+    "--tokens-only": False,
+    "--export-byo": None,
+    "--shard-records": None,
+    "--allow-excluded": 0,
+}
 
 
-def _top_parser() -> argparse.ArgumentParser:
-    """The parser for ``backlot`` itself — help, --version, and the command list.
+def _reject_flags_for_the_other_importer(chosen: str, supplied: dict[str, object]) -> None:
+    """Fail when an option belongs to the importer that was NOT chosen.
 
-    The subcommands are declared for the help listing only; `main` dispatches on argv before this
-    parser ever runs, so a command's own flags (`backlot serve --reload`) are never parsed here.
+    Two disjoint argparse parsers made this impossible to express; one command accepting both sets
+    makes `--type erb --dry-run` typable, and it would otherwise be silently ignored. Named
+    explicitly because "unrecognized argument" is not what happened — the flag is real, just not for
+    this importer.
     """
-    ap = argparse.ArgumentParser(
-        prog="backlot",
-        description="Enterprise SaaS read APIs (Slack, Gmail, Drive, GitHub, Jira, Confluence, "
-        "Notion, S3, HubSpot, Linear, Fireflies) over your own corpus, with per-document ACLs.",
-        epilog="Run `backlot <command> --help` for a command's own options.",
+    wrong = _BENCH_ONLY if chosen == BYO else _BYO_ONLY
+    offenders = [flag for flag, unset in wrong.items() if supplied[flag] != unset]
+    if not offenders:
+        return
+    other = BENCH if chosen == BYO else BYO
+    raise typer.BadParameter(
+        f"{', '.join(offenders)} {'belongs' if len(offenders) == 1 else 'belong'} to "
+        f"--type {other}, and --type {chosen} is in effect"
     )
-    ap.add_argument("--version", action="version", version=f"backlot {_version()}")
-    sub = ap.add_subparsers(dest="command", required=True, metavar="<command>")
-    sub.add_parser("serve", help="run the mock API server")
-    sub.add_parser("import", help="build the data dir from a corpus (--type byo | erb)")
-    return ap
+
+
+@app.command("import")
+def import_(
+    corpus: Annotated[
+        Optional[Path],
+        # No rich_help_panel: typer renders arguments in a panel of their own even when it shares a
+        # title with an options panel, so naming it _BYO_PANEL printed that heading twice. The help
+        # text carries the `--type byo` qualifier instead.
+        typer.Argument(
+            help="[--type byo] a JSONL corpus file, a .jsonl.gz, or a directory holding "
+            "manifest.json + data/<source>/part-*.jsonl.gz shards",
+        ),
+    ] = None,
+    corpus_type: Annotated[
+        str,
+        typer.Option(
+            "--type",
+            "-t",
+            metavar="{byo,enterpriserag-bench}",
+            help="what kind of corpus to import: `byo` reads a BYO-JSONL corpus, a `.jsonl.gz`, or "
+            "a sharded artifact directory; `enterpriserag-bench` (alias `erb`) downloads and "
+            "imports EnterpriseRAG-Bench",
+            rich_help_panel="Common",
+        ),
+    ] = BYO,
+    data_dir: DataDir = None,
+    # --- BYO ---------------------------------------------------------------
+    bundled: Annotated[
+        bool,
+        typer.Option(
+            "--bundled",
+            help="load the hello-world corpus bundled with the package instead of a path of your "
+            "own — the one thing an install from a wheel can serve with no data to hand",
+            rich_help_panel=_BYO_PANEL,
+        ),
+    ] = False,
+    append: Annotated[
+        bool,
+        typer.Option(
+            "--append",
+            help="add to the existing DB instead of resetting",
+            rich_help_panel=_BYO_PANEL,
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="validate the corpus only; don't touch the DB",
+            rich_help_panel=_BYO_PANEL,
+        ),
+    ] = False,
+    roster: Annotated[
+        Optional[Path],
+        typer.Option(
+            help="roster YAML naming the corpus's principals; with it, principals/groups/tokens "
+            "come from the file instead of from the records",
+            rich_help_panel=_BYO_PANEL,
+        ),
+    ] = None,
+    # --- EnterpriseRAG-Bench -----------------------------------------------
+    slice_questions: Annotated[
+        Optional[Path],
+        typer.Option(
+            help="only import docs referenced (expected_doc_ids) by this questions JSONL",
+            rich_help_panel=_BENCH_PANEL,
+        ),
+    ] = None,
+    ref: Annotated[
+        str,
+        typer.Option(help="EnterpriseRAG-Bench branch/ref to fetch", rich_help_panel=_BENCH_PANEL),
+    ] = "main",
+    no_download: Annotated[
+        bool,
+        typer.Option(
+            "--no-download",
+            help="reuse cached data/raw/generated_data; skip fetching",
+            rich_help_panel=_BENCH_PANEL,
+        ),
+    ] = False,
+    tokens_only: Annotated[
+        bool,
+        typer.Option(
+            "--tokens-only",
+            help="resolve the roster and write tokens.yaml WITHOUT building the DB (fast)",
+            rich_help_panel=_BENCH_PANEL,
+        ),
+    ] = False,
+    export_byo: Annotated[
+        Optional[Path],
+        typer.Option(
+            metavar="DIR",
+            help="write a BYO-JSONL artifact into DIR instead of building the DB: "
+            "corpus.jsonl + roster.yaml, or shards + manifest.json with --shard-records; "
+            "`backlot import` loads either to an equivalent DB",
+            rich_help_panel=_BENCH_PANEL,
+        ),
+    ] = None,
+    shard_records: Annotated[
+        Optional[int],
+        typer.Option(
+            metavar="N",
+            help="with --export-byo: write data/<source>/part-*.jsonl.gz shards of N records "
+            "each plus manifest.json, instead of one corpus.jsonl",
+            rich_help_panel=_BENCH_PANEL,
+        ),
+    ] = None,
+    allow_excluded: Annotated[
+        int,
+        typer.Option(
+            metavar="N",
+            help="proceed with up to N empty-content documents that KNOWN_EMPTY_DOCS does not name "
+            "(0: any undeclared exclusion stops the run)",
+            rich_help_panel=_BENCH_PANEL,
+        ),
+    ] = 0,
+) -> None:
+    """Build the data dir from a corpus.
+
+    Two importers behind one command, chosen with --type. The options below are grouped by the importer they drive; passing one importer's option while the other is selected is an error rather than silently ignored.
+    """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
+    if corpus_type not in IMPORTER_TYPES:
+        raise typer.BadParameter(
+            f"{corpus_type!r} is not one of {', '.join(IMPORTER_TYPES)}", param_hint="'--type'"
+        )
+    chosen = BYO if corpus_type == BYO else BENCH
+    _reject_flags_for_the_other_importer(
+        chosen,
+        {
+            "--bundled": bundled,
+            "--append": append,
+            "--dry-run": dry_run,
+            "--roster": roster,
+            "--slice-questions": slice_questions,
+            "--ref": ref,
+            "--no-download": no_download,
+            "--tokens-only": tokens_only,
+            "--export-byo": export_byo,
+            "--shard-records": shard_records,
+            "--allow-excluded": allow_excluded,
+        },
+    )
+    _use_data_dir(data_dir)
+
+    if chosen == BYO:
+        if bundled == bool(corpus):
+            # Exactly one source. Both mistakes are named in one message because a reader who typed
+            # neither needs to learn that --bundled exists, and one who typed both needs to learn
+            # they conflict.
+            raise typer.BadParameter(
+                "give a corpus path or --bundled (the corpus bundled with the package), not both",
+                param_hint="'CORPUS'",
+            )
+        if bundled:
+            from backlot.testing import HELLO_CORPUS
+
+            corpus = HELLO_CORPUS
+
+        from backlot.importer import byo
+
+        raise typer.Exit(byo.run(corpus, append=append, dry_run=dry_run, roster=roster))
+
+    if shard_records is not None:
+        if shard_records < 1:
+            # 0 makes `n >= shard_records` always true: one shard per record, 600k files for the
+            # bench, which is the very thing sharding was added to avoid.
+            raise typer.BadParameter("must be at least 1", param_hint="'--shard-records'")
+        if export_byo is None:
+            # Silently ignored before this check existed, so a sharded export could be asked for and
+            # a database built instead.
+            raise typer.BadParameter(
+                "only means anything with --export-byo", param_hint="'--shard-records'"
+            )
+
+    from backlot.importer import erb
+
+    raise typer.Exit(
+        erb.run(
+            slice_questions=slice_questions,
+            ref=ref,
+            no_download=no_download,
+            tokens_only=tokens_only,
+            export_byo_dir=export_byo,
+            shard_records=shard_records,
+            allow_excluded=allow_excluded,
+        )
+    )
+
+
+# --------------------------------------------------------------------------- status
+
+
+@app.command()
+def status(data_dir: DataDir = None) -> None:
+    """Report what the data dir holds: the corpus, its per-source counts, and the roster size.
+
+    Answers "did my import land, and what is in it" without starting a server or opening sqlite by hand. Exits 1 when there is no corpus, so it works as a shell guard.
+    """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
+    _use_data_dir(data_dir)
+    from backlot.config import get_settings
+
+    settings = get_settings()
+    typer.echo(f"data dir: {settings.data_dir}")
+    if not settings.db_path.exists():
+        typer.echo(f"corpus:   none ({settings.db_path.name} is missing)")
+        typer.echo("Build one with `backlot import --bundled` or `backlot import <corpus.jsonl>`.")
+        raise typer.Exit(1)
+
+    from backlot import store
+
+    conn = store.connect_ro(settings.db_path)
+    try:
+        counts = {
+            src: conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+            for src, tbl in store.SOURCE_TABLE.items()
+        }
+        # None on a DB built before the meta table existed; the counts above are rows, and parsing
+        # turns one Slack transcript into many message rows, so the two numbers differ by design.
+        source_docs = store.read_meta(conn, "source_documents")
+    finally:
+        conn.close()
+
+    typer.echo(f"corpus:   {settings.db_path} ({settings.db_path.stat().st_size / 1e6:.1f} MB)")
+    typer.echo(
+        f"documents: {sum(counts.values())} rows"
+        + (f" from {source_docs} source documents" if source_docs else "")
+    )
+    for src, n in sorted(counts.items()):
+        if n:
+            typer.echo(f"  {src:14s} {n}")
+    empty = sorted(src for src, n in counts.items() if not n)
+    if empty:
+        typer.echo(f"  (no documents: {', '.join(empty)})")
+
+    if settings.tokens_path.exists():
+        import yaml
+
+        data = yaml.safe_load(settings.tokens_path.read_text()) or {}
+        users = data.get("users") or {}
+        typer.echo(
+            f"tokens:   {len(users)} in {settings.tokens_path.name}, org {data.get('org', '?')}"
+        )
+    else:
+        typer.echo(f"tokens:   none ({settings.tokens_path.name} is missing)")
 
 
 def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in COMMANDS:
-        return COMMANDS[argv[0]](argv[1:])
-    # No command, an unknown one, or a global flag: let argparse answer it. `--help`/`--version`
-    # exit 0 from inside parse_args; anything else is a usage error, which exits 2.
-    _top_parser().parse_args(argv)
-    return 2  # unreachable: parse_args above always exits when no command was dispatched
+    """Entry point for the console script, ``python -m backlot``, and the tests.
+
+    Returns an exit code rather than raising, so callers can drive it as a function.
+
+    Runs the app in click's STANDALONE mode and translates the ``SystemExit`` it raises, instead of
+    passing ``standalone_mode=False`` and catching the exceptions itself: typer vendors its own copy
+    of click (``typer._click``), so ``typer.BadParameter is click.BadParameter`` is False and a
+    usage error is not an instance of anything importable from the top-level ``click``. Standalone
+    mode is also what formats those errors, so this way the message a user sees is typer's own.
+
+    ``prog_name`` is passed because ``sys.argv[0]`` is the interpreter under ``python -m`` and
+    ``-c``, which would otherwise appear in every usage line and help screen.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    try:
+        app(args=args, prog_name="backlot")
+    except SystemExit as e:
+        return int(e.code or 0)
+    return 0
 
 
 if __name__ == "__main__":

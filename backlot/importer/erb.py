@@ -18,7 +18,6 @@ Only ``curl`` is used to fetch (no ``gh`` / no auth).
 
 from __future__ import annotations
 
-import argparse
 import datetime as _dt
 import gzip
 import hashlib
@@ -2325,127 +2324,76 @@ def import_structured(settings, gen_dir, *, question_ids=None, allow_excluded=0)
     return counts
 
 
-def build_parser(prog: str | None = None) -> argparse.ArgumentParser:
-    """This importer's own argument parser.
+def run(
+    *,
+    slice_questions: Path | None = None,
+    ref: str = "main",
+    no_download: bool = False,
+    tokens_only: bool = False,
+    export_byo_dir: Path | None = None,
+    shard_records: int | None = None,
+    allow_excluded: int = 0,
+) -> int:
+    """Fetch the bench and build the DB (or export it, or write only the roster).
 
-    Split out from :func:`main` so ``backlot.cli`` can render ``backlot import --type erb --help`` —
-    the flags below plus its own ``--type`` — as ONE help screen, without redeclaring any of them
-    there. ``prog`` names the command in usage and error messages.
+    Takes keyword arguments rather than an argv list: the command line that reaches this lives in
+    ``backlot.cli``, which is where every flag and its help text is declared. ``export_byo_dir``
+    rather than ``export_byo`` because :func:`export_byo` is the function it calls.
     """
-    ap = argparse.ArgumentParser(
-        prog=prog,
-        description="Import EnterpriseRAG-Bench (faithful, structured) into the mock DB.",
-    )
-    ap.add_argument(
-        "--slice-questions",
-        type=Path,
-        default=None,
-        help="only import docs referenced (expected_doc_ids) by this questions JSONL",
-    )
-    ap.add_argument(
-        "--ref", default="main", help="EnterpriseRAG-Bench branch/ref to fetch (default: main)"
-    )
-    ap.add_argument(
-        "--no-download",
-        action="store_true",
-        help="reuse cached data/raw/generated_data; skip fetching",
-    )
-    ap.add_argument(
-        "--tokens-only",
-        action="store_true",
-        help="resolve the roster and write tokens.yaml WITHOUT building the DB (fast)",
-    )
-    ap.add_argument(
-        "--export-byo",
-        type=Path,
-        default=None,
-        metavar="DIR",
-        help="write a BYO-JSONL artifact into DIR instead of building the DB: "
-        "corpus.jsonl + roster.yaml, or shards + manifest.json with "
-        "--shard-records; `backlot import` loads either to an equivalent DB",
-    )
-    ap.add_argument(
-        "--shard-records",
-        type=int,
-        default=None,
-        metavar="N",
-        help="with --export-byo: write data/<source>/part-*.jsonl.gz shards of N "
-        "records each plus manifest.json, instead of one corpus.jsonl",
-    )
-    ap.add_argument(
-        "--allow-excluded",
-        type=int,
-        default=0,
-        metavar="N",
-        help="proceed with up to N empty-content documents that KNOWN_EMPTY_DOCS does "
-        "not name (default 0: any undeclared exclusion stops the run)",
-    )
-    return ap
-
-
-def main(argv: list[str], prog: str | None = None) -> int:
-    ap = build_parser(prog)
-    args = ap.parse_args(argv)
-    if args.shard_records is not None and args.shard_records < 1:
-        # 0 makes `n >= shard_records` always true: one shard per record, 600k files for the bench,
-        # which is the very thing sharding was added to avoid.
-        ap.error("--shard-records must be at least 1")
     settings = get_settings()
 
-    if args.no_download:
+    if no_download:
         gen_dir = bench_settings().raw_dir / "generated_data"
     else:
-        gen_dir = fetch_generated_data(settings, ref=args.ref)
+        gen_dir = fetch_generated_data(settings, ref=ref)
 
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(gen_dir / "employee_directory.yaml", employee_yaml(settings))
 
     question_ids = None
-    if args.slice_questions:
+    if slice_questions:
         question_ids = set()
-        for line in args.slice_questions.read_text().splitlines():
+        for line in Path(slice_questions).read_text().splitlines():
             line = line.strip()
             if not line:
                 continue
             question_ids.update(json.loads(line).get("expected_doc_ids", []))
 
-    if args.export_byo:
+    if export_byo_dir:
         counts = export_byo(
             settings,
             gen_dir,
-            args.export_byo,
+            export_byo_dir,
             question_ids=question_ids,
-            shard_records=args.shard_records,
-            allow_excluded=args.allow_excluded,
+            shard_records=shard_records,
+            allow_excluded=allow_excluded,
         )
         dest = (
-            f"{args.export_byo}/data/<source>/part-*.jsonl.gz + manifest.json"
-            if args.shard_records
-            else f"{args.export_byo}/corpus.jsonl"
+            f"{export_byo_dir}/data/<source>/part-*.jsonl.gz + manifest.json"
+            if shard_records
+            else f"{export_byo_dir}/corpus.jsonl"
         )
         print(f"Converted {sum(counts.values())} documents -> {dest}")
         for src, n in counts.items():
             print(f"  {src:14s} {n}")
         print(
-            f"Roster -> {args.export_byo}/roster.yaml "
+            f"Roster -> {export_byo_dir}/roster.yaml "
             f"(org {settings.org_name}, domain {settings.org_domain})"
         )
         print(
-            f"Load it with: backlot import {args.export_byo}/corpus.jsonl "
-            f"--roster {args.export_byo}/roster.yaml"
+            f"Load it with: backlot import {export_byo_dir}/corpus.jsonl "
+            f"--roster {export_byo_dir}/roster.yaml"
         )
         return 0
 
-    if args.tokens_only:
-        n = dump_tokens(
-            settings, gen_dir, question_ids=question_ids, allow_excluded=args.allow_excluded
-        )
+    if tokens_only:
+        n = dump_tokens(settings, gen_dir, question_ids=question_ids, allow_excluded=allow_excluded)
         print(f"Wrote {n} users to {settings.tokens_path} (roster only; no DB built)")
         print(f"Org: {settings.org_name} ({settings.org_domain})")
         return 0
 
     counts = import_structured(
-        settings, gen_dir, question_ids=question_ids, allow_excluded=args.allow_excluded
+        settings, gen_dir, question_ids=question_ids, allow_excluded=allow_excluded
     )
     print(f"Loaded {sum(counts.values())} documents into {settings.db_path}")
     for src, n in counts.items():
@@ -2455,4 +2403,8 @@ def main(argv: list[str], prog: str | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:], prog="python -m backlot.importer.erb"))
+    # `python -m backlot.importer.erb <flags>` is `backlot import -t erb <flags>`, re-entered through
+    # the CLI so the flags are parsed by the one parser that declares them.
+    from backlot.cli import main
+
+    raise SystemExit(main(["import", "-t", "erb", *sys.argv[1:]]))

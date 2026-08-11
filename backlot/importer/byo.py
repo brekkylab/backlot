@@ -61,14 +61,13 @@ Usage:  backlot import path/to/corpus.jsonl [--append | --dry-run] [--roster r.y
 
 from __future__ import annotations
 
-import argparse
 import gzip
 import hashlib
 import json
 import re
 import sys
 from collections.abc import Iterator
-from pathlib import Path  # noqa: F401  (kept for typing/backcompat)
+from pathlib import Path
 
 import yaml
 
@@ -1335,62 +1334,18 @@ def load_records(
     }
 
 
-def build_parser(prog: str | None = None) -> argparse.ArgumentParser:
-    """This importer's own argument parser.
+def run(
+    corpus: Path, *, append: bool = False, dry_run: bool = False, roster: Path | None = None
+) -> int:
+    """Load ``corpus`` into the mock DB (or, with ``dry_run``, only validate it).
 
-    Split out from :func:`main` so ``backlot.cli`` can render ``backlot import --help`` — the flags
-    below plus its own ``--type`` — as ONE help screen, without redeclaring any of them there.
-    ``prog`` names the command in usage and error messages ("backlot import" vs the module path).
+    Takes keyword arguments rather than an argv list: the command line that reaches this lives in
+    ``backlot.cli``, which is where every flag and its help text is declared. Nothing here parses
+    arguments, so there is no second place for a default to drift.
     """
-    ap = argparse.ArgumentParser(
-        prog=prog, description="Import (load) a BYO JSONL corpus into the mock DB."
-    )
-    ap.add_argument(
-        "corpus",
-        nargs="?",
-        help="a JSONL corpus file, a .jsonl.gz, or a directory holding "
-        "manifest.json + data/<source>/part-*.jsonl.gz shards",
-    )
-    ap.add_argument(
-        "--bundled",
-        action="store_true",
-        help="load the hello-world corpus bundled with the package instead of a path of your own — "
-        "the one thing an install from a wheel can serve with no data to hand",
-    )
-    ap.add_argument(
-        "--append", action="store_true", help="add to the existing DB instead of resetting"
-    )
-    ap.add_argument(
-        "--dry-run", action="store_true", help="validate the corpus only; don't touch the DB"
-    )
-    ap.add_argument(
-        "--roster",
-        type=Path,
-        default=None,
-        help="roster YAML naming the corpus's principals (see load_roster); with it, "
-        "principals/groups/tokens come from the file instead of from the records",
-    )
-    return ap
+    corpus = Path(corpus)
 
-
-def main(argv: list[str], prog: str | None = None) -> int:
-    ap = build_parser(prog)
-    args = ap.parse_args(argv)
-    if args.bundled == bool(args.corpus):
-        # Exactly one source, checked here rather than with a mutually-exclusive group so the
-        # message names both mistakes: `argparse` would say "not allowed with" for one and
-        # "required" for the other, and neither mentions --bundled as the way out.
-        ap.error("give a corpus path or --bundled (the corpus bundled with the package), not both")
-    if args.bundled:
-        # Local import: the constant lives with `mock_server`, which serves the same corpus, and
-        # nothing else in this module needs that module.
-        from backlot.testing import HELLO_CORPUS
-
-        corpus = HELLO_CORPUS
-    else:
-        corpus = Path(args.corpus)
-
-    if args.dry_run:
+    if dry_run:
         # A sharded artifact is checked against its manifest first: a truncated download is a
         # different failure from a bad record, and saying so is cheaper than a schema error.
         _verify_or_die(corpus)
@@ -1423,11 +1378,10 @@ def main(argv: list[str], prog: str | None = None) -> int:
     settings = get_settings()
     # A sharded artifact ships its own roster beside the manifest, so importing one takes the
     # directory and nothing else; `--roster` still wins when it is given.
-    roster = args.roster
     if roster is None and corpus.is_dir() and (corpus / "roster.yaml").exists():
         roster = corpus / "roster.yaml"
         print(f"using the artifact's own roster: {roster}", file=sys.stderr)
-    res = load(corpus, settings, reset=not args.append, roster=roster)
+    res = load(corpus, settings, reset=not append, roster=roster)
     print(f"Loaded {res['total']} documents into {settings.db_path}")
     for src, n in sorted(res["counts"].items()):
         print(f"  {src:14s} {n}")
@@ -1437,4 +1391,9 @@ def main(argv: list[str], prog: str | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:], prog="python -m backlot.importer.byo"))
+    # `python -m backlot.importer.byo <flags>` is `backlot import <flags>`, re-entered through the
+    # CLI so the flags are parsed by the one parser that declares them. Kept because CONTRIBUTING
+    # documents this spelling and it is what a source checkout without the console script has.
+    from backlot.cli import main
+
+    raise SystemExit(main(["import", *sys.argv[1:]]))

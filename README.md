@@ -26,6 +26,11 @@ backlot serve               # http://127.0.0.1:8000
 curl -s localhost:8000/health
 ```
 
+`backlot status` says what the data dir currently holds, `--data-dir DIR` points any command at a
+different one (so several corpora can sit side by side), and `backlot --install-completion` adds
+shell completion. `backlot <command> --help` lists a command's options — all of them are declared in
+[`backlot/cli.py`](backlot/cli.py).
+
 Or skip the CLI entirely and let a test spin one up on a free port, serving that same corpus
 (`pip install "backlot[examples]"` for the vendor SDKs the first snippet uses):
 

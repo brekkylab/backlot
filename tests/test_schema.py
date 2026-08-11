@@ -680,13 +680,32 @@ def test_a_validation_error_names_the_record_it_is_about():
     by_id = record_errors(
         {"source_type": "github", "title": "t", "content": "c", "doc_id": "d1", "subtype": "nope"}
     )
-    assert by_id and by_id[0].startswith("d1 subtype: ")
+    assert by_id and by_id[0].startswith("d1 [subtype]: ")
 
     by_title = record_errors({"source_type": "linear", "title": "Cutover plan", "nope": 1})
     assert by_title and all(e.startswith("Cutover plan") for e in by_title)
 
     anonymous = record_errors({"source_type": "github", "content": "c"})
     assert anonymous == ["<root>: 'title' is a required property"]
+
+
+def test_a_label_cannot_be_mistaken_for_the_field_path():
+    """A label is free text and a space does not close it. A record titled `subtype` whose
+    `subtype` field is wrong read "subtype subtype: ...", naming the field twice and marking
+    neither as the record — so the path is bracketed. The path's own spelling is untouched:
+    the slash form is what the rest of this suite pins."""
+    assert record_errors(
+        {"source_type": "github", "title": "subtype", "content": "c", "subtype": 9}
+    ) == ["subtype [subtype]: 9 is not one of ['issue', 'pull_request', 'file']"]
+
+    # A record-wide error has no path, so it gains no brackets either.
+    assert record_errors({"source_type": "github", "content": "c", "doc_id": "d"}) == [
+        "d: 'title' is a required property"
+    ]
+
+    # A record that gave no name still shows the bare path, as it did before labels existed.
+    nameless = record_errors({"source_type": "github", "title": "", "content": "c", "subtype": 9})
+    assert nameless and all(e.startswith("subtype: ") for e in nameless)
 
 
 def test_the_condition_clause_is_omitted_rather_than_guessed():

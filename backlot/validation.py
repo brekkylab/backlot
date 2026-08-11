@@ -150,8 +150,11 @@ def record_errors(rec: dict) -> list[str]:
     for err in sorted(_validator(st).iter_errors(rec), key=lambda e: list(e.path)):
         loc = "/".join(str(p) for p in err.path)
         # The record's own name says "the whole record" better than a placeholder does, so
-        # `<root>` is only there for a record that gave nothing to be called by.
-        head = " ".join(x for x in (label, loc) if x) or "<root>"
+        # `<root>` is only there for a record that gave nothing to be called by. The path is
+        # bracketed rather than set off by a space, because a label is free text and a space does
+        # not close: a record titled `subtype` with a bad `subtype` field read
+        # "subtype subtype: ...", naming the field twice and marking neither.
+        head = f"{label} [{loc}]" if label and loc else (label or loc or "<root>")
         msgs.append(f"{head}: {err.message}{_when_clause(SERVICE_SCHEMAS[st], err.schema_path)}")
     return msgs
 

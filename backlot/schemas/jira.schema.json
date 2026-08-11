@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brekkylab/backlot/schemas/jira.schema.json",
+  "title": "BYO corpus record — jira",
+  "description": "A Jira issue. Title -> summary, content -> description (ADF). `container` is the project. Use `parent` for subtasks.",
+  "type": "object",
+  "properties": {
+    "source_type": {
+      "const": "jira"
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The retrieval payload served verbatim as the body."
+    },
+    "title": {
+      "type": "string",
+      "description": "Document title (email subject / file name / issue title / page title)."
+    },
+    "doc_id": {
+      "type": "string",
+      "description": "Stable id (default: dsid_<sha256(source_type+title+content)>)."
+    },
+    "project": {
+      "type": "string",
+      "description": "The project this document belongs to (default: the source_type)."
+    },
+    "group": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ACL group owning the project (default: slug(container)); null means the container owns no group, so nothing is group-scoped to it."
+    },
+    "author_email": {
+      "type": "string",
+      "format": "email",
+      "description": "Author / sender / owner."
+    },
+    "author_name": {
+      "type": "string",
+      "description": "The owner's display name as the corpus writes it, served as the document's owner (a name is not recoverable from an email address)."
+    },
+    "author_groups": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Groups the author belongs to."
+    },
+    "visibility": {
+      "enum": [
+        "public",
+        "group",
+        "private"
+      ],
+      "description": "public = org-wide, group = the container's group, private = author only."
+    },
+    "readers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
+    },
+    "meta": {
+      "type": "object",
+      "description": "Free-form per-source structured extras merged into the record."
+    },
+    "subtype": {
+      "type": "string",
+      "description": "Free-form (issuetype is the canonical field)."
+    },
+    "parent": {
+      "type": "string",
+      "description": "doc_id of the parent issue (subtask)."
+    },
+    "status": {
+      "type": "string",
+      "description": "e.g. To Do, In Progress, Done."
+    },
+    "issuetype": {
+      "type": "string",
+      "description": "e.g. Task, Bug, Story, Incident, Sub-task."
+    },
+    "priority": {
+      "type": "string",
+      "description": "e.g. Low, Medium, High, Highest."
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "issuelinks": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "description": "Jira issuelink objects."
+    },
+    "changelog": {
+      "type": [
+        "array",
+        "object"
+      ],
+      "description": "Changelog histories."
+    },
+    "created": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "description": "fields.created (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+    },
+    "updated": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "description": "fields.updated (epoch seconds or ISO 8601). Default: created + 1h."
+    },
+    "assignee": {
+      "type": "string",
+      "format": "email",
+      "description": "Assignee email (emitted as fields.assignee). Default: unassigned (null)."
+    },
+    "reporter": {
+      "type": "string",
+      "format": "email",
+      "description": "Reporter email (emitted as fields.reporter). Default: the author."
+    },
+    "resolution": {
+      "type": "string",
+      "description": "Resolution name, e.g. Done, Won't Do (emitted as fields.resolution)."
+    },
+    "resolutiondate": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "description": "When the issue was resolved (epoch seconds or ISO 8601)."
+    },
+    "duedate": {
+      "type": "string",
+      "description": "Due date, YYYY-MM-DD (fields.duedate)."
+    },
+    "fix_versions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Fix version names (emitted as fields.fixVersions)."
+    },
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "A comment on the document (served via the vendor's comment API).",
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Comment text (alias: body)."
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Comment text (alias: content)."
+          },
+          "author_email": {
+            "type": "string",
+            "format": "email"
+          },
+          "author_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "Optional stable id (default: <doc_id>::c<n>)."
+          },
+          "created_ts": {
+            "type": [
+              "integer",
+              "number",
+              "string"
+            ],
+            "description": "Optional creation time (epoch seconds or ISO string)."
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "content"
+            ]
+          },
+          {
+            "required": [
+              "body"
+            ]
+          }
+        ],
+        "additionalProperties": false
+      }
+    },
+    "severity": {
+      "type": "string",
+      "description": "Incident severity (`Sev1`…), a separate axis from `priority` — how bad, not when to fix."
+    },
+    "squad": {
+      "type": "string",
+      "description": "The squad that owns the issue, which need not be the project."
+    }
+  },
+  "required": [
+    "source_type",
+    "content",
+    "title"
+  ],
+  "additionalProperties": false
+}

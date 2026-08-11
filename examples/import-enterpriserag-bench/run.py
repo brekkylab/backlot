@@ -29,11 +29,16 @@ def _free_port():
         return s.getsockname()[1]
 
 
-env = {**os.environ, "MOCK_DATA_DIR": str(DATA)}
+env = {**os.environ, "BACKLOT_DATA_DIR": str(DATA)}
 
 # 1. import the bench (download -> load -> ACL) into examples/import-enterpriserag-bench/data
+# `-m backlot` so the CLI runs under THIS interpreter (no activated venv needed on PATH); it is the
+# same `backlot import --type enterpriserag-bench` you would run by hand.
 subprocess.run(
-    [sys.executable, "-m", "app.importer.erb", *sys.argv[1:]], cwd=ROOT, env=env, check=True
+    [sys.executable, "-m", "backlot", "import", "--type", "enterpriserag-bench", *sys.argv[1:]],
+    cwd=ROOT,
+    env=env,
+    check=True,
 )
 
 # 2. serve it and read it back over HTTP
@@ -42,8 +47,8 @@ proc = subprocess.Popen(
     [
         sys.executable,
         "-m",
-        "uvicorn",
-        "app.main:app",
+        "backlot",
+        "serve",
         "--port",
         str(port),
         "--log-level",

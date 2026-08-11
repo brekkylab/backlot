@@ -1,8 +1,8 @@
 # Using official SDKs against the mock
 
 One runnable, **self-contained** script per service — each spins up its own mock (via
-`_mockserver`) on a tiny in-code corpus, points the official SDK at it, and prints what it read.
-The only change from talking to the real service is the base URL.
+`backlot.serve_or_connect`) on a tiny in-code corpus, points the official SDK at it, and prints
+what it read. The only change from talking to the real service is the base URL.
 
 ```bash
 pip install -e ".[examples]"
@@ -29,8 +29,8 @@ Every script here is Python except [`linear/`](linear/), which is a small TypeSc
 That is not a stylistic choice: **`@linear/sdk` is the only client Linear publishes, and there is
 no official Python SDK at all.** Documenting a snippet would have been cheaper and was rejected —
 an example nobody executes cannot back the claim that the mock works with the real client — so it
-is a real project, and a dedicated CI job (`linear-sdk-example` in `.github/workflows/ci.yml`)
-installs and runs it on every push.
+is a real project that CI installs, typechecks and runs on every push, at the end of the `test`
+job in `.github/workflows/ci.yml`.
 
 ```bash
 cd examples/using-official-sdk/linear
@@ -101,7 +101,7 @@ library's own token exchange runs against the mock's `POST /oauth2/token` in bot
 
 - **`gmail.py` → authorized-user (3-legged OAuth)**: `client_id`/`client_secret` + a
   `refresh_token`. The shared `oauth_client` comes from
-  [`GET /_mock/credentials`](../../README.md#oauth-client-config-google-style); the
+  [`GET /_mock/credentials`](../../README.md#auth--tokens); the
   `refresh_token` is a user's token from `GET /_mock/users`. `--user <email>` picks the user
   (default: the first); there is no admin in this flow.
 - **`gdrive.py` → service account**: the key from `/_mock/credentials` (standing in for the JSON

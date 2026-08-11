@@ -1,10 +1,10 @@
 """Full-text search: store.build_fts + search_documents (FTS5) over the SAMPLE corpus.
 
-The `db` fixture is built via app.importer.byo.load, which now builds the docs_fts index, so
+The `db` fixture is built via backlot.importer.byo.load, which now builds the docs_fts index, so
 these exercise the real FTS path (search.messages / confluence CQL both sit on search_documents).
 """
 
-from app import store
+from backlot import store
 
 
 def test_fts_index_built(db):
@@ -129,7 +129,7 @@ def test_search_order_by_recency():
 
 
 def test_parse_slack_query():
-    from app.routers.slack import _parse_slack_query
+    from backlot.routers.slack import _parse_slack_query
 
     # bare terms: no scope, AND semantics
     assert _parse_slack_query("upload csv") == ("upload csv", None, False)
@@ -145,7 +145,7 @@ def test_parse_slack_query():
 
 def test_search_channel_scope_and_phrase(db):
     # in:#<channel> narrows to that channel exactly like the container arg; a foreign channel drops it
-    from app.routers.slack import _parse_slack_query
+    from backlot.routers.slack import _parse_slack_query
 
     terms, container, phrase = _parse_slack_query("in:#general gateway")
     assert container == "general" and not phrase
@@ -156,7 +156,7 @@ def test_search_channel_scope_and_phrase(db):
 
 
 def test_jira_text_from_jql():
-    from app.routers.atlassian import _text_from_jql
+    from backlot.routers.atlassian import _text_from_jql
 
     assert _text_from_jql('project = PAY AND text ~ "latency spike"') == "latency spike"
     assert _text_from_jql("summary ~ 'postmortem'") == "postmortem"
@@ -165,7 +165,7 @@ def test_jira_text_from_jql():
 
 
 def test_gmail_q_parse_and_match():
-    from app.routers.google import _parse_gmail_q
+    from backlot.routers.google import _parse_gmail_q
 
     free, ops = _parse_gmail_q("from:ceo@acme.com subject:board has:attachment quarterly")
     assert free == "quarterly"
@@ -176,7 +176,7 @@ def test_gmail_q_parse_and_match():
 def test_gmail_relative_date_parse():
     # newer_than:/older_than: are operators (relative age), NOT free text — so they neither leak
     # into the FTS term nor drop the real free-text term beside them.
-    from app.routers.google import _parse_gmail_q, _gmail_rel_secs
+    from backlot.routers.google import _parse_gmail_q, _gmail_rel_secs
 
     free, ops = _parse_gmail_q("quarterly newer_than:5d older_than:1y")
     assert free == "quarterly"
@@ -190,7 +190,7 @@ def test_gmail_relative_date_parse():
 def test_gmail_relative_date_query_not_zeroed(db):
     # Regression: newer_than:/older_than: used to fall through as free text, FTS-match nothing, and
     # zero out ANY relative-date query. They must filter by age (anchored to now) like real Gmail.
-    from app.routers.google import _gmail_query
+    from backlot.routers.google import _gmail_query
 
     total = len(_gmail_query(db, None, None, ""))  # whole (admin-visible) mailbox
     assert total > 0
@@ -201,7 +201,7 @@ def test_gmail_relative_date_query_not_zeroed(db):
 
 
 def test_github_issue_q_parse():
-    from app.routers.github import _parse_issue_q
+    from backlot.routers.github import _parse_issue_q
 
     free, quals = _parse_issue_q("repo:acme/gateway is:pr state:closed refill bug")
     assert free == "refill bug"

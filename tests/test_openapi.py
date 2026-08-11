@@ -1,4 +1,4 @@
-"""Unit tests for app.openapi — the MCP-ready OpenAPI derivation served at /_mock/openapi/{source}.
+"""Unit tests for backlot.openapi — the MCP-ready OpenAPI derivation served at /_mock/openapi/{source}.
 
 This is app code (not examples), so it's imported and tested directly: the slice/dedupe logic that
 lets an OpenAPI→MCP bridge consume the mock's spec without operationId collisions.
@@ -10,7 +10,7 @@ import warnings
 
 import pytest
 
-from app import openapi
+from backlot import openapi
 
 
 def test_operation_id_picks_the_method_deterministically():
@@ -53,7 +53,7 @@ def test_served_operation_ids_are_stable_across_processes():
 
     script = (
         "import json, warnings; warnings.filterwarnings('ignore');"
-        "from app.main import app;"
+        "from backlot.main import app;"
         "print(json.dumps(sorted("
         "  op['operationId']"
         "  for item in app.openapi()['paths'].values()"
@@ -92,7 +92,7 @@ def test_every_query_param_in_the_served_spec_declares_required():
     had their own copy emitted no ``required`` key at all, so 15 of the spec's 123 query params
     were shaped differently from the other 108 for no reason."""
     warnings.filterwarnings("ignore")
-    from app.main import app
+    from backlot.main import app
 
     missing = [
         (path, method, q["name"])
@@ -171,7 +171,7 @@ def test_every_bridged_operation_id_names_its_own_method():
     called ``..._post``. With FastAPI's set-ordered default that was wrong for 14 operations on
     roughly half of all boots."""
     warnings.filterwarnings("ignore")
-    from app.main import app
+    from backlot.main import app
 
     spec = app.openapi()
     wrong = [
@@ -189,7 +189,7 @@ def test_build_mcp_spec_resolves_all_real_collisions():
     """Against the real app spec, every bridged source's built spec has unique operationIds
     (the raw /openapi.json carries ~14 duplicates from GET/POST and v2/v3 fidelity aliases)."""
     warnings.filterwarnings("ignore")
-    from app.main import app
+    from backlot.main import app
 
     full = app.openapi()
     for source in openapi.SOURCE_PREFIXES:

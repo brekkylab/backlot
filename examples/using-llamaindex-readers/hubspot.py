@@ -20,8 +20,14 @@ reader's own design; the mock just serves the three listings it pages through.
 """
 
 import argparse
+import sys
+from pathlib import Path
 
-from _llamaindex import drop_self_from_syspath, point_hubspot_at, serve_or_connect
+from backlot import serve_or_connect
+from backlot.integrations.llamaindex import point_hubspot_at
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _common.syspath import drop_self_from_syspath
 
 # Named hubspot.py, so this directory would shadow the SDK's `hubspot` package for the reader's
 # own `from hubspot import HubSpot`.

@@ -13,7 +13,8 @@ import argparse
 
 from llama_index.readers.notion import NotionPageReader
 
-from _llamaindex import notion_base_url, patch_notion_at, serve_or_connect
+from backlot import serve_or_connect
+from backlot.integrations.llamaindex import patch_notion_at
 
 CORPUS = [
     {
@@ -34,7 +35,7 @@ CORPUS = [
 
 
 def build(mock, token):
-    patch_notion_at(notion_base_url(mock.base_url))
+    patch_notion_at(f"{mock.base_url}/notion")
     return NotionPageReader(integration_token=token)
 
 

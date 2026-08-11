@@ -28,7 +28,8 @@ import urllib.request
 from mirage import MountMode, Workspace
 from mirage.resource.s3 import S3Config, S3Resource
 
-from _mirage import FUSE_HELP, lines, run_mirage, s3_base_url, serve_or_connect
+from backlot import serve_or_connect
+from _helpers import FUSE_HELP, lines, run_mirage
 
 BUCKET = "eng-artifacts"
 CORPUS = [
@@ -55,7 +56,7 @@ def build(mock, access_key, secret_key):
     return S3Resource(
         S3Config(
             bucket=BUCKET,
-            endpoint_url=s3_base_url(mock.base_url),
+            endpoint_url=f"{mock.base_url}/s3",
             path_style=True,
             region="us-east-1",
             aws_access_key_id=access_key,

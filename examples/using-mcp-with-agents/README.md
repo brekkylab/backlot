@@ -30,16 +30,24 @@ service (like the other `examples/` dirs) — run the one you want:
   each work across every object type (list, read, search, batch-read, associations) rather than a set
   per type, so "find the account, then its notes" is two calls with the object type as an argument.
 
+**Two sources have no script here, and cannot.** Linear's official MCP server is **remote-hosted**
+at `https://mcp.linear.app/mcp` with no URL override, so nothing local can substitute for it — and
+the OpenAPI→MCP bridge is no help either, because Linear is GraphQL-only: the mock's `/openapi.json`
+describes one `POST /linear/graphql` operation, which would derive a single raw-document tool rather
+than a usable toolset. Fireflies is GraphQL-only for the same reason and publishes no MCP server at
+all. Both are still reachable from an agent the ordinary way — hand it the GraphQL endpoint and a
+token (see `examples/using-official-sdk/`).
+
 Each service file builds its own MCP `StdioServerParameters` and calls `run_agent(...)`. Two shared
 helpers:
 
 | File | What it is |
 |---|---|
 | `_agent.py` | The agent loop for both backends: `--agent anthropic` (default, Anthropic SDK + its beta MCP tool runner) or `--agent openai` (OpenAI Agents SDK) |
-| `_mockserver.py` | Starts the mock (`app.main`) on a small corpus, or connects to a `--url` one |
+| `backlot.serve_or_connect` | Starts the mock (`backlot.main`) on a small corpus, or connects to a `--url` one |
 
 Each service file declares its own CLI options with `argparse` — run `python <file> --help` to see
-exactly what that provider takes (e.g. `s3.py` takes `--access-key`/`--secret-key`, required with
+exactly what that source takes (e.g. `s3.py` takes `--access-key`/`--secret-key`, required with
 `--url`; `atlassian.py` takes `--token`/`--username`). All accept `--url` and `--agent {anthropic,openai}`.
 
 Each example spins up its own small mock by default, or pass `--url` to use an already-running one
@@ -165,7 +173,7 @@ deliberately thin — the mock does the spec work:
   typed `/openapi.json` (the routers declare query params and response models) sliced to that
   source and with the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each
   (the raw spec carries ~14 duplicate operationIds, which an MCP tool set can't have). This lives
-  in `app/openapi.py`, so there is nothing to clean up client-side;
+  in `backlot/openapi.py`, so there is nothing to clean up client-side;
 - the bridge just fetches that spec and serves it over stdio via `FastMCP.from_openapi()` on an
   `httpx.AsyncClient` whose base URL is the mock and whose **`Authorization`** header is the mock
   token — so the mock resolves the token to a user and **enforces that user's ACL** on every call.
@@ -173,7 +181,7 @@ deliberately thin — the mock does the spec work:
 stdio (not streamable-HTTP): FastMCP's HTTP mode has a known bug forwarding the client's
 `Authorization` header downstream. Auth: `--username` present → HTTP Basic (Atlassian); otherwise
 `Bearer` (`--token`, default admin; per-user from `GET /_mock/users`). Adding a source is one entry
-in `app/openapi.py`'s `SOURCE_PREFIXES` plus a thin launcher.
+in `backlot/openapi.py`'s `SOURCE_PREFIXES` plus a thin launcher.
 
 **Notion and Atlassian** already have vendor-server launchers above, but they also work through the
 generic bridge (no vendor server) — run `_openapi_bridge.py` directly:

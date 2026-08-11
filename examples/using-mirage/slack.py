@@ -22,7 +22,8 @@ import subprocess
 from mirage import MountMode, Workspace
 from mirage.resource.slack import SlackConfig, SlackResource
 
-from _mirage import FUSE_HELP, lines, run_mirage, serve_or_connect, slack_base_url
+from backlot import serve_or_connect
+from _helpers import FUSE_HELP, lines, run_mirage
 
 CORPUS = [  # `created` keeps the throwaway channels' dates tight (one day) rather than synthesized
     {
@@ -44,7 +45,7 @@ CORPUS = [  # `created` keeps the throwaway channels' dates tight (one day) rath
 def build(mock, token):
     # Slack's host is a config knob — point it at the mock (no monkeypatch needed).
     # --token <usr-token> (from /_mock/users) → ACL-filtered to that user; else admin sees all.
-    return SlackResource(SlackConfig(token=token, base_url=slack_base_url(mock.base_url)))
+    return SlackResource(SlackConfig(token=token, base_url=f"{mock.base_url}/slack/api"))
 
 
 async def main(resource) -> None:

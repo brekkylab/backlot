@@ -1,20 +1,21 @@
-"""app.importer.byo: load an arbitrary BYO JSONL corpus -> DB, honoring per-doc ACL."""
+"""backlot.importer.byo: load an arbitrary BYO JSONL corpus -> DB, honoring per-doc ACL."""
 
 import gzip
 import hashlib
 import io
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 import yaml
 
-from app import store
-from app.acl import Acl
-from app.config import Settings, get_settings
-from app.routers.slack import _message
-from app.importer import byo
-from app.importer.byo import load
+from backlot import store
+from backlot.acl import Acl
+from backlot.config import Settings, get_settings
+from backlot.routers.slack import _message
+from backlot.importer import byo
+from backlot.importer.byo import load
 
 
 def _write(tmp_path, records):
@@ -311,7 +312,7 @@ def test_byo_slack_threads(tmp_path):
     thread = store.slack_thread(conn, root["doc_id"])
     assert [r["thread_seq"] for r in thread] == [0, 1, 2]
     # replies share the root's thread_ts and sort strictly after it
-    from app.routers.slack import _msg_ts
+    from backlot.routers.slack import _msg_ts
 
     ts = [_msg_ts(r) for r in thread]
     assert ts == sorted(ts) and ts[0] < ts[1] < ts[2]
@@ -356,7 +357,7 @@ def test_byo_created_updated_times(tmp_path):
 
     # and reach the router response
     from starlette.requests import Request
-    from app.routers.atlassian import _jira_issue
+    from backlot.routers.atlassian import _jira_issue
 
     req = Request(
         {
@@ -396,7 +397,7 @@ def test_byo_gmail_created_and_to(tmp_path):
         Settings(data_dir=tmp_path),
     )
     conn = store.connect_ro(tmp_path / "mock.sqlite")
-    from app.routers.google import _gmail_message
+    from backlot.routers.google import _gmail_message
 
     msg = _gmail_message(store.get_document(conn, "gmail", "m1"), "metadata")
     assert msg["internalDate"] == str(_epoch("2026-04-01T12:00:00Z") * 1000)
@@ -430,7 +431,7 @@ def test_byo_slack_rich_replies(tmp_path):
         Settings(data_dir=tmp_path),
     )
     conn = store.connect_ro(tmp_path / "mock.sqlite")
-    from app.routers.slack import _message, _msg_ts
+    from backlot.routers.slack import _message, _msg_ts
 
     thread = store.slack_thread(conn, "s-root")
     root, reply = thread[0], thread[1]
@@ -501,7 +502,7 @@ def test_notion_byo_load(tmp_path):
 
 
 def test_notion_byo_rejects_bad_subtype():
-    from app.validation import record_errors
+    from backlot.validation import record_errors
 
     errs = record_errors({"source_type": "notion", "title": "x", "content": "y", "subtype": "wiki"})
     assert any("subtype" in e for e in errs)
@@ -563,8 +564,8 @@ def test_s3_byo_load(tmp_path):
 
 
 def test_github_file_byo_load(tmp_path, monkeypatch):
-    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path))
-    from app.config import get_settings
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path))
+    from backlot.config import get_settings
 
     get_settings.cache_clear()
     s = get_settings()
@@ -593,7 +594,7 @@ def test_github_file_byo_load(tmp_path, monkeypatch):
 
 def test_github_file_byo_requires_path(tmp_path):
     # a file record without `path` must be rejected by schema validation
-    from app.validation import record_errors
+    from backlot.validation import record_errors
 
     errs = record_errors(
         {"source_type": "github", "subtype": "file", "title": "x", "content": "y", "repo": "r"}
@@ -709,8 +710,8 @@ def test_hubspot_byo_association_infers_missing_target_type(tmp_path):
 
 
 def test_append_preserves_prior_roster_and_org(tmp_path, monkeypatch):
-    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path))
-    from app.config import get_settings
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path))
+    from backlot.config import get_settings
 
     get_settings.cache_clear()
     s = get_settings()
@@ -794,8 +795,8 @@ def test_append_preserves_prior_roster_and_org(tmp_path, monkeypatch):
 
 
 def test_append_incremental_fts_finds_new_and_keeps_old(tmp_path, monkeypatch):
-    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path))
-    from app.config import get_settings
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path))
+    from backlot.config import get_settings
 
     get_settings.cache_clear()
     s = get_settings()
@@ -944,7 +945,7 @@ def test_fireflies_byo_parses_sentences_out_of_a_plain_body(tmp_path):
 def test_fireflies_byo_content_and_sentences_always_round_trip(tmp_path):
     """The invariant that makes `content` a safe definition rather than a duplicate, checked for
     both the supplied-sentences and the parsed-body path."""
-    from app import synth
+    from backlot import synth
 
     corpus = _write(
         tmp_path,
@@ -1074,7 +1075,7 @@ def test_fireflies_byo_org_is_inferred_from_host_email_and_sentence_authors(tmp_
 
 def test_byo_emails_includes_every_author_alias():
     """The generator behind org inference. A new per-source author alias must be added here too."""
-    from app.importer.byo import _emails
+    from backlot.importer.byo import _emails
 
     rec = {
         "source_type": "fireflies",
@@ -1460,7 +1461,7 @@ def test_byo_jsonl_records_split_only_on_newline(tmp_path):
     # guards the test itself: without a character splitlines() breaks on, it proves nothing
     assert len(corpus.read_text().splitlines()) == 3
 
-    from app.validation import validate_file
+    from backlot.validation import validate_file
 
     assert validate_file(corpus) == []
     settings = Settings(data_dir=tmp_path)
@@ -1737,7 +1738,7 @@ def test_import_refuses_a_shard_that_does_not_match_the_manifest(tmp_path, monke
         fh.writelines(kept)
 
     data = tmp_path / "data-refused"
-    monkeypatch.setenv("MOCK_DATA_DIR", str(data))
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     with pytest.raises(SystemExit) as e:
         byo.main([str(out)])
@@ -1746,7 +1747,7 @@ def test_import_refuses_a_shard_that_does_not_match_the_manifest(tmp_path, monke
 
 
 def test_a_single_gzipped_corpus_file_loads(tmp_path):
-    """The README documents `python -m app.importer.byo corpus.jsonl.gz`; every other test reaches a
+    """The README documents `backlot import corpus.jsonl.gz`; every other test reaches a
     `.gz` through a shard directory, so the plain single-file case had no coverage."""
     corpus = tmp_path / "corpus.jsonl.gz"
     with io.TextIOWrapper(gzip.GzipFile(corpus, "wb", mtime=0), encoding="utf-8") as fh:
@@ -1836,3 +1837,130 @@ def test_two_sources_may_share_a_doc_id(tmp_path):
         conn.execute("SELECT title FROM gdrive_files WHERE doc_id='shared-1'").fetchone()[0]
         == "Sprint plan (doc)"
     )
+
+
+def test_load_records_source_documents_counts_documents_not_rows(tmp_path):
+    """One Slack record with two replies is 1 source document and 3 message rows."""
+    from backlot import store
+    from tests._helpers import build_corpus
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "author_email": "bob@acme.com",
+                "content": "Anyone seeing 502s from the gateway?",
+                "replies": [
+                    {"content": "Looking now.", "author_email": "ava@acme.com"},
+                    {"content": "Rolled back.", "author_email": "bob@acme.com"},
+                ],
+            },
+        ],
+    )
+    conn = store.connect_ro(settings.db_path)
+    assert store.read_meta(conn, "source_documents") == "1"
+    rows = conn.execute(f"SELECT COUNT(*) FROM {store.table('slack')}").fetchone()[0]
+    assert rows == 3
+    conn.close()
+
+
+def test_load_records_source_documents_sums_across_sources(tmp_path):
+    from backlot import store
+    from tests._helpers import build_corpus
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "space": "handbook",
+                "title": "Handbook",
+                "content": "How we build software.",
+                "author_email": "ava@acme.com",
+            },
+            {
+                "source_type": "gmail",
+                "mailbox": "ceo",
+                "title": "Q1 deck",
+                "content": "Draft narrative.",
+                "author_email": "ceo@acme.com",
+                "to": "ava@acme.com",
+            },
+        ],
+    )
+    conn = store.connect_ro(settings.db_path)
+    assert store.read_meta(conn, "source_documents") == "2"
+    conn.close()
+
+
+def test_append_accumulates_source_documents(tmp_path):
+    """reset=False appends, so the count adds rather than replaces."""
+    import json
+    from backlot import store
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    settings = Settings(data_dir=tmp_path)
+    first = tmp_path / "a.jsonl"
+    first.write_text(
+        json.dumps(
+            {
+                "source_type": "confluence",
+                "space": "h",
+                "title": "A",
+                "content": "a",
+                "author_email": "ava@acme.com",
+            }
+        )
+    )
+    second = tmp_path / "b.jsonl"
+    second.write_text(
+        json.dumps(
+            {
+                "source_type": "confluence",
+                "space": "h",
+                "title": "B",
+                "content": "b",
+                "author_email": "ava@acme.com",
+            }
+        )
+    )
+    load(first, settings)
+    load(second, settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    assert store.read_meta(conn, "source_documents") == "2"
+    conn.close()
+
+
+def test_hello_corpus_loads_and_covers_every_source(tmp_path):
+    """The wheel's built-in corpus must load and exercise EVERY served source.
+
+    Driven off `store.SOURCE_TABLE` rather than a list written out here, so adding a twelfth source
+    fails this test until the bundled corpus covers it too — which is how fireflies came to be
+    missing from the corpus while every other source had rows.
+    """
+    hello = Path(__file__).resolve().parent.parent / "backlot" / "data" / "hello.jsonl"
+    settings = Settings(data_dir=tmp_path)
+    load(hello, settings)
+    conn = store.connect_ro(settings.db_path)
+    counts = {
+        src: conn.execute(f"SELECT COUNT(*) FROM {store.table(src)}").fetchone()[0]
+        for src in store.SOURCE_TABLE
+    }
+    for src, n in counts.items():
+        assert n > 0, f"hello corpus has no {src} rows"
+    # The two counts must differ, or the corpus does not demonstrate the parsing layer.
+    assert int(store.read_meta(conn, "source_documents")) < sum(counts.values())
+    # Every child-row table is exercised too: a comment API with nothing behind it teaches a
+    # reader that the mock has no comments rather than that this corpus has none.
+    for src, tbl in store.COMMENT_TABLE.items():
+        n = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+        assert n > 0, f"hello corpus has no {src} child rows ({tbl})"
+    # More than one container per source, so a listing endpoint has something to page.
+    for src in store.SOURCE_TABLE:
+        gtable, gcol = store.GROUPING[src]
+        n = conn.execute(f"SELECT COUNT(*) FROM {gtable}").fetchone()[0]
+        assert n >= 2, f"hello corpus has only {n} {gcol}(s) for {src}"
+    conn.close()

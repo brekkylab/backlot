@@ -14,11 +14,11 @@ os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 import pytest
 import yaml
 
-from app import store, synth
-from app.config import Settings, get_settings
-from app.importer import byo, erb
+from backlot import store, synth
+from backlot.config import Settings, get_settings
+from backlot.importer import byo, erb
 from tests._helpers import client_for
-from app.importer.erb import Principals, canonical, grants_for
+from backlot.importer.erb import Principals, canonical, grants_for
 
 C = erb
 
@@ -65,6 +65,25 @@ def test_supported_sources():
         "linear",
         "fireflies",
     )
+
+
+def test_the_download_cache_defaults_beside_the_cwd_not_the_configured_data_dir(
+    tmp_path, monkeypatch
+):
+    """Moved here with the setting itself: `raw_dir` is this importer's download cache, so it lives
+    on `erb.BenchSettings` rather than on the Settings every layer reads.
+
+    The default stays pinned to ./data/raw even when BACKLOT_DATA_DIR points elsewhere — that is
+    what lets a build into a throwaway dir reuse an existing ~1 GB download."""
+    monkeypatch.delenv("BACKLOT_RAW_DIR", raising=False)
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "elsewhere"))
+    monkeypatch.chdir(tmp_path)
+    assert erb.BenchSettings(_env_file=None).raw_dir == tmp_path / "data" / "raw"
+
+
+def test_the_download_cache_honours_its_env_var(tmp_path, monkeypatch):
+    monkeypatch.setenv("BACKLOT_RAW_DIR", str(tmp_path / "cache"))
+    assert erb.BenchSettings(_env_file=None).raw_dir == tmp_path / "cache"
 
 
 def test_erb_sources_are_registered_in_the_store():
@@ -148,13 +167,13 @@ def test_dump_tokens_returns_the_number_it_actually_wrote(tmp_path):
     resolved principal instead reported 679 for a file holding 167."""
     import shutil
 
-    from app.config import Settings
+    from backlot.config import Settings
 
     gen = _write_generated_data(tmp_path)
     data = tmp_path / "tok"
     data.mkdir(parents=True, exist_ok=True)
     settings = Settings(data_dir=data)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
 
     n = erb.dump_tokens(settings, gen)
     written = yaml.safe_load(settings.tokens_path.read_text())["users"]
@@ -541,7 +560,7 @@ def test_drive_doc_type_maps_onto_drive_mime_types():
     """The bench's `doc_type` vocabulary (doc/sheet/slides/pdf) is not the mock's native subtype
     vocabulary, so every imported row used to fall back to `application/octet-stream` — making
     anything that branches on mimeType untestable against the bench corpus (issue #23)."""
-    from app.routers.google import _drive_file
+    from backlot.routers.google import _drive_file
 
     conn = _conn()
     P = Principals([], "redwoodinference.com")
@@ -569,7 +588,7 @@ def test_drive_doc_type_maps_onto_drive_mime_types():
 
 
 def test_drive_unknown_doc_type_falls_back_to_the_title_extension():
-    from app.routers.google import _drive_file
+    from backlot.routers.google import _drive_file
 
     conn = _conn()
     P = Principals([], "redwoodinference.com")
@@ -959,10 +978,10 @@ def test_synthesized_users_installed_after_load(tmp_path, monkeypatch):
             }
         )
     )
-    monkeypatch.setenv("MOCK_DATA_DIR", str(data))
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     erb.import_structured(settings, gen)
 
     c = sqlite3.connect(settings.db_path)
@@ -1002,10 +1021,10 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
     (gen / "sources" / "hubspot" / "company-acacia-loop-services.json").write_text(
         json.dumps({**HS_RAW, "dataset_doc_uuid": "dsid_hs_e2e"})
     )
-    monkeypatch.setenv("MOCK_DATA_DIR", str(data))
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     res = erb.import_structured(settings, gen)
 
     # import_structured returns the per-source counts directly; a company counts once even though
@@ -1020,8 +1039,81 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
         c.execute("SELECT COUNT(*) FROM hubspot_objects WHERE object_type='notes'").fetchone()[0]
         == 2
     )
+    # `source_documents` is the ERB-level count (this one bench document), not the 3
+    # `hubspot_objects` rows `to_byo` materializes for it (company + 2 notes) — the same distinction
+    # `byo.load_records`'s own counting makes for a Slack thread's replies, but at a different
+    # granularity: `_byo_hubspot` splits one bench document into several TOP-LEVEL BYO records, so
+    # counting `byo.load_records`'s `(where, record)` pairs would overcount it as 3.
+    assert store.read_meta(c, "source_documents") == "1"
     # the company is ACL-granted, so a non-admin can actually reach it
     assert c.execute("SELECT COUNT(*) FROM doc_acl WHERE doc_id='dsid_hs_e2e'").fetchone()[0] > 0
+    c.close()
+    get_settings.cache_clear()
+
+
+def test_import_structured_persists_source_documents_including_excluded(tmp_path, monkeypatch):
+    """`source_documents == documents + excluded + failed` (see export_byo's layer). The `+
+    excluded` term is the one this task's erb-side fix introduced (`len(records) + len(excluded)`),
+    and it was otherwise only exercised in `export_byo`'s manifest.json, never against the database
+    `import_structured` actually builds — so a real document plus a deliberately empty-content one
+    (which `select_records` drops into `excluded`) has to add up to 2 offered, not 1."""
+    data = tmp_path / "data"
+    data.mkdir()
+    gen = tmp_path / "gen"
+    (gen / "sources" / "google_drive").mkdir(parents=True)
+    (gen / "employee_directory.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "departments": {
+                    "Engineering": [
+                        {
+                            "name": "Real Dev",
+                            "email": "real.dev@redwoodinference.com",
+                            "title": "Eng",
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    (gen / "sources" / "google_drive" / "real.json").write_text(
+        json.dumps(
+            {
+                "title_field_name": "title",
+                "content_field_names": ["body"],
+                "dataset_doc_uuid": "dsid_real",
+                "title": "Doc",
+                "body": "x",
+                "owner": "Real Dev",
+                "created_at": "2025-01-01",
+            }
+        )
+    )
+    # Whitespace-only body -> empty after strip -> select_records drops it into `excluded` rather
+    # than yielding it to the converter.
+    (gen / "sources" / "google_drive" / "empty.json").write_text(
+        json.dumps(
+            {
+                "title_field_name": "title",
+                "content_field_names": ["body"],
+                "dataset_doc_uuid": "dsid_empty",
+                "title": "Empty",
+                "body": "   ",
+                "owner": "Real Dev",
+                "created_at": "2025-01-01",
+            }
+        )
+    )
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
+    get_settings.cache_clear()
+    settings = get_settings()
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
+    # dsid_empty isn't in KNOWN_EMPTY_DOCS, so allow_excluded=1 is needed or _resolve_roster refuses.
+    res = erb.import_structured(settings, gen, allow_excluded=1)
+
+    assert res["google_drive"] == 1  # only the real document converts and is written
+    c = sqlite3.connect(settings.db_path)
+    assert store.read_meta(c, "source_documents") == "2"  # 1 written + 1 excluded
     c.close()
     get_settings.cache_clear()
 
@@ -1036,10 +1128,10 @@ def _import_gen(tmp_path, monkeypatch, source: str, filename: str, raw: dict, em
         yaml.safe_dump({"departments": {"Team": employees}})
     )
     (gen / "sources" / source / filename).write_text(json.dumps(raw))
-    monkeypatch.setenv("MOCK_DATA_DIR", str(data))
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     settings = get_settings()
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     erb.import_structured(settings, gen)
     return settings
 
@@ -1130,9 +1222,18 @@ def test_qst_0001_owner_is_maya_chen(tmp_path):
     data_dir = tmp_path / "data"
     qfile = Path(tmp_path) / "extra_questions.jsonl"
     _extra_questions(tmp_path)
-    env = {**os.environ, "MOCK_DATA_DIR": str(data_dir)}
+    env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir)}
     subprocess.run(
-        [sys.executable, "-m", "app.importer.erb", "--slice-questions", str(qfile)],
+        [
+            sys.executable,
+            "-m",
+            "backlot",
+            "import",
+            "-t",
+            "erb",
+            "--slice-questions",
+            str(qfile),
+        ],
         check=True,
         env=env,
     )
@@ -1417,14 +1518,6 @@ def test_linear_undated_comment_stays_on_the_issues_clock():
     """created_ts is NOT NULL, and a random per-comment time would shuffle the thread."""
     _conn_, row, comments = _load_linear({**LINEAR_RAW, "comments": ["no date here", "nor here"]})
     assert [c["created_ts"] for c in comments] == [row["created_ts"] + 1, row["created_ts"] + 2]
-
-
-def test_linear_priority_normalisation():
-    assert [erb.linear_priority(v) for v in ("P0", "P1", "P2", "P3")] == [1, 2, 3, 4]
-    assert [erb.linear_priority(v) for v in ("Urgent", "High", "Medium", "Low")] == [1, 2, 3, 4]
-    assert erb.linear_priority(3) == 3  # already Linear's scale
-    assert erb.linear_priority("unrecognised") == 0  # Linear's "No priority"
-    assert erb.linear_priority(None) is None
 
 
 def test_linear_grants_flow_through_the_shared_container_path():
@@ -2116,7 +2209,14 @@ def _write_generated_data(root: Path) -> Path:
 
 
 def _dump_db(path) -> dict[str, list]:
-    """Every user table as sorted row tuples, so two DBs can be compared table by table."""
+    """Every servable table as sorted row tuples, so two DBs can be compared table by table.
+
+    Excludes ``meta``: it holds build-PROVENANCE facts, not servable content, and
+    ``source_documents`` in particular counts a different unit for the two round-trip sides on
+    purpose — a HubSpot company's notes are sub-parts of ONE bench document to a direct import, but
+    independently-addressable top-level documents to a BYO corpus that was exported and re-loaded
+    (see ``_byo_hubspot``). Forcing them equal would mean one side counting wrong.
+    """
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     try:
@@ -2124,7 +2224,8 @@ def _dump_db(path) -> dict[str, list]:
             r[0]
             for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name NOT LIKE 'docs_fts%' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                "AND name NOT LIKE 'docs_fts%' AND name NOT LIKE 'sqlite_%' AND name != 'meta' "
+                "ORDER BY name"
             )
         ]
         out = {}
@@ -2139,23 +2240,23 @@ def _dump_db(path) -> dict[str, list]:
 
 
 def _import_erb_directly(gen: Path, data_dir: Path):
-    from app.config import Settings
+    from backlot.config import Settings
 
     data_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(data_dir=data_dir)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     erb.import_structured(settings, gen)
     return settings
 
 
 def _import_via_byo(gen: Path, data_dir: Path, out_dir: Path):
-    from app.config import Settings
-    from app.importer import byo
+    from backlot.config import Settings
+    from backlot.importer import byo
 
     data_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(data_dir=data_dir)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     erb.export_byo(settings, gen, out_dir)
     byo.load(out_dir / "corpus.jsonl", settings, roster=out_dir / "roster.yaml")
     return settings
@@ -2181,6 +2282,23 @@ def test_erb_to_byo_round_trip_builds_an_equivalent_database(tmp_path):
             f"  only via byo:  {[r for r in b[t] if r not in a[t]]}"
         )
 
+    # meta.source_documents is excluded from _dump_db on purpose (see its docstring) — the two
+    # sides count a different unit — so it is not silently left unchecked; it gets its own pinned
+    # assertion instead. RT_DOCS holds 15 bench documents (2 confluence + 2 google_drive + 1 jira +
+    # 1 github + 2 gmail + 2 slack + 1 hubspot + 2 fireflies + 2 linear), none excluded (every one
+    # has real content), so:
+    #   direct:  source_documents = 15 documents + 0 excluded = 15
+    # Only `_byo_hubspot` fans a bench document out into more than one top-level BYO record (the
+    # company plus its 2 notes in HS_RAW); every other converter returns exactly one. So the
+    # exported-and-reloaded corpus holds 15 - 1 + 3 = 17 top-level BYO documents, and `byo.load()`
+    # counts one per document at ITS OWN granularity (a JSONL line):
+    #   via byo: source_documents = 17
+    conn_direct, conn_viabyo = sqlite3.connect(direct.db_path), sqlite3.connect(viabyo.db_path)
+    assert store.read_meta(conn_direct, "source_documents") == "15"
+    assert store.read_meta(conn_viabyo, "source_documents") == "17"
+    conn_direct.close()
+    conn_viabyo.close()
+
 
 def test_erb_to_byo_round_trip_writes_the_same_tokens(tmp_path):
     """`tokens.yaml` is the roster a caller authenticates with, so the converted artifact has to
@@ -2199,14 +2317,14 @@ def test_erb_to_byo_round_trip_writes_the_same_tokens(tmp_path):
 def test_erb_to_byo_output_validates_against_the_byo_schemas(tmp_path):
     """--dry-run has to still catch a bad corpus, so the converted artifact must pass the very
     same validator a hand-written corpus does — no private back door into the loader."""
-    from app.validation import validate_file
-    from app.config import Settings
+    from backlot.validation import validate_file
+    from backlot.config import Settings
 
     gen = _write_generated_data(tmp_path)
     data = tmp_path / "data"
     data.mkdir()
     settings = Settings(data_dir=data)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     out = tmp_path / "artifact"
     out.mkdir()
     erb.export_byo(settings, gen, out)
@@ -2222,7 +2340,7 @@ def test_byo_drive_subtypes_are_all_accepted_by_the_schema():
     """`_drive_type` is the mock's Drive subtype vocabulary (#23), and a converted record has to
     carry its output — so the BYO drive schema must accept every value it can produce, or an
     artifact fails validation on a file type the importer itself created."""
-    from app.validation import record_errors
+    from backlot.validation import record_errors
 
     for doc_type, title in (
         ("doc", "Runbook"),
@@ -2283,7 +2401,7 @@ def test_unresolvable_principals_are_dropped_not_stored_as_nulls():
     """`P.resolve` returns None for a reference that is not a person. Such a name must not hold a
     slot in a list of principals — `requested_reviewers` is rendered per entry into a GitHub user,
     so a null 500s the pull-request endpoint (8 bench documents carry one)."""
-    from app.routers.github import _gh_user
+    from backlot.routers.github import _gh_user
 
     with pytest.raises(AttributeError):
         _gh_user(None)  # the crash the null caused
@@ -2384,7 +2502,7 @@ def test_export_byo_writes_a_roster_carrying_names_and_who_may_authenticate(tmp_
     P.resolve("Zoe Newperson", role="owner", group_hint="research-applied-ml")
     P.resolve("Ravi Other", role="collaborator")
 
-    from app.config import Settings
+    from backlot.config import Settings
 
     settings = Settings(data_dir=tmp_path, org_name="redwood", org_domain="redwoodinference.com")
     out = tmp_path / "roster.yaml"
@@ -2402,7 +2520,7 @@ def test_export_byo_writes_a_roster_carrying_names_and_who_may_authenticate(tmp_
     assert "group" not in contacts["ravi.other@redwoodinference.com"]
 
     # ...and byo reads exactly this back
-    from app.importer.byo import load_roster
+    from backlot.importer.byo import load_roster
 
     parsed = load_roster(out)
     assert parsed["users"]["tomas.rre@redwoodinference.com"] == {
@@ -2423,7 +2541,7 @@ def test_conversion_does_not_depend_on_document_order():
     Measured on a 2,555-document bench slice, that order sensitivity moved 27 doc_acl grants and
     one comment attribution. `_populate_principals` resolves everything before anything is
     converted, so the corpus converts to the same records either way."""
-    from app.config import Settings
+    from backlot.config import Settings
 
     settings = Settings(data_dir=Path("/nonexistent"))
     settings.org_name, settings.org_domain = "redwood", "redwoodinference.com"
@@ -2477,13 +2595,13 @@ def test_every_supported_source_has_a_byo_converter_and_a_round_trip_fixture():
 def test_export_byo_converts_every_document_it_was_given(tmp_path):
     """The counts `export_byo` returns must account for every record, per source — the guard on the
     soft failure above actually firing."""
-    from app.config import Settings
+    from backlot.config import Settings
 
     gen = _write_generated_data(tmp_path)
     data = tmp_path / "data"
     data.mkdir()
     settings = Settings(data_dir=data)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     out = tmp_path / "artifact"
     counts = erb.export_byo(settings, gen, out)
     assert counts == {src: len(docs) for src, docs in RT_DOCS.items()}
@@ -2530,13 +2648,13 @@ def test_export_byo_shards_are_verifiable_and_reproducible(tmp_path):
     header would put the current time in every shard."""
     import gzip as _gzip
     import json as _json
-    from app.config import Settings
+    from backlot.config import Settings
 
     gen = _write_generated_data(tmp_path)
     data = tmp_path / "data"
     data.mkdir()
     settings = Settings(data_dir=data)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
 
     out = tmp_path / "sharded"
     counts = erb.export_byo(settings, gen, out, shard_records=2)
@@ -2613,12 +2731,12 @@ def _with_empty_thread(tmp_path, dsid="dsid_empty_thread"):
 
 
 def _settings_for(tmp_path, gen):
-    from app.config import Settings
+    from backlot.config import Settings
 
     data = tmp_path / "data"
     data.mkdir()
     settings = Settings(data_dir=data)
-    shutil.copy(gen / "employee_directory.yaml", settings.employee_yaml)
+    shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
     return settings
 
 
@@ -2733,3 +2851,16 @@ def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
             f"table {t} differs\n  only in direct: {[r for r in a[t] if r not in b[t]]}\n"
             f"  only via byo:  {[r for r in b[t] if r not in a[t]]}"
         )
+
+    # Same pinned check as test_erb_to_byo_round_trip_builds_an_equivalent_database, adjusted for
+    # the 2 extra bench FILES this test adds on top of RT_DOCS's 15 (zz-repeat.json, zz-shared.json
+    # — both duplicate an existing doc_id, but `select_records` counts by file, not by doc_id, so
+    # both still add to the offered total; neither is excluded and neither is hubspot, so they add
+    # 1 each to both sides):
+    #   direct:  source_documents = 17 documents + 0 excluded = 17
+    #   via byo: source_documents = 17 - 1 (hubspot company) + 3 (company + 2 notes) = 19
+    conn_direct, conn_viabyo = sqlite3.connect(direct.db_path), sqlite3.connect(viabyo.db_path)
+    assert store.read_meta(conn_direct, "source_documents") == "17"
+    assert store.read_meta(conn_viabyo, "source_documents") == "19"
+    conn_direct.close()
+    conn_viabyo.close()

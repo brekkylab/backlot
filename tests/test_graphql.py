@@ -16,8 +16,8 @@ from fastapi.responses import JSONResponse
 from graphql import GraphQLError
 from starlette.testclient import TestClient
 
-from app import auth, pagination, store
-from app.graphql import engine
+from backlot import auth, pagination, store
+from backlot.graphql import engine
 
 SDL = """
 type Query {

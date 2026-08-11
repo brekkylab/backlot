@@ -1,0 +1,298 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brekkylab/backlot/schemas/linear.schema.json",
+  "title": "BYO corpus record — linear",
+  "description": "A Linear issue. `team` is the grouping unit, because `data.team.issues` is how both the GraphQL API and the official clients reach issues and because an issue's identifier prefix (ENG-123) IS the team key. Field names are Linear's own — `state` (not status), `estimate`, camelCase `branchName`/`dueDate` — so a corpus written against the real API needs no renaming. `identifier` and `branchName` are derived when omitted. Comments are served through the `Issue.comments` connection.",
+  "type": "object",
+  "properties": {
+    "source_type": {
+      "const": "linear"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The issue title."
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The issue's markdown description — served as `Issue.description` and indexed for search."
+    },
+    "doc_id": {
+      "type": "string",
+      "description": "Stable id (default: dsid_<sha256(source_type+title+content)>). The served `Issue.id` UUID is derived from it."
+    },
+    "team": {
+      "type": "string",
+      "description": "The owning team, e.g. \"engineering\". Its short key (ENG) is derived from the name and is what identifiers are prefixed with. Default: the source_type."
+    },
+    "group": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ACL group owning the team (default: slug(team)); null means the container owns no group, so nothing is group-scoped to it."
+    },
+    "identifier": {
+      "type": "string",
+      "description": "Human identifier, e.g. \"ENG-123\". Default: synthesized as <TEAMKEY>-<n> from the doc_id. Not required to be unique — the bench's own keys repeat — and `issue(id:)` resolves a repeated identifier to the first matching issue."
+    },
+    "parent": {
+      "type": "string",
+      "description": "The parent issue's identifier (e.g. \"ENG-20297\"), served as `Issue.parent`. Resolved at serve time through the same ACL-scoped lookup `issue(id:)` uses, so a parent the caller cannot read comes back null."
+    },
+    "relations": {
+      "type": "array",
+      "description": "Issue relations, served as `Issue.relations` / `inverseRelations`. Each names a target by doc_id; an unresolvable target is a load error, never a dangling relation.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "doc_id of the related issue."
+          },
+          "type": {
+            "enum": [
+              "blocks",
+              "duplicate",
+              "related"
+            ],
+            "description": "Linear's relation vocabulary (default: related)."
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "state": {
+      "type": "string",
+      "description": "Workflow state NAME, e.g. \"In Progress\" / \"Done\" / \"Backlog\". Its Linear category (triage|backlog|unstarted|started|completed|canceled) is derived from the name and served as `state.type`."
+    },
+    "priority": {
+      "type": [
+        "integer",
+        "string"
+      ],
+      "description": "Linear's 0-4 scale (0 none, 1 urgent, 2 high, 3 medium, 4 low). A label (\"Urgent\", \"High\") or a bench-style \"P0\"-\"P3\" is accepted and normalized onto that scale."
+    },
+    "estimate": {
+      "type": [
+        "integer",
+        "number",
+        "null"
+      ],
+      "description": "Complexity estimate in the team's scale."
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Label names, served through the `labels` connection."
+    },
+    "project": {
+      "type": "string",
+      "description": "Project name; served as `project { name }`."
+    },
+    "cycle": {
+      "type": "string",
+      "description": "Cycle name, e.g. \"2025-W08\"; served as `cycle { name }`."
+    },
+    "release": {
+      "type": "string",
+      "description": "Release name (e.g. \"runtime-1.19\"), served as `Issue.releases`."
+    },
+    "attachments": {
+      "type": "array",
+      "description": "External links on the issue, served as `Issue.attachments`. A bare URL string is accepted; `title` is derived from the last path segment when absent, since Linear declares it non-null.",
+      "items": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "subtitle": {
+                "type": "string"
+              },
+              "sourceType": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "branchName": {
+      "type": "string",
+      "description": "Suggested git branch. Default: Linear's own derivation, <assignee>/<identifier>-<title slug>."
+    },
+    "dueDate": {
+      "type": "string",
+      "description": "Due date as a bare YYYY-MM-DD (Linear's TimelessDate scalar)."
+    },
+    "assignee": {
+      "type": "string",
+      "format": "email",
+      "description": "Assignee's email. Omit for an unassigned issue — `assignee` then resolves to null, as it does in Linear."
+    },
+    "assigneeName": {
+      "type": "string",
+      "description": "Assignee display name (default: derived from the email)."
+    },
+    "author_email": {
+      "type": "string",
+      "format": "email",
+      "description": "The issue creator; served as `creator`."
+    },
+    "author_name": {
+      "type": "string",
+      "description": "The owner's display name as the corpus writes it, served as the document's owner (a name is not recoverable from an email address)."
+    },
+    "author_groups": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Groups the creator belongs to."
+    },
+    "visibility": {
+      "enum": [
+        "public",
+        "group",
+        "private"
+      ],
+      "description": "public = org-wide, group = the team's group, private = creator only."
+    },
+    "readers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
+    },
+    "comments": {
+      "type": "array",
+      "description": "Comments on the issue, served through `Issue.comments`.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "author_email": {
+            "type": "string",
+            "format": "email"
+          },
+          "author_name": {
+            "type": "string"
+          },
+          "created_ts": {
+            "type": [
+              "integer",
+              "number",
+              "string"
+            ]
+          },
+          "reactions": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "meta": {
+      "type": "object",
+      "description": "Free-form per-source structured extras merged into the record."
+    },
+    "created": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "description": "createdAt (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+    },
+    "updated": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "description": "updatedAt (epoch seconds or ISO 8601). Defaults to createdAt when absent, since Linear declares updatedAt non-null."
+    },
+    "archivedAt": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ]
+    },
+    "autoArchivedAt": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ]
+    },
+    "autoClosedAt": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ]
+    },
+    "canceledAt": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ]
+    },
+    "completedAt": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ]
+    },
+    "startedAt": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ]
+    }
+  },
+  "required": [
+    "source_type",
+    "content",
+    "title"
+  ],
+  "additionalProperties": false
+}

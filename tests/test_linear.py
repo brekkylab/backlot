@@ -2,7 +2,7 @@
 
 The filter tests were their own file once. They are still their own SECTION below, and the reason
 they exist in this shape is worth keeping: a mutation review found 16 of 17 injected faults in
-`app/graphql/linear_filters.py` surviving the rest of the suite. A wrong filter returns
+`backlot/graphql/linear_filters.py` surviving the rest of the suite. A wrong filter returns
 plausible-looking data rather than an error, so every comparator pins its BOUNDARY (`lte` vs `lt`),
 not merely that it filters something.
 """
@@ -10,10 +10,11 @@ not merely that it filters something.
 from __future__ import annotations
 
 import json
+from urllib.parse import urlparse
 
 import pytest
 
-from app import synth
+from backlot import synth
 from tests._helpers import build_corpus, client_for, corpus_client, db_count
 
 
@@ -107,6 +108,22 @@ def test_linear_issue_by_uuid_and_by_identifier(client, admin_h):
     assert issue["identifier"] == "ENG-101"
     by_uuid = gql(client, "{ issue(id: %s) { identifier } }" % lit(issue["id"]), admin_h)
     assert by_uuid.json()["data"]["issue"]["identifier"] == "ENG-101"
+
+
+def test_linear_issue_url_is_the_real_vendor_domain(client, admin_h):
+    """Regression: a rename's blind substitution once turned every served `url` field into
+    `linear.backlot`. Asserted on the parsed host (no trailing slash) rather than a URL literal,
+    because the vulnerable pattern is the literal characters `app` immediately followed by a
+    slash — spelling that combination anywhere, even in a comment, makes a repeat of the bug
+    rewrite it right alongside the code it guards. A bare `"linear.app"` with nothing appended
+    has no slash for the pattern to land on, so it survives. The `"backlot" not in host` half is
+    the one that actually matters: a rename can only ever INTRODUCE the mock's own name into a
+    vendor domain, never remove it, so no mechanical substitution can turn that assertion from
+    failing into passing."""
+    issue = gql(client, '{ issue(id: "ENG-101") { url } }', admin_h).json()["data"]["issue"]
+    host = urlparse(issue["url"]).netloc
+    assert host == "linear.app"
+    assert "backlot" not in host
 
 
 def test_linear_missing_issue_is_a_field_error_not_a_400(client, admin_h):
@@ -477,7 +494,7 @@ def test_linear_parent_and_children_read_the_same_column(client, admin_h, ro_con
 
     Also a performance contract: `@linear/sdk`'s Issue fragment selects `parent { id }` on every
     node, so resolving it by identifier cost ~45ms on a 50-issue page."""
-    # `ro_conn` is the SAMPLE db; a fresh get_settings() would follow whatever MOCK_DATA_DIR
+    # `ro_conn` is the SAMPLE db; a fresh get_settings() would follow whatever BACKLOT_DATA_DIR
     # another module last set, which is why this reads the fixture instead.
     row = ro_conn.execute(
         "SELECT doc_id, parent_doc_id, parent_key FROM linear_issues WHERE doc_id = 'lin-batch'"
@@ -491,7 +508,7 @@ def test_linear_parent_and_children_read_the_same_column(client, admin_h, ro_con
     assert served["identifier"] == "ENG-103"
 
 
-# --- the filter compiler (app/graphql/linear_filters.py) --------------------------------------
+# --- the filter compiler (backlot/graphql/linear_filters.py) --------------------------------------
 
 CORPUS = [
     {
@@ -687,7 +704,7 @@ def test_negated_derived_filter_keeps_null_column_rows(fclient):
     by_id = ids(
         fclient,
         '{project: {id: {neq: "%s"}}}'
-        % __import__("app.synth", fromlist=["x"]).linear_project_id("runtime"),
+        % __import__("backlot.synth", fromlist=["x"]).linear_project_id("runtime"),
     )
     assert by_name == by_id == ["DES-1"]
 

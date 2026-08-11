@@ -7,8 +7,13 @@ python examples/using-llamaindex-readers/github.py --url http://localhost:8000 -
 """
 
 import argparse
+import sys
+from pathlib import Path
 
-from _llamaindex import drop_self_from_syspath, github_base_url, serve_or_connect
+from backlot import serve_or_connect
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _common.syspath import drop_self_from_syspath
 
 # This file is named github.py; drop its own dir so the local helper import above wins but any
 # `import github` inside the reader's deps resolves to the real package.
@@ -39,7 +44,7 @@ CORPUS = [
 
 def build(mock, token):
     client = GitHubIssuesClient(
-        github_token=token, base_url=github_base_url(mock.base_url), verbose=False
+        github_token=token, base_url=f"{mock.base_url}/github", verbose=False
     )
     return GitHubRepositoryIssuesReader(client, owner="acme", repo="gateway", verbose=False)
 

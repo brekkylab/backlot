@@ -1,12 +1,12 @@
 # Bring your own corpus
 
-Serve **any** document set through all eleven mock APIs — provide a JSONL where each line is one
+Serve **any** document set through every mock API — provide a JSONL where each line is one
 document, validate it, and load it:
 
 ```bash
-python -m app.importer.byo mycorpus.jsonl              # validate + load -> data/
-python -m app.importer.byo mycorpus.jsonl --dry-run    # validate only, no DB writes
-python -m uvicorn app.main:app --port 8000
+backlot import mycorpus.jsonl              # validate + load -> data/
+backlot import mycorpus.jsonl --dry-run    # validate only, no DB writes
+backlot serve --port 8000
 ```
 
 `run.py` here is a self-contained walkthrough — it validates `sample_corpus.jsonl`, starts a
@@ -16,17 +16,20 @@ real mock server backed by it, and reads it back over HTTP (ACL enforced):
 python examples/bring-your-own-corpus/run.py
 ```
 
-`sample_corpus.jsonl` is a runnable sample for a fictional "Acme". It deliberately fills in
-**every** field the schemas expose — `created`/`updated` on all records, plus the per-service
-fidelity fields (slack rich replies with reactions/files/edited and `participants`; gmail
-`to`/`html`/`mailbox_owner` and a `messages` thread with `in_reply_to`; drive
-`trashed`/`parents`/`collaborators`; github `closed_at`/`merged_by`/`milestone`/
-`requested_reviewers` + comment reactions; jira `assignee`/`resolution`/`resolutiondate`/
-`duedate`/`severity`/`squad`; confluence `version_number`/`version_message`/`minor_edit`/
-`confidentiality`/`owner_team`/`reviewers`; linear a parent/child pair with `relations`,
-`attachments`, `estimate`/`cycle`/`project`/`release` and lifecycle timestamps) — so you can see
-that none of the response structure has to be synthesized: it can all be set directly from the
-corpus. `tests/test_schema.py` asserts it stays valid and keeps covering every served source.
+`sample_corpus.jsonl` is **the field reference**: a runnable corpus for a fictional "Acme" that
+populates *every* field the schemas declare, at least once, across every source — so you can
+see that none of the response structure has to be synthesized. It can all be set from the corpus.
+
+That is not a claim, it is a test: `test_schema.py::test_example_corpus_populates_every_field_the_schemas_declare`
+derives the field list from `backlot/schemas/*.json`, so adding a field to a schema fails the suite
+until this file carries it. Coverage is the union over one source's records, because some fields are
+alternatives — a `visibility` record and a `readers` record, a transcript written as `sentences` and
+one written as `content`.
+
+Two other corpora in this repo look similar and answer different questions; see
+[**Which corpus is which**](../../backlot/schemas/README.md#which-corpus-is-which). The short
+version: read this one to learn the format, and run `backlot.mock_server()` if you just want a
+populated server to poke at.
 
 ## Record format
 
@@ -60,8 +63,8 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   `data/tokens.yaml` — the same token-scoped ACL then applies across every one of them and MCP.
 - **Org:** the org name + domain are inferred from the corpus's dominant author email domain
   (a `@acme.com` corpus serves as org `acme`, so Slack `auth.test`, `/_mock/users`, and default
-  emails all say `acme` — not a hardcoded default). Override with `MOCK_ORG_NAME` /
-  `MOCK_ORG_DOMAIN`. The chosen values are persisted to `data/tokens.yaml`.
+  emails all say `acme` — not a hardcoded default). Override with `BACKLOT_ORG_NAME` /
+  `BACKLOT_ORG_DOMAIN`. The chosen values are persisted to `data/tokens.yaml`.
 - **Slack threads:** a slack record may carry a `replies` array. Each reply is a full message
   (`content`, optional `author_email`/`author_name`/`subtype`/`reactions`/`files`/`edited`), not
   just text. It becomes a thread — the record is the root, each reply a threaded reply. Only the
@@ -102,7 +105,7 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   `tokens.yaml` come from that file alone, instead of every `author_email` becoming a token-holding
   user. That is how a corpus converted from an existing dataset carries the people it already knows
   — including which of them are real accounts. See
-  [`schemas/README.md`](../../schemas/README.md).
+  [`schemas/README.md`](../../backlot/schemas/README.md).
 - **Timestamps:** every record accepts `created` (epoch seconds or ISO 8601) — it drives the
   Slack `ts` / Gmail `Date`+`internalDate` / Drive `createdTime` / GitHub `created_at` / Jira
   `created` / Confluence version time. Drive/GitHub/Jira/Confluence also accept `updated`
@@ -110,6 +113,6 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
 - **Gmail recipients:** `to` sets the `To` header (default `<mailbox>@<org_domain>`).
 
 Per-service extras (`subtype`, `labels`, `reactions`, `comments`, `issuelinks`, …) are
-described by the per-service JSON Schemas — see [`schemas/README.md`](../../schemas/README.md).
+described by the per-service JSON Schemas — see [`schemas/README.md`](../../backlot/schemas/README.md).
 Each record is validated against its schema before loading, so typos and shape errors fail fast
 with a line number; the schemas double as the contract for LLM dataset generation.

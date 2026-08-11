@@ -10,12 +10,17 @@ Self-contained.
 """
 
 import argparse
+import sys
+from pathlib import Path
 
 from google.api_core.client_options import ClientOptions
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-from _mockserver import google_service_account_info, serve_or_connect
+from backlot import serve_or_connect
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _common.google_creds import google_service_account_info
 
 CORPUS = [
     {

@@ -7,8 +7,13 @@ python examples/using-llamaindex-readers/jira.py --url http://localhost:8000 --t
 """
 
 import argparse
+import sys
+from pathlib import Path
 
-from _llamaindex import atlassian_base_url, drop_self_from_syspath, serve_or_connect
+from backlot import serve_or_connect
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _common.syspath import drop_self_from_syspath
 
 # This file is named jira.py; drop its own dir so the reader's `from jira import JIRA` resolves to
 # the real `jira` package rather than this script.
@@ -37,7 +42,7 @@ CORPUS = [
 
 
 def build(mock, token):
-    return JiraReader(PATauth={"server_url": atlassian_base_url(mock.base_url), "api_token": token})
+    return JiraReader(PATauth={"server_url": f"{mock.base_url}/atlassian", "api_token": token})
 
 
 def main(reader):

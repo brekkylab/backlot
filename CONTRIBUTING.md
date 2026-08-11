@@ -1,40 +1,56 @@
 # Contributing
 
-Thanks for your interest in improving **enterprise-mock**! Its essence is to serve each
-provider's **read-only API** — Slack, Gmail, Google Drive, GitHub, Jira, Confluence — with
-the **smallest possible gap** from the real thing, so clients built against the real APIs
-work unchanged against the mock. EnterpriseRAG-Bench is simply one corpus you can load into
-that surface (bring your own works too). Contributions that shrink the gap between the mock
-and the real APIs — request/response shapes, status codes, pagination, error formats — are
-especially welcome.
+Thanks for your interest in improving **Backlot**! Its essence is to serve each vendor's
+**read-only API** — Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3,
+HubSpot, Linear, Fireflies — with the **smallest possible gap** from the real thing, so clients
+built against the real APIs work unchanged against the mock. The corpus is yours to supply;
+EnterpriseRAG-Bench is just one dataset you can load into that surface. Contributions that shrink
+the gap between the mock and the real APIs — request/response shapes, status codes, pagination,
+error formats — are especially welcome.
 
 ## Development setup
 
 Requires Python **3.11+**.
 
 ```bash
-git clone https://github.com/brekkylab/enterprise-mock.git
-cd enterprise-mock
+git clone https://github.com/brekkylab/backlot.git
+cd backlot
 
 uv venv && source .venv/bin/activate     # or: python -m venv .venv && source .venv/bin/activate
 uv pip install -e ".[dev]"               # or: pip install -e ".[dev]"
 ```
 
-The server itself needs no data or API keys to start:
+That puts the `backlot` command on PATH. The server needs no API keys, but it does need a
+corpus — the bundled hello-world one (136 records covering every source) is enough to get a
+live server:
 
 ```bash
-python -m app.main                       # serves on http://localhost:8000
+backlot import backlot/data/hello.jsonl   # -> data/mock.sqlite + data/tokens.yaml
+backlot serve                             # serves on http://127.0.0.1:8000
 curl -s localhost:8000/health
 ```
 
-To exercise it against a real corpus, build one first (`python -m app.importer.erb`
-for a bench slice, or `python -m app.importer.byo mycorpus.jsonl` for your own — see
-the README).
+For a real corpus use `backlot import --type enterpriserag-bench` (the bench) or
+`backlot import mycorpus.jsonl` (your own) — see the README. Every `backlot import` flag is the
+importer module's own, so `python -m backlot.importer.{byo,erb}` still takes exactly the same ones.
 
-## Running tests
+## Terminology
+
+Two words, and they are not interchangeable:
+
+- **source** — one of the things Backlot serves: `slack`, `gmail`, `jira`, … This is the codebase's
+  own word for it (`source_type` on every record, `store.SOURCE_TABLE`, `/_mock/openapi/<source>`),
+  so use it for anything on our side of the line: a corpus record, a router, a table, an example
+  script, a test file.
+- **vendor** — the real company whose API a source imitates, and the artifacts that belong to them:
+  a *vendor SDK*, a *vendor MCP server*, "the real vendor APIs", "per-vendor page caps". Never a
+  synonym for source — "the real source API" would name the wrong owner.
+
+## Running tests and lint
 
 ```bash
 pytest                    # unit + HTTP endpoint tests; needs no data
+ruff check . && ruff format --check .    # both gate CI; ruff comes from the `dev` extra
 ```
 
 - **Unit + endpoint tests** run with no data and no network — these must pass for every change.
@@ -59,15 +75,20 @@ The whole point of this project is **fidelity to the real APIs**, so:
 
 - When you add or change an endpoint, mirror the real service's request/response shape,
   status codes, pagination, and error format as closely as practical.
-- Response shapes are validated against the JSON Schemas in [`schemas/`](schemas/); update
-  the relevant schema alongside any response-shape change.
+- Response shapes are pinned by each route's `response_model` and by the endpoint tests — not by
+  [`backlot/schemas/`](backlot/schemas/), which is the **ingest** contract (the BYO-JSONL record a
+  corpus may carry). Touch a schema when you change what a corpus can express, and a
+  `response_model` when you change what a client receives.
+- A divergence from the real API is a bug, even when the mock's answer is reasonable. Measure
+  against the real service where you can, and record the measurement in the comment beside the fix —
+  several of them exist precisely because someone diffed the two side by side.
 - ACL scoping is enforced per bearer token (the admin token bypasses). New endpoints that
   expose corpus content must respect the same ACL rules — add a test proving an
   ACL-restricted item is readable by the admin token and blocked for a scoped user token.
 
 ## Reporting bugs & requesting features
 
-Open an issue at https://github.com/brekkylab/enterprise-mock/issues. For a bug, include
+Open an issue at https://github.com/brekkylab/backlot/issues. For a bug, include
 the endpoint, the request you made, what you got, and what a real API would have returned.
 
 ## License

@@ -2,8 +2,11 @@
 
 ``SAMPLE`` is the single source of test data — it carries the +α surface (threads, reactions,
 comments, attachments, doc types, issue links/subtasks, child pages) that the SDK/MCP tests
-exercise, plus public/group/private docs for the ACL tests. It is deliberately independent of
-``examples/bring-your-own-corpus/sample_corpus.jsonl`` (which belongs to the BYO example).
+exercise, plus public/group/private docs for the ACL tests. It is deliberately independent of the
+repo's other two corpora, which answer different questions (see "Which corpus is which" in
+``backlot/schemas/README.md``): ``examples/bring-your-own-corpus/sample_corpus.jsonl`` is the field
+reference, and ``backlot/data/hello.jsonl`` is the demo corpus the wheel ships. A fixture is free to
+stay small and odd in ways neither of those may be, which is why it is not one of them.
 
 - ``db``   — a read-only connection to the built DB.
 - ``acl`` / ``tokens`` — the generated ACL and email->token map for that DB.
@@ -15,22 +18,17 @@ exercise, plus public/group/private docs for the ACL tests. It is deliberately i
 from __future__ import annotations
 
 import json
-import os
-import socket
-import subprocess
-import sys
-import time
-import urllib.request
 from pathlib import Path
 
 import pytest
 import yaml
 
-from app import store
-from app.acl import Acl
-from app.config import Settings
+import backlot
+from backlot import store
+from backlot.acl import Acl
+from backlot.config import Settings
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent  # used by test_schema.py to find the BYO example
 
 # One corpus for every test. Explicit doc_ids on the docs the ACL tests assert against.
 SAMPLE = [
@@ -727,7 +725,7 @@ SAMPLE = [
 
 
 def _build(data_dir: Path) -> Settings:
-    from app.importer.byo import load
+    from backlot.importer.byo import load
 
     settings = Settings(data_dir=data_dir)
     corpus = data_dir / "_corpus.jsonl"
@@ -776,7 +774,7 @@ def client(sample_settings):
 
     Module-scoped, so each vendor's test file gets its own — a lifespan over SAMPLE costs ~5ms once
     the corpus is built, and sharing one session-wide would collide with the tests that reload
-    ``app.main`` to serve a different DB."""
+    ``backlot.main`` to serve a different DB."""
     from tests._helpers import client_for
 
     with client_for(sample_settings) as c:
@@ -812,46 +810,16 @@ def ro_conn(sample_settings):
     conn.close()
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 @pytest.fixture(scope="module")
 def live_server(sample_settings):
-    """The SAMPLE DB served by a real uvicorn subprocess; yields ``(base_url, settings)``."""
-    port = _free_port()
-    env = {**os.environ, "MOCK_DATA_DIR": str(sample_settings.data_dir)}
-    proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "app.main:app",
-            "--port",
-            str(port),
-            "--log-level",
-            "warning",
-        ],
-        cwd=REPO_ROOT,
-        env=env,
-    )
-    base = f"http://127.0.0.1:{port}"
-    try:
-        for _ in range(100):
-            try:
-                with urllib.request.urlopen(f"{base}/health", timeout=0.5) as r:
-                    if r.status == 200:
-                        break
-            except Exception:  # noqa: BLE001
-                time.sleep(0.1)
-        else:
-            raise RuntimeError("mock server did not become ready")
-        yield base, sample_settings
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+    """SAMPLE served by a real uvicorn subprocess (via ``backlot.mock_server``); yields
+    ``(base_url, settings)`` for the official SDKs and the Dockerised MCP server, which make real
+    HTTP calls rather than going through the in-process ``TestClient``.
+
+    A separate build from ``sample_settings``'s own tempdir, but from the identical SAMPLE list —
+    doc ids and per-user tokens are deterministic hashes of the record content (see
+    ``backlot.importer.byo``), so the two builds agree on everything the tests read from
+    ``settings`` (``admin_token``, ``tokens_path``) even though they're different directories.
+    """
+    with backlot.mock_server(SAMPLE) as m:
+        yield m.base_url, sample_settings

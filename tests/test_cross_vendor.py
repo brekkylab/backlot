@@ -12,14 +12,16 @@ these share are in ``tests/_helpers.py``.
 from __future__ import annotations
 
 
+import sqlite3
+
 import pytest
 
-from app.config import Settings
-from tests._helpers import crawl_confluence, db_count
+from backlot.config import Settings
+from tests._helpers import build_corpus, client_for, crawl_confluence, db_count
 
 
 def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
-    """The message is part of the emulated surface — a client that string-matches its provider's
+    """The message is part of the emulated surface — a client that string-matches its vendor's
     error has to keep matching — which is why the shared guard takes it as a parameter.
 
     GitHub only: Google no longer goes through `auth.require_bearer`, because its answer is not one
@@ -40,7 +42,7 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens_yaml, ro_conn, sample
     user_conf = len(crawl_confluence(client, uh))
     assert user_conf < admin_conf  # some confluence docs are group/private-restricted
     # matches exactly the ACL-computed visible count
-    from app.acl import Acl
+    from backlot.acl import Acl
 
     acl = Acl.load(
         sample_settings.tokens_path, sample_settings.admin_token, sample_settings.org_name
@@ -51,7 +53,7 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens_yaml, ro_conn, sample
 
 def test_mock_users_directory(client, tokens_yaml, org):
     # the /_mock/users directory lists every user + token (for testing per-user ACL)
-    from app import synth
+    from backlot import synth
 
     body = client.get("/_mock/users").json()
     assert body["admin_token"] == tokens_yaml["admin_token"]
@@ -79,7 +81,7 @@ def test_mock_users_directory(client, tokens_yaml, org):
 
 
 def test_mock_users_can_be_disabled(client, monkeypatch):
-    from app import main
+    from backlot import main
 
     monkeypatch.setattr(main, "get_settings", lambda: Settings(expose_tokens=False))
     assert client.get("/_mock/users").status_code == 404
@@ -100,7 +102,7 @@ def test_unauthenticated_is_rejected(client):
 # --- OpenAPI enrichment: the params each router advertises ---------------------------------
 # The routers read query params off the raw request rather than through FastAPI signatures, so
 # each has to declare what it honours by hand (openapi.qp). One table rather than a test per
-# vendor: the assertion is identical and only the path and the expected names differ.
+# router: the assertion is identical and only the path and the expected names differ.
 
 
 @pytest.mark.parametrize(
@@ -139,3 +141,138 @@ def test_mock_openapi_spec_endpoint(client):
     )
     assert client.get("/_mock/openapi/s3").status_code == 404  # SigV4 — intentionally no bridge
     assert client.get("/_mock/openapi/nope").status_code == 404
+
+
+# --- /health: source_documents beside documents ---------------------------------------------
+
+
+def _join_warm_thread(main_module) -> None:
+    """Wait for the background per-source COUNT(*) cache (see lifespan._warm_caches) to land,
+    deterministically — /health's `documents`/`by_source` are None/{} until it does, and a
+    fresh-process cold start loses that race against an immediate request 100% of the time (no
+    poll budget is safe on a slower CI runner), so the test has to join the thread, not wait on it."""
+    warm = main_module.app.state.warm_thread
+    warm.join(timeout=10)
+    assert not warm.is_alive(), "cache warm-up did not finish within 10s"
+
+
+def test_health_reports_both_counts(tmp_path):
+    """Both numbers, always: the row count alone reads as inflated."""
+    from backlot import main as main_module
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "author_email": "bob@acme.com",
+                "content": "Anyone seeing 502s?",
+                "replies": [{"content": "Looking.", "author_email": "ava@acme.com"}],
+            },
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        _join_warm_thread(main_module)
+        body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert body["source_documents"] == 1
+    assert body["documents"] == 2
+
+
+def _one_slack_doc(tmp_path):
+    return build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "author_email": "bob@acme.com",
+                "content": "Anyone seeing 502s?",
+            },
+        ],
+    )
+
+
+def test_a_failing_warm_up_is_recorded_instead_of_dying_with_its_thread(tmp_path, monkeypatch):
+    """The warm-up runs in a daemon thread, so an exception inside it used to vanish with the thread.
+
+    Every cache then stayed None, which each consumer reads as "not warm yet" — the Slack routes fall
+    back to per-request queries and keep answering correctly — so nothing 500d, nothing retried, and
+    a broken warm-up was indistinguishable from a slow one for the life of the process.
+    """
+    from backlot import main as main_module
+    from backlot import store
+
+    settings = _one_slack_doc(tmp_path)
+    # The thread is the only caller of this, so patching it cannot disturb the serving path.
+    monkeypatch.setattr(
+        store,
+        "slack_channel_member_counts",
+        lambda conn: (_ for _ in ()).throw(sqlite3.OperationalError("no such table: whatever")),
+    )
+    with client_for(settings, reload=True) as client:
+        _join_warm_thread(main_module)
+        assert main_module.app.state.warm_error, "the failure was swallowed"
+        response = client.get("/health")
+        body = response.json()
+
+    assert response.status_code == 200, "a working server must not fail its own healthcheck"
+    assert body["status"] == "degraded", body
+    # Reported even though the earlier caches DID land: the warm-up fills three in sequence, and
+    # `degraded` without the reason is a worse answer than either "ok" or a plain failure.
+    assert "no such table" in body["warm_error"], body
+
+    # Still degraded rather than down — the corpus reads correctly through the fallback path.
+    admin = {"Authorization": f"Bearer {settings.admin_token}"}
+    with client_for(settings) as client:
+        listed = client.get("/slack/api/conversations.list", headers=admin).json()
+    assert [c["name"] for c in listed["channels"]] == ["incidents"]
+
+
+def test_health_reports_degraded_when_no_counts_ever_landed(tmp_path):
+    """The shape a total warm-up failure leaves: no counts, and an error to explain them.
+
+    Asserted on the rendering rather than by breaking the thread, because what a load balancer and
+    an operator see is this body — previously `status: "ok"` with `documents: null` forever.
+    """
+    from backlot import main as main_module
+
+    settings = _one_slack_doc(tmp_path)
+    with client_for(settings, reload=True) as client:
+        _join_warm_thread(main_module)
+        main_module.app.state.doc_counts = None
+        main_module.app.state.warm_error = "OperationalError: unable to open database file"
+        body = client.get("/health").json()
+
+    assert body["status"] == "degraded", body
+    assert body["documents"] is None and body["by_source"] == {}
+    assert body["warm_error"] == "OperationalError: unable to open database file"
+
+
+def test_health_source_documents_is_null_without_the_meta_key(tmp_path):
+    """A DB built before the meta table must still answer /health."""
+    from backlot import main as main_module
+    from backlot import store
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "space": "h",
+                "title": "A",
+                "content": "a",
+                "author_email": "ava@acme.com",
+            },
+        ],
+    )
+    conn = store.connect_rw(settings.db_path)
+    conn.execute("DELETE FROM meta WHERE key = 'source_documents'")
+    conn.commit()
+    conn.close()
+    with client_for(settings, reload=True) as client:
+        _join_warm_thread(main_module)
+        body = client.get("/health").json()
+    assert body["source_documents"] is None
+    assert body["documents"] == 1

@@ -18,18 +18,14 @@ from pathlib import Path
 
 import httpx
 
-# examples/ on sys.path, for the shared mock plumbing in _common/. Inline because this is the
-# directory's only script — the other example dirs have 8-10 importers, so they keep a shim.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from _common.mockserver import ROOT, mock_server  # noqa: E402
+from backlot import mock_server
 
 CORPUS = Path(__file__).resolve().parent / "sample_corpus.jsonl"
 
-# 1. Validate the corpus against schemas/ before serving anything (the same CLI you'd run by hand).
-if subprocess.run(
-    [sys.executable, "-m", "app.importer.byo", str(CORPUS), "--dry-run"], cwd=ROOT
-).returncode:
+# 1. Validate the corpus against backlot/schemas/ before serving anything (the same CLI you'd run by
+# hand: `backlot import <corpus> --dry-run`). Spelled `-m backlot` so it runs under THIS interpreter
+# and needs no activated venv on PATH; the package resolves from a checkout or site-packages alike.
+if subprocess.run([sys.executable, "-m", "backlot", "import", str(CORPUS), "--dry-run"]).returncode:
     raise SystemExit("corpus is invalid")
 
 # 2. Serve it with a real mock server and keep it running until Ctrl+C.

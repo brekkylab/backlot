@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brekkylab/backlot/schemas/github.schema.json",
+  "title": "BYO corpus record — github",
+  "description": "A GitHub issue or pull request. Title -> title, content -> body markdown. `container` is the repo name.",
+  "type": "object",
+  "properties": {
+    "source_type": {
+      "const": "github"
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The retrieval payload served verbatim as the body."
+    },
+    "title": {
+      "type": "string",
+      "description": "Document title (email subject / file name / issue title / page title)."
+    },
+    "doc_id": {
+      "type": "string",
+      "description": "Stable id (default: dsid_<sha256(source_type+title+content)>)."
+    },
+    "repo": {
+      "type": "string",
+      "description": "The repo this document belongs to (default: the source_type)."
+    },
+    "group": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "ACL group owning the repo (default: slug(container)); null means the container owns no group, so nothing is group-scoped to it."
+    },
+    "author_email": {
+      "type": "string",
+      "format": "email",
+      "description": "Author / sender / owner."
+    },
+    "author_name": {
+      "type": "string",
+      "description": "The owner's display name as the corpus writes it, served as the document's owner (a name is not recoverable from an email address)."
+    },
+    "author_groups": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Groups the author belongs to."
+    },
+    "visibility": {
+      "enum": [
+        "public",
+        "group",
+        "private"
+      ],
+      "description": "public = org-wide, group = the container's group, private = author only."
+    },
+    "readers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
+    },
+    "meta": {
+      "type": "object",
+      "description": "Free-form per-source structured extras merged into the record."
+    },
+    "subtype": {
+      "enum": [
+        "issue",
+        "pull_request",
+        "file"
+      ],
+      "description": "Issue vs PR vs file (default: issue)."
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "File path (required for subtype='file')."
+    },
+    "state": {
+      "type": "string",
+      "description": "open | closed."
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "assignees": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Assignee logins/emails."
+    },
+    "merged_at": {
+      "type": "string",
+      "description": "PR merge time (RFC3339)."
+    },
+    "head": {
+      "type": "string",
+      "description": "PR head ref."
+    },
+    "base": {
+      "type": "string",
+      "description": "PR base ref."
+    },
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "description": "[{author_email, state, body}]."
+    },
+    "reactions": {
+      "type": [
+        "array",
+        "object"
+      ],
+      "description": "Reaction counts."
+    },
+    "created": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "description": "created_at (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+    },
+    "updated": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "description": "updated_at (epoch seconds or ISO 8601). Default: created + 1h."
+    },
+    "closed_at": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ],
+      "description": "When the issue/PR was closed (epoch seconds or ISO 8601). Default: derived from state."
+    },
+    "closed_by": {
+      "type": "string",
+      "format": "email",
+      "description": "Email of the user who closed the issue."
+    },
+    "merged_by": {
+      "type": "string",
+      "format": "email",
+      "description": "PR only: email of the user who merged it."
+    },
+    "milestone": {
+      "type": "string",
+      "description": "Milestone title (emitted as a milestone object)."
+    },
+    "requested_reviewers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "PR only: emails of requested reviewers."
+    },
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "A comment on the document (served via the vendor's comment API).",
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Comment text (alias: body)."
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Comment text (alias: content)."
+          },
+          "author_email": {
+            "type": "string",
+            "format": "email"
+          },
+          "author_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "Optional stable id (default: <doc_id>::c<n>)."
+          },
+          "created_ts": {
+            "type": [
+              "integer",
+              "number",
+              "string"
+            ],
+            "description": "Optional creation time (epoch seconds or ISO string)."
+          },
+          "reactions": {
+            "type": [
+              "object",
+              "array"
+            ],
+            "description": "Reaction rollup ({\"+1\": n, heart: n, ...})."
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "content"
+            ]
+          },
+          {
+            "required": [
+              "body"
+            ]
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "source_type",
+    "content",
+    "title"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "subtype": {
+            "const": "file"
+          }
+        },
+        "required": [
+          "subtype"
+        ]
+      },
+      "then": {
+        "required": [
+          "path"
+        ]
+      }
+    }
+  ],
+  "additionalProperties": false
+}

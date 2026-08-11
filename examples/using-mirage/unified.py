@@ -14,21 +14,21 @@ authorized-user credential). Point them all at the same mock.
 import argparse
 import os
 import subprocess
+import sys
+from pathlib import Path
 
 from mirage import MountMode, Workspace
 from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
 from mirage.resource.gmail import GmailConfig, GmailResource
 from mirage.resource.slack import SlackConfig, SlackResource
 
-from _mirage import (
-    FUSE_HELP,
-    google_oauth_user,
-    lines,
-    point_google_at,
-    run_mirage,
-    serve_or_connect,
-    slack_base_url,
-)
+from backlot import serve_or_connect
+from backlot.integrations.mirage import point_google_at
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _common.google_creds import google_oauth_user
+
+from _helpers import FUSE_HELP, lines, run_mirage
 
 # One term — "Q1" — deliberately threads through all three sources.
 CORPUS = [
@@ -96,7 +96,7 @@ def build(mock, token, user) -> dict:
     client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url, user)
     google = dict(client_id=client_id, client_secret=client_secret, refresh_token=refresh_token)
     return {  # three backends, one filesystem
-        "/slack": SlackResource(SlackConfig(token=token, base_url=slack_base_url(mock.base_url))),
+        "/slack": SlackResource(SlackConfig(token=token, base_url=f"{mock.base_url}/slack/api")),
         "/gmail": GmailResource(GmailConfig(**google)),
         "/gdrive": GoogleDriveResource(GoogleDriveConfig(**google)),
     }
@@ -129,7 +129,7 @@ def main_fuse(resources: dict) -> None:
     real command across them. Needs macFUSE/fuse3.
 
     ``grep -r`` walks the whole mount, so it's meant for the small default corpus; against a
-    large ``--url`` use the per-provider scripts (their bounded navigation)."""
+    large ``--url`` use the per-source scripts (their bounded navigation)."""
     try:
         with Workspace(resources, mode=MountMode.READ) as ws:
             mnt = ws.add_fuse_mount("/")  # the workspace root is now one real directory

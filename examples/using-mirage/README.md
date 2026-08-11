@@ -2,7 +2,7 @@
 
 [mirage](https://github.com/strukto-ai/mirage) (`mirage-ai`) is a **virtual filesystem for AI
 agents**: it mounts a SaaS backend and lets you read it with plain bash — `ls`, `cat`, `grep`,
-`find`, `jq`. These scripts point mirage at enterprise-mock, so you can exercise a mirage-based
+`find`, `jq`. These scripts point mirage at Backlot, so you can exercise a mirage-based
 agent over a corpus **you** supply, entirely offline.
 
 ```bash
@@ -18,10 +18,10 @@ already-running mock instead (it falls back to a local one if that's unreachable
 python examples/using-mirage/unified.py --url https://your-mock-host.example.com
 ```
 
-Add **`--fuse`** to any provider script to expose the mount as a **real OS filesystem** instead
-of driving it in-process (see [FUSE mode](#fuse-mode-fuse) below).
+Add **`--fuse`** to any source's script to expose the mount as a **real OS filesystem** instead
+of driving it in-process (see [FUSE mode](#fuse-mode---fuse) below).
 
-## Providers
+## Sources
 
 | Script | mirage resource | mount | what it shows |
 |---|---|---|---|
@@ -50,42 +50,42 @@ both, together).
 **Slack** and **Notion** take a `base_url` config, so you point them straight at the mock — no glue:
 
 ```python
-from _mirage import slack_base_url, serve_or_connect
+from backlot import serve_or_connect
 with serve_or_connect(CORPUS) as mock:
     resource = SlackResource(SlackConfig(token=mock.token,
-                                         base_url=slack_base_url(mock.base_url)))
+                                         base_url=f"{mock.base_url}/slack/api"))
     ws = Workspace({"/slack": resource}, mode=MountMode.READ)
     print(await (await ws.execute("ls /slack/channels/")).stdout_str())
 ```
 
-**Notion** is the same one-liner — `NotionConfig(base_url=notion_base_url(mock.base_url))`, no
+**Notion** is the same one-liner — `NotionConfig(base_url=f"{mock.base_url}/notion/v1")`, no
 monkeypatch. mirage sends `Notion-Version: 2022-06-28`, which the mock's version-aware router
 serves (the legacy inline-`properties` / `databases.query` shape), so pages and databases both
 read correctly.
 
 **S3** is also plain config, no monkeypatch and no pin bump: `S3Config(endpoint_url=
-s3_base_url(mock.base_url), path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
+f"{mock.base_url}/s3", path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
 `path_style=True` keeps the bucket in the path (`/s3/<bucket>/...`) rather than the hostname. S3
 uses an AWS keypair (not a bearer token): `--access-key`/`--secret-key` are **required with
 `--url`** (real AWS keys, or a pair from `GET <url>/_mock/users` — the keys the SigV4 verifier
 accepts); without `--url` the local throwaway mock uses its own admin keypair.
 
 **Google** has no such knob — its connectors read the API host from module constants that the
-base helpers return verbatim. So `_mirage.py` exposes `point_google_at(base_url)`, which rewrites
-those constants to the mock before the Google resources are built:
+base helpers return verbatim. So `backlot.integrations.mirage` exposes `point_google_at(base_url)`,
+which rewrites those constants to the mock before the Google resources are built:
 
 ```python
-from _mirage import point_google_at
+from backlot.integrations.mirage import point_google_at
 point_google_at(mock.base_url)              # googleapis.com  ->  the mock
 gmail = GmailResource(GmailConfig(**creds))
 ```
 
 It redirects the OAuth token endpoint, the Drive API, and the Docs/Sheets/Slides APIs (mirage
 reads native Google docs structurally through those, not via Drive export) — each to a distinct
-mock path, so Docs and Slides don't collide. `_mirage.py` also re-exports `serve_or_connect` /
-`google_oauth_user` from
-[`../using-official-sdk/_mockserver.py`](../using-official-sdk/_mockserver.py), so the `--url` /
-`--user` / `--token` flags behave exactly as in those examples.
+mock path, so Docs and Slides don't collide. The `--url` / `--user` / `--token` flags behave
+exactly as in the `using-official-sdk` examples: `serve_or_connect` comes from `backlot` itself,
+and `google_oauth_user` (mock-specific OAuth glue, not general API) from
+[`examples/_common/google_creds.py`](../_common/google_creds.py).
 
 **GitHub** is the same shape as Google, but with one constant: `GitHubConfig` has no `base_url`
 field, and mirage hardcodes `mirage.core.github._client.API_BASE = "https://api.github.com"`.
@@ -93,7 +93,7 @@ field, and mirage hardcodes `mirage.core.github._client.API_BASE = "https://api.
 resource is built:
 
 ```python
-from _mirage import point_github_at
+from backlot.integrations.mirage import point_github_at
 point_github_at(mock.base_url)                       # api.github.com  ->  the mock
 repo = GitHubResource(GitHubConfig(token=T, owner="acme", repo="gateway"))
 ```
@@ -172,4 +172,4 @@ history): Drive's root is navigable (`'root' in parents` returns folder objects;
 enumeration is present-but-empty), the Docs/Sheets/Slides read APIs serve native-doc content, a
 Slack channel's `created` never postdates its messages, and `conversations.history` honors
 `oldest`/`latest` so a per-day fetch returns only that day (not the whole channel). Coverage
-lives in [`tests/test_editor_apis.py`](../../tests/test_editor_apis.py).
+lives in [`tests/test_google.py`](../../tests/test_google.py).

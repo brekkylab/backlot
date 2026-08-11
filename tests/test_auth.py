@@ -1,4 +1,4 @@
-"""Unit tests for the shared credential resolvers in :mod:`app.auth`.
+"""Unit tests for the shared credential resolvers in :mod:`backlot.auth`.
 
 The bearer/basic resolvers are covered end-to-end by the per-source endpoint tests; this
 file covers the ones with a contract worth pinning on their own — currently the API-key
@@ -14,7 +14,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from app import auth
+from backlot import auth
 
 
 def _request(authorization: str | None = None, app=None) -> Request:
@@ -40,7 +40,7 @@ def _app(acl) -> SimpleNamespace:
 
 def test_require_bearer_raises_401_carrying_the_vendors_own_detail(acl):
     """The detail string is the VENDOR's: GitHub says "Bad credentials", Google "Invalid
-    Credentials", Atlassian "Unauthorized". A client that string-matches its provider's error has
+    Credentials", Atlassian "Unauthorized". A client that string-matches its vendor's error has
     to keep matching, so the message is a parameter rather than something this helper invents."""
     with pytest.raises(HTTPException) as e:
         auth.require_bearer(_request(app=_app(acl)), "Bad credentials")

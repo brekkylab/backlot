@@ -22,7 +22,7 @@ import urllib.request
 import boto3
 from botocore.config import Config
 
-from _mockserver import serve_or_connect
+from backlot import serve_or_connect
 
 CORPUS = [
     {

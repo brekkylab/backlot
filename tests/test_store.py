@@ -1,4 +1,4 @@
-"""Tests for the read-only SQLite store layer (`app.store`).
+"""Tests for the read-only SQLite store layer (`backlot.store`).
 
 The store is shared by every router, search, and the importers, so it gets its own file rather
 than being verified incidentally through a load/route test. Registry wiring is checked across
@@ -13,7 +13,7 @@ import sqlite3
 
 import pytest
 
-from app import store
+from backlot import store
 
 ALL_SOURCES = [
     "slack",
@@ -56,7 +56,7 @@ def test_grouping_cols_per_source():
     assert store.grouping_col("notion") == "teamspace"
     assert store.grouping_col("s3") == "bucket"
     # HubSpot has no channel/space concept; the API is polymorphic over `{objectType}`, so the
-    # object type is the grouping unit (see app/store.py GROUPING).
+    # object type is the grouping unit (see backlot/store.py GROUPING).
     assert store.grouping_col("hubspot") == "object_type"
     assert store.grouping_col("linear") == "team"
     # Fireflies groups meetings into channels, its own concept and a documented filter.
@@ -71,7 +71,7 @@ def test_comment_tables_only_where_supported():
     assert store.comment_table("notion") == "notion_comments"
     assert store.comment_table("linear") == "linear_comments"
     # Fireflies' child rows are SENTENCES, not comments; the slot is "the child rows of a doc in
-    # this source", so it is reused rather than duplicated (see app/store.py COMMENT_TABLE).
+    # this source", so it is reused rather than duplicated (see backlot/store.py COMMENT_TABLE).
     assert store.comment_table("fireflies") == "fireflies_sentences"
     # HubSpot models notes/emails/meetings as their own object types, not as comments on a record.
     for src in ("slack", "gmail", "google_drive", "s3", "hubspot"):
@@ -789,3 +789,69 @@ def test_fireflies_counts_agree_with_the_pages(db):
     ]:
         total = store.count_fireflies_transcripts(db, keyword=kw, scope=scope)
         assert total == len(store.list_fireflies_transcripts(db, keyword=kw, scope=scope, limit=50))
+
+
+# --- meta table (build-time facts) -----------------------------------------------
+
+
+def test_meta_round_trips(tmp_path):
+    conn = store.connect_rw(tmp_path / "meta.sqlite")
+    store.write_meta(conn, "source_documents", 531248)
+    assert store.read_meta(conn, "source_documents") == "531248"
+    conn.close()
+
+
+def test_meta_absent_key_is_none(tmp_path):
+    conn = store.connect_rw(tmp_path / "meta.sqlite")
+    assert store.read_meta(conn, "never_written") is None
+    conn.close()
+
+
+def test_meta_overwrites(tmp_path):
+    conn = store.connect_rw(tmp_path / "meta.sqlite")
+    store.write_meta(conn, "source_documents", 1)
+    store.write_meta(conn, "source_documents", 2)
+    assert store.read_meta(conn, "source_documents") == "2"
+    conn.close()
+
+
+def test_read_meta_tolerates_a_db_without_the_table(tmp_path):
+    """A DB built before this change has no meta table; /health must still answer.
+
+    Simulates the deployed box's DB: created with the full pre-Task-3 schema, then the meta
+    table dropped to represent a pre-meta-table version."""
+    path = tmp_path / "old.sqlite"
+    # Create a DB with the full schema, then drop the meta table to simulate the deployed box
+    conn = store.connect_rw(path)
+    conn.execute("DROP TABLE IF EXISTS meta")
+    conn.commit()
+    conn.close()
+    # Re-open and verify read_meta tolerates the missing table
+    conn = sqlite3.connect(path)
+    assert store.read_meta(conn, "source_documents") is None
+    conn.close()
+
+
+def test_write_meta_commits_the_entire_transaction(tmp_path):
+    """write_meta commits the entire pending transaction, not just its own row.
+
+    This test verifies the contract documented in the docstring: when called from the importers
+    (Task 4), a write_meta call flushes any unrelated pending inserts."""
+    path = tmp_path / "committed.sqlite"
+    conn = store.connect_rw(path)
+    # Insert unrelated data without committing
+    conn.execute(
+        "INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts) "
+        "VALUES('n1','eng','a@x.com','Test','content',1)"
+    )
+    # write_meta commits the entire pending transaction
+    store.write_meta(conn, "test_key", "test_value")
+    conn.close()
+    # From a separate connection, verify both the unrelated row and the meta row are visible
+    check_conn = store.connect_ro(path)
+    assert (
+        check_conn.execute("SELECT COUNT(*) FROM notion_pages WHERE doc_id = 'n1'").fetchone()[0]
+        == 1
+    )
+    assert store.read_meta(check_conn, "test_key") == "test_value"
+    check_conn.close()

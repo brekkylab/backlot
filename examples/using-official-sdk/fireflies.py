@@ -19,7 +19,7 @@ import argparse
 import json
 
 import httpx
-from _mockserver import serve_or_connect
+from backlot import serve_or_connect
 
 # Two meetings in one channel. The second supplies only a `content` body — a plain
 # "Speaker: text" transcript — to show that the loader parses sentences back out of it, so a BYO

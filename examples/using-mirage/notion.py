@@ -24,7 +24,8 @@ import subprocess
 from mirage import MountMode, Workspace
 from mirage.resource.notion import NotionConfig, NotionResource
 
-from _mirage import FUSE_HELP, lines, notion_base_url, run_mirage, serve_or_connect
+from backlot import serve_or_connect
+from _helpers import FUSE_HELP, lines, run_mirage
 
 CORPUS = [
     {
@@ -57,7 +58,7 @@ CORPUS = [
 def build(mock, token):
     # Notion's host is a config knob — point it at the mock (no monkeypatch needed).
     # --token <usr-token> (from /_mock/users) → ACL-filtered to that user; else admin sees all.
-    return NotionResource(NotionConfig(api_key=token, base_url=notion_base_url(mock.base_url)))
+    return NotionResource(NotionConfig(api_key=token, base_url=f"{mock.base_url}/notion/v1"))
 
 
 async def main(resource) -> None:

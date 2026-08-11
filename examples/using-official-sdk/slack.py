@@ -10,7 +10,7 @@ import argparse
 
 from slack_sdk import WebClient
 
-from _mockserver import serve_or_connect
+from backlot import serve_or_connect
 
 CORPUS = [
     {"source_type": "slack", "channel": "eng", "content": "Deploy freeze starts Friday 5pm."},

@@ -1,5 +1,5 @@
 /**
- * Read Linear issues from an enterprise-mock server with the OFFICIAL `@linear/sdk`.
+ * Read Linear issues from a Backlot server with the OFFICIAL `@linear/sdk`.
  *
  * This is the only TypeScript example in `examples/using-official-sdk/` — every sibling is
  * Python — because `@linear/sdk` is the only client Linear publishes and there is no official
@@ -150,12 +150,14 @@ async function serveOrConnect(url: string | undefined): Promise<Mock> {
   if (url) console.log(`--url ${url} is not reachable — falling back to a local mock`);
 
   const python = process.env.PYTHON ?? "python3";
-  const dataDir = mkdtempSync(join(tmpdir(), "enterprise-mock-linear-"));
+  const dataDir = mkdtempSync(join(tmpdir(), "backlot-linear-"));
   const corpus = join(dataDir, "corpus.jsonl");
   writeFileSync(corpus, CORPUS.map((r) => JSON.stringify(r)).join("\n"));
-  const env = { ...process.env, MOCK_DATA_DIR: dataDir };
+  const env = { ...process.env, BACKLOT_DATA_DIR: dataDir };
 
-  const imported = spawnSync(python, ["-m", "app.importer.byo", corpus], {
+  // `-m backlot import` — the same CLI as `backlot import <corpus>`, run through the interpreter
+  // we already resolved (PYTHON / python3), so no activated venv has to be on PATH.
+  const imported = spawnSync(python, ["-m", "backlot", "import", corpus], {
     cwd: REPO_ROOT, env, stdio: ["ignore", "ignore", "inherit"],
   });
   if (imported.status !== 0) {
@@ -169,7 +171,7 @@ async function serveOrConnect(url: string | undefined): Promise<Mock> {
   const port = await freePort();
   const proc: ChildProcess = spawn(
     python,
-    ["-m", "uvicorn", "app.main:app", "--port", String(port), "--log-level", "warning"],
+    ["-m", "uvicorn", "backlot.main:app", "--port", String(port), "--log-level", "warning"],
     { cwd: REPO_ROOT, env, stdio: ["ignore", "ignore", "inherit"] },
   );
   const baseUrl = `http://127.0.0.1:${port}`;

@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 from mcp import StdioServerParameters
 
 from _agent import run_agent
-from _mockserver import serve_or_connect
+from backlot import serve_or_connect
 
 CORPUS = [
     {

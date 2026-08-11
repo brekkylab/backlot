@@ -1,9 +1,23 @@
+# Pinned so the project (and its network/volume names) is `backlot` regardless of what the checkout
+# directory happens to be called.
+name: backlot
+
 services:
   mock:
     build: .
-    image: enterprise-mock:latest
+    image: backlot:latest
     ports:
       - "8000:8000"
-    # Override the admin/service token if desired:
-    # environment:
-    #   MOCK_ADMIN_TOKEN: my-service-token
+    # Settings come from a `.env` file on the host, not from this file. What a deployment needs is a
+    # property of ITS data and ITS exposure — a multi-GB corpus wants different SQLite tuning than a
+    # laptop, and a shared box needs a different admin token — so hardcoding any of it here would
+    # push one deployment's choices onto every `docker compose up`. Copy `.env.example` to `.env` and
+    # edit. `required: false` so a fresh clone still comes up on the package defaults.
+    env_file:
+      - path: .env
+        required: false
+
+    # A deployment that builds its own corpus mounts it over the baked one. Build the image with
+    # `--target serve` (no corpus) and point this at the data dir you imported on the host:
+    # volumes:
+    #   - ./data:/app/data

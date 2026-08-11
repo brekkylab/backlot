@@ -24,8 +24,11 @@ ENV PATH="/opt/venv/bin:$PATH" \
 
 WORKDIR /app
 RUN python -m venv /opt/venv
-# pyproject declares `readme`, so README.md has to be present for the install to resolve.
-COPY pyproject.toml README.md ./
+# Both are named by pyproject (`readme`, `license-files`). Neither is required to build — setuptools
+# tolerates either being absent, silently — but the installed dist-info then loses it: without
+# LICENSE the image redistributes MIT-licensed code carrying no copy of the notice, and without
+# README `pip show backlot` in the container has an empty description.
+COPY pyproject.toml README.md LICENSE ./
 COPY backlot ./backlot
 RUN pip install --no-cache-dir .
 

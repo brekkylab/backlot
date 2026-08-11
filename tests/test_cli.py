@@ -32,9 +32,9 @@ def plain(captured: str) -> str:
     """Rendered CLI output -> the text a reader sees, on one line.
 
     Assertions have to go through this. rich HIGHLIGHTS option names by styling each fragment
-    separately, so with color on, `--export-byo` reaches the buffer as
-    ``'\\x1b[1;36m-\\x1b[0m\\x1b[1;36m-export\\x1b[0m\\x1b[1;36m-byo\\x1b[0m'`` and the contiguous
-    substring is simply not there. GitHub Actions sets FORCE_COLOR, so a suite that asserts on raw
+    separately, so with color on, `--shard-records` reaches the buffer as
+    ``'\\x1b[1;36m-\\x1b[0m\\x1b[1;36m-shard\\x1b[0m\\x1b[1;36m-records\\x1b[0m'`` and the
+    contiguous substring is simply not there. GitHub Actions sets FORCE_COLOR, so a suite that asserts on raw
     output passes locally and fails only in CI — which is exactly what happened. Newlines collapse
     too, so a message wrapped by a narrow terminal still matches.
     """
@@ -73,8 +73,8 @@ def _record() -> dict:
     }
 
 
-def _spy(monkeypatch, module) -> dict:
-    """Replace ``module.run`` with a recorder that BINDS the call to the real signature.
+def _spy(monkeypatch, module, name: str = "run") -> dict:
+    """Replace ``module.<name>`` with a recorder that BINDS the call to the real signature.
 
     Binding matters: a bare ``**kw`` recorder accepts any keyword, so a caller passing
     ``export_byo=`` to a ``run(export_byo_dir=...)`` would be recorded happily here and TypeError
@@ -82,7 +82,7 @@ def _spy(monkeypatch, module) -> dict:
     """
     import inspect
 
-    real = inspect.signature(module.run)
+    real = inspect.signature(getattr(module, name))
     seen: dict = {}
 
     def recorder(*args, **kw):
@@ -91,7 +91,7 @@ def _spy(monkeypatch, module) -> dict:
         seen.update(bound.arguments)
         return 0
 
-    monkeypatch.setattr(module, "run", recorder)
+    monkeypatch.setattr(module, name, recorder)
     return seen
 
 
@@ -104,6 +104,12 @@ def spy_byo(monkeypatch):
 @pytest.fixture
 def spy_erb(monkeypatch):
     return _spy(monkeypatch, erb)
+
+
+@pytest.fixture
+def spy_erb_export(monkeypatch):
+    """`backlot export`'s target — a separate entry point from the import one it used to be a flag on."""
+    return _spy(monkeypatch, erb, "run_export")
 
 
 # --- the importers actually run ---------------------------------------------------------------
@@ -158,9 +164,9 @@ def test_import_bundled_loads_the_corpus_bundled_with_the_package(tmp_path, monk
 
 @pytest.mark.parametrize("spelling", ["enterpriserag-bench", "erb"])
 def test_type_routes_to_the_bench_importer(spelling, spy_erb):
-    assert cli.main(["import", "--type", spelling, "--no-download", "--ref", "topic"]) == 0
-    assert spy_erb["no_download"] is True
-    assert spy_erb["ref"] == "topic"
+    """Importing the bench takes no options at all, so routing is the whole contract."""
+    assert cli.main(["import", "--type", spelling]) == 0
+    assert spy_erb == {}  # called, with nothing to pass
 
 
 def test_byo_options_reach_the_byo_importer_typed(tmp_path, spy_byo):
@@ -170,15 +176,6 @@ def test_byo_options_reach_the_byo_importer_typed(tmp_path, spy_byo):
     assert spy_byo["append"] is True
     assert spy_byo["dry_run"] is False
     assert spy_byo["roster"] == roster
-
-
-def test_bench_numeric_options_arrive_as_ints(tmp_path, spy_erb):
-    out = tmp_path / "out"
-    argv = ["import", "-t", "erb", "--export-byo", str(out), "--shard-records", "50000"]
-    assert cli.main([*argv, "--allow-excluded", "3"]) == 0
-    assert spy_erb["shard_records"] == 50000  # not "50000"
-    assert spy_erb["allow_excluded"] == 3
-    assert spy_erb["export_byo_dir"] == out
 
 
 def test_the_bundled_flag_resolves_to_the_packaged_corpus_path(spy_byo):
@@ -202,36 +199,47 @@ def test_an_unknown_type_is_a_usage_error(capsys):
     assert "nope" in plain(capsys.readouterr().err)
 
 
-@pytest.mark.parametrize(
-    ("argv", "flag"),
-    [
-        (["import", "-t", "erb", "--dry-run"], "--dry-run"),
-        (["import", "-t", "erb", "--bundled"], "--bundled"),
-        (["import", "-t", "erb", "--append"], "--append"),
-        (["import", "c.jsonl", "--no-download"], "--no-download"),
-        (["import", "c.jsonl", "--tokens-only"], "--tokens-only"),
-        (["import", "c.jsonl", "--allow-excluded", "2"], "--allow-excluded"),
-    ],
-)
-def test_an_option_belonging_to_the_other_importer_is_refused(argv, flag, capsys):
-    """One command accepting both importers' options makes these typable. argparse could not reach
-    this case — the two parsers were disjoint — and the flag would otherwise be dropped in silence.
-    """
-    assert cli.main(argv) == 2
+@pytest.mark.parametrize("flag", ["--dry-run", "--bundled", "--append"])
+def test_a_byo_option_under_the_bench_type_is_refused(flag, capsys):
+    """The bench importer has no options, so every one of `import`'s belongs to BYO. Giving one with
+    `--type erb` is a real flag in the wrong place, which is worth saying rather than ignoring."""
+    assert cli.main(["import", "-t", "erb", flag]) == 2
     err = plain(capsys.readouterr().err)
     assert flag in err and "--type" in err
 
 
+def test_a_corpus_path_under_the_bench_type_is_refused(capsys):
+    """`import -t erb some.jsonl` reads as "import this file as the bench", which is not a thing:
+    the bench downloads its own corpus."""
+    assert cli.main(["import", "-t", "erb", "some.jsonl"]) == 2
+    assert "downloads its own corpus" in plain(capsys.readouterr().err)
+
+
 def test_shard_records_must_be_at_least_one(capsys):
     """0 makes `n >= shard_records` always true: one shard per record, 600k files for the bench."""
-    assert cli.main(["import", "-t", "erb", "--export-byo", "out", "--shard-records", "0"]) == 2
+    assert cli.main(["export", "out", "--shard-records", "0"]) == 2
     assert "at least 1" in plain(capsys.readouterr().err)
 
 
-def test_shard_records_without_export_byo_is_refused(capsys):
-    """Silently ignored before: a sharded export was asked for and a database got built instead."""
-    assert cli.main(["import", "-t", "erb", "--shard-records", "5"]) == 2
-    assert "--export-byo" in plain(capsys.readouterr().err)
+# --- export -----------------------------------------------------------------------------------
+
+
+def test_export_routes_to_the_bench_exporter(tmp_path, spy_erb_export):
+    out = tmp_path / "artifact"
+    assert cli.main(["export", str(out), "--shard-records", "50000"]) == 0
+    assert spy_erb_export["out_dir"] == out
+    assert spy_erb_export["shard_records"] == 50000  # an int, not "50000"
+
+
+def test_export_without_sharding_writes_one_corpus_file(tmp_path, spy_erb_export):
+    out = tmp_path / "artifact"
+    assert cli.main(["export", str(out)]) == 0
+    assert spy_erb_export["shard_records"] is None
+
+
+def test_export_requires_a_destination(capsys):
+    assert cli.main(["export"]) == 2
+    assert "DIR" in plain(capsys.readouterr().err)
 
 
 # --- serve ------------------------------------------------------------------------------------
@@ -366,17 +374,24 @@ def test_help_shows_every_command(capsys):
         assert command in out
 
 
-def test_import_help_shows_both_importers_options_in_one_screen(capsys):
+def test_import_help_shows_every_option_it_accepts(capsys):
     """The reason this refactor exists: every option `import` accepts is declared in cli.py and
-    visible at once, grouped by the importer it drives. Before, the bench options were unreachable
-    from the help text until you already knew to pass `-t erb`."""
+    visible at once. Before, they were split across two importers' argparse parsers."""
     assert cli.main(["import", "--help"]) == 0
     out = plain(capsys.readouterr().out)
-    for byo_option in ("--bundled", "--append", "--dry-run", "--roster"):
-        assert byo_option in out, byo_option
-    for bench_option in ("--slice-questions", "--export-byo", "--shard-records", "--tokens-only"):
-        assert bench_option in out, bench_option
-    assert "BYO corpus" in out and "EnterpriseRAG-Bench" in out  # the two panels
+    for option in ("--type", "--data-dir", "--bundled", "--append", "--dry-run", "--roster"):
+        assert option in out, option
+    assert "BYO corpus" in out  # the panel that says which importer they belong to
+
+
+@pytest.mark.parametrize(
+    "not_an_option", ["--slice-questions", "--tokens-only", "--export-byo", "--allow-excluded"]
+)
+def test_import_rejects_options_it_does_not_have(not_an_option, capsys):
+    """None of these exist. A stale invocation carrying one must fail loudly — being accepted and
+    ignored is how a caller believes they asked for something they did not get."""
+    assert cli.main(["import", "-t", "erb", not_an_option, "x"]) == 2
+    assert "No such option" in plain(capsys.readouterr().err)
 
 
 def test_the_module_spellings_re_enter_the_same_cli(monkeypatch, spy_byo):

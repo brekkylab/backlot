@@ -2,18 +2,19 @@
 
     backlot serve                       # uvicorn backlot.main:app, with uvicorn's own defaults
     backlot import <corpus.jsonl>       # backlot.importer.byo   (--type byo, the default)
-    backlot import --type erb           # backlot.importer.erb
+    backlot import --type erb           # backlot.importer.erb, no options of its own
+    backlot export out/                 # the bench as a BYO artifact instead of a database
     backlot status                      # what the data dir currently holds
 
 This module is the ONE place the command line is defined. The importers used to declare their own
 flags in their own ``argparse`` parsers, which meant ``backlot import --help`` was assembled from
-three files and reading this one told you almost nothing. Each importer now exposes a plain
-``run(...)`` taking keyword arguments, and the flags that drive it are the parameters below.
+three files and reading this one told you almost nothing. Each importer now exposes plain functions
+taking keyword arguments, and the flags that drive them are the parameters below.
 
-``import`` is a single command rather than one per corpus type, so the two importers' options share
-a help screen; the ``rich_help_panel`` on each option is what keeps them legible as two groups.
-Since one command now accepts both sets, a mix that belongs to neither importer is rejected
-explicitly — see ``_reject_flags_for_the_other_importer``.
+``import`` keeps both corpus types behind one command (``--type``) because the bench importer has no
+options left to separate: writing an artifact became ``export``, and the rest went. So every option
+on ``import`` is BYO's, and one given under ``--type erb`` is refused rather than ignored — see
+``_reject_byo_flags_under_bench``.
 """
 
 from __future__ import annotations
@@ -35,7 +36,6 @@ BYO, BENCH, BENCH_ALIAS = "byo", "enterpriserag-bench", "erb"
 IMPORTER_TYPES = (BYO, BENCH, BENCH_ALIAS)
 
 _BYO_PANEL = "BYO corpus options (--type byo)"
-_BENCH_PANEL = "EnterpriseRAG-Bench options (--type enterpriserag-bench)"
 
 app = typer.Typer(
     name="backlot",
@@ -171,41 +171,29 @@ def serve(
 
 # --------------------------------------------------------------------------- import
 
-# Which options belong to which importer, and the default that means "not given". Kept as data so
-# the check below names the offending flags in the user's own spelling.
+# The BYO options, and the default that means "not given". Kept as data so the check below names the
+# offending flags in the user's own spelling. There is no bench counterpart: importing the bench
+# takes no options at all, which is why every one of these is refused under `--type erb`.
 _BYO_ONLY: dict[str, object] = {
     "--bundled": False,
     "--append": False,
     "--dry-run": False,
     "--roster": None,
 }
-_BENCH_ONLY: dict[str, object] = {
-    "--slice-questions": None,
-    "--ref": "main",
-    "--no-download": False,
-    "--tokens-only": False,
-    "--export-byo": None,
-    "--shard-records": None,
-    "--allow-excluded": 0,
-}
 
 
-def _reject_flags_for_the_other_importer(chosen: str, supplied: dict[str, object]) -> None:
-    """Fail when an option belongs to the importer that was NOT chosen.
+def _reject_byo_flags_under_bench(supplied: dict[str, object]) -> None:
+    """Fail when a BYO option is given with `--type erb`, which has no options of its own.
 
-    Two disjoint argparse parsers made this impossible to express; one command accepting both sets
-    makes `--type erb --dry-run` typable, and it would otherwise be silently ignored. Named
-    explicitly because "unrecognized argument" is not what happened — the flag is real, just not for
-    this importer.
+    Named explicitly because "unrecognized argument" is not what happened — the flag is real, just
+    not for this importer — and because the alternative is ignoring it in silence.
     """
-    wrong = _BENCH_ONLY if chosen == BYO else _BYO_ONLY
-    offenders = [flag for flag, unset in wrong.items() if supplied[flag] != unset]
+    offenders = [flag for flag, unset in _BYO_ONLY.items() if supplied[flag] != unset]
     if not offenders:
         return
-    other = BENCH if chosen == BYO else BYO
     raise typer.BadParameter(
         f"{', '.join(offenders)} {'belongs' if len(offenders) == 1 else 'belong'} to "
-        f"--type {other}, and --type {chosen} is in effect"
+        f"--type {BYO}, and --type {BENCH} is in effect"
     )
 
 
@@ -268,133 +256,89 @@ def import_(
             rich_help_panel=_BYO_PANEL,
         ),
     ] = None,
-    # --- EnterpriseRAG-Bench -----------------------------------------------
-    slice_questions: Annotated[
-        Optional[Path],
-        typer.Option(
-            help="only import docs referenced (expected_doc_ids) by this questions JSONL",
-            rich_help_panel=_BENCH_PANEL,
-        ),
-    ] = None,
-    ref: Annotated[
-        str,
-        typer.Option(help="EnterpriseRAG-Bench branch/ref to fetch", rich_help_panel=_BENCH_PANEL),
-    ] = "main",
-    no_download: Annotated[
-        bool,
-        typer.Option(
-            "--no-download",
-            help="reuse cached data/raw/generated_data; skip fetching",
-            rich_help_panel=_BENCH_PANEL,
-        ),
-    ] = False,
-    tokens_only: Annotated[
-        bool,
-        typer.Option(
-            "--tokens-only",
-            help="resolve the roster and write tokens.yaml WITHOUT building the DB (fast)",
-            rich_help_panel=_BENCH_PANEL,
-        ),
-    ] = False,
-    export_byo: Annotated[
-        Optional[Path],
-        typer.Option(
-            metavar="DIR",
-            help="write a BYO-JSONL artifact into DIR instead of building the DB: "
-            "corpus.jsonl + roster.yaml, or shards + manifest.json with --shard-records; "
-            "`backlot import` loads either to an equivalent DB",
-            rich_help_panel=_BENCH_PANEL,
-        ),
-    ] = None,
-    shard_records: Annotated[
-        Optional[int],
-        typer.Option(
-            metavar="N",
-            help="with --export-byo: write data/<source>/part-*.jsonl.gz shards of N records "
-            "each plus manifest.json, instead of one corpus.jsonl",
-            rich_help_panel=_BENCH_PANEL,
-        ),
-    ] = None,
-    allow_excluded: Annotated[
-        int,
-        typer.Option(
-            metavar="N",
-            help="proceed with up to N empty-content documents that KNOWN_EMPTY_DOCS does not name "
-            "(0: any undeclared exclusion stops the run)",
-            rich_help_panel=_BENCH_PANEL,
-        ),
-    ] = 0,
 ) -> None:
     """Build the data dir from a corpus.
 
-    Two importers behind one command, chosen with --type. The options below are grouped by the importer they drive; passing one importer's option while the other is selected is an error rather than silently ignored.
+    Two importers behind one command, chosen with --type. Importing the bench takes no options of its own, so every option below is BYO's, and passing one with `--type erb` is an error rather than silently ignored.
     """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
     if corpus_type not in IMPORTER_TYPES:
         raise typer.BadParameter(
             f"{corpus_type!r} is not one of {', '.join(IMPORTER_TYPES)}", param_hint="'--type'"
         )
-    chosen = BYO if corpus_type == BYO else BENCH
-    _reject_flags_for_the_other_importer(
-        chosen,
-        {
-            "--bundled": bundled,
-            "--append": append,
-            "--dry-run": dry_run,
-            "--roster": roster,
-            "--slice-questions": slice_questions,
-            "--ref": ref,
-            "--no-download": no_download,
-            "--tokens-only": tokens_only,
-            "--export-byo": export_byo,
-            "--shard-records": shard_records,
-            "--allow-excluded": allow_excluded,
-        },
-    )
     _use_data_dir(data_dir)
 
-    if chosen == BYO:
-        if bundled == bool(corpus):
-            # Exactly one source. Both mistakes are named in one message because a reader who typed
-            # neither needs to learn that --bundled exists, and one who typed both needs to learn
-            # they conflict.
+    if corpus_type != BYO:
+        _reject_byo_flags_under_bench(
+            {
+                "--bundled": bundled,
+                "--append": append,
+                "--dry-run": dry_run,
+                "--roster": roster,
+            }
+        )
+        if corpus is not None:
             raise typer.BadParameter(
-                "give a corpus path or --bundled (the corpus bundled with the package), not both",
+                f"--type {BENCH} downloads its own corpus; a path is only for --type {BYO}",
                 param_hint="'CORPUS'",
             )
-        if bundled:
-            from backlot.testing import HELLO_CORPUS
+        from backlot.importer import erb
 
-            corpus = HELLO_CORPUS
+        raise typer.Exit(erb.run())
 
-        from backlot.importer import byo
+    if bundled == bool(corpus):
+        # Exactly one source. Both mistakes are named in one message because a reader who typed
+        # neither needs to learn that --bundled exists, and one who typed both needs to learn they
+        # conflict.
+        raise typer.BadParameter(
+            "give a corpus path or --bundled (the corpus bundled with the package), not both",
+            param_hint="'CORPUS'",
+        )
+    if bundled:
+        from backlot.testing import HELLO_CORPUS
 
-        raise typer.Exit(byo.run(corpus, append=append, dry_run=dry_run, roster=roster))
+        corpus = HELLO_CORPUS
 
-    if shard_records is not None:
-        if shard_records < 1:
-            # 0 makes `n >= shard_records` always true: one shard per record, 600k files for the
-            # bench, which is the very thing sharding was added to avoid.
-            raise typer.BadParameter("must be at least 1", param_hint="'--shard-records'")
-        if export_byo is None:
-            # Silently ignored before this check existed, so a sharded export could be asked for and
-            # a database built instead.
-            raise typer.BadParameter(
-                "only means anything with --export-byo", param_hint="'--shard-records'"
-            )
+    from backlot.importer import byo
+
+    raise typer.Exit(byo.run(corpus, append=append, dry_run=dry_run, roster=roster))
+
+
+# --------------------------------------------------------------------------- export
+
+
+@app.command()
+def export(
+    out_dir: Annotated[
+        Path,
+        typer.Argument(
+            metavar="DIR",
+            help="where to write corpus.jsonl + roster.yaml (or the shards + manifest.json)",
+        ),
+    ],
+    shard_records: Annotated[
+        Optional[int],
+        typer.Option(
+            metavar="N",
+            help="write data/<source>/part-*.jsonl.gz shards of N records each plus "
+            "manifest.json, instead of one corpus.jsonl — what half a million documents need to "
+            "be distributable",
+        ),
+    ] = None,
+    data_dir: DataDir = None,
+) -> None:
+    """Write EnterpriseRAG-Bench out as a BYO-JSONL artifact instead of a database.
+
+    `backlot import` loads the result to a database equivalent to importing the bench directly. Its own command rather than a flag on `import`, because it writes an artifact and imports nothing.
+    """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
+    if shard_records is not None and shard_records < 1:
+        # 0 makes `n >= shard_records` always true: one shard per record, 600k files for the bench,
+        # which is the very thing sharding was added to avoid.
+        raise typer.BadParameter("must be at least 1", param_hint="'--shard-records'")
+    _use_data_dir(data_dir)
 
     from backlot.importer import erb
 
-    raise typer.Exit(
-        erb.run(
-            slice_questions=slice_questions,
-            ref=ref,
-            no_download=no_download,
-            tokens_only=tokens_only,
-            export_byo_dir=export_byo,
-            shard_records=shard_records,
-            allow_excluded=allow_excluded,
-        )
-    )
+    raise typer.Exit(erb.run_export(out_dir, shard_records=shard_records))
 
 
 # --------------------------------------------------------------------------- status

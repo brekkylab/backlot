@@ -5,15 +5,13 @@ Downloads the bench's ``generated_data/``, resolves display names to real emails
 per-doc ACL grants from the real people/scope fields (``grants_for``). Everything the import needs
 — fetch, parse, principal resolution, ACL derivation, orchestration — lives in this one module.
 
-    backlot import -t erb                                   # full corpus: download -> load -> ACL
-    backlot import -t erb --slice-questions extra.jsonl      # only the docs a slice needs
-    backlot import -t erb --no-download                      # reuse whatever is already in data/raw
-    backlot import -t erb --ref some-branch                  # fetch a non-default branch/ref
+    backlot import -t erb          # download -> load -> ACL. No options: it imports the corpus.
+    backlot export out/            # the same corpus as a BYO artifact instead of a database
 
-``-t erb`` is short for ``--type enterpriserag-bench``; ``python -m backlot.importer.erb <flags>``
-runs this module directly with the same flags.
-
-Only ``curl`` is used to fetch (no ``gh`` / no auth).
+``-t erb`` is short for ``--type enterpriserag-bench``; ``python -m backlot.importer.erb`` is the
+same command. The download is cached under ``BenchSettings.raw_dir``, and
+:func:`fetch_generated_data` returns the cache when it is populated, so a re-run does not refetch
+and there is no flag for it. Only ``curl`` is used to fetch (no ``gh`` / no auth).
 """
 
 from __future__ import annotations
@@ -2040,9 +2038,7 @@ class _ByoWriter:
         )
 
 
-def export_byo(
-    settings, gen_dir, out_dir, *, question_ids=None, shard_records=None, allow_excluded=0
-) -> dict:
+def export_byo(settings, gen_dir, out_dir, *, shard_records=None) -> dict:
     """Convert ERB to a BYO-JSONL artifact: ``corpus.jsonl`` + ``roster.yaml``, or per-source gzip
     shards plus ``manifest.json`` when ``shard_records`` is set (what the full 512k-document corpus
     needs to be distributable).
@@ -2053,9 +2049,7 @@ def export_byo(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    P, records, excluded = _resolve_roster(
-        settings, gen_dir, question_ids=question_ids, allow_excluded=allow_excluded
-    )
+    P, records, excluded = _resolve_roster(settings, gen_dir)
     _precompute_globals(records)
     # The same resolve-then-convert order import_structured uses, and for the same reason: without
     # it the artifact's content depends on which document was read first, and it stops matching a
@@ -2132,12 +2126,8 @@ KNOWN_EMPTY_DOCS = {
 }
 
 
-def select_records(
-    gen_dir: Path, question_ids: set[str] | None = None, excluded: list | None = None
-):
-    """Yield ``(source_type, dsid, raw_json)`` records under ``gen_dir/sources``, or only those
-    whose ``dsid`` is in ``question_ids``. A selected doc's container is NOT expanded to its
-    siblings, so a sliced corpus can leave a container sparse.
+def select_records(gen_dir: Path, excluded: list | None = None):
+    """Yield ``(source_type, dsid, raw_json)`` records under ``gen_dir/sources``.
 
     An empty-content document is dropped HERE rather than in any one consumer — dropping it in only
     one is what let a direct import accept a document the converted artifact then rejected against
@@ -2145,8 +2135,6 @@ def select_records(
     ``_erb_path``, so "which one?" is a lookup rather than a rescan of the raw bench.
     """
     for src, dsid, raw in iter_records(gen_dir / "sources"):
-        if question_ids is not None and dsid not in question_ids:
-            continue
         if not (derive_title_content(raw)[1] or "").strip():
             if excluded is not None:
                 excluded.append(
@@ -2163,7 +2151,7 @@ def select_records(
         yield src, dsid, raw
 
 
-def _resolve_roster(settings, gen_dir, *, question_ids=None, allow_excluded=0):
+def _resolve_roster(settings, gen_dir):
     """Shared prefix: build Principals, materialize records, harvest emails.
 
     Returns ``(P, records, excluded)``. Every consumer of the corpus goes through here, so this is
@@ -2173,26 +2161,24 @@ def _resolve_roster(settings, gen_dir, *, question_ids=None, allow_excluded=0):
     settings.org_name, settings.org_domain = infer_org(emails, settings)
     P = Principals.from_directory(employee_yaml(settings), settings.org_domain)
     records, excluded = [], []
-    for rec in select_records(gen_dir, question_ids, excluded):
+    for rec in select_records(gen_dir, excluded):
         records.append(rec)
         if len(records) % 25000 == 0:
             print(f"  materialized {len(records)} records...", file=sys.stderr, flush=True)
     # An exclusion this file does not declare means the input changed: `generated_data` has had one
-    # commit ever, so the same bench has to yield the same set. Refusing costs a flag; accepting is
-    # how a document goes missing with a line on stderr as the only record of it. Nothing caps the
-    # list because this gate bounds how long it can get.
+    # commit ever, so the same bench has to yield the same set. Refusing is unconditional — there is
+    # no flag to wave it through, because accepting is how a document goes missing with a line on
+    # stderr as the only record of it. Nothing caps the list because this gate bounds how long it
+    # can get. Everything KNOWN_EMPTY_DOCS names is always excluded, silently.
     undeclared = [e for e in excluded if e["doc_id"] not in KNOWN_EMPTY_DOCS]
-    if len(undeclared) > allow_excluded:
+    if undeclared:
         print(
             f"{len(undeclared)} document(s) excluded that KNOWN_EMPTY_DOCS does not name:",
             file=sys.stderr,
         )
         for e in undeclared:
             print(f"  {e['source']}/{e['path']}  ({e['doc_id']}) — {e['reason']}", file=sys.stderr)
-        print(
-            f"Read them, then declare them or pass --allow-excluded {len(undeclared)}.",
-            file=sys.stderr,
-        )
+        print("Read them, then declare them in KNOWN_EMPTY_DOCS.", file=sys.stderr)
         raise SystemExit(1)
     if excluded:
         print(
@@ -2248,31 +2234,14 @@ def _populate_principals(records, P, settings) -> None:
         pass
 
 
-def dump_tokens(settings, gen_dir, *, question_ids=None, allow_excluded=0) -> int:
-    """Resolve principals and write ``tokens.yaml`` WITHOUT building the DB — a fast roster preview.
-    Returns the tokened-user count. Runs the real converter and discards its records, so the roster
-    matches a full import exactly."""
-    P, records, _ = _resolve_roster(
-        settings, gen_dir, question_ids=question_ids, allow_excluded=allow_excluded
-    )
-    _precompute_globals(records)
-    _populate_principals(records, P, settings)
-    P.write_tokens(settings)
-    # The same filter write_tokens applies — only the employee directory gets a token, so counting
-    # every resolved principal reported four times the rows the file actually holds.
-    return sum(1 for u in P.users.values() if u.get("directory"))
-
-
-def import_structured(settings, gen_dir, *, question_ids=None, allow_excluded=0) -> dict:
+def import_structured(settings, gen_dir) -> dict:
     """Build the DB from an ERB ``generated_data`` tree.
 
     Each document is converted to BYO record(s) and those are loaded — the same path the
     redistributed artifact takes, where ``export_byo`` writes the identical records to JSONL. One
     mapping per source, so a direct import and the artifact cannot disagree.
     """
-    P, records, excluded = _resolve_roster(
-        settings, gen_dir, question_ids=question_ids, allow_excluded=allow_excluded
-    )
+    P, records, excluded = _resolve_roster(settings, gen_dir)
     _precompute_globals(records)
     if _SLACK_TS_REMAP:
         print(
@@ -2324,77 +2293,29 @@ def import_structured(settings, gen_dir, *, question_ids=None, allow_excluded=0)
     return counts
 
 
-def run(
-    *,
-    slice_questions: Path | None = None,
-    ref: str = "main",
-    no_download: bool = False,
-    tokens_only: bool = False,
-    export_byo_dir: Path | None = None,
-    shard_records: int | None = None,
-    allow_excluded: int = 0,
-) -> int:
-    """Fetch the bench and build the DB (or export it, or write only the roster).
+def _fetch_and_seed_roster():
+    """The prefix both entry points share: get the corpus, put its directory where settings expect.
 
-    Takes keyword arguments rather than an argv list: the command line that reaches this lives in
-    ``backlot.cli``, which is where every flag and its help text is declared. ``export_byo_dir``
-    rather than ``export_byo`` because :func:`export_byo` is the function it calls.
+    Returns ``(settings, gen_dir)``. ``fetch_generated_data`` returns the cache when it is already
+    populated, so this is cheap on a re-run and needs no "skip the download" flag.
     """
     settings = get_settings()
-
-    if no_download:
-        gen_dir = bench_settings().raw_dir / "generated_data"
-    else:
-        gen_dir = fetch_generated_data(settings, ref=ref)
-
+    gen_dir = fetch_generated_data(settings)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(gen_dir / "employee_directory.yaml", employee_yaml(settings))
+    return settings, gen_dir
 
-    question_ids = None
-    if slice_questions:
-        question_ids = set()
-        for line in Path(slice_questions).read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            question_ids.update(json.loads(line).get("expected_doc_ids", []))
 
-    if export_byo_dir:
-        counts = export_byo(
-            settings,
-            gen_dir,
-            export_byo_dir,
-            question_ids=question_ids,
-            shard_records=shard_records,
-            allow_excluded=allow_excluded,
-        )
-        dest = (
-            f"{export_byo_dir}/data/<source>/part-*.jsonl.gz + manifest.json"
-            if shard_records
-            else f"{export_byo_dir}/corpus.jsonl"
-        )
-        print(f"Converted {sum(counts.values())} documents -> {dest}")
-        for src, n in counts.items():
-            print(f"  {src:14s} {n}")
-        print(
-            f"Roster -> {export_byo_dir}/roster.yaml "
-            f"(org {settings.org_name}, domain {settings.org_domain})"
-        )
-        print(
-            f"Load it with: backlot import {export_byo_dir}/corpus.jsonl "
-            f"--roster {export_byo_dir}/roster.yaml"
-        )
-        return 0
+def run() -> int:
+    """Fetch the bench and build the DB. No parameters: it imports the corpus, whole.
 
-    if tokens_only:
-        n = dump_tokens(settings, gen_dir, question_ids=question_ids, allow_excluded=allow_excluded)
-        print(f"Wrote {n} users to {settings.tokens_path} (roster only; no DB built)")
-        print(f"Org: {settings.org_name} ({settings.org_domain})")
-        return 0
-
-    counts = import_structured(
-        settings, gen_dir, question_ids=question_ids, allow_excluded=allow_excluded
-    )
+    There is deliberately no way to import part of it. A subset leaves containers sparse, so every
+    ACL decision and every pagination result becomes a property of the subset rather than of the
+    corpus — which is the opposite of what a fidelity mock is for. The roster falls out of the
+    import itself, so it needs no pass of its own either.
+    """
+    settings, gen_dir = _fetch_and_seed_roster()
+    counts = import_structured(settings, gen_dir)
     print(f"Loaded {sum(counts.values())} documents into {settings.db_path}")
     for src, n in counts.items():
         print(f"  {src:14s} {n}")
@@ -2402,9 +2323,32 @@ def run(
     return 0
 
 
+def run_export(out_dir: Path, *, shard_records: int | None = None) -> int:
+    """Write the bench as a BYO artifact instead of a database — what ``backlot export`` calls."""
+    settings, gen_dir = _fetch_and_seed_roster()
+    counts = export_byo(settings, gen_dir, out_dir, shard_records=shard_records)
+    dest = (
+        f"{out_dir}/data/<source>/part-*.jsonl.gz + manifest.json"
+        if shard_records
+        else f"{out_dir}/corpus.jsonl"
+    )
+    print(f"Converted {sum(counts.values())} documents -> {dest}")
+    for src, n in counts.items():
+        print(f"  {src:14s} {n}")
+    print(
+        f"Roster -> {out_dir}/roster.yaml (org {settings.org_name}, domain {settings.org_domain})"
+    )
+    print(
+        f"Load it with: backlot import {out_dir}"
+        if shard_records
+        else f"Load it with: backlot import {out_dir}/corpus.jsonl --roster {out_dir}/roster.yaml"
+    )
+    return 0
+
+
 if __name__ == "__main__":
-    # `python -m backlot.importer.erb <flags>` is `backlot import -t erb <flags>`, re-entered through
-    # the CLI so the flags are parsed by the one parser that declares them.
+    # `python -m backlot.importer.erb` is `backlot import -t erb`, re-entered through the CLI so the
+    # one parser that declares the options is the one that parses them.
     from backlot.cli import main
 
     raise SystemExit(main(["import", "-t", "erb", *sys.argv[1:]]))

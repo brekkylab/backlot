@@ -8,11 +8,11 @@ it into the per-service tables, derives the ACL from the real people/scope field
 ``tokens.yaml`` for the resolved roster:
 
 ```bash
-backlot import -t erb                                          # full corpus: download -> load -> ACL
-backlot import -t erb --slice-questions extra_questions.jsonl   # only the docs a slice needs
-backlot import -t erb --no-download                             # reuse whatever is already in data/raw
-backlot import -t erb --ref some-branch                         # fetch a non-default branch/ref
+backlot import -t erb     # download -> load -> ACL. No options: it imports the corpus.
 ```
+
+There is nothing to tune. The download is cached under `BACKLOT_RAW_DIR`, and the import returns
+that cache when it is populated, so re-running does not refetch.
 
 This is faithful representation, not synthesis: names are resolved to real emails via the
 employee directory (``backlot.importer.principals``), and **every import parses the real
@@ -26,8 +26,7 @@ per-sentence utterances with speakers and timings).
 first run; cached after), starts a real mock server against it, and prints what got served:
 
 ```bash
-python examples/import-enterpriserag-bench/run.py                                   # full corpus
-python examples/import-enterpriserag-bench/run.py --slice-questions extra_questions.jsonl  # a slice
+python examples/import-enterpriserag-bench/run.py
 ```
 
 `BACKLOT_RAW_DIR` and `BACKLOT_DATASET_REPO` configure the download; they live on
@@ -43,7 +42,6 @@ size stays where you can see it, resume it and cache it:
 
 ```bash
 backlot import -t erb                       # host: downloads + builds ./data (cached in ./data/raw)
-backlot import -t erb --slice-questions q.jsonl    # ...or only the documents a question set needs
 
 docker build --target serve -t backlot .    # the server, no corpus
 docker run -p 8000:8000 -v "$PWD/data:/app/data" backlot
@@ -88,5 +86,5 @@ Properties of the data, not of the server — they apply only when you load this
 
 ## Redistributing it as a BYO corpus
 
-`--export-byo` writes the whole thing as BYO-JSONL instead of a database, losslessly — see
+`backlot export` writes the whole thing as BYO-JSONL instead of a database, losslessly — see
 [**Round-tripping an existing dataset**](../../backlot/schemas/README.md#round-tripping-an-existing-dataset).

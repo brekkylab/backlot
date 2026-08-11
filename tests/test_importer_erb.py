@@ -4,7 +4,6 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-import urllib.request
 from pathlib import Path
 
 import certifi
@@ -161,10 +160,10 @@ def test_resolve_synthesizes_internal_user():
     assert p.users[email]["group"] == "research-applied-ml"
 
 
-def test_dump_tokens_returns_the_number_it_actually_wrote(tmp_path):
-    """`--tokens-only` prints this count, so it has to be the number of rows in tokens.yaml.
-    Only the employee directory gets a token (see Principals.write_tokens); counting every
-    resolved principal instead reported 679 for a file holding 167."""
+def test_only_the_employee_directory_gets_a_token(tmp_path):
+    """Only the employee directory gets a token (see Principals.write_tokens), even though the
+    corpus resolves far more principals than that — the bench names thousands of people who cannot
+    authenticate. Counting every resolved principal instead reported 679 for a file holding 167."""
     import shutil
 
     from backlot.config import Settings
@@ -175,9 +174,11 @@ def test_dump_tokens_returns_the_number_it_actually_wrote(tmp_path):
     settings = Settings(data_dir=data)
     shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
 
-    n = erb.dump_tokens(settings, gen)
+    erb.import_structured(settings, gen)
     written = yaml.safe_load(settings.tokens_path.read_text())["users"]
-    assert n == len(written)
+    directory = {e["email"] for e in erb.parse_employees(erb.employee_yaml(settings))}
+    assert {u["email"] for u in written} == directory
+    assert len(written) == len(directory)  # one row each, no duplicates
 
 
 def test_resolve_external_parses_email_and_is_not_registered():
@@ -1108,8 +1109,10 @@ def test_import_structured_persists_source_documents_including_excluded(tmp_path
     get_settings.cache_clear()
     settings = get_settings()
     shutil.copy(gen / "employee_directory.yaml", erb.employee_yaml(settings))
-    # dsid_empty isn't in KNOWN_EMPTY_DOCS, so allow_excluded=1 is needed or _resolve_roster refuses.
-    res = erb.import_structured(settings, gen, allow_excluded=1)
+    # An exclusion has to be DECLARED or _resolve_roster refuses the run — there is no flag to wave
+    # one through, so the fixture's empty doc joins the declared set for the duration of this test.
+    monkeypatch.setattr(erb, "KNOWN_EMPTY_DOCS", erb.KNOWN_EMPTY_DOCS | {"dsid_empty"})
+    res = erb.import_structured(settings, gen)
 
     assert res["google_drive"] == 1  # only the real document converts and is written
     c = sqlite3.connect(settings.db_path)
@@ -1205,35 +1208,21 @@ def test_thread_reply_rows_inherit_the_root_grants(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _extra_questions(tmp):
-    p = Path(tmp) / "extra_questions.jsonl"
-    urllib.request.urlretrieve(
-        "https://raw.githubusercontent.com/onyx-dot-app/EnterpriseRAG-Bench/main/extra_questions.jsonl",
-        p,
-    )
-    return [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
-
-
 @pytest.mark.skipif(
     os.environ.get("ERB_E2E") != "1",
     reason="set ERB_E2E=1 to run the network-backed faithful-import e2e",
 )
 def test_qst_0001_owner_is_maya_chen(tmp_path):
+    """Imports the WHOLE bench — ~1GB fetched and ~500k documents loaded, so budget minutes.
+
+    Deliberately the whole thing: the importer offers no way to take a subset, because a sparse
+    container makes an owner-resolution result a property of the subset rather than of the corpus.
+    This asserts against exactly the database a user gets.
+    """
     data_dir = tmp_path / "data"
-    qfile = Path(tmp_path) / "extra_questions.jsonl"
-    _extra_questions(tmp_path)
     env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir)}
     subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "backlot",
-            "import",
-            "-t",
-            "erb",
-            "--slice-questions",
-            str(qfile),
-        ],
+        [sys.executable, "-m", "backlot", "import", "-t", "erb"],
         check=True,
         env=env,
     )
@@ -2750,7 +2739,9 @@ def test_an_undeclared_empty_document_stops_the_export(tmp_path, capsys):
         erb.export_byo(settings, gen, tmp_path / "out", shard_records=2)
     err = capsys.readouterr().err
     assert "general/empty-thread.json" in err and "dsid_empty_thread" in err
-    assert "--allow-excluded 1" in err  # and says how to proceed once someone has looked
+    # and says how to proceed once someone has looked. Declaring it is the ONLY way through — no
+    # flag waves an undeclared exclusion past, so a document cannot go missing quietly.
+    assert "declare them in KNOWN_EMPTY_DOCS" in err
 
 
 def test_a_declared_exclusion_is_recorded_by_identity_and_the_layer_adds_up(tmp_path, monkeypatch):
@@ -2777,10 +2768,11 @@ def test_a_declared_exclusion_is_recorded_by_identity_and_the_layer_adds_up(tmp_
     )
 
 
-def test_the_snapshot_the_data_came_from_reaches_the_manifest(tmp_path):
+def test_the_snapshot_the_data_came_from_reaches_the_manifest(tmp_path, monkeypatch):
     """Neither ref nor tag pins this data — `main` moved past the commit that added generated_data
     and the one tag predates it — so the artifact carries the tarball digest instead."""
     gen = _with_empty_thread(tmp_path)
+    monkeypatch.setattr(erb, "KNOWN_EMPTY_DOCS", {"dsid_empty_thread"})
     monkey = {
         "repo": "onyx-dot-app/EnterpriseRAG-Bench",
         "ref": "main",
@@ -2793,7 +2785,7 @@ def test_the_snapshot_the_data_came_from_reaches_the_manifest(tmp_path):
 
     settings = _settings_for(tmp_path, gen)
     out = tmp_path / "out"
-    erb.export_byo(settings, gen, out, shard_records=2, allow_excluded=1)
+    erb.export_byo(settings, gen, out, shard_records=2)
     assert (
         json.loads((out / "manifest.json").read_text())["layers"]["converted"]["snapshot"] == monkey
     )

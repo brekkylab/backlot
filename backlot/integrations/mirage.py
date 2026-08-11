@@ -38,14 +38,27 @@ def _rebind_mirage_constants(source_module: str, overrides: dict[str, str]) -> N
     Patches the source module — imported first so it exists — AND every already-imported
     ``mirage.core.*`` that copied a same-named constant by value, which is what makes the redirect
     order-independent. Idempotent.
+
+    Raises if any name in ``overrides`` matched nothing. A renamed constant is the one failure this
+    sweep cannot notice on its own: a moved MODULE already raises ``ImportError`` on the line below,
+    but ``hasattr`` on a renamed constant is simply False everywhere, and the caller would go on to
+    talk to the real vendor with whatever credentials it loaded.
     """
     importlib.import_module(source_module)
+    patched: set[str] = set()
     for mod in list(sys.modules.values()):
         if not getattr(mod, "__name__", "").startswith("mirage.core."):
             continue
         for const, value in overrides.items():
             if hasattr(mod, const):
                 setattr(mod, const, value)
+                patched.add(const)
+    if missing := sorted(set(overrides) - patched):
+        raise RuntimeError(
+            f"{', '.join(missing)} not found in {source_module} or any imported mirage.core.* "
+            f"module — mirage's constants moved in an upgrade. Update this shim before the run "
+            f"silently reaches the real vendor instead of the mock."
+        )
 
 
 def point_google_at(base_url: str) -> None:
@@ -63,6 +76,11 @@ def point_google_at(base_url: str) -> None:
             "TOKEN_URL": f"{base}/oauth2/token",
             "GMAIL_API_BASE": f"{base}/gmail/v1",
             "DRIVE_API_BASE": f"{base}/drive/v3",
+            # Backlot serves no upload route, so this one exists to make a write FAIL against the
+            # mock rather than succeed against real Drive: mirage reads it for uploads, and it is
+            # the only constant here whose vendor value would be reached by a caller who believed
+            # the whole client was redirected.
+            "DRIVE_UPLOAD_BASE": f"{base}/upload/drive/v3",
             "DOCS_API_BASE": f"{base}/docs/v1",
             "SHEETS_API_BASE": f"{base}/sheets/v4",
             "SLIDES_API_BASE": f"{base}/slides/v1",

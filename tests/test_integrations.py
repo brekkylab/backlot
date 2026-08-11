@@ -10,9 +10,24 @@ mock — because a shim that silently no-ops would otherwise send a "mock" run t
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 import backlot
+
+# Every constant point_google_at / point_github_at rebind. Spelled out here rather than read back
+# out of the functions, so the completeness test below cannot agree with the code by construction.
+_NAMED_BY_THE_PATCHERS = {
+    "TOKEN_URL",
+    "GMAIL_API_BASE",
+    "DRIVE_API_BASE",
+    "DRIVE_UPLOAD_BASE",
+    "DOCS_API_BASE",
+    "SHEETS_API_BASE",
+    "SLIDES_API_BASE",
+    "API_BASE",
+}
 
 
 def test_slack_reader_is_constructed_against_the_mock():
@@ -131,6 +146,112 @@ def test_google_build_registry_does_not_survive_a_direct_uninstall():
         )
     finally:
         discovery.build = original
+
+
+def _isolate_mirage(monkeypatch, modules: dict[str, dict[str, str]]):
+    """Replace every imported ``mirage*`` module with the given stand-ins, for this test only.
+
+    The real package is installed, so without evicting it the constant sweep would find genuine
+    ``mirage.core.*`` modules alongside a stand-in and report a patch that the stand-in never got —
+    making the assertion depend on which test imported mirage first.
+    """
+    import types
+
+    for name in [n for n in sys.modules if n == "mirage" or n.startswith("mirage.")]:
+        monkeypatch.delitem(sys.modules, name)
+    for name in ("mirage", "mirage.core", "mirage.core.google", "mirage.core.github"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    made = {}
+    for name, constants in modules.items():
+        mod = types.ModuleType(name)
+        for const, value in constants.items():
+            setattr(mod, const, value)
+        monkeypatch.setitem(sys.modules, name, mod)
+        made[name] = mod
+    return made
+
+
+def test_mirage_patchers_raise_when_a_constant_is_renamed(monkeypatch):
+    """Regression: the sweep was `if hasattr: setattr` with no counter, so a mirage upgrade that
+    renamed a constant made both patchers return successfully having changed nothing — and the run
+    then addressed gmail.googleapis.com / api.github.com with the caller's real credentials.
+    `integrations/__init__.py` promises the opposite ("fails loudly if its seam disappears").
+    """
+    from backlot.integrations.mirage import point_github_at, point_google_at
+
+    mods = _isolate_mirage(
+        monkeypatch,
+        {
+            "mirage.core.google._client": {
+                "GMAIL_BASE_URL": "https://gmail.googleapis.com/gmail/v1"
+            },
+            "mirage.core.github._client": {"GITHUB_API_ROOT": "https://api.github.com"},
+        },
+    )
+    for fn in (point_google_at, point_github_at):
+        with pytest.raises(RuntimeError, match="mirage's constants moved"):
+            fn("http://127.0.0.1:9999")
+    # and nothing was left half-patched at the real hosts' expense
+    for mod in mods.values():
+        for name, val in vars(mod).items():
+            if name.isupper():
+                assert "127.0.0.1" not in val, f"{name} was rebound despite the raise"
+
+
+def test_mirage_patchers_rebind_every_constant_they_name(monkeypatch):
+    """The success path, against the constants mirage actually ships: every name each patcher
+    declares must land, since the raise above is only as good as the set it checks."""
+    from backlot.integrations.mirage import point_github_at, point_google_at
+
+    real = pytest.importorskip("mirage.core.google._client")
+    real_github = pytest.importorskip("mirage.core.github._client")
+    google_names = [n for n in vars(real) if n.isupper() and isinstance(getattr(real, n), str)]
+    github_names = [
+        n for n in vars(real_github) if n.isupper() and isinstance(getattr(real_github, n), str)
+    ]
+
+    mods = _isolate_mirage(
+        monkeypatch,
+        {
+            "mirage.core.google._client": {n: getattr(real, n) for n in google_names},
+            "mirage.core.github._client": {n: getattr(real_github, n) for n in github_names},
+        },
+    )
+    point_google_at("http://127.0.0.1:9999")
+    point_github_at("http://127.0.0.1:9999")
+
+    patched = {
+        n
+        for mod in mods.values()
+        for n, v in vars(mod).items()
+        if n.isupper() and isinstance(v, str) and "127.0.0.1" in v
+    }
+    assert patched == _NAMED_BY_THE_PATCHERS, (
+        f"missing: {sorted(_NAMED_BY_THE_PATCHERS - patched)}, unexpected: {sorted(patched - _NAMED_BY_THE_PATCHERS)}"
+    )
+
+
+def test_mirage_patchers_name_every_host_constant_mirage_ships(monkeypatch):
+    """A constant mirage adds later is one the patchers do not know about, so it keeps pointing at
+    the real vendor — silently, because the raise above only covers names we already name. Fails
+    when mirage grows one, which is the moment to decide whether the mock serves it.
+    """
+    real = pytest.importorskip("mirage.core.google._client")
+    real_github = pytest.importorskip("mirage.core.github._client")
+
+    from backlot.integrations import mirage as shim
+
+    unpatched = {}
+    for mod in (real, real_github):
+        for name, val in vars(mod).items():
+            if not (name.isupper() and isinstance(val, str) and val.startswith("http")):
+                continue
+            if name not in _NAMED_BY_THE_PATCHERS:
+                unpatched[f"{mod.__name__}.{name}"] = val
+    assert unpatched == {}, (
+        f"mirage ships host constants {shim.__name__} does not rebind, so they stay pointed at the "
+        f"real vendor: {unpatched}"
+    )
 
 
 def test_patch_linear_at_only_rewrites_linear_urls():

@@ -701,3 +701,41 @@ def test_the_condition_clause_is_omitted_rather_than_guessed():
         == ""
     )
     assert validation._when_clause({}, ["required"]) == ""
+
+    # `then` under `properties` is a field name a corpus author picked, not the keyword, and
+    # the `if` beside it is another field — a schema that happens to hold both fields must not
+    # be read as a condition over them.
+    assert (
+        validation._when_clause(
+            {"properties": {"if": {"properties": {"mode": {"const": "fast"}}}, "then": {}}},
+            ["properties", "then", "type"],
+        )
+        == ""
+    )
+
+
+def test_an_else_branch_rules_out_the_condition_whole():
+    """`else` is in force when the predicate fails, so a two-field condition is ruled out as a
+    pair. Negating each field on its own would read as "a is not x AND b is not y", which the
+    schema never says — a record with a == x and b != y takes the `else` too."""
+    two_field = {
+        "allOf": [{"if": {"properties": {"a": {"const": "x"}, "b": {"const": "y"}}}, "else": {}}]
+    }
+    assert (
+        validation._when_clause(two_field, ["allOf", 0, "else", "required"])
+        == ' unless a is "x" and b is "y"'
+    )
+
+
+def test_a_label_stays_on_one_line_and_admits_being_cut():
+    """`--dry-run` prints one problem per line, and a title is free text. A silently cut label
+    also reads as a shorter id — one the author would search the corpus for and never find."""
+    multiline = record_errors(
+        {"source_type": "github", "content": "c", "title": "two\nlines", "nope": 1}
+    )
+    assert multiline and all("\n" not in m for m in multiline)
+    assert multiline[0].startswith("two lines: ")
+
+    cut = record_errors({"source_type": "github", "content": "c", "doc_id": "d" * 80})
+    label = cut[0].split(":")[0]
+    assert len(label) == 60 and label.endswith("…")

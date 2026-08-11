@@ -60,6 +60,23 @@ def _subschema(schema: dict, parts: list):
     return node
 
 
+# Keywords whose value is a MAP of subschemas, keyed by names the schema author chose. A
+# `then` sitting directly under one of these is such a name — a field a corpus may carry — and
+# the `if` beside it is another one, so reading the pair as a conditional would invent a clause
+# out of two ordinary fields.
+_SUBSCHEMA_MAPS = frozenset(
+    {"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"}
+)
+
+
+def _branch_index(parts: list) -> int | None:
+    """Index of the first ``then``/``else`` that stands where a keyword can stand."""
+    for i, p in enumerate(parts):
+        if p in ("then", "else") and (i == 0 or parts[i - 1] not in _SUBSCHEMA_MAPS):
+            return i
+    return None
+
+
 def _when_clause(schema: dict, schema_path) -> str:
     """`" when subtype is \\"file\\""` for a rule a condition put in force, else ``""``.
 
@@ -70,16 +87,19 @@ def _when_clause(schema: dict, schema_path) -> str:
     ``else``), and the ``if`` beside it is the predicate — so it is stated instead of left for the
     reader to find in the schema. Shapes this does not recognise add no clause rather than a
     guessed one.
+
+    An ``else`` reads "unless", not a field-by-field negation: it is in force when the whole
+    predicate fails, so a two-field condition rules out the pair together, and negating each
+    field separately would claim something the schema does not say.
     """
     parts = list(schema_path)
-    branch = next((i for i, p in enumerate(parts) if p in ("then", "else")), None)
+    branch = _branch_index(parts)
     if branch is None:
         return ""
     owner = _subschema(schema, parts[:branch])
     cond = owner.get("if") if isinstance(owner, dict) else None
     if not isinstance(cond, dict):
         return ""
-    negated = "not " if parts[branch] == "else" else ""
     clauses = []
     for field, spec in (cond.get("properties") or {}).items():
         if not isinstance(spec, dict):
@@ -91,8 +111,9 @@ def _when_clause(schema: dict, schema_path) -> str:
         else:
             continue
         shown = " or ".join(json.dumps(v, ensure_ascii=False) for v in allowed)
-        clauses.append(f"{field} is {negated}{shown}")
-    return " when " + " and ".join(clauses) if clauses else ""
+        clauses.append(f"{field} is {shown}")
+    lead = " unless " if parts[branch] == "else" else " when "
+    return lead + " and ".join(clauses) if clauses else ""
 
 
 def _record_label(rec: dict) -> str:
@@ -100,11 +121,16 @@ def _record_label(rec: dict) -> str:
 
     A line number is not that on its own — a sharded artifact numbers each shard from one, and
     the id is what the author's own build wrote down and can grep for.
+
+    One line, and truncation says so. ``--dry-run`` prints one problem per line and a title is
+    free text that may hold a newline; a silently cut label, meanwhile, looks like a shorter id
+    that the author would search for and never find.
     """
     for key in ("doc_id", "title"):
         value = rec.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()[:60]
+            label = " ".join(value.split())
+            return label if len(label) <= 60 else label[:59] + "…"
     return ""
 
 

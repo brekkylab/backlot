@@ -16,6 +16,7 @@ string "5" would have passed.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,34 @@ import pytest
 from backlot import cli
 from backlot.config import get_settings
 from backlot.importer import byo, erb
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain(captured: str) -> str:
+    """Rendered CLI output -> the text a reader sees, on one line.
+
+    Assertions have to go through this. rich HIGHLIGHTS option names by styling each fragment
+    separately, so with color on, `--export-byo` reaches the buffer as
+    ``'\\x1b[1;36m-\\x1b[0m\\x1b[1;36m-export\\x1b[0m\\x1b[1;36m-byo\\x1b[0m'`` and the contiguous
+    substring is simply not there. GitHub Actions sets FORCE_COLOR, so a suite that asserts on raw
+    output passes locally and fails only in CI — which is exactly what happened. Newlines collapse
+    too, so a message wrapped by a narrow terminal still matches.
+    """
+    return " ".join(_ANSI.sub("", captured).split())
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_rendering(monkeypatch):
+    """Render help and errors plainly and at a fixed width, whatever the runner's environment.
+
+    `plain()` above already makes the assertions robust; this makes the OUTPUT deterministic as
+    well, so a failure message is readable instead of a wall of escape codes.
+    """
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.setenv("COLUMNS", "200")
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +124,7 @@ def test_import_dry_run_validates_without_writing_a_db(tmp_path, monkeypatch, ca
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "data"))
 
     assert cli.main(["import", str(corpus), "--dry-run"]) == 0
-    assert "OK: 1 records valid." in capsys.readouterr().out
+    assert "OK: 1 records valid." in plain(capsys.readouterr().out)
     assert not (tmp_path / "data" / "mock.sqlite").exists()
 
 
@@ -165,12 +194,12 @@ def test_the_bundled_flag_resolves_to_the_packaged_corpus_path(spy_byo):
 @pytest.mark.parametrize("argv", [["import"], ["import", "--bundled", "some.jsonl"]])
 def test_a_corpus_path_and_bundled_are_mutually_required(argv, capsys):
     assert cli.main(argv) == 2
-    assert "--bundled" in capsys.readouterr().err
+    assert "--bundled" in plain(capsys.readouterr().err)
 
 
 def test_an_unknown_type_is_a_usage_error(capsys):
     assert cli.main(["import", "-t", "nope"]) == 2
-    assert "nope" in capsys.readouterr().err
+    assert "nope" in plain(capsys.readouterr().err)
 
 
 @pytest.mark.parametrize(
@@ -189,20 +218,20 @@ def test_an_option_belonging_to_the_other_importer_is_refused(argv, flag, capsys
     this case — the two parsers were disjoint — and the flag would otherwise be dropped in silence.
     """
     assert cli.main(argv) == 2
-    err = capsys.readouterr().err
+    err = plain(capsys.readouterr().err)
     assert flag in err and "--type" in err
 
 
 def test_shard_records_must_be_at_least_one(capsys):
     """0 makes `n >= shard_records` always true: one shard per record, 600k files for the bench."""
     assert cli.main(["import", "-t", "erb", "--export-byo", "out", "--shard-records", "0"]) == 2
-    assert "at least 1" in capsys.readouterr().err
+    assert "at least 1" in plain(capsys.readouterr().err)
 
 
 def test_shard_records_without_export_byo_is_refused(capsys):
     """Silently ignored before: a sharded export was asked for and a database got built instead."""
     assert cli.main(["import", "-t", "erb", "--shard-records", "5"]) == 2
-    assert "--export-byo" in capsys.readouterr().err
+    assert "--export-byo" in plain(capsys.readouterr().err)
 
 
 # --- serve ------------------------------------------------------------------------------------
@@ -265,7 +294,7 @@ def test_serve_refuses_to_start_without_a_corpus(tmp_path, monkeypatch, capsys):
     missing file — which reads as a broken install rather than an empty data dir."""
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "empty"))
     assert cli.main(["serve"]) == 2
-    err = capsys.readouterr().err
+    err = plain(capsys.readouterr().err)
     assert "no corpus" in err
     assert "backlot import --bundled" in err  # the way out, not just the complaint
 
@@ -290,7 +319,7 @@ def test_data_dir_overrides_the_environment(tmp_path, monkeypatch):
 def test_status_reports_an_empty_data_dir_and_exits_one(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "empty"))
     assert cli.main(["status"]) == 1
-    out = capsys.readouterr().out
+    out = plain(capsys.readouterr().out)
     assert "none" in out
     assert "backlot import" in out  # tells you how to fix it
 
@@ -301,7 +330,7 @@ def test_status_reports_the_loaded_corpus(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
 
     assert cli.main(["status"]) == 0
-    out = capsys.readouterr().out
+    out = plain(capsys.readouterr().out)
     assert "slack" in out and "fireflies" in out
     assert "tokens" in out
 
@@ -311,14 +340,14 @@ def test_status_reports_the_loaded_corpus(tmp_path, monkeypatch, capsys):
 
 def test_an_unknown_command_is_a_usage_error(capsys):
     assert cli.main(["frobnicate"]) == 2
-    assert "frobnicate" in capsys.readouterr().err
+    assert "frobnicate" in plain(capsys.readouterr().err)
 
 
 def test_no_arguments_prints_the_command_list(capsys):
     """Exit stays 2 — a bare invocation is still a usage error — but the output is the help screen
     rather than a one-line complaint, so the commands are discoverable without `--help`."""
     assert cli.main([]) == 2
-    out = capsys.readouterr().out
+    out = plain(capsys.readouterr().out)
     for command in ("serve", "import", "status"):
         assert command in out
 
@@ -327,12 +356,12 @@ def test_version_reports_the_installed_distribution(capsys):
     from importlib.metadata import version
 
     assert cli.main(["--version"]) == 0
-    assert capsys.readouterr().out.strip() == f"backlot {version('backlot')}"
+    assert plain(capsys.readouterr().out) == f"backlot {version('backlot')}"
 
 
 def test_help_shows_every_command(capsys):
     assert cli.main(["--help"]) == 0
-    out = capsys.readouterr().out
+    out = plain(capsys.readouterr().out)
     for command in ("serve", "import", "status"):
         assert command in out
 
@@ -342,7 +371,7 @@ def test_import_help_shows_both_importers_options_in_one_screen(capsys):
     visible at once, grouped by the importer it drives. Before, the bench options were unreachable
     from the help text until you already knew to pass `-t erb`."""
     assert cli.main(["import", "--help"]) == 0
-    out = capsys.readouterr().out
+    out = plain(capsys.readouterr().out)
     for byo_option in ("--bundled", "--append", "--dry-run", "--roster"):
         assert byo_option in out, byo_option
     for bench_option in ("--slice-questions", "--export-byo", "--shard-records", "--tokens-only"):

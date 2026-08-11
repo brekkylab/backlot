@@ -178,15 +178,6 @@ def test_type_routes_to_the_bench_importer(spy_erb):
     assert spy_erb == {}  # called, with nothing to pass
 
 
-def test_the_bench_type_has_no_abbreviation(capsys):
-    """`erb` is what this codebase calls the dataset among itself. On the command line the name is
-    spelled out, so a reader of the invocation learns what is being downloaded — and the error names
-    the spelling that works rather than only rejecting the one that does not."""
-    assert cli.main(["import", "--type", "erb"]) == 2
-    err = plain(capsys.readouterr().err)
-    assert "erb" in err and "enterpriserag-bench" in err
-
-
 def test_byo_options_reach_the_byo_importer_typed(tmp_path, spy_byo):
     roster = tmp_path / "roster.yaml"
     assert cli.main(["import", "c.jsonl", "--append", "--roster", str(roster)]) == 0
@@ -213,8 +204,13 @@ def test_a_corpus_path_and_bundled_are_mutually_required(argv, capsys):
 
 
 def test_an_unknown_type_is_a_usage_error(capsys):
+    """The message names the values that DO work, not just the one that does not — which is what
+    someone reaching for a shorter spelling of `enterpriserag-bench` needs to read."""
     assert cli.main(["import", "-t", "nope"]) == 2
-    assert "nope" in plain(capsys.readouterr().err)
+    err = plain(capsys.readouterr().err)
+    assert "nope" in err
+    for valid in cli.IMPORTER_TYPES:
+        assert valid in err, valid
 
 
 @pytest.mark.parametrize("flag", ["--dry-run", "--bundled", "--append"])

@@ -140,7 +140,12 @@ CREATE TABLE IF NOT EXISTS github_items (
     merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, reactions TEXT,
     created_ts INTEGER NOT NULL, updated_ts INTEGER,
     closed_ts INTEGER, closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT,
-    owner_display TEXT, path TEXT
+    owner_display TEXT, path TEXT,
+    -- `path` names the file THIS row is (only kind='file' rows have one). `changed_paths` is the
+    -- other direction: a JSON list of the paths a PULL touched, so a corpus can say which files a
+    -- pull changed instead of leaving the router to pick deterministically. See
+    -- backlot.routers.github's changeset note.
+    changed_paths TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_github_repo ON github_items(repo);
 CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path);
@@ -179,9 +184,14 @@ CREATE TABLE IF NOT EXISTS confluence_comments (
 );
 CREATE INDEX IF NOT EXISTS idx_confluence_comments_doc ON confluence_comments(doc_id);
 
+-- Two resources real GitHub keeps apart, discriminated by `path`: a row WITH one is a
+-- line-anchored review comment (/pulls/{n}/comments), one without is a conversation comment
+-- (/issues/{n}/comments). `line` may be NULL for a file-level review comment, as on real GitHub;
+-- `diff_hunk` is optional and derived from the file's snapshot when the corpus omits it.
 CREATE TABLE IF NOT EXISTS github_comments (
     id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
-    author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT
+    author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT,
+    path TEXT, line INTEGER, diff_hunk TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_github_comments_doc ON github_comments(doc_id);
 
@@ -419,6 +429,10 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # DB (table absent) and on a DB that already has the column.
     for table, column, decl in (
         ("github_items", "path", "TEXT"),
+        ("github_items", "changed_paths", "TEXT"),
+        ("github_comments", "path", "TEXT"),
+        ("github_comments", "line", "INTEGER"),
+        ("github_comments", "diff_hunk", "TEXT"),
         ("linear_issues", "parent_key", "TEXT"),
         ("linear_issues", "parent_doc_id", "TEXT"),
         ("linear_issues", "release", "TEXT"),
@@ -1697,6 +1711,24 @@ def list_repo_file_paths(conn, repo, visible_ids=None, limit=10_000, offset=0) -
         + " ORDER BY path LIMIT ? OFFSET ?"
     )
     return [r[0] for r in conn.execute(sql, [repo, *cp, limit, offset])]
+
+
+def github_comments(conn, doc_id, *, anchored: bool | None = None) -> list[sqlite3.Row]:
+    """``github_comments`` rows for one document, carrying the review-comment columns.
+
+    A github-specific reader because :func:`doc_comments` selects one fixed column list for six
+    tables and so cannot carry ``path``/``line``/``diff_hunk``.
+
+    ``anchored`` splits the two resources this one table holds and real GitHub keeps apart — see the
+    table's own comment in ``SCHEMA``. ``True`` returns only line-anchored review comments, ``False``
+    only conversation comments, ``None`` both.
+    """
+    where = {None: "", True: " AND path IS NOT NULL", False: " AND path IS NULL"}[anchored]
+    return conn.execute(
+        "SELECT id, doc_id, seq, author_email, body, created_ts, reactions, path, line, diff_hunk "
+        "FROM github_comments WHERE doc_id = ?" + where + " ORDER BY seq",
+        (doc_id,),
+    ).fetchall()
 
 
 def count_repo_files(conn, repo, visible_ids=None) -> int:

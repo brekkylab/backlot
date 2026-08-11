@@ -172,44 +172,108 @@ _GH_FILE_DOCS = [
 # files-only (test_github_file_excluded_from_issues_and_pulls asserts its pulls are empty) and
 # 'gateway' has issues/PRs but only the one collision file. A PR's changeset is synthesized from
 # the repo's own file set, so the diff endpoints need a repo where both exist.
-_GH_DIFF_DOCS = [
-    {
-        "source_type": "github",
-        "doc_id": f"gh-diff-file-{name}",
-        "repo": "diffable",
-        "subtype": "file",
-        "path": path,
-        "title": path.rsplit("/", 1)[-1],
-        "content": content,
-        "group": "engineering",
-        "visibility": "public",
-        "author_email": "ava@acme.com",
-        "author_groups": ["engineering"],
-    }
-    for name, path, content in [
-        ("app", "app.py", "import sys\n\n\ndef run(argv):\n    return 0\n"),
-        ("core", "pkg/core.py", "\n".join(f"line_{i} = {i}" for i in range(1, 31)) + "\n"),
-        ("readme", "README.md", "# diffable\n\nA repo whose pulls have a changeset.\n"),
-        ("conf", "pkg/conf.toml", '[tool]\nname = "diffable"\n'),
-        # no trailing newline: a hunk touching the last line needs git's `\ No newline` marker,
-        # and putting that marker mid-file is a diff git refuses to apply
-        ("nonl", "pkg/no_newline.cfg", "alpha\nbeta\ngamma"),
+_GH_DIFF_DOCS = (
+    [
+        {
+            "source_type": "github",
+            "doc_id": f"gh-diff-file-{name}",
+            "repo": "diffable",
+            "subtype": "file",
+            "path": path,
+            "title": path.rsplit("/", 1)[-1],
+            "content": content,
+            "group": "engineering",
+            "visibility": "public",
+            "author_email": "ava@acme.com",
+            "author_groups": ["engineering"],
+        }
+        for name, path, content in [
+            ("app", "app.py", "import sys\n\n\ndef run(argv):\n    return 0\n"),
+            ("core", "pkg/core.py", "\n".join(f"line_{i} = {i}" for i in range(1, 31)) + "\n"),
+            ("readme", "README.md", "# diffable\n\nA repo whose pulls have a changeset.\n"),
+            ("conf", "pkg/conf.toml", '[tool]\nname = "diffable"\n'),
+            # no trailing newline: a hunk touching the last line needs git's `\ No newline` marker,
+            # and putting that marker mid-file is a diff git refuses to apply
+            ("nonl", "pkg/no_newline.cfg", "alpha\nbeta\ngamma"),
+        ]
     ]
-] + [
-    {
-        "source_type": "github",
-        "doc_id": "gh-diff-pr",
-        "repo": "diffable",
-        "subtype": "pull_request",
-        "title": "Tighten the run() argv handling",
-        "content": "Reworks argv parsing and drops the dead branch.",
-        "group": "engineering",
-        "visibility": "public",
-        "author_email": "bob@acme.com",
-        "author_groups": ["engineering"],
-        "meta": {"state": "open", "head": "fix/argv", "base": "main"},
-    },
-]
+    + [
+        # people-only, so a pull can DECLARE a path the caller cannot see
+        {
+            "source_type": "github",
+            "doc_id": "gh-diff-file-secret",
+            "repo": "diffable",
+            "subtype": "file",
+            "path": "secret/keys.txt",
+            "title": "keys.txt",
+            "content": "rotate-me\nand-me\n",
+            "group": "people",
+            "visibility": "group",
+            "author_email": "hana@acme.com",
+            "author_groups": ["people"],
+        }
+    ]
+    + [
+        {
+            "source_type": "github",
+            "doc_id": "gh-diff-pr",
+            "repo": "diffable",
+            "subtype": "pull_request",
+            "title": "Tighten the run() argv handling",
+            "content": "Reworks argv parsing and drops the dead branch.",
+            "group": "engineering",
+            "visibility": "public",
+            "author_email": "bob@acme.com",
+            "author_groups": ["engineering"],
+            "meta": {"state": "open", "head": "fix/argv", "base": "main"},
+        },
+        # The same repo's other pull, this one DECLARING its changeset and carrying both kinds of
+        # comment. Four paths so a small per_page actually produces a second page — the synthesized
+        # changeset caps at three and could never take the paging branch.
+        {
+            "source_type": "github",
+            "doc_id": "gh-diff-pr-declared",
+            "repo": "diffable",
+            "subtype": "pull_request",
+            "title": "Rename line_1 and document the config",
+            "content": "Touches the four files it says it touches.",
+            "group": "engineering",
+            "visibility": "public",
+            "author_email": "bob@acme.com",
+            "author_groups": ["engineering"],
+            "meta": {"state": "open", "head": "chore/rename", "base": "main"},
+            "changed_paths": ["pkg/core.py", "app.py", "pkg/conf.toml", "README.md"],
+            "comments": [
+                {"content": "conversation, not anchored", "author_email": "ava@acme.com"},
+                {
+                    "content": "this line should be a constant",
+                    "author_email": "ava@acme.com",
+                    "path": "pkg/core.py",
+                    "line": 4,
+                },
+                {
+                    "content": "file-level note, no line",
+                    "author_email": "ava@acme.com",
+                    "path": "app.py",
+                    "diff_hunk": "@@ -1,2 +1,3 @@\n import sys\n",
+                },
+            ],
+        },
+        {
+            "source_type": "github",
+            "doc_id": "gh-diff-pr-restricted",
+            "repo": "diffable",
+            "subtype": "pull_request",
+            "title": "Rotate the signing keys",
+            "content": "Declares a path only the people group can read.",
+            "group": "engineering",
+            "visibility": "public",
+            "author_email": "hana@acme.com",
+            "author_groups": ["people"],
+            "changed_paths": ["app.py", "secret/keys.txt"],
+        },
+    ]
+)
 
 
 @pytest.fixture(scope="module")
@@ -894,6 +958,295 @@ def test_github_issue_ignores_the_diff_media_type(gh_client, gh_admin_h, gh_org)
         headers={**gh_admin_h, "Accept": "application/vnd.github.diff"},
     ).json()
     assert body["number"] == num
+
+
+# --- a corpus-declared changeset: `changed_paths` ---------------------------------------
+
+
+@pytest.fixture(scope="module")
+def declared_pr(gh_client, gh_admin_h, gh_org):
+    """(client, headers, org, number) for 'diffable''s pull that declares its own changeset."""
+    c, _ = gh_client
+    from backlot import synth
+
+    return c, gh_admin_h, gh_org, synth.github_number("gh-diff-pr-declared")
+
+
+def test_github_pull_files_are_the_declared_paths(declared_pr):
+    """With `changed_paths` the changeset is what the corpus says it is — same order, all of them,
+    not the deterministic pick and not capped at three."""
+    c, h, org, num = declared_pr
+    files = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json()
+    assert [f["filename"] for f in files] == [
+        "pkg/core.py",
+        "app.py",
+        "pkg/conf.toml",
+        "README.md",
+    ]
+
+
+def test_github_declared_changeset_still_agrees_with_the_pull_object(declared_pr):
+    c, h, org, num = declared_pr
+    pull = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers=h).json()
+    files = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json()
+    assert pull["changed_files"] == len(files) == 4
+    assert pull["additions"] == sum(f["additions"] for f in files)
+    assert pull["deletions"] == sum(f["deletions"] for f in files)
+
+
+def test_github_declared_changeset_diff_reverse_applies_with_real_git(declared_pr, tmp_path):
+    """Same proof as for the synthesized changeset: declaring the files changes WHICH files are in
+    the diff, not whether the hunks are real."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    c, h, org, num = declared_pr
+    diff = c.get(
+        f"/github/repos/{org}/diffable/pulls/{num}",
+        headers={**h, "Accept": "application/vnd.github.diff"},
+    ).text
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=wt, check=True)
+    tree = c.get(
+        f"/github/repos/{org}/diffable/git/trees/main", headers=h, params={"recursive": "1"}
+    ).json()["tree"]
+    for e in tree:
+        if e["type"] != "blob":
+            continue
+        raw = c.get(
+            f"/github/repos/{org}/diffable/contents/{e['path']}",
+            headers={**h, "Accept": "application/vnd.github.raw"},
+        ).text
+        dest = wt / e["path"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(raw)
+    (wt / "pr.diff").write_text(diff)
+    r = subprocess.run(
+        ["git", "apply", "--reverse", "--check", "pr.diff"], cwd=wt, capture_output=True, text=True
+    )
+    assert r.returncode == 0, f"git rejected the declared diff:\n{r.stderr}\n---\n{diff}"
+
+
+def test_github_declared_path_the_caller_cannot_see_is_dropped(
+    gh_client, gh_admin_h, gh_user_tokens, gh_org
+):
+    """A declared path is still ACL-resolved: declaring a file does not publish its name. Stronger
+    than the same check on a synthesized changeset, which might not have picked the restricted file
+    at all."""
+    c, _ = gh_client
+    from backlot import synth
+
+    num = synth.github_number("gh-diff-pr-restricted")
+    bob = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}  # not in 'people'
+    url = f"/github/repos/{gh_org}/diffable/pulls/{num}/files"
+    assert [f["filename"] for f in c.get(url, headers=gh_admin_h).json()] == [
+        "app.py",
+        "secret/keys.txt",
+    ]
+    assert [f["filename"] for f in c.get(url, headers=bob).json()] == ["app.py"]
+    # the pull object's counts follow the CALLER's view, not the corpus's declaration
+    pull = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}", headers=bob).json()
+    assert pull["changed_files"] == 1
+
+
+def test_github_declared_path_that_does_not_exist_is_dropped(tmp_path):
+    """A path naming no file in the repo cannot be diffed, so it is skipped rather than emitted as a
+    file with no content. Indistinguishable from an ACL-hidden one at this layer, which is why both
+    behave the same way."""
+    from backlot.routers.github import _pr_files
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "f1",
+                "repo": "r",
+                "subtype": "file",
+                "path": "real.py",
+                "title": "real.py",
+                "content": "a\nb\nc\n",
+                "author_email": "a@x.com",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "p1",
+                "repo": "r",
+                "subtype": "pull_request",
+                "title": "PR",
+                "content": "body",
+                "author_email": "a@x.com",
+                "changed_paths": ["real.py", "typo.py"],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    row = store.get_document(conn, "github", "p1")
+    assert [f["filename"] for f in _pr_files(conn, "org", "r", row, "http://m/github")] == [
+        "real.py"
+    ]
+
+
+def test_github_declared_paths_are_deduplicated(tmp_path):
+    """A repeated path would put the same file in the diff twice, which `git apply` refuses — so a
+    corpus typo would produce a diff no client can use."""
+    from backlot.routers.github import _pr_files
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "f1",
+                "repo": "r",
+                "subtype": "file",
+                "path": "a.py",
+                "title": "a.py",
+                "content": "x\ny\nz\n",
+                "author_email": "a@x.com",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "p1",
+                "repo": "r",
+                "subtype": "pull_request",
+                "title": "PR",
+                "content": "body",
+                "author_email": "a@x.com",
+                "changed_paths": ["a.py", "a.py"],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    row = store.get_document(conn, "github", "p1")
+    assert [f["filename"] for f in _pr_files(conn, "org", "r", row, "http://m/github")] == ["a.py"]
+
+
+# --- /pulls/{n}/files pagination --------------------------------------------------------
+
+
+def test_github_pull_files_paginates(declared_pr):
+    """Real GitHub paginates the changed-file list; a client's paging loop over it is only
+    exercisable if the mock emits the Link header."""
+    c, h, org, num = declared_pr
+    url = f"/github/repos/{org}/diffable/pulls/{num}/files"
+    first = c.get(url, headers=h, params={"per_page": 2, "page": 1})
+    assert [f["filename"] for f in first.json()] == ["pkg/core.py", "app.py"]
+    assert 'rel="next"' in first.headers.get("Link", "")
+    second = c.get(url, headers=h, params={"per_page": 2, "page": 2})
+    assert [f["filename"] for f in second.json()] == ["pkg/conf.toml", "README.md"]
+    assert 'rel="next"' not in second.headers.get("Link", "")
+
+
+def test_github_pull_files_pagination_covers_every_file_once(declared_pr):
+    c, h, org, num = declared_pr
+    url = f"/github/repos/{org}/diffable/pulls/{num}/files"
+    unpaged = c.get(url, headers=h).json()
+    walked, page = [], 1
+    while True:
+        r = c.get(url, headers=h, params={"per_page": 3, "page": page})
+        walked += r.json()
+        if 'rel="next"' not in r.headers.get("Link", ""):
+            break
+        page += 1
+    assert walked == unpaged
+
+
+# --- line-anchored review comments ------------------------------------------------------
+
+
+def test_github_pull_review_comments_are_served(declared_pr):
+    c, h, org, num = declared_pr
+    body = c.get(f"/github/repos/{org}/diffable/pulls/{num}/comments", headers=h).json()
+    assert [(x["path"], x["line"]) for x in body] == [("pkg/core.py", 4), ("app.py", None)]
+    first = body[0]
+    assert first["body"] == "this line should be a constant"
+    assert first["side"] == "RIGHT" and first["commit_id"]
+    assert first["user"]["login"] == "ava"
+    assert first["pull_request_url"].endswith(f"/pulls/{num}")
+    assert first["html_url"].endswith(f"#discussion_r{first['id']}")
+
+
+def test_github_review_comment_position_points_at_the_commented_row(declared_pr):
+    """`position` indexes INTO the diff hunk, so the row it selects must be the commented line."""
+    c, h, org, num = declared_pr
+    comment = next(
+        x
+        for x in c.get(f"/github/repos/{org}/diffable/pulls/{num}/comments", headers=h).json()
+        if x["path"] == "pkg/core.py"
+    )
+    rows = comment["diff_hunk"].split("\n")
+    pos = comment["position"]
+    assert pos is not None
+    assert rows[pos].lstrip(" +") == f"line_{comment['line']} = {comment['line']}"
+
+
+def test_hunk_position_is_not_the_file_line():
+    """`position` and `line` are different numbers on real GitHub — the row's offset within the diff
+    hunk versus the line in the file — and a client resolving a comment against a diff uses the
+    former. They coincide only for a hunk that starts at line 1 with nothing removed above, so this
+    pins the distinction on a hunk where they cannot."""
+    from backlot.routers.github import _hunk_position
+
+    hunk = "@@ -8,4 +10,5 @@\n ctx_a\n-gone\n+added\n ctx_b\n ctx_c\n"
+    #        new-side lines:      10       (none)  11      12      13
+    assert _hunk_position(hunk, 10) == 1
+    assert _hunk_position(hunk, 11) == 3  # offset 2 is the removed row, which has no new-side line
+    assert _hunk_position(hunk, 13) == 5
+    assert _hunk_position(hunk, 99) is None  # outside the hunk
+    assert _hunk_position(hunk, None) is None  # a file-level comment
+    assert _hunk_position("not a hunk", 10) is None
+
+
+def test_github_file_level_review_comment_has_no_position(declared_pr):
+    c, h, org, num = declared_pr
+    comment = next(
+        x
+        for x in c.get(f"/github/repos/{org}/diffable/pulls/{num}/comments", headers=h).json()
+        if x["line"] is None
+    )
+    assert comment["position"] is None and comment["subject_type"] == "file"
+
+
+def test_github_review_comment_diff_hunk_is_derived_when_absent(declared_pr):
+    """The corpus need only say where the comment is anchored; the hunk around it comes from the
+    file's own snapshot, the same principle as the changeset."""
+    c, h, org, num = declared_pr
+    body = c.get(f"/github/repos/{org}/diffable/pulls/{num}/comments", headers=h).json()
+    derived = next(x for x in body if x["path"] == "pkg/core.py")
+    assert derived["diff_hunk"].startswith("@@ ")
+    assert "line_4 = 4" in derived["diff_hunk"]  # real content from the file, around line 4
+    explicit = next(x for x in body if x["path"] == "app.py")
+    assert explicit["diff_hunk"] == "@@ -1,2 +1,3 @@\n import sys\n"  # corpus wins
+
+
+def test_github_review_comments_do_not_leak_into_the_conversation(declared_pr):
+    """The two resources real GitHub keeps apart must stay apart: serving review comments from
+    /issues/{n}/comments would duplicate them under a resource that means something else."""
+    c, h, org, num = declared_pr
+    convo = c.get(f"/github/repos/{org}/diffable/issues/{num}/comments", headers=h).json()
+    assert [x["body"] for x in convo] == ["conversation, not anchored"]
+    assert all("path" not in x for x in convo)
+
+
+def test_github_comment_counts_split_the_two_kinds(declared_pr):
+    """`comments` counts the conversation and `review_comments` the anchored ones, as real GitHub
+    reports them — one number covering both would contradict whichever list you fetched."""
+    c, h, org, num = declared_pr
+    pull = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers=h).json()
+    assert pull["comments"] == 1
+    assert pull["review_comments"] == 2
+    issue = c.get(f"/github/repos/{org}/diffable/issues/{num}", headers=h).json()
+    assert issue["comments"] == 1  # the issue view counts the conversation only
+
+
+def test_github_pull_with_no_review_comments_still_answers_empty(diff_pr):
+    c, h, org, num = diff_pr
+    r = c.get(f"/github/repos/{org}/diffable/pulls/{num}/comments", headers=h)
+    assert r.status_code == 200 and r.json() == []
 
 
 # --- git trees: the real truncation cap (issue #49 D9) ----------------------------------

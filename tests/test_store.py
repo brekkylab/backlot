@@ -456,13 +456,77 @@ def test_connect_rw_self_heals_missing_path_column(tmp_path):
         reconn.close()
 
 
+def test_connect_rw_self_heals_the_changeset_columns(tmp_path):
+    """Same self-heal for the pull-changeset columns added later: a DB built before them keeps the
+    old column set, and then every INSERT naming one fails. github_comments gets the review-comment
+    columns the same way."""
+    p = tmp_path / "old2.sqlite"
+    conn = sqlite3.connect(p)
+    conn.execute(
+        "CREATE TABLE github_items ("
+        "doc_id TEXT PRIMARY KEY, repo TEXT NOT NULL, author_email TEXT NOT NULL, "
+        "title TEXT NOT NULL, content TEXT NOT NULL, kind TEXT, created_ts INTEGER NOT NULL, "
+        "path TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE github_comments ("
+        "id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL, author_email TEXT, "
+        "body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO github_items(doc_id, repo, author_email, title, content, created_ts) "
+        "VALUES ('p1', 'svc', 'a@x', 'a pull', '...', 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    reconn = store.connect_rw(p)  # must not raise
+    try:
+        assert "changed_paths" in {r[1] for r in reconn.execute("PRAGMA table_info(github_items)")}
+        ccols = {r[1] for r in reconn.execute("PRAGMA table_info(github_comments)")}
+        assert {"path", "line", "diff_hunk"} <= ccols
+        assert reconn.execute("SELECT doc_id FROM github_items WHERE doc_id = 'p1'").fetchone()
+    finally:
+        reconn.close()
+
+
 def test_connect_rw_fresh_db_still_works(tmp_path):
     conn = store.connect_rw(tmp_path / "fresh.sqlite")
     try:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(github_items)")}
-        assert "path" in cols
+        assert {"path", "changed_paths"} <= cols
+        ccols = {r[1] for r in conn.execute("PRAGMA table_info(github_comments)")}
+        assert {"path", "line", "diff_hunk"} <= ccols
     finally:
         conn.close()
+
+
+def test_github_comments_splits_review_from_conversation(tmp_path):
+    """github_comments holds two resources real GitHub keeps apart, discriminated by `path`: a row
+    WITH one is a line-anchored review comment (/pulls/{n}/comments), one without is a conversation
+    comment (/issues/{n}/comments). Serving either from an unsplit read duplicates it under a
+    resource that means something else.
+
+    A github-specific reader because the shared doc_comments SELECT is one column list for six
+    tables and cannot carry github-only columns."""
+    conn = store.connect_rw(tmp_path / "c.sqlite")
+    rows = [
+        ("c1", 1, "looks good overall", None, None),
+        ("c2", 2, "this branch is dead", "src/a.py", 12),
+        ("c3", 3, "and here too", "src/a.py", 40),
+    ]
+    for cid, seq, body, path, line in rows:
+        conn.execute(
+            "INSERT INTO github_comments(id,doc_id,seq,author_email,body,created_ts,path,line) "
+            "VALUES(?,'p1',?,'a@x',?,1,?,?)",
+            (cid, seq, body, path, line),
+        )
+    conn.commit()
+    assert [c["id"] for c in store.github_comments(conn, "p1")] == ["c1", "c2", "c3"]
+    assert [c["id"] for c in store.github_comments(conn, "p1", anchored=False)] == ["c1"]
+    anchored = store.github_comments(conn, "p1", anchored=True)
+    assert [c["id"] for c in anchored] == ["c2", "c3"]
+    assert (anchored[0]["path"], anchored[0]["line"]) == ("src/a.py", 12)
 
 
 def test_connect_ro_tuning(sample_settings):

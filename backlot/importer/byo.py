@@ -221,6 +221,7 @@ def _service_columns(
             "merged_by": ex.get("merged_by"),
             "milestone": ex.get("milestone"),
             "requested_reviewers": _j(ex.get("requested_reviewers")),
+            "changed_paths": _j(ex.get("changed_paths")),
             "owner_display": owner_display,
         }
     if src == "jira":
@@ -809,6 +810,7 @@ class _Loader:
             "merged_by",
             "milestone",
             "requested_reviewers",
+            "changed_paths",
             "resolution",
             "resolutiondate",
             "duedate",
@@ -1021,6 +1023,20 @@ class _Loader:
                 ),
             )
 
+        # A pull's changeset (github). Only a pull has one, and it must be a list of paths — the
+        # router resolves each against this repo's subtype='file' docs. Refused here rather than
+        # stored and silently unservable.
+        if src == "github" and rec.get("changed_paths") is not None:
+            if subtype != "pull_request":
+                raise SystemExit(
+                    f"{where}: changed_paths is for subtype='pull_request' only (this is "
+                    f"{subtype or 'issue'!r})"
+                )
+            if not isinstance(rec["changed_paths"], list) or not all(
+                isinstance(p, str) for p in rec["changed_paths"]
+            ):
+                raise SystemExit(f"{where}: changed_paths must be a list of path strings")
+
         # comments on the document — only jira/confluence/github expose them (slack uses replies)
         rec_comments = rec.get("comments") or []
         ctable = store.comment_table(src)
@@ -1054,6 +1070,24 @@ class _Loader:
                     _j(c.get("reactions")),
                 ),
             )
+            # github's line-anchored REVIEW comments live in the same table, discriminated by
+            # `path` (see store.SCHEMA). A second statement rather than widening the shared INSERT
+            # above, which serves six tables that have no such columns.
+            if src == "github" and any(k in c for k in ("path", "line", "diff_hunk")):
+                if not c.get("path"):
+                    raise SystemExit(
+                        f"{where}: a review comment needs 'path' — it is what marks the comment as "
+                        "line-anchored; line/diff_hunk alone would be served by neither endpoint"
+                    )
+                if subtype != "pull_request":
+                    raise SystemExit(
+                        f"{where}: a review comment is for subtype='pull_request' only (this is "
+                        f"{subtype or 'issue'!r})"
+                    )
+                conn.execute(
+                    "UPDATE github_comments SET path = ?, line = ?, diff_hunk = ? WHERE id = ?",
+                    (c["path"], c.get("line"), c.get("diff_hunk"), _cid),
+                )
 
         for i, rep in enumerate(replies or [], start=1):
             if not rep.get("content"):

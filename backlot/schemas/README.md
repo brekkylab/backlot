@@ -126,7 +126,9 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   `subtype`/`edited`, not just `content`); gmail accepts an explicit `to`.
 - **Per-service fidelity fields** (all optional; see each schema):
   gmail `html`; drive `trashed`; github `closed_at`/`closed_by`/`merged_by`/`milestone`/
-  `requested_reviewers` (+ comment `reactions`); jira `assignee`/`reporter`/`resolution`/
+  `requested_reviewers`/`changed_paths` (+ comment `reactions`, and `path`/`line`/`diff_hunk` to make
+  a comment a line-anchored review comment rather than a conversation one); jira
+  `assignee`/`reporter`/`resolution`/
   `resolutiondate`/`duedate`/`fix_versions`; confluence `version_number`/`version_message`/
   `minor_edit`; notion `properties` (database schema / row values), `icon`, `cover` (+ `subtype`
   `page|database`, `parent` for database rows); s3 `key` (**required** — the object's path within

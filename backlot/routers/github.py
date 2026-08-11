@@ -351,7 +351,9 @@ async def issue_comments(owner: str, repo: str, number: int, request: Request):
     ab = _api_base(request)
     return [
         _gh_comment(owner, repo, number, c, ab)
-        for c in store.doc_comments(conn, "github", row["doc_id"])
+        # anchored=False: a line-anchored review comment belongs to /pulls/{n}/comments, and
+        # serving it here too would duplicate it under a resource that means something else
+        for c in store.github_comments(conn, row["doc_id"], anchored=False)
     ]
 
 
@@ -380,10 +382,10 @@ async def list_pulls(
     )
     start = (page - 1) * per_page
     ab = _api_base(request)
-    # one file listing for the whole page: each PR's changeset chooses from it (see _pr_files)
-    paths = store.list_repo_file_paths(conn, repo, ids)
+    # one _RepoFiles for the whole page: every PR's changeset reads through it (see _pr_files)
+    repo_files = _RepoFiles(conn, repo, ids)
     body = [
-        _pr_obj(conn, owner, repo, r, ab, ids=ids, paths=paths)
+        _pr_obj(conn, owner, repo, r, ab, ids=ids, repo_files=repo_files)
         for r in prs[start : start + per_page]
     ]
     return _paged(request, len(prs), {"state": state}, body, page, per_page)
@@ -457,17 +459,13 @@ async def pull_reviews(owner: str, repo: str, number: int, request: Request):
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/comments")
 async def pull_review_comments(owner: str, repo: str, number: int, request: Request):
-    """A pull's REVIEW comments — the line-anchored ones, a different resource from both
+    """A pull's REVIEW comments — the line-anchored ones. A different resource from both
     ``/issues/{n}/comments`` (the conversation) and ``/pulls/{n}/reviews`` (approve/request-changes
-    events, which this mock does carry).
+    events): a corpus marks a comment as this one by giving it a ``path``.
 
-    ``github_comments`` has no ``path``/``line``/``diff_hunk``, so a line-anchored comment cannot be
-    represented and this is always empty. That is still the right answer rather than the 404 it used
-    to be: the collection is a real resource on every pull, a pull with no review comments answers
-    ``[]`` on real GitHub too, and a 404 aborts any client that renders a pull by combining its
-    metadata, conversation, review comments and files. Returning the conversation here instead would
-    be worse — it would duplicate ``/issues/{n}/comments`` under a resource that means something
-    else.
+    A pull with none answers ``[]``, which is also what real GitHub does — and what this returned for
+    every pull before ``github_comments`` could hold the anchoring. A 404 (the behaviour before that)
+    aborts any client that renders a pull from its metadata, conversation, review comments and files.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -475,20 +473,47 @@ async def pull_review_comments(owner: str, repo: str, number: int, request: Requ
     row = _resolve(request, conn, repo, number, ids)
     if row is None or row["kind"] != "pull_request":
         raise HTTPException(status_code=404, detail="Not Found")
-    return []
+    rows = store.github_comments(conn, row["doc_id"], anchored=True)
+    if not rows:
+        return []
+    ab = _api_base(request)
+    src = _RepoFiles(conn, repo, ids)
+    # The same changeset this pull's diff serves, so a comment's `diff_hunk` and the diff agree.
+    patches = {
+        f["filename"]: f.get("patch") for f in _pr_files(conn, owner, repo, row, ab, ids, src)
+    }
+    out = []
+    for c in rows:
+        f = src.get(c["path"])
+        if f is None:  # anchored to a file this caller cannot see, or to no file at all
+            continue
+        out.append(_gh_review_comment(owner, repo, number, row, c, f, patches, ab))
+    return out
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/files")
-async def pull_files(owner: str, repo: str, number: int, request: Request):
-    """The pull's changed-file list (``filename``/``status``/``additions``/``deletions``/``patch``).
-    Synthesized from the repo's own snapshot — see the changeset note below."""
+async def pull_files(
+    owner: str,
+    repo: str,
+    number: int,
+    request: Request,
+    page: int | None = Query(None, ge=1),
+    per_page: int | None = Query(None, ge=1),
+):
+    """The pull's changed-file list (``filename``/``status``/``additions``/``deletions``/``patch``),
+    paginated as the real API paginates it. See the changeset note below for where it comes from."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     row = _resolve(request, conn, repo, number, ids)
     if row is None or row["kind"] != "pull_request":
         raise HTTPException(status_code=404, detail="Not Found")
-    return _pr_files(conn, owner, repo, row, _api_base(request), ids)
+    files = _pr_files(conn, owner, repo, row, _api_base(request), ids)
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
+    return _paged(request, len(files), {}, files[start : start + per_page], page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/git/ref/{ref:path}")
@@ -1048,7 +1073,7 @@ def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "") -> dict:
         "assignee": assignees[0] if assignees else None,
         "assignees": assignees,
         "milestone": _milestone(row, owner, repo, api_base),
-        "comments": len(store.doc_comments(conn, "github", row["doc_id"])),
+        "comments": len(store.github_comments(conn, row["doc_id"], anchored=False)),
         "reactions": _reactions(store.jcol(row, "reactions", {}), self_url),
         "author_association": "MEMBER",
         "created_at": synth.rfc3339(created),
@@ -1075,7 +1100,7 @@ def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "") -> dict:
 
 
 def _pr_obj(
-    conn, owner: str, repo: str, row, api_base: str = "", ids=None, files=None, paths=None
+    conn, owner: str, repo: str, row, api_base: str = "", ids=None, files=None, repo_files=None
 ) -> dict:
     obj = _issue_obj(conn, owner, repo, row, api_base)
     sha = hashlib.sha1(row["doc_id"].encode()).hexdigest()
@@ -1083,7 +1108,7 @@ def _pr_obj(
     reviewers = [_gh_user(e, api_base) for e in store.jcol(row, "requested_reviewers")]
     n_comments = obj["comments"]
     if files is None:
-        files = _pr_files(conn, owner, repo, row, api_base, ids, paths)
+        files = _pr_files(conn, owner, repo, row, api_base, ids, repo_files)
     obj.update(
         {
             # A PR's issue view and its pull view are two DISTINCT nodes on real GitHub, so this
@@ -1119,7 +1144,10 @@ def _pr_obj(
             "additions": sum(f["additions"] for f in files),
             "deletions": sum(f["deletions"] for f in files),
             "changed_files": len(files),
-            "review_comments": 0,
+            # the anchored half of github_comments; `comments` above is the conversation half. Real
+            # GitHub reports the two separately, and one number covering both would contradict
+            # whichever list the caller then fetched.
+            "review_comments": len(store.github_comments(conn, row["doc_id"], anchored=True)),
             "comments": n_comments,
             "url": f"{api_base}/repos/{owner}/{repo}/pulls/{number}",
             "diff_url": f"https://github.com/{owner}/{repo}/pull/{number}.diff",
@@ -1132,15 +1160,17 @@ def _pr_obj(
 
 # --- pull request changesets ----------------------------------------------------
 #
-# `github_items` carries nothing about what a pull CHANGED: no files, no patch, no additions/
-# deletions. The changeset below is therefore synthesized — deterministically, seeded on the pull's
-# doc_id — but it invents no content: it only ever names files the repo actually has, and every line
-# on either side of a hunk is a line of that file's own snapshot. A `modified` file's "before" state
-# is the snapshot with one real block either taken out or duplicated (see _patch_modified), so the
-# hunk is a well-formed diff against real bytes in both directions.
+# WHICH files a pull changed comes from its `changed_paths` when the corpus declared it. Nothing
+# records the HUNKS, so those are always synthesized — deterministically, seeded on the pull's
+# doc_id — but they invent no content: every line on either side is a line of that file's own
+# snapshot. A `modified` file's "before" state is the snapshot with one real block either taken out
+# or duplicated (see _patch_modified), so the hunk is a well-formed diff against real bytes in both
+# directions. Without `changed_paths` the file list is chosen deterministically too, which is
+# well-formed but unrelated to what the pull is about.
 #
 # What that buys, none of which was reachable before: a client's diff path, its handling of an
-# omitted `patch`, and its pagination over a changed-file list.
+# omitted `patch`, and — for a corpus that declares more paths than one page holds — its paging over
+# a changed-file list. A synthesized list caps at _MAX_CHANGED_FILES and will not fill a page.
 #
 # THE SNAPSHOT IS THE PULL'S HEAD. Every hunk here is expressed against that one convention, which
 # is what makes the diff actually apply: `git apply --reverse` walks the snapshot back to the base
@@ -1153,7 +1183,7 @@ def _pr_obj(
 #     a diff mixing that with a `modified` hunk claims the snapshot is base and head at once, which
 #     no client can apply. Deletions come from the `dedup` flavour below instead.
 
-_MAX_CHANGED_FILES = 3
+_MAX_CHANGED_FILES = 3  # only bounds a SYNTHESIZED changeset; `changed_paths` is taken in full
 _MAX_BLOCK_LINES = 3  # how many lines one hunk adds or removes
 _PATCH_CONTEXT = 3
 # Real GitHub omits `patch` for a binary file or a diff too large to inline.
@@ -1161,33 +1191,71 @@ PATCH_MAX_BYTES = 1024 * 1024
 _CHANGE_STATUSES = ("modified", "added")
 
 
+class _RepoFiles:
+    """One repo's files for the life of one request: the path listing, fetched lazily, plus a memo
+    of the rows actually read.
+
+    Both halves matter on a list endpoint. A ``/pulls`` page builds a changeset per row and those
+    changesets overlap heavily — a synthesized one draws from the same pool, and a declared
+    ``changed_paths`` repeats across pulls — so without the memo the same file's content is read once
+    per pull. Lazy because a pull that declares its paths never needs the listing at all.
+    """
+
+    def __init__(self, conn, repo: str, ids):
+        self._conn, self._repo, self._ids = conn, repo, ids
+        self._paths: list[str] | None = None
+        self._rows: dict[str, object] = {}
+
+    @property
+    def paths(self) -> list[str]:
+        if self._paths is None:
+            self._paths = store.list_repo_file_paths(self._conn, self._repo, self._ids)
+        return self._paths
+
+    def get(self, path: str):
+        """The file row, or None when the caller cannot see it or the repo has no such file. The two
+        are deliberately indistinguishable to callers: a path the corpus named but this caller may
+        not read must behave exactly like one that was a typo, or the response reveals which."""
+        if path not in self._rows:
+            self._rows[path] = store.get_repo_file(self._conn, self._repo, path, self._ids)
+        return self._rows[path]
+
+
 def _pr_files(
-    conn, owner: str, repo: str, row, api_base: str = "", ids=None, paths: list[str] | None = None
+    conn, owner: str, repo: str, row, api_base: str = "", ids=None, repo_files=None
 ) -> list[dict]:
     """The pull's changed files in the real API's shape. See the changeset note above.
 
-    Chooses among PATHS and then reads only the few files it picked, so the cost is one cheap
-    listing plus <=3 point lookups rather than every file's content. ``paths`` lets a list endpoint
-    hoist that one listing out of its per-row loop (see :func:`list_pulls`) — without it, a
-    ``/pulls`` page repeats it once per pull.
+    ``changed_paths`` on the pull wins when the corpus set it — in full and in its declared order,
+    uncapped, because the corpus is stating a fact rather than asking for a plausible one. Otherwise
+    up to :data:`_MAX_CHANGED_FILES` paths are chosen deterministically.
+
+    Either way only the chosen files are read, never the whole repo — pass ``repo_files`` to share
+    one :class:`_RepoFiles` across a page of pulls.
     """
-    if paths is None:
-        paths = store.list_repo_file_paths(conn, repo, ids)
-    if not paths:
-        return []
+    src = repo_files if repo_files is not None else _RepoFiles(conn, repo, ids)
     doc_id = row["doc_id"]
-    n = 1 + synth.hnum(doc_id, salt="pr-nfiles") % min(_MAX_CHANGED_FILES, len(paths))
-    start = synth.hnum(doc_id, salt="pr-offset") % len(paths)
+    declared = store.jcol(row, "changed_paths")
+    if declared:
+        # dict.fromkeys: declared order, minus repeats. A path named twice would put the same file
+        # in the diff twice, which `git apply` refuses outright.
+        chosen = list(dict.fromkeys(declared))
+    else:
+        paths = src.paths
+        if not paths:
+            return []
+        n = 1 + synth.hnum(doc_id, salt="pr-nfiles") % min(_MAX_CHANGED_FILES, len(paths))
+        start = synth.hnum(doc_id, salt="pr-offset") % len(paths)
+        chosen = [paths[(start + i) % len(paths)] for i in range(n)]
     head_sha = hashlib.sha1(doc_id.encode()).hexdigest()
     out = []
-    for i in range(n):
-        f = store.get_repo_file(conn, repo, paths[(start + i) % len(paths)], ids)
-        if f is None:  # the listing and the read raced a writer; drop it rather than half-report it
+    for path in chosen:
+        f = src.get(path)
+        if f is None:  # not visible to this caller, or no such file — see _RepoFiles.get
             continue
-        # the first file is always `modified`, so a changeset always carries one hunk with context
-        status = (
-            "modified" if i == 0 else _CHANGE_STATUSES[synth.hnum(doc_id, salt=f"pr-st{i}") % 2]
-        )
+        # Seeded on (pull, path) rather than the file's position, so a file's status does not shift
+        # when an ACL-hidden sibling drops out of the list or the corpus reorders `changed_paths`.
+        status = _CHANGE_STATUSES[synth.hnum(f"{doc_id}:{path}", salt="pr-status") % 2]
         out.append(_changed_file(doc_id, owner, repo, f, status, head_sha, api_base))
     return out
 
@@ -1307,6 +1375,102 @@ def _pr_mbox(row, obj: dict, diff: str) -> str:
         f"Subject: [PATCH] {obj['title']}\n\n"
         f"{body}\n---\n{diff}-- \n2.45.0\n"
     )
+
+
+def _gh_review_comment(
+    owner: str, repo: str, number: int, pr_row, c, file_row, patches: dict, api_base: str = ""
+) -> dict:
+    """One line-anchored review comment, in the real API's shape.
+
+    ``diff_hunk`` prefers what the corpus supplied, then the hunk this pull's own diff carries for
+    that file — so the comment and the diff agree — and falls back to a context window from the
+    snapshot when the comment is anchored to a file the changeset does not touch (real GitHub cannot
+    produce that, but there is no reason to drop the comment over it).
+    """
+    ts = c["created_ts"] or synth.epoch(c["id"])
+    email = c["author_email"] or "unknown@x"
+    cid = synth.github_number(c["id"])
+    head = hashlib.sha1(pr_row["doc_id"].encode()).hexdigest()
+    self_url = f"{api_base}/repos/{owner}/{repo}/pulls/comments/{cid}"
+    pr_url = f"{api_base}/repos/{owner}/{repo}/pulls/{number}"
+    html_url = f"https://github.com/{owner}/{repo}/pull/{number}#discussion_r{cid}"
+    hunk = c["diff_hunk"] or patches.get(c["path"]) or _hunk_around(file_row, c["line"])
+    return {
+        "id": cid,
+        "node_id": synth.node_id("PullRequestReviewComment", cid),
+        "pull_request_review_id": synth.github_number(pr_row["doc_id"] + ":review"),
+        "path": c["path"],
+        "line": c["line"],
+        "original_line": c["line"],
+        "start_line": None,
+        "original_start_line": None,
+        "side": "RIGHT",
+        "start_side": None,
+        # no history here, so the commit a comment is "original" to is the pull's head
+        "commit_id": head,
+        "original_commit_id": head,
+        "diff_hunk": hunk,
+        "position": _hunk_position(hunk, c["line"]),
+        "original_position": _hunk_position(hunk, c["line"]),
+        # real GitHub's own discriminator for a comment on a whole file rather than one line
+        "subject_type": "line" if c["line"] else "file",
+        "body": c["body"],
+        "user": _gh_user(email, api_base),
+        "created_at": synth.rfc3339(ts),
+        "updated_at": synth.rfc3339(ts),
+        "author_association": "MEMBER",
+        "reactions": _reactions(store.jcol(c, "reactions", {}), self_url),
+        "url": self_url,
+        "pull_request_url": pr_url,
+        "html_url": html_url,
+        "_links": {
+            "self": {"href": self_url},
+            "html": {"href": html_url},
+            "pull_request": {"href": pr_url},
+        },
+    }
+
+
+_HUNK_HEADER = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _hunk_position(hunk: str, line: int | None) -> int | None:
+    """``position`` is the row's offset INSIDE the diff hunk — 1-based, counting every row after the
+    ``@@`` header — not the line number in the file, which is what ``line`` reports. Real GitHub
+    returns both, and a client resolving a comment against a diff uses this one, so reporting
+    ``line`` for it would look right and point at the wrong row.
+
+    None when the comment has no line (a file-level comment) or the hunk does not cover it, which is
+    a state the real API has too."""
+    if not hunk or line is None:
+        return None
+    rows = hunk.split("\n")
+    m = _HUNK_HEADER.match(rows[0])
+    if m is None:
+        return None
+    cur = int(m.group(1))
+    for offset, row in enumerate(rows[1:], start=1):
+        if not row or row[0] == "-":  # a removed row occupies no line on the new side
+            continue
+        if cur == line:
+            return offset
+        cur += 1
+    return None
+
+
+def _hunk_around(file_row, line: int | None) -> str:
+    """A context-only hunk covering ``line`` of the file's snapshot — the fallback for a review
+    comment on a file this pull's changeset does not touch. All-context because nothing changed on
+    that file: inventing +/- rows to look more like a diff would claim an edit that is not in the
+    changeset the same pull serves."""
+    lines = (file_row["content"] or "").splitlines(keepends=True)
+    if not lines:
+        return ""
+    idx = max(0, min((line - 1) if line else 0, len(lines) - 1))
+    lo = max(0, idx - _PATCH_CONTEXT)
+    window = lines[lo : idx + _PATCH_CONTEXT + 1]
+    header = f"@@ -{lo + 1},{len(window)} +{lo + 1},{len(window)} @@"
+    return header + "\n" + "".join(" " + ln for ln in _nl_terminated(window))
 
 
 def _gh_comment(owner: str, repo: str, number: int, c, api_base: str = "") -> dict:

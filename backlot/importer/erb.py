@@ -546,8 +546,7 @@ class BenchSettings(BaseSettings):
 
         Pinning it to the cwd is the point: a re-import into a fresh build dir
         (``BACKLOT_DATA_DIR=/tmp/… backlot import --type enterpriserag-bench``) then REUSES the
-        already-downloaded
-        source JSONs instead of fetching ~1 GB from GitHub again.
+        already-downloaded source JSONs instead of fetching ~1 GB from GitHub again.
         """
         if isinstance(values, dict):
             values.setdefault("raw_dir", Path("data").resolve() / "raw")
@@ -2350,8 +2349,7 @@ def run_export(out_dir: Path, *, shard_records: int | None = None) -> int:
 
 if __name__ == "__main__":
     # `python -m backlot.importer.erb` is `backlot import --type enterpriserag-bench`, re-entered
-    # through the CLI so the
-    # one parser that declares the options is the one that parses them.
+    # through the CLI so the one parser that declares the options is the one that parses them.
     from backlot.cli import main
 
     raise SystemExit(main(["import", "--type", "enterpriserag-bench", *sys.argv[1:]]))

@@ -16,6 +16,7 @@ string "5" would have passed.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -335,6 +336,23 @@ def test_data_dir_overrides_the_environment(tmp_path, monkeypatch):
     assert not (tmp_path / "from-env").exists()
 
 
+def test_a_rejected_command_does_not_apply_its_data_dir(tmp_path, monkeypatch):
+    """`--data-dir` writes the environment and clears the settings cache, so applying it before the
+    usage checks left a rejected call having changed where the NEXT one would read from — visible
+    in-process, which is how `cli.main` is used from tests and from `python -m backlot`."""
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "keep-me"))
+
+    # rejected: a BYO option under the bench type
+    assert (
+        cli.main(["import", "-t", "enterpriserag-bench", "--dry-run", "--data-dir", "/nope"]) == 2
+    )
+    assert os.environ["BACKLOT_DATA_DIR"] == str(tmp_path / "keep-me")
+
+    # rejected: neither a path nor --bundled
+    assert cli.main(["import", "--data-dir", "/nope"]) == 2
+    assert os.environ["BACKLOT_DATA_DIR"] == str(tmp_path / "keep-me")
+
+
 # --- status -----------------------------------------------------------------------------------
 
 
@@ -344,6 +362,21 @@ def test_status_reports_an_empty_data_dir_and_exits_one(tmp_path, monkeypatch, c
     out = plain(capsys.readouterr().out)
     assert "none" in out
     assert "backlot import" in out  # tells you how to fix it
+
+
+def test_status_reports_an_unreadable_corpus_rather_than_raising(tmp_path, monkeypatch, capsys):
+    """A file at the corpus path that is not a corpus — a truncated copy, an interrupted import.
+    Diagnosing the data dir is this command's entire job, so it cannot answer with sqlite's
+    traceback."""
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "mock.sqlite").write_bytes(b"not a database")
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
+
+    assert cli.main(["status"]) == 1
+    err = plain(capsys.readouterr().err)
+    assert "unreadable" in err
+    assert "backlot import" in err  # and how to get out of it
 
 
 def test_status_reports_the_loaded_corpus(tmp_path, monkeypatch, capsys):

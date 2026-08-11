@@ -267,8 +267,8 @@ def import_(
         raise typer.BadParameter(
             f"{corpus_type!r} is not one of {', '.join(IMPORTER_TYPES)}", param_hint="'--type'"
         )
-    _use_data_dir(data_dir)
-
+    # _use_data_dir AFTER the checks, in both branches: it writes the environment and clears the
+    # settings cache, and a call that is about to be rejected should leave neither behind.
     if corpus_type != BYO:
         _reject_byo_flags_under_bench(
             {
@@ -283,6 +283,7 @@ def import_(
                 f"--type {BENCH} downloads its own corpus; a path is only for --type {BYO}",
                 param_hint="'CORPUS'",
             )
+        _use_data_dir(data_dir)
         from backlot.importer import erb
 
         raise typer.Exit(erb.run())
@@ -300,6 +301,7 @@ def import_(
 
         corpus = HELLO_CORPUS
 
+    _use_data_dir(data_dir)
     from backlot.importer import byo
 
     raise typer.Exit(byo.run(corpus, append=append, dry_run=dry_run, roster=roster))
@@ -362,21 +364,35 @@ def status(data_dir: DataDir = None) -> None:
         typer.echo("Build one with `backlot import --bundled` or `backlot import <corpus.jsonl>`.")
         raise typer.Exit(1)
 
+    import sqlite3
+
     from backlot import store
 
-    conn = store.connect_ro(settings.db_path)
+    size = f"{settings.db_path.stat().st_size / 1e6:.1f} MB"
     try:
-        counts = {
-            src: conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-            for src, tbl in store.SOURCE_TABLE.items()
-        }
-        # None on a DB built before the meta table existed; the counts above are rows, and parsing
-        # turns one Slack transcript into many message rows, so the two numbers differ by design.
-        source_docs = store.read_meta(conn, "source_documents")
-    finally:
-        conn.close()
+        conn = store.connect_ro(settings.db_path)
+        try:
+            counts = {
+                src: conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+                for src, tbl in store.SOURCE_TABLE.items()
+            }
+            # None on a DB built before the meta table existed; the counts above are rows, and
+            # parsing turns one Slack transcript into many message rows, so the two numbers differ
+            # by design.
+            source_docs = store.read_meta(conn, "source_documents")
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        # A file that is present but not a corpus: a truncated copy, an interrupted import, or
+        # something else entirely at that path. This command exists to diagnose the data dir, so it
+        # has to REPORT that rather than raise sqlite's error through a traceback.
+        typer.echo(f"corpus:   {settings.db_path} ({size}) — unreadable: {e}", err=True)
+        typer.echo(
+            "Not a Backlot corpus, or incomplete. Rebuild it with `backlot import`.", err=True
+        )
+        raise typer.Exit(1) from e
 
-    typer.echo(f"corpus:   {settings.db_path} ({settings.db_path.stat().st_size / 1e6:.1f} MB)")
+    typer.echo(f"corpus:   {settings.db_path} ({size})")
     typer.echo(
         f"documents: {sum(counts.values())} rows"
         + (f" from {source_docs} source documents" if source_docs else "")

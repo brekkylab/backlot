@@ -35,8 +35,7 @@ from backlot.integrations.mirage import point_github_at
 
 from _helpers import FUSE_HELP, lines, run_mirage
 
-OWNER = "acme"  # the mock echoes back whatever owner is asked for; any org works
-REPO = "gateway"
+REPO = "gateway"  # the throwaway CORPUS's repo; a --url mock's own repos are discovered below
 CORPUS = [
     {
         "source_type": "github",
@@ -84,34 +83,36 @@ def _api_get(url: str, token: str) -> dict:
         return json.load(r)
 
 
-def discover_repo(base_url: str, token: str, org: str = OWNER) -> tuple[str, str] | None:
-    """Find a real repo on the mock that actually has files, instead of assuming the throwaway
-    CORPUS's own ``OWNER``/``REPO`` exists — against a ``--url`` serving a different corpus,
+def discover_repo(base_url: str, token: str) -> tuple[str, str] | None:
+    """Find a repo the token can reach that actually has files, instead of assuming the throwaway
+    CORPUS's own ``REPO`` exists — against a ``--url`` serving a different corpus,
     ``GitHubResource.__init__`` 404s immediately (it eagerly fetches the repo + its tree).
 
-    Lists the org's repos (the mock echoes back whatever org is asked for — see ``OWNER``) via
-    plain ``urllib`` + the same bearer token the resource will use, then returns the first repo
-    whose recursive git tree contains at least one ``blob`` entry (a repo with only issues/PRs
-    and no files would give the ls/cat walk below nothing to read). Returns ``(owner, repo)``,
-    or ``None`` if nothing qualifies (or the mock can't be reached) — the caller falls back to
-    the throwaway ``CORPUS``'s own ``OWNER``/``REPO`` in that case.
+    Goes through ``GET /user/repos`` — the CREDENTIAL's own view of what it can reach — so nothing
+    here has to guess the owner: the mock derives its org from the corpus's email domain and 404s
+    any other owner, exactly as real GitHub does, and each entry's ``full_name`` already carries
+    the right ``owner/repo`` pair.
+
+    Returns the first repo whose recursive git tree has at least one ``blob`` entry (a repo of only
+    issues/PRs would give the ls/cat walk below nothing to read), falling back to the first visible
+    repo, or ``None`` if the token can reach none at all (or the mock can't be reached).
     """
     base = f"{base_url.rstrip('/')}/github"
     try:
-        repos = _api_get(f"{base}/orgs/{org}/repos", token)
+        repos = _api_get(f"{base}/user/repos?per_page=100", token)
     except Exception:  # noqa: BLE001 — any failure just means "discovery found nothing"
         return None
-    for r in repos:
-        name = r.get("name")
-        if not name:
-            continue
+    pairs = [
+        tuple(r["full_name"].split("/", 1)) for r in repos if "/" in (r.get("full_name") or "")
+    ]
+    for owner, name in pairs:
         try:
-            tree = _api_get(f"{base}/repos/{org}/{name}/git/trees/main?recursive=1", token)
+            tree = _api_get(f"{base}/repos/{owner}/{name}/git/trees/main?recursive=1", token)
         except Exception:  # noqa: BLE001
             continue
         if any(entry.get("type") == "blob" for entry in tree.get("tree", [])):
-            return org, name
-    return None
+            return owner, name
+    return pairs[0] if pairs else None
 
 
 def build(mock, token, owner, repo):
@@ -193,17 +194,14 @@ if __name__ == "__main__":
             print("authenticating with --token → responses are ACL-filtered to that user")
         token = args.token or mock.token
 
-        # Discover a repo that actually has files rather than assuming this script's own
-        # CORPUS repo (OWNER/REPO) exists on whatever's behind --url; fall back to it only if
-        # discovery finds nothing (e.g. the local throwaway mock, or a corpus with no files).
+        # Discover a repo that actually has files rather than assuming this script's own CORPUS
+        # repo exists on whatever's behind --url. The owner comes from the mock too — it 404s a
+        # wrong one, so there is nothing to hardcode.
         discovered = discover_repo(mock.base_url, token)
-        owner, repo = discovered if discovered else (OWNER, REPO)
-        if discovered:
-            print(f"discovered repo with files: {owner}/{repo}")
-        else:
-            print(
-                f"no repo with files discovered — falling back to the throwaway corpus's {owner}/{repo}"
-            )
+        if discovered is None:
+            raise SystemExit("no repositories visible to this token — nothing to mount")
+        owner, repo = discovered
+        print(f"mounting {owner}/{repo}")
 
         resource = build(mock, token, owner, repo)
         if args.fuse:

@@ -267,7 +267,12 @@ def test_mcp_github_bridge_acl_enforced(live_server):
     row, email = _restricted_doc(settings, user["token"], "github")
     assert row is not None, f"no GitHub issue is ACL-restricted from {email} in the sample corpus"
     number = synth.github_number(row["doc_id"])
-    owner, repo = settings.org_name, row["repo"]
+    # the org the CORPUS produced, which tokens.yaml records — not `settings.org_name`, which is
+    # still the unloaded default here (the importer writes the derived org to tokens.yaml and the
+    # server reads it from there at startup; see backlot.main). The GitHub surface 404s any other
+    # owner, so the two are not interchangeable.
+    owner = yaml.safe_load(settings.tokens_path.read_text())["org"]
+    repo = row["repo"]
 
     def reads(token):
         return _bridge_call(

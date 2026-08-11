@@ -85,12 +85,14 @@ with serve_or_connect(CORPUS, url=args.url) as mock:
         print("authenticating with --token → responses are ACL-filtered to that user")
     gh = Github(auth=Auth.Token(args.token or mock.token), base_url=f"{mock.base_url}/github")
 
-    # the repo owner is echoed back by the mock (it doesn't own an org concept), so any org works
-    repos = list(gh.get_organization("acme").get_repos())
+    # `get_user().get_repos()` is GET /user/repos — the credential's own view of what it can reach.
+    # Nothing here names the org: the mock derives it from the corpus's email domain and 404s any
+    # other owner, as real GitHub does, so `full_name` is the only safe way to address a repo.
+    repos = list(gh.get_user().get_repos())
     if not repos:
         print("no repos visible to this identity")
     else:
-        repo = gh.get_repo(f"acme/{repos[0].name}")
+        repo = gh.get_repo(repos[0].full_name)
         issues = list(repo.get_issues(state="all")[:5])
         print(f"{len(repos)} repos; {repo.name} has these issues/PRs:")
         for issue in issues:

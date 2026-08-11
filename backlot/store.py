@@ -1682,6 +1682,23 @@ def list_repo_files(conn, repo, visible_ids=None, limit=10_000, offset=0) -> lis
     return conn.execute(sql, [repo, *cp, limit, offset]).fetchall()
 
 
+def list_repo_file_paths(conn, repo, visible_ids=None, limit=10_000, offset=0) -> list[str]:
+    """Just the paths :func:`list_repo_files` would return, in the same order.
+
+    For a caller that only needs to CHOOSE among a repo's files rather than read them — github's
+    pull-request changeset picks a few paths per pull — and would otherwise drag every file's
+    content along to do it. On a 3000-file repo that is ~4 MB of content read per pull, and a
+    ``/pulls`` page synthesizes a changeset per row.
+    """
+    clause, cp = _acl_clause("github_items", visible_ids)
+    sql = (
+        "SELECT path FROM github_items WHERE repo = ? AND kind = 'file'"
+        + clause
+        + " ORDER BY path LIMIT ? OFFSET ?"
+    )
+    return [r[0] for r in conn.execute(sql, [repo, *cp, limit, offset])]
+
+
 def count_repo_files(conn, repo, visible_ids=None) -> int:
     clause, cp = _acl_clause("github_items", visible_ids)
     return conn.execute(

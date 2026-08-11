@@ -2720,3 +2720,142 @@ def test_byo_meta_cannot_smuggle_a_tracker_id(tmp_path):
     jira = conn.execute(f"SELECT key FROM {store.table('jira')}").fetchone()
     assert gh["number"] is None, "meta must not populate the served number column"
     assert jira["key"] is None, "meta must not populate the served key column"
+
+
+def test_byo_a_repeated_document_may_restate_its_own_tracker_id(tmp_path):
+    """Two records sharing a (source, doc_id) are both written — the row-level INSERT OR
+    REPLACE leaves the later one, which is what a direct import of the same documents
+    produces, and one real corpus has four such pairs, one of them within jira. Such a
+    repeat carrying its own provided key was aborting the whole import, naming the very
+    doc_id it was inserting. Only a DIFFERENT document violates the claim."""
+    from tests._helpers import build_corpus
+
+    rec = {
+        "source_type": "jira",
+        "doc_id": "jira-x",
+        "project": "PAY",
+        "title": "t",
+        "content": "c",
+        "author_email": "ava@acme.com",
+        "key": "PAY-7",
+    }
+    settings = build_corpus(tmp_path, [rec, dict(rec)])
+    conn = store.connect_ro(settings.db_path)
+    rows = conn.execute(f"SELECT doc_id, key FROM {store.table('jira')}").fetchall()
+    assert [(r["doc_id"], r["key"]) for r in rows] == [("jira-x", "PAY-7")]
+
+
+def test_byo_a_tracker_id_claim_survives_append(tmp_path):
+    """`tracker_ids` lives on a `_Loader` that `load_records` builds fresh per invocation, so
+    without seeding it from the DB the whole check ended at the shard boundary: two shards
+    appended in separate runs could each provide PAY-7 and neither would be told, leaving the
+    loser advertising an id that fetches somebody else. That is the failure this check exists
+    to remove, reached through --append."""
+    import pytest
+
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    def shard(name, doc_id, **extra):
+        p = tmp_path / name
+        p.write_text(
+            json.dumps(
+                {
+                    "source_type": "jira",
+                    "doc_id": doc_id,
+                    "project": "PAY",
+                    "title": doc_id,
+                    "content": "c",
+                    "author_email": "ava@acme.com",
+                    "key": "PAY-7",
+                    **extra,
+                }
+            )
+            + "\n"
+        )
+        return p
+
+    settings = Settings(data_dir=tmp_path)
+    first = shard("a.jsonl", "jira-a")
+    load(first, settings, reset=True)
+
+    with pytest.raises(SystemExit) as e:
+        load(shard("b.jsonl", "jira-b"), settings, reset=False)
+    assert "PAY-7" in str(e.value) and "jira-a" in str(e.value)
+
+    # Re-appending a shard already loaded is not a collision with itself, so a re-run of the
+    # same import still works — the seeded claim names the same doc_id that is re-stating it.
+    load(first, settings, reset=False)
+
+    # And a number is per repository, so the same one in another repo is not a claim on it.
+    gh = tmp_path / "g.jsonl"
+    for repo, doc in (("core", "g-a"), ("other", "g-b")):
+        gh.write_text(
+            json.dumps(
+                {
+                    "source_type": "github",
+                    "doc_id": doc,
+                    "repo": repo,
+                    "subtype": "issue",
+                    "title": doc,
+                    "content": "c",
+                    "author_email": "ava@acme.com",
+                    "number": 412,
+                }
+            )
+            + "\n"
+        )
+        load(gh, settings, reset=False)
+
+
+def test_byo_a_pull_requests_reviews_link_to_the_number_the_index_resolved(tmp_path):
+    """Every other handler reads `_issue_number`; this one derived. When a PR provides no
+    number and the derived one is already held by a row that did provide it, the index moves
+    this row — and the reviews body went on citing the derived number, so it linked to the
+    displacing PR, a different document, from a response about this one."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    stolen = synth.github_number("g-victim")
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "g-victim",
+                "repo": "core",
+                "subtype": "pull_request",
+                "title": "victim",
+                "content": "v",
+                "author_email": "ava@acme.com",
+                "reviews": [{"author_email": "bob@acme.com", "state": "APPROVED"}],
+            },
+            {
+                "source_type": "github",
+                "doc_id": "g-a-thief",
+                "repo": "core",
+                "subtype": "pull_request",
+                "title": "thief",
+                "content": "t",
+                "author_email": "ava@acme.com",
+                "number": stolen,
+            },
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    with client_for(settings, reload=True) as c:
+        listing = c.get(
+            "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
+        ).json()
+        displaced = next(i["number"] for i in listing if i["title"] == "victim")
+        assert displaced != stolen
+
+        reviews = c.get(f"/github/repos/acme/core/pulls/{displaced}/reviews", headers=hdr).json()
+        assert reviews, "the victim's own reviews"
+        for rv in reviews:
+            assert rv["pull_request_url"].endswith(f"/pulls/{displaced}")
+            assert f"/pull/{displaced}#" in rv["html_url"]

@@ -652,6 +652,26 @@ class _Loader:
         # every row, so it is the only place the claim can be checked at all.
         self.tracker_ids = {}  # (source_type, container, id) -> doc_id
 
+    def seed_tracker_ids(self) -> None:
+        """Re-read the ids already in the DB, so a claim holds ACROSS runs too.
+
+        A fresh ``_Loader`` per :func:`load_records` sees only the shard it is loading. Without
+        this, two shards appended in separate runs could each provide ``PAY-7`` and neither would
+        be told — the reverse index would hand the key to whichever doc_id sorts first, and the
+        other row would advertise an id that fetches somebody else. That is the failure this
+        check exists to remove, and ``--append`` is a route straight back into it.
+
+        Only provided ids are stored (a derived one stays NULL and is resolved at index-build
+        time), so the column is exactly the set of claims already made.
+        """
+        for src, col in (("github", "number"), ("jira", "key")):
+            scope_sql = store.grouping_col(src) if src == "github" else "''"
+            for row in self.conn.execute(
+                f"SELECT doc_id, {col} AS v, {scope_sql} AS scope FROM {store.table(src)} "
+                f"WHERE {col} IS NOT NULL"
+            ):
+                self.tracker_ids[(src, str(row["scope"]), str(row["v"]))] = row["doc_id"]
+
     def add(self, rec: dict, where: str = "record") -> None:
         """Insert one BYO record's row(s). ``where`` names the record in an error message.
 
@@ -994,11 +1014,17 @@ class _Loader:
             if provided_id is not None:
                 scope = container if src == "github" else ""
                 claim = (src, scope, str(provided_id))
-                if claim in self.tracker_ids:
+                # Only a DIFFERENT document violates the claim. Two records may share a
+                # (source, doc_id) — both are written and the row-level INSERT OR REPLACE leaves
+                # the later one, which is what a direct import of the same documents produces —
+                # and such a repeat re-stating its own id was aborting the import by naming the
+                # very doc_id it was inserting.
+                claimed = self.tracker_ids.get(claim)
+                if claimed is not None and claimed != did:
                     label = "number" if src == "github" else "key"
                     raise SystemExit(
                         f"{where}: {label} {provided_id!r} is already claimed by "
-                        f"{self.tracker_ids[claim]!r}" + (f" in repo {scope!r}" if scope else "")
+                        f"{claimed!r}" + (f" in repo {scope!r}" if scope else "")
                     )
                 self.tracker_ids[claim] = did
             names = list(cols)
@@ -1369,6 +1395,8 @@ def load_records(
     org = org_name
 
     loader = _Loader(conn, org, org_domain, closed=closed, validate=validate)
+    if not reset:
+        loader.seed_tracker_ids()
     source_docs = 0
     for lineno, rec in records_factory():
         source_docs += 1

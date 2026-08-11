@@ -306,7 +306,7 @@ async def pull_reviews(owner: str, repo: str, number: int, request: Request):
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
-    number = synth.stored(row, "number") or synth.github_number(row["doc_id"])
+    number = _issue_number(request.app.state.index, row)
     sha = hashlib.sha1(row["doc_id"].encode()).hexdigest()[:40]
     out = []
     for i, rv in enumerate(store.jcol(row, "reviews"), start=1):

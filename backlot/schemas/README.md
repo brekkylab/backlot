@@ -43,6 +43,13 @@ text: supply `sentences` and `content` is derived from them, or supply only `con
 sentences are parsed back out of it. Either way the two round-trip exactly, so full-text search
 and the per-sentence API can never disagree.
 
+Parsing reads `Speaker: text` — optionally led by a `[00:12]` / `(00:12)` / `00:12 -` clock — and
+nothing else, so **any** line of that shape names a speaker, including a header line like
+`Date: 2025-02-20`. There is no list of labels exempted from it: excluding a label would also strand
+its line, since `content` is re-derived from the sentences and a line no sentence holds is a line
+the transcript loses. Supply `sentences` explicitly when a body carries an auto-notes header, or
+when a speaker's talk-time share in the served analytics has to be exact.
+
 ## Which corpus is which
 
 Three corpora live in this repo. They look similar — one fictional company, every source covered —

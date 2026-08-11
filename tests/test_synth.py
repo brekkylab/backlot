@@ -184,6 +184,39 @@ def test_a_colon_inside_a_sentence_does_not_mint_a_speaker():
     assert sentences[0]["text"] == "the dashboard\nsee https://example.com for detail"
 
 
+def test_an_auto_notes_label_line_is_read_as_a_speaker_here():
+    """A BYO transcript body is read by the conventions the record format documents and no others,
+    so a line shaped like `Label: value` IS a speaker line — `Date:` and `Duration:` included.
+
+    That is the intended reading, not an oversight. `backlot.importer.erb` suppresses those labels
+    because its dataset demonstrably leads with an auto-notes header AND declares the attendees to
+    gate them against; a BYO record has no attendee list, leaving "Host: welcome everyone" and
+    "Date: 2025-02-20" indistinguishable. Given the ambiguity this parser keeps the property that
+    matters — the fixed point below, which a deny list breaks by dropping the line — and a corpus
+    that wants a header excluded supplies `sentences` explicitly instead.
+    """
+    text = "Date: 2025-02-20\nDuration: ~52 min\nMaya: numbers first."
+    sentences = synth.parse_transcript_text(text)
+    assert [s["speaker_name"] for s in sentences] == ["Date", "Duration", "Maya"]
+    # The consequence to know about: these names reach the served speaker analytics.
+    assert [s["name"] for s in synth.fireflies_speaker_stats(sentences)] == [
+        "Date",
+        "Duration",
+        "Maya",
+    ]
+
+
+def test_a_label_shaped_opening_line_keeps_the_fixed_point():
+    """The regression a ported-back deny list would cause. Suppressing a label-shaped speaker also
+    strands its line — nothing holds it, and `content` is re-derived from the sentences — so the
+    transcript silently loses its first line from both the served body and full-text search.
+    Every plausible speaker label that is also a header word has to survive this.
+    """
+    for opening in ("Host: welcome everyone", "Notes: kickoff", "Date: 2025-02-20"):
+        text = f"{opening}\nMaya: numbers first."
+        assert synth.fireflies_transcript_text(synth.parse_transcript_text(text)) == text, opening
+
+
 def test_parse_transcript_text_of_an_empty_body_is_empty():
     assert synth.parse_transcript_text("") == []
     assert synth.parse_transcript_text("   \n  ") == []

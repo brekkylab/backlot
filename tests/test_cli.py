@@ -26,32 +26,42 @@ from backlot.config import get_settings
 from backlot.importer import byo, erb
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
+# The frame rich draws around an error or a help panel. Dropped because a message WRAPPED inside one
+# puts these glyphs between its own words: at 80 columns the panel renders as
+#     | ... downloads its own      |
+#     | corpus; a path is only ... |
+# which collapses to "its own | | corpus" and matches no substring anyone would think to assert.
+_BOX = re.compile(r"[─-╿]")
 
 
 def plain(captured: str) -> str:
     """Rendered CLI output -> the text a reader sees, on one line.
 
-    Assertions have to go through this. rich HIGHLIGHTS option names by styling each fragment
-    separately, so with color on, `--shard-records` reaches the buffer as
-    ``'\\x1b[1;36m-\\x1b[0m\\x1b[1;36m-shard\\x1b[0m\\x1b[1;36m-records\\x1b[0m'`` and the
-    contiguous substring is simply not there. GitHub Actions sets FORCE_COLOR, so a suite that asserts on raw
-    output passes locally and fails only in CI — which is exactly what happened. Newlines collapse
-    too, so a message wrapped by a narrow terminal still matches.
+    Assertions have to go through this, for two reasons that both passed locally and failed in CI:
+
+    - rich HIGHLIGHTS option names by styling each fragment separately, so with color on
+      `--shard-records` reaches the buffer as
+      ``'\\x1b[1;36m-\\x1b[0m\\x1b[1;36m-shard\\x1b[0m\\x1b[1;36m-records\\x1b[0m'`` and the
+      contiguous substring is not there. GitHub Actions sets FORCE_COLOR; a dev shell does not.
+    - a message longer than the terminal wraps inside its panel, and the frame lands between words.
+
+    Reproduce either with ``FORCE_COLOR=1 COLUMNS=80 pytest``.
     """
-    return " ".join(_ANSI.sub("", captured).split())
+    return " ".join(_BOX.sub(" ", _ANSI.sub("", captured)).split())
 
 
 @pytest.fixture(autouse=True)
 def _deterministic_rendering(monkeypatch):
-    """Render help and errors plainly and at a fixed width, whatever the runner's environment.
+    """Render help and errors the same way here as on a CI runner.
 
-    `plain()` above already makes the assertions robust; this makes the OUTPUT deterministic as
-    well, so a failure message is readable instead of a wall of escape codes.
+    80 columns on purpose, not a comfortable width: it is what a runner gives, and it is narrow
+    enough that rich wraps most messages inside their panel. A wide setting here would hide every
+    wrapping bug until CI found it, which is how the frame-between-words case above got through.
     """
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("TERM", "dumb")
-    monkeypatch.setenv("COLUMNS", "200")
+    monkeypatch.setenv("COLUMNS", "80")
 
 
 @pytest.fixture(autouse=True)

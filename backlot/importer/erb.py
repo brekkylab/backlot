@@ -2326,6 +2326,11 @@ def run() -> int:
 
 def run_export(out_dir: Path, *, shard_records: int | None = None) -> int:
     """Write the bench as a BYO artifact instead of a database — what ``backlot export`` calls."""
+    # The destination is created FIRST, before the ~1GB fetch. `export_byo` would create it too, but
+    # only after the download, so an unwritable or mistyped path failed at the end of a long wait
+    # instead of in milliseconds.
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     settings, gen_dir = _fetch_and_seed_roster()
     counts = export_byo(settings, gen_dir, out_dir, shard_records=shard_records)
     dest = (
@@ -2350,6 +2355,6 @@ def run_export(out_dir: Path, *, shard_records: int | None = None) -> int:
 if __name__ == "__main__":
     # `python -m backlot.importer.erb` is `backlot import --type enterpriserag-bench`, re-entered
     # through the CLI so the one parser that declares the options is the one that parses them.
-    from backlot.cli import main
+    from backlot.cli import BENCH, module_main
 
-    raise SystemExit(main(["import", "--type", "enterpriserag-bench", *sys.argv[1:]]))
+    raise SystemExit(module_main(BENCH, sys.argv[1:]))

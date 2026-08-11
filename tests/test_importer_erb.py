@@ -2749,7 +2749,7 @@ def test_a_declared_exclusion_is_recorded_by_identity_and_the_layer_adds_up(tmp_
     manifest names what went — and states the total it came out of, because a consumer holding a
     short count should not have to leave the artifact to learn whether anything is missing."""
     gen = _with_empty_thread(tmp_path)
-    monkeypatch.setattr(erb, "KNOWN_EMPTY_DOCS", {"dsid_empty_thread"})
+    monkeypatch.setattr(erb, "KNOWN_EMPTY_DOCS", erb.KNOWN_EMPTY_DOCS | {"dsid_empty_thread"})
     settings = _settings_for(tmp_path, gen)
     out = tmp_path / "out"
     erb.export_byo(settings, gen, out, shard_records=2)
@@ -2772,7 +2772,7 @@ def test_the_snapshot_the_data_came_from_reaches_the_manifest(tmp_path, monkeypa
     """Neither ref nor tag pins this data — `main` moved past the commit that added generated_data
     and the one tag predates it — so the artifact carries the tarball digest instead."""
     gen = _with_empty_thread(tmp_path)
-    monkeypatch.setattr(erb, "KNOWN_EMPTY_DOCS", {"dsid_empty_thread"})
+    monkeypatch.setattr(erb, "KNOWN_EMPTY_DOCS", erb.KNOWN_EMPTY_DOCS | {"dsid_empty_thread"})
     monkey = {
         "repo": "onyx-dot-app/EnterpriseRAG-Bench",
         "ref": "main",

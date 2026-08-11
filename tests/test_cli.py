@@ -145,6 +145,27 @@ def test_import_dry_run_validates_without_writing_a_db(tmp_path, monkeypatch, ca
     assert not (tmp_path / "data" / "mock.sqlite").exists()
 
 
+def test_a_corpus_the_importer_rejects_reports_its_reason_and_exits_1(
+    tmp_path, monkeypatch, capsys
+):
+    """The cli-to-importer seam, with NOTHING patched — the one path every other test here stubs out.
+
+    The importers signal a bad corpus with `raise SystemExit("<message>")`, eleven places in byo.py
+    alone. `main()` coercing that payload with `int()` turned the most common failure this tool has
+    into `ValueError: invalid literal for int() ... 'line 2: invalid JSON: ...'` — the diagnostic
+    still on screen, but as the payload of a traceback. Every routing test patches `byo.run`, so the
+    hole was exactly here.
+    """
+    corpus = tmp_path / "bad.jsonl"
+    corpus.write_text('{"source_type": "slack", "id": "x"}\nthis is not json\n')
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "data"))
+
+    assert cli.main(["import", str(corpus)]) == 1
+    err = plain(capsys.readouterr().err)
+    assert "line 2" in err and "invalid JSON" in err
+    assert "Traceback" not in err
+
+
 def test_a_dry_run_of_an_invalid_corpus_exits_non_zero(tmp_path, monkeypatch):
     corpus = tmp_path / "bad.jsonl"
     corpus.write_text(json.dumps({"source_type": "slack"}) + "\n")  # no content
@@ -252,6 +273,19 @@ def test_export_without_sharding_writes_one_corpus_file(tmp_path, spy_erb_export
     assert spy_erb_export["shard_records"] is None
 
 
+def test_export_rejects_a_destination_it_cannot_create(tmp_path, monkeypatch, capsys):
+    """Named, and BEFORE the ~1GB fetch. The destination was first touched inside `export_byo`, i.e.
+    after the download, so a mistyped path cost the whole wait and then a pathlib traceback."""
+    not_a_dir = tmp_path / "afile"
+    not_a_dir.write_text("")
+    called = _spy(monkeypatch, erb, "run_export")
+
+    assert cli.main(["export", str(not_a_dir / "out")]) == 2
+    err = plain(capsys.readouterr().err)
+    assert "cannot create" in err
+    assert called == {}, "the exporter must not be reached, so nothing is downloaded"
+
+
 def test_export_requires_a_destination(capsys):
     assert cli.main(["export"]) == 2
     assert "DIR" in plain(capsys.readouterr().err)
@@ -260,12 +294,30 @@ def test_export_requires_a_destination(capsys):
 # --- serve ------------------------------------------------------------------------------------
 
 
+def _write_corpus_schema(path) -> None:
+    """A schema-valid corpus with no rows, which is all `serve`'s pre-flight looks at."""
+    import sqlite3
+
+    from backlot import store
+
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(store.SCHEMA)
+    finally:
+        conn.close()
+
+
 @pytest.fixture
 def a_data_dir_with_a_corpus(tmp_path, monkeypatch):
-    """`serve` refuses to start without a corpus, so its tests need one to exist."""
+    """A data dir `serve` will accept.
+
+    An empty file sufficed while the pre-flight only checked existence. It reads the schema now,
+    which an empty file does not have — and that is the point of the check, so the fixture supplies a
+    real schema rather than the check being loosened to admit a placeholder.
+    """
     data = tmp_path / "data"
     data.mkdir()
-    (data / "mock.sqlite").write_bytes(b"")
+    _write_corpus_schema(data / "mock.sqlite")
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     return data
 
@@ -286,6 +338,17 @@ def _uvicorn_defaults() -> dict:
     import uvicorn
 
     return inspect.signature(uvicorn.run).parameters
+
+
+def test_an_invalid_log_level_is_refused_before_uvicorn_sees_it(
+    monkeypatch, a_data_dir_with_a_corpus, capsys
+):
+    """Left as a free string, a typo travelled into uvicorn's own config and surfaced as
+    `KeyError: 'bogus'` from `configure_logging` — a library the caller never named."""
+    seen = _spy_uvicorn(monkeypatch)
+    assert cli.main(["serve", "--log-level", "bogus"]) == 2
+    assert "bogus" in plain(capsys.readouterr().err)
+    assert seen == {}, "uvicorn must not be reached at all"
 
 
 def test_serve_passes_its_arguments_through_to_uvicorn(monkeypatch, a_data_dir_with_a_corpus):
@@ -312,13 +375,52 @@ def test_no_proxy_headers_is_the_only_way_to_turn_them_off(monkeypatch, a_data_d
     assert seen["proxy_headers"] is False
 
 
+@pytest.mark.parametrize(
+    ("damage", "reason"),
+    [
+        ("random-bytes", "file is not a database"),
+        ("truncated", "database disk image is malformed"),
+        ("other-database", "not a Backlot corpus"),
+    ],
+)
+def test_serve_refuses_a_corpus_it_cannot_read(damage, reason, tmp_path, monkeypatch, capsys):
+    """Existence is not readability. A corrupt file passed the pre-flight, bound the port, and died
+    in the lifespan with `sqlite3.DatabaseError` — the failure shape the pre-flight exists to remove.
+
+    The three ways a file at that path is not a corpus, each with the message sqlite or the schema
+    check actually produces for it, so the diagnosis and not just the refusal is pinned.
+    """
+    import sqlite3
+
+    data = tmp_path / "data"
+    data.mkdir()
+    db = data / "mock.sqlite"
+    if damage == "random-bytes":
+        db.write_bytes(b"\x00\xff" * 2048)
+    elif damage == "truncated":  # what an interrupted copy of a real corpus looks like
+        whole = tmp_path / "whole.sqlite"
+        _write_corpus_schema(whole)
+        db.write_bytes(whole.read_bytes()[:8192])
+    else:  # a valid database that is simply not this application's
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE unrelated (x)")
+        conn.close()
+    monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
+
+    assert cli.main(["serve"]) == 2
+    err = plain(capsys.readouterr().err)
+    assert "no usable corpus" in err
+    assert reason in err  # names WHY, not just that it failed
+
+
 def test_serve_refuses_to_start_without_a_corpus(tmp_path, monkeypatch, capsys):
     """Without this check uvicorn binds the port and prints its banner, then the lifespan dies on a
     missing file — which reads as a broken install rather than an empty data dir."""
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "empty"))
     assert cli.main(["serve"]) == 2
     err = plain(capsys.readouterr().err)
-    assert "no corpus" in err
+    assert "no usable corpus" in err
+    assert "mock.sqlite is missing" in err  # the empty-dir case, distinct from a corrupt one
     assert "backlot import --bundled" in err  # the way out, not just the complaint
 
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import sys
+from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, Optional
@@ -38,6 +39,23 @@ BYO, BENCH = "byo", "enterpriserag-bench"
 IMPORTER_TYPES = (BYO, BENCH)
 
 _BYO_PANEL = "BYO corpus options (--type byo)"
+
+
+class LogLevel(str, Enum):
+    """uvicorn's own log levels, as an enum so click REJECTS anything else.
+
+    Declared rather than left as a free string: a typo otherwise travels all the way into
+    ``uvicorn.config.configure_logging``, which answers with ``KeyError: 'bogus'`` from inside a
+    library the caller did not name. Listing the values in help text does not enforce them.
+    """
+
+    critical = "critical"
+    error = "error"
+    warning = "warning"
+    info = "info"
+    debug = "debug"
+    trace = "trace"
+
 
 app = typer.Typer(
     name="backlot",
@@ -73,6 +91,47 @@ def _use_data_dir(data_dir: Path | None) -> None:
 
     os.environ["BACKLOT_DATA_DIR"] = str(data_dir)
     get_settings.cache_clear()
+
+
+def _human_size(n: int) -> str:
+    """Bytes -> a size a reader can act on.
+
+    Scaled rather than always MB: a 4KB file printed as ``0.0 MB`` hides exactly what the number is
+    there to reveal, since a truncated download is the reason to look at the size at all.
+    """
+    for unit, cutoff in (("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
+        if n >= cutoff:
+            return f"{n / cutoff:.1f} {unit}"
+    return f"{n} bytes"
+
+
+def _unreadable_corpus(db_path: Path) -> str | None:
+    """Why the file at ``db_path`` is not a usable corpus, or None if it looks like one.
+
+    Reads the SCHEMA, never the rows. `/health` defers its per-source ``COUNT(*)`` to a background
+    thread precisely because counting is slow on a large cold DB, so a check that runs before the
+    server binds cannot afford to count. This catches the three shapes that reach the corpus path in
+    practice: something that is not a database, a truncated one, and a database that is not this
+    application's.
+    """
+    import sqlite3
+
+    from backlot import store
+
+    try:
+        conn = store.connect_ro(db_path)
+        try:
+            tables = {
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        return str(e)
+    missing = sorted(t for t in store.SOURCE_TABLE.values() if t not in tables)
+    if missing:
+        return f"not a Backlot corpus — {len(missing)} table(s) missing, e.g. {missing[0]}"
+    return None
 
 
 DataDir = Annotated[
@@ -112,10 +171,8 @@ def serve(
         bool, typer.Option("--reload", help="restart on source changes (development)")
     ] = False,
     log_level: Annotated[
-        Optional[str],
-        typer.Option(
-            help="uvicorn log level: critical|error|warning|info|debug|trace  [default: info]"
-        ),
+        Optional[LogLevel],
+        typer.Option(help="uvicorn log level  [default: info]"),
     ] = None,
     # Behind a TLS-terminating proxy/ALB, proxy headers make the app honour X-Forwarded-Proto/Host
     # and emit https self-URLs, which clients that follow returned URLs (PyGithub) need. uvicorn has
@@ -146,11 +203,17 @@ def serve(
 
     settings = get_settings()
     # Checked before uvicorn starts: without it the process prints its startup banner, binds the
-    # port, and only then fails inside the lifespan on a missing file — which reads as a broken
-    # install rather than an empty data dir.
-    if not settings.db_path.exists():
+    # port, and only then fails inside the lifespan — which reads as a broken install rather than a
+    # bad data dir. Existence is not enough: a truncated or corrupt file passes it and dies in the
+    # lifespan with `sqlite3.DatabaseError: file is not a database`, the very shape this removes.
+    problem = (
+        f"{settings.db_path.name} is missing"
+        if not settings.db_path.exists()
+        else _unreadable_corpus(settings.db_path)
+    )
+    if problem:
         typer.echo(
-            f"no corpus in {settings.data_dir} ({settings.db_path.name} is missing).\n"
+            f"no usable corpus in {settings.data_dir} ({problem}).\n"
             f"Build one first:  backlot import --bundled     # the corpus shipped in the package\n"
             f"                  backlot import <corpus.jsonl>",
             err=True,
@@ -165,7 +228,9 @@ def serve(
         host=host,
         port=port,
         reload=reload,
-        log_level=log_level,
+        # .value, not the member: uvicorn stores what it is given and this keeps a plain str out of
+        # its config rather than a str subclass.
+        log_level=log_level.value if log_level else None,
         proxy_headers=proxy_headers,
         forwarded_allow_ips=forwarded_allow_ips,
     )
@@ -207,6 +272,9 @@ def import_(
         # title with an options panel, so naming it _BYO_PANEL printed that heading twice. The help
         # text carries the `--type byo` qualifier instead.
         typer.Argument(
+            # Spelled the way the errors below spell it: usage said `[corpus]` while a rejection said
+            # `Invalid value for 'CORPUS'`, which reads as two different arguments.
+            metavar="[CORPUS]",
             help="[--type byo] a JSONL corpus file, a .jsonl.gz, or a directory holding "
             "manifest.json + data/<source>/part-*.jsonl.gz shards",
         ),
@@ -338,6 +406,14 @@ def export(
         # 0 makes `n >= shard_records` always true: one shard per record, 600k files for the bench,
         # which is the very thing sharding was added to avoid.
         raise typer.BadParameter("must be at least 1", param_hint="'--shard-records'")
+    # Created here, before the ~1GB fetch, and with the failure named: an unwritable or mistyped
+    # destination otherwise surfaced as a pathlib traceback out of the middle of the export.
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise typer.BadParameter(
+            f"cannot create {out_dir}: {e.strerror}", param_hint="'DIR'"
+        ) from e
     _use_data_dir(data_dir)
 
     from backlot.importer import erb
@@ -364,33 +440,30 @@ def status(data_dir: DataDir = None) -> None:
         typer.echo("Build one with `backlot import --bundled` or `backlot import <corpus.jsonl>`.")
         raise typer.Exit(1)
 
-    import sqlite3
-
     from backlot import store
 
-    size = f"{settings.db_path.stat().st_size / 1e6:.1f} MB"
-    try:
-        conn = store.connect_ro(settings.db_path)
-        try:
-            counts = {
-                src: conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-                for src, tbl in store.SOURCE_TABLE.items()
-            }
-            # None on a DB built before the meta table existed; the counts above are rows, and
-            # parsing turns one Slack transcript into many message rows, so the two numbers differ
-            # by design.
-            source_docs = store.read_meta(conn, "source_documents")
-        finally:
-            conn.close()
-    except sqlite3.Error as e:
-        # A file that is present but not a corpus: a truncated copy, an interrupted import, or
-        # something else entirely at that path. This command exists to diagnose the data dir, so it
-        # has to REPORT that rather than raise sqlite's error through a traceback.
-        typer.echo(f"corpus:   {settings.db_path} ({size}) — unreadable: {e}", err=True)
+    size = _human_size(settings.db_path.stat().st_size)
+    # A file that is present but not a corpus: a truncated copy, an interrupted import, or something
+    # else entirely at that path. This command exists to diagnose the data dir, so it has to REPORT
+    # that rather than raise sqlite's error through a traceback.
+    if problem := _unreadable_corpus(settings.db_path):
+        typer.echo(f"corpus:   {settings.db_path} ({size}) — unreadable: {problem}", err=True)
         typer.echo(
             "Not a Backlot corpus, or incomplete. Rebuild it with `backlot import`.", err=True
         )
-        raise typer.Exit(1) from e
+        raise typer.Exit(1)
+
+    conn = store.connect_ro(settings.db_path)
+    try:
+        counts = {
+            src: conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+            for src, tbl in store.SOURCE_TABLE.items()
+        }
+        # None on a DB built before the meta table existed; the counts above are rows, and parsing
+        # turns one Slack transcript into many message rows, so the two numbers differ by design.
+        source_docs = store.read_meta(conn, "source_documents")
+    finally:
+        conn.close()
 
     typer.echo(f"corpus:   {settings.db_path} ({size})")
     typer.echo(
@@ -416,6 +489,24 @@ def status(data_dir: DataDir = None) -> None:
         typer.echo(f"tokens:   none ({settings.tokens_path.name} is missing)")
 
 
+def module_main(corpus_type: str, argv: list[str]) -> int:
+    """Entry point for ``python -m backlot.importer.{byo,erb}`` — that module's own import, spelled
+    through the one parser that declares the options.
+
+    The type is FIXED by which module you ran, so a `--type` among the forwarded arguments is
+    refused. Left through, it silently won: `python -m backlot.importer.erb --type byo --bundled`
+    prepended the bench type, the user's `--type` overrode it, and the BYO importer ran to
+    completion from a module named for the other one.
+    """
+    if any(a == "-t" or a == "--type" or a.startswith("--type=") for a in argv):
+        print(
+            f"this module IS --type {corpus_type}; use `backlot import` to choose a corpus type",
+            file=sys.stderr,
+        )
+        return 2
+    return main(["import", "--type", corpus_type, *argv])
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the console script, ``python -m backlot``, and the tests.
 
@@ -434,8 +525,29 @@ def main(argv: list[str] | None = None) -> int:
     try:
         app(args=args, prog_name="backlot")
     except SystemExit as e:
-        return int(e.code or 0)
+        return _exit_code(e.code)
     return 0
+
+
+def _exit_code(code: object) -> int:
+    """A ``SystemExit`` payload -> a process exit status, by Python's own rules.
+
+    ``int(code)`` is not enough. The importers report a bad corpus as ``SystemExit("<message>")`` —
+    eleven places in ``byo.py`` alone, and handing over a malformed corpus is the most common way
+    this tool fails — so coercing blindly turned the one diagnostic the user needs into the payload
+    of a ``ValueError`` traceback:
+
+        ValueError: invalid literal for int() with base 10: 'line 2: invalid JSON: ...'
+
+    The interpreter's own contract: ``None`` is success, an int is the status, anything else is a
+    message printed to stderr with status 1.
+    """
+    if code is None:
+        return 0
+    if isinstance(code, int):  # bool is an int, and True -> 1 is what Python does too
+        return code
+    print(code, file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

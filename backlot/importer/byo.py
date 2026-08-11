@@ -1394,6 +1394,6 @@ if __name__ == "__main__":
     # `python -m backlot.importer.byo <flags>` is `backlot import <flags>`, re-entered through the
     # CLI so the flags are parsed by the one parser that declares them. Kept because CONTRIBUTING
     # documents this spelling and it is what a source checkout without the console script has.
-    from backlot.cli import main
+    from backlot.cli import BYO, module_main
 
-    raise SystemExit(main(["import", *sys.argv[1:]]))
+    raise SystemExit(module_main(BYO, sys.argv[1:]))

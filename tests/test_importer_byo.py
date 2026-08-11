@@ -1400,6 +1400,132 @@ def test_byo_roster_is_the_closed_principal_set(tmp_path):
         conn.close()
 
 
+def test_byo_roster_person_may_hold_many_groups(tmp_path):
+    """A person is rarely exactly one group: squads, compliance registers and region-scoped
+    grants sit on top of the department. An entry's `groups` list states those memberships;
+    the department membership stays, so a squad-less roster is unchanged by the feature."""
+    roster = tmp_path / "roster.yaml"
+    roster.write_text(
+        yaml.safe_dump(
+            {
+                "org": "redwood",
+                "org_domain": "redwoodinference.com",
+                "departments": {
+                    "Engineering": [
+                        {"name": "Ava Chen", "email": "ava.chen@redwoodinference.com"},
+                        {
+                            "name": "Bo Ryu",
+                            "email": "bo.ryu@redwoodinference.com",
+                            # a repeat of the department and an unslugged name, both normalized
+                            "groups": ["proj-checkout-rework", "Engineering", "res-emea-support"],
+                        },
+                    ]
+                },
+                "contacts": [
+                    {
+                        "name": "Zoe Newperson",
+                        "email": "zoe.newperson@redwoodinference.com",
+                        "group": "engineering",
+                        "groups": ["comp-hr-investigations"],
+                    }
+                ],
+            }
+        )
+    )
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "doc_id": "c1",
+                "space": "ENG",
+                "group": "proj-checkout-rework",
+                "visibility": "group",
+                "title": "t",
+                "content": "c",
+                "author_email": "ava.chen@redwoodinference.com",
+            }
+        ],
+    )
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings, roster=roster)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        members = {
+            (r["group_id"], r["user_id"]) for r in conn.execute("SELECT * FROM group_members")
+        }
+        assert members == {
+            ("engineering", "ava.chen@redwoodinference.com"),
+            ("engineering", "bo.ryu@redwoodinference.com"),
+            ("proj-checkout-rework", "bo.ryu@redwoodinference.com"),
+            ("res-emea-support", "bo.ryu@redwoodinference.com"),
+            ("engineering", "zoe.newperson@redwoodinference.com"),
+            ("comp-hr-investigations", "zoe.newperson@redwoodinference.com"),
+        }
+        assert {r["id"] for r in conn.execute("SELECT id FROM principals WHERE type='group'")} == {
+            "engineering",
+            "proj-checkout-rework",
+            "res-emea-support",
+            "comp-hr-investigations",
+        }
+        # the extra memberships change who a group-scoped clause admits, nothing about tokens
+        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        assert {u["email"] for u in tokens["users"]} == {
+            "ava.chen@redwoodinference.com",
+            "bo.ryu@redwoodinference.com",
+        }
+    finally:
+        conn.close()
+
+
+def test_byo_roster_duplicate_entries_union_their_groups(tmp_path):
+    """A person listed under two departments — or as a contact carrying an extra register
+    on top of their department entry — holds the UNION of the memberships. Replacing the
+    entry dropped the earlier groups, and a group-scoped document then wrongly denied the
+    person. A scalar `groups:` is one group, not a character sequence."""
+    from backlot.importer.byo import load_roster
+
+    roster = tmp_path / "roster.yaml"
+    roster.write_text(
+        yaml.safe_dump(
+            {
+                "org": "redwood",
+                "org_domain": "redwoodinference.com",
+                "departments": {
+                    "Engineering": [{"name": "Bo Ryu", "email": "bo@redwoodinference.com"}],
+                    "Security": [
+                        {
+                            "name": "Bo Ryu",
+                            "email": "bo@redwoodinference.com",
+                            "groups": "res-emea-support",  # scalar: one group
+                        }
+                    ],
+                },
+                "contacts": [
+                    {
+                        "name": "Bo Ryu",
+                        "email": "bo@redwoodinference.com",
+                        "groups": ["comp-hr-investigations", 2024],
+                    }
+                ],
+            }
+        )
+    )
+    parsed = load_roster(roster)
+    bo = parsed["users"]["bo@redwoodinference.com"]
+    assert bo["token"] is True  # the contact entry never demoted the account
+    # A set, not a list: downstream this becomes group membership, and the rendered order
+    # rides on `yaml.safe_dump`'s key sorting rather than on anything this code decides.
+    assert set(bo["groups"]) == {
+        "engineering",
+        "security",
+        "res-emea-support",
+        "comp-hr-investigations",
+        "2024",
+    }
+    assert len(bo["groups"]) == 5  # deduplicated, so no membership row is doubled
+
+
 def test_byo_roster_departments_alone_is_an_employee_directory(tmp_path):
     """The bench's `employee_directory.yaml` is usable as a roster verbatim, which is what lets a
     converted corpus ship the directory it was resolved against."""
@@ -1964,3 +2090,111 @@ def test_hello_corpus_loads_and_covers_every_source(tmp_path):
         n = conn.execute(f"SELECT COUNT(*) FROM {gtable}").fetchone()[0]
         assert n >= 2, f"hello corpus has only {n} {gcol}(s) for {src}"
     conn.close()
+
+
+def test_byo_roster_a_stated_name_beats_a_derived_one(tmp_path):
+    """Memberships union, but names do not, so first-seen-wins is wrong for them: `name`
+    always has a fallback derived from the address and therefore never looks absent. An
+    entry stating "Tomás Rré" lost to an earlier entry that stated nothing, and the corpus
+    served "Tomas Rre" — a name the address cannot round-trip back to."""
+    from backlot.importer.byo import load_roster
+
+    email = "tomas.rre@redwoodinference.com"
+
+    def roster(name, departments):
+        p = tmp_path / f"{name}.yaml"
+        p.write_text(
+            yaml.safe_dump({"departments": departments}, allow_unicode=True), encoding="utf-8"
+        )
+        return load_roster(p)["users"][email]
+
+    # Derived first, stated second — the case that used to lose the accent.
+    assert (
+        roster(
+            "a",
+            {
+                "Engineering": [{"email": email}],
+                "Security": [{"name": "Tomás Rré", "email": email}],
+            },
+        )["name"]
+        == "Tomás Rré"
+    )
+    # Stated first, derived second — unchanged.
+    assert (
+        roster(
+            "b",
+            {
+                "Aaa": [{"name": "Tomás Rré", "email": email}],
+                "Bbb": [{"email": email}],
+            },
+        )["name"]
+        == "Tomás Rré"
+    )
+    # Two stated names: the first still wins, as memberships do.
+    assert (
+        roster(
+            "c",
+            {
+                "Aaa": [{"name": "First Stated", "email": email}],
+                "Bbb": [{"name": "Second Stated", "email": email}],
+            },
+        )["name"]
+        == "First Stated"
+    )
+
+
+def test_byo_roster_a_list_under_the_singular_group_key_is_read_not_crashed(tmp_path):
+    """`groups:` accepts a scalar because the sibling field is one; adding the plural makes
+    the mirror slip likelier. A list under `group:` reached `slugify` and raised
+    `AttributeError: 'list' object has no attribute 'lower'`, naming neither the file nor
+    the key. Every entry is kept — trading the crash for a silent loss would be no better."""
+    from backlot.importer.byo import load_roster
+
+    roster = tmp_path / "roster.yaml"
+    roster.write_text(
+        yaml.safe_dump(
+            {
+                "contacts": [
+                    {"name": "A", "email": "a@x.com", "group": ["engineering", "security"]},
+                    {"name": "B", "email": "b@x.com", "group": "engineering"},
+                ]
+            }
+        )
+    )
+    users = load_roster(roster)["users"]
+    assert set(users["a@x.com"]["groups"]) == {"engineering", "security"}
+    assert users["b@x.com"]["groups"] == ["engineering"]  # the scalar path is unchanged
+
+
+def test_byo_roster_group_and_groups_read_the_same_in_every_shape(tmp_path):
+    """Neither field's meaning may depend on how it is written. A department entry's own
+    `group:` was read only as a list, so the scalar — the likelier spelling — vanished
+    without a word; and a `groups:` scalar was read only as a string, so a bare `2024`
+    raised while `[2024]` slugified. One reader for both fields makes the shapes uniform."""
+    from backlot.importer.byo import load_roster
+
+    roster = tmp_path / "roster.yaml"
+    roster.write_text(
+        yaml.safe_dump(
+            {
+                "departments": {
+                    "Engineering": [
+                        {"email": "a@x.com", "group": "squad-checkout"},
+                        {"email": "b@x.com", "group": ["squad-checkout", "squad-ledger"]},
+                        {"email": "c@x.com", "groups": 2024},
+                        {"email": "d@x.com", "groups": [2024]},
+                        {"email": "e@x.com", "group": "squad-checkout", "groups": "squad-checkout"},
+                    ]
+                }
+            }
+        )
+    )
+    users = load_roster(roster)["users"]
+    # A department entry's `group:` is an extra membership, whichever shape states it.
+    assert users["a@x.com"]["groups"] == ["engineering", "squad-checkout"]
+    assert users["b@x.com"]["groups"] == ["engineering", "squad-checkout", "squad-ledger"]
+    # A bare number is one group named "2024", not a TypeError and not its digits.
+    assert users["c@x.com"]["groups"] == ["engineering", "2024"]
+    assert users["d@x.com"]["groups"] == users["c@x.com"]["groups"]
+    # Naming one group across both fields still yields one row.
+    assert users["e@x.com"]["groups"] == ["engineering", "squad-checkout"]

@@ -510,6 +510,8 @@ def load_roster(path) -> dict:
         departments:                      # authenticating users -> a bearer token each
           Engineering:
             - {name: Ava Chen, email: ava.chen@redwoodinference.com}
+            - {name: Bo Ryu, email: bo.ryu@redwoodinference.com,
+               groups: [proj-checkout-rework, res-emea-support]}
         contacts:                         # principals with NO token (display-only)
           - {name: Zoe Newperson, email: zoe.newperson@redwoodinference.com, group: engineering}
 
@@ -519,30 +521,87 @@ def load_roster(path) -> dict:
     ``contacts`` are people a corpus names who are not accounts — they own and read documents but
     cannot authenticate, the distinction ``tokens.yaml`` draws.
 
+    A person may belong to more than one group — a squad, a compliance register, a region-scoped
+    grant — which one department slot cannot say. An entry's ``groups`` list adds those memberships
+    on top of the department (or ``group``) one; it never replaces it, so a directory that only
+    knows departments and a roster that also states squads produce the same department rows.
+
     With a roster, `principals`, `group_members` and `tokens.yaml` come from it ALONE: a record's
     `author_email` / `readers` become references into it, and an address absent from it (a Slack
     handle, an outside sender) stays a plain address instead of becoming an account with a token.
     """
     data = yaml.safe_load(Path(path).read_text()) or {}
+
+    def _slugs(raw) -> list[str]:
+        """One roster field — ``group:`` or ``groups:`` — in any shape, as group ids.
+
+        The two fields differ only in which membership they NAME, never in how they are
+        written, so one reader serves both and neither shape can be a slip. A sequence is
+        each of its entries; anything else is a single group, so a scalar (a string, or a
+        bare ``2024`` that YAML hands over as an int) is one group rather than a character
+        sequence or a ``TypeError``. Slugified once here, so no caller does it twice."""
+        items = raw if isinstance(raw, (list, tuple)) else [raw]
+        return [s for s in (slugify(str(g)) for g in items if g) if s]
+
+    def _primary(raw) -> str | None:
+        # The membership an entry's own `group:` names. A list means its first entry; the rest
+        # are not dropped, `_groups` reads the whole field again as extra memberships.
+        return next(iter(_slugs(raw)), None)
+
+    def _groups(entry: dict, primary: str | None) -> list[str]:
+        # The primary membership first — a department entry's is its department, a contact's is
+        # its own `group:` — then everything either field names. dict.fromkeys keeps first
+        # occurrence, so a group repeated across the two fields never doubles a row, and a
+        # `group:` on a department entry is read rather than silently dropped.
+        listed = _slugs(entry.get("group")) + _slugs(entry.get("groups"))
+        return list(dict.fromkeys(([primary] if primary else []) + listed))
+
     users: dict[str, dict] = {}
+
+    def _merge(email: str, name: str, groups: list[str], token: bool, *, stated: bool) -> None:
+        # A person may appear more than once — two departments, or a department entry plus a
+        # contact carrying extra register memberships. Membership is the UNION: replacing the
+        # entry silently dropped the earlier groups, and a `readers: [group:...]` clause then
+        # wrongly denied the person the feature was written for. A contact never upgrades an
+        # account, but it never demotes one either.
+        #
+        # Names do not union, so first-seen-wins is wrong for them: `name` always has a
+        # fallback — one derived from the address — and so never looks absent. An entry that
+        # states "Tomás Rré" lost to an earlier entry that stated nothing, and the corpus
+        # served "Tomas Rre". A stated name wins over a derived one, whichever is seen first;
+        # between two stated names the first still wins, as for groups.
+        cur = users.get(email)
+        if cur is None:
+            users[email] = {"name": name, "groups": groups, "token": token, "_stated": stated}
+            return
+        # No empty-string filter here: both operands came from `_groups`, which drops them
+        # already. Inside `_groups` the filter is load-bearing — it catches a name whose slug
+        # collapses to "" — and repeating it here only suggested it could still happen.
+        cur["groups"] = list(dict.fromkeys(cur["groups"] + groups))
+        cur["token"] = cur["token"] or token
+        if stated and not cur["_stated"]:
+            cur["name"] = name
+            cur["_stated"] = True
+
     for dept, people in (data.get("departments") or {}).items():
         for p in people or []:
-            users[p["email"]] = {
-                "name": p.get("name") or _display_name(p["email"]),
-                "group": slugify(dept) or None,
-                "token": True,
-            }
+            _merge(
+                p["email"],
+                p.get("name") or _display_name(p["email"]),
+                _groups(p, slugify(dept) or None),
+                True,
+                stated=bool(p.get("name")),
+            )
     for p in data.get("contacts") or []:
-        # A contact never upgrades an account: `departments` is the authenticating roster, so a
-        # duplicated email keeps its token rather than losing it to listing order.
-        users.setdefault(
+        _merge(
             p["email"],
-            {
-                "name": p.get("name") or _display_name(p["email"]),
-                "group": (slugify(p["group"]) if p.get("group") else None),
-                "token": False,
-            },
+            p.get("name") or _display_name(p["email"]),
+            _groups(p, _primary(p.get("group"))),
+            False,
+            stated=bool(p.get("name")),
         )
+    for u in users.values():
+        u.pop("_stated", None)
     return {"org": data.get("org"), "org_domain": data.get("org_domain"), "users": users}
 
 
@@ -1263,8 +1322,8 @@ def load_records(
         # The roster IS the principal set: users, the groups they belong to, and the memberships
         # between them. Nothing the records referenced adds to it.
         users = {e: u["name"] for e, u in roster_data["users"].items()}
-        groups = {u["group"] for u in roster_data["users"].values() if u["group"]}
-        memberships = {(u["group"], e) for e, u in roster_data["users"].items() if u["group"]}
+        groups = {g for u in roster_data["users"].values() for g in u["groups"]}
+        memberships = {(g, e) for e, u in roster_data["users"].items() for g in u["groups"]}
 
     # principals: org, groups, users
     conn.execute("INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (org, "org", org, None))

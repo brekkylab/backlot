@@ -2525,7 +2525,7 @@ def test_export_byo_writes_a_roster_carrying_names_and_who_may_authenticate(tmp_
     parsed = load_roster(out)
     assert parsed["users"]["tomas.rre@redwoodinference.com"] == {
         "name": "Tomás Rré",
-        "group": "engineering",
+        "groups": ["engineering"],
         "token": True,
     }
     assert parsed["users"]["ravi.other@redwoodinference.com"]["token"] is False

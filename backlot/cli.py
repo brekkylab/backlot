@@ -2,7 +2,7 @@
 
     backlot serve                       # uvicorn backlot.main:app, with uvicorn's own defaults
     backlot import <corpus.jsonl>       # backlot.importer.byo   (--type byo, the default)
-    backlot import --type erb           # backlot.importer.erb, no options of its own
+    backlot import --type enterpriserag-bench   # backlot.importer.erb, no options
     backlot export out/                 # the bench as a BYO artifact instead of a database
     backlot status                      # what the data dir currently holds
 
@@ -13,7 +13,7 @@ taking keyword arguments, and the flags that drive them are the parameters below
 
 ``import`` keeps both corpus types behind one command (``--type``) because the bench importer has no
 options left to separate: writing an artifact became ``export``, and the rest went. So every option
-on ``import`` is BYO's, and one given under ``--type erb`` is refused rather than ignored — see
+on ``import`` is BYO's, and one given under the bench type is refused rather than ignored — see
 ``_reject_byo_flags_under_bench``.
 """
 
@@ -30,10 +30,12 @@ import typer
 # The importers and uvicorn are imported inside each command, not here: `serve` must not pay for
 # `backlot.importer.erb` (2,400 lines) and `import` must not pull in uvicorn.
 
-# --type value -> the importer it selects. `erb` is accepted beside the full bench name because that
-# is what the module, the tests and every existing doc call it.
-BYO, BENCH, BENCH_ALIAS = "byo", "enterpriserag-bench", "erb"
-IMPORTER_TYPES = (BYO, BENCH, BENCH_ALIAS)
+# --type value -> the importer it selects. The bench is spelled out in full and has no short alias:
+# `erb` is what this codebase calls it among itself, and a caller reading `--type erb` learns nothing
+# about what is being downloaded. The cost of the abbreviation lands on the person who did not write
+# the code, so it is not offered.
+BYO, BENCH = "byo", "enterpriserag-bench"
+IMPORTER_TYPES = (BYO, BENCH)
 
 _BYO_PANEL = "BYO corpus options (--type byo)"
 
@@ -173,7 +175,7 @@ def serve(
 
 # The BYO options, and the default that means "not given". Kept as data so the check below names the
 # offending flags in the user's own spelling. There is no bench counterpart: importing the bench
-# takes no options at all, which is why every one of these is refused under `--type erb`.
+# takes no options at all, which is why every one of these is refused under the bench type.
 _BYO_ONLY: dict[str, object] = {
     "--bundled": False,
     "--append": False,
@@ -183,7 +185,7 @@ _BYO_ONLY: dict[str, object] = {
 
 
 def _reject_byo_flags_under_bench(supplied: dict[str, object]) -> None:
-    """Fail when a BYO option is given with `--type erb`, which has no options of its own.
+    """Fail when a BYO option is given with the bench type, which has no options of its own.
 
     Named explicitly because "unrecognized argument" is not what happened — the flag is real, just
     not for this importer — and because the alternative is ignoring it in silence.
@@ -216,8 +218,8 @@ def import_(
             "-t",
             metavar="{byo,enterpriserag-bench}",
             help="what kind of corpus to import: `byo` reads a BYO-JSONL corpus, a `.jsonl.gz`, or "
-            "a sharded artifact directory; `enterpriserag-bench` (alias `erb`) downloads and "
-            "imports EnterpriseRAG-Bench",
+            "a sharded artifact directory; `enterpriserag-bench` downloads and imports "
+            "EnterpriseRAG-Bench",
             rich_help_panel="Common",
         ),
     ] = BYO,
@@ -259,7 +261,7 @@ def import_(
 ) -> None:
     """Build the data dir from a corpus.
 
-    Two importers behind one command, chosen with --type. Importing the bench takes no options of its own, so every option below is BYO's, and passing one with `--type erb` is an error rather than silently ignored.
+    Two importers behind one command, chosen with --type. Importing the bench takes no options of its own, so every option below is BYO's, and passing one with `--type enterpriserag-bench` is an error rather than silently ignored.
     """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
     if corpus_type not in IMPORTER_TYPES:
         raise typer.BadParameter(

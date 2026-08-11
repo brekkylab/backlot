@@ -1222,7 +1222,7 @@ def test_qst_0001_owner_is_maya_chen(tmp_path):
     data_dir = tmp_path / "data"
     env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir)}
     subprocess.run(
-        [sys.executable, "-m", "backlot", "import", "-t", "erb"],
+        [sys.executable, "-m", "backlot", "import", "--type", "enterpriserag-bench"],
         check=True,
         env=env,
     )

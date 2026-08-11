@@ -8,7 +8,7 @@ it into the per-service tables, derives the ACL from the real people/scope field
 ``tokens.yaml`` for the resolved roster:
 
 ```bash
-backlot import -t erb     # download -> load -> ACL. No options: it imports the corpus.
+backlot import --type enterpriserag-bench   # download -> load -> ACL. No options.
 ```
 
 There is nothing to tune. The download is cached under `BACKLOT_RAW_DIR`, and the import returns
@@ -41,7 +41,7 @@ knowledge of this dataset — it bakes only the corpus that ships in the package
 size stays where you can see it, resume it and cache it:
 
 ```bash
-backlot import -t erb                       # host: downloads + builds ./data (cached in ./data/raw)
+backlot import --type enterpriserag-bench   # host: downloads + builds ./data (cached in ./data/raw)
 
 docker build --target serve -t backlot .    # the server, no corpus
 docker run -p 8000:8000 -v "$PWD/data:/app/data" backlot

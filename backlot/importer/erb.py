@@ -5,10 +5,11 @@ Downloads the bench's ``generated_data/``, resolves display names to real emails
 per-doc ACL grants from the real people/scope fields (``grants_for``). Everything the import needs
 — fetch, parse, principal resolution, ACL derivation, orchestration — lives in this one module.
 
-    backlot import -t erb          # download -> load -> ACL. No options: it imports the corpus.
+    backlot import --type enterpriserag-bench    # download -> load -> ACL. No options.
     backlot export out/            # the same corpus as a BYO artifact instead of a database
 
-``-t erb`` is short for ``--type enterpriserag-bench``; ``python -m backlot.importer.erb`` is the
+The type is spelled out in full — there is no ``erb`` alias on the command line, because a
+caller reading it learns nothing from the abbreviation. ``python -m backlot.importer.erb`` is the
 same command. The download is cached under ``BenchSettings.raw_dir``, and
 :func:`fetch_generated_data` returns the cache when it is populated, so a re-run does not refetch
 and there is no flag for it. Only ``curl`` is used to fetch (no ``gh`` / no auth).
@@ -544,7 +545,8 @@ class BenchSettings(BaseSettings):
         """Default the cache to ``./data/raw`` — the DEFAULT data dir, not the configured one.
 
         Pinning it to the cwd is the point: a re-import into a fresh build dir
-        (``BACKLOT_DATA_DIR=/tmp/… backlot import -t erb``) then REUSES the already-downloaded
+        (``BACKLOT_DATA_DIR=/tmp/… backlot import --type enterpriserag-bench``) then REUSES the
+        already-downloaded
         source JSONs instead of fetching ~1 GB from GitHub again.
         """
         if isinstance(values, dict):
@@ -2347,8 +2349,9 @@ def run_export(out_dir: Path, *, shard_records: int | None = None) -> int:
 
 
 if __name__ == "__main__":
-    # `python -m backlot.importer.erb` is `backlot import -t erb`, re-entered through the CLI so the
+    # `python -m backlot.importer.erb` is `backlot import --type enterpriserag-bench`, re-entered
+    # through the CLI so the
     # one parser that declares the options is the one that parses them.
     from backlot.cli import main
 
-    raise SystemExit(main(["import", "-t", "erb", *sys.argv[1:]]))
+    raise SystemExit(main(["import", "--type", "enterpriserag-bench", *sys.argv[1:]]))

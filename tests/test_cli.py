@@ -172,11 +172,19 @@ def test_import_bundled_loads_the_corpus_bundled_with_the_package(tmp_path, monk
 # --- routing and how options arrive -----------------------------------------------------------
 
 
-@pytest.mark.parametrize("spelling", ["enterpriserag-bench", "erb"])
-def test_type_routes_to_the_bench_importer(spelling, spy_erb):
+def test_type_routes_to_the_bench_importer(spy_erb):
     """Importing the bench takes no options at all, so routing is the whole contract."""
-    assert cli.main(["import", "--type", spelling]) == 0
+    assert cli.main(["import", "--type", "enterpriserag-bench"]) == 0
     assert spy_erb == {}  # called, with nothing to pass
+
+
+def test_the_bench_type_has_no_abbreviation(capsys):
+    """`erb` is what this codebase calls the dataset among itself. On the command line the name is
+    spelled out, so a reader of the invocation learns what is being downloaded — and the error names
+    the spelling that works rather than only rejecting the one that does not."""
+    assert cli.main(["import", "--type", "erb"]) == 2
+    err = plain(capsys.readouterr().err)
+    assert "erb" in err and "enterpriserag-bench" in err
 
 
 def test_byo_options_reach_the_byo_importer_typed(tmp_path, spy_byo):
@@ -212,16 +220,16 @@ def test_an_unknown_type_is_a_usage_error(capsys):
 @pytest.mark.parametrize("flag", ["--dry-run", "--bundled", "--append"])
 def test_a_byo_option_under_the_bench_type_is_refused(flag, capsys):
     """The bench importer has no options, so every one of `import`'s belongs to BYO. Giving one with
-    `--type erb` is a real flag in the wrong place, which is worth saying rather than ignoring."""
-    assert cli.main(["import", "-t", "erb", flag]) == 2
+    the bench type is a real flag in the wrong place, worth saying rather than ignoring."""
+    assert cli.main(["import", "-t", "enterpriserag-bench", flag]) == 2
     err = plain(capsys.readouterr().err)
     assert flag in err and "--type" in err
 
 
 def test_a_corpus_path_under_the_bench_type_is_refused(capsys):
-    """`import -t erb some.jsonl` reads as "import this file as the bench", which is not a thing:
+    """A path with the bench type reads as "import this file as the bench", which is not a thing:
     the bench downloads its own corpus."""
-    assert cli.main(["import", "-t", "erb", "some.jsonl"]) == 2
+    assert cli.main(["import", "-t", "enterpriserag-bench", "some.jsonl"]) == 2
     assert "downloads its own corpus" in plain(capsys.readouterr().err)
 
 
@@ -400,7 +408,7 @@ def test_import_help_shows_every_option_it_accepts(capsys):
 def test_import_rejects_options_it_does_not_have(not_an_option, capsys):
     """None of these exist. A stale invocation carrying one must fail loudly — being accepted and
     ignored is how a caller believes they asked for something they did not get."""
-    assert cli.main(["import", "-t", "erb", not_an_option, "x"]) == 2
+    assert cli.main(["import", "-t", "enterpriserag-bench", not_an_option, "x"]) == 2
     assert "No such option" in plain(capsys.readouterr().err)
 
 

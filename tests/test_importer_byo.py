@@ -2859,3 +2859,137 @@ def test_byo_a_pull_requests_reviews_link_to_the_number_the_index_resolved(tmp_p
         for rv in reviews:
             assert rv["pull_request_url"].endswith(f"/pulls/{displaced}")
             assert f"/pull/{displaced}#" in rv["html_url"]
+
+
+def test_byo_two_projects_cannot_share_a_provided_key_prefix(tmp_path):
+    """A key's prefix is its project's key, and real Jira holds that unique across projects.
+    The index can only give `PAY` to one container, so a second project providing `PAY-`
+    keys loaded fine and then `project = PAY` JQL, the picker and the role endpoint all
+    silently served only the first — the same one-holder rule as a full key, one level up.
+    The claim must also hold across `--append`, where the earlier keys are only in the DB."""
+    from tests._helpers import build_corpus
+
+    def rec(did, project, key):
+        return {
+            "source_type": "jira",
+            "doc_id": did,
+            "project": project,
+            "title": did,
+            "content": "c",
+            "author_email": "ava@acme.com",
+            "key": key,
+        }
+
+    # Two keys under one prefix in ONE project is the normal case and loads.
+    with pytest.raises(SystemExit) as e:
+        build_corpus(
+            tmp_path / "one",
+            [
+                rec("j-a", "payments", "PAY-1"),
+                rec("j-b", "payments", "PAY-3"),
+                rec("j-c", "billing", "PAY-2"),
+            ],
+        )
+    assert "PAY" in str(e.value) and "payments" in str(e.value)
+
+    # And across runs: the first shard's claim is seeded from the DB, not remembered.
+    settings = Settings(data_dir=tmp_path)
+    first = tmp_path / "a.jsonl"
+    first.write_text(json.dumps(rec("j-a", "payments", "PAY-1")))
+    load(first, settings, reset=True)
+    second = tmp_path / "b.jsonl"
+    second.write_text(json.dumps(rec("j-b", "billing", "PAY-2")))
+    with pytest.raises(SystemExit) as e:
+        load(second, settings, reset=False)
+    assert "PAY" in str(e.value) and "payments" in str(e.value)
+    # Re-appending the holder itself is not a violation.
+    load(first, settings, reset=False)
+
+
+def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):
+    """`PAY-1` beside `BILL-2` in one project is the other direction of the same 1:1: the
+    project can only have one key, so whichever the index picked, the other issue served a
+    key whose prefix was not its project's key — the invariant `fields.project.key` and the
+    synthesized keys of keyless siblings are both built on."""
+    from tests._helpers import build_corpus
+
+    def rec(did, key):
+        return {
+            "source_type": "jira",
+            "doc_id": did,
+            "project": "payments",
+            "title": did,
+            "content": "c",
+            "author_email": "ava@acme.com",
+            "key": key,
+        }
+
+    with pytest.raises(SystemExit) as e:
+        build_corpus(tmp_path / "one", [rec("j-a", "BILL-2"), rec("j-b", "PAY-1")])
+    assert "BILL" in str(e.value) and "PAY-1" in str(e.value)
+
+    # Across runs too, through the seeded maps.
+    settings = Settings(data_dir=tmp_path)
+    first = tmp_path / "a.jsonl"
+    first.write_text(json.dumps(rec("j-a", "BILL-2")))
+    load(first, settings, reset=True)
+    second = tmp_path / "b.jsonl"
+    second.write_text(json.dumps(rec("j-b", "PAY-1")))
+    with pytest.raises(SystemExit) as e:
+        load(second, settings, reset=False)
+    assert "BILL" in str(e.value) and "PAY-1" in str(e.value)
+
+
+def test_byo_a_derived_id_may_move_across_append_but_always_fetches_its_advertiser(tmp_path):
+    """Characterization of a deliberate choice (see `_free_number`'s docstring): a served id
+    is a function of the container's whole row set. Appending a row whose derived number
+    lands between two existing rows moves one of them — including `gh-054074`, whose own
+    derived number never collided with anything; the displaced `gh-014031` reaches it first.
+    What IS guaranteed, before and after, is that every advertised number fetches the row
+    that advertised it. If a future change wants numbers stable across `--append`, it has to
+    store the resolved value, which `byo._Loader.add`'s comment explains the cost of."""
+    from backlot import synth
+    from tests._helpers import client_for
+
+    A, B, C = "gh-000000", "gh-014031", "gh-054074"
+    assert synth.github_number(A) == synth.github_number(B) == synth.github_number(C) - 1
+
+    def rec(did):
+        return {
+            "source_type": "github",
+            "doc_id": did,
+            "repo": "core",
+            "subtype": "issue",
+            "title": did,
+            "content": "c",
+            "author_email": "ava@acme.com",
+        }
+
+    def served(settings):
+        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        hdr = {
+            "Authorization": "Bearer "
+            + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+        }
+        with client_for(settings, reload=True) as c:
+            listing = c.get(
+                "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
+            ).json()
+            out = {i["title"]: i["number"] for i in listing}
+            for title, number in out.items():
+                got = c.get(f"/github/repos/acme/core/issues/{number}", headers=hdr)
+                assert got.status_code == 200 and got.json()["title"] == title
+            return out
+
+    settings = Settings(data_dir=tmp_path)
+    shard = tmp_path / "s1.jsonl"
+    shard.write_text("\n".join(json.dumps(rec(d)) for d in (A, C)))
+    load(shard, settings, reset=True)
+    n = synth.github_number(A)
+    assert served(settings) == {A: n, C: n + 1}
+
+    shard2 = tmp_path / "s2.jsonl"
+    shard2.write_text(json.dumps(rec(B)))
+    load(shard2, settings, reset=False)
+    # B displaced to n+1, which displaces C to n+2 — C moved without ever colliding.
+    assert served(settings) == {A: n, B: n + 1, C: n + 2}

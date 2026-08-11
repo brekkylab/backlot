@@ -45,10 +45,18 @@ _PROBE_LIMIT = 90_000
 def _free_number(taken: dict, container: str, start: int) -> int:
     """A number in `container` that nothing has claimed, starting from the derived one.
 
-    A derived number is a hash, so it can land on one a document provided outright. The
-    provider keeps it — that is the corpus stating a fact — and the derived row moves,
-    deterministically, to the next free number. It stays put whenever nothing collides,
-    which is every row in a corpus that provides no ids at all."""
+    A derived number is a hash, so it can land on one a document provided outright — or on
+    another row's derived one. The earlier claimant keeps it and this row moves,
+    deterministically, to the next free number. That next number may itself be a later
+    row's derived spelling, so one collision can move rows that never collided themselves.
+
+    What this makes a served id is a function of the container's WHOLE row set, not of the
+    row alone: stable across restarts of the same DB, free to move when `--append` changes
+    the set. That is the deliberate choice — the alternative, storing the resolved value,
+    is what the loader comment in `byo._Loader.add` rejects, since a stored synthesized id
+    is indistinguishable from a provided one. The invariant kept instead is
+    self-consistency at every moment: the id a row advertises is the id that fetches it,
+    because the routers read the same map this function fills."""
     n = start
     for _ in range(_PROBE_LIMIT):
         if (container, n) not in taken:

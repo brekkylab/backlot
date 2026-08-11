@@ -651,6 +651,14 @@ class _Loader:
         # unreachable at the only id it advertised. The loader is the one place that sees
         # every row, so it is the only place the claim can be checked at all.
         self.tracker_ids = {}  # (source_type, container, id) -> doc_id
+        # A jira key's prefix is its PROJECT's key, and real Jira holds that 1:1 in both
+        # directions: a project has one key, a key names one project. The index can only
+        # pick one side of a tie with setdefault — two projects providing `PAY-` keys left
+        # `project = PAY` JQL and the role endpoint silently serving only the first, and a
+        # project providing `PAY-1` beside `BILL-2` served issue keys whose prefix was not
+        # their project's key. Both are corpus shapes only the loader can see and refuse.
+        self.jira_prefixes = {}  # container -> prefix
+        self.jira_prefix_holders = {}  # prefix -> container
 
     def seed_tracker_ids(self) -> None:
         """Re-read the ids already in the DB, so a claim holds ACROSS runs too.
@@ -662,15 +670,22 @@ class _Loader:
         check exists to remove, and ``--append`` is a route straight back into it.
 
         Only provided ids are stored (a derived one stays NULL and is resolved at index-build
-        time), so the column is exactly the set of claims already made.
+        time), so the column is exactly the set of claims already made. The jira prefix maps
+        are seeded from the same rows: a later shard bringing `BILL-` keys into a project
+        that already answers at `PAY`, or claiming `PAY` for a second project, is the same
+        1:1 violation whether the earlier keys arrived this run or a previous one.
         """
         for src, col in (("github", "number"), ("jira", "key")):
-            scope_sql = store.grouping_col(src) if src == "github" else "''"
             for row in self.conn.execute(
-                f"SELECT doc_id, {col} AS v, {scope_sql} AS scope FROM {store.table(src)} "
-                f"WHERE {col} IS NOT NULL"
+                f"SELECT doc_id, {col} AS v, {store.grouping_col(src)} AS c "
+                f"FROM {store.table(src)} WHERE {col} IS NOT NULL"
             ):
-                self.tracker_ids[(src, str(row["scope"]), str(row["v"]))] = row["doc_id"]
+                scope = str(row["c"]) if src == "github" else ""
+                self.tracker_ids[(src, scope, str(row["v"]))] = row["doc_id"]
+                if src == "jira":
+                    prefix = str(row["v"]).rsplit("-", 1)[0]
+                    self.jira_prefixes[str(row["c"])] = prefix
+                    self.jira_prefix_holders[prefix] = str(row["c"])
 
     def add(self, rec: dict, where: str = "record") -> None:
         """Insert one BYO record's row(s). ``where`` names the record in an error message.
@@ -1027,6 +1042,25 @@ class _Loader:
                         f"{claimed!r}" + (f" in repo {scope!r}" if scope else "")
                     )
                 self.tracker_ids[claim] = did
+                if src == "jira":
+                    # The prefix claims, both directions (see __init__). Distinct from the
+                    # full-key claim above: PAY-1 and PAY-2 are different keys, but if they
+                    # sit in different projects they still fight over who *is* PAY.
+                    prefix = str(provided_id).rsplit("-", 1)[0]
+                    holder = self.jira_prefix_holders.get(prefix)
+                    if holder is not None and holder != container:
+                        raise SystemExit(
+                            f"{where}: key {provided_id!r} carries project key {prefix!r}, "
+                            f"which project {holder!r} already holds"
+                        )
+                    held = self.jira_prefixes.get(container)
+                    if held is not None and held != prefix:
+                        raise SystemExit(
+                            f"{where}: key {provided_id!r} would name project {container!r} "
+                            f"{prefix!r}, but its keys already name it {held!r}"
+                        )
+                    self.jira_prefix_holders[prefix] = container
+                    self.jira_prefixes[container] = prefix
             names = list(cols)
             conn.execute(
                 f"INSERT OR REPLACE INTO {store.table(src)} ({', '.join(names)}) "

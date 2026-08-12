@@ -196,9 +196,9 @@ def _s3_mini_db(tmp_path):
             "created_ts) VALUES (?,?,?,?,?,?,1)",
             (doc_id, bucket, "a@x.com", key, "body", key),
         )
-    # d2 is ACL-restricted to group 'eng'; everything else is unrestricted (no doc_acl row ->
+    # d2 is ACL-restricted to group 'eng'; everything else is unrestricted (no s3_acl row ->
     # _acl_clause's EXISTS check only bites rows it has an entry for).
-    conn.execute("INSERT INTO doc_acl VALUES ('d2','group','eng')")
+    conn.execute("INSERT INTO s3_acl VALUES ('d2','group','eng')")
     conn.commit()
     return conn
 
@@ -307,9 +307,10 @@ def _drive_usage_db(tmp_path):
             (doc_id, "f", "a@x.com", doc_id, content, "document", trashed),
         )
     # Every doc gets a grant, as the importers write one: a `visible_ids` filter passes only rows
-    # that HAVE a matching doc_acl row, so a doc with no grant is invisible to any scoped caller.
+    # that HAVE a matching google_drive_acl row, so a doc with no grant is invisible to any scoped
+    # caller.
     for doc_id, pid in [("g1", "acme"), ("g2", "eng"), ("g3", "acme")]:
-        conn.execute("INSERT INTO doc_acl VALUES (?,?,?)", (doc_id, "group", pid))
+        conn.execute("INSERT INTO google_drive_acl VALUES (?,?,?)", (doc_id, "group", pid))
     conn.commit()
     return conn
 
@@ -378,7 +379,7 @@ def _hubspot_mini_db(tmp_path):
         ("co1", "group", "everyone"),
         ("d1", "group", "everyone"),
     ]:
-        conn.execute("INSERT INTO doc_acl VALUES (?,?,?)", (doc_id, ptype, pid))
+        conn.execute("INSERT INTO hubspot_acl VALUES (?,?,?)", (doc_id, ptype, pid))
     conn.commit()
     return conn
 
@@ -606,7 +607,7 @@ def test_list_repo_file_paths_agrees_with_the_full_listing(tmp_path):
             (doc_id, path.rsplit("/", 1)[-1], path),
         )
         conn.execute(
-            "INSERT INTO doc_acl(doc_id, principal_id, principal_type) VALUES(?,?,'group')",
+            "INSERT INTO github_acl(doc_id, principal_id, principal_type) VALUES(?,?,'group')",
             (doc_id, principal),
         )
     conn.execute(

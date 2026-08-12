@@ -436,3 +436,43 @@ def test_grants_are_written_to_their_own_source_table(tmp_path):
     assert "hana@acme.com" in drive and "acme" not in drive
     assert "acme" in conf
     conn.close()
+
+
+def test_a_shared_doc_id_does_not_share_visibility(tmp_path):
+    """The defect this change exists to remove: bob is in no granted group, and the drive file
+    is readable only by hana. A confluence page sharing its doc_id used to grant the org."""
+    from tests._helpers import build_corpus
+
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "space": "handbook",
+                "doc_id": "shared-1",
+                "title": "Public page",
+                "content": "anyone may read this",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "group": "engineering",
+                "author_groups": ["engineering"],
+            },
+            {
+                "source_type": "google_drive",
+                "folder": "vault",
+                "doc_id": "shared-1",
+                "title": "Secret sheet",
+                "content": "hana only",
+                "author_email": "hana@acme.com",
+                "readers": ["hana@acme.com"],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    bob = {"acme", "bob@acme.com", *store.user_group_ids(conn, "bob@acme.com")}
+    titles = [r["title"] for r in store.list_documents(conn, "google_drive", None, bob, limit=10)]
+    assert titles == []  # bob sees no drive document at all
+    hana = {"acme", "hana@acme.com", *store.user_group_ids(conn, "hana@acme.com")}
+    titles = [r["title"] for r in store.list_documents(conn, "google_drive", None, hana, limit=10)]
+    assert titles == ["Secret sheet"]
+    conn.close()

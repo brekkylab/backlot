@@ -554,10 +554,15 @@ def _like_escape(needle: str | None) -> str:
     return (needle or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _acl_clause(tbl: str, visible_ids: set[str] | None, col: str = "doc_id") -> tuple[str, list]:
+def _acl_clause(
+    source_type: str, tbl: str, visible_ids: set[str] | None, col: str = "doc_id"
+) -> tuple[str, list]:
     """``col`` names the column holding the doc whose ACL decides visibility — normally the row's
     own ``doc_id``, but for a HubSpot association it is the *target* (``to_doc_id``), since the
-    target is the record whose existence the response would reveal."""
+    target is the record whose existence the response would reveal.
+
+    ``source_type`` selects the ACL table. Per source because `doc_id` is per source: one table
+    keyed corpus-wide let two documents that merely share an id share their grants."""
     if visible_ids is None:
         return "", []
     ids = list(visible_ids)
@@ -565,7 +570,7 @@ def _acl_clause(tbl: str, visible_ids: set[str] | None, col: str = "doc_id") -> 
         return " AND 0", []
     marks = ",".join("?" for _ in ids)
     return (
-        f" AND EXISTS (SELECT 1 FROM doc_acl a WHERE a.doc_id = {tbl}.{col} "
+        f" AND EXISTS (SELECT 1 FROM {acl_table(source_type)} a WHERE a.doc_id = {tbl}.{col} "
         f"AND a.principal_id IN ({marks}))",
         ids,
     )
@@ -618,7 +623,7 @@ def list_documents(
         params.append(state)
     if exclude_trashed:
         sql += " AND COALESCE(trashed, 0) = 0"
-    clause, cparams = _acl_clause(tbl, visible_ids)
+    clause, cparams = _acl_clause(source_type, tbl, visible_ids)
     sql += clause + " ORDER BY doc_id LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
@@ -656,7 +661,7 @@ def list_s3_objects(
     if start_at:
         sql += " AND key >= ?"
         params.append(start_at)
-    clause, cparams = _acl_clause("s3_objects", visible_ids)
+    clause, cparams = _acl_clause("s3", "s3_objects", visible_ids)
     sql += clause + " ORDER BY key ASC LIMIT ?"
     params += cparams + [limit]
     return conn.execute(sql, params).fetchall()
@@ -692,7 +697,7 @@ def list_hubspot_objects(
     if after_doc_id:
         sql += " AND doc_id > ?"
         params.append(after_doc_id)
-    clause, cparams = _acl_clause("hubspot_objects", visible_ids)
+    clause, cparams = _acl_clause("hubspot", "hubspot_objects", visible_ids)
     sql += clause + " ORDER BY doc_id LIMIT ?"
     params += cparams + [limit]
     return conn.execute(sql, params).fetchall()
@@ -788,7 +793,7 @@ def list_linear_issues(
         sql += f" AND {frag}"
         params += fparams
     sql += _linear_archived(archived)
-    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    clause, cparams = _acl_clause("linear", "linear_issues", visible_ids)
     sql += clause + f" ORDER BY {_linear_order(order_by, descending, sort)} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
@@ -808,7 +813,7 @@ def count_linear_issues(
         sql += f" AND {frag}"
         params += fparams
     sql += _linear_archived(archived)
-    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    clause, cparams = _acl_clause("linear", "linear_issues", visible_ids)
     return conn.execute(sql + clause, params + cparams).fetchone()[0]
 
 
@@ -818,7 +823,7 @@ def linear_issue_by_identifier(conn, identifier, visible_ids=None) -> sqlite3.Ro
     the lookup is unambiguous — the UUID form of ``issue(id:)`` is the exact one."""
     sql = "SELECT * FROM linear_issues WHERE identifier = ?"
     params: list = [identifier]
-    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    clause, cparams = _acl_clause("linear", "linear_issues", visible_ids)
     return conn.execute(sql + clause + " ORDER BY doc_id LIMIT 1", params + cparams).fetchone()
 
 
@@ -841,7 +846,7 @@ def list_linear_comments(
         frag, fparams = prefilter
         sql += f" AND {frag}"
         params += fparams
-    clause, cparams = _acl_clause("i", visible_ids)
+    clause, cparams = _acl_clause("linear", "i", visible_ids)
     sql += clause + " ORDER BY c.created_ts, c.id LIMIT ? OFFSET ?"
     return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
 
@@ -857,7 +862,7 @@ def count_linear_comments(conn, *, doc_id=None, visible_ids=None, prefilter=None
         frag, fparams = prefilter
         sql += f" AND {frag}"
         params += fparams
-    clause, cparams = _acl_clause("i", visible_ids)
+    clause, cparams = _acl_clause("linear", "i", visible_ids)
     return conn.execute(sql + clause, params + cparams).fetchone()[0]
 
 
@@ -875,7 +880,7 @@ def linear_children(
         frag, fparams = prefilter
         sql += f" AND {frag}"
         params += fparams
-    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    clause, cparams = _acl_clause("linear", "linear_issues", visible_ids)
     sql += clause + " ORDER BY created_ts, doc_id LIMIT ? OFFSET ?"
     return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
 
@@ -889,7 +894,7 @@ def linear_relations(
     ACL-scoped on the OTHER end: a relation whose counterpart the caller cannot read is omitted
     entirely, since surfacing its id would disclose that issue."""
     mine, other = ("to_doc_id", "from_doc_id") if inverse else ("from_doc_id", "to_doc_id")
-    clause, cparams = _acl_clause("i", visible_ids)
+    clause, cparams = _acl_clause("linear", "i", visible_ids)
     sql = (
         f"SELECT r.* FROM linear_relations r JOIN linear_issues i ON i.doc_id = r.{other} "
         f"WHERE r.{mine} = ?{clause} ORDER BY r.created_ts, r.id LIMIT ? OFFSET ?"
@@ -913,7 +918,7 @@ def linear_attachments(
         frag, fparams = prefilter
         sql += f" AND {frag}"
         params += fparams
-    clause, cparams = _acl_clause("i", visible_ids)
+    clause, cparams = _acl_clause("linear", "i", visible_ids)
     sql += clause + " ORDER BY a.seq LIMIT ? OFFSET ?"
     return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
 
@@ -926,7 +931,7 @@ def linear_attachment_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | 
     from backlot import synth
 
     join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = a.doc_id"
-    clause, cparams = _acl_clause("i", visible_ids)
+    clause, cparams = _acl_clause("linear", "i", visible_ids)
     rows = conn.execute(f"SELECT a.* FROM linear_attachments a{join} WHERE 1=1{clause}", cparams)
     for row in rows:
         if synth.linear_attachment_id(row["id"]) == served_id:
@@ -942,8 +947,8 @@ def linear_relation_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | No
     if visible_ids is None:
         rows = conn.execute("SELECT * FROM linear_relations")
     else:
-        clause_a, pa = _acl_clause("a", visible_ids)
-        clause_b, pb = _acl_clause("b", visible_ids)
+        clause_a, pa = _acl_clause("linear", "a", visible_ids)
+        clause_b, pb = _acl_clause("linear", "b", visible_ids)
         rows = conn.execute(
             f"SELECT r.* FROM linear_relations r "
             f"JOIN linear_issues a ON a.doc_id = r.from_doc_id "
@@ -1024,7 +1029,7 @@ def linear_team_has_visible(conn, team, visible_ids=None) -> bool:
     at the first visible row, so deciding which teams to surface costs a few cheap probes instead
     of an ACL-filtered ``GROUP BY`` over every issue in the corpus. Same shape as
     :func:`drive_folder_has_visible`."""
-    clause, params = _acl_clause("linear_issues", visible_ids)
+    clause, params = _acl_clause("linear", "linear_issues", visible_ids)
     return (
         conn.execute(
             f"SELECT 1 FROM linear_issues WHERE team = ?{clause} LIMIT 1", [team, *params]
@@ -1072,7 +1077,7 @@ def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
     if build is None:
         raise ValueError(f"unknown linear entity kind {kind!r}")
     frag, params = build(value)
-    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    clause, cparams = _acl_clause("linear", "linear_issues", visible_ids)
     return (
         conn.execute(
             f"SELECT 1 FROM linear_issues WHERE {frag}{clause} LIMIT 1", [*params, *cparams]
@@ -1084,7 +1089,7 @@ def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
 def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:
     """team -> visible issue count, in one grouped scan — ``Team.issueCount`` for a whole page of
     teams without a COUNT(*) per team."""
-    clause, cparams = _acl_clause("linear_issues", visible_ids)
+    clause, cparams = _acl_clause("linear", "linear_issues", visible_ids)
     rows = conn.execute(
         f"SELECT team, COUNT(*) FROM linear_issues WHERE 1=1{clause} GROUP BY team", cparams
     )
@@ -1103,7 +1108,7 @@ def hubspot_associations(
     if after_to_doc_id:
         sql += " AND to_doc_id > ?"
         params.append(after_to_doc_id)
-    clause, cparams = _acl_clause("hubspot_associations", visible_ids, col="to_doc_id")
+    clause, cparams = _acl_clause("hubspot", "hubspot_associations", visible_ids, col="to_doc_id")
     sql += clause + " ORDER BY to_doc_id LIMIT ?"
     params += cparams + [limit]
     return conn.execute(sql, params).fetchall()
@@ -1114,7 +1119,7 @@ def list_drive_folder(conn, folder, visible_ids=None, limit=100, offset=0) -> li
     big folder costs one page of rows per request, not a full-corpus scan on every page."""
     sql = "SELECT * FROM gdrive_files WHERE folder = ? AND COALESCE(trashed, 0) = 0"
     params: list = [folder]
-    clause, cparams = _acl_clause("gdrive_files", visible_ids)
+    clause, cparams = _acl_clause("google_drive", "gdrive_files", visible_ids)
     # No ORDER BY: the folder index already yields a stable order for pagination, and adding
     # ORDER BY doc_id forces a per-page sort of the whole folder (≈30x slower on a big folder).
     sql += clause + " LIMIT ? OFFSET ?"
@@ -1137,7 +1142,7 @@ def list_drive_by_name(
     if container is not None:
         sql += " AND folder = ?"
         params.append(container)
-    clause, cparams = _acl_clause("gdrive_files", visible_ids)
+    clause, cparams = _acl_clause("google_drive", "gdrive_files", visible_ids)
     sql += clause + " LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
@@ -1146,7 +1151,7 @@ def list_drive_by_name(
 def count_drive_folder(conn, folder, visible_ids=None) -> int:
     sql = "SELECT COUNT(*) FROM gdrive_files WHERE folder = ? AND COALESCE(trashed, 0) = 0"
     params: list = [folder]
-    clause, cparams = _acl_clause("gdrive_files", visible_ids)
+    clause, cparams = _acl_clause("google_drive", "gdrive_files", visible_ids)
     sql += clause
     params += cparams
     return conn.execute(sql, params).fetchone()[0]
@@ -1155,7 +1160,7 @@ def count_drive_folder(conn, folder, visible_ids=None) -> int:
 def drive_folder_has_visible(conn, folder, visible_ids=None) -> bool:
     """Whether the caller can see any file in a folder — a ``LIMIT 1`` existence check (stops at
     the first visible file), so deciding which folders to surface is a couple of cheap probes."""
-    clause, params = _acl_clause("gdrive_files", visible_ids)
+    clause, params = _acl_clause("google_drive", "gdrive_files", visible_ids)
     sql = f"SELECT 1 FROM gdrive_files WHERE folder = ?{clause} LIMIT 1"
     return conn.execute(sql, [folder, *params]).fetchone() is not None
 
@@ -1174,7 +1179,7 @@ def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
         f"COALESCE(SUM(CASE WHEN COALESCE(trashed, 0) = 1 THEN {nbytes} ELSE 0 END), 0) "
         "FROM gdrive_files WHERE 1=1"
     )
-    clause, params = _acl_clause("gdrive_files", visible_ids)
+    clause, params = _acl_clause("google_drive", "gdrive_files", visible_ids)
     total, trashed = conn.execute(sql + clause, params).fetchone()
     return int(total), int(trashed)
 
@@ -1201,7 +1206,7 @@ def count_documents(
         params.append(state)
     if exclude_trashed:
         sql += " AND COALESCE(trashed, 0) = 0"
-    clause, cparams = _acl_clause(tbl, visible_ids)
+    clause, cparams = _acl_clause(source_type, tbl, visible_ids)
     sql += clause
     params += cparams
     return conn.execute(sql, params).fetchone()[0]
@@ -1211,7 +1216,7 @@ def get_document(conn, source_type, doc_id, visible_ids=None) -> sqlite3.Row | N
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE doc_id = ?"
     params: list = [doc_id]
-    clause, cparams = _acl_clause(tbl, visible_ids)
+    clause, cparams = _acl_clause(source_type, tbl, visible_ids)
     sql += clause
     params += cparams
     return conn.execute(sql, params).fetchone()
@@ -1276,7 +1281,7 @@ def _fireflies_where(
         cols = fireflies_scope_columns(scope) or ("title", "content")
         sql += " AND (" + " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in cols) + ")"
         params += [f"%{_like_escape(keyword)}%" for _ in cols]
-    clause, cparams = _acl_clause("fireflies_transcripts", visible_ids)
+    clause, cparams = _acl_clause("fireflies", "fireflies_transcripts", visible_ids)
     return sql + clause, params + cparams
 
 
@@ -1328,7 +1333,7 @@ def fireflies_transcript_by_id(conn, transcript_id, visible_ids=None) -> sqlite3
     """Resolve the API-facing transcript id to its row. Unlike Linear's identifier this IS
     unique — it is derived from the doc_id — so there is no first-match ambiguity."""
     sql = "SELECT * FROM fireflies_transcripts WHERE transcript_id = ?"
-    clause, cparams = _acl_clause("fireflies_transcripts", visible_ids)
+    clause, cparams = _acl_clause("fireflies", "fireflies_transcripts", visible_ids)
     return conn.execute(sql + clause, [transcript_id] + cparams).fetchone()
 
 
@@ -1480,7 +1485,7 @@ def search_documents(
         m = _fts_match(query, source_type, has_src, phrase=phrase)
         if not m:
             return []
-        clause, cparams = _acl_clause("t", visible_ids)
+        clause, cparams = _acl_clause(source_type, "t", visible_ids)
         src_sql = "" if has_src else " AND docs_fts.source_type = ?"
         src_p = [] if has_src else [source_type]
         # For a phrase search, tier the results: docs literally containing the query string first
@@ -1518,7 +1523,7 @@ def search_documents(
     like = f"%{query}%"
     sql = f"SELECT * FROM {tbl} WHERE (title LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
     params: list = [like, like, *cont_p]
-    clause, cparams = _acl_clause(tbl, visible_ids)
+    clause, cparams = _acl_clause(source_type, tbl, visible_ids)
     sql += clause + " ORDER BY (CASE WHEN title LIKE ? THEN 0 ELSE 1 END), doc_id LIMIT ? OFFSET ?"
     params += cparams + [like, limit, offset]
     return conn.execute(sql, params).fetchall()
@@ -1540,7 +1545,7 @@ def count_search(
         m = _fts_match(query, source_type, has_src, phrase=phrase)
         if not m:
             return 0
-        clause, cparams = _acl_clause("t", visible_ids)
+        clause, cparams = _acl_clause(source_type, "t", visible_ids)
         src_sql = "" if has_src else " AND docs_fts.source_type = ?"
         src_p = [] if has_src else [source_type]
         sql = (
@@ -1550,7 +1555,7 @@ def count_search(
         )
         return conn.execute(sql, [m, *src_p, *cont_p, *cparams, cap]).fetchone()[0]
     like = f"%{query}%"
-    clause, cparams = _acl_clause(tbl, visible_ids)
+    clause, cparams = _acl_clause(source_type, tbl, visible_ids)
     sql = (
         f"SELECT COUNT(*) FROM (SELECT doc_id FROM {tbl} WHERE (title LIKE ? OR content LIKE ?)"
         f"{cont_sql.format(a=tbl)}{clause} LIMIT ?)"
@@ -1565,7 +1570,7 @@ def children(
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE parent_id = ?"
     params: list = [parent_id]
-    clause, cparams = _acl_clause(tbl, visible_ids)
+    clause, cparams = _acl_clause(source_type, tbl, visible_ids)
     sql += clause + " ORDER BY doc_id LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
@@ -1599,7 +1604,7 @@ def list_slack_top_level(
         hi = ts_hi if ts_hi is not None else (1 << 62)
         sql += " AND created_ts >= ? AND created_ts <= ?"
         params += [lo, hi]
-    clause, cparams = _acl_clause("slack_messages", visible_ids)
+    clause, cparams = _acl_clause("slack", "slack_messages", visible_ids)
     sql += clause + " ORDER BY doc_id LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
@@ -1608,7 +1613,7 @@ def list_slack_top_level(
 def count_slack_top_level(conn, channel, visible_ids=None) -> int:
     sql = "SELECT COUNT(*) FROM slack_messages WHERE channel = ? AND thread_seq = 0"
     params: list = [channel]
-    clause, cparams = _acl_clause("slack_messages", visible_ids)
+    clause, cparams = _acl_clause("slack", "slack_messages", visible_ids)
     sql += clause
     params += cparams
     return conn.execute(sql, params).fetchone()[0]
@@ -1620,7 +1625,7 @@ def list_slack_channel_messages(conn, channel, visible_ids=None) -> list[sqlite3
     synthesized and can't be queried directly."""
     sql = "SELECT * FROM slack_messages WHERE channel = ?"
     params: list = [channel]
-    clause, cparams = _acl_clause("slack_messages", visible_ids)
+    clause, cparams = _acl_clause("slack", "slack_messages", visible_ids)
     sql += clause + " ORDER BY thread_id, thread_seq"
     params += cparams
     return conn.execute(sql, params).fetchall()
@@ -1644,7 +1649,7 @@ def list_gmail_in_range(
     if mailbox is not None:
         sql += " AND mailbox = ?"
         params.append(mailbox)
-    clause, cparams = _acl_clause("gmail_messages", visible_ids)
+    clause, cparams = _acl_clause("gmail", "gmail_messages", visible_ids)
     # created_ts DESC = newest-first (real Gmail's messages.list order); doc_id breaks ties into a
     # stable TOTAL order so keyset-free offset pagination can't dupe/skip rows across pages.
     sql += clause + " ORDER BY created_ts DESC, doc_id LIMIT ? OFFSET ?"
@@ -1659,7 +1664,7 @@ def slack_messages_at_created_ts(conn, channel, created_ts, visible_ids=None) ->
     with a NULL ``created_ts`` misses this; the caller falls back to a full scan for those."""
     sql = "SELECT * FROM slack_messages WHERE channel = ? AND created_ts = ?"
     params: list = [channel, created_ts]
-    clause, cparams = _acl_clause("slack_messages", visible_ids)
+    clause, cparams = _acl_clause("slack", "slack_messages", visible_ids)
     sql += clause + " ORDER BY thread_id, thread_seq"
     params += cparams
     return conn.execute(sql, params).fetchall()
@@ -1668,7 +1673,7 @@ def slack_messages_at_created_ts(conn, channel, created_ts, visible_ids=None) ->
 def slack_reply_count(conn, root_doc_id, visible_ids=None) -> int:
     sql = "SELECT COUNT(*) FROM slack_messages WHERE thread_id = ? AND thread_seq > 0"
     params: list = [root_doc_id]
-    clause, cparams = _acl_clause("slack_messages", visible_ids)
+    clause, cparams = _acl_clause("slack", "slack_messages", visible_ids)
     sql += clause
     params += cparams
     return conn.execute(sql, params).fetchone()[0]
@@ -1694,7 +1699,7 @@ def slack_reply_authors(conn, root_doc_id, visible_ids=None) -> list[str]:
     """Distinct reply-author emails in a thread, in reply order (for reply_users)."""
     sql = "SELECT author_email FROM slack_messages WHERE thread_id = ? AND thread_seq > 0"
     params: list = [root_doc_id]
-    clause, cparams = _acl_clause("slack_messages", visible_ids)
+    clause, cparams = _acl_clause("slack", "slack_messages", visible_ids)
     sql += clause + " ORDER BY thread_seq"
     params += cparams
     seen: list[str] = []
@@ -1707,7 +1712,7 @@ def slack_reply_authors(conn, root_doc_id, visible_ids=None) -> list[str]:
 def slack_thread(conn, root_doc_id, visible_ids=None) -> list[sqlite3.Row]:
     sql = "SELECT * FROM slack_messages WHERE thread_id = ?"
     params: list = [root_doc_id]
-    clause, cparams = _acl_clause("slack_messages", visible_ids)
+    clause, cparams = _acl_clause("slack", "slack_messages", visible_ids)
     sql += clause + " ORDER BY thread_seq"
     params += cparams
     return conn.execute(sql, params).fetchall()
@@ -1717,7 +1722,7 @@ def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
     """All messages in a Gmail thread (root + replies), ordered, ACL-filtered."""
     sql = "SELECT * FROM gmail_messages WHERE thread_id = ?"
     params: list = [thread_id]
-    clause, cparams = _acl_clause("gmail_messages", visible_ids)
+    clause, cparams = _acl_clause("gmail", "gmail_messages", visible_ids)
     sql += clause + " ORDER BY thread_seq"
     params += cparams
     return conn.execute(sql, params).fetchall()
@@ -1727,7 +1732,7 @@ def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
 
 
 def list_repo_files(conn, repo, visible_ids=None, limit=10_000, offset=0) -> list[sqlite3.Row]:
-    clause, cp = _acl_clause("github_items", visible_ids)
+    clause, cp = _acl_clause("github", "github_items", visible_ids)
     sql = (
         "SELECT * FROM github_items WHERE repo = ? AND kind = 'file'"
         + clause
@@ -1744,7 +1749,7 @@ def list_repo_file_paths(conn, repo, visible_ids=None, limit=10_000, offset=0) -
     content along to do it. On a 3000-file repo that is ~4 MB of content read per pull, and a
     ``/pulls`` page synthesizes a changeset per row.
     """
-    clause, cp = _acl_clause("github_items", visible_ids)
+    clause, cp = _acl_clause("github", "github_items", visible_ids)
     sql = (
         "SELECT path FROM github_items WHERE repo = ? AND kind = 'file'"
         + clause
@@ -1789,14 +1794,14 @@ def github_comments(conn, doc_id, *, anchored: bool | None = None) -> list[sqlit
 
 
 def count_repo_files(conn, repo, visible_ids=None) -> int:
-    clause, cp = _acl_clause("github_items", visible_ids)
+    clause, cp = _acl_clause("github", "github_items", visible_ids)
     return conn.execute(
         "SELECT COUNT(*) FROM github_items WHERE repo = ? AND kind = 'file'" + clause, [repo, *cp]
     ).fetchone()[0]
 
 
 def get_repo_file(conn, repo, path, visible_ids=None) -> sqlite3.Row | None:
-    clause, cp = _acl_clause("github_items", visible_ids)
+    clause, cp = _acl_clause("github", "github_items", visible_ids)
     return conn.execute(
         "SELECT * FROM github_items WHERE repo = ? AND kind = 'file' AND path = ?" + clause,
         [repo, path, *cp],

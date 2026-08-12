@@ -78,6 +78,17 @@ def test_comment_tables_only_where_supported():
         assert store.comment_table(src) is None
 
 
+def test_acl_table_registry_covers_every_source(tmp_path):
+    """Each source owns its ACL, so the registry must be total over SOURCE_TABLE — a source
+    missing here would silently fall back to no scoping at all."""
+    assert set(store.ACL_TABLE) == set(store.SOURCE_TABLE)
+    assert store.acl_table("github") == "github_acl"
+    conn = store.connect_rw(tmp_path / "s.sqlite")
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert set(store.ACL_TABLE.values()) <= names
+    conn.close()
+
+
 # --- generic reads over the SAMPLE corpus ---------------------------------------
 
 

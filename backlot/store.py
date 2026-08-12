@@ -61,6 +61,16 @@ def comment_table(source_type: str) -> str | None:
     return COMMENT_TABLE.get(source_type)
 
 
+# Each source's ACL. Per source, not one shared table, because `doc_id` is per-source too (see
+# test_two_sources_may_share_a_doc_id): keyed corpus-wide, two documents that merely share an id
+# shared their grants and the union was enforced.
+ACL_TABLE = {src: f"{src}_acl" for src in SOURCE_TABLE}
+
+
+def acl_table(source_type: str) -> str:
+    return ACL_TABLE[source_type]
+
+
 # source_type -> (grouping table, grouping column) — the service's own name for its
 # grouping unit (Slack channel, Gmail mailbox, Drive folder, GitHub repo, Jira project,
 # Confluence space) instead of a vague generic "container".
@@ -424,6 +434,18 @@ CREATE INDEX IF NOT EXISTS idx_acl_pid ON doc_acl(principal_id);
 -- structure inside a document to first-class rows (one Slack transcript -> many messages).
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
+
+# One ACL table per source, appended rather than written out eleven times: they differ only in name,
+# and a hand-written block per source is eleven places for them to drift apart.
+SCHEMA += "".join(
+    f"\nCREATE TABLE IF NOT EXISTS {t} (\n"
+    "    doc_id TEXT NOT NULL, principal_type TEXT NOT NULL,\n"
+    "    principal_id TEXT NOT NULL REFERENCES principals(id),\n"
+    "    PRIMARY KEY (doc_id, principal_type, principal_id)\n"
+    ");\n"
+    f"CREATE INDEX IF NOT EXISTS idx_{t}_pid ON {t}(principal_id);\n"
+    for t in ACL_TABLE.values()
+)
 
 
 def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:

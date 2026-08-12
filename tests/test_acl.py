@@ -391,3 +391,48 @@ def test_fireflies_mine_returns_nothing_for_a_token_that_is_not_a_person(sample_
             client, "{ transcripts(mine: true, limit: 50) { title } }", sample_settings.admin_token
         )
         assert got["data"]["transcripts"] == []
+
+
+def test_grants_are_written_to_their_own_source_table(tmp_path):
+    """A grant belongs to one source's document. Two documents sharing a doc_id across sources
+    must not share a grant — the union used to be enforced, so a public page made a restricted
+    drive file readable by anyone in the org."""
+    from tests._helpers import build_corpus
+
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "space": "handbook",
+                "doc_id": "shared-1",
+                "title": "Public page",
+                "content": "anyone may read this",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "group": "engineering",
+                "author_groups": ["engineering"],
+            },
+            {
+                "source_type": "google_drive",
+                "folder": "vault",
+                "doc_id": "shared-1",
+                "title": "Secret sheet",
+                "content": "hana only",
+                "author_email": "hana@acme.com",
+                "readers": ["hana@acme.com"],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    conf = {
+        r["principal_id"]
+        for r in conn.execute("SELECT principal_id FROM confluence_acl WHERE doc_id='shared-1'")
+    }
+    drive = {
+        r["principal_id"]
+        for r in conn.execute("SELECT principal_id FROM google_drive_acl WHERE doc_id='shared-1'")
+    }
+    assert "hana@acme.com" in drive and "acme" not in drive
+    assert "acme" in conf
+    conn.close()

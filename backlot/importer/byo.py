@@ -660,7 +660,7 @@ class _Loader:
         self.users = {}  # email -> display name
         self.groups = set()
         self.memberships = set()  # (group_id, email)
-        self.grants = []  # (doc_id, principal_type, principal_id)
+        self.grants = []  # (source_type, doc_id, principal_type, principal_id)
         self.counts = {}
         self.seen = set()  # (source_type, doc_id)
         # github comment ids are ASSIGNED rather than hashed at serve time, because a comment's own
@@ -1113,7 +1113,7 @@ class _Loader:
             fts_ids.setdefault(src, []).append(did)
             counts[src] = counts.get(src, 0) + 1
             for pt, pid in grant_types:
-                grants.append((did, pt, pid))
+                grants.append((src, did, pt, pid))
 
         insert(
             doc_id,
@@ -1531,7 +1531,11 @@ def load_records(
     loader.write_containers()
     for g, email in memberships:
         conn.execute("INSERT OR REPLACE INTO group_members VALUES (?,?)", (g, email))
-    for doc_id, ptype, pid in grants:
+    for source_type, doc_id, ptype, pid in grants:
+        conn.execute(
+            f"INSERT OR IGNORE INTO {store.acl_table(source_type)} VALUES (?,?,?)",
+            (doc_id, ptype, pid),
+        )
         conn.execute("INSERT OR REPLACE INTO doc_acl VALUES (?,?,?)", (doc_id, ptype, pid))
     conn.commit()
     if reset:

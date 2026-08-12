@@ -638,3 +638,261 @@ def test_example_corpus_populates_every_field_the_schemas_declare():
         for src, schema in validation.SERVICE_SCHEMAS.items()
     }
     assert {s: m for s, m in missing.items() if m} == {}
+
+
+def test_a_conditional_requirement_says_which_records_it_applies_to():
+    """`path` is required of source files and of nothing else, but the rule is an
+    `if`/`then`, so jsonschema reports it at the document root with a bare message. A
+    23,000-record corpus was rejected with dozens of identical
+    "<root>: 'path' is a required property" lines, and none of them said that only
+    subtype 'file' rows needed one — the condition sat in the schema for the reader to
+    go and find."""
+    errs = record_errors(
+        {
+            "source_type": "github",
+            "title": "settlement.py",
+            "content": "code",
+            "doc_id": "gh-1",
+            "subtype": "file",
+        }
+    )
+    assert errs == ["gh-1: 'path' is a required property when subtype is \"file\""]
+
+    # An issue is not a file, so the same schema asks nothing of it.
+    assert (
+        record_errors(
+            {
+                "source_type": "github",
+                "title": "t",
+                "content": "c",
+                "doc_id": "gh-2",
+                "subtype": "issue",
+            }
+        )
+        == []
+    )
+
+
+def test_a_validation_error_names_the_record_it_is_about():
+    """A line number is not an identifier: a sharded artifact numbers every shard from
+    one, and the id is what the author's own build wrote down and can grep for. Absent an
+    id, the title serves; absent both, the root placeholder is all there is."""
+    by_id = record_errors(
+        {"source_type": "github", "title": "t", "content": "c", "doc_id": "d1", "subtype": "nope"}
+    )
+    assert by_id and by_id[0].startswith("d1 [subtype]: ")
+
+    by_title = record_errors({"source_type": "linear", "title": "Cutover plan", "nope": 1})
+    assert by_title and all(e.startswith("Cutover plan") for e in by_title)
+
+    anonymous = record_errors({"source_type": "github", "content": "c"})
+    assert anonymous == ["<root>: 'title' is a required property"]
+
+
+def test_a_label_cannot_be_mistaken_for_the_field_path():
+    """A label is free text and a space does not close it. A record titled `subtype` whose
+    `subtype` field is wrong read "subtype subtype: ...", naming the field twice and marking
+    neither as the record — so the path is bracketed. The path's own spelling is untouched:
+    the slash form is what the rest of this suite pins."""
+    assert record_errors(
+        {"source_type": "github", "title": "subtype", "content": "c", "subtype": 9}
+    ) == ["subtype [subtype]: 9 is not one of ['issue', 'pull_request', 'file']"]
+
+    # A record-wide error has no path, so it gains no brackets either.
+    assert record_errors({"source_type": "github", "content": "c", "doc_id": "d"}) == [
+        "d: 'title' is a required property"
+    ]
+
+    # A nameless record marks its path as a path, so an unbracketed head is always the record:
+    # bare, `subtype: ` was both this and the labelled record-wide line just above it.
+    nameless = record_errors({"source_type": "github", "title": "", "content": "c", "subtype": 9})
+    assert nameless and all(e.startswith("<root> [subtype]: ") for e in nameless)
+
+
+def test_the_condition_clause_is_omitted_rather_than_guessed():
+    """An unconditional rule gets no clause, and a condition shape the renderer does not
+    recognise gets none either — a wrong "when" is worse than no "when"."""
+    plain = record_errors({"source_type": "github", "content": "c", "doc_id": "d"})
+    assert plain == ["d: 'title' is a required property"]
+    assert (
+        validation._when_clause(
+            {"allOf": [{"then": {"required": ["x"]}}]},
+            ["allOf", 0, "then", "required"],
+            {"required": ["x"]},
+        )
+        == ""
+    )
+    assert validation._when_clause({}, ["required"], {}) == ""
+
+    # `then` under `properties` is a field name a corpus author picked, not the keyword, and
+    # the `if` beside it is another field — a schema that happens to hold both fields must not
+    # be read as a condition over them.
+    assert (
+        validation._when_clause(
+            {"properties": {"if": {"properties": {"mode": {"const": "fast"}}}, "then": {}}},
+            ["properties", "then", "type"],
+            {},
+        )
+        == ""
+    )
+
+
+def test_a_multi_value_predicate_is_bracketed_against_the_and():
+    """Values within a field were joined by " or " and the fields by " and ", with no grouping
+    between the two -- so `a is "x" or "y" and b is "z"` reads as `x or (y and z)`, which is not
+    what the schema says. A single-value `enum` is unaffected."""
+    two = {
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"a": {"enum": ["x", "y"]}, "b": {"const": "z"}},
+                    "required": ["a", "b"],
+                },
+                "then": {"required": ["q"]},
+            }
+        ]
+    }
+    assert validation._when_clause(
+        two, ["allOf", 0, "then", "required"], two["allOf"][0]["then"]
+    ) == (' when a is one of ["x", "y"] and b is "z"')
+
+    one = {"allOf": [{"if": {"properties": {"a": {"enum": ["x"]}}, "required": ["a"]}, "then": {}}]}
+    assert validation._when_clause(
+        one, ["allOf", 0, "then", "required"], one["allOf"][0]["then"]
+    ) == (' when a is "x"')
+
+
+def test_a_malformed_condition_reports_rather_than_raises():
+    """A schema is only `json.loads`ed at import -- `check_schema` runs in a test, not on load --
+    so a hand-edited file can reach the renderer with a non-object where a subschema belongs. The
+    diagnostics path must degrade to "no clause" there, because raising turns every record into a
+    traceback, including on the `--dry-run` that exists to report problems."""
+    for broken in (
+        {"if": {"properties": ["a"]}, "then": {}},
+        {"if": {"properties": "a"}, "then": {}},
+        {"if": {"properties": 1}, "then": {}},
+    ):
+        assert validation._when_clause(broken, ["then", "required"], broken["then"]) == ""
+
+
+def test_a_predicate_field_the_condition_does_not_require_says_so():
+    """`properties` constrains a value; it does not require the field. An `if` with no sibling
+    `required` succeeds for a record that omits the field, so `then` binds that record too --
+    and a bare `when subtype is "file"` would send its author hunting for a field they never
+    wrote. The shipped github condition DOES carry `required`, so its clause is unchanged."""
+    from jsonschema import Draft202012Validator
+
+    unguarded = {
+        "type": "object",
+        "allOf": [
+            {"if": {"properties": {"subtype": {"const": "file"}}}, "then": {"required": ["path"]}}
+        ],
+    }
+    # No `subtype` anywhere in the record, yet the requirement binds it.
+    (err,) = Draft202012Validator(unguarded).iter_errors({})
+    assert (
+        validation._when_clause(unguarded, err.schema_path, err.schema)
+        == ' when subtype is "file" (or absent)'
+    )
+
+    guarded = {
+        "type": "object",
+        "allOf": [
+            {
+                "if": {"properties": {"subtype": {"const": "file"}}, "required": ["subtype"]},
+                "then": {"required": ["path"]},
+            }
+        ],
+    }
+    assert not list(Draft202012Validator(guarded).iter_errors({}))
+    (bound,) = Draft202012Validator(guarded).iter_errors({"subtype": "file"})
+    assert validation._when_clause(guarded, bound.schema_path, bound.schema) == (
+        ' when subtype is "file"'
+    )
+
+    # The real schema is the guarded form, so the headline diagnostic keeps its plain clause.
+    assert record_errors(
+        {"source_type": "github", "subtype": "file", "title": "t", "content": "c", "doc_id": "gh-1"}
+    ) == ["gh-1: 'path' is a required property when subtype is \"file\""]
+
+
+def test_a_clause_is_not_read_across_a_ref_hop():
+    """`err.schema_path` omits the `$ref` keyword it passed through, so a path from inside a
+    referenced subschema reads as a root-relative one. Walking the root by it can land on a
+    different conditional and name a field the record never mentions, so the walk is only trusted
+    when it arrives at the subschema that actually reported the error."""
+    from jsonschema import Draft202012Validator
+
+    root = {
+        "type": "object",
+        "$ref": "#/$defs/Sub",
+        "allOf": [
+            {
+                "if": {"properties": {"mode": {"const": "fast"}}, "required": ["mode"]},
+                "then": {"required": ["speed"]},
+            }
+        ],
+        "$defs": {
+            "Sub": {
+                "allOf": [
+                    {
+                        "if": {"properties": {"kind": {"const": "blob"}}, "required": ["kind"]},
+                        "then": {"required": ["sha"]},
+                    }
+                ]
+            }
+        },
+    }
+    (err,) = Draft202012Validator(root).iter_errors({"kind": "blob"})
+    # The hop is gone from both spellings of the path, so neither is a way to tell them apart.
+    assert list(err.schema_path) == ["allOf", 0, "then", "required"]
+    assert list(err.absolute_schema_path) == ["allOf", 0, "then", "required"]
+    # That path also addresses the ROOT's conditional, whose `if` is over `mode` -- a field this
+    # record does not carry. No clause is better than that one.
+    assert validation._when_clause(root, err.schema_path, err.schema) == ""
+
+    # A path that does arrive at the failing subschema still gets its clause, including when the
+    # error sits deeper inside `then` than the branch itself.
+    nested = {
+        "type": "object",
+        "allOf": [
+            {
+                "if": {"properties": {"subtype": {"const": "file"}}, "required": ["subtype"]},
+                "then": {"properties": {"path": {"type": "string"}}},
+            }
+        ],
+    }
+    (deep,) = Draft202012Validator(nested).iter_errors({"subtype": "file", "path": 9})
+    assert list(deep.schema_path) == ["allOf", 0, "then", "properties", "path", "type"]
+    assert (
+        validation._when_clause(nested, deep.schema_path, deep.schema) == ' when subtype is "file"'
+    )
+
+
+def test_an_else_branch_rules_out_the_condition_whole():
+    """`else` is in force when the predicate fails, so a two-field condition is ruled out as a
+    pair. Negating each field on its own would read as "a is not x AND b is not y", which the
+    schema never says — a record with a == x and b != y takes the `else` too."""
+    two_field = {
+        "allOf": [{"if": {"properties": {"a": {"const": "x"}, "b": {"const": "y"}}}, "else": {}}]
+    }
+    assert (
+        validation._when_clause(
+            two_field, ["allOf", 0, "else", "required"], two_field["allOf"][0]["else"]
+        )
+        == ' unless a is "x" (or absent) and b is "y" (or absent)'
+    )
+
+
+def test_a_label_stays_on_one_line_and_admits_being_cut():
+    """`--dry-run` prints one problem per line, and a title is free text. A silently cut label
+    also reads as a shorter id — one the author would search the corpus for and never find."""
+    multiline = record_errors(
+        {"source_type": "github", "content": "c", "title": "two\nlines", "nope": 1}
+    )
+    assert multiline and all("\n" not in m for m in multiline)
+    assert multiline[0].startswith("two lines: ")
+
+    cut = record_errors({"source_type": "github", "content": "c", "doc_id": "d" * 80})
+    label = cut[0].split(":")[0]
+    assert len(label) == 60 and label.endswith("…")

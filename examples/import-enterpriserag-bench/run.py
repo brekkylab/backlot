@@ -3,11 +3,11 @@
 
 Runs the one-command import into examples/import-enterpriserag-bench/data (downloading on the
 first run; cached afterwards), starts a real mock server against it, prints what got served, and
-keeps serving until you press Ctrl+C. Extra flags are forwarded to the importer:
+keeps serving until you press Ctrl+C:
 
-    python examples/import-enterpriserag-bench/run.py                                  # full corpus: download -> load -> ACL
-    python examples/import-enterpriserag-bench/run.py --slice-questions extra_questions.jsonl  # only the docs a slice needs
-    python examples/import-enterpriserag-bench/run.py --no-download                     # reuse whatever is already in data/raw
+    python examples/import-enterpriserag-bench/run.py
+
+The import takes no options — it imports the corpus, whole — so this takes none either.
 """
 
 import json
@@ -35,7 +35,7 @@ env = {**os.environ, "BACKLOT_DATA_DIR": str(DATA)}
 # `-m backlot` so the CLI runs under THIS interpreter (no activated venv needed on PATH); it is the
 # same `backlot import --type enterpriserag-bench` you would run by hand.
 subprocess.run(
-    [sys.executable, "-m", "backlot", "import", "--type", "enterpriserag-bench", *sys.argv[1:]],
+    [sys.executable, "-m", "backlot", "import", "--type", "enterpriserag-bench"],
     cwd=ROOT,
     env=env,
     check=True,

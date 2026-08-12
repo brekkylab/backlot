@@ -195,11 +195,11 @@ EnterpriseRAG-Bench's `employee_directory.yaml`, so that file works as a roster 
 
 ## Round-tripping an existing dataset
 
-`backlot.importer.erb` can write a BYO artifact instead of a database, which is how the bench is
+`backlot export` writes a BYO artifact instead of a database, which is how the bench is
 redistributed in this schema:
 
 ```bash
-backlot import -t erb --export-byo out/   # -> out/corpus.jsonl + out/roster.yaml
+backlot export out/                       # -> out/corpus.jsonl + out/roster.yaml
 backlot import out/corpus.jsonl --roster out/roster.yaml
 ```
 
@@ -218,7 +218,7 @@ and which people are real accounts rather than just document owners.
 At half a million records one file is unwieldy, so the export can split:
 
 ```bash
-backlot import -t erb --export-byo out/ --shard-records 50000
+backlot export out/ --shard-records 50000
 ```
 
 Each source becomes `out/data/<source>/part-NNNNN.jsonl.gz` alongside `out/manifest.json`, which

@@ -134,7 +134,7 @@ enterprise documents across nine of the supported sources. One command downloads
 ACL-derives it:
 
 ```bash
-backlot import --type enterpriserag-bench    # -t erb for short
+backlot import --type enterpriserag-bench
 ```
 
 What that dataset does and does not carry, and how to redistribute it as BYO-JSONL, is in

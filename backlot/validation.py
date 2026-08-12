@@ -49,17 +49,155 @@ def _validator(source_type: str) -> Draft202012Validator:
     return Draft202012Validator(SERVICE_SCHEMAS[source_type], format_checker=FormatChecker())
 
 
+def _subschema(schema: dict, parts: list):
+    """Walk into ``schema`` by a schema-path prefix, through objects and arrays alike."""
+    node = schema
+    try:
+        for p in parts:
+            node = node[int(p)] if isinstance(node, list) else node[p]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return node
+
+
+# Keywords whose value is a MAP of subschemas, keyed by names the schema author chose. A
+# `then` sitting directly under one of these is such a name — a field a corpus may carry — and
+# the `if` beside it is another one, so reading the pair as a conditional would invent a clause
+# out of two ordinary fields.
+_SUBSCHEMA_MAPS = frozenset(
+    {"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"}
+)
+
+
+def _branch_index(parts: list) -> int | None:
+    """Index of the first ``then``/``else`` that stands where a keyword can stand."""
+    for i, p in enumerate(parts):
+        if p in ("then", "else") and (i == 0 or parts[i - 1] not in _SUBSCHEMA_MAPS):
+            return i
+    return None
+
+
+def _when_clause(schema: dict, schema_path, failing) -> str:
+    """`" when subtype is \\"file\\""` for a rule a condition put in force, else ``""``.
+
+    A conditional requirement reports at the document root with a bare message: a 23,000-record
+    corpus was rejected with dozens of identical ``<root>: 'path' is a required property`` lines,
+    none of which said that ``path`` is required of source files and of nothing else. The
+    condition is recoverable — the failing branch's schema path runs through a ``then`` (or an
+    ``else``), and the ``if`` beside it is the predicate — so it is stated instead of left for the
+    reader to find in the schema. Shapes this does not recognise add no clause rather than a
+    guessed one.
+
+    An ``else`` reads "unless", not a field-by-field negation: it is in force when the whole
+    predicate fails, so a two-field condition rules out the pair together, and negating each
+    field separately would claim something the schema does not say.
+
+    A predicate field is reported as ``(or absent)`` unless the ``if`` requires it, because
+    ``properties`` alone constrains a value without demanding the field.
+
+    ``failing`` is the subschema that actually reported the error, and the walk is only trusted
+    when it arrives there. No shipped schema uses ``$ref`` yet, so this guard changes nothing
+    today; it is what keeps the clause honest once one does.
+    """
+    parts = list(schema_path)
+    branch = _branch_index(parts)
+    if branch is None:
+        return ""
+    # A schema path is reported WITHOUT the `$ref` hops it passed through, so a path from inside a
+    # referenced subschema reads as a root-relative one and this walk lands on whatever conditional
+    # happens to sit at those keys. The last element is the failing keyword, so its parent is the
+    # schema that failed; anything else means the walk went somewhere other than the real branch.
+    # `is not`, not `!=`: two structurally identical branches under different conditionals must not
+    # count as a match, and jsonschema hands the subschema object through rather than copying it.
+    if _subschema(schema, parts[:-1]) is not failing:
+        return ""
+    owner = _subschema(schema, parts[:branch])
+    cond = owner.get("if") if isinstance(owner, dict) else None
+    if not isinstance(cond, dict):
+        return ""
+    clauses = []
+    # Guarded like `owner`, `cond` and `spec` are: `_load_schemas` only json.loads the files, and
+    # `check_schema` runs in a test rather than at import, so a hand-edited schema reaches here
+    # unvalidated. A non-object `properties` must not turn "report this bad record" into a
+    # traceback on every record -- least of all on `--dry-run`, whose whole job is to report.
+    props = cond.get("properties")
+    for field, spec in (props if isinstance(props, dict) else {}).items():
+        if not isinstance(spec, dict):
+            continue
+        if "const" in spec:
+            allowed = [spec["const"]]
+        elif isinstance(spec.get("enum"), list) and spec["enum"]:
+            allowed = spec["enum"]
+        else:
+            continue
+        dumped = [json.dumps(v, ensure_ascii=False) for v in allowed]
+        # Not `x or y`: the fields are joined by " and ", so a bare `or` between values reads as
+        # `x or (y and z)` once a second field follows. A single value needs no bracketing.
+        shown = dumped[0] if len(dumped) == 1 else "one of [" + ", ".join(dumped) + "]"
+        req = cond.get("required")
+        if isinstance(req, list) and field in req:
+            clauses.append(f"{field} is {shown}")
+        else:
+            # `properties` constrains a field's value, it does not require the field. An `if` with
+            # no sibling `required` therefore SUCCEEDS for a record that omits the field, so `then`
+            # is in force there too -- and saying only `when subtype is "file"` sends the author
+            # looking through a record for a field they never set. `unless` needs it for the mirror
+            # reason: an absent field satisfies the predicate, so it does not lift the rule.
+            clauses.append(f"{field} is {shown} (or absent)")
+    lead = " unless " if parts[branch] == "else" else " when "
+    return lead + " and ".join(clauses) if clauses else ""
+
+
+def _record_label(rec: dict) -> str:
+    """How the author finds this record again: the id it wrote, else its title.
+
+    A line number is not that on its own — a sharded artifact numbers each shard from one, and
+    the id is what the author's own build wrote down and can grep for.
+
+    One line, and truncation says so. ``--dry-run`` prints one problem per line and a title is
+    free text that may hold a newline; a silently cut label, meanwhile, looks like a shorter id
+    that the author would search for and never find.
+    """
+    for key in ("doc_id", "title"):
+        value = rec.get(key)
+        if isinstance(value, str) and value.strip():
+            label = " ".join(value.split())
+            return label if len(label) <= 60 else label[:59] + "…"
+    return ""
+
+
 def record_errors(rec: dict) -> list[str]:
-    """Return human-readable validation errors for one BYO record ([] if valid)."""
+    """Return human-readable validation errors for one BYO record ([] if valid).
+
+    Each message names the record, where in it the problem is, and — for a rule that only
+    applies to some records — the condition that put the rule in force.
+    """
     if not isinstance(rec, dict):
         return ["record must be a JSON object"]
     st = rec.get("source_type")
     if st not in SERVICE_SCHEMAS:
         return [f"source_type must be one of {list(SERVICE_SCHEMAS)}, got {st!r}"]
+    label = _record_label(rec)
     msgs: list[str] = []
     for err in sorted(_validator(st).iter_errors(rec), key=lambda e: list(e.path)):
-        loc = "/".join(str(p) for p in err.path) or "<root>"
-        msgs.append(f"{loc}: {err.message}")
+        loc = "/".join(str(p) for p in err.path)
+        # The record's own name says "the whole record" better than a placeholder does, so
+        # `<root>` is only there for a record that gave nothing to be called by. The path is
+        # bracketed rather than set off by a space, because a label is free text and a space does
+        # not close: a record titled `subtype` with a bad `subtype` field read
+        # "subtype subtype: ...", naming the field twice and marking neither.
+        #
+        # A nameless record's path is bracketed too, against `<root>`, so that brackets always mean
+        # "field path" and an unbracketed head always names the record. Left bare, a path from a
+        # nameless record and a label from a named one produce the same one-token head: `subtype: `
+        # was both "the subtype field is wrong" and "this record called subtype is wrong".
+        if label:
+            head = f"{label} [{loc}]" if loc else label
+        else:
+            head = f"<root> [{loc}]" if loc else "<root>"
+        msgs.append(
+            f"{head}: {err.message}{_when_clause(SERVICE_SCHEMAS[st], err.schema_path, err.schema)}"
+        )
     return msgs
 
 

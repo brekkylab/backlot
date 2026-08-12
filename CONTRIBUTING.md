@@ -31,8 +31,12 @@ curl -s localhost:8000/health
 ```
 
 For a real corpus use `backlot import --type enterpriserag-bench` (the bench) or
-`backlot import mycorpus.jsonl` (your own) — see the README. Every `backlot import` flag is the
-importer module's own, so `python -m backlot.importer.{byo,erb}` still takes exactly the same ones.
+`backlot import mycorpus.jsonl` (your own) — see the README.
+
+Every command and every option lives in `backlot/cli.py`, declared as Typer parameters; the
+importers expose a plain `run(**kwargs)` and parse nothing. So `backlot import --help` is the
+complete list, and adding a flag means touching one file. `python -m backlot.importer.{byo,erb}`
+still work — they re-enter the same CLI, so they cannot take a different set.
 
 ## Terminology
 

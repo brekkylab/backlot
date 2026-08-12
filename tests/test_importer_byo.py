@@ -2201,7 +2201,7 @@ def test_import_refuses_a_shard_that_does_not_match_the_manifest(tmp_path, monke
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     get_settings.cache_clear()
     with pytest.raises(SystemExit) as e:
-        byo.main([str(out)])
+        byo.run(out)
     assert e.value.code == 1
     assert not (data / "mock.sqlite").exists(), "a rejected artifact must not leave a database"
 

@@ -1034,7 +1034,7 @@ async def confluence_restrictions(content_id: int, request: Request):
     doc_id = request.app.state.index["confluence"].get(content_id)
     if doc_id is None:
         raise HTTPException(status_code=404, detail="No content found with id")
-    emails = store.doc_member_emails(conn, doc_id)
+    emails = store.doc_member_emails(conn, "confluence", doc_id)
     users = [] if emails is None else [_conf_user(e) for e in sorted(emails)]
 
     def _op(name):

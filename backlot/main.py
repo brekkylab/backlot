@@ -288,7 +288,7 @@ async def lifespan(app: FastAPI):
     app.state.doc_counts = None
     # channel -> {principals granted on any of its docs}, so conversations.list can decide a
     # non-admin caller's visible channels by set-intersection (O(channels)) instead of a
-    # per-request doc_acl⋈messages join that scales with the docs granted to the caller.
+    # per-request slack_acl⋈messages join that scales with the docs granted to the caller.
     app.state.channel_acl = None
     # channel -> its member count (its distinct speakers). conversations.info/.list report it
     # for every channel in a page, and a per-channel COUNT(DISTINCT) is far too slow for that.
@@ -316,8 +316,8 @@ async def lifespan(app: FastAPI):
             try:
                 cacl: dict[str, set] = {}
                 for ch, pid in c.execute(
-                    "SELECT DISTINCT d.channel, a.principal_id "
-                    "FROM doc_acl a JOIN slack_messages d ON d.doc_id = a.doc_id"
+                    f"SELECT DISTINCT d.channel, a.principal_id "
+                    f"FROM {store.acl_table('slack')} a JOIN slack_messages d ON d.doc_id = a.doc_id"
                 ):
                     cacl.setdefault(ch, set()).add(pid)
                 app.state.channel_acl = {k: frozenset(v) for k, v in cacl.items()}

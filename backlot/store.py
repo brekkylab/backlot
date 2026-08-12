@@ -1685,15 +1685,15 @@ def slack_reply_count(conn, root_doc_id, visible_ids=None) -> int:
 
 def slack_channels_for_principals(conn, principals) -> set[str]:
     """Channels with at least one doc granted to any of ``principals``. Starts from the
-    principal-indexed ``doc_acl`` (idx_acl_pid) instead of scanning the whole slack table, so
-    it's cheap even at millions of rows — used to list a non-admin caller's visible channels."""
+    principal-indexed ``slack_acl`` (idx_slack_acl_pid) instead of scanning the whole slack table,
+    so it's cheap even at millions of rows — used to list a non-admin caller's visible channels."""
     principals = list(principals)
     if not principals:
         return set()
     marks = ",".join("?" for _ in principals)
     rows = conn.execute(
-        f"SELECT DISTINCT d.channel FROM doc_acl a JOIN slack_messages d ON d.doc_id = a.doc_id "
-        f"WHERE a.principal_id IN ({marks})",
+        f"SELECT DISTINCT d.channel FROM {acl_table('slack')} a "
+        f"JOIN slack_messages d ON d.doc_id = a.doc_id WHERE a.principal_id IN ({marks})",
         principals,
     )
     return {r[0] for r in rows}
@@ -1909,7 +1909,7 @@ def distinct_slack_author_emails(conn) -> list[str]:
 def container_grants(conn, source_type, container) -> list[sqlite3.Row]:
     tbl, gcol = table(source_type), grouping_col(source_type)
     return conn.execute(
-        f"SELECT DISTINCT a.principal_type, a.principal_id FROM doc_acl a "
+        f"SELECT DISTINCT a.principal_type, a.principal_id FROM {acl_table(source_type)} a "
         f"JOIN {tbl} d ON d.doc_id = a.doc_id WHERE d.{gcol} = ?",
         (container,),
     ).fetchall()
@@ -1919,7 +1919,7 @@ def container_has_public(conn, source_type, container) -> bool:
     tbl, gcol = table(source_type), grouping_col(source_type)
     return (
         conn.execute(
-            f"SELECT 1 FROM doc_acl a JOIN {tbl} d ON d.doc_id = a.doc_id "
+            f"SELECT 1 FROM {acl_table(source_type)} a JOIN {tbl} d ON d.doc_id = a.doc_id "
             f"WHERE d.{gcol} = ? AND a.principal_type = 'org' LIMIT 1",
             (container,),
         ).fetchone()
@@ -1927,15 +1927,15 @@ def container_has_public(conn, source_type, container) -> bool:
     )
 
 
-def doc_grants(conn, doc_id) -> list[sqlite3.Row]:
+def doc_grants(conn, source_type, doc_id) -> list[sqlite3.Row]:
     return conn.execute(
-        "SELECT principal_type, principal_id FROM doc_acl WHERE doc_id = ? "
+        f"SELECT principal_type, principal_id FROM {acl_table(source_type)} WHERE doc_id = ? "
         "ORDER BY principal_type, principal_id",
         (doc_id,),
     ).fetchall()
 
 
-def docs_with_grants(conn, doc_ids: list[str]) -> set[str]:
+def docs_with_grants(conn, source_type, doc_ids: list[str]) -> set[str]:
     """The subset of ``doc_ids`` that have at least one ACL grant — one query (chunked to stay
     under SQLite's variable limit) instead of a per-doc ``doc_grants`` call when building a list."""
     out: set[str] = set()
@@ -1945,7 +1945,8 @@ def docs_with_grants(conn, doc_ids: list[str]) -> set[str]:
         out.update(
             r[0]
             for r in conn.execute(
-                f"SELECT DISTINCT doc_id FROM doc_acl WHERE doc_id IN ({marks})", chunk
+                f"SELECT DISTINCT doc_id FROM {acl_table(source_type)} WHERE doc_id IN ({marks})",
+                chunk,
             ).fetchall()
         )
     return out
@@ -1968,8 +1969,8 @@ def container_member_emails(conn, source_type, container) -> set[str] | None:
     return _expand_grants(conn, container_grants(conn, source_type, container))
 
 
-def doc_member_emails(conn, doc_id) -> set[str] | None:
-    return _expand_grants(conn, doc_grants(conn, doc_id))
+def doc_member_emails(conn, source_type, doc_id) -> set[str] | None:
+    return _expand_grants(conn, doc_grants(conn, source_type, doc_id))
 
 
 # --- comments -------------------------------------------------------------------

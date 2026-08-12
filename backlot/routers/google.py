@@ -1014,7 +1014,9 @@ def _drive_fill_shared(conn, files: list[dict], stored: set[str]) -> None:
     """Resolve ``shared`` for one page of stored files, in one query. Objects not in ``stored`` are
     the synthesized folders, left alone: their sharing comes from the files they hold, not from a
     grant on the folder id."""
-    have = store.docs_with_grants(conn, [f["id"] for f in files if f["id"] in stored])
+    have = store.docs_with_grants(
+        conn, "google_drive", [f["id"] for f in files if f["id"] in stored]
+    )
     for f in files:
         if f["id"] in stored:
             f["shared"] = f["id"] in have
@@ -1407,7 +1409,11 @@ async def drive_files_list(request: Request):
     def objects(o: int, n: int, *, with_shared: bool = True) -> list[dict]:
         rows = fetch(o, n) if n > 0 else []
         stored.update(r["doc_id"] for r in rows)
-        shared = store.docs_with_grants(conn, [r["doc_id"] for r in rows]) if with_shared else ()
+        shared = (
+            store.docs_with_grants(conn, "google_drive", [r["doc_id"] for r in rows])
+            if with_shared
+            else ()
+        )
         return [_drive_file(conn, r, shared=r["doc_id"] in shared, me=me) for r in rows]
 
     total = total_rows + len(folders)
@@ -2017,7 +2023,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     # "shared" = visible to anyone besides the owner — true for org/group/multi-reader docs.
     # In a list the caller passes it in (batch-computed); for a single get, look it up here.
     if shared is None:
-        shared = bool(store.doc_grants(conn, row["doc_id"]))
+        shared = bool(store.doc_grants(conn, "google_drive", row["doc_id"]))
     ext = row["title"].rsplit(".", 1)[-1] if (native is None and "." in row["title"]) else None
     nbytes = len((row["content"] or "").encode("utf-8"))
     f = {
@@ -2080,7 +2086,7 @@ def _drive_permissions(conn, doc_id: str, *, folder: str | None = None) -> list[
     grants = (
         store.container_grants(conn, "google_drive", folder)
         if folder
-        else store.doc_grants(conn, doc_id)
+        else store.doc_grants(conn, "google_drive", doc_id)
     )
     domain = get_settings().org_domain
     perms = []

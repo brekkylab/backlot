@@ -475,4 +475,17 @@ def test_a_shared_doc_id_does_not_share_visibility(tmp_path):
     hana = {"acme", "hana@acme.com", *store.user_group_ids(conn, "hana@acme.com")}
     titles = [r["title"] for r in store.list_documents(conn, "google_drive", None, hana, limit=10)]
     assert titles == ["Secret sheet"]
+    # doc_grants/docs_with_grants answer for ONE source's document, not the id corpus-wide: the
+    # drive row is hana-only even though a confluence row sharing the same doc_id is org-public.
+    drive = {
+        (r["principal_type"], r["principal_id"])
+        for r in store.doc_grants(conn, "google_drive", "shared-1")
+    }
+    assert drive == {("user", "hana@acme.com")}
+    assert store.docs_with_grants(conn, "google_drive", ["shared-1"]) == {"shared-1"}
+    conf = {
+        (r["principal_type"], r["principal_id"])
+        for r in store.doc_grants(conn, "confluence", "shared-1")
+    }
+    assert ("org", "acme") in conf
     conn.close()

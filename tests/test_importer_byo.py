@@ -1144,7 +1144,9 @@ def test_byo_gmail_thread_messages(tmp_path):
         # the mailbox owner is served as the owner, not the sender of any one message
         assert rows[0]["owner_display"] == "Ava Chen"
         # children inherit the root's ACL, or a non-admin reader sees a truncated thread
-        assert store.doc_grants(conn, "th-1::m1") == store.doc_grants(conn, "th-1")
+        assert store.doc_grants(conn, "gmail", "th-1::m1") == store.doc_grants(
+            conn, "gmail", "th-1"
+        )
     finally:
         conn.close()
 
@@ -2059,8 +2061,8 @@ def test_byo_empty_readers_means_nobody(tmp_path):
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
     try:
-        assert store.doc_grants(conn, "gm-dark") == []
-        assert store.doc_grants(conn, "gm-open")  # absent readers -> the org default
+        assert store.doc_grants(conn, "gmail", "gm-dark") == []
+        assert store.doc_grants(conn, "gmail", "gm-open")  # absent readers -> the org default
         # ...so it is invisible to a user token and reachable only by admin (visible_ids=None)
         assert store.get_document(conn, "gmail", "gm-dark", visible_ids={"acme"}) is None
         assert store.get_document(conn, "gmail", "gm-dark") is not None

@@ -703,9 +703,10 @@ def test_a_label_cannot_be_mistaken_for_the_field_path():
         "d: 'title' is a required property"
     ]
 
-    # A record that gave no name still shows the bare path, as it did before labels existed.
+    # A nameless record marks its path as a path, so an unbracketed head is always the record:
+    # bare, `subtype: ` was both this and the labelled record-wide line just above it.
     nameless = record_errors({"source_type": "github", "title": "", "content": "c", "subtype": 9})
-    assert nameless and all(e.startswith("subtype: ") for e in nameless)
+    assert nameless and all(e.startswith("<root> [subtype]: ") for e in nameless)
 
 
 def test_the_condition_clause_is_omitted_rather_than_guessed():

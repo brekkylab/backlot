@@ -186,7 +186,15 @@ def record_errors(rec: dict) -> list[str]:
         # bracketed rather than set off by a space, because a label is free text and a space does
         # not close: a record titled `subtype` with a bad `subtype` field read
         # "subtype subtype: ...", naming the field twice and marking neither.
-        head = f"{label} [{loc}]" if label and loc else (label or loc or "<root>")
+        #
+        # A nameless record's path is bracketed too, against `<root>`, so that brackets always mean
+        # "field path" and an unbracketed head always names the record. Left bare, a path from a
+        # nameless record and a label from a named one produce the same one-token head: `subtype: `
+        # was both "the subtype field is wrong" and "this record called subtype is wrong".
+        if label:
+            head = f"{label} [{loc}]" if loc else label
+        else:
+            head = f"<root> [{loc}]" if loc else "<root>"
         msgs.append(
             f"{head}: {err.message}{_when_clause(SERVICE_SCHEMAS[st], err.schema_path, err.schema)}"
         )

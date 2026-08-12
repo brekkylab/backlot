@@ -56,9 +56,14 @@ first-class base-URL arg needed. It requires `hubspot-api-client>=12`: on 8.x th
 **ignored** and the client talks to api.hubapi.com, so the script asserts its configured host before
 reading anything rather than letting a "mock" run hit production.
 
-`github.py` lists a repo's issues/PRs, then crawls its **code**: `repo.get_git_tree(...,
-recursive=True)` for the file tree, `repo.get_contents(path)` to read one file, and
-`repo.get_readme()` — the mock serves the real git `trees`/`contents`/`blobs`/`readme` shapes.
+`github.py` finds its repo through `get_user().get_repos()` (`GET /user/repos`, the credential's own
+view — the mock derives its org from the corpus and 404s any other owner, so nothing hardcodes one),
+then reads a **pull request**: `pr.get_files()` for the changeset with a real `git apply`-able
+`patch`, `pr.get_review_comments()` for the line-anchored ones and `pr.get_issue_comments()` for the
+conversation — two resources GitHub keeps apart, which the corpus splits by putting a `path` on a
+comment. It then crawls the **code**: `repo.get_git_ref("heads/main")` to pin the branch to a commit,
+`repo.get_git_tree(..., recursive=True)` for the file tree, `repo.get_contents(path)` and
+`repo.get_readme()`.
 
 Pass `--url http://host:port` to point a script at an already-running mock instead; if it's
 omitted or unreachable, the script falls back to spinning up its own.

@@ -1085,6 +1085,17 @@ def test_github_pull_files_are_the_declared_paths(declared_pr):
     ]
 
 
+def test_github_declared_paths_are_modified_not_added(declared_pr):
+    """A corpus that names a path is saying the pull CHANGED a file the repo has. Reporting it as
+    `added` claims the pull created it, which is more than the corpus said — a PR titled "fix the
+    off-by-one" showing its file as brand new reads as a bug in the mock.
+
+    A synthesized changeset still varies the status, so the new-file path stays exercisable."""
+    c, h, org, num = declared_pr
+    files = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json()
+    assert {f["status"] for f in files} == {"modified"}
+
+
 def test_github_declared_changeset_still_agrees_with_the_pull_object(declared_pr):
     c, h, org, num = declared_pr
     pull = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers=h).json()

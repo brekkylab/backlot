@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Read GitHub through the official PyGithub. Self-contained: run it directly.
 
-Lists a repo's issues/PRs, then crawls its code: the git tree (`get_git_tree(...,
-recursive=True)`), a file read via `get_contents`, and the README via `get_readme`.
+Finds its repo via `get_user().get_repos()`, reads a pull request (`get_files()`,
+`get_review_comments()` vs `get_issue_comments()`), then crawls the code: `get_git_ref()`,
+`get_git_tree(..., recursive=True)`, `get_contents()` and `get_readme()`.
 
     pip install -e ".[examples]"
     python examples/using-official-sdk/github.py            # or: --url http://localhost:8000
@@ -36,6 +37,23 @@ CORPUS = [
         "title": "Fix token-bucket refill off-by-one",
         "content": "Corrects the refill tick; adds a regression test.",
         "subtype": "pull_request",
+        # The files this pull touched, named as `path` values of this repo's subtype='file' records.
+        # Only WHICH files: the hunks are derived from each file's own content, so the diff applies
+        # with real git. Leave it out and the mock picks deterministically instead — a well-formed
+        # diff, but unrelated to what the pull is about.
+        "changed_paths": ["src/ratelimiter.py"],
+        "comments": [
+            # No `path` -> a conversation comment (GET /issues/{n}/comments)
+            {"content": "Can we add a metric for dropped bursts?", "author_email": "ava@acme.com"},
+            # `path` -> a line-anchored REVIEW comment (GET /pulls/{n}/comments). Real GitHub keeps
+            # the two apart and counts them separately, and so does the mock.
+            {
+                "content": "This clamps against `tokens`, so the bucket can never refill.",
+                "author_email": "ava@acme.com",
+                "path": "src/ratelimiter.py",
+                "line": 8,
+            },
+        ],
     },
     {
         "source_type": "github",
@@ -99,7 +117,36 @@ with serve_or_connect(CORPUS, url=args.url) as mock:
             kind = "PR" if issue.pull_request else "issue"
             print(f"  - #{issue.number} ({kind}) {issue.title}")
 
-        # code crawl: the repo's file tree, then read one file + the README
+        # --- pull requests: the changeset, and the two kinds of comment ---------------------
+        pulls = list(repo.get_pulls(state="all"))
+        for pr in pulls[:1]:
+            print(f"\n#{pr.number} {pr.title}")
+            print(
+                f"  {pr.changed_files} changed file(s), +{pr.additions}/-{pr.deletions}; "
+                f"{pr.comments} conversation comment(s), {pr.review_comments} review comment(s)"
+            )
+            # get_files() is GET /pulls/{n}/files. `patch` is a real unified diff hunk built from
+            # the file's own content — `git apply` accepts it.
+            for f in pr.get_files():
+                print(f"  - {f.status:8} {f.filename}  +{f.additions}/-{f.deletions}")
+                for line in (f.patch or "").splitlines()[:4]:
+                    print(f"      {line}")
+            # get_review_comments() is GET /pulls/{n}/comments — the line-anchored ones only.
+            # PyGithub's own docstring points at get_issue_comments() for the conversation, which
+            # is the split the corpus made with `path` above.
+            for rc in pr.get_review_comments():
+                where = f"{rc.path}:{rc.line}" if rc.line else f"{rc.path} (file-level)"
+                print(f"  review comment @ {where}: {rc.body}")
+            for ic in pr.get_issue_comments():
+                print(f"  conversation: {ic.body}")
+
+        # --- code crawl: pin the branch to a commit, then read the tree, a file, the README ----
+        # get_git_ref() is GET /git/ref/{ref}. It takes the ref as a trailing PATH, which is why it
+        # resolves a branch whose name contains a slash (`heads/release/2026-03`) where
+        # /branches/{branch} cannot.
+        head = repo.get_git_ref(f"heads/{repo.default_branch}")
+        print(f"\n$ get_git_ref('heads/{repo.default_branch}') -> {head.object.sha[:12]}")
+
         tree = repo.get_git_tree(repo.default_branch, recursive=True)
         print(f"\n{repo.name}@{repo.default_branch} tree ({len(tree.tree)} entries), a few paths:")
         for entry in tree.tree[:5]:

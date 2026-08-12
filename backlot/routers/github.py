@@ -1242,6 +1242,11 @@ def _pr_files(
         # dict.fromkeys: declared order, minus repeats. A path named twice would put the same file
         # in the diff twice, which `git apply` refuses outright.
         chosen = list(dict.fromkeys(declared))
+        # A corpus naming a path says the pull CHANGED a file the repo already has, so every
+        # declared file is `modified` (bar the ones _changed_file has to downgrade for want of a
+        # hunk). Varying it would have the mock claim the pull CREATED a file, which is more than
+        # the corpus said. A synthesized changeset still varies, so `added` stays exercisable.
+        statuses = dict.fromkeys(chosen, "modified")
     else:
         paths = src.paths
         if not paths:
@@ -1249,16 +1254,18 @@ def _pr_files(
         n = 1 + synth.hnum(doc_id, salt="pr-nfiles") % min(_MAX_CHANGED_FILES, len(paths))
         start = synth.hnum(doc_id, salt="pr-offset") % len(paths)
         chosen = [paths[(start + i) % len(paths)] for i in range(n)]
+        # Seeded on (pull, path) rather than the file's position, so a file's status does not shift
+        # when an ACL-hidden sibling drops out of the list.
+        statuses = {
+            p: _CHANGE_STATUSES[synth.hnum(f"{doc_id}:{p}", salt="pr-status") % 2] for p in chosen
+        }
     head_sha = hashlib.sha1(doc_id.encode()).hexdigest()
     out = []
     for path in chosen:
         f = src.get(path)
         if f is None:  # not visible to this caller, or no such file — see _RepoFiles.get
             continue
-        # Seeded on (pull, path) rather than the file's position, so a file's status does not shift
-        # when an ACL-hidden sibling drops out of the list or the corpus reorders `changed_paths`.
-        status = _CHANGE_STATUSES[synth.hnum(f"{doc_id}:{path}", salt="pr-status") % 2]
-        out.append(_changed_file(doc_id, owner, repo, f, status, head_sha, api_base))
+        out.append(_changed_file(doc_id, owner, repo, f, statuses[path], head_sha, api_base))
     return out
 
 
@@ -1427,7 +1434,7 @@ def _gh_review_comment(
     self_url = f"{api_base}/repos/{owner}/{repo}/pulls/comments/{cid}"
     pr_url = f"{api_base}/repos/{owner}/{repo}/pulls/{number}"
     html_url = f"https://github.com/{owner}/{repo}/pull/{number}#discussion_r{cid}"
-    hunk = c["diff_hunk"] or patches.get(c["path"]) or _hunk_around(file_row, c["line"])
+    hunk = _comment_hunk(c, patches.get(c["path"]), file_row)
     return {
         "id": cid,
         "node_id": synth.node_id("PullRequestReviewComment", cid),
@@ -1492,6 +1499,21 @@ def _hunk_position(hunk: str, line: int | None) -> int | None:
             return offset
         cur += 1
     return None
+
+
+def _comment_hunk(c, patch: str | None, file_row) -> str:
+    """The hunk a review comment is anchored to: what the corpus supplied, else this pull's own hunk
+    for that file, else a context window from the snapshot.
+
+    The middle rung is taken only when the pull's hunk actually COVERS the commented line — a pull
+    changes one part of a file and a comment may sit anywhere in it, so handing back a hunk the
+    comment's own `line` is nowhere inside would leave `position` null against a `diff_hunk` that
+    looks authoritative."""
+    if c["diff_hunk"]:
+        return c["diff_hunk"]
+    if patch and (c["line"] is None or _hunk_position(patch, c["line"]) is not None):
+        return patch
+    return _hunk_around(file_row, c["line"])
 
 
 def _hunk_around(file_row, line: int | None) -> str:

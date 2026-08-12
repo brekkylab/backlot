@@ -736,6 +736,47 @@ def test_the_condition_clause_is_omitted_rather_than_guessed():
     )
 
 
+def test_a_predicate_field_the_condition_does_not_require_says_so():
+    """`properties` constrains a value; it does not require the field. An `if` with no sibling
+    `required` succeeds for a record that omits the field, so `then` binds that record too --
+    and a bare `when subtype is "file"` would send its author hunting for a field they never
+    wrote. The shipped github condition DOES carry `required`, so its clause is unchanged."""
+    from jsonschema import Draft202012Validator
+
+    unguarded = {
+        "type": "object",
+        "allOf": [
+            {"if": {"properties": {"subtype": {"const": "file"}}}, "then": {"required": ["path"]}}
+        ],
+    }
+    # No `subtype` anywhere in the record, yet the requirement binds it.
+    (err,) = Draft202012Validator(unguarded).iter_errors({})
+    assert (
+        validation._when_clause(unguarded, err.schema_path, err.schema)
+        == ' when subtype is "file" (or absent)'
+    )
+
+    guarded = {
+        "type": "object",
+        "allOf": [
+            {
+                "if": {"properties": {"subtype": {"const": "file"}}, "required": ["subtype"]},
+                "then": {"required": ["path"]},
+            }
+        ],
+    }
+    assert not list(Draft202012Validator(guarded).iter_errors({}))
+    (bound,) = Draft202012Validator(guarded).iter_errors({"subtype": "file"})
+    assert validation._when_clause(guarded, bound.schema_path, bound.schema) == (
+        ' when subtype is "file"'
+    )
+
+    # The real schema is the guarded form, so the headline diagnostic keeps its plain clause.
+    assert record_errors(
+        {"source_type": "github", "subtype": "file", "title": "t", "content": "c", "doc_id": "gh-1"}
+    ) == ["gh-1: 'path' is a required property when subtype is \"file\""]
+
+
 def test_a_clause_is_not_read_across_a_ref_hop():
     """`err.schema_path` omits the `$ref` keyword it passed through, so a path from inside a
     referenced subschema reads as a root-relative one. Walking the root by it can land on a
@@ -800,7 +841,7 @@ def test_an_else_branch_rules_out_the_condition_whole():
         validation._when_clause(
             two_field, ["allOf", 0, "else", "required"], two_field["allOf"][0]["else"]
         )
-        == ' unless a is "x" and b is "y"'
+        == ' unless a is "x" (or absent) and b is "y" (or absent)'
     )
 
 

@@ -92,6 +92,9 @@ def _when_clause(schema: dict, schema_path, failing) -> str:
     predicate fails, so a two-field condition rules out the pair together, and negating each
     field separately would claim something the schema does not say.
 
+    A predicate field is reported as ``(or absent)`` unless the ``if`` requires it, because
+    ``properties`` alone constrains a value without demanding the field.
+
     ``failing`` is the subschema that actually reported the error, and the walk is only trusted
     when it arrives there. No shipped schema uses ``$ref`` yet, so this guard changes nothing
     today; it is what keeps the clause honest once one does.
@@ -123,7 +126,16 @@ def _when_clause(schema: dict, schema_path, failing) -> str:
         else:
             continue
         shown = " or ".join(json.dumps(v, ensure_ascii=False) for v in allowed)
-        clauses.append(f"{field} is {shown}")
+        req = cond.get("required")
+        if isinstance(req, list) and field in req:
+            clauses.append(f"{field} is {shown}")
+        else:
+            # `properties` constrains a field's value, it does not require the field. An `if` with
+            # no sibling `required` therefore SUCCEEDS for a record that omits the field, so `then`
+            # is in force there too -- and saying only `when subtype is "file"` sends the author
+            # looking through a record for a field they never set. `unless` needs it for the mirror
+            # reason: an absent field satisfies the predicate, so it does not lift the rule.
+            clauses.append(f"{field} is {shown} (or absent)")
     lead = " unless " if parts[branch] == "else" else " when "
     return lead + " and ".join(clauses) if clauses else ""
 

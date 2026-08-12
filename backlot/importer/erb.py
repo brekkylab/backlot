@@ -2228,7 +2228,7 @@ def _populate_principals(records, P, settings) -> None:
     ``P.resolve`` LEARNS — it harvests real addresses out of Gmail headers and dedupes people by
     canonical name — so converting in a single pass made the output depend on document ORDER: a name
     unresolvable when its own document was converted resolved once a later one introduced it, giving
-    a different ``doc_acl``. Resolving everything first means every conversion sees the finished
+    different grants. Resolving everything first means every conversion sees the finished
     directory, which is also what lets a direct import and the exported artifact agree.
     """
     for _ in _convert_all(records, P, settings, {}, []):

@@ -204,7 +204,7 @@ backlot import out/corpus.jsonl --roster out/roster.yaml
 ```
 
 The result is a database **equivalent** to importing the bench directly — same rows, same column
-values, same `doc_acl`, same `tokens.yaml`, for all nine bench sources.
+values, same ACL grants, same `tokens.yaml`, for all nine bench sources.
 `tests/test_importer_erb.py` asserts exactly that, as a table-by-table diff, so expressiveness the
 schemas lose fails a test instead of quietly producing a lossy artifact. It also asserts that every
 source in `erb.SUPPORTED` has a converter and a fixture, because the conversion fails soft: a source

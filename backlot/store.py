@@ -422,13 +422,6 @@ CREATE TABLE IF NOT EXISTS group_members (
     group_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (group_id, user_id)
 );
 
-CREATE TABLE IF NOT EXISTS doc_acl (
-    doc_id TEXT NOT NULL, principal_type TEXT NOT NULL, principal_id TEXT NOT NULL,
-    PRIMARY KEY (doc_id, principal_type, principal_id)
-);
-CREATE INDEX IF NOT EXISTS idx_acl_doc ON doc_acl(doc_id);
-CREATE INDEX IF NOT EXISTS idx_acl_pid ON doc_acl(principal_id);
-
 -- Build-time facts that cannot be recomputed from the rows. `source_documents` is the count of
 -- documents the corpus OFFERED, which differs from COUNT(*) because faithful parsing promotes
 -- structure inside a document to first-class rows (one Slack transcript -> many messages).

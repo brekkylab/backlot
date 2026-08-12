@@ -1047,7 +1047,12 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
     # counting `byo.load_records`'s `(where, record)` pairs would overcount it as 3.
     assert store.read_meta(c, "source_documents") == "1"
     # the company is ACL-granted, so a non-admin can actually reach it
-    assert c.execute("SELECT COUNT(*) FROM doc_acl WHERE doc_id='dsid_hs_e2e'").fetchone()[0] > 0
+    assert (
+        c.execute(
+            f"SELECT COUNT(*) FROM {store.acl_table('hubspot')} WHERE doc_id='dsid_hs_e2e'"
+        ).fetchone()[0]
+        > 0
+    )
     c.close()
     get_settings.cache_clear()
 
@@ -1139,10 +1144,12 @@ def _import_gen(tmp_path, monkeypatch, source: str, filename: str, raw: dict, em
     return settings
 
 
-def _granted(conn, doc_id) -> set:
+def _granted(conn, doc_id, source_type) -> set:
     return {
         (r["principal_type"], r["principal_id"])
-        for r in conn.execute("SELECT * FROM doc_acl WHERE doc_id=?", (doc_id,))
+        for r in conn.execute(
+            f"SELECT * FROM {store.acl_table(source_type)} WHERE doc_id=?", (doc_id,)
+        )
     }
 
 
@@ -1160,14 +1167,16 @@ def test_materialized_note_rows_inherit_the_company_grants(tmp_path, monkeypatch
     )
     conn = sqlite3.connect(settings.db_path)
     conn.row_factory = sqlite3.Row
-    company = _granted(conn, "dsid_hs_acl")
+    company = _granted(conn, "dsid_hs_acl", "hubspot")
     assert company  # sanity: the parent is granted
     notes = [
         r[0] for r in conn.execute("SELECT doc_id FROM hubspot_objects WHERE object_type='notes'")
     ]
     assert notes
     for n in notes:
-        assert _granted(conn, n) == company, f"note {n} does not inherit the company's grants"
+        assert _granted(conn, n, "hubspot") == company, (
+            f"note {n} does not inherit the company's grants"
+        )
     conn.close()
     get_settings.cache_clear()
 
@@ -1193,12 +1202,14 @@ def test_thread_reply_rows_inherit_the_root_grants(tmp_path, monkeypatch):
     )
     conn = sqlite3.connect(settings.db_path)
     conn.row_factory = sqlite3.Row
-    root = _granted(conn, "dsid_s_acl")
+    root = _granted(conn, "dsid_s_acl", "slack")
     assert root
     replies = [r[0] for r in conn.execute("SELECT doc_id FROM slack_messages WHERE thread_seq > 0")]
     assert replies
     for rid in replies:
-        assert _granted(conn, rid) == root, f"reply {rid} does not inherit the root's grants"
+        assert _granted(conn, rid, "slack") == root, (
+            f"reply {rid} does not inherit the root's grants"
+        )
     conn.close()
     get_settings.cache_clear()
 
@@ -2253,7 +2264,7 @@ def _import_via_byo(gen: Path, data_dir: Path, out_dir: Path):
 
 def test_erb_to_byo_round_trip_builds_an_equivalent_database(tmp_path):
     """ERB -> BYO-JSONL -> DB must be indistinguishable from ERB -> DB, table by table, including
-    doc_acl, principals, group_members and every per-service column.
+    every source's own ACL table, principals, group_members and every per-service column.
 
     Both paths now share one mapping (`to_byo`), so this no longer guards two implementations
     against drift. What it still guards is the SERIALIZATION: that writing the converted records
@@ -2527,7 +2538,7 @@ def test_conversion_does_not_depend_on_document_order():
     attributed to her or left with the name as a text prefix, depending on whether the issue she
     authored happened to be converted before the issue she commented on.
 
-    Measured on a 2,555-document bench slice, that order sensitivity moved 27 doc_acl grants and
+    Measured on a 2,555-document bench slice, that order sensitivity moved 27 ACL grants and
     one comment attribution. `_populate_principals` resolves everything before anything is
     converted, so the corpus converts to the same records either way."""
     from backlot.config import Settings

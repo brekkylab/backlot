@@ -1536,7 +1536,6 @@ def load_records(
             f"INSERT OR IGNORE INTO {store.acl_table(source_type)} VALUES (?,?,?)",
             (doc_id, ptype, pid),
         )
-        conn.execute("INSERT OR REPLACE INTO doc_acl VALUES (?,?,?)", (doc_id, ptype, pid))
     conn.commit()
     if reset:
         store.build_fts(conn)  # full-text index for search (search.messages / confluence CQL)

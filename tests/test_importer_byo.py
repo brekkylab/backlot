@@ -781,7 +781,8 @@ def test_append_preserves_prior_roster_and_org(tmp_path, monkeypatch):
         org_grant_principals = {
             r[0]
             for r in conn.execute(
-                "SELECT DISTINCT principal_id FROM doc_acl WHERE principal_type='org'"
+                f"SELECT DISTINCT principal_id FROM {store.acl_table('notion')} "
+                "WHERE principal_type='org'"
             )
         }
         assert org_grant_principals == {prev_org}
@@ -1303,14 +1304,15 @@ def test_byo_typed_reader_principals(tmp_path):
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
     try:
+        acl = store.acl_table("confluence")
         assert {
             (r["principal_type"], r["principal_id"])
-            for r in conn.execute("SELECT * FROM doc_acl WHERE doc_id='c1'")
+            for r in conn.execute(f"SELECT * FROM {acl} WHERE doc_id='c1'")
         } == {("user", "ava@acme.com"), ("group", "eng"), ("org", "acme")}
         # the unprefixed shorthand is unchanged
         assert {
             (r["principal_type"], r["principal_id"])
-            for r in conn.execute("SELECT * FROM doc_acl WHERE doc_id='c2'")
+            for r in conn.execute(f"SELECT * FROM {acl} WHERE doc_id='c2'")
         } == {("user", "ava@acme.com"), ("group", "eng")}
     finally:
         conn.close()

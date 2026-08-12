@@ -736,6 +736,19 @@ def test_the_condition_clause_is_omitted_rather_than_guessed():
     )
 
 
+def test_a_malformed_condition_reports_rather_than_raises():
+    """A schema is only `json.loads`ed at import -- `check_schema` runs in a test, not on load --
+    so a hand-edited file can reach the renderer with a non-object where a subschema belongs. The
+    diagnostics path must degrade to "no clause" there, because raising turns every record into a
+    traceback, including on the `--dry-run` that exists to report problems."""
+    for broken in (
+        {"if": {"properties": ["a"]}, "then": {}},
+        {"if": {"properties": "a"}, "then": {}},
+        {"if": {"properties": 1}, "then": {}},
+    ):
+        assert validation._when_clause(broken, ["then", "required"], broken["then"]) == ""
+
+
 def test_a_predicate_field_the_condition_does_not_require_says_so():
     """`properties` constrains a value; it does not require the field. An `if` with no sibling
     `required` succeeds for a record that omits the field, so `then` binds that record too --

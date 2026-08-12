@@ -116,7 +116,12 @@ def _when_clause(schema: dict, schema_path, failing) -> str:
     if not isinstance(cond, dict):
         return ""
     clauses = []
-    for field, spec in (cond.get("properties") or {}).items():
+    # Guarded like `owner`, `cond` and `spec` are: `_load_schemas` only json.loads the files, and
+    # `check_schema` runs in a test rather than at import, so a hand-edited schema reaches here
+    # unvalidated. A non-object `properties` must not turn "report this bad record" into a
+    # traceback on every record -- least of all on `--dry-run`, whose whole job is to report.
+    props = cond.get("properties")
+    for field, spec in (props if isinstance(props, dict) else {}).items():
         if not isinstance(spec, dict):
             continue
         if "const" in spec:

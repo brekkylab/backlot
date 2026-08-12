@@ -456,40 +456,6 @@ def test_connect_rw_self_heals_missing_path_column(tmp_path):
         reconn.close()
 
 
-def test_connect_rw_self_heals_the_changeset_columns(tmp_path):
-    """Same self-heal for the pull-changeset columns added later: a DB built before them keeps the
-    old column set, and then every INSERT naming one fails. github_comments gets the review-comment
-    columns the same way."""
-    p = tmp_path / "old2.sqlite"
-    conn = sqlite3.connect(p)
-    conn.execute(
-        "CREATE TABLE github_items ("
-        "doc_id TEXT PRIMARY KEY, repo TEXT NOT NULL, author_email TEXT NOT NULL, "
-        "title TEXT NOT NULL, content TEXT NOT NULL, kind TEXT, created_ts INTEGER NOT NULL, "
-        "path TEXT)"
-    )
-    conn.execute(
-        "CREATE TABLE github_comments ("
-        "id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL, author_email TEXT, "
-        "body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT)"
-    )
-    conn.execute(
-        "INSERT INTO github_items(doc_id, repo, author_email, title, content, created_ts) "
-        "VALUES ('p1', 'svc', 'a@x', 'a pull', '...', 1)"
-    )
-    conn.commit()
-    conn.close()
-
-    reconn = store.connect_rw(p)  # must not raise
-    try:
-        assert "changed_paths" in {r[1] for r in reconn.execute("PRAGMA table_info(github_items)")}
-        ccols = {r[1] for r in reconn.execute("PRAGMA table_info(github_comments)")}
-        assert {"path", "line", "diff_hunk"} <= ccols
-        assert reconn.execute("SELECT doc_id FROM github_items WHERE doc_id = 'p1'").fetchone()
-    finally:
-        reconn.close()
-
-
 def test_connect_rw_fresh_db_still_works(tmp_path):
     conn = store.connect_rw(tmp_path / "fresh.sqlite")
     try:

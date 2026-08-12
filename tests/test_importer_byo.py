@@ -2232,58 +2232,16 @@ def _gh_changeset_corpus(**pr_extra):
     ]
 
 
-def test_github_changed_paths_round_trips(tmp_path):
-    """`changed_paths` says which files a pull touched. Without it the router picks
-    deterministically, which is well-formed but unrelated to what the pull is about."""
-    load(
-        _write(tmp_path, _gh_changeset_corpus(changed_paths=["src/b.py", "src/a.py"])),
-        Settings(data_dir=tmp_path),
-    )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
-    row = store.get_document(conn, "github", "cs-pr")
-    assert store.jcol(row, "changed_paths") == ["src/b.py", "src/a.py"]  # order preserved
-    # an ordinary file row is untouched by this
-    assert store.get_document(conn, "github", "cs-file-0")["changed_paths"] is None
-
-
-def test_github_changed_paths_on_a_non_pull_is_refused(tmp_path):
-    """Only a pull has a changeset. Accepting it on an issue would store data nothing can serve."""
-    corpus = _write(
-        tmp_path,
-        [
-            {
-                "source_type": "github",
-                "doc_id": "cs-issue",
-                "repo": "cs",
-                "title": "An issue",
-                "content": "body",
-                "author_email": "a@x.com",
-                "changed_paths": ["src/a.py"],
-            }
-        ],
-    )
-    with pytest.raises(SystemExit) as e:
-        load(corpus, Settings(data_dir=tmp_path))
-    assert "changed_paths" in str(e.value)
-
-
-def test_github_changed_paths_must_be_a_list_of_paths(tmp_path):
-    with pytest.raises(SystemExit) as e:
-        load(
-            _write(tmp_path, _gh_changeset_corpus(changed_paths="src/a.py")),
-            Settings(data_dir=tmp_path),
-        )
-    assert "changed_paths" in str(e.value)
-
-
-def test_github_review_comment_fields_round_trip(tmp_path):
-    """A comment carrying `path` is a line-anchored REVIEW comment; one without is a conversation
-    comment. Both live in github_comments, discriminated by `path`."""
+def test_github_changeset_fields_round_trip(tmp_path):
+    """`changed_paths` says which files a pull touched — without it the router picks
+    deterministically, which is well-formed but unrelated to what the pull is about. A comment
+    carrying `path` is a line-anchored REVIEW comment; one without is a conversation comment. Both
+    live in github_comments, discriminated by `path`."""
     load(
         _write(
             tmp_path,
             _gh_changeset_corpus(
-                changed_paths=["src/a.py"],
+                changed_paths=["src/b.py", "src/a.py"],
                 comments=[
                     {"content": "overall looks fine", "author_email": "b@x.com"},
                     {
@@ -2304,6 +2262,10 @@ def test_github_review_comment_fields_round_trip(tmp_path):
         Settings(data_dir=tmp_path),
     )
     conn = store.connect_ro(tmp_path / "mock.sqlite")
+    row = store.get_document(conn, "github", "cs-pr")
+    assert store.jcol(row, "changed_paths") == ["src/b.py", "src/a.py"]  # order preserved
+    assert store.get_document(conn, "github", "cs-file-0")["changed_paths"] is None
+
     assert [c["body"] for c in store.github_comments(conn, "cs-pr", anchored=False)] == [
         "overall looks fine"
     ]
@@ -2312,35 +2274,58 @@ def test_github_review_comment_fields_round_trip(tmp_path):
     assert anchored[1]["diff_hunk"].startswith("@@ -1,2 +1,2 @@")
 
 
-def test_github_review_comment_without_a_path_is_refused(tmp_path):
-    """`path` is the discriminator, so `line`/`diff_hunk` without one would store a comment that
-    is neither resource — invisible to both endpoints."""
-    corpus = _write(
-        tmp_path,
-        _gh_changeset_corpus(
-            comments=[{"content": "where?", "author_email": "b@x.com", "line": 3}]
+@pytest.mark.parametrize(
+    "records, expected",
+    [
+        # a changeset and a review comment are both pull-only; on an issue they would be stored and
+        # then be unservable
+        (
+            lambda: [
+                {
+                    "source_type": "github",
+                    "doc_id": "cs-issue",
+                    "repo": "cs",
+                    "title": "An issue",
+                    "content": "body",
+                    "author_email": "a@x.com",
+                    "changed_paths": ["src/a.py"],
+                }
+            ],
+            "changed_paths",
         ),
-    )
+        (
+            lambda: [
+                {
+                    "source_type": "github",
+                    "doc_id": "cs-issue",
+                    "repo": "cs",
+                    "title": "An issue",
+                    "content": "body",
+                    "author_email": "a@x.com",
+                    "comments": [{"content": "x", "author_email": "b@x.com", "path": "src/a.py"}],
+                }
+            ],
+            "review comment",
+        ),
+        # `changed_paths` is a list of paths, not one path
+        (lambda: _gh_changeset_corpus(changed_paths="src/a.py"), "changed_paths"),
+        # `path` is what marks a comment as line-anchored, so line/diff_hunk without one would be
+        # served by neither endpoint
+        (
+            lambda: _gh_changeset_corpus(
+                comments=[{"content": "where?", "author_email": "b@x.com", "line": 3}]
+            ),
+            "path",
+        ),
+    ],
+    ids=[
+        "changed_paths-on-issue",
+        "review-comment-on-issue",
+        "changed_paths-not-a-list",
+        "no-path",
+    ],
+)
+def test_github_changeset_misuse_is_refused(tmp_path, records, expected):
     with pytest.raises(SystemExit) as e:
-        load(corpus, Settings(data_dir=tmp_path))
-    assert "path" in str(e.value)
-
-
-def test_github_review_comment_on_a_non_pull_is_refused(tmp_path):
-    corpus = _write(
-        tmp_path,
-        [
-            {
-                "source_type": "github",
-                "doc_id": "cs-issue",
-                "repo": "cs",
-                "title": "An issue",
-                "content": "body",
-                "author_email": "a@x.com",
-                "comments": [{"content": "x", "author_email": "b@x.com", "path": "src/a.py"}],
-            }
-        ],
-    )
-    with pytest.raises(SystemExit) as e:
-        load(corpus, Settings(data_dir=tmp_path))
-    assert "review comment" in str(e.value)
+        load(_write(tmp_path, records()), Settings(data_dir=tmp_path))
+    assert expected in str(e.value)

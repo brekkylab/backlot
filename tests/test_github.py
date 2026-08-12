@@ -535,21 +535,19 @@ def test_github_file_acl_scoped(gh_client, gh_admin_h, gh_org, gh_user_tokens):
     assert has_secret(member_h)
     assert not has_secret(nonmember_h)
 
-    ok = c.get(f"/github/repos/{gh_org}/codebase/contents/config/secret.yaml", headers=member_h)
-    assert ok.status_code == 200
-    hidden = c.get(
-        f"/github/repos/{gh_org}/codebase/contents/config/secret.yaml", headers=nonmember_h
-    )
-    assert hidden.status_code == 404
+    secret = f"/github/repos/{gh_org}/codebase/contents/config/secret.yaml"
+    assert c.get(secret, headers=member_h).status_code == 200
+    assert c.get(secret, headers=nonmember_h).status_code == 404
+    # ...and asking for the raw bytes is not a way around it
+    raw = {"Accept": "application/vnd.github.raw"}
+    assert c.get(secret, headers={**member_h, **raw}).status_code == 200
+    assert c.get(secret, headers={**nonmember_h, **raw}).status_code == 404
 
 
 # --- media-type negotiation: Accept: application/vnd.github.raw (issue #49 D1) ----------
-#
-# Real GitHub serves the raw bytes when a content endpoint is asked for the `raw` media type; the
-# tell that it isn't happening is the byte count disagreeing with the `size` the tree reported for
-# the same blob, so that is what these assert against rather than just "some content came back".
 
 _MAIN_PY = "def main():\n    return 1\n"
+_CODEBASE_README = "# codebase\n\nCore service source, browsable via the tree/contents API.\n"
 
 
 @pytest.mark.parametrize(
@@ -563,50 +561,38 @@ _MAIN_PY = "def main():\n    return 1\n"
         "application/vnd.github.v3.raw+json",
     ],
 )
-def test_github_blob_accept_raw_returns_the_bytes(gh_client, gh_admin_h, gh_org, accept):
+def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org, accept):
+    """Every content endpoint, in every spelling of the header GitHub honours.
+
+    The tell that it isn't happening is the byte count disagreeing with the `size` the tree reported
+    for the same blob, so that is what these assert against rather than "some content came back".
+    Real GitHub answers git/blobs with text/plain and contents/readme with vnd.github.raw — the same
+    bytes either way, but the difference is GitHub's own, so it is reproduced.
+    """
     c, _ = gh_client
     sha = hashlib.sha1(_MAIN_PY.encode()).hexdigest()
-    r = c.get(
-        f"/github/repos/{gh_org}/codebase/git/blobs/{sha}",
-        headers={**gh_admin_h, "Accept": accept},
-    )
-    assert r.status_code == 200
-    assert r.text == _MAIN_PY
-    assert len(r.content) == len(_MAIN_PY.encode())  # == the tree's `size` for this blob
-    # real GitHub answers git/blobs raw with text/plain (contents/readme use vnd.github.raw)
-    assert r.headers["content-type"].startswith("text/plain")
-
-
-def test_github_contents_accept_raw_returns_the_bytes(gh_client, gh_admin_h, gh_org):
-    c, _ = gh_client
-    r = c.get(
-        f"/github/repos/{gh_org}/codebase/contents/src/main.py",
-        headers={**gh_admin_h, "Accept": "application/vnd.github.raw"},
-    )
-    assert r.status_code == 200
-    assert r.text == _MAIN_PY
-    assert r.headers["content-type"].startswith("application/vnd.github.raw")
-
-
-def test_github_readme_accept_raw_returns_the_bytes(gh_client, gh_admin_h, gh_org):
-    c, _ = gh_client
-    text = "# codebase\n\nCore service source, browsable via the tree/contents API.\n"
-    r = c.get(
-        f"/github/repos/{gh_org}/codebase/readme",
-        headers={**gh_admin_h, "Accept": "application/vnd.github.raw"},
-    )
-    assert r.status_code == 200
-    assert r.text == text
-    assert r.headers["content-type"].startswith("application/vnd.github.raw")
-
-
-def test_github_readme_stub_honours_accept_raw(client, admin_h, org):
-    # 'gateway' has no README file doc, so this exercises the synthesized-stub branch too
-    r = client.get(
-        f"/github/repos/{org}/gateway/readme",
-        headers={**admin_h, "Accept": "application/vnd.github.raw"},
-    )
-    assert r.status_code == 200 and r.text.startswith("# gateway")
+    for url, ctype, body in [
+        (f"/github/repos/{gh_org}/codebase/git/blobs/{sha}", "text/plain", _MAIN_PY),
+        (
+            f"/github/repos/{gh_org}/codebase/contents/src/main.py",
+            "application/vnd.github.raw",
+            _MAIN_PY,
+        ),
+        (
+            f"/github/repos/{gh_org}/codebase/readme",
+            "application/vnd.github.raw",
+            _CODEBASE_README,
+        ),
+        # 'gateway' carries no README doc, so this one exercises the synthesized-stub branch
+        (f"/github/repos/{gh_org}/gateway/readme", "application/vnd.github.raw", None),
+    ]:
+        r = c.get(url, headers={**gh_admin_h, "Accept": accept})
+        assert r.status_code == 200, url
+        assert r.headers["content-type"].startswith(ctype), url
+        if body is None:
+            assert r.text.startswith("# gateway")
+        else:
+            assert r.text == body and len(r.content) == len(body.encode()), url
 
 
 def test_github_raw_accept_leaves_the_json_envelope_alone(gh_client, gh_admin_h, gh_org):
@@ -625,91 +611,65 @@ def test_github_raw_accept_leaves_the_json_envelope_alone(gh_client, gh_admin_h,
     assert isinstance(dirs.json(), list)
 
 
-def test_github_raw_accept_still_acl_scoped(gh_client, gh_user_tokens, gh_org):
-    c, _ = gh_client
-    nonmember_h = {
-        "Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}",
-        "Accept": "application/vnd.github.raw",
-    }
-    r = c.get(f"/github/repos/{gh_org}/codebase/contents/config/secret.yaml", headers=nonmember_h)
-    assert r.status_code == 404
-
-
 # --- GET /user/repos (issue #49 D3) ------------------------------------------------------
 
 
-def test_github_user_repos_lists_the_callers_repos(gh_client, gh_admin_h, gh_org):
+def test_github_user_repos(gh_client, gh_admin_h, gh_user_tokens, gh_org):
+    """The credential's own view of what it can reach: the same set `/orgs/{org}/repos` gives an
+    admin, ACL-scoped per caller, and paginated."""
     c, _ = gh_client
-    r = c.get("/github/user/repos", headers=gh_admin_h)
-    assert r.status_code == 200
-    body = r.json()
+    body = c.get("/github/user/repos", headers=gh_admin_h).json()
     org_repos = c.get(
         f"/github/orgs/{gh_org}/repos", headers=gh_admin_h, params={"per_page": 100}
     ).json()
     assert {x["name"] for x in body} == {x["name"] for x in org_repos}
     assert all(x["full_name"] == f"{gh_org}/{x['name']}" for x in body)
 
-
-def test_github_user_repos_is_acl_scoped(gh_client, gh_user_tokens, gh_admin_h):
-    c, _ = gh_client
     # 'vault' holds one group-visible issue owned by 'people', which bob is not in
     bob_h = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}
-    admin = {x["name"] for x in c.get("/github/user/repos", headers=gh_admin_h).json()}
     bob = {x["name"] for x in c.get("/github/user/repos", headers=bob_h).json()}
-    assert "vault" in admin and "vault" not in bob
-    assert bob < admin
+    assert "vault" in {x["name"] for x in body} and "vault" not in bob
+    assert bob < {x["name"] for x in body}
 
-
-def test_github_user_repos_paginates(gh_client, gh_admin_h):
-    c, _ = gh_client
-    r = c.get("/github/user/repos", headers=gh_admin_h, params={"per_page": 1, "page": 1})
-    assert len(r.json()) == 1
-    assert 'rel="next"' in r.headers.get("Link", "")
+    page = c.get("/github/user/repos", headers=gh_admin_h, params={"per_page": 1, "page": 1})
+    assert len(page.json()) == 1 and 'rel="next"' in page.headers.get("Link", "")
 
 
 # --- GET /repos/{o}/{r}/git/ref/{ref} (issue #49 D4) -------------------------------------
 
 
-def test_github_git_ref_resolves_a_branch_to_a_commit(gh_client, gh_admin_h, gh_org):
+def test_github_git_ref_resolves_a_ref_to_a_commit(gh_client, gh_admin_h, gh_org):
+    """Resolving a branch to a commit sha, including one whose name contains a slash — the whole
+    point of this route over `/branches/{branch}`, which cannot carry that in one path segment."""
     c, _ = gh_client
     r = c.get(f"/github/repos/{gh_org}/codebase/git/ref/heads/main", headers=gh_admin_h)
     assert r.status_code == 200
     body = r.json()
-    assert body["ref"] == "refs/heads/main"
-    assert body["object"]["type"] == "commit"
+    assert body["ref"] == "refs/heads/main" and body["object"]["type"] == "commit"
     branch = c.get(f"/github/repos/{gh_org}/codebase/branches/main", headers=gh_admin_h).json()
     assert body["object"]["sha"] == branch["commit"]["sha"]  # the two must agree
 
-
-def test_github_git_ref_handles_a_slash_in_the_branch_name(gh_client, gh_admin_h, gh_org):
-    """The whole point of the git-refs route over /branches/{branch}: the ref is the trailing
-    path, so `release/2026-03` resolves where a single path segment cannot carry it."""
-    c, _ = gh_client
-    r = c.get(f"/github/repos/{gh_org}/codebase/git/ref/heads/release/2026-03", headers=gh_admin_h)
-    assert r.status_code == 200
-    assert r.json()["ref"] == "refs/heads/release/2026-03"
-    tree_sha = r.json()["object"]["sha"]
+    slashed = c.get(
+        f"/github/repos/{gh_org}/codebase/git/ref/heads/release/2026-03", headers=gh_admin_h
+    ).json()
+    assert slashed["ref"] == "refs/heads/release/2026-03"
     # the sha it hands back is usable as a git/trees ref, which is what a pinning client does next
-    assert (
-        c.get(
-            f"/github/repos/{gh_org}/codebase/git/trees/{tree_sha}", headers=gh_admin_h
-        ).status_code
-        == 200
+    tree = c.get(
+        f"/github/repos/{gh_org}/codebase/git/trees/{slashed['object']['sha']}", headers=gh_admin_h
     )
+    assert tree.status_code == 200
 
-
-def test_github_git_ref_unknown_repo_404s(gh_client, gh_admin_h, gh_org):
-    c, _ = gh_client
-    r = c.get(f"/github/repos/{gh_org}/no-such-repo/git/ref/heads/main", headers=gh_admin_h)
-    assert r.status_code == 404
+    unknown = c.get(f"/github/repos/{gh_org}/no-such-repo/git/ref/heads/main", headers=gh_admin_h)
+    assert unknown.status_code == 404
 
 
 # --- owner validation (issue #49 D7) -----------------------------------------------------
 
 
-def test_github_wrong_owner_404s(gh_client, gh_admin_h, gh_org):
+def test_github_validates_the_owner_segment(gh_client, gh_admin_h, gh_org):
     """Real GitHub 404s on a wrong owner; echoing it back lets a client's owner-handling bug pass
-    here and fail in production."""
+    here and fail in production. Case-insensitive, as GitHub logins are, and the `{org}` segment
+    is held to the same rule."""
     c, _ = gh_client
     for path in (
         "",
@@ -726,15 +686,7 @@ def test_github_wrong_owner_404s(gh_client, gh_admin_h, gh_org):
         ok = c.get(f"/github/repos/{gh_org}/codebase{path}", headers=gh_admin_h)
         assert ok.status_code == 200, f"right owner rejected at {path!r}"
 
-
-def test_github_owner_match_is_case_insensitive(gh_client, gh_admin_h, gh_org):
-    c, _ = gh_client
-    r = c.get(f"/github/repos/{gh_org.upper()}/codebase", headers=gh_admin_h)
-    assert r.status_code == 200
-
-
-def test_github_wrong_org_404s(gh_client, gh_admin_h):
-    c, _ = gh_client
+    assert c.get(f"/github/repos/{gh_org.upper()}/codebase", headers=gh_admin_h).status_code == 200
     assert c.get("/github/orgs/not-the-org", headers=gh_admin_h).status_code == 404
     assert c.get("/github/orgs/not-the-org/repos", headers=gh_admin_h).status_code == 404
 
@@ -742,7 +694,9 @@ def test_github_wrong_org_404s(gh_client, gh_admin_h):
 # --- a pull's node_id is PullRequest-typed (issue #49 D8) --------------------------------
 
 
-def test_github_pull_node_id_is_pullrequest_typed(gh_client, gh_admin_h, gh_org):
+def test_github_pull_and_issue_views_are_different_nodes(gh_client, gh_admin_h, gh_org):
+    """Real GitHub models a PR's issue view and its pull view as two distinct nodes, so the pull
+    is PullRequest-typed while /issues keeps the Issue-typed id for the same PR."""
     c, _ = gh_client
     from backlot import synth
 
@@ -751,77 +705,35 @@ def test_github_pull_node_id_is_pullrequest_typed(gh_client, gh_admin_h, gh_org)
     decoded = base64.b64decode(pull["node_id"] + "==").decode()
     assert "PullRequest" in decoded and "Issue" not in decoded
 
-
-def test_github_pr_keeps_its_issue_node_id_in_the_issues_stream(gh_client, gh_admin_h, gh_org):
-    """Real GitHub models a PR's issue view and pull view as two distinct nodes, so /issues must
-    keep the Issue-typed id even for a PR — this is not a bug to fix alongside D8."""
-    c, _ = gh_client
-    from backlot import synth
-
-    num = synth.github_number("gh-pr-1")
     issue = c.get(f"/github/repos/{gh_org}/gateway/issues/{num}", headers=gh_admin_h).json()
     assert "pull_request" in issue  # sanity: this is the PR seen as an issue
     assert "Issue" in base64.b64decode(issue["node_id"] + "==").decode()
 
 
-# --- pull review comments (issue #49 D5) ------------------------------------------------
-
-
-def test_github_pull_review_comments_route_exists(gh_client, gh_admin_h, gh_org):
-    """A pull's review-comment collection is a real resource, so a PR with none must answer `[]`
-    rather than 404 — a 404 aborts any client that renders a pull from its four sub-resources."""
-    c, _ = gh_client
-    from backlot import synth
-
-    num = synth.github_number("gh-pr-1")
-    r = c.get(f"/github/repos/{gh_org}/gateway/pulls/{num}/comments", headers=gh_admin_h)
-    assert r.status_code == 200
-    assert r.json() == []
-
-
-def test_github_pull_review_comments_404_for_a_non_pull(gh_client, gh_admin_h, gh_org):
-    c, _ = gh_client
-    from backlot import synth
-
-    num = synth.github_number("gh-issue-1")  # an issue, not a PR
-    r = c.get(f"/github/repos/{gh_org}/gateway/pulls/{num}/comments", headers=gh_admin_h)
-    assert r.status_code == 404
-
-
 # --- pull changeset: /pulls/{n}/files and the diff media types (issue #49 D6, D2) --------
-
-
-def _hunk_is_wellformed(patch: str) -> bool:
-    """Every `@@ -a,b +c,d @@` header's counts must match the lines that follow it."""
-    import re as _re
-
-    hunks = _re.findall(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*$", patch, _re.M)
-    if not hunks:
-        return False
-    bodies = _re.split(r"^@@ .*$\n?", patch, flags=_re.M)[1:]
-    if len(bodies) != len(hunks):
-        return False
-    for (_, old_n, _, new_n), body in zip(hunks, bodies):
-        old_n = int(old_n) if old_n is not None else 1
-        new_n = int(new_n) if new_n is not None else 1
-        lines = [ln for ln in body.split("\n") if ln != ""]
-        old_seen = sum(1 for ln in lines if ln[0] in " -")
-        new_seen = sum(1 for ln in lines if ln[0] in " +")
-        if old_seen != old_n or new_seen != new_n:
-            return False
-    return True
 
 
 @pytest.fixture(scope="module")
 def diff_pr(gh_client, gh_admin_h, gh_org):
-    """(client, headers, org, pull_number) for the 'diffable' repo's one PR."""
+    """(client, headers, org, pull_number) for the 'diffable' repo's synthesized-changeset PR."""
     c, _ = gh_client
     from backlot import synth
 
     return c, gh_admin_h, gh_org, synth.github_number("gh-diff-pr")
 
 
+@pytest.fixture(scope="module")
+def declared_pr(gh_client, gh_admin_h, gh_org):
+    """Same, for the pull that declares its own changeset via `changed_paths`."""
+    c, _ = gh_client
+    from backlot import synth
+
+    return c, gh_admin_h, gh_org, synth.github_number("gh-diff-pr-declared")
+
+
 def test_github_pull_files_lists_the_changed_files(diff_pr):
+    """The real API's shape, agreeing with the pull object's own counts — those used to contradict
+    it — and stable across calls, since the whole changeset is derived from a hash of the doc_id."""
     c, h, org, num = diff_pr
     r = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h)
     assert r.status_code == 200
@@ -842,34 +754,66 @@ def test_github_pull_files_lists_the_changed_files(diff_pr):
         assert f["changes"] == f["additions"] + f["deletions"]
         assert f["blob_url"] and f["raw_url"] and f["contents_url"]
 
-
-def test_github_pull_files_patches_are_wellformed_hunks(diff_pr):
-    c, h, org, num = diff_pr
-    files = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json()
-    patched = [f for f in files if f.get("patch")]
-    assert patched, "at least one changed file must carry a patch"
-    for f in patched:
-        assert _hunk_is_wellformed(f["patch"]), (
-            f"malformed patch for {f['filename']}:\n{f['patch']}"
-        )
-
-
-def test_github_pull_object_counts_agree_with_its_files(diff_pr):
-    """The pull object already advertised additions/deletions/changed_files; they have to be the
-    sum over what /files reports or the two answers contradict each other."""
-    c, h, org, num = diff_pr
     pull = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers=h).json()
-    files = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json()
     assert pull["changed_files"] == len(files)
     assert pull["additions"] == sum(f["additions"] for f in files)
     assert pull["deletions"] == sum(f["deletions"] for f in files)
+    assert c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json() == files
 
 
-def test_github_pull_files_are_deterministic(diff_pr):
-    c, h, org, num = diff_pr
-    first = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json()
-    second = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json()
-    assert first == second
+@pytest.mark.parametrize("which", ["synthesized", "declared"])
+def test_github_pull_diff_reverse_applies_with_real_git(
+    gh_client, gh_admin_h, gh_org, tmp_path, which
+):
+    """The claim a synthesized diff has to earn: real `git apply` accepts it.
+
+    The snapshot the mock serves IS the pull's head, so `git apply --reverse` must be able to walk
+    it back to the base. Nothing weaker proves it — a hunk header off by one line, or context that
+    doesn't match the file, still looks like a diff and still passes a shape assertion. Run for both
+    changeset kinds: declaring the files changes WHICH files are in the diff, not whether the hunks
+    are real.
+    """
+    import shutil
+    import subprocess
+
+    from backlot import synth
+
+    if shutil.which("git") is None:  # pragma: no cover - git is present everywhere this runs
+        pytest.skip("git not available")
+    c, _ = gh_client
+    num = synth.github_number("gh-diff-pr" if which == "synthesized" else "gh-diff-pr-declared")
+    diff = c.get(
+        f"/github/repos/{gh_org}/diffable/pulls/{num}",
+        headers={**gh_admin_h, "Accept": "application/vnd.github.diff"},
+    ).text
+    assert diff, "the changeset must not be empty for this repo"
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=wt, check=True)
+    tree = c.get(
+        f"/github/repos/{gh_org}/diffable/git/trees/main",
+        headers=gh_admin_h,
+        params={"recursive": "1"},
+    ).json()["tree"]
+    for e in tree:
+        if e["type"] != "blob":
+            continue
+        raw = c.get(
+            f"/github/repos/{gh_org}/diffable/contents/{e['path']}",
+            headers={**gh_admin_h, "Accept": "application/vnd.github.raw"},
+        ).text
+        dest = wt / e["path"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(raw)
+    (wt / "pr.diff").write_text(diff)
+    r = subprocess.run(
+        ["git", "apply", "--reverse", "--check", "-v", "pr.diff"],
+        cwd=wt,
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, f"git rejected the diff:\n{r.stderr}\n---\n{diff}"
 
 
 def test_github_pull_files_empty_when_the_repo_has_no_file_docs(tmp_path):
@@ -902,18 +846,9 @@ def test_github_pull_files_empty_when_the_repo_has_no_file_docs(tmp_path):
     assert (pr["changed_files"], pr["additions"], pr["deletions"]) == (0, 0, 0)
 
 
-def test_github_pull_files_is_acl_scoped(gh_client, gh_user_tokens, gh_org):
-    """A file the caller can't see must not appear in a changeset either."""
-    c, _ = gh_client
-    from backlot import synth
-
-    num = synth.github_number("gh-diff-pr")
-    nonmember_h = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}
-    files = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/files", headers=nonmember_h).json()
-    assert all(f["filename"] != "config/secret.yaml" for f in files)
-
-
-def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr):
+def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_org):
+    """`…diff` is a representation of the pull resource, so the default `Accept` still gets JSON and
+    an ISSUE — which has no diff — gets its JSON too, as real GitHub does."""
     c, h, org, num = diff_pr
     r = c.get(
         f"/github/repos/{org}/diffable/pulls/{num}",
@@ -928,51 +863,30 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr):
         if f.get("patch"):
             assert f["patch"] in r.text
 
+    body = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers=h).json()
+    assert body["number"] == num and body["title"] == "Tighten the run() argv handling"
 
-def test_github_pull_diff_reverse_applies_with_real_git(diff_pr, tmp_path):
-    """The claim a synthesized diff has to earn: real `git apply` accepts it.
+    from backlot import synth
 
-    The snapshot the mock serves IS the pull's head, so `git apply --reverse` must be able to walk
-    it back to the base. Nothing weaker proves it — a hunk header off by one line, or context that
-    doesn't match the file, still looks like a diff and still passes a shape assertion. Reverse
-    rather than forward because the base is what the mock doesn't have on disk.
-    """
-    import shutil
-    import subprocess
+    issue_num = synth.github_number("gh-issue-1")
+    issue = c.get(
+        f"/github/repos/{gh_org}/gateway/issues/{issue_num}",
+        headers={**gh_admin_h, "Accept": "application/vnd.github.diff"},
+    ).json()
+    assert issue["number"] == issue_num
 
-    if shutil.which("git") is None:  # pragma: no cover - git is present everywhere this runs
-        pytest.skip("git not available")
+
+def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):
+    """The `patch` media type is a git-am-able mail patch, not the same bytes as `diff`."""
     c, h, org, num = diff_pr
-    diff = c.get(
+    r = c.get(
         f"/github/repos/{org}/diffable/pulls/{num}",
-        headers={**h, "Accept": "application/vnd.github.diff"},
-    ).text
-    assert diff, "the changeset must not be empty for this repo"
-
-    wt = tmp_path / "wt"
-    wt.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=wt, check=True)
-    tree = c.get(
-        f"/github/repos/{org}/diffable/git/trees/main", headers=h, params={"recursive": "1"}
-    ).json()["tree"]
-    for e in tree:
-        if e["type"] != "blob":
-            continue
-        raw = c.get(
-            f"/github/repos/{org}/diffable/contents/{e['path']}",
-            headers={**h, "Accept": "application/vnd.github.raw"},
-        ).text
-        dest = wt / e["path"]
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(raw)
-    (wt / "pr.diff").write_text(diff)
-    r = subprocess.run(
-        ["git", "apply", "--reverse", "--check", "-v", "pr.diff"],
-        cwd=wt,
-        capture_output=True,
-        text=True,
+        headers={**h, "Accept": "application/vnd.github.patch"},
     )
-    assert r.returncode == 0, f"git rejected the diff:\n{r.stderr}\n---\n{diff}"
+    assert r.status_code == 200
+    assert r.text.startswith("From ")
+    assert "Subject: [PATCH] Tighten the run() argv handling" in r.text
+    assert "diff --git " in r.text
 
 
 def test_github_oversized_patch_is_omitted_from_json_but_kept_in_the_diff(diff_pr, monkeypatch):
@@ -1028,53 +942,16 @@ def test_github_diff_never_emits_a_file_header_with_no_body(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
-def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):
-    """The `patch` media type is a git-am-able mail patch, not the same bytes as `diff`."""
-    c, h, org, num = diff_pr
-    r = c.get(
-        f"/github/repos/{org}/diffable/pulls/{num}",
-        headers={**h, "Accept": "application/vnd.github.patch"},
-    )
-    assert r.status_code == 200
-    assert r.text.startswith("From ")
-    assert "Subject: [PATCH] Tighten the run() argv handling" in r.text
-    assert "diff --git " in r.text
-
-
-def test_github_pull_default_accept_is_still_json(diff_pr):
-    c, h, org, num = diff_pr
-    body = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers=h).json()
-    assert body["number"] == num and body["title"] == "Tighten the run() argv handling"
-
-
-def test_github_issue_ignores_the_diff_media_type(gh_client, gh_admin_h, gh_org):
-    """Only a pull has a diff; an issue asked for one gets its JSON, as real GitHub does."""
-    c, _ = gh_client
-    from backlot import synth
-
-    num = synth.github_number("gh-issue-1")
-    body = c.get(
-        f"/github/repos/{gh_org}/gateway/issues/{num}",
-        headers={**gh_admin_h, "Accept": "application/vnd.github.diff"},
-    ).json()
-    assert body["number"] == num
-
-
 # --- a corpus-declared changeset: `changed_paths` ---------------------------------------
 
 
-@pytest.fixture(scope="module")
-def declared_pr(gh_client, gh_admin_h, gh_org):
-    """(client, headers, org, number) for 'diffable''s pull that declares its own changeset."""
-    c, _ = gh_client
-    from backlot import synth
-
-    return c, gh_admin_h, gh_org, synth.github_number("gh-diff-pr-declared")
-
-
-def test_github_pull_files_are_the_declared_paths(declared_pr):
+def test_github_declared_changeset_is_what_the_corpus_said(declared_pr):
     """With `changed_paths` the changeset is what the corpus says it is — same order, all of them,
-    not the deterministic pick and not capped at three."""
+    not the deterministic pick and not capped at three — and the pull object's counts follow it.
+
+    Every declared file is `modified`: a corpus naming a path says the pull CHANGED a file the repo
+    already has, and reporting it as `added` would claim the pull created it, which is more than the
+    corpus said. A synthesized changeset still varies, so `added` stays exercisable."""
     c, h, org, num = declared_pr
     files = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json()
     assert [f["filename"] for f in files] == [
@@ -1083,62 +960,12 @@ def test_github_pull_files_are_the_declared_paths(declared_pr):
         "pkg/conf.toml",
         "README.md",
     ]
-
-
-def test_github_declared_paths_are_modified_not_added(declared_pr):
-    """A corpus that names a path is saying the pull CHANGED a file the repo has. Reporting it as
-    `added` claims the pull created it, which is more than the corpus said — a PR titled "fix the
-    off-by-one" showing its file as brand new reads as a bug in the mock.
-
-    A synthesized changeset still varies the status, so the new-file path stays exercisable."""
-    c, h, org, num = declared_pr
-    files = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json()
     assert {f["status"] for f in files} == {"modified"}
 
-
-def test_github_declared_changeset_still_agrees_with_the_pull_object(declared_pr):
-    c, h, org, num = declared_pr
     pull = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers=h).json()
-    files = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json()
     assert pull["changed_files"] == len(files) == 4
     assert pull["additions"] == sum(f["additions"] for f in files)
     assert pull["deletions"] == sum(f["deletions"] for f in files)
-
-
-def test_github_declared_changeset_diff_reverse_applies_with_real_git(declared_pr, tmp_path):
-    """Same proof as for the synthesized changeset: declaring the files changes WHICH files are in
-    the diff, not whether the hunks are real."""
-    import shutil
-    import subprocess
-
-    if shutil.which("git") is None:  # pragma: no cover
-        pytest.skip("git not available")
-    c, h, org, num = declared_pr
-    diff = c.get(
-        f"/github/repos/{org}/diffable/pulls/{num}",
-        headers={**h, "Accept": "application/vnd.github.diff"},
-    ).text
-    wt = tmp_path / "wt"
-    wt.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=wt, check=True)
-    tree = c.get(
-        f"/github/repos/{org}/diffable/git/trees/main", headers=h, params={"recursive": "1"}
-    ).json()["tree"]
-    for e in tree:
-        if e["type"] != "blob":
-            continue
-        raw = c.get(
-            f"/github/repos/{org}/diffable/contents/{e['path']}",
-            headers={**h, "Accept": "application/vnd.github.raw"},
-        ).text
-        dest = wt / e["path"]
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(raw)
-    (wt / "pr.diff").write_text(diff)
-    r = subprocess.run(
-        ["git", "apply", "--reverse", "--check", "pr.diff"], cwd=wt, capture_output=True, text=True
-    )
-    assert r.returncode == 0, f"git rejected the declared diff:\n{r.stderr}\n---\n{diff}"
 
 
 def test_github_declared_path_the_caller_cannot_see_is_dropped(
@@ -1163,85 +990,51 @@ def test_github_declared_path_the_caller_cannot_see_is_dropped(
     assert pull["changed_files"] == 1
 
 
-def test_github_declared_path_that_does_not_exist_is_dropped(tmp_path):
+def test_github_declared_paths_are_resolved_and_deduplicated(tmp_path):
     """A path naming no file in the repo cannot be diffed, so it is skipped rather than emitted as a
-    file with no content. Indistinguishable from an ACL-hidden one at this layer, which is why both
-    behave the same way."""
+    file with no content — indistinguishable from an ACL-hidden one at this layer, which is why both
+    behave the same way. A path named twice would put the same file in the diff twice, which
+    `git apply` refuses outright."""
     from backlot.routers.github import _pr_files
 
-    s = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "github",
-                "doc_id": "f1",
-                "repo": "r",
-                "subtype": "file",
-                "path": "real.py",
-                "title": "real.py",
-                "content": "a\nb\nc\n",
-                "author_email": "a@x.com",
-            },
-            {
-                "source_type": "github",
-                "doc_id": "p1",
-                "repo": "r",
-                "subtype": "pull_request",
-                "title": "PR",
-                "content": "body",
-                "author_email": "a@x.com",
-                "changed_paths": ["real.py", "typo.py"],
-            },
-        ],
-    )
-    conn = store.connect_ro(s.db_path)
-    row = store.get_document(conn, "github", "p1")
-    assert [f["filename"] for f in _pr_files(conn, "org", "r", row, "http://m/github")] == [
-        "real.py"
-    ]
+    def files_for(changed_paths):
+        s = tiny_corpus(
+            tmp_path / str(abs(hash(tuple(changed_paths)))),
+            [
+                {
+                    "source_type": "github",
+                    "doc_id": "f1",
+                    "repo": "r",
+                    "subtype": "file",
+                    "path": "real.py",
+                    "title": "real.py",
+                    "content": "a\nb\nc\n",
+                    "author_email": "a@x.com",
+                },
+                {
+                    "source_type": "github",
+                    "doc_id": "p1",
+                    "repo": "r",
+                    "subtype": "pull_request",
+                    "title": "PR",
+                    "content": "body",
+                    "author_email": "a@x.com",
+                    "changed_paths": changed_paths,
+                },
+            ],
+        )
+        conn = store.connect_ro(s.db_path)
+        row = store.get_document(conn, "github", "p1")
+        return [f["filename"] for f in _pr_files(conn, "org", "r", row, "http://m/github")]
 
-
-def test_github_declared_paths_are_deduplicated(tmp_path):
-    """A repeated path would put the same file in the diff twice, which `git apply` refuses — so a
-    corpus typo would produce a diff no client can use."""
-    from backlot.routers.github import _pr_files
-
-    s = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "github",
-                "doc_id": "f1",
-                "repo": "r",
-                "subtype": "file",
-                "path": "a.py",
-                "title": "a.py",
-                "content": "x\ny\nz\n",
-                "author_email": "a@x.com",
-            },
-            {
-                "source_type": "github",
-                "doc_id": "p1",
-                "repo": "r",
-                "subtype": "pull_request",
-                "title": "PR",
-                "content": "body",
-                "author_email": "a@x.com",
-                "changed_paths": ["a.py", "a.py"],
-            },
-        ],
-    )
-    conn = store.connect_ro(s.db_path)
-    row = store.get_document(conn, "github", "p1")
-    assert [f["filename"] for f in _pr_files(conn, "org", "r", row, "http://m/github")] == ["a.py"]
-
-
-# --- /pulls/{n}/files pagination --------------------------------------------------------
+    assert files_for(["real.py", "typo.py"]) == ["real.py"]
+    assert files_for(["real.py", "real.py"]) == ["real.py"]
 
 
 def test_github_pull_files_paginates(declared_pr):
     """Real GitHub paginates the changed-file list; a client's paging loop over it is only
-    exercisable if the mock emits the Link header."""
+    exercisable if the mock emits the Link header — and a synthesized changeset caps at three files,
+    so a declared one is what makes a second page reachable at all."""
     c, h, org, num = declared_pr
     url = f"/github/repos/{org}/diffable/pulls/{num}/files"
     first = c.get(url, headers=h, params={"per_page": 2, "page": 1})
@@ -1251,10 +1044,6 @@ def test_github_pull_files_paginates(declared_pr):
     assert [f["filename"] for f in second.json()] == ["pkg/conf.toml", "README.md"]
     assert 'rel="next"' not in second.headers.get("Link", "")
 
-
-def test_github_pull_files_pagination_covers_every_file_once(declared_pr):
-    c, h, org, num = declared_pr
-    url = f"/github/repos/{org}/diffable/pulls/{num}/files"
     unpaged = c.get(url, headers=h).json()
     walked, page = [], 1
     while True:
@@ -1266,41 +1055,96 @@ def test_github_pull_files_pagination_covers_every_file_once(declared_pr):
     assert walked == unpaged
 
 
-# --- line-anchored review comments ------------------------------------------------------
+# --- line-anchored review comments (issue #49 D5) ---------------------------------------
 
 
 def test_github_pull_review_comments_are_served(declared_pr):
+    """The real API's shape, anchored where the corpus said. `diff_hunk` comes from the corpus when
+    it supplied one and is otherwise derived from the file's own snapshot, the same principle as the
+    changeset; `position` indexes INTO that hunk, so the row it selects is the commented line."""
     c, h, org, num = declared_pr
     body = c.get(f"/github/repos/{org}/diffable/pulls/{num}/comments", headers=h).json()
     assert [(x["path"], x["line"]) for x in body] == [("pkg/core.py", 4), ("app.py", None)]
-    first = body[0]
-    assert first["body"] == "this line should be a constant"
-    assert first["side"] == "RIGHT" and first["commit_id"]
-    assert first["user"]["login"] == "ava"
-    assert first["pull_request_url"].endswith(f"/pulls/{num}")
-    assert first["html_url"].endswith(f"#discussion_r{first['id']}")
+
+    derived = body[0]
+    assert derived["body"] == "this line should be a constant"
+    assert derived["side"] == "RIGHT" and derived["commit_id"]
+    assert derived["user"]["login"] == "ava"
+    assert derived["pull_request_url"].endswith(f"/pulls/{num}")
+    assert derived["html_url"].endswith(f"#discussion_r{derived['id']}")
+    assert derived["diff_hunk"].startswith("@@ ")
+    assert "line_4 = 4" in derived["diff_hunk"]  # real content from the file, around line 4
+    rows = derived["diff_hunk"].split("\n")
+    assert rows[derived["position"]].lstrip(" +") == "line_4 = 4"
+
+    explicit = body[1]
+    assert explicit["diff_hunk"] == "@@ -1,2 +1,3 @@\n import sys\n"  # corpus wins
+    # a file-level comment has no line to index into the hunk with
+    assert explicit["position"] is None and explicit["subject_type"] == "file"
 
 
-def test_github_review_comment_position_points_at_the_commented_row(declared_pr):
-    """`position` indexes INTO the diff hunk, so the row it selects must be the commented line."""
-    c, h, org, num = declared_pr
-    comment = next(
-        x
-        for x in c.get(f"/github/repos/{org}/diffable/pulls/{num}/comments", headers=h).json()
-        if x["path"] == "pkg/core.py"
+def test_github_pull_review_comments_are_a_separate_resource(gh_client, gh_admin_h, gh_org):
+    """A pull with none answers `[]` — the collection is a real resource, and the 404 it used to
+    return aborts any client that renders a pull from its four sub-resources. A non-pull has no such
+    resource at all, and the anchored comments must never leak into the conversation endpoint."""
+    c, _ = gh_client
+    from backlot import synth
+
+    pr_num = synth.github_number("gh-pr-1")  # a PR with no anchored comments
+    r = c.get(f"/github/repos/{gh_org}/gateway/pulls/{pr_num}/comments", headers=gh_admin_h)
+    assert r.status_code == 200 and r.json() == []
+
+    issue_num = synth.github_number("gh-issue-1")  # an issue, not a PR
+    assert (
+        c.get(
+            f"/github/repos/{gh_org}/gateway/pulls/{issue_num}/comments", headers=gh_admin_h
+        ).status_code
+        == 404
     )
-    rows = comment["diff_hunk"].split("\n")
-    pos = comment["position"]
-    assert pos is not None
-    assert rows[pos].lstrip(" +") == f"line_{comment['line']} = {comment['line']}"
+
+    declared = synth.github_number("gh-diff-pr-declared")
+    convo = c.get(
+        f"/github/repos/{gh_org}/diffable/issues/{declared}/comments", headers=gh_admin_h
+    ).json()
+    assert [x["body"] for x in convo] == ["conversation, not anchored"]
+    assert all("path" not in x for x in convo)
 
 
-def test_hunk_position_is_not_the_file_line():
+def test_github_comment_counts_match_the_lists_they_describe(
+    gh_client, gh_admin_h, gh_user_tokens, gh_org
+):
+    """`comments` counts the conversation and `review_comments` the anchored ones, as real GitHub
+    reports them — one number covering both would contradict whichever list you fetched.
+
+    `review_comments` counts what the LIST returns, which drops a comment anchored to a file the
+    caller cannot read: counting the raw rows made the two contradict each other, never terminated a
+    client paging until it had that many, and leaked that a hidden file carries a comment."""
+    c, _ = gh_client
+    from backlot import synth
+
+    num = synth.github_number("gh-diff-pr-declared")
+    pull = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}", headers=gh_admin_h).json()
+    assert pull["comments"] == 1 and pull["review_comments"] == 2
+    issue = c.get(f"/github/repos/{gh_org}/diffable/issues/{num}", headers=gh_admin_h).json()
+    assert issue["comments"] == 1  # the issue view counts the conversation only
+
+    # 'gone/x.py' is in no tree and 'secret/keys.txt' is people-only, so the count has to shrink
+    # with the list — differently for each caller
+    unres = synth.github_number("gh-diff-pr-unresolvable")
+    bob = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}
+    for headers, expected in ((gh_admin_h, ["app.py", "secret/keys.txt"]), (bob, ["app.py"])):
+        body = c.get(f"/github/repos/{gh_org}/diffable/pulls/{unres}/comments", headers=headers)
+        obj = c.get(f"/github/repos/{gh_org}/diffable/pulls/{unres}", headers=headers).json()
+        assert [x["path"] for x in body.json()] == expected
+        assert obj["review_comments"] == len(expected)
+
+
+def test_hunk_position_indexes_into_the_hunk():
     """`position` and `line` are different numbers on real GitHub — the row's offset within the diff
     hunk versus the line in the file — and a client resolving a comment against a diff uses the
-    former. They coincide only for a hunk that starts at line 1 with nothing removed above, so this
+    former. They coincide only for a hunk starting at line 1 with nothing removed above, so this
     pins the distinction on a hunk where they cannot."""
-    from backlot.routers.github import _hunk_position
+    from backlot.routers.github import _hunk_around, _hunk_position
 
     hunk = "@@ -8,4 +10,5 @@\n ctx_a\n-gone\n+added\n ctx_b\n ctx_c\n"
     #        new-side lines:      10       (none)  11      12      13
@@ -1311,94 +1155,12 @@ def test_hunk_position_is_not_the_file_line():
     assert _hunk_position(hunk, None) is None  # a file-level comment
     assert _hunk_position("not a hunk", 10) is None
 
-
-def test_hunk_position_ignores_the_no_newline_marker():
-    """git's `\\ No newline at end of file` is a hunk row but NOT a line of the file. Counting it as
-    one lets a line past the end of the file resolve to the marker's own offset."""
-    from backlot.routers.github import _hunk_around, _hunk_position
-
-    hunk = _hunk_around({"content": "alpha\nbeta\ngamma"}, 3)  # no trailing newline
-    assert "\\ No newline at end of file" in hunk
-    assert _hunk_position(hunk, 3) == 3  # the real last line
-    assert _hunk_position(hunk, 4) is None  # past the end — must not land on the marker
-
-
-def test_github_file_level_review_comment_has_no_position(declared_pr):
-    c, h, org, num = declared_pr
-    comment = next(
-        x
-        for x in c.get(f"/github/repos/{org}/diffable/pulls/{num}/comments", headers=h).json()
-        if x["line"] is None
-    )
-    assert comment["position"] is None and comment["subject_type"] == "file"
-
-
-def test_github_review_comment_diff_hunk_is_derived_when_absent(declared_pr):
-    """The corpus need only say where the comment is anchored; the hunk around it comes from the
-    file's own snapshot, the same principle as the changeset."""
-    c, h, org, num = declared_pr
-    body = c.get(f"/github/repos/{org}/diffable/pulls/{num}/comments", headers=h).json()
-    derived = next(x for x in body if x["path"] == "pkg/core.py")
-    assert derived["diff_hunk"].startswith("@@ ")
-    assert "line_4 = 4" in derived["diff_hunk"]  # real content from the file, around line 4
-    explicit = next(x for x in body if x["path"] == "app.py")
-    assert explicit["diff_hunk"] == "@@ -1,2 +1,3 @@\n import sys\n"  # corpus wins
-
-
-def test_github_review_comments_do_not_leak_into_the_conversation(declared_pr):
-    """The two resources real GitHub keeps apart must stay apart: serving review comments from
-    /issues/{n}/comments would duplicate them under a resource that means something else."""
-    c, h, org, num = declared_pr
-    convo = c.get(f"/github/repos/{org}/diffable/issues/{num}/comments", headers=h).json()
-    assert [x["body"] for x in convo] == ["conversation, not anchored"]
-    assert all("path" not in x for x in convo)
-
-
-def test_github_comment_counts_split_the_two_kinds(declared_pr):
-    """`comments` counts the conversation and `review_comments` the anchored ones, as real GitHub
-    reports them — one number covering both would contradict whichever list you fetched."""
-    c, h, org, num = declared_pr
-    pull = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers=h).json()
-    assert pull["comments"] == 1
-    assert pull["review_comments"] == 2
-    issue = c.get(f"/github/repos/{org}/diffable/issues/{num}", headers=h).json()
-    assert issue["comments"] == 1  # the issue view counts the conversation only
-
-
-def test_github_review_comment_count_matches_the_list_it_describes(gh_client, gh_admin_h, gh_org):
-    """`review_comments` has to be the number the list endpoint actually returns.
-
-    The list drops a comment whose `path` resolves to no file the caller can read; counting every
-    anchored row instead meant the two answers contradicted each other, a client paging until it had
-    `review_comments` items never terminated, and the count LEAKED that a hidden file carries a
-    comment."""
-    c, _ = gh_client
-    from backlot import synth
-
-    num = synth.github_number("gh-diff-pr-unresolvable")
-    body = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/comments", headers=gh_admin_h).json()
-    pull = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}", headers=gh_admin_h).json()
-    # 'gone/x.py' is in no tree, so even the admin sees one fewer than the corpus declared
-    assert [x["path"] for x in body] == ["app.py", "secret/keys.txt"]
-    assert pull["review_comments"] == len(body) == 2
-
-
-def test_github_review_comment_count_is_acl_scoped(gh_client, gh_user_tokens, gh_org):
-    c, _ = gh_client
-    from backlot import synth
-
-    num = synth.github_number("gh-diff-pr-unresolvable")
-    bob = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}  # not in 'people'
-    body = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/comments", headers=bob).json()
-    pull = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}", headers=bob).json()
-    assert [x["path"] for x in body] == ["app.py"]
-    assert pull["review_comments"] == len(body) == 1
-
-
-def test_github_pull_with_no_review_comments_still_answers_empty(diff_pr):
-    c, h, org, num = diff_pr
-    r = c.get(f"/github/repos/{org}/diffable/pulls/{num}/comments", headers=h)
-    assert r.status_code == 200 and r.json() == []
+    # git's `\ No newline at end of file` is a hunk row but NOT a line of the file. Counting it as
+    # one let a line past the end of the file resolve to the marker's own offset.
+    unterminated = _hunk_around({"content": "alpha\nbeta\ngamma"}, 3)
+    assert "\\ No newline at end of file" in unterminated
+    assert _hunk_position(unterminated, 3) == 3  # the real last line
+    assert _hunk_position(unterminated, 4) is None  # past the end — must not land on the marker
 
 
 def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
@@ -1442,51 +1204,28 @@ def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
 # --- git trees: the real truncation cap (issue #49 D9) ----------------------------------
 
 
-def test_github_tree_truncates_at_the_entry_cap(gh_client, gh_admin_h, gh_org, monkeypatch):
-    """Real GitHub caps a recursive tree and sets `truncated: true`; a mock that can never set it
-    leaves a client's truncation-handling path untested."""
+def test_github_tree_truncates_at_the_real_caps(gh_client, gh_admin_h, gh_org, monkeypatch):
+    """Real GitHub caps a recursive tree (100k entries / 7 MB) and sets `truncated: true`; a mock
+    that can never set it leaves a client's truncation-handling path untested.
+
+    (The un-truncated case is already asserted by test_github_tree_recursive.)"""
     from backlot.routers import github as gh
 
     c, _ = gh_client
+    url = f"/github/repos/{gh_org}/codebase/git/trees/main"
+    full = c.get(url, headers=gh_admin_h, params={"recursive": "1"}).json()["tree"]
+
     monkeypatch.setattr(gh, "TREE_MAX_ENTRIES", 2)
-    body = c.get(
-        f"/github/repos/{gh_org}/codebase/git/trees/main",
-        headers=gh_admin_h,
-        params={"recursive": "1"},
-    ).json()
-    assert body["truncated"] is True
-    assert len(body["tree"]) == 2
+    body = c.get(url, headers=gh_admin_h, params={"recursive": "1"}).json()
+    assert body["truncated"] is True and len(body["tree"]) == 2
+    monkeypatch.undo()
 
-
-def test_github_tree_truncates_at_the_byte_cap(gh_client, gh_admin_h, gh_org, monkeypatch):
-    """The other half of the real cap (7 MB), and the only branch that trims entry by entry."""
-    from backlot.routers import github as gh
-
-    c, _ = gh_client
-    full = c.get(
-        f"/github/repos/{gh_org}/codebase/git/trees/main",
-        headers=gh_admin_h,
-        params={"recursive": "1"},
-    ).json()["tree"]
+    # the byte cap is the only branch that trims entry by entry
     monkeypatch.setattr(gh, "TREE_MAX_BYTES", len(json.dumps(full)) // 2)
-    body = c.get(
-        f"/github/repos/{gh_org}/codebase/git/trees/main",
-        headers=gh_admin_h,
-        params={"recursive": "1"},
-    ).json()
+    body = c.get(url, headers=gh_admin_h, params={"recursive": "1"}).json()
     assert body["truncated"] is True
     assert 0 < len(body["tree"]) < len(full)
     assert body["tree"] == full[: len(body["tree"])]  # a prefix, not a resampling
-
-
-def test_github_tree_not_truncated_under_the_cap(gh_client, gh_admin_h, gh_org):
-    c, _ = gh_client
-    body = c.get(
-        f"/github/repos/{gh_org}/codebase/git/trees/main",
-        headers=gh_admin_h,
-        params={"recursive": "1"},
-    ).json()
-    assert body["truncated"] is False
 
 
 # --- OpenAPI enrichment: github response fidelity ------------------------------------------

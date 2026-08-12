@@ -715,11 +715,13 @@ def test_the_condition_clause_is_omitted_rather_than_guessed():
     assert plain == ["d: 'title' is a required property"]
     assert (
         validation._when_clause(
-            {"allOf": [{"then": {"required": ["x"]}}]}, ["allOf", 0, "then", "required"]
+            {"allOf": [{"then": {"required": ["x"]}}]},
+            ["allOf", 0, "then", "required"],
+            {"required": ["x"]},
         )
         == ""
     )
-    assert validation._when_clause({}, ["required"]) == ""
+    assert validation._when_clause({}, ["required"], {}) == ""
 
     # `then` under `properties` is a field name a corpus author picked, not the keyword, and
     # the `if` beside it is another field — a schema that happens to hold both fields must not
@@ -728,8 +730,62 @@ def test_the_condition_clause_is_omitted_rather_than_guessed():
         validation._when_clause(
             {"properties": {"if": {"properties": {"mode": {"const": "fast"}}}, "then": {}}},
             ["properties", "then", "type"],
+            {},
         )
         == ""
+    )
+
+
+def test_a_clause_is_not_read_across_a_ref_hop():
+    """`err.schema_path` omits the `$ref` keyword it passed through, so a path from inside a
+    referenced subschema reads as a root-relative one. Walking the root by it can land on a
+    different conditional and name a field the record never mentions, so the walk is only trusted
+    when it arrives at the subschema that actually reported the error."""
+    from jsonschema import Draft202012Validator
+
+    root = {
+        "type": "object",
+        "$ref": "#/$defs/Sub",
+        "allOf": [
+            {
+                "if": {"properties": {"mode": {"const": "fast"}}, "required": ["mode"]},
+                "then": {"required": ["speed"]},
+            }
+        ],
+        "$defs": {
+            "Sub": {
+                "allOf": [
+                    {
+                        "if": {"properties": {"kind": {"const": "blob"}}, "required": ["kind"]},
+                        "then": {"required": ["sha"]},
+                    }
+                ]
+            }
+        },
+    }
+    (err,) = Draft202012Validator(root).iter_errors({"kind": "blob"})
+    # The hop is gone from both spellings of the path, so neither is a way to tell them apart.
+    assert list(err.schema_path) == ["allOf", 0, "then", "required"]
+    assert list(err.absolute_schema_path) == ["allOf", 0, "then", "required"]
+    # That path also addresses the ROOT's conditional, whose `if` is over `mode` -- a field this
+    # record does not carry. No clause is better than that one.
+    assert validation._when_clause(root, err.schema_path, err.schema) == ""
+
+    # A path that does arrive at the failing subschema still gets its clause, including when the
+    # error sits deeper inside `then` than the branch itself.
+    nested = {
+        "type": "object",
+        "allOf": [
+            {
+                "if": {"properties": {"subtype": {"const": "file"}}, "required": ["subtype"]},
+                "then": {"properties": {"path": {"type": "string"}}},
+            }
+        ],
+    }
+    (deep,) = Draft202012Validator(nested).iter_errors({"subtype": "file", "path": 9})
+    assert list(deep.schema_path) == ["allOf", 0, "then", "properties", "path", "type"]
+    assert (
+        validation._when_clause(nested, deep.schema_path, deep.schema) == ' when subtype is "file"'
     )
 
 
@@ -741,7 +797,9 @@ def test_an_else_branch_rules_out_the_condition_whole():
         "allOf": [{"if": {"properties": {"a": {"const": "x"}, "b": {"const": "y"}}}, "else": {}}]
     }
     assert (
-        validation._when_clause(two_field, ["allOf", 0, "else", "required"])
+        validation._when_clause(
+            two_field, ["allOf", 0, "else", "required"], two_field["allOf"][0]["else"]
+        )
         == ' unless a is "x" and b is "y"'
     )
 

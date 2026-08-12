@@ -77,7 +77,7 @@ def _branch_index(parts: list) -> int | None:
     return None
 
 
-def _when_clause(schema: dict, schema_path) -> str:
+def _when_clause(schema: dict, schema_path, failing) -> str:
     """`" when subtype is \\"file\\""` for a rule a condition put in force, else ``""``.
 
     A conditional requirement reports at the document root with a bare message: a 23,000-record
@@ -91,10 +91,22 @@ def _when_clause(schema: dict, schema_path) -> str:
     An ``else`` reads "unless", not a field-by-field negation: it is in force when the whole
     predicate fails, so a two-field condition rules out the pair together, and negating each
     field separately would claim something the schema does not say.
+
+    ``failing`` is the subschema that actually reported the error, and the walk is only trusted
+    when it arrives there. No shipped schema uses ``$ref`` yet, so this guard changes nothing
+    today; it is what keeps the clause honest once one does.
     """
     parts = list(schema_path)
     branch = _branch_index(parts)
     if branch is None:
+        return ""
+    # A schema path is reported WITHOUT the `$ref` hops it passed through, so a path from inside a
+    # referenced subschema reads as a root-relative one and this walk lands on whatever conditional
+    # happens to sit at those keys. The last element is the failing keyword, so its parent is the
+    # schema that failed; anything else means the walk went somewhere other than the real branch.
+    # `is not`, not `!=`: two structurally identical branches under different conditionals must not
+    # count as a match, and jsonschema hands the subschema object through rather than copying it.
+    if _subschema(schema, parts[:-1]) is not failing:
         return ""
     owner = _subschema(schema, parts[:branch])
     cond = owner.get("if") if isinstance(owner, dict) else None
@@ -155,7 +167,9 @@ def record_errors(rec: dict) -> list[str]:
         # not close: a record titled `subtype` with a bad `subtype` field read
         # "subtype subtype: ...", naming the field twice and marking neither.
         head = f"{label} [{loc}]" if label and loc else (label or loc or "<root>")
-        msgs.append(f"{head}: {err.message}{_when_clause(SERVICE_SCHEMAS[st], err.schema_path)}")
+        msgs.append(
+            f"{head}: {err.message}{_when_clause(SERVICE_SCHEMAS[st], err.schema_path, err.schema)}"
+        )
     return msgs
 
 

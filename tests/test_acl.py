@@ -489,3 +489,77 @@ def test_a_shared_doc_id_does_not_share_visibility(tmp_path):
     }
     assert ("org", "acme") in conf
     conn.close()
+
+
+def test_slack_channels_for_principals_reads_its_own_acl_table(tmp_path):
+    """The principal-indexed lookup ``conversations.list`` falls back to while the channel-ACL
+    cache is cold (see ``routers/slack.py``'s ``else`` branch). It must answer from ``slack_acl``,
+    not some other source's table — a doc_id shared with a github item, granted to a DIFFERENT
+    principal there, would leak (or hide) a channel if the query read the wrong table."""
+    from tests._helpers import build_corpus
+
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "eng-private",
+                "doc_id": "collide-1",
+                "content": "restricted to engineering",
+                "author_email": "ava@acme.com",
+                "readers": ["engineering"],
+            },
+            {
+                "source_type": "github",
+                "repo": "unrelated-repo",
+                "doc_id": "collide-1",
+                "title": "Unrelated issue",
+                "content": "granted to a different group entirely",
+                "author_email": "bob@acme.com",
+                "readers": ["design"],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    # granted via slack_acl -> the channel is found
+    assert store.slack_channels_for_principals(conn, ["engineering"]) == {"eng-private"}
+    # granted only in github_acl (same doc_id, different table) -> must NOT surface the channel
+    assert store.slack_channels_for_principals(conn, ["design"]) == set()
+    conn.close()
+
+
+def test_container_has_public_reads_its_own_acl_table(tmp_path):
+    """A cross-source doc_id collision must not leak a grant from one source's ACL into another
+    source's ``container_has_public`` answer — the container-level analogue of the doc-id bug this
+    plan exists to fix. A slack channel and a github repo share a doc_id here; the slack message is
+    group-restricted and the github item is public, so the two sources must disagree."""
+    from tests._helpers import build_corpus
+
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "shared-name",
+                "doc_id": "collide-2",
+                "content": "restricted to engineering",
+                "author_email": "ava@acme.com",
+                "visibility": "group",
+                "group": "engineering",
+                "author_groups": ["engineering"],
+            },
+            {
+                "source_type": "github",
+                "repo": "collide-repo",
+                "doc_id": "collide-2",
+                "title": "Public issue",
+                "content": "anyone may read this",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    assert store.container_has_public(conn, "github", "collide-repo") is True
+    assert store.container_has_public(conn, "slack", "shared-name") is False
+    conn.close()

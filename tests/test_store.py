@@ -736,6 +736,37 @@ def test_linear_comment_table_is_registered(db):
     assert store.comment_table("linear") == "linear_comments"
 
 
+def test_linear_relation_by_id_scopes_the_from_end_too(tmp_path):
+    """The docstring claims a relation is "scoped on BOTH ends". A relation whose `to` issue is
+    granted to the caller but whose `from` issue is NOT must still be hidden — this pins the alias
+    collision where `_acl_clause`'s inner alias shadowed the caller's outer "a"/"b" alias and
+    turned the from-end predicate into a tautology (`a.doc_id = a.doc_id`), which admitted a
+    relation off an unreadable issue to any caller holding ANY grant at all in `linear_acl`."""
+    from backlot import synth
+
+    conn = store.connect_rw(tmp_path / "rel.sqlite")
+    for doc_id in ("i1", "i2"):
+        conn.execute(
+            "INSERT INTO linear_issues(doc_id, team, author_email, title, content, created_ts) "
+            "VALUES (?,'eng','a@x.com','issue','body',1)",
+            (doc_id,),
+        )
+    conn.execute(
+        "INSERT INTO linear_relations(id, from_doc_id, to_doc_id, type, created_ts) "
+        "VALUES ('r1','i1','i2','blocks',1)"
+    )
+    # Only i2 (the `to` end) is granted; i1 (the `from` end) carries no grant at all.
+    conn.execute("INSERT INTO linear_acl VALUES ('i2','group','bob')")
+    conn.commit()
+    served = synth.linear_relation_id("r1")
+    assert store.linear_relation_by_id(conn, served, {"bob"}) is None
+    assert store.linear_relation_by_id(conn, served, None) is not None  # admin bypass still works
+    # Granting i1 too makes it visible — proving the hiding above was the ACL, not a broken query.
+    conn.execute("INSERT INTO linear_acl VALUES ('i1','group','bob')")
+    conn.commit()
+    assert store.linear_relation_by_id(conn, served, {"bob"}) is not None
+
+
 # --- fireflies ------------------------------------------------------------------
 # Sentences occupy the per-source child-rows slot, so the registry assertion above already
 # covers the table wiring; these cover the reads the GraphQL resolvers are built on.

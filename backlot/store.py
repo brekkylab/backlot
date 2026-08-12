@@ -569,9 +569,13 @@ def _acl_clause(
     if not ids:
         return " AND 0", []
     marks = ",".join("?" for _ in ids)
+    # The subquery's own alias must not collide with a caller's outer alias — the Linear relation
+    # readers pass "a"/"b" as `tbl` (see linear_relation_by_id), and a shared name there would
+    # shadow the outer table, turning `_acl.doc_id = {tbl}.{col}` into a tautological
+    # self-comparison that admits any row with ANY grant in this table.
     return (
-        f" AND EXISTS (SELECT 1 FROM {acl_table(source_type)} a WHERE a.doc_id = {tbl}.{col} "
-        f"AND a.principal_id IN ({marks}))",
+        f" AND EXISTS (SELECT 1 FROM {acl_table(source_type)} _acl WHERE _acl.doc_id = {tbl}.{col} "
+        f"AND _acl.principal_id IN ({marks}))",
         ids,
     )
 

@@ -133,6 +133,11 @@ CREATE TABLE IF NOT EXISTS gdrive_files (
 );
 CREATE INDEX IF NOT EXISTS idx_gdrive_folder ON gdrive_files(folder);
 
+-- `path` names the file THIS row is (only kind='file' rows have one). `changed_paths` is the other
+-- direction: a JSON list of the paths a PULL touched, so a corpus can state which files a pull
+-- changed instead of leaving the router to pick deterministically. See backlot.routers.github's
+-- changeset note. Comments stay OUTSIDE the parens: SQLite persists the statement verbatim, and a
+-- trailing in-body comment makes a later `ALTER TABLE ... DROP COLUMN` fail to re-parse it.
 CREATE TABLE IF NOT EXISTS github_items (
     doc_id TEXT PRIMARY KEY, repo TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
@@ -140,12 +145,7 @@ CREATE TABLE IF NOT EXISTS github_items (
     merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, reactions TEXT,
     created_ts INTEGER NOT NULL, updated_ts INTEGER,
     closed_ts INTEGER, closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT,
-    owner_display TEXT, path TEXT,
-    -- `path` names the file THIS row is (only kind='file' rows have one). `changed_paths` is the
-    -- other direction: a JSON list of the paths a PULL touched, so a corpus can say which files a
-    -- pull changed instead of leaving the router to pick deterministically. See
-    -- backlot.routers.github's changeset note.
-    changed_paths TEXT
+    owner_display TEXT, path TEXT, changed_paths TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_github_repo ON github_items(repo);
 CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path);

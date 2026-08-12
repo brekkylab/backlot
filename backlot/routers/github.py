@@ -77,9 +77,9 @@ def _github_media(request: Request, name: str) -> bool:
     real API honours: ``application/vnd.github.<name>``, the legacy ``…github.v3.<name>``, and the
     ``…github.<name>+json`` form."""
     wanted = {
-        f"application/vnd.github.{name}",
-        f"application/vnd.github.v3.{name}",
-        f"application/vnd.github.{name}+json",
+        f"application/vnd.github.{v}{name}{suffix}"
+        for v in ("", "v3.")  # the legacy version segment GitHub's own docs used
+        for suffix in ("", "+json")
     }
     return any(t in wanted for t in _accept_types(request))
 
@@ -215,7 +215,9 @@ async def search_issues(
     )
     start = (page - 1) * per_page
     ab = _api_base(request)
-    owner = get_settings().org_name
+    # _org, not the setting directly: the owner in the URLs these items carry has to be the one the
+    # repo routes accept, or every link a client follows out of a search hit 404s
+    owner = _org(request)
     items = [_issue_obj(conn, owner, r["repo"], r, ab) for r in matched[start : start + per_page]]
     return {"total_count": len(matched), "incomplete_results": False, "items": items}
 
@@ -473,22 +475,16 @@ async def pull_review_comments(owner: str, repo: str, number: int, request: Requ
     row = _resolve(request, conn, repo, number, ids)
     if row is None or row["kind"] != "pull_request":
         raise HTTPException(status_code=404, detail="Not Found")
-    rows = store.github_comments(conn, row["doc_id"], anchored=True)
-    if not rows:
+    src = _RepoFiles(conn, repo, ids)
+    resolved = _resolved_review_comments(conn, row, src)
+    if not resolved:
         return []
     ab = _api_base(request)
-    src = _RepoFiles(conn, repo, ids)
     # The same changeset this pull's diff serves, so a comment's `diff_hunk` and the diff agree.
     patches = {
         f["filename"]: f.get("patch") for f in _pr_files(conn, owner, repo, row, ab, ids, src)
     }
-    out = []
-    for c in rows:
-        f = src.get(c["path"])
-        if f is None:  # anchored to a file this caller cannot see, or to no file at all
-            continue
-        out.append(_gh_review_comment(owner, repo, number, row, c, f, patches, ab))
-    return out
+    return [_gh_review_comment(owner, repo, number, row, c, f, patches, ab) for c, f in resolved]
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/files")
@@ -508,7 +504,7 @@ async def pull_files(
     row = _resolve(request, conn, repo, number, ids)
     if row is None or row["kind"] != "pull_request":
         raise HTTPException(status_code=404, detail="Not Found")
-    files = _pr_files(conn, owner, repo, row, _api_base(request), ids)
+    files = _json_file_objects(_pr_files(conn, owner, repo, row, _api_base(request), ids))
     page, per_page = clamp_page(
         page, per_page, get_settings().default_page_size, get_settings().max_page_size
     )
@@ -1107,8 +1103,11 @@ def _pr_obj(
     number = obj["number"]
     reviewers = [_gh_user(e, api_base) for e in store.jcol(row, "requested_reviewers")]
     n_comments = obj["comments"]
+    # one _RepoFiles for both the changeset and the review-comment resolution below, so a file
+    # either of them touches is read once
+    src = repo_files if repo_files is not None else _RepoFiles(conn, repo, ids)
     if files is None:
-        files = _pr_files(conn, owner, repo, row, api_base, ids, repo_files)
+        files = _pr_files(conn, owner, repo, row, api_base, ids, src)
     obj.update(
         {
             # A PR's issue view and its pull view are two DISTINCT nodes on real GitHub, so this
@@ -1144,10 +1143,11 @@ def _pr_obj(
             "additions": sum(f["additions"] for f in files),
             "deletions": sum(f["deletions"] for f in files),
             "changed_files": len(files),
-            # the anchored half of github_comments; `comments` above is the conversation half. Real
+            # The anchored half of github_comments; `comments` above is the conversation half. Real
             # GitHub reports the two separately, and one number covering both would contradict
-            # whichever list the caller then fetched.
-            "review_comments": len(store.github_comments(conn, row["doc_id"], anchored=True)),
+            # whichever list the caller then fetched. Resolved the same way /pulls/{n}/comments
+            # resolves it, so the count describes the list the caller actually gets.
+            "review_comments": len(_resolved_review_comments(conn, row, src)),
             "comments": n_comments,
             "url": f"{api_base}/repos/{owner}/{repo}/pulls/{number}",
             "diff_url": f"https://github.com/{owner}/{repo}/pull/{number}.diff",
@@ -1186,7 +1186,9 @@ def _pr_obj(
 _MAX_CHANGED_FILES = 3  # only bounds a SYNTHESIZED changeset; `changed_paths` is taken in full
 _MAX_BLOCK_LINES = 3  # how many lines one hunk adds or removes
 _PATCH_CONTEXT = 3
-# Real GitHub omits `patch` for a binary file or a diff too large to inline.
+# Real GitHub omits `patch` from the JSON file object for a binary file or a diff too large to
+# inline. That is a limit on THAT representation only — the `.diff` media type still carries the
+# hunks — so it is applied where the JSON is built (see _json_file_objects), never when the hunk is.
 PATCH_MAX_BYTES = 1024 * 1024
 _CHANGE_STATUSES = ("modified", "added")
 
@@ -1278,8 +1280,6 @@ def _changed_file(
         added, deleted, patch = len(lines), 0, _patch_new_file(lines)
     else:
         added, deleted, patch = _patch_modified(f"{doc_id}:{path}", lines, selectable)
-    if patch is not None and len(patch.encode()) > PATCH_MAX_BYTES:
-        patch = None  # as real GitHub does for an oversized diff
     sha = _blob_sha(content)
     obj = {
         "sha": sha,
@@ -1343,10 +1343,28 @@ def _nl_terminated(lines: list[str]) -> list[str]:
     return out
 
 
+def _json_file_objects(files: list[dict]) -> list[dict]:
+    """The file objects as the JSON endpoint serves them: `patch` dropped when it is too large to
+    inline, which is what real GitHub does for that field. See :data:`PATCH_MAX_BYTES` — the cap
+    belongs to this representation, so the diff built from the same list keeps its hunks."""
+    return [
+        {k: v for k, v in f.items() if k != "patch"}
+        if f.get("patch") and len(f["patch"].encode()) > PATCH_MAX_BYTES
+        else f
+        for f in files
+    ]
+
+
 def _pr_diff(files: list[dict], base_sha: str) -> str:
-    """The pull's unified diff (`Accept: application/vnd.github.diff`), git-apply-able."""
+    """The pull's unified diff (`Accept: application/vnd.github.diff`), git-apply-able.
+
+    A file with no hunk at all is left out rather than given a header: `diff --git` followed by
+    nothing is not an empty diff, it is what real git reports as "patch with only garbage", and it
+    would make the WHOLE diff unapplyable rather than that one file."""
     out = []
     for f in files:
+        if not f.get("patch"):
+            continue
         a, b = f"a/{f['filename']}", f"b/{f['filename']}"
         out.append(f"diff --git {a} {b}\n")
         short = f["sha"][:7]
@@ -1354,8 +1372,7 @@ def _pr_diff(files: list[dict], base_sha: str) -> str:
             out.append(f"new file mode 100644\nindex 0000000..{short}\n--- /dev/null\n+++ {b}\n")
         else:  # `removed` is never synthesized — see the changeset note above
             out.append(f"index {base_sha[:7]}..{short} 100644\n--- {a}\n+++ {b}\n")
-        if f.get("patch"):
-            out.append(f["patch"] if f["patch"].endswith("\n") else f["patch"] + "\n")
+        out.append(f["patch"] if f["patch"].endswith("\n") else f["patch"] + "\n")
     return "".join(out)
 
 
@@ -1375,6 +1392,22 @@ def _pr_mbox(row, obj: dict, diff: str) -> str:
         f"Subject: [PATCH] {obj['title']}\n\n"
         f"{body}\n---\n{diff}-- \n2.45.0\n"
     )
+
+
+def _resolved_review_comments(conn, row, repo_files) -> list[tuple]:
+    """This pull's anchored comments paired with the file each one resolves to, dropping any whose
+    ``path`` names no file the caller can read.
+
+    One resolution, used by both the list endpoint and the ``review_comments`` count on the pull.
+    Counting the raw rows instead made the two contradict each other — a client paging until it had
+    ``review_comments`` items never finished — and leaked that a hidden file carries a comment.
+    """
+    out = []
+    for c in store.github_comments(conn, row["doc_id"], anchored=True):
+        f = repo_files.get(c["path"])
+        if f is not None:  # else: hidden from this caller, or no such file — see _RepoFiles.get
+            out.append((c, f))
+    return out
 
 
 def _gh_review_comment(
@@ -1450,7 +1483,10 @@ def _hunk_position(hunk: str, line: int | None) -> int | None:
         return None
     cur = int(m.group(1))
     for offset, row in enumerate(rows[1:], start=1):
-        if not row or row[0] == "-":  # a removed row occupies no line on the new side
+        # A removed row occupies no line on the new side, and `\ No newline at end of file` is a
+        # hunk row but not a line of the file at all — counting it lets a line past the end of the
+        # file resolve to the marker's own offset.
+        if not row or row[0] in "-\\":
             continue
         if cur == line:
             return offset

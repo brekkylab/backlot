@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
+
 import yaml
 
 import pytest
@@ -256,6 +258,41 @@ _GH_DIFF_DOCS = (
                     "author_email": "ava@acme.com",
                     "path": "app.py",
                     "diff_hunk": "@@ -1,2 +1,3 @@\n import sys\n",
+                },
+            ],
+        },
+        # review comments anchored to paths that do NOT resolve: one to no file at all, one to a
+        # people-only file. Both drop out of the list, so `review_comments` has to drop them too.
+        {
+            "source_type": "github",
+            "doc_id": "gh-diff-pr-unresolvable",
+            "repo": "diffable",
+            "subtype": "pull_request",
+            "title": "Comments anchored off the tree",
+            "content": "body",
+            "group": "engineering",
+            "visibility": "public",
+            "author_email": "bob@acme.com",
+            "author_groups": ["engineering"],
+            "changed_paths": ["app.py"],
+            "comments": [
+                {
+                    "content": "resolvable",
+                    "author_email": "ava@acme.com",
+                    "path": "app.py",
+                    "line": 1,
+                },
+                {
+                    "content": "no such file",
+                    "author_email": "ava@acme.com",
+                    "path": "gone/x.py",
+                    "line": 1,
+                },
+                {
+                    "content": "people only",
+                    "author_email": "hana@acme.com",
+                    "path": "secret/keys.txt",
+                    "line": 1,
                 },
             ],
         },
@@ -515,7 +552,17 @@ def test_github_file_acl_scoped(gh_client, gh_admin_h, gh_org, gh_user_tokens):
 _MAIN_PY = "def main():\n    return 1\n"
 
 
-@pytest.mark.parametrize("accept", ["application/vnd.github.raw", "application/vnd.github.v3.raw"])
+@pytest.mark.parametrize(
+    "accept",
+    [
+        "application/vnd.github.raw",
+        "application/vnd.github.v3.raw",
+        "application/vnd.github.raw+json",
+        # GitHub's own docs spelled it `application/vnd.github.VERSION.raw+json`; missing this one
+        # meant a caller using it got the base64 envelope with a 200 and no way to tell
+        "application/vnd.github.v3.raw+json",
+    ],
+)
 def test_github_blob_accept_raw_returns_the_bytes(gh_client, gh_admin_h, gh_org, accept):
     c, _ = gh_client
     sha = hashlib.sha1(_MAIN_PY.encode()).hexdigest()
@@ -928,6 +975,59 @@ def test_github_pull_diff_reverse_applies_with_real_git(diff_pr, tmp_path):
     assert r.returncode == 0, f"git rejected the diff:\n{r.stderr}\n---\n{diff}"
 
 
+def test_github_oversized_patch_is_omitted_from_json_but_kept_in_the_diff(diff_pr, monkeypatch):
+    """`patch` being omitted is a limit on the JSON file object, not on the diff — real GitHub's
+    `.diff` still carries the hunks. Applying the cap when the hunk is BUILT left the diff with a
+    `diff --git` header and no body, which real git rejects as garbage rather than as a diff."""
+    from backlot.routers import github as gh
+
+    c, h, org, num = diff_pr
+    monkeypatch.setattr(gh, "PATCH_MAX_BYTES", 1)  # every patch counts as oversized
+    files = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h).json()
+    assert files and all("patch" not in f for f in files)
+    # ...but the counts still describe the change, and the diff still carries the hunks
+    assert any(f["additions"] or f["deletions"] for f in files)
+    diff = c.get(
+        f"/github/repos/{org}/diffable/pulls/{num}",
+        headers={**h, "Accept": "application/vnd.github.diff"},
+    ).text
+    assert "@@ " in diff
+
+
+def test_github_diff_never_emits_a_file_header_with_no_body(tmp_path):
+    """A `diff --git` header with nothing after it is not an empty diff — real git calls it garbage
+    and refuses the whole patch, so a file with no hunk at all is left out instead."""
+    import shutil
+    import subprocess
+
+    from backlot.routers.github import _pr_diff
+
+    diff = _pr_diff(
+        [
+            {"sha": "a" * 40, "filename": "nohunk.bin", "status": "modified"},
+            {
+                "sha": "b" * 40,
+                "filename": "ok.txt",
+                "status": "added",
+                "patch": "@@ -0,0 +1,1 @@\n+hello\n",
+            },
+        ],
+        "c" * 40,
+    )
+    assert "nohunk.bin" not in diff and "ok.txt" in diff
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=wt, check=True)
+    (wt / "ok.txt").write_text("hello\n")
+    (wt / "pr.diff").write_text(diff)
+    r = subprocess.run(
+        ["git", "apply", "--reverse", "--check", "pr.diff"], cwd=wt, capture_output=True, text=True
+    )
+    assert r.returncode == 0, r.stderr
+
+
 def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):
     """The `patch` media type is a git-am-able mail patch, not the same bytes as `diff`."""
     c, h, org, num = diff_pr
@@ -1201,6 +1301,17 @@ def test_hunk_position_is_not_the_file_line():
     assert _hunk_position("not a hunk", 10) is None
 
 
+def test_hunk_position_ignores_the_no_newline_marker():
+    """git's `\\ No newline at end of file` is a hunk row but NOT a line of the file. Counting it as
+    one lets a line past the end of the file resolve to the marker's own offset."""
+    from backlot.routers.github import _hunk_around, _hunk_position
+
+    hunk = _hunk_around({"content": "alpha\nbeta\ngamma"}, 3)  # no trailing newline
+    assert "\\ No newline at end of file" in hunk
+    assert _hunk_position(hunk, 3) == 3  # the real last line
+    assert _hunk_position(hunk, 4) is None  # past the end — must not land on the marker
+
+
 def test_github_file_level_review_comment_has_no_position(declared_pr):
     c, h, org, num = declared_pr
     comment = next(
@@ -1243,10 +1354,78 @@ def test_github_comment_counts_split_the_two_kinds(declared_pr):
     assert issue["comments"] == 1  # the issue view counts the conversation only
 
 
+def test_github_review_comment_count_matches_the_list_it_describes(gh_client, gh_admin_h, gh_org):
+    """`review_comments` has to be the number the list endpoint actually returns.
+
+    The list drops a comment whose `path` resolves to no file the caller can read; counting every
+    anchored row instead meant the two answers contradicted each other, a client paging until it had
+    `review_comments` items never terminated, and the count LEAKED that a hidden file carries a
+    comment."""
+    c, _ = gh_client
+    from backlot import synth
+
+    num = synth.github_number("gh-diff-pr-unresolvable")
+    body = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/comments", headers=gh_admin_h).json()
+    pull = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}", headers=gh_admin_h).json()
+    # 'gone/x.py' is in no tree, so even the admin sees one fewer than the corpus declared
+    assert [x["path"] for x in body] == ["app.py", "secret/keys.txt"]
+    assert pull["review_comments"] == len(body) == 2
+
+
+def test_github_review_comment_count_is_acl_scoped(gh_client, gh_user_tokens, gh_org):
+    c, _ = gh_client
+    from backlot import synth
+
+    num = synth.github_number("gh-diff-pr-unresolvable")
+    bob = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}  # not in 'people'
+    body = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/comments", headers=bob).json()
+    pull = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}", headers=bob).json()
+    assert [x["path"] for x in body] == ["app.py"]
+    assert pull["review_comments"] == len(body) == 1
+
+
 def test_github_pull_with_no_review_comments_still_answers_empty(diff_pr):
     c, h, org, num = diff_pr
     r = c.get(f"/github/repos/{org}/diffable/pulls/{num}/comments", headers=h)
     assert r.status_code == 200 and r.json() == []
+
+
+def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
+    """Every absolute URL the mock puts in a response has to be one the mock accepts back — SDK
+    clients complete objects lazily by following them (see `_api_base`). Now that a wrong owner
+    404s, an emitted URL built from a different notion of the org would be a dead link, and the
+    builders do not all read the org from the same place.
+
+    NOT covered, deliberately: a comment's own `url`/`_links.self`
+    (`…/pulls/comments/{id}`, `…/issues/comments/{id}`). No route serves a comment by id — the id is
+    a hash of the stored comment id, so resolving one back would need a reverse index the app does
+    not build. The field is kept because it is part of the real object's shape, but following it
+    404s. Pre-existing for issue comments; review comments inherit it."""
+    c, _ = gh_client
+    from backlot import synth
+
+    num = synth.github_number("gh-diff-pr-declared")
+    seen = []
+    search = c.get("/github/search/issues", headers=gh_admin_h, params={"q": "argv"}).json()
+    assert search["items"], "need a search hit to check the URLs it emits"
+    seen += [search["items"][0][k] for k in ("url", "repository_url", "comments_url")]
+    pull = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}", headers=gh_admin_h).json()
+    seen += [pull["url"], pull["issue_url"], pull["repository_url"]]
+    files = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/files", headers=gh_admin_h).json()
+    seen.append(files[0]["contents_url"])
+    review = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/comments", headers=gh_admin_h)
+    seen.append(review.json()[0]["pull_request_url"])
+    tree = c.get(
+        f"/github/repos/{gh_org}/diffable/git/trees/main",
+        headers=gh_admin_h,
+        params={"recursive": 1},
+    ).json()
+    seen += [tree["url"], next(e["url"] for e in tree["tree"] if e["type"] == "blob")]
+
+    for url in seen:
+        path = url.split("/github", 1)[1]
+        r = c.get(f"/github{path}", headers=gh_admin_h)
+        assert r.status_code == 200, f"emitted a dead URL: {url} -> {r.status_code}"
 
 
 # --- git trees: the real truncation cap (issue #49 D9) ----------------------------------
@@ -1266,6 +1445,27 @@ def test_github_tree_truncates_at_the_entry_cap(gh_client, gh_admin_h, gh_org, m
     ).json()
     assert body["truncated"] is True
     assert len(body["tree"]) == 2
+
+
+def test_github_tree_truncates_at_the_byte_cap(gh_client, gh_admin_h, gh_org, monkeypatch):
+    """The other half of the real cap (7 MB), and the only branch that trims entry by entry."""
+    from backlot.routers import github as gh
+
+    c, _ = gh_client
+    full = c.get(
+        f"/github/repos/{gh_org}/codebase/git/trees/main",
+        headers=gh_admin_h,
+        params={"recursive": "1"},
+    ).json()["tree"]
+    monkeypatch.setattr(gh, "TREE_MAX_BYTES", len(json.dumps(full)) // 2)
+    body = c.get(
+        f"/github/repos/{gh_org}/codebase/git/trees/main",
+        headers=gh_admin_h,
+        params={"recursive": "1"},
+    ).json()
+    assert body["truncated"] is True
+    assert 0 < len(body["tree"]) < len(full)
+    assert body["tree"] == full[: len(body["tree"])]  # a prefix, not a resampling
 
 
 def test_github_tree_not_truncated_under_the_cap(gh_client, gh_admin_h, gh_org):

@@ -1314,6 +1314,340 @@ def test_byo_typed_reader_principals(tmp_path):
         conn.close()
 
 
+def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
+    """A corpus that writes its own issue keys and PR numbers into document text needs the API to
+    serve those exact strings, or every citation a document makes dangles on the served surface.
+    A provided jira `key` / github `number` is stored at load and wins. A github record without a
+    number keeps the synthesized one, materialized for the same reason as Linear's `identifier`; a
+    jira record without a key stores nothing, because a key's prefix belongs to the project rather
+    than to the row (see the loader's comment) — it is served and indexed from the container's
+    spelling instead. A github `file` row never takes a number, so it cannot shadow a real issue
+    or PR."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    records = [
+        {
+            "source_type": "jira",
+            "doc_id": "j-key",
+            "project": "payments",
+            "title": "t",
+            "content": "c",
+            "key": "PAY-7",
+            "author_email": "ava@acme.com",
+        },
+        {
+            "source_type": "jira",
+            "doc_id": "j-plain",
+            "project": "payments",
+            "title": "t2",
+            "content": "c2",
+            "author_email": "ava@acme.com",
+        },
+        {
+            "source_type": "github",
+            "doc_id": "g-num",
+            "repo": "core",
+            "subtype": "pull_request",
+            "title": "t",
+            "content": "c",
+            "number": 4242,
+            "author_email": "ava@acme.com",
+        },
+        {
+            "source_type": "github",
+            "doc_id": "g-file",
+            "repo": "core",
+            "subtype": "file",
+            "path": "src/a.py",
+            "title": "a.py",
+            "content": "print()",
+            "author_email": "ava@acme.com",
+            # provided or not, a file row's number stays NULL — the schema says
+            # "ignored", and a stored one could only shadow a real issue or PR
+            "number": 9,
+        },
+    ]
+    settings = build_corpus(tmp_path, records)
+
+    conn = store.connect_ro(settings.db_path)
+    try:
+        jira = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
+        assert jira["j-key"] == "PAY-7"
+        assert jira["j-plain"] is None
+        gh = {
+            r["doc_id"]: r["number"]
+            for r in conn.execute("SELECT doc_id, number FROM github_items")
+        }
+        assert gh["g-num"] == 4242
+        assert gh["g-file"] is None
+    finally:
+        conn.close()
+
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    with client_for(settings, reload=True) as c:
+        got = c.get("/atlassian/rest/api/3/issue/PAY-7", headers=hdr)
+        assert got.status_code == 200 and got.json()["key"] == "PAY-7"
+        # the synthesized spelling still resolves for the record that wrote none — under the
+        # prefix its project's provided key carries, which is the string the API serves for it
+        plain = synth.jira_key("j-plain", "PAY")
+        assert c.get(f"/atlassian/rest/api/3/issue/{plain}", headers=hdr).status_code == 200
+        pull = c.get("/github/repos/acme/core/pulls/4242", headers=hdr)
+        assert pull.status_code == 200 and pull.json()["number"] == 4242
+
+
+def test_byo_provided_key_prefix_is_the_project_key(tmp_path):
+    """An agent that reads PAY-7 out of a document navigates by PAY: the issue's
+    `fields.project.key`, the project picker and JQL `project = PAY` must all speak the
+    provided prefix, or the corpus cites keys its own API cannot navigate."""
+    from tests._helpers import build_corpus, client_for
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-key",
+                "project": "payments",
+                "title": "t",
+                "content": "c",
+                "key": "PAY-7",
+                "author_email": "ava@acme.com",
+            }
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    with client_for(settings, reload=True) as c:
+        issue = c.get("/atlassian/rest/api/3/issue/PAY-7", headers=hdr).json()
+        assert issue["fields"]["project"]["key"] == "PAY"
+        found = c.get(
+            "/atlassian/rest/api/3/search/jql", headers=hdr, params={"jql": "project = PAY"}
+        ).json()
+        assert [i["key"] for i in found["issues"]] == ["PAY-7"]
+        projects = c.get("/atlassian/rest/api/3/project/search", headers=hdr).json()
+        assert "PAY" in [p["key"] for p in projects["values"]]
+
+
+def test_byo_one_provided_key_sets_the_prefix_for_its_keyless_siblings(tmp_path):
+    """A project whose issues carry a MIX of provided and absent keys is the normal case for a
+    corpus that cites keys in document text: only the cited issues need to spell one out. Every
+    issue in such a project must still answer at one prefix — two spellings at once (the provided
+    `PAY-7` beside a sibling's `PAYMENTS<hash>-<n>`) would leave `project = PAY` returning a subset
+    of its own project and the picker naming a key half the issues do not use.
+
+    The keyless row is why the loader stores no synthesized key: whichever row sorted first by
+    `doc_id` would otherwise decide the prefix, and here that row is the keyless one."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    def issue(did):
+        return {
+            "source_type": "jira",
+            "doc_id": did,
+            "project": "payments",
+            "title": did,
+            "content": "c",
+            "author_email": "ava@acme.com",
+        }
+
+    # 'j-aaa' sorts before 'j-zzz': the keyless row is the one the index reaches first.
+    settings = build_corpus(tmp_path, [issue("j-aaa"), {**issue("j-zzz"), "key": "PAY-7"}])
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    keyless = synth.jira_key("j-aaa", "PAY")
+    assert keyless.startswith("PAY-")
+    with client_for(settings, reload=True) as c:
+        served = c.get(f"/atlassian/rest/api/3/issue/{keyless}", headers=hdr)
+        assert served.status_code == 200
+        assert served.json()["key"] == keyless
+        assert served.json()["fields"]["project"]["key"] == "PAY"
+        found = c.get(
+            "/atlassian/rest/api/3/search/jql", headers=hdr, params={"jql": "project = PAY"}
+        ).json()
+        assert sorted(i["key"] for i in found["issues"]) == sorted([keyless, "PAY-7"])
+        projects = c.get("/atlassian/rest/api/3/project/search", headers=hdr).json()
+        assert [p["key"] for p in projects["values"] if p["key"].startswith("PAY")] == ["PAY"]
+
+
+def test_byo_colliding_provided_id_claims_the_spelling_and_the_other_row_moves(tmp_path):
+    """Provided ids claim their spelling first, and a row whose derived id was taken moves
+    to the next free one — it does not merely stay listable. Left as an alias that
+    setdefault silently dropped, that row advertised a number which fetched the provider
+    and was reachable at nothing: the index and the serving path disagreed about the same
+    document. Both now read the number the index resolved."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    stolen = synth.github_number("g-victim")
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "g-victim",
+                "repo": "core",
+                "title": "v",
+                "content": "v",
+                "author_email": "ava@acme.com",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "g-a-thief",
+                "repo": "core",
+                "subtype": "pull_request",
+                "title": "t",
+                "content": "t",
+                "author_email": "ava@acme.com",
+                "number": stolen,
+            },
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    with client_for(settings, reload=True) as c:
+        got = c.get(f"/github/repos/acme/core/pulls/{stolen}", headers=hdr).json()
+        assert got["title"] == "t"  # the provided id wins the spelling
+        alias = synth.github_number("g-a-thief")
+        got2 = c.get(f"/github/repos/acme/core/pulls/{alias}", headers=hdr)
+        assert got2.status_code == 200 and got2.json()["title"] == "t"
+        listing = c.get(
+            "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
+        ).json()
+        served = {i["title"]: i["number"] for i in listing}
+        assert "v" in served
+        # The displaced row advertises a number that is not the provider's, and fetching
+        # that number returns the displaced row itself.
+        assert served["v"] != stolen
+        back = c.get(f"/github/repos/acme/core/issues/{served['v']}", headers=hdr)
+        assert back.status_code == 200 and back.json()["title"] == "v"
+
+
+def test_byo_a_provided_number_wins_whichever_doc_id_sorts_first(tmp_path):
+    """The contract above cannot depend on doc_id order, and it did: both index passes read one
+    column, so a synthesized number written into it at load was indistinguishable from a provided
+    one, and the provider lost its own number to a row that merely hashed to it and sorted earlier
+    — a 404 at the number the corpus had asked for. The victim doc_id sorts FIRST here; only a
+    corpus that stores nothing for an absent number can keep the provider's claim.
+
+    A keyless row therefore holds NULL, and the number it serves comes from the reverse index's
+    second pass — same value, decided after every provided one is already registered."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    stolen = synth.github_number("g-a-victim")
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "g-a-victim",
+                "repo": "core",
+                "title": "v",
+                "content": "v",
+                "author_email": "ava@acme.com",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "g-thief",
+                "repo": "core",
+                "subtype": "pull_request",
+                "title": "t",
+                "content": "t",
+                "author_email": "ava@acme.com",
+                "number": stolen,
+            },
+        ],
+    )
+    conn = store.connect_ro(settings.db_path)
+    try:
+        stored = {
+            r["doc_id"]: r["number"]
+            for r in conn.execute("SELECT doc_id, number FROM github_items")
+        }
+        assert stored == {"g-a-victim": None, "g-thief": stolen}
+    finally:
+        conn.close()
+
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    with client_for(settings, reload=True) as c:
+        got = c.get(f"/github/repos/acme/core/pulls/{stolen}", headers=hdr)
+        assert got.status_code == 200 and got.json()["title"] == "t"
+        assert got.json()["number"] == stolen
+        listing = c.get(
+            "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
+        ).json()
+        assert "v" in {i["title"] for i in listing}
+
+
+def test_byo_server_boots_read_only_on_a_pre_column_db(tmp_path):
+    """The serving path opens the DB read-only — no migration can run there. A DB built
+    before the key/number columns existed must boot and serve the synthesized spellings
+    exactly as that version did, not crash in lifespan."""
+    import sqlite3 as _sq
+
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-old",
+                "project": "payments",
+                "title": "t",
+                "content": "c",
+                "author_email": "ava@acme.com",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "g-old",
+                "repo": "core",
+                "title": "t",
+                "content": "c",
+                "author_email": "ava@acme.com",
+            },
+        ],
+    )
+    conn = _sq.connect(settings.db_path)
+    conn.executescript(
+        "DROP INDEX IF EXISTS idx_jira_doc_key;"
+        "DROP INDEX IF EXISTS idx_github_doc_number;"
+        "ALTER TABLE jira_issues DROP COLUMN key;"
+        "ALTER TABLE github_items DROP COLUMN number;"
+    )
+    conn.commit()
+    conn.close()
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    with client_for(settings, reload=True) as c:
+        jkey = synth.jira_key("j-old", synth.jira_project_key("payments"))
+        assert c.get(f"/atlassian/rest/api/3/issue/{jkey}", headers=hdr).status_code == 200
+        num = synth.github_number("g-old")
+        assert c.get(f"/github/repos/acme/core/issues/{num}", headers=hdr).status_code == 200
+
+
 # --- roster sidecar ---------------------------------------------------------------
 
 
@@ -2198,3 +2532,464 @@ def test_byo_roster_group_and_groups_read_the_same_in_every_shape(tmp_path):
     assert users["d@x.com"]["groups"] == users["c@x.com"]["groups"]
     # Naming one group across both fields still yields one row.
     assert users["e@x.com"]["groups"] == ["engineering", "squad-checkout"]
+
+
+def test_byo_two_records_cannot_claim_one_tracker_id(tmp_path):
+    """Two records providing the same github number, or the same jira key, used to load
+    without a word: the reverse index gave the id to one of them and the other was
+    unreachable at the only id it advertised. The loader is the one place that sees every
+    row, so it is the only place the claim can be checked — and a corpus stating a fact
+    twice is the corpus's mistake to hear about, not a silent loss."""
+    import pytest
+
+    from tests._helpers import build_corpus
+
+    def rows(*extra):
+        return list(extra)
+
+    with pytest.raises(SystemExit) as e:
+        build_corpus(
+            tmp_path / "gh",
+            rows(
+                {
+                    "source_type": "github",
+                    "doc_id": "g-a",
+                    "repo": "core",
+                    "subtype": "issue",
+                    "title": "A",
+                    "content": "one",
+                    "author_email": "ava@acme.com",
+                    "number": 500,
+                },
+                {
+                    "source_type": "github",
+                    "doc_id": "g-b",
+                    "repo": "core",
+                    "subtype": "issue",
+                    "title": "B",
+                    "content": "two",
+                    "author_email": "ava@acme.com",
+                    "number": 500,
+                },
+            ),
+        )
+    assert "500" in str(e.value) and "g-a" in str(e.value)
+
+    with pytest.raises(SystemExit) as e:
+        build_corpus(
+            tmp_path / "jira",
+            rows(
+                {
+                    "source_type": "jira",
+                    "doc_id": "j-a",
+                    "project": "payments",
+                    "title": "JA",
+                    "content": "x",
+                    "author_email": "ava@acme.com",
+                    "key": "PAY-1",
+                },
+                {
+                    "source_type": "jira",
+                    "doc_id": "j-b",
+                    "project": "payments",
+                    "title": "JB",
+                    "content": "y",
+                    "author_email": "ava@acme.com",
+                    "key": "PAY-1",
+                },
+            ),
+        )
+    assert "PAY-1" in str(e.value) and "j-a" in str(e.value)
+
+    # The same number in a DIFFERENT repository is a different id, and loads.
+    build_corpus(
+        tmp_path / "ok",
+        rows(
+            {
+                "source_type": "github",
+                "doc_id": "g-c",
+                "repo": "core",
+                "subtype": "issue",
+                "title": "C",
+                "content": "one",
+                "author_email": "ava@acme.com",
+                "number": 500,
+            },
+            {
+                "source_type": "github",
+                "doc_id": "g-d",
+                "repo": "gateway",
+                "subtype": "issue",
+                "title": "D",
+                "content": "two",
+                "author_email": "ava@acme.com",
+                "number": 500,
+            },
+        ),
+    )
+
+
+def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
+    """The jira half of the collision contract: an issue whose derived key was claimed by
+    an issue that provided it moves to the next free sequence number in the same project,
+    and answers there. Serving and the index read one authority, so the key an issue
+    advertises is the key that fetches it."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    # 'j-keyless' derives PAY-<n>; the second record provides exactly that key.
+    stolen = synth.jira_key("j-keyless", "PAY")
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-keyless",
+                "project": "payments",
+                "title": "derived",
+                "content": "one",
+                "author_email": "ava@acme.com",
+            },
+            {
+                "source_type": "jira",
+                "doc_id": "j-provider",
+                "project": "payments",
+                "title": "provided",
+                "content": "two",
+                "author_email": "ava@acme.com",
+                "key": stolen,
+            },
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    with client_for(settings, reload=True) as c:
+        found = c.get(
+            "/atlassian/rest/api/3/search/jql", headers=hdr, params={"jql": "project = PAY"}
+        ).json()
+        served = {i["fields"]["summary"]: i["key"] for i in found["issues"]}
+        assert served["provided"] == stolen
+        assert served["derived"] != stolen
+        for summary, key in served.items():
+            got = c.get(f"/atlassian/rest/api/3/issue/{key}", headers=hdr)
+            assert got.status_code == 200, (summary, key)
+            assert got.json()["fields"]["summary"] == summary
+
+
+def test_byo_meta_cannot_smuggle_a_tracker_id(tmp_path):
+    """A tracker id is read from the field its schema declares and from nowhere else.
+    `meta` is documented free-form, so seeding the extras from it let
+    `meta: {"number": 3}` claim issue 3 in a repository exactly as a top-level `number`
+    would — a spelling no schema describes, that shadows a real issue, and that the
+    uniqueness check would then refuse an import over."""
+    import sqlite3
+
+    from backlot import store
+    from tests._helpers import build_corpus
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "smug",
+                "repo": "core",
+                "subtype": "issue",
+                "title": "t",
+                "content": "c",
+                "author_email": "ava@acme.com",
+                "meta": {"number": 777},
+            },
+            {
+                "source_type": "jira",
+                "doc_id": "j-smug",
+                "project": "payments",
+                "title": "t",
+                "content": "c",
+                "author_email": "ava@acme.com",
+                "meta": {"key": "PAY-777"},
+            },
+        ],
+    )
+    conn = sqlite3.connect(settings.db_path)
+    conn.row_factory = sqlite3.Row
+    gh = conn.execute(f"SELECT number FROM {store.table('github')}").fetchone()
+    jira = conn.execute(f"SELECT key FROM {store.table('jira')}").fetchone()
+    assert gh["number"] is None, "meta must not populate the served number column"
+    assert jira["key"] is None, "meta must not populate the served key column"
+
+
+def test_byo_a_repeated_document_may_restate_its_own_tracker_id(tmp_path):
+    """Two records sharing a (source, doc_id) are both written — the row-level INSERT OR
+    REPLACE leaves the later one, which is what a direct import of the same documents
+    produces, and one real corpus has four such pairs, one of them within jira. Such a
+    repeat carrying its own provided key was aborting the whole import, naming the very
+    doc_id it was inserting. Only a DIFFERENT document violates the claim."""
+    from tests._helpers import build_corpus
+
+    rec = {
+        "source_type": "jira",
+        "doc_id": "jira-x",
+        "project": "PAY",
+        "title": "t",
+        "content": "c",
+        "author_email": "ava@acme.com",
+        "key": "PAY-7",
+    }
+    settings = build_corpus(tmp_path, [rec, dict(rec)])
+    conn = store.connect_ro(settings.db_path)
+    rows = conn.execute(f"SELECT doc_id, key FROM {store.table('jira')}").fetchall()
+    assert [(r["doc_id"], r["key"]) for r in rows] == [("jira-x", "PAY-7")]
+
+
+def test_byo_a_tracker_id_claim_survives_append(tmp_path):
+    """`tracker_ids` lives on a `_Loader` that `load_records` builds fresh per invocation, so
+    without seeding it from the DB the whole check ended at the shard boundary: two shards
+    appended in separate runs could each provide PAY-7 and neither would be told, leaving the
+    loser advertising an id that fetches somebody else. That is the failure this check exists
+    to remove, reached through --append."""
+    import pytest
+
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    def shard(name, doc_id, **extra):
+        p = tmp_path / name
+        p.write_text(
+            json.dumps(
+                {
+                    "source_type": "jira",
+                    "doc_id": doc_id,
+                    "project": "PAY",
+                    "title": doc_id,
+                    "content": "c",
+                    "author_email": "ava@acme.com",
+                    "key": "PAY-7",
+                    **extra,
+                }
+            )
+            + "\n"
+        )
+        return p
+
+    settings = Settings(data_dir=tmp_path)
+    first = shard("a.jsonl", "jira-a")
+    load(first, settings, reset=True)
+
+    with pytest.raises(SystemExit) as e:
+        load(shard("b.jsonl", "jira-b"), settings, reset=False)
+    assert "PAY-7" in str(e.value) and "jira-a" in str(e.value)
+
+    # Re-appending a shard already loaded is not a collision with itself, so a re-run of the
+    # same import still works — the seeded claim names the same doc_id that is re-stating it.
+    load(first, settings, reset=False)
+
+    # And a number is per repository, so the same one in another repo is not a claim on it.
+    gh = tmp_path / "g.jsonl"
+    for repo, doc in (("core", "g-a"), ("other", "g-b")):
+        gh.write_text(
+            json.dumps(
+                {
+                    "source_type": "github",
+                    "doc_id": doc,
+                    "repo": repo,
+                    "subtype": "issue",
+                    "title": doc,
+                    "content": "c",
+                    "author_email": "ava@acme.com",
+                    "number": 412,
+                }
+            )
+            + "\n"
+        )
+        load(gh, settings, reset=False)
+
+
+def test_byo_a_pull_requests_reviews_link_to_the_number_the_index_resolved(tmp_path):
+    """Every other handler reads `_issue_number`; this one derived. When a PR provides no
+    number and the derived one is already held by a row that did provide it, the index moves
+    this row — and the reviews body went on citing the derived number, so it linked to the
+    displacing PR, a different document, from a response about this one."""
+    from backlot import synth
+    from tests._helpers import build_corpus, client_for
+
+    stolen = synth.github_number("g-victim")
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "g-victim",
+                "repo": "core",
+                "subtype": "pull_request",
+                "title": "victim",
+                "content": "v",
+                "author_email": "ava@acme.com",
+                "reviews": [{"author_email": "bob@acme.com", "state": "APPROVED"}],
+            },
+            {
+                "source_type": "github",
+                "doc_id": "g-a-thief",
+                "repo": "core",
+                "subtype": "pull_request",
+                "title": "thief",
+                "content": "t",
+                "author_email": "ava@acme.com",
+                "number": stolen,
+            },
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    hdr = {
+        "Authorization": "Bearer "
+        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    }
+    with client_for(settings, reload=True) as c:
+        listing = c.get(
+            "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
+        ).json()
+        displaced = next(i["number"] for i in listing if i["title"] == "victim")
+        assert displaced != stolen
+
+        reviews = c.get(f"/github/repos/acme/core/pulls/{displaced}/reviews", headers=hdr).json()
+        assert reviews, "the victim's own reviews"
+        for rv in reviews:
+            assert rv["pull_request_url"].endswith(f"/pulls/{displaced}")
+            assert f"/pull/{displaced}#" in rv["html_url"]
+
+
+def test_byo_two_projects_cannot_share_a_provided_key_prefix(tmp_path):
+    """A key's prefix is its project's key, and real Jira holds that unique across projects.
+    The index can only give `PAY` to one container, so a second project providing `PAY-`
+    keys loaded fine and then `project = PAY` JQL, the picker and the role endpoint all
+    silently served only the first — the same one-holder rule as a full key, one level up.
+    The claim must also hold across `--append`, where the earlier keys are only in the DB."""
+    from tests._helpers import build_corpus
+
+    def rec(did, project, key):
+        return {
+            "source_type": "jira",
+            "doc_id": did,
+            "project": project,
+            "title": did,
+            "content": "c",
+            "author_email": "ava@acme.com",
+            "key": key,
+        }
+
+    # Two keys under one prefix in ONE project is the normal case and loads.
+    with pytest.raises(SystemExit) as e:
+        build_corpus(
+            tmp_path / "one",
+            [
+                rec("j-a", "payments", "PAY-1"),
+                rec("j-b", "payments", "PAY-3"),
+                rec("j-c", "billing", "PAY-2"),
+            ],
+        )
+    assert "PAY" in str(e.value) and "payments" in str(e.value)
+
+    # And across runs: the first shard's claim is seeded from the DB, not remembered.
+    settings = Settings(data_dir=tmp_path)
+    first = tmp_path / "a.jsonl"
+    first.write_text(json.dumps(rec("j-a", "payments", "PAY-1")))
+    load(first, settings, reset=True)
+    second = tmp_path / "b.jsonl"
+    second.write_text(json.dumps(rec("j-b", "billing", "PAY-2")))
+    with pytest.raises(SystemExit) as e:
+        load(second, settings, reset=False)
+    assert "PAY" in str(e.value) and "payments" in str(e.value)
+    # Re-appending the holder itself is not a violation.
+    load(first, settings, reset=False)
+
+
+def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):
+    """`PAY-1` beside `BILL-2` in one project is the other direction of the same 1:1: the
+    project can only have one key, so whichever the index picked, the other issue served a
+    key whose prefix was not its project's key — the invariant `fields.project.key` and the
+    synthesized keys of keyless siblings are both built on."""
+    from tests._helpers import build_corpus
+
+    def rec(did, key):
+        return {
+            "source_type": "jira",
+            "doc_id": did,
+            "project": "payments",
+            "title": did,
+            "content": "c",
+            "author_email": "ava@acme.com",
+            "key": key,
+        }
+
+    with pytest.raises(SystemExit) as e:
+        build_corpus(tmp_path / "one", [rec("j-a", "BILL-2"), rec("j-b", "PAY-1")])
+    assert "BILL" in str(e.value) and "PAY-1" in str(e.value)
+
+    # Across runs too, through the seeded maps.
+    settings = Settings(data_dir=tmp_path)
+    first = tmp_path / "a.jsonl"
+    first.write_text(json.dumps(rec("j-a", "BILL-2")))
+    load(first, settings, reset=True)
+    second = tmp_path / "b.jsonl"
+    second.write_text(json.dumps(rec("j-b", "PAY-1")))
+    with pytest.raises(SystemExit) as e:
+        load(second, settings, reset=False)
+    assert "BILL" in str(e.value) and "PAY-1" in str(e.value)
+
+
+def test_byo_a_derived_id_may_move_across_append_but_always_fetches_its_advertiser(tmp_path):
+    """Characterization of a deliberate choice (see `_free_number`'s docstring): a served id
+    is a function of the container's whole row set. Appending a row whose derived number
+    lands between two existing rows moves one of them — including `gh-054074`, whose own
+    derived number never collided with anything; the displaced `gh-014031` reaches it first.
+    What IS guaranteed, before and after, is that every advertised number fetches the row
+    that advertised it. If a future change wants numbers stable across `--append`, it has to
+    store the resolved value, which `byo._Loader.add`'s comment explains the cost of."""
+    from backlot import synth
+    from tests._helpers import client_for
+
+    A, B, C = "gh-000000", "gh-014031", "gh-054074"
+    assert synth.github_number(A) == synth.github_number(B) == synth.github_number(C) - 1
+
+    def rec(did):
+        return {
+            "source_type": "github",
+            "doc_id": did,
+            "repo": "core",
+            "subtype": "issue",
+            "title": did,
+            "content": "c",
+            "author_email": "ava@acme.com",
+        }
+
+    def served(settings):
+        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        hdr = {
+            "Authorization": "Bearer "
+            + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+        }
+        with client_for(settings, reload=True) as c:
+            listing = c.get(
+                "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
+            ).json()
+            out = {i["title"]: i["number"] for i in listing}
+            for title, number in out.items():
+                got = c.get(f"/github/repos/acme/core/issues/{number}", headers=hdr)
+                assert got.status_code == 200 and got.json()["title"] == title
+            return out
+
+    settings = Settings(data_dir=tmp_path)
+    shard = tmp_path / "s1.jsonl"
+    shard.write_text("\n".join(json.dumps(rec(d)) for d in (A, C)))
+    load(shard, settings, reset=True)
+    n = synth.github_number(A)
+    assert served(settings) == {A: n, C: n + 1}
+
+    shard2 = tmp_path / "s2.jsonl"
+    shard2.write_text(json.dumps(rec(B)))
+    load(shard2, settings, reset=False)
+    # B displaced to n+1, which displaces C to n+2 — C moved without ever colliding.
+    assert served(settings) == {A: n, B: n + 1, C: n + 2}

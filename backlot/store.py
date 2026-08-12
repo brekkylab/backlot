@@ -140,10 +140,17 @@ CREATE TABLE IF NOT EXISTS github_items (
     merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, reactions TEXT,
     created_ts INTEGER NOT NULL, updated_ts INTEGER,
     closed_ts INTEGER, closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT,
-    owner_display TEXT, path TEXT
+    owner_display TEXT, path TEXT, number INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_github_repo ON github_items(repo);
 CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path);
+-- (doc_id, kind, repo, number) in that order: the issue-number reverse index scans exactly these
+-- four, so the build stays an index-only scan and never touches the wide rows (see
+-- main._build_index). Partial, because that scan excludes kind='file' rows — in a code-heavy
+-- corpus they dominate the table, and indexing them would only pay write and disk cost for rows
+-- the one consumer filters out. `kind` must stay among the columns or the plan loses COVERING.
+CREATE INDEX IF NOT EXISTS idx_github_doc_number ON github_items(doc_id, kind, repo, number)
+    WHERE kind IS NULL OR kind != 'file';
 
 CREATE TABLE IF NOT EXISTS jira_issues (
     doc_id TEXT PRIMARY KEY, project TEXT NOT NULL, author_email TEXT NOT NULL,
@@ -151,10 +158,11 @@ CREATE TABLE IF NOT EXISTS jira_issues (
     status TEXT, issuetype TEXT, priority TEXT, labels TEXT, components TEXT,
     issuelinks TEXT, parent_id TEXT, changelog TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     assignee_email TEXT, reporter_email TEXT, resolution TEXT, resolution_ts INTEGER,
-    duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, owner_display TEXT
+    duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, owner_display TEXT, key TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_jira_project ON jira_issues(project);
 CREATE INDEX IF NOT EXISTS idx_jira_parent ON jira_issues(parent_id);
+CREATE INDEX IF NOT EXISTS idx_jira_doc_key ON jira_issues(doc_id, project, key);
 
 CREATE TABLE IF NOT EXISTS confluence_pages (
     doc_id TEXT PRIMARY KEY, space TEXT NOT NULL, author_email TEXT NOT NULL,
@@ -419,9 +427,11 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # DB (table absent) and on a DB that already has the column.
     for table, column, decl in (
         ("github_items", "path", "TEXT"),
+        ("github_items", "number", "INTEGER"),
         ("linear_issues", "parent_key", "TEXT"),
         ("linear_issues", "parent_doc_id", "TEXT"),
         ("linear_issues", "release", "TEXT"),
+        ("jira_issues", "key", "TEXT"),
     ):
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")

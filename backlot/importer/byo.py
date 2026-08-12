@@ -206,6 +206,7 @@ def _service_columns(
         return {
             "kind": subtype or "issue",
             "path": ex.get("path"),
+            "number": ex.get("number"),
             "state": ex.get("state"),
             "labels": _j(ex.get("labels")),
             "assignees": _j(ex.get("assignees")),
@@ -245,6 +246,7 @@ def _service_columns(
             # `squad` is the owning team, which need not be the project's ACL group.
             "severity": ex.get("severity"),
             "squad": ex.get("squad"),
+            "key": ex.get("key"),
             "owner_display": owner_display,
         }
     if src == "confluence":
@@ -643,6 +645,47 @@ class _Loader:
         # Linear relations name a target by doc_id and are resolved after the whole corpus is read,
         # since a target may appear on a later line.
         self.lin_links = []
+        # Tracker ids the corpus provided, so a second record claiming one is refused here.
+        # Two records providing the same github number or jira key used to load without a
+        # word: one of them then owned the id in the reverse index and the other was
+        # unreachable at the only id it advertised. The loader is the one place that sees
+        # every row, so it is the only place the claim can be checked at all.
+        self.tracker_ids = {}  # (source_type, container, id) -> doc_id
+        # A jira key's prefix is its PROJECT's key, and real Jira holds that 1:1 in both
+        # directions: a project has one key, a key names one project. The index can only
+        # pick one side of a tie with setdefault — two projects providing `PAY-` keys left
+        # `project = PAY` JQL and the role endpoint silently serving only the first, and a
+        # project providing `PAY-1` beside `BILL-2` served issue keys whose prefix was not
+        # their project's key. Both are corpus shapes only the loader can see and refuse.
+        self.jira_prefixes = {}  # container -> prefix
+        self.jira_prefix_holders = {}  # prefix -> container
+
+    def seed_tracker_ids(self) -> None:
+        """Re-read the ids already in the DB, so a claim holds ACROSS runs too.
+
+        A fresh ``_Loader`` per :func:`load_records` sees only the shard it is loading. Without
+        this, two shards appended in separate runs could each provide ``PAY-7`` and neither would
+        be told — the reverse index would hand the key to whichever doc_id sorts first, and the
+        other row would advertise an id that fetches somebody else. That is the failure this
+        check exists to remove, and ``--append`` is a route straight back into it.
+
+        Only provided ids are stored (a derived one stays NULL and is resolved at index-build
+        time), so the column is exactly the set of claims already made. The jira prefix maps
+        are seeded from the same rows: a later shard bringing `BILL-` keys into a project
+        that already answers at `PAY`, or claiming `PAY` for a second project, is the same
+        1:1 violation whether the earlier keys arrived this run or a previous one.
+        """
+        for src, col in (("github", "number"), ("jira", "key")):
+            for row in self.conn.execute(
+                f"SELECT doc_id, {col} AS v, {store.grouping_col(src)} AS c "
+                f"FROM {store.table(src)} WHERE {col} IS NOT NULL"
+            ):
+                scope = str(row["c"]) if src == "github" else ""
+                self.tracker_ids[(src, scope, str(row["v"]))] = row["doc_id"]
+                if src == "jira":
+                    prefix = str(row["v"]).rsplit("-", 1)[0]
+                    self.jira_prefixes[str(row["c"])] = prefix
+                    self.jira_prefix_holders[prefix] = str(row["c"])
 
     def add(self, rec: dict, where: str = "record") -> None:
         """Insert one BYO record's row(s). ``where`` names the record in an error message.
@@ -774,6 +817,14 @@ class _Loader:
 
         # structured extras: rec.meta merged with convenience top-level keys
         extras = dict(rec.get("meta") or {})
+        # A tracker id is read from the field the schema declares it in, and from nowhere
+        # else. `meta` is documented free-form, so seeding `extras` from it let
+        # `meta: {"number": 3}` claim issue 3 in a repository just as a top-level `number`
+        # would — a spelling no schema describes, that shadows a real issue, and that the
+        # uniqueness check below would then refuse an import over. Both ids are ordinary
+        # `meta` content again: carried through, never promoted to the served column.
+        for reserved in ("number", "key"):
+            extras.pop(reserved, None)
         for k in (
             "labels",
             "reactions",
@@ -809,6 +860,7 @@ class _Loader:
             "merged_by",
             "milestone",
             "requested_reviewers",
+            "number",
             "resolution",
             "resolutiondate",
             "duedate",
@@ -941,6 +993,74 @@ class _Loader:
                 # the API had just handed the caller that exact string. Deterministic, so the
                 # served value is unchanged; it is just written down now.
                 cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
+            # A jira key and a github number are deliberately NOT materialized the way Linear's
+            # identifier is: the column holds what the CORPUS wrote and nothing else, so "provided"
+            # means exactly "non-NULL" everywhere downstream. Two things depend on that.
+            #
+            # A key carries the PROJECT's key as its prefix — a fact about the container, not about
+            # this row. Written here the prefix would be the synthesized one, since the record
+            # cannot know whether a sibling issue in the same project provides `PAY-7`, and a
+            # project mixing provided and absent keys would then serve two spellings at once.
+            #
+            # And the reverse indexes let a provided id claim its spelling ahead of every
+            # synthesized one (main._build_index scans in two passes). A synthesized value written
+            # into the same column is indistinguishable from a provided one, which put the passes
+            # in doc_id order instead: a record that provided number N lost it to whichever row
+            # synthesized N and sorted first, and answered 404 at the number it had asked for.
+            #
+            # Nothing needs either value stored. Unlike Linear, whose identifier is resolvable ONLY
+            # from its column, the index registers each row's synthesized spelling as an alias at
+            # build time, and the routers read through synth.stored() with that same value as the
+            # fallback — so an absent id stays absent and is derived where the whole container is
+            # visible, once.
+            if src == "github" and cols.get("kind") == "file":
+                # The schema says a file row's number is ignored — make that true in the table
+                # too, not only in the reverse index: file rows stay NULL, provided or not, so a
+                # stored number can never shadow a real issue or PR.
+                cols["number"] = None
+            # A provided id is a claim on one spelling, and two records cannot hold the same
+            # one: whichever the index gave it to, the other would be unreachable at the only
+            # id it advertises. A github number is per repository, a jira key per instance.
+            provided_id = (
+                cols.get("number")
+                if src == "github"
+                else (cols.get("key") if src == "jira" else None)
+            )
+            if provided_id is not None:
+                scope = container if src == "github" else ""
+                claim = (src, scope, str(provided_id))
+                # Only a DIFFERENT document violates the claim. Two records may share a
+                # (source, doc_id) — both are written and the row-level INSERT OR REPLACE leaves
+                # the later one, which is what a direct import of the same documents produces —
+                # and such a repeat re-stating its own id was aborting the import by naming the
+                # very doc_id it was inserting.
+                claimed = self.tracker_ids.get(claim)
+                if claimed is not None and claimed != did:
+                    label = "number" if src == "github" else "key"
+                    raise SystemExit(
+                        f"{where}: {label} {provided_id!r} is already claimed by "
+                        f"{claimed!r}" + (f" in repo {scope!r}" if scope else "")
+                    )
+                self.tracker_ids[claim] = did
+                if src == "jira":
+                    # The prefix claims, both directions (see __init__). Distinct from the
+                    # full-key claim above: PAY-1 and PAY-2 are different keys, but if they
+                    # sit in different projects they still fight over who *is* PAY.
+                    prefix = str(provided_id).rsplit("-", 1)[0]
+                    holder = self.jira_prefix_holders.get(prefix)
+                    if holder is not None and holder != container:
+                        raise SystemExit(
+                            f"{where}: key {provided_id!r} carries project key {prefix!r}, "
+                            f"which project {holder!r} already holds"
+                        )
+                    held = self.jira_prefixes.get(container)
+                    if held is not None and held != prefix:
+                        raise SystemExit(
+                            f"{where}: key {provided_id!r} would name project {container!r} "
+                            f"{prefix!r}, but its keys already name it {held!r}"
+                        )
+                    self.jira_prefix_holders[prefix] = container
+                    self.jira_prefixes[container] = prefix
             names = list(cols)
             conn.execute(
                 f"INSERT OR REPLACE INTO {store.table(src)} ({', '.join(names)}) "
@@ -1309,6 +1429,8 @@ def load_records(
     org = org_name
 
     loader = _Loader(conn, org, org_domain, closed=closed, validate=validate)
+    if not reset:
+        loader.seed_tracker_ids()
     source_docs = 0
     for lineno, rec in records_factory():
         source_docs += 1

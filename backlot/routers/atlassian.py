@@ -123,12 +123,36 @@ def _adf(content: str) -> dict:
     }
 
 
-def _jira_container_for_key(conn, token: str) -> str | None:
-    """Resolve a JQL project token to its backing container. Matches either the synthesized
-    project key (``PAY3F9A2C``, case-insensitive) or the literal container name (e.g.
-    ``payments``, case-insensitive) — real Jira project pickers accept both key and name.
-    Anything else is unresolvable -> None (callers must treat this as "0 results", never
-    silently fall back to the unfiltered corpus)."""
+def _project_key(request: Request, container: str) -> str:
+    """The project key a container serves and navigates by: the prefix its corpus-provided
+    issue keys carry (aliased at index build) when the corpus wrote any, else the
+    synthesized key. One spelling for the issue prefix, the project payload, JQL and the
+    picker — real Jira guarantees an issue key's prefix IS its project's key, and an agent
+    that reads PAY-7 out of a document will navigate by PAY."""
+    return (_index_maps(request).get("jira_project_keys") or {}).get(
+        container
+    ) or synth.jira_project_key(container)
+
+
+def _index_maps(request: Request) -> dict:
+    # A bare Request (unit tests build them without an app scope) has no app.state;
+    # absence of the maps just means "no aliases", never an error.
+    try:
+        return getattr(request.app.state, "index", None) or {}
+    except KeyError:
+        return {}
+
+
+def _jira_container_for_key(conn, token: str, request: Request | None = None) -> str | None:
+    """Resolve a JQL project token to its backing container. Matches the corpus-provided
+    key prefix (``PAY``), the synthesized project key (``PAY3F9A2C``, case-insensitive) or
+    the literal container name (e.g. ``payments``, case-insensitive) — real Jira project
+    pickers accept both key and name. Anything else is unresolvable -> None (callers must
+    treat this as "0 results", never silently fall back to the unfiltered corpus)."""
+    if request is not None:
+        aliased = (_index_maps(request).get("jira_project_containers") or {}).get(token.upper())
+        if aliased is not None:
+            return aliased
     for r in store.list_containers(conn, "jira"):
         if synth.jira_project_key(r["name"]) == token.upper() or r["name"].lower() == token.lower():
             return r["name"]
@@ -157,7 +181,7 @@ async def jira_project_search(request: Request):
     _require(request)
     values = []
     for r in store.list_containers(conn, "jira"):
-        key = synth.jira_project_key(r["name"])
+        key = _project_key(request, r["name"])
         values.append(
             {
                 "id": str(synth.github_user_id(r["name"])),
@@ -183,7 +207,7 @@ async def jira_project_roles(key: str, request: Request):
 async def jira_project_role(key: str, role_id: int, request: Request):
     conn = auth.conn(request)
     _require(request)
-    container = _jira_container_for_key(conn, key)
+    container = _jira_container_for_key(conn, key, request)
     actors = []
     if container:
         c = store.get_container(conn, "jira", container)
@@ -223,7 +247,7 @@ async def jira_search(request: Request):
         except Exception:
             pass
     jql = str(params.get("jql", ""))
-    container = _project_from_jql(conn, jql)
+    container = _project_from_jql(conn, jql, request)
     if container is _JIRA_PROJECT_UNRESOLVED:
         # a project= clause was present but didn't match any project: strict 0 matches, not
         # the unfiltered corpus.
@@ -460,11 +484,11 @@ async def jira_fields(request: Request):
 _JIRA_PROJECT_UNRESOLVED = object()
 
 
-def _project_from_jql(conn, jql: str):
+def _project_from_jql(conn, jql: str, request: Request | None = None):
     m = re.search(r"project\s*=\s*[\"']?([A-Za-z0-9_]+)", jql)
     if not m:
         return None
-    container = _jira_container_for_key(conn, m.group(1))
+    container = _jira_container_for_key(conn, m.group(1), request)
     return container if container is not None else _JIRA_PROJECT_UNRESOLVED
 
 
@@ -521,11 +545,30 @@ def _jira_actor(email: str, site: str = "") -> dict:
     }
 
 
-def _jira_ref(row, site: str = "") -> dict:
+def _issue_key(request: Request, row) -> str:
+    """The key this issue answers to, as the reverse index resolved it.
+
+    Deriving it here instead would disagree with the index whenever the derived key was
+    already held by an issue that provided it: the row then advertised a key that fetched
+    somebody else, and was reachable at nothing."""
+    provided = synth.stored(row, "key")
+    if provided:
+        return str(provided)
+    # Shape tests call the builders with a bare Request that carries no app, and they only
+    # read the derived spelling — so reach the index through the scope rather than the
+    # `app` property, which raises there.
+    state = getattr(request.scope.get("app"), "state", None)
+    resolved = (getattr(state, "index", None) or {}).get("jira_key") or {}
+    return resolved.get(row["doc_id"]) or synth.jira_key(
+        row["doc_id"], _project_key(request, row["project"])
+    )
+
+
+def _jira_ref(request: Request, row, site: str = "") -> dict:
     status = row["status"] or "To Do"
     return {
         "id": str(synth.jira_numeric_id(row["doc_id"])),
-        "key": synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"])),
+        "key": _issue_key(request, row),
         "self": f"{site}/rest/api/3/issue/{synth.jira_numeric_id(row['doc_id'])}" if site else None,
         "fields": {
             "summary": row["title"],
@@ -567,7 +610,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
     site = _site(request)
     created = row["created_ts"] or synth.epoch(row["doc_id"])
     updated = row["updated_ts"] or created + 3600
-    pkey = synth.jira_project_key(row["project"])
+    pkey = _project_key(request, row["project"])
     reporter = _jira_actor(row["reporter_email"] or row["author_email"], site)
     creator = _jira_actor(row["author_email"], site)
     assignee = _jira_actor(row["assignee_email"], site) if row["assignee_email"] else None
@@ -643,15 +686,15 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
         }
         fields["issuelinks"] = store.jcol(row, "issuelinks")
         subs = store.children(conn, "jira", row["doc_id"])
-        fields["subtasks"] = [_jira_ref(s, site) for s in subs]
+        fields["subtasks"] = [_jira_ref(request, s, site) for s in subs]
         if row["parent_id"]:
             prow = store.get_document(conn, "jira", row["parent_id"])
             if prow:
-                fields["parent"] = _jira_ref(prow, site)
+                fields["parent"] = _jira_ref(request, prow, site)
     nid = synth.jira_numeric_id(row["doc_id"])
     issue = {
         "id": str(nid),
-        "key": synth.jira_key(row["doc_id"], pkey),
+        "key": _issue_key(request, row),
         "self": f"{site}/rest/api/3/issue/{nid}",
         "fields": fields,
     }

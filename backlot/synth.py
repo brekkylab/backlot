@@ -821,3 +821,10 @@ def s3_iso(ts: int) -> str:
 def s3_http_date(ts: int) -> str:
     """The Last-Modified response header, RFC 1123: Fri, 05 Apr 2024 17:00:00 GMT."""
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+
+def stored(row, col: str):
+    """A materialized column when present — a DB from before the column existed is
+    served through read-only opens (no migration runs on that path), so absence is an
+    expected state that falls through to the synthesized value at the call site."""
+    return row[col] if col in row.keys() else None

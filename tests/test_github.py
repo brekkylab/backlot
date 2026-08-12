@@ -1184,6 +1184,42 @@ def test_github_comment_by_id_refuses_what_its_collection_would_not_serve(
     assert c.get(by_id, headers=bob).status_code == 404
 
 
+def test_github_colliding_comment_ids_404_rather_than_serve_the_wrong_comment(
+    tmp_path, monkeypatch
+):
+    """`github_comment_id` hashes into a fixed space, so two comments can land on one served id —
+    a birthday bound, not something a wider range removes. Both would then advertise the same
+    `url`, and serving whichever was indexed last means one comment's url returns another's body.
+
+    Forced here by shrinking the space to a single value, since a real collision needs ~100k
+    comments to be likely."""
+    from backlot import synth
+    from backlot.main import _build_index
+
+    monkeypatch.setattr(synth, "github_comment_id", lambda cid: 1)  # every comment collides
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "p1",
+                "repo": "r",
+                "subtype": "pull_request",
+                "title": "PR",
+                "content": "body",
+                "author_email": "a@x.com",
+                "comments": [
+                    {"content": "first", "author_email": "a@x.com"},
+                    {"content": "second", "author_email": "a@x.com"},
+                ],
+            }
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    assert _build_index(conn)["github_comments"] == {}  # ambiguous, so neither is resolvable
+    conn.close()
+
+
 def test_github_comment_counts_match_the_lists_they_describe(
     gh_client, gh_admin_h, gh_user_tokens, gh_org
 ):

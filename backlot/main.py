@@ -73,8 +73,26 @@ def _build_index(conn) -> dict:
     # complete an object by following it, so the synthesized id has to resolve back to a row. Keyed
     # by id alone rather than (repo, id): real GitHub comment ids are unique repo-wide and the route
     # still checks the comment's document against the {repo} it was asked under.
-    for r in conn.execute("SELECT id FROM github_comments"):
-        idx["github_comments"][synth.github_comment_id(r["id"])] = r["id"]
+    #
+    # `github_comment_id` hashes into 9e9 values, so two comments CAN land on one served id — a
+    # birthday bound, ~4% for a corpus of 27k comments and rising with the square. Both would then
+    # advertise the same url and it would serve whichever was indexed last, which is one comment's
+    # url returning another comment's body. An ambiguous key is dropped instead, so that url 404s:
+    # wrong data is the one outcome this must not produce. ORDER BY id keeps which keys are
+    # ambiguous stable across restarts.
+    ambiguous = set()
+    for r in conn.execute("SELECT id FROM github_comments ORDER BY id"):
+        key = synth.github_comment_id(r["id"])
+        if idx["github_comments"].setdefault(key, r["id"]) != r["id"]:
+            ambiguous.add(key)
+    for key in ambiguous:
+        del idx["github_comments"][key]
+    if ambiguous:
+        logging.getLogger(__name__).warning(
+            "%d github comment id(s) collide; their `url` will 404 rather than serve the wrong "
+            "comment",
+            len(ambiguous),
+        )
     for r in conn.execute(
         f"SELECT doc_id, {store.grouping_col('jira')} AS container FROM {store.table('jira')}"
     ):

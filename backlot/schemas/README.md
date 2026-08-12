@@ -124,6 +124,14 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   jira/confluence also accept `updated`. Both are optional — when omitted the router synthesizes
   a stable time from the `doc_id`. Slack `replies` are full messages (`reactions`/`files`/
   `subtype`/`edited`, not just `content`); gmail accepts an explicit `to`.
+- **Tracker ids the corpus owns** (both optional): github `number` and jira `key` — the
+  spelling a document cites, stored and served verbatim so that citation is a working
+  lookup. Read from these fields only; a `number` or `key` inside `meta` stays ordinary
+  `meta` content. Each is unique within its scope — a number within its repository, a key
+  within the instance — and a second record claiming one stops the import. Omit them and
+  the id is derived, under the prefix this project's provided keys carry, so a corpus need
+  only write the ids its documents actually cite. A jira key is shaped `^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$`,
+  enforced because the prefix is a fact about the whole project.
 - **Per-service fidelity fields** (all optional; see each schema):
   gmail `html`; drive `trashed`; github `closed_at`/`closed_by`/`merged_by`/`milestone`/
   `requested_reviewers`/`changed_paths` (+ comment `reactions`, and `path`/`line`/`diff_hunk` to make

@@ -7,6 +7,7 @@ indexes (issue number / Jira key / Confluence id -> doc_id) for O(1) get-by-id.
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 from contextlib import asynccontextmanager
 
@@ -35,6 +36,46 @@ from backlot.routers import (
 )
 
 
+# Numbers a derived id may take before the search gives up. A repository with more
+# documents than this has run out of the space `synth.github_number` draws from, which is
+# a corpus-scale problem and not something a silent duplicate should paper over.
+_PROBE_LIMIT = 90_000
+
+
+def _free_number(taken: dict, container: str, start: int) -> int:
+    """A number in `container` that nothing has claimed, starting from the derived one.
+
+    A derived number is a hash, so it can land on one a document provided outright — or on
+    another row's derived one. The earlier claimant keeps it and this row moves,
+    deterministically, to the next free number. That next number may itself be a later
+    row's derived spelling, so one collision can move rows that never collided themselves.
+
+    What this makes a served id is a function of the container's WHOLE row set, not of the
+    row alone: stable across restarts of the same DB, free to move when `--append` changes
+    the set. That is the deliberate choice — the alternative, storing the resolved value,
+    is what the loader comment in `byo._Loader.add` rejects, since a stored synthesized id
+    is indistinguishable from a provided one. The invariant kept instead is
+    self-consistency at every moment: the id a row advertises is the id that fetches it,
+    because the routers read the same map this function fills."""
+    n = start
+    for _ in range(_PROBE_LIMIT):
+        if (container, n) not in taken:
+            return n
+        n = n % _PROBE_LIMIT + 1
+    return start
+
+
+def _free_key(taken: dict, prefix: str, start: str) -> str:
+    """The jira analogue of `_free_number`: same prefix, next free sequence number."""
+    n = int(start.rsplit("-", 1)[-1]) if "-" in start else 1
+    for _ in range(_PROBE_LIMIT):
+        key = f"{prefix}-{n}"
+        if key not in taken:
+            return key
+        n = n % _PROBE_LIMIT + 1
+    return start
+
+
 def _build_index(conn) -> dict:
     idx = {
         "github": {},
@@ -53,6 +94,18 @@ def _build_index(conn) -> dict:
         "linear_labels": {},
         "linear_releases": {},
         "fireflies_users": {},
+        # container -> the project-key prefix its corpus-provided issue keys carry, and
+        # the reverse — so `project = PAY` JQL, the project picker and every issue's
+        # `fields.project.key` speak the spelling the documents cite.
+        "jira_project_keys": {},
+        "jira_project_containers": {},
+        # doc_id -> the number/key the document answers to. The routers read these rather
+        # than deriving the id themselves: a keyless row's derived spelling can already be
+        # held by a row that provided it, and then the row served a number that fetched
+        # somebody else while being reachable at nothing. Resolving it belongs here, the
+        # one place the whole container is visible.
+        "github_number": {},
+        "jira_key": {},
     }
     # Gmail ids are 16-hex integers, not dsids, so the served id has to be reversed back to a row.
     # ONE map covers messages AND threads: a thread key is the root message's doc_id (verified on
@@ -61,19 +114,81 @@ def _build_index(conn) -> dict:
     # +2.2s and +88 MiB, taking this whole function from 6.4s to ~8.6s, with 0 collisions.
     for r in conn.execute(f"SELECT doc_id FROM {store.table('gmail')}"):
         idx["gmail"][synth.gmail_message_id(r["doc_id"])] = r["doc_id"]
+
     # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
     # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
-    for r in conn.execute(
-        f"SELECT doc_id, {store.grouping_col('github')} AS container "
-        f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file'"
-    ):
-        idx["github"][(r["container"], synth.github_number(r["doc_id"]))] = r["doc_id"]
-    for r in conn.execute(
-        f"SELECT doc_id, {store.grouping_col('jira')} AS container FROM {store.table('jira')}"
-    ):
-        idx["jira"][synth.jira_key(r["doc_id"], synth.jira_project_key(r["container"]))] = r[
-            "doc_id"
-        ]
+    # Two passes each: corpus-provided ids claim their spelling first, then every row's
+    # synthesized spelling registers as an alias — a collision can therefore never make the
+    # losing document unreachable, it just answers to its synthesized id. Scans are in doc_id
+    # order with setdefault (first row wins, stable across restarts — Linear's contract for
+    # repeated identifiers). A DB from before the columns existed is opened READ-ONLY here, so
+    # no migration can run; the column-less query serves it exactly as that version did.
+    def _scan(with_cols: str, without_cols: str, tail: str):
+        try:
+            return list(conn.execute(with_cols + tail))
+        except sqlite3.OperationalError as e:
+            # Only a missing column means "a DB from before these columns existed". Any
+            # other OperationalError — a locked database, a corrupt page — must surface:
+            # swallowed, it boots a server that ignores every corpus-provided id and 404s
+            # at all of them, with nothing said. Same narrowing as `store.read_meta`.
+            if "no such column" not in str(e).lower():
+                raise
+            return list(conn.execute(without_cols + tail))
+
+    gh_rows = _scan(
+        f"SELECT doc_id, {store.grouping_col('github')} AS container, number ",
+        f"SELECT doc_id, {store.grouping_col('github')} AS container, NULL AS number ",
+        f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file' ORDER BY doc_id",
+    )
+    for r in gh_rows:
+        if r["number"]:
+            idx["github"].setdefault((r["container"], r["number"]), r["doc_id"])
+            idx["github_number"][r["doc_id"]] = r["number"]
+    for r in gh_rows:
+        if r["doc_id"] in idx["github_number"]:
+            continue
+        n = _free_number(idx["github"], r["container"], synth.github_number(r["doc_id"]))
+        idx["github"][(r["container"], n)] = r["doc_id"]
+        idx["github_number"][r["doc_id"]] = n
+    # A record that provided a number keeps answering at its derived spelling too, where
+    # that is still free. Last, so it never takes the number a displaced row wanted.
+    for r in gh_rows:
+        if r["number"]:
+            idx["github"].setdefault(
+                (r["container"], synth.github_number(r["doc_id"])), r["doc_id"]
+            )
+
+    j_rows = _scan(
+        f"SELECT doc_id, {store.grouping_col('jira')} AS container, key ",
+        f"SELECT doc_id, {store.grouping_col('jira')} AS container, NULL AS key ",
+        f"FROM {store.table('jira')} ORDER BY doc_id",
+    )
+    for r in j_rows:
+        if r["key"]:
+            idx["jira"].setdefault(r["key"], r["doc_id"])
+            idx["jira_key"][r["doc_id"]] = r["key"]
+            prefix = str(r["key"]).rsplit("-", 1)[0]
+            if prefix:
+                idx["jira_project_keys"].setdefault(r["container"], prefix)
+                idx["jira_project_containers"].setdefault(prefix.upper(), r["container"])
+    for r in j_rows:
+        if r["key"]:
+            continue
+        # The synthesized alias carries the container's provided prefix when one exists,
+        # so a keyless row in a keyed project still serves `<PAY>-<n>` — real Jira
+        # guarantees an issue key's prefix IS its project's key.
+        pkey = idx["jira_project_keys"].get(r["container"]) or synth.jira_project_key(
+            r["container"]
+        )
+        key = _free_key(idx["jira"], pkey, synth.jira_key(r["doc_id"], pkey))
+        idx["jira"][key] = r["doc_id"]
+        idx["jira_key"][r["doc_id"]] = key
+    for r in j_rows:
+        if r["key"]:
+            pkey = idx["jira_project_keys"].get(r["container"]) or synth.jira_project_key(
+                r["container"]
+            )
+            idx["jira"].setdefault(synth.jira_key(r["doc_id"], pkey), r["doc_id"])
     for r in conn.execute(f"SELECT doc_id FROM {store.table('confluence')}"):
         idx["confluence"][synth.confluence_id(r["doc_id"])] = r["doc_id"]
     # Notion ids are dashed UUIDs; key the index by the dashless form so a client sending either

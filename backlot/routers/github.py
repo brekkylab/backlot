@@ -218,7 +218,10 @@ async def search_issues(
     # _org, not the setting directly: the owner in the URLs these items carry has to be the one the
     # repo routes accept, or every link a client follows out of a search hit 404s
     owner = _org(request)
-    items = [_issue_obj(conn, owner, r["repo"], r, ab) for r in matched[start : start + per_page]]
+    idx = request.app.state.index
+    items = [
+        _issue_obj(conn, owner, r["repo"], r, ab, idx) for r in matched[start : start + per_page]
+    ]
     return {"total_count": len(matched), "incomplete_results": False, "items": items}
 
 
@@ -345,7 +348,8 @@ async def list_issues(
     rows = all_rows[start : start + per_page]
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
-    body = [_issue_obj(conn, owner, repo, r, ab) for r in rows]
+    idx = request.app.state.index
+    body = [_issue_obj(conn, owner, repo, r, ab, idx) for r in rows]
     return _paged(request, len(all_rows), {"state": state}, body, page, per_page)
 
 
@@ -379,7 +383,7 @@ async def get_issue_comment(owner: str, repo: str, comment_id: int, request: Req
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     row, doc = _comment_by_id(request, conn, repo, comment_id, ids, anchored=False)
-    number = synth.github_number(doc["doc_id"])
+    number = _issue_number(request.app.state.index, doc)
     return _gh_comment(owner, repo, number, row, _api_base(request))
 
 
@@ -397,7 +401,7 @@ async def get_pull_review_comment(owner: str, repo: str, comment_id: int, reques
     if f is None:
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
-    number = synth.github_number(doc["doc_id"])
+    number = _issue_number(request.app.state.index, doc)
     patches = {
         x["filename"]: x.get("patch") for x in _pr_files(conn, owner, repo, doc, ab, ids, src)
     }
@@ -412,7 +416,7 @@ async def get_issue(owner: str, repo: str, number: int, request: Request):
     row = _resolve(request, conn, repo, number, ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    return _issue_obj(conn, owner, repo, row, _api_base(request))
+    return _issue_obj(conn, owner, repo, row, _api_base(request), request.app.state.index)
 
 
 @router.get("/repos/{owner}/{repo}/issues/{number}/comments")
@@ -458,8 +462,9 @@ async def list_pulls(
     ab = _api_base(request)
     # one _RepoFiles for the whole page: every PR's changeset reads through it (see _pr_files)
     repo_files = _RepoFiles(conn, repo, ids)
+    idx = request.app.state.index
     body = [
-        _pr_obj(conn, owner, repo, r, ab, ids=ids, repo_files=repo_files)
+        _pr_obj(conn, owner, repo, r, ab, idx, ids=ids, repo_files=repo_files)
         for r in prs[start : start + per_page]
     ]
     return _paged(request, len(prs), {"state": state}, body, page, per_page)
@@ -479,11 +484,12 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
     if row is None or row["kind"] != "pull_request":
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
+    idx = request.app.state.index
     wants_diff, wants_patch = _github_media(request, "diff"), _github_media(request, "patch")
     if not (wants_diff or wants_patch):
-        return _pr_obj(conn, owner, repo, row, ab, ids=ids)
+        return _pr_obj(conn, owner, repo, row, ab, idx, ids=ids)
     files = _pr_files(conn, owner, repo, row, ab, ids)
-    obj = _pr_obj(conn, owner, repo, row, ab, ids=ids, files=files)
+    obj = _pr_obj(conn, owner, repo, row, ab, idx, ids=ids, files=files)
     diff = _pr_diff(files, obj["base"]["sha"])
     if wants_patch:
         return Response(
@@ -502,7 +508,7 @@ async def pull_reviews(owner: str, repo: str, number: int, request: Request):
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
-    number = synth.github_number(row["doc_id"])
+    number = _issue_number(request.app.state.index, row)
     sha = hashlib.sha1(row["doc_id"].encode()).hexdigest()[:40]
     out = []
     for i, rv in enumerate(store.jcol(row, "reviews"), start=1):
@@ -1096,10 +1102,24 @@ def _milestone(row, owner, repo, api_base):
     }
 
 
-def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "") -> dict:
+def _issue_number(index, row) -> int:
+    """The number this document answers to, as the reverse index resolved it.
+
+    Deriving it here instead would disagree with the index whenever the derived number
+    was already held by a document that provided it: the row then advertised a number
+    that fetched somebody else, and was reachable at nothing. The index resolves that
+    once, where the whole repository is visible."""
+    provided = synth.stored(row, "number")
+    if provided:
+        return int(provided)
+    resolved = (index or {}).get("github_number") or {}
+    return resolved.get(row["doc_id"]) or synth.github_number(row["doc_id"])
+
+
+def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "", index=None) -> dict:
     created = row["created_ts"] or synth.epoch(row["doc_id"])
     updated = row["updated_ts"] or created + 3600
-    number = synth.github_number(row["doc_id"])
+    number = _issue_number(index, row)
     iid = synth.jira_numeric_id(row["doc_id"])  # a stable large numeric db id (≠ number)
     is_pr = row["kind"] == "pull_request"
     kind = "pull" if is_pr else "issues"
@@ -1164,9 +1184,17 @@ def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "") -> dict:
 
 
 def _pr_obj(
-    conn, owner: str, repo: str, row, api_base: str = "", ids=None, files=None, repo_files=None
+    conn,
+    owner: str,
+    repo: str,
+    row,
+    api_base: str = "",
+    index=None,
+    ids=None,
+    files=None,
+    repo_files=None,
 ) -> dict:
-    obj = _issue_obj(conn, owner, repo, row, api_base)
+    obj = _issue_obj(conn, owner, repo, row, api_base, index)
     sha = hashlib.sha1(row["doc_id"].encode()).hexdigest()
     number = obj["number"]
     reviewers = [_gh_user(e, api_base) for e in store.jcol(row, "requested_reviewers")]

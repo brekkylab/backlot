@@ -1184,20 +1184,18 @@ def test_github_comment_by_id_refuses_what_its_collection_would_not_serve(
     assert c.get(by_id, headers=bob).status_code == 404
 
 
-def test_github_colliding_comment_ids_404_rather_than_serve_the_wrong_comment(
-    tmp_path, monkeypatch
-):
-    """`github_comment_id` hashes into a fixed space, so two comments can land on one served id —
-    a birthday bound, not something a wider range removes. Both would then advertise the same
-    `url`, and serving whichever was indexed last means one comment's url returns another's body.
+def test_github_comment_ids_are_unique_even_when_the_seed_collides(tmp_path, monkeypatch):
+    """A comment's `id` is ASSIGNED at import, not hashed at serve time.
 
-    Forced here by shrinking the space to a single value, since a real collision needs ~100k
-    comments to be likely."""
-    from backlot import synth
-    from backlot.main import _build_index
+    A hash alone collides by the birthday bound — ~4% at 27k comments, certain by 500k — and two
+    comments sharing an id means one comment's `url` returns the other's body. The seed is probed
+    until free, so the ids are unique however badly it collides, and a re-import keeps the ones it
+    already assigned so a url a client stored stays valid. Forced here by collapsing the seed to a
+    single value, since a real collision needs ~100k comments to be likely."""
+    from backlot.importer import byo
 
-    monkeypatch.setattr(synth, "github_comment_id", lambda cid: 1)  # every comment collides
-    s = tiny_corpus(
+    monkeypatch.setattr(byo.synth, "github_comment_id", lambda cid: 7)  # every seed collides
+    settings = tiny_corpus(
         tmp_path,
         [
             {
@@ -1208,15 +1206,24 @@ def test_github_colliding_comment_ids_404_rather_than_serve_the_wrong_comment(
                 "title": "PR",
                 "content": "body",
                 "author_email": "a@x.com",
-                "comments": [
-                    {"content": "first", "author_email": "a@x.com"},
-                    {"content": "second", "author_email": "a@x.com"},
-                ],
+                "comments": [{"content": f"c{i}", "author_email": "a@x.com"} for i in range(5)],
             }
         ],
     )
-    conn = store.connect_ro(s.db_path)
-    assert _build_index(conn)["github_comments"] == {}  # ambiguous, so neither is resolvable
+    monkeypatch.undo()
+
+    conn = store.connect_ro(settings.db_path)
+    served = [r["served_id"] for r in conn.execute("SELECT served_id FROM github_comments")]
+    assert len(served) == 5 and len(set(served)) == 5 and all(served)
+    for sid in served:  # each still resolves to its own comment
+        assert store.get_github_comment(conn, sid)["served_id"] == sid
+    conn.close()
+
+    byo.load(settings.data_dir / "corpus.jsonl", settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    assert sorted(
+        r["served_id"] for r in conn.execute("SELECT served_id FROM github_comments")
+    ) == (sorted(served))
     conn.close()
 
 
@@ -1479,7 +1486,10 @@ def test_github_comment_reactions(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    c = store.doc_comments(conn, "github", "gh2")[0]
+    # store.github_comments, not the shared doc_comments: only the github reader carries the
+    # `served_id` the builder reports as the comment's `id`
+    c = store.github_comments(conn, "gh2")[0]
     obj = _gh_comment("org", "gw", 1, c, "http://m/github")
     assert obj["reactions"]["heart"] == 2 and obj["node_id"] and obj["url"]
     assert obj["reactions"]["total_count"] == 2
+    assert obj["id"] == c["served_id"]

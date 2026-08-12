@@ -363,8 +363,7 @@ def _comment_by_id(request, conn, repo: str, cid: int, ids, *, anchored: bool):
     another repo, and one of the other kind all have to be indistinguishable from a comment that
     does not exist, or the response confirms what it is refusing to serve.
     """
-    stored = request.app.state.index["github_comments"].get(cid)
-    row = store.get_github_comment(conn, stored) if stored else None
+    row = store.get_github_comment(conn, cid)
     if row is None or (row["path"] is not None) != anchored:
         raise HTTPException(status_code=404, detail="Not Found")
     doc = store.get_document(conn, "github", row["doc_id"], visible_ids=ids)
@@ -1498,7 +1497,7 @@ def _gh_review_comment(
     """
     ts = c["created_ts"] or synth.epoch(c["id"])
     email = c["author_email"] or "unknown@x"
-    cid = synth.github_comment_id(c["id"])
+    cid = c["served_id"]
     head = hashlib.sha1(pr_row["doc_id"].encode()).hexdigest()
     self_url = f"{api_base}/repos/{owner}/{repo}/pulls/comments/{cid}"
     pr_url = f"{api_base}/repos/{owner}/{repo}/pulls/{number}"
@@ -1603,7 +1602,7 @@ def _hunk_around(file_row, line: int | None) -> str:
 def _gh_comment(owner: str, repo: str, number: int, c, api_base: str = "") -> dict:
     ts = c["created_ts"] or synth.epoch(c["id"])
     email = c["author_email"] or "unknown@x"
-    cid = synth.github_comment_id(c["id"])
+    cid = c["served_id"]
     self_url = f"{api_base}/repos/{owner}/{repo}/issues/comments/{cid}"
     return {
         "id": cid,

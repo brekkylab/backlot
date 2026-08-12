@@ -188,12 +188,19 @@ CREATE INDEX IF NOT EXISTS idx_confluence_comments_doc ON confluence_comments(do
 -- line-anchored review comment (/pulls/{n}/comments), one without is a conversation comment
 -- (/issues/{n}/comments). `line` may be NULL for a file-level review comment, as on real GitHub;
 -- `diff_hunk` is optional and derived from the file's snapshot when the corpus omits it.
+-- `served_id` is the `id` the API reports, assigned at import (see backlot.importer.byo) rather
+-- than hashed at serve time: a comment's own `url` resolves through it, and a hash into any fixed
+-- range collides by the birthday bound long before a real corpus runs out of comments — two
+-- comments sharing one served id means one comment's url returns the other's body.
 CREATE TABLE IF NOT EXISTS github_comments (
     id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
     author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT,
-    path TEXT, line INTEGER, diff_hunk TEXT
+    path TEXT, line INTEGER, diff_hunk TEXT, served_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_github_comments_doc ON github_comments(doc_id);
+-- UNIQUE is the guarantee, not just an index: the assignment probes against it, so a duplicate is
+-- an import error rather than a comment that silently shadows another at serve time.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_github_comments_served ON github_comments(served_id);
 
 CREATE TABLE IF NOT EXISTS notion_comments (
     id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
@@ -433,6 +440,7 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
         ("github_comments", "path", "TEXT"),
         ("github_comments", "line", "INTEGER"),
         ("github_comments", "diff_hunk", "TEXT"),
+        ("github_comments", "served_id", "INTEGER"),
         ("linear_issues", "parent_key", "TEXT"),
         ("linear_issues", "parent_doc_id", "TEXT"),
         ("linear_issues", "release", "TEXT"),
@@ -1713,14 +1721,19 @@ def list_repo_file_paths(conn, repo, visible_ids=None, limit=10_000, offset=0) -
     return [r[0] for r in conn.execute(sql, [repo, *cp, limit, offset])]
 
 
-def get_github_comment(conn, comment_id: str) -> sqlite3.Row | None:
-    """One comment by its STORED id, carrying `doc_id` so the caller can ACL-check the document it
-    belongs to. The served id is a hash of this one; `backlot.main._build_index` holds the reverse
-    map."""
+def get_github_comment(conn, served_id: int) -> sqlite3.Row | None:
+    """One comment by the id the API reports, carrying `doc_id` so the caller can ACL-check the
+    document it belongs to.
+
+    A unique-indexed column lookup, not a reverse map built at startup: the id is assigned at import
+    (see :mod:`backlot.importer.byo`), so it needs neither the memory nor the per-boot scan, and it
+    cannot be ambiguous.
+    """
     return conn.execute(
-        "SELECT id, doc_id, seq, author_email, body, created_ts, reactions, path, line, diff_hunk "
-        "FROM github_comments WHERE id = ?",
-        (comment_id,),
+        "SELECT id, doc_id, seq, author_email, body, created_ts, reactions, path, line, diff_hunk, "
+        "served_id "
+        "FROM github_comments WHERE served_id = ?",
+        (served_id,),
     ).fetchone()
 
 
@@ -1736,7 +1749,8 @@ def github_comments(conn, doc_id, *, anchored: bool | None = None) -> list[sqlit
     """
     where = {None: "", True: " AND path IS NOT NULL", False: " AND path IS NULL"}[anchored]
     return conn.execute(
-        "SELECT id, doc_id, seq, author_email, body, created_ts, reactions, path, line, diff_hunk "
+        "SELECT id, doc_id, seq, author_email, body, created_ts, reactions, path, line, diff_hunk, "
+        "served_id "
         "FROM github_comments WHERE doc_id = ?" + where + " ORDER BY seq",
         (doc_id,),
     ).fetchall()

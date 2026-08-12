@@ -66,6 +66,7 @@ import gzip
 import hashlib
 import json
 import re
+import sqlite3
 import sys
 from collections.abc import Iterator
 from pathlib import Path  # noqa: F401  (kept for typing/backcompat)
@@ -617,6 +618,33 @@ class _Loader:
     :meth:`resolve_cross_references`, since the target may arrive on a later record.
     """
 
+    def _assign_github_comment_id(self, stored_id: str) -> int:
+        """The `id` this comment will be served as: unique, 10 digits like real GitHub's, and stable.
+
+        Seeded from the stored id so the same corpus always produces the same ids, then probed with
+        a salt until free — a plain hash collides by the birthday bound long before a corpus runs
+        out of comments, and a shared id means one comment's `url` returns another's body. A comment
+        already in the DB keeps the id it has, so a re-import does not renumber it.
+        """
+        if stored_id in self._gh_comment_ids:
+            return self._gh_comment_ids[stored_id]
+        served = synth.github_comment_id(stored_id)
+        # Re-seed a few times, then walk. Re-seeding keeps ids spread out, but it only terminates
+        # if the hash actually varies with the salt — walking is what makes termination
+        # unconditional, and it cannot spin as long as the range has a free value.
+        for salt in range(1, 9):
+            if served not in self._gh_ids_taken:
+                break
+            served = synth.github_comment_id(f"{stored_id}\x00{salt}")
+        while served in self._gh_ids_taken:
+            served = (
+                synth.GITHUB_COMMENT_ID_MIN
+                + (served - synth.GITHUB_COMMENT_ID_MIN + 1) % synth.GITHUB_COMMENT_ID_RANGE
+            )
+        self._gh_comment_ids[stored_id] = served
+        self._gh_ids_taken.add(served)
+        return served
+
     def __init__(
         self, conn, org: str, org_domain: str, *, closed: bool = False, validate: bool = True
     ):
@@ -635,6 +663,20 @@ class _Loader:
         self.grants = []  # (doc_id, principal_type, principal_id)
         self.counts = {}
         self.seen = set()  # (source_type, doc_id)
+        # github comment ids are ASSIGNED here rather than hashed at serve time, because a comment's
+        # own `url` resolves through one and a hash into any fixed range collides by the birthday
+        # bound (~4% at 27k comments) — two comments sharing an id means one comment's url returns
+        # the other's body. Seeded from the stored id so it stays stable, probed so it stays unique.
+        # Preloaded from the DB so an append cannot reissue an id, and so re-importing a comment
+        # keeps the id it already had.
+        self._gh_comment_ids = {}  # stored id -> served id, for comments already in the DB
+        self._gh_ids_taken = set()
+        try:
+            for r in conn.execute("SELECT id, served_id FROM github_comments WHERE served_id"):
+                self._gh_comment_ids[r["id"]] = r["served_id"]
+                self._gh_ids_taken.add(r["served_id"])
+        except sqlite3.OperationalError:
+            pass  # fresh DB: the table is created by connect_rw before any of this runs
         self.fts_ids = {}
         # HubSpot associations are resolved after the whole corpus is read: a link may name a target
         # that appears on a later line, and an omitted `to_type` is filled in from the target's own
@@ -1057,19 +1099,17 @@ class _Loader:
             # comment's own id, which would scatter one thread across two years.
             c_ts = _epoch(c.get("created_ts")) or (prev_c_ts + 1)
             prev_c_ts = max(prev_c_ts, c_ts)
+            _cid = c.get("id") or f"{doc_id}::c{j}"
             conn.execute(
                 f"INSERT OR REPLACE INTO {ctable}"
                 "(id, doc_id, seq, author_email, body, created_ts, reactions) VALUES (?,?,?,?,?,?,?)",
-                (
-                    _cid := c.get("id") or f"{doc_id}::c{j}",
-                    doc_id,
-                    j,
-                    c.get("author_email"),
-                    body,
-                    c_ts,
-                    _j(c.get("reactions")),
-                ),
+                (_cid, doc_id, j, c.get("author_email"), body, c_ts, _j(c.get("reactions"))),
             )
+            if src == "github":
+                conn.execute(
+                    "UPDATE github_comments SET served_id = ? WHERE id = ?",
+                    (self._assign_github_comment_id(_cid), _cid),
+                )
             # github's line-anchored REVIEW comments live in the same table, discriminated by
             # `path` (see store.SCHEMA). A second statement rather than widening the shared INSERT
             # above, which serves six tables that have no such columns.

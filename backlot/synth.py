@@ -130,12 +130,19 @@ def github_number(doc_id: str) -> int:
     return hnum(doc_id, 0, 8) % 90_000 + 1
 
 
+GITHUB_COMMENT_ID_MIN = 1_000_000_000
+GITHUB_COMMENT_ID_RANGE = 9_000_000_000
+
+
 def github_comment_id(comment_id: str) -> int:
-    """A comment's own id. Wide on purpose: unlike an issue/PR `number`, which is scoped to a repo
-    and small by nature, a comment id is repo-wide (10 digits on real GitHub) and is the key a
-    comment's own `url` resolves through — ``github_number``'s 90k values collide long before a
-    real corpus runs out of comments, and a collision means one comment's url serves another's."""
-    return 1_000_000_000 + hnum(comment_id, 0, 12) % 9_000_000_000
+    """The SEED for a comment's own id — 10 digits, as real GitHub's are.
+
+    Only a seed: the id served is assigned at import and probed for uniqueness from here (see
+    ``backlot.importer.byo``). A hash alone cannot be relied on, because a comment's `url` resolves
+    through its id and any fixed range collides by the birthday bound long before a corpus runs out
+    of comments. Wide anyway, so the probe almost never has to run.
+    """
+    return GITHUB_COMMENT_ID_MIN + hnum(comment_id, 0, 12) % GITHUB_COMMENT_ID_RANGE
 
 
 def jira_numeric_id(doc_id: str) -> int:

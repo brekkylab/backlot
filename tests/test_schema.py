@@ -736,6 +736,31 @@ def test_the_condition_clause_is_omitted_rather_than_guessed():
     )
 
 
+def test_a_multi_value_predicate_is_bracketed_against_the_and():
+    """Values within a field were joined by " or " and the fields by " and ", with no grouping
+    between the two -- so `a is "x" or "y" and b is "z"` reads as `x or (y and z)`, which is not
+    what the schema says. A single-value `enum` is unaffected."""
+    two = {
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"a": {"enum": ["x", "y"]}, "b": {"const": "z"}},
+                    "required": ["a", "b"],
+                },
+                "then": {"required": ["q"]},
+            }
+        ]
+    }
+    assert validation._when_clause(
+        two, ["allOf", 0, "then", "required"], two["allOf"][0]["then"]
+    ) == (' when a is one of ["x", "y"] and b is "z"')
+
+    one = {"allOf": [{"if": {"properties": {"a": {"enum": ["x"]}}, "required": ["a"]}, "then": {}}]}
+    assert validation._when_clause(
+        one, ["allOf", 0, "then", "required"], one["allOf"][0]["then"]
+    ) == (' when a is "x"')
+
+
 def test_a_malformed_condition_reports_rather_than_raises():
     """A schema is only `json.loads`ed at import -- `check_schema` runs in a test, not on load --
     so a hand-edited file can reach the renderer with a non-object where a subschema belongs. The

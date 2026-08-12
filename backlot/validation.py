@@ -130,7 +130,10 @@ def _when_clause(schema: dict, schema_path, failing) -> str:
             allowed = spec["enum"]
         else:
             continue
-        shown = " or ".join(json.dumps(v, ensure_ascii=False) for v in allowed)
+        dumped = [json.dumps(v, ensure_ascii=False) for v in allowed]
+        # Not `x or y`: the fields are joined by " and ", so a bare `or` between values reads as
+        # `x or (y and z)` once a second field follows. A single value needs no bracketing.
+        shown = dumped[0] if len(dumped) == 1 else "one of [" + ", ".join(dumped) + "]"
         req = cond.get("required")
         if isinstance(req, list) and field in req:
             clauses.append(f"{field} is {shown}")

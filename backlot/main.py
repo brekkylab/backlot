@@ -38,6 +38,7 @@ from backlot.routers import (
 def _build_index(conn) -> dict:
     idx = {
         "github": {},
+        "github_comments": {},
         "jira": {},
         "confluence": {},
         "notion": {},
@@ -68,6 +69,12 @@ def _build_index(conn) -> dict:
         f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file'"
     ):
         idx["github"][(r["container"], synth.github_number(r["doc_id"]))] = r["doc_id"]
+    # Every comment GitHub emits carries its own `url` (…/issues|pulls/comments/{id}), and clients
+    # complete an object by following it, so the synthesized id has to resolve back to a row. Keyed
+    # by id alone rather than (repo, id): real GitHub comment ids are unique repo-wide and the route
+    # still checks the comment's document against the {repo} it was asked under.
+    for r in conn.execute("SELECT id FROM github_comments"):
+        idx["github_comments"][synth.github_comment_id(r["id"])] = r["id"]
     for r in conn.execute(
         f"SELECT doc_id, {store.grouping_col('jira')} AS container FROM {store.table('jira')}"
     ):

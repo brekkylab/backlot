@@ -631,6 +631,25 @@ def test_github_user_repos(gh_client, gh_admin_h, gh_user_tokens, gh_org):
     assert "vault" in {x["name"] for x in body} and "vault" not in bob
     assert bob < {x["name"] for x in body}
 
+    # ...and the repo's own routes agree with the listing. A repo every one of whose documents is
+    # hidden from this caller is one they must not be able to confirm the existence of, so "does
+    # this repo exist" is answered against the CALLER's view, not the corpus's.
+    for path in (
+        "",
+        "/issues",
+        "/pulls",
+        "/readme",
+        "/git/trees/main",
+        "/git/ref/heads/main",
+        "/branches/main",
+        "/commits/deadbeef",
+        "/contents",
+        "/collaborators",
+        "/teams",
+    ):
+        assert c.get(f"/github/repos/{gh_org}/vault{path}", headers=bob_h).status_code == 404, path
+        assert c.get(f"/github/repos/{gh_org}/vault{path}", headers=gh_admin_h).status_code == 200
+
     page = c.get("/github/user/repos", headers=gh_admin_h, params={"per_page": 1, "page": 1})
     assert len(page.json()) == 1 and 'rel="next"' in page.headers.get("Link", "")
 
@@ -1110,6 +1129,61 @@ def test_github_pull_review_comments_are_a_separate_resource(gh_client, gh_admin
     assert all("path" not in x for x in convo)
 
 
+def test_github_comment_by_id_refuses_what_its_collection_would_not_serve(
+    gh_client, gh_admin_h, gh_user_tokens, gh_org
+):
+    """A comment's own `url` is a second way to reach it, so it has to refuse everything the
+    collection refuses — otherwise it is a way around the list's ACL and its two-resource split.
+
+    404 for all of it: a comment of the other kind, one under the wrong repo, and one anchored to a
+    file the caller cannot read must be indistinguishable from one that does not exist."""
+    c, _ = gh_client
+    from backlot import synth
+
+    num = synth.github_number("gh-diff-pr-declared")
+    review = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/comments", headers=gh_admin_h)
+    rc_id = review.json()[0]["id"]
+    convo = c.get(f"/github/repos/{gh_org}/diffable/issues/{num}/comments", headers=gh_admin_h)
+    ic_id = convo.json()[0]["id"]
+
+    # each id resolves under its own kind...
+    assert (
+        c.get(f"/github/repos/{gh_org}/diffable/pulls/comments/{rc_id}", headers=gh_admin_h).json()[
+            "path"
+        ]
+        == "pkg/core.py"
+    )
+    assert (
+        c.get(
+            f"/github/repos/{gh_org}/diffable/issues/comments/{ic_id}", headers=gh_admin_h
+        ).json()["body"]
+        == "conversation, not anchored"
+    )
+    # ...and nowhere else: not as the other kind, not under another repo
+    for url in (
+        f"/github/repos/{gh_org}/diffable/issues/comments/{rc_id}",
+        f"/github/repos/{gh_org}/diffable/pulls/comments/{ic_id}",
+        f"/github/repos/{gh_org}/codebase/pulls/comments/{rc_id}",
+        f"/github/repos/{gh_org}/diffable/pulls/comments/999999",
+    ):
+        assert c.get(url, headers=gh_admin_h).status_code == 404, url
+
+    # a review comment anchored to a people-only file: the collection drops it for bob, so by-id
+    # must too
+    unres = synth.github_number("gh-diff-pr-unresolvable")
+    hidden = next(
+        x
+        for x in c.get(
+            f"/github/repos/{gh_org}/diffable/pulls/{unres}/comments", headers=gh_admin_h
+        ).json()
+        if x["path"] == "secret/keys.txt"
+    )
+    bob = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}
+    by_id = f"/github/repos/{gh_org}/diffable/pulls/comments/{hidden['id']}"
+    assert c.get(by_id, headers=gh_admin_h).status_code == 200
+    assert c.get(by_id, headers=bob).status_code == 404
+
+
 def test_github_comment_counts_match_the_lists_they_describe(
     gh_client, gh_admin_h, gh_user_tokens, gh_org
 ):
@@ -1169,11 +1243,10 @@ def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
     404s, an emitted URL built from a different notion of the org would be a dead link, and the
     builders do not all read the org from the same place.
 
-    NOT covered, deliberately: a comment's own `url`/`_links.self`
-    (`…/pulls/comments/{id}`, `…/issues/comments/{id}`). No route serves a comment by id — the id is
-    a hash of the stored comment id, so resolving one back would need a reverse index the app does
-    not build. The field is kept because it is part of the real object's shape, but following it
-    404s. Pre-existing for issue comments; review comments inherit it."""
+    Includes a comment's own `url`, whose id is a hash of the stored comment id — it resolves back
+    through the same startup reverse index that already serves gmail/jira/notion ids, and its route
+    has to be registered ahead of `…/pulls/{number}/comments` or the literal `comments` is parsed as
+    a pull number instead."""
     c, _ = gh_client
     from backlot import synth
 
@@ -1187,7 +1260,9 @@ def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
     files = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/files", headers=gh_admin_h).json()
     seen.append(files[0]["contents_url"])
     review = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/comments", headers=gh_admin_h)
-    seen.append(review.json()[0]["pull_request_url"])
+    seen += [review.json()[0]["pull_request_url"], review.json()[0]["url"]]
+    convo = c.get(f"/github/repos/{gh_org}/diffable/issues/{num}/comments", headers=gh_admin_h)
+    seen.append(convo.json()[0]["url"])
     tree = c.get(
         f"/github/repos/{gh_org}/diffable/git/trees/main",
         headers=gh_admin_h,

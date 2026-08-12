@@ -279,7 +279,9 @@ def test_mcp_github_bridge_acl_enforced(live_server):
             base,
             "github",
             token,
-            tool_pred=lambda n: n.startswith("get_issue"),
+            # `get_issue`, not `get_issue_comment` — a prefix match picks whichever the bridge
+            # lists first, and the arguments below only fit the one that takes a `number`
+            tool_pred=lambda n: n.startswith("get_issue") and "comment" not in n,
             args={"owner": owner, "repo": repo, "number": number},
             ok_pred=lambda t: '"number"' in t and '"title"' in t,
         )

@@ -235,6 +235,25 @@ async def get_org(org: str, request: Request):
     }
 
 
+def _repo_visible(conn, repo: str, ids) -> bool:
+    """Whether the caller can see this repo at all. One with no visible document is not visible.
+
+    ``store.get_container`` alone answers "does this repo exist", which is a different question: a
+    repo every one of whose documents is hidden from a caller is one they must not be able to
+    confirm the existence of. Every repo route resolves it through here so the answer cannot drift
+    between them, and it is the same predicate :func:`_visible_repos` filters the listing by.
+    """
+    if store.get_container(conn, "github", repo) is None:
+        return False
+    return ids is None or store.count_documents(conn, "github", repo, ids) > 0
+
+
+def _require_repo(conn, repo: str, ids) -> None:
+    """404 unless the caller can see the repo (see :func:`_repo_visible`)."""
+    if not _repo_visible(conn, repo, ids):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
 def _visible_repos(conn, ids) -> list[str]:
     """Repo names the caller can see at all — one with no visible document is not visible."""
     repos = [r["name"] for r in store.list_containers(conn, "github")]
@@ -292,9 +311,9 @@ async def list_user_repos(
 @router.get("/repos/{owner}/{repo}")
 async def get_repo(owner: str, repo: str, request: Request):
     conn = auth.conn(request)
-    _require(request)
-    if store.get_container(conn, "github", repo) is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    _require_repo(conn, repo, ids)
     return _repo_obj(conn, owner, repo, _api_base(request))
 
 
@@ -310,8 +329,7 @@ async def list_issues(
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    if store.get_container(conn, "github", repo) is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+    _require_repo(conn, repo, ids)
     state_filter = state if state != "all" else None
     # kind='file' docs (source code, not issues/PRs) never appear here — fetch generously and
     # filter+paginate in Python, mirroring list_pulls below.
@@ -329,6 +347,62 @@ async def list_issues(
     ab = _api_base(request)
     body = [_issue_obj(conn, owner, repo, r, ab) for r in rows]
     return _paged(request, len(all_rows), {"state": state}, body, page, per_page)
+
+
+# --- a comment by its own id ----------------------------------------------------
+#
+# Both routes MUST be declared ahead of `…/issues/{number}/comments` and `…/pulls/{number}/comments`:
+# FastAPI matches in declaration order, and the literal `comments` would otherwise be parsed as the
+# `{number}` path param and rejected as a non-integer.
+
+
+def _comment_by_id(request, conn, repo: str, cid: int, ids, *, anchored: bool):
+    """Resolve a served comment id back to (comment, document), or raise 404.
+
+    404 rather than 403 for every failure — a comment the caller cannot read, one belonging to
+    another repo, and one of the other kind all have to be indistinguishable from a comment that
+    does not exist, or the response confirms what it is refusing to serve.
+    """
+    stored = request.app.state.index["github_comments"].get(cid)
+    row = store.get_github_comment(conn, stored) if stored else None
+    if row is None or (row["path"] is not None) != anchored:
+        raise HTTPException(status_code=404, detail="Not Found")
+    doc = store.get_document(conn, "github", row["doc_id"], visible_ids=ids)
+    if doc is None or doc["repo"] != repo:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return row, doc
+
+
+@router.get("/repos/{owner}/{repo}/issues/comments/{comment_id}")
+async def get_issue_comment(owner: str, repo: str, comment_id: int, request: Request):
+    """One conversation comment, the resource its own `url` points at."""
+    conn = auth.conn(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    row, doc = _comment_by_id(request, conn, repo, comment_id, ids, anchored=False)
+    number = synth.github_number(doc["doc_id"])
+    return _gh_comment(owner, repo, number, row, _api_base(request))
+
+
+@router.get("/repos/{owner}/{repo}/pulls/comments/{comment_id}")
+async def get_pull_review_comment(owner: str, repo: str, comment_id: int, request: Request):
+    """One line-anchored review comment. The file it is anchored to has to be readable by this
+    caller too — the collection drops such a comment, so serving it by id would be a way around
+    that."""
+    conn = auth.conn(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    row, doc = _comment_by_id(request, conn, repo, comment_id, ids, anchored=True)
+    src = _RepoFiles(conn, repo, ids)
+    f = src.get(row["path"])
+    if f is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    ab = _api_base(request)
+    number = synth.github_number(doc["doc_id"])
+    patches = {
+        x["filename"]: x.get("patch") for x in _pr_files(conn, owner, repo, doc, ab, ids, src)
+    }
+    return _gh_review_comment(owner, repo, number, doc, row, f, patches, ab)
 
 
 @router.get("/repos/{owner}/{repo}/issues/{number}", response_model=GitHubIssue)
@@ -371,8 +445,7 @@ async def list_pulls(
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    if store.get_container(conn, "github", repo) is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+    _require_repo(conn, repo, ids)
     state_filter = state if state != "all" else None
     prs = [
         r
@@ -526,9 +599,9 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     unvalidated-segment bug that the owner check fixes: an owner IS knowable.
     """
     conn = auth.conn(request)
-    _require(request)
-    if store.get_container(conn, "github", repo) is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    _require_repo(conn, repo, ids)
     ref = ref.strip("/")
     if ref.startswith("refs/"):  # real API takes `heads/main`; tolerate the fully-qualified form
         ref = ref[len("refs/") :]
@@ -570,8 +643,7 @@ async def get_tree(
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    if store.get_container(conn, "github", repo) is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+    _require_repo(conn, repo, ids)
     ab = _api_base(request)
     rows = store.list_repo_files(conn, repo, ids)
     entries = _tree_from_paths(owner, repo, rows, ab)
@@ -612,8 +684,7 @@ async def _contents_response(owner: str, repo: str, path: str, request: Request)
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    if store.get_container(conn, "github", repo) is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+    _require_repo(conn, repo, ids)
     ab = _api_base(request)
     path = path.strip("/")
     if path:
@@ -648,8 +719,7 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    if store.get_container(conn, "github", repo) is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+    _require_repo(conn, repo, ids)
     row = next(
         (r for r in store.list_repo_files(conn, repo, ids) if _blob_sha(r["content"]) == sha), None
     )
@@ -673,9 +743,9 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
 @router.get("/repos/{owner}/{repo}/branches/{branch}")
 async def get_branch(owner: str, repo: str, branch: str, request: Request):
     conn = auth.conn(request)
-    _require(request)
-    if store.get_container(conn, "github", repo) is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    _require_repo(conn, repo, ids)
     ab = _api_base(request)
     commit_sha, tree_sha = _repo_commit_sha(repo), _repo_tree_sha(repo)
     return {
@@ -692,9 +762,9 @@ async def get_branch(owner: str, repo: str, branch: str, request: Request):
 @router.get("/repos/{owner}/{repo}/commits/{sha}")
 async def get_commit(owner: str, repo: str, sha: str, request: Request):
     conn = auth.conn(request)
-    _require(request)
-    if store.get_container(conn, "github", repo) is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    _require_repo(conn, repo, ids)
     ab = _api_base(request)
     tree_sha = _repo_tree_sha(repo)
     return {
@@ -715,8 +785,7 @@ async def get_readme(owner: str, repo: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    if store.get_container(conn, "github", repo) is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+    _require_repo(conn, repo, ids)
     ab = _api_base(request)
     row = store.get_repo_file(conn, repo, "README.md", ids) or store.get_repo_file(
         conn, repo, "readme.md", ids
@@ -755,9 +824,9 @@ async def get_readme(owner: str, repo: str, request: Request):
 @router.get("/repos/{owner}/{repo}/collaborators")
 async def list_collaborators(owner: str, repo: str, request: Request):
     conn = auth.conn(request)
-    _require(request)
-    if store.get_container(conn, "github", repo) is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    _require_repo(conn, repo, ids)
     emails = store.container_member_emails(conn, "github", repo)
     if emails is None:
         emails = store.all_user_emails(conn)
@@ -806,10 +875,10 @@ async def list_teams(org: str, request: Request):
 @router.get("/repos/{owner}/{repo}/teams")
 async def list_repo_teams(owner: str, repo: str, request: Request):
     conn = auth.conn(request)
-    _require(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    _require_repo(conn, repo, ids)
     c = store.get_container(conn, "github", repo)
-    if c is None:
-        raise HTTPException(status_code=404, detail="Not Found")
     if not c["group_id"]:
         return []
     return [
@@ -1429,7 +1498,7 @@ def _gh_review_comment(
     """
     ts = c["created_ts"] or synth.epoch(c["id"])
     email = c["author_email"] or "unknown@x"
-    cid = synth.github_number(c["id"])
+    cid = synth.github_comment_id(c["id"])
     head = hashlib.sha1(pr_row["doc_id"].encode()).hexdigest()
     self_url = f"{api_base}/repos/{owner}/{repo}/pulls/comments/{cid}"
     pr_url = f"{api_base}/repos/{owner}/{repo}/pulls/{number}"
@@ -1534,7 +1603,7 @@ def _hunk_around(file_row, line: int | None) -> str:
 def _gh_comment(owner: str, repo: str, number: int, c, api_base: str = "") -> dict:
     ts = c["created_ts"] or synth.epoch(c["id"])
     email = c["author_email"] or "unknown@x"
-    cid = synth.github_number(c["id"])
+    cid = synth.github_comment_id(c["id"])
     self_url = f"{api_base}/repos/{owner}/{repo}/issues/comments/{cid}"
     return {
         "id": cid,

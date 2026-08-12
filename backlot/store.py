@@ -1713,6 +1713,17 @@ def list_repo_file_paths(conn, repo, visible_ids=None, limit=10_000, offset=0) -
     return [r[0] for r in conn.execute(sql, [repo, *cp, limit, offset])]
 
 
+def get_github_comment(conn, comment_id: str) -> sqlite3.Row | None:
+    """One comment by its STORED id, carrying `doc_id` so the caller can ACL-check the document it
+    belongs to. The served id is a hash of this one; `backlot.main._build_index` holds the reverse
+    map."""
+    return conn.execute(
+        "SELECT id, doc_id, seq, author_email, body, created_ts, reactions, path, line, diff_hunk "
+        "FROM github_comments WHERE id = ?",
+        (comment_id,),
+    ).fetchone()
+
+
 def github_comments(conn, doc_id, *, anchored: bool | None = None) -> list[sqlite3.Row]:
     """``github_comments`` rows for one document, carrying the review-comment columns.
 

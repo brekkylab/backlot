@@ -1,5 +1,7 @@
 """ACL resolution + visibility, asserted against the SAMPLE corpus's generated ACL."""
 
+import yaml
+
 from backlot import store
 from tests._helpers import client_for, gql
 
@@ -489,6 +491,20 @@ def test_a_shared_doc_id_does_not_share_visibility(tmp_path):
     }
     assert ("org", "acme") in conf
     conn.close()
+
+    # The leak was user-facing at the ROUTER layer, not just the store — assert it there too, with
+    # a real HTTP request carrying a non-admin bearer token. ava is a member of the org the public
+    # confluence grant names, but holds no grant of her own on the drive file: in the pre-fix world
+    # a shared doc_acl table would OR the two sources' rows together for "shared-1" and let any org
+    # member (ava included) through on the strength of the confluence grant alone.
+    toks = yaml.safe_load(s.tokens_path.read_text())
+    ava_token = next(u["token"] for u in toks["users"] if u["email"] == "ava@acme.com")
+    hana_token = next(u["token"] for u in toks["users"] if u["email"] == "hana@acme.com")
+    with client_for(s) as client:
+        r = client.get("/drive/v3/files", headers={"Authorization": f"Bearer {ava_token}"})
+        assert [f["name"] for f in r.json()["files"]] == []
+        r = client.get("/drive/v3/files", headers={"Authorization": f"Bearer {hana_token}"})
+        assert "Secret sheet" in {f["name"] for f in r.json()["files"]}
 
 
 def test_slack_channels_for_principals_reads_its_own_acl_table(tmp_path):

@@ -1088,6 +1088,14 @@ class _Loader:
                 # hash directly could still leave one page unreachable at its own id (#51).
                 # Assigning here, probed against every id already taken, is what makes it unique.
                 cols[store.served_id_column("confluence")] = self._assign_confluence_id(did)
+            if src == "gmail":
+                # Unlike confluence, no probe: synth.gmail_message_id draws from 2**63, so a
+                # collision is vanishingly unlikely at any corpus size we generate (#51), and the
+                # UNIQUE index (backed by the upsert above, scoped to doc_id) turns one into a loud
+                # import failure instead of a silent probe. This also keeps the seed pure, which is
+                # what lets _gmail_ids derive a reply's threadId by re-hashing the root's key
+                # instead of reading the root's row.
+                cols[store.served_id_column("gmail")] = store.served_id_seed("gmail")(did)
             # A jira key and a github number are deliberately NOT materialized the way Linear's
             # identifier is: the column holds what the CORPUS wrote and nothing else, so "provided"
             # means exactly "non-NULL" everywhere downstream. Two things depend on that.

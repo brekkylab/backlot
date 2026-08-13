@@ -83,7 +83,6 @@ def _build_index(conn) -> dict:
         "notion": {},
         "s3": {},
         "hubspot": {},
-        "gmail": {},
         "linear": {},
         "linear_teams": {},
         "linear_users": {},
@@ -106,13 +105,6 @@ def _build_index(conn) -> dict:
         "github_number": {},
         "jira_key": {},
     }
-    # Gmail ids are 16-hex integers, not dsids, so the served id has to be reversed back to a row.
-    # ONE map covers messages AND threads: a thread key is the root message's doc_id (verified on
-    # a real corpus -- 0 of 121,390 thread keys is anything else), which is also why real Gmail
-    # reports id == threadId for a lone message. Measured cost on a 556,238-message corpus:
-    # +2.2s and +88 MiB, taking this whole function from 6.4s to ~8.6s, with 0 collisions.
-    for r in conn.execute(f"SELECT doc_id FROM {store.table('gmail')}"):
-        idx["gmail"][synth.gmail_message_id(r["doc_id"])] = r["doc_id"]
 
     # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
     # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.

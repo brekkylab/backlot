@@ -180,13 +180,22 @@ CREATE TABLE IF NOT EXISTS gmail_messages (
     thread_id TEXT, thread_seq INTEGER NOT NULL DEFAULT 0,
     label_ids TEXT, to_addr TEXT, cc TEXT, bcc TEXT, reply_to TEXT,
     message_id TEXT, in_reply_to TEXT, refs TEXT, attachments TEXT, created_ts INTEGER NOT NULL,
-    body_html TEXT, owner_display TEXT
+    body_html TEXT, owner_display TEXT, served_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_gmail_mailbox ON gmail_messages(mailbox);
 CREATE INDEX IF NOT EXISTS idx_gmail_author ON gmail_messages(author_email);
 -- date-scoped listing (ls /gmail/<label>/<date>) filters by a created_ts range; the index turns
 -- that from a full-table scan into a range seek.
 CREATE INDEX IF NOT EXISTS idx_gmail_created_ts ON gmail_messages(created_ts);
+-- The id the API reports, assigned at import (see backlot.importer.byo) rather than hashed at
+-- serve time, so a get-by-id is a column lookup instead of a reverse map rebuilt on every boot.
+-- Unlike confluence this is the raw seed, never probed: `synth.gmail_message_id` draws from 2**63,
+-- and keeping it a pure hash is what lets a reply derive its `threadId` by re-hashing the root's
+-- key instead of reading the root's row. UNIQUE turns the (vanishingly unlikely) collision into a
+-- loud import failure -- the shared write path's upsert (`ON CONFLICT(doc_id) DO UPDATE`) is
+-- scoped to doc_id only, so a served_id collision (a different doc_id) falls through to this
+-- index and raises, rather than silently replacing the earlier message.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gmail_served ON gmail_messages(served_id);
 
 CREATE TABLE IF NOT EXISTS gdrive_files (
     doc_id TEXT PRIMARY KEY, folder TEXT NOT NULL, author_email TEXT NOT NULL,
@@ -1830,6 +1839,15 @@ def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
     sql += clause + " ORDER BY thread_seq"
     params += cparams
     return conn.execute(sql, params).fetchall()
+
+
+def gmail_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+    """One message by the id the API reports. The stored column is lowercase hex; callers pass the
+    id as the client spelled it, so fold case here rather than at each call site."""
+    clause, cp = _acl_clause("gmail", visible_ids=visible_ids)
+    return conn.execute(
+        f"SELECT * FROM gmail_messages WHERE served_id = ?{clause}", [served_id.lower(), *cp]
+    ).fetchone()
 
 
 # --- GitHub file items (kind='file') ----------------------------------------

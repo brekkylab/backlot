@@ -632,6 +632,48 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
     conn.close()
 
 
+def test_gmail_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
+    """Gmail's id space is 2**63, so unlike confluence it does not probe: the seed is stored as-is.
+    Keeping it a pure hash is what lets `_gmail_ids` derive `threadId` by re-hashing the root's key
+    instead of reading the root's row.
+
+    The second half forces the collision gmail's design accepts as the tradeoff for staying
+    unprobed: a duplicate `served_id` MUST fail the import loudly (a UNIQUE index violation), not
+    resolve through the shared write path's upsert, which was `INSERT OR REPLACE` and resolved a
+    conflict on ANY unique index by silently DELETING the row already holding that value -- a
+    message would vanish with no error. `monkeypatch.setitem` on `store.SERVED_ID`, not
+    `monkeypatch.setattr(synth, "gmail_message_id", ...)`: the registry captures the seed function
+    object at `backlot.store` import time, so patching the module attribute afterward cannot reach
+    it (see the confluence test above for the same defect)."""
+    from tests._helpers import build_corpus
+
+    docs = [
+        {
+            "source_type": "gmail",
+            "mailbox": "a@acme.com",
+            "doc_id": f"m{i}",
+            "title": f"Mail {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i in range(5)
+    ]
+    s = build_corpus(tmp_path / "ok", docs)
+    conn = store.connect_ro(s.db_path)
+    rows = conn.execute("SELECT doc_id, served_id FROM gmail_messages").fetchall()
+    assert len(rows) == 5
+    assert {r["served_id"] for r in rows} == {synth.gmail_message_id(r["doc_id"]) for r in rows}
+    for r in rows:
+        assert store.gmail_by_served_id(conn, r["served_id"])["doc_id"] == r["doc_id"]
+    conn.close()
+
+    monkeypatch.setitem(
+        store.SERVED_ID, "gmail", ("served_id", lambda key: "00000000deadbeef", None)
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        build_corpus(tmp_path / "collide", docs)
+
+
 def test_connect_ro_tuning(sample_settings):
     # tuned connection applies the pragmas; a plain one keeps sqlite defaults (tests unaffected)
     c = store.connect_ro(sample_settings.db_path, mmap_mb=64, cache_mb=16, temp_memory=True)

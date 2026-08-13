@@ -442,30 +442,37 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
 
 
 # --- Gmail ids ------------------------------------------------------------------------------
-# Served ids are 16-hex integers (`synth.gmail_message_id`), not the corpus's dsids, so every route
-# resolves an incoming id back to a row through the startup reverse index — the same shape the
-# github / jira / confluence / notion / s3 routes already use. Threads share the map, because a
-# thread key IS the root message's doc_id.
+# Served ids are 16-hex integers (`synth.gmail_message_id`), not the corpus's dsids, but unlike
+# github / jira / confluence / notion / s3 (whose routes still resolve through a startup reverse
+# index) Gmail's id is a stored column (`gmail_messages.served_id`, assigned at import — see
+# `backlot.importer.byo`), so resolution is a unique-indexed column lookup rather than a map rebuilt
+# on every boot. Threads still resolve through the same column, because a thread key IS the root
+# message's doc_id.
 
 _GMAIL_HEX = re.compile(r"[0-9a-fA-F]+\Z")
 
 
-def _gmail_resolve(request: Request, served_id: str) -> str | None:
+def _gmail_resolve(conn, served_id: str) -> str | None:
     """The ``doc_id`` behind a served Gmail id, or ``None`` if it names nothing.
 
     An id that Gmail could not parse at all raises instead: measured, the real API answers 400
     INVALID_ARGUMENT "Invalid id value" for a non-hex id or one >= 2**63, and 404 only for a
     well-formed id it does not hold. `7fffffffffffffff` is well-formed; `8000000000000000` is
-    not."""
+    not.
+
+    No ``visible_ids`` here on purpose: this only resolves the *shape*-valid id to a doc_id. The
+    ACL read stays in the caller (`_gmail_doc` / `store.gmail_thread`), so an id that resolves to a
+    document the caller cannot see is not-found, never a different answer."""
     if not _GMAIL_HEX.fullmatch(served_id) or int(served_id, 16) >= synth.GMAIL_ID_MAX:
         raise gerr.invalid_id_value()
-    return request.app.state.index["gmail"].get(served_id.lower())
+    row = store.gmail_by_served_id(conn, served_id)
+    return row["doc_id"] if row is not None else None
 
 
-def _gmail_doc(request: Request, conn, ids, served_id: str):
+def _gmail_doc(conn, ids, served_id: str):
     """The visible row behind a served id. Resolution happens before the ACL read, so an id that
     resolves to a document the caller cannot see is still not-found, never a different answer."""
-    doc_id = _gmail_resolve(request, served_id)
+    doc_id = _gmail_resolve(conn, served_id)
     if doc_id is None:
         return None
     return store.get_document(conn, "gmail", doc_id, visible_ids=ids)
@@ -473,9 +480,16 @@ def _gmail_doc(request: Request, conn, ids, served_id: str):
 
 def _gmail_ids(row) -> tuple[str, str]:
     """``(id, threadId)`` for a row. A message that is its own thread root reports the same value
-    twice, as real Gmail does."""
+    twice, as real Gmail does.
+
+    The two halves come from different sources on purpose: `id` reads the row's own stored
+    `served_id` (assigned once, at import), while `threadId` re-hashes the root's key
+    (`thread_id or doc_id`) rather than reading the root row. Gmail never probes its seed off a
+    collision (see the schema comment on `idx_gmail_served`), so the hash and the stored column
+    always agree — which is what makes it safe to derive `threadId` this way instead of paying for
+    a lookup of the root row on every listed message."""
     return (
-        synth.gmail_message_id(row["doc_id"]),
+        row["served_id"],
         synth.gmail_message_id(row["thread_id"] or row["doc_id"]),
     )
 
@@ -520,7 +534,7 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = _gmail_doc(request, conn, ids, msg_id)
+    row = _gmail_doc(conn, ids, msg_id)
     if row is None:
         raise gerr.not_found_entity()
     return _gmail_message(row, request.query_params.get("format", "full"))
@@ -534,7 +548,7 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = _gmail_doc(request, conn, ids, msg_id)
+    row = _gmail_doc(conn, ids, msg_id)
     if row is None:
         raise gerr.not_found_entity()
     doc_id = row["doc_id"]
@@ -594,10 +608,10 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    thread_key = _gmail_resolve(request, thread_id)
+    thread_key = _gmail_resolve(conn, thread_id)
     msgs = store.gmail_thread(conn, thread_key, visible_ids=ids) if thread_key else []
     if not msgs:
-        row = _gmail_doc(request, conn, ids, thread_id)
+        row = _gmail_doc(conn, ids, thread_id)
         if row is None:
             raise gerr.not_found_entity()
         msgs = [row]

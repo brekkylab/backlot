@@ -95,7 +95,11 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   *which* files: the hunks are always derived from each file's own content, so the diff applies with
   real `git` either way. Omit it and the mock picks a few files deterministically instead — a
   well-formed diff, but unrelated to what the pull is about. A path naming no file the caller can
-  read is skipped, so declaring one does not publish its name.
+  read is skipped, so declaring one does not publish its name — and a path naming no file *at all*
+  is skipped the same way, since telling the two apart per caller is what would publish it. That
+  second case is usually a typo, so the import reports it and `--dry-run` names the line and the
+  path; it is not refused, because a corpus is often a slice of a repo that legitimately stops short
+  of a file its pulls touched.
 - **GitHub review comments:** a comment on a `pull_request` becomes a line-anchored **review**
   comment (`GET /pulls/{n}/comments`) when it carries a `path`, with an optional `line` (omit it for
   a file-level comment) and an optional `diff_hunk` (derived from the file otherwise). Without a

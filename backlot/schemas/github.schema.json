@@ -174,7 +174,7 @@
         "type": "string",
         "minLength": 1
       },
-      "description": "PR only: paths of the files this pull changed, as `path` values of this repo's subtype='file' docs. Omit it and the changeset is chosen deterministically instead, which is well-formed but unrelated to what the pull is about. The hunks themselves are always synthesized from the file's own snapshot."
+      "description": "PR only: paths of the files this pull changed, as `path` values of this repo's subtype='file' docs. Omit it and the changeset is chosen deterministically instead, which is well-formed but unrelated to what the pull is about. The hunks themselves are always synthesized from the file's own snapshot. A path matching no such doc is dropped from the changeset — the import reports it and `--dry-run` names it, but loads the record as written, since a corpus may legitimately be a slice of the repo."
     },
     "comments": {
       "type": "array",

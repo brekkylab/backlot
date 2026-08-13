@@ -3120,7 +3120,39 @@ def test_github_changeset_fields_round_trip(tmp_path):
         "no-path",
     ],
 )
-def test_github_changeset_misuse_is_refused(tmp_path, records, expected):
+def test_github_changeset_misuse_is_refused(tmp_path, records, expected, capsys):
+    corpus = _write(tmp_path, records())
     with pytest.raises(SystemExit) as e:
-        load(_write(tmp_path, records()), Settings(data_dir=tmp_path))
+        load(corpus, Settings(data_dir=tmp_path))
     assert expected in str(e.value)
+    # `--dry-run` reports what a load refuses, or a corpus passes the check that exists to spare
+    # the author a failed import and then fails the import.
+    assert byo.run(corpus, dry_run=True) == 1
+    assert expected in capsys.readouterr().err
+
+
+def test_a_changed_path_matching_no_file_is_reported_and_loaded(tmp_path, capsys):
+    """A declared path that names no `file` document is a corpus typo the mock cannot prove is one:
+    a corpus is routinely a SLICE of a repo, and under `--append` the file may land in a later
+    shard. So it is REPORTED — naming the pull and the path — and loaded verbatim, leaving the
+    router to drop it from the changeset. Refusing would make a pull that states the files it
+    really touched unimportable whenever the slice stopped short of one of them."""
+    corpus = _write(tmp_path, _gh_changeset_corpus(changed_paths=["src/a.py", "src/typo.py"]))
+
+    assert byo.run(corpus, dry_run=True) == 0  # a report, not a verdict on the corpus
+    dry = capsys.readouterr()
+    assert "OK: 3 records valid." in dry.out
+    assert "changed_paths" in dry.err and "line 3: src/typo.py" in dry.err
+    assert "src/a.py" not in dry.err  # only the unresolved one is named
+
+    # A load counts them and points at the report, rather than printing one line per path in among
+    # its own ten lines of summary — the same split as a dangling linear `parent`.
+    load(corpus, Settings(data_dir=tmp_path))
+    err = capsys.readouterr().err
+    assert "1 changed_paths" in err and "--dry-run" in err
+    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    # stored as the corpus stated it — the report does not edit the record
+    assert store.jcol(store.get_document(conn, "github", "cs-pr"), "changed_paths") == [
+        "src/a.py",
+        "src/typo.py",
+    ]

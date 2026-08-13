@@ -2782,6 +2782,15 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
       two alias NAMESPACES per project rather than one alias per row. Both now 404, same as real
       Jira's `/issue/PAYDF384A-101` or `/issue/payments-101` would for a project that actually
       answers at `PAY`.
+    - **A second, unflagged side effect of the SAME reuse (review round 2).** `_jira_container_
+      for_key`'s prefix match is case-INSENSITIVE (`token.upper()`), which is right for the JQL
+      token -- but before I-1's fix, that case-insensitivity leaked into issue-key resolution too:
+      `pay-<n>`/`Pay-<n>` resolved `j-provider` right alongside `PAY-<n>`, even though every
+      provided key's prefix is schema-enforced uppercase (`jira.schema.json`'s `key` pattern) and
+      every other case-tolerance docstring in this file scopes itself explicitly to the project
+      token/picker, never to the key itself. I-1's fix closes this as a side effect (the AGREEMENT
+      check is a plain `!=`, not `.upper() != .upper()`), but nothing asserted it, so it is
+      asserted below.
     """
     from backlot import synth
     from tests._helpers import build_corpus, client_for
@@ -2844,6 +2853,15 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
         for alt_key in (f"{synth_prefix}-{suffix}", f"payments-{suffix}"):
             resp = c.get(f"/atlassian/rest/api/3/issue/{alt_key}", headers=hdr)
             assert resp.status_code == 404, alt_key
+
+        # Review round 2: a lowercase or mixed-case spelling of the SAME served key must also
+        # 404 -- issue-key resolution is case-sensitive (real Jira's own behaviour, and this
+        # project's pre-task-8 one), even though the project TOKEN/picker `_jira_container_
+        # for_key` backs is deliberately case-insensitive.
+        for cased_key in (stolen.lower(), stolen[0] + stolen[1:].lower()):
+            assert cased_key != stolen  # sanity: an actually different spelling
+            resp = c.get(f"/atlassian/rest/api/3/issue/{cased_key}", headers=hdr)
+            assert resp.status_code == 404, cased_key
 
 
 def test_byo_meta_cannot_smuggle_a_tracker_id(tmp_path):

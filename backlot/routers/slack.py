@@ -362,12 +362,17 @@ async def conversations_history(request: Request):
     messages = []
     for r in rows:
         rc = store.slack_reply_count(conn, r["doc_id"], ids) if r["thread_id"] else 0
-        latest = _latest_reply(r, rc) if rc else None
+        latest = _latest_reply(conn, r, rc, ids) if rc else None
         ru = store.slack_reply_authors(conn, r["doc_id"], ids) if rc else []
         ruids = [synth.slack_user_id(e) for e in ru[:5]]
         messages.append(
             _message(
-                r, reply_count=rc, latest_reply=latest, reply_users=ruids, reply_users_count=len(ru)
+                conn,
+                r,
+                reply_count=rc,
+                latest_reply=latest,
+                reply_users=ruids,
+                reply_users_count=len(ru),
             )
         )
     cursor = next_cursor(offset, len(rows), total)
@@ -416,7 +421,7 @@ async def conversations_replies(request: Request):
     if hit is None:
         return _err("thread_not_found")
     if not hit["thread_id"]:  # standalone message (no thread)
-        return {"ok": True, "messages": [_message(hit)], "has_more": False}
+        return {"ok": True, "messages": [_message(conn, hit)], "has_more": False}
     # The root's own created_ts differs from a reply's ts, so don't re-scan the channel for it —
     # derive its doc_id from the hit (a root's doc_id == its thread_id) and pull the root out of the
     # ordered thread rows below.
@@ -426,12 +431,13 @@ async def conversations_replies(request: Request):
     if root is None:
         return _err("thread_not_found")
     rc = sum(1 for x in rows if x["thread_seq"] > 0)
-    latest = _latest_reply(root, rc) if rc else None
+    latest = _latest_reply(conn, root, rc, ids) if rc else None
     ru = store.slack_reply_authors(conn, root["doc_id"], ids)
     ruids = [synth.slack_user_id(e) for e in ru[:5]]
     parent_uid = synth.slack_user_id(root["author_email"])
     messages = [
         _message(
+            conn,
             x,
             reply_count=(rc if x["thread_seq"] == 0 else 0),
             latest_reply=(latest if x["thread_seq"] == 0 else None),
@@ -724,16 +730,25 @@ def _search_match(conn, row) -> dict:
     if row[
         "thread_id"
     ]:  # a hit inside a thread carries its root ts so the client can fetch replies
-        m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(row), row["thread_id"])
+        m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(conn, row), row["thread_id"])
     return m
 
 
-def _root_epoch(row) -> int:
-    """The thread root's base second — the caller-supplied `created` (with the reply's
-    position backed out) if present, else synthesized from the root doc_id."""
-    if row["created_ts"]:
+def _root_epoch(conn, row) -> int:
+    """The thread root's base second. A root answers from its own row; a reply looks
+    the root up (a primary-key read). The old shortcut — the reply's own second with
+    its position backed out — assumed every reply sits exactly its position in
+    seconds after the root, which stopped holding once a corpus could write a
+    reply's own clock. Corpora without one resolve identically either way: the
+    root's stored second is the same number the subtraction produced."""
+    if not row["thread_id"] or row["thread_seq"] == 0:
+        return row["created_ts"] or synth.epoch(row["thread_id"] or row["doc_id"])
+    base = store.slack_root_created_ts(conn, row["thread_id"])
+    if base:
+        return base
+    if row["created_ts"]:  # a reply whose root row is absent
         return row["created_ts"] - row["thread_seq"]
-    return synth.epoch(row["thread_id"] or row["doc_id"])
+    return synth.epoch(row["thread_id"])
 
 
 def _compute_channel_created(conn, name: str) -> int:
@@ -786,12 +801,20 @@ def _msg_ts(row) -> str:
     return synth.slack_ts(row["doc_id"])
 
 
-def _latest_reply(root_row, reply_count: int) -> str:
-    """ts of the last reply in a thread (root base + reply_count)."""
-    return synth.slack_fmt_ts(_root_epoch(root_row) + reply_count, root_row["doc_id"])
+def _latest_reply(conn, root_row, reply_count: int, visible_ids=None) -> str:
+    """ts of the last visible reply in a thread — its real stored second, keyed on
+    the root the way every in-thread ts is. Root-plus-count was the same number
+    while replies sat one second apart; it drifted once a reply could carry its own
+    clock, and it already pointed at the wrong second when a hidden reply sat
+    mid-thread and the count shrank while the survivors kept their seconds."""
+    last = store.slack_last_reply_ts(conn, root_row["doc_id"], visible_ids)
+    if last is None:
+        last = _root_epoch(conn, root_row) + reply_count
+    return synth.slack_fmt_ts(last, root_row["doc_id"])
 
 
 def _message(
+    conn,
     row,
     reply_count: int = 0,
     latest_reply: str | None = None,
@@ -823,7 +846,7 @@ def _message(
     if row["subtype"]:
         m["subtype"] = row["subtype"]
     if row["thread_id"]:  # part of a thread
-        m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(row), row["thread_id"])
+        m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(conn, row), row["thread_id"])
         if row["thread_seq"] == 0 and reply_count > 0:  # thread root
             m.update(
                 {

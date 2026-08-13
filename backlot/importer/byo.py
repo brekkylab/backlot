@@ -1174,6 +1174,7 @@ class _Loader:
                 ),
             )
 
+        prev_cts = created
         for i, rep in enumerate(replies or [], start=1):
             if not rep.get("content"):
                 raise SystemExit(f"{where}: each reply needs 'content'")
@@ -1184,10 +1185,23 @@ class _Loader:
                 + hashlib.sha256((doc_id + str(i) + rep["content"]).encode()).hexdigest()[:32]
             )
             seen.add((src, rep_id))
-            # A reply is a full message (reactions/files/subtype/edited carry through);
-            # its time is the root's + its position so the thread stays ordered (created is now
-            # always set, so a reply ts is never NULL).
-            rep_cts = created + i
+            # A reply is a full message (reactions/files/subtype/edited carry through).
+            # Its time is its own `created` when the corpus wrote one — the gmail
+            # treatment — else one second after the message before it, which lands every
+            # reply of a clockless thread exactly where root+position always put it.
+            # Strictly increasing is enforced rather than assumed: a Slack ts is identity
+            # as well as clock, so two thread messages sharing a second would collide at
+            # the ts every endpoint resolves, and a reply at or before its parent is a
+            # shape real Slack cannot emit.
+            rep_cts = _epoch(rep.get("created"))
+            if rep_cts is None:
+                rep_cts = prev_cts + 1
+            elif rep_cts <= prev_cts:
+                raise SystemExit(
+                    f"{where}: reply {i}: created must be after the message before it "
+                    f"(got {rep.get('created')!r}, the previous message is at {prev_cts})"
+                )
+            prev_cts = rep_cts
             insert(
                 rep_id,
                 rep_author,

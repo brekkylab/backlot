@@ -98,7 +98,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "description": "A threaded reply — a full message that inherits the root's channel and ACL. Carries the same fields a root message can (reactions, files, subtype, edited); its time is the root's created + its position in the thread.",
+        "description": "A threaded reply — a full message that inherits the root's channel and ACL. Carries the same fields a root message can (reactions, files, subtype, edited); its time is its own `created` when given, else one second after the message before it.",
         "properties": {
           "content": {
             "type": "string",
@@ -114,6 +114,14 @@
           "doc_id": {
             "type": "string",
             "description": "Optional stable id for the reply."
+          },
+          "created": {
+            "type": [
+              "integer",
+              "number",
+              "string"
+            ],
+            "description": "Reply time (default: one second after the previous message). Must be after the message before it: a Slack ts is identity as well as clock, so a thread's times are strictly increasing."
           },
           "title": {
             "type": "string"

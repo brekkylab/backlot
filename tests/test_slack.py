@@ -333,12 +333,12 @@ def test_slack_reply_users_and_num_members(tmp_path):
     root, first_reply = thread[0], thread[1]
     ru = store.slack_reply_authors(conn, "s1")
     ruids = [synth.slack_user_id(e) for e in ru]
-    rootmsg = _message(root, reply_count=3, reply_users=ruids, reply_users_count=len(ru))
+    rootmsg = _message(conn, root, reply_count=3, reply_users=ruids, reply_users_count=len(ru))
     # 3 replies but only 2 distinct repliers -> counts differ (real Slack distinguishes them)
     assert rootmsg["reply_count"] == 3 and rootmsg["reply_users_count"] == 2
     assert len(rootmsg["reply_users"]) == 2
     # a reply carries parent_user_id pointing at the root author
-    rep = _message(first_reply, parent_user_id=synth.slack_user_id("bob@x.com"))
+    rep = _message(conn, first_reply, parent_user_id=synth.slack_user_id("bob@x.com"))
     assert rep["parent_user_id"] == synth.slack_user_id("bob@x.com")
     # conversations.list channel object reports a real member count (was hardcoded 0)
     import types
@@ -346,3 +346,50 @@ def test_slack_reply_users_and_num_members(tmp_path):
     req = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
     ch = _full_channel(req, conn, "inc")
     assert ch["num_members"] > 0 and ch["creator"] == "USERVICE0"
+
+
+def test_thread_ts_and_latest_reply_follow_a_replys_own_clock(tmp_path):
+    """A reply may carry its own `created`, the treatment a gmail message gets.
+    Its thread_ts must still be the ROOT's ts — the old derivation backed the root's
+    second out as created_ts minus position, which held only while replies sat one
+    second apart — and a root's latest_reply must name the last reply's real second,
+    not root plus reply count."""
+    from datetime import datetime
+
+    from backlot.routers.slack import _latest_reply, _message, _msg_ts
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "doc_id": "s1",
+                "channel": "inc",
+                "content": "root",
+                "author_email": "bob@x.com",
+                "visibility": "public",
+                "created": "2026-05-01T00:00:00Z",
+                "replies": [
+                    {"content": "ack", "author_email": "ava@x.com"},
+                    {
+                        "content": "the real answer, hours later",
+                        "author_email": "cid@x.com",
+                        "created": "2026-05-01T03:00:00Z",
+                    },
+                ],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    thread = store.slack_thread(conn, "s1")
+    root, late = thread[0], thread[2]
+    base = int(datetime.fromisoformat("2026-05-01T00:00:00+00:00").timestamp())
+    # the late reply's ts is its own second, not root + position
+    assert _msg_ts(late).split(".")[0] == str(base + 3 * 3600)
+    # its thread_ts is the root's ts — position arithmetic would land 2s early
+    assert _message(conn, late)["thread_ts"] == _msg_ts(root)
+    # latest_reply is the late reply's real ts, not root + reply count
+    assert _latest_reply(conn, root, 2) == _msg_ts(late)
+    # the replies endpoint's fast path (resolve a public ts by its second) finds it
+    hits = store.slack_messages_at_created_ts(conn, "inc", base + 3 * 3600)
+    assert any(_msg_ts(r) == _msg_ts(late) for r in hits)

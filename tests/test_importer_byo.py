@@ -269,15 +269,16 @@ def test_byo_meta_comments_hierarchy(tmp_path):
 def test_slack_message_text_without_title():
     # empty title -> the message text is just the content (no bold lead line)
     assert (
-        _message(_row(doc_id="d1", title="", content="hi", author_email="a@x.com"))["text"] == "hi"
+        _message(None, _row(doc_id="d1", title="", content="hi", author_email="a@x.com"))["text"]
+        == "hi"
     )
     assert (
-        _message(_row(doc_id="d2", title="T", content="hi", author_email="a@x.com"))["text"]
+        _message(None, _row(doc_id="d2", title="T", content="hi", author_email="a@x.com"))["text"]
         == "*T*\nhi"
     )
     # a standalone message has no thread_ts / reply_count
     assert "thread_ts" not in _message(
-        _row(doc_id="d1", title="", content="hi", author_email="a@x.com")
+        None, _row(doc_id="d1", title="", content="hi", author_email="a@x.com")
     )
 
 
@@ -439,10 +440,82 @@ def test_byo_slack_rich_replies(tmp_path):
     assert _msg_ts(root) == f"{_epoch('2026-05-01T00:00:00Z')}.{_msg_ts(root).split('.')[1]}"
     assert _msg_ts(reply) > _msg_ts(root)
     # reply carries the full message fields (reactions + subtype), not just content
-    rm = _message(reply)
+    rm = _message(conn, reply)
     assert rm["reactions"][0]["name"] == "eyes" and rm["subtype"] == "thread_broadcast"
     # reply shares the root's thread_ts
-    assert rm["thread_ts"] == _message(root, reply_count=1)["thread_ts"] == _msg_ts(root)
+    assert rm["thread_ts"] == _message(conn, root, reply_count=1)["thread_ts"] == _msg_ts(root)
+
+
+def test_byo_slack_reply_carries_its_own_clock(tmp_path):
+    """A reply's `created` is honored when the corpus writes one — the treatment a
+    gmail message already gets — and an absent one lands a second after the message
+    before it, which is exactly where root+position always put it. Every reply of a
+    clockless thread therefore loads byte-identically to the old rule."""
+    load(
+        _write(
+            tmp_path,
+            [
+                {
+                    "source_type": "slack",
+                    "content": "root",
+                    "channel": "incidents",
+                    "doc_id": "s-root",
+                    "author_email": "bob@a.com",
+                    "created": "2026-05-01T00:00:00Z",
+                    "replies": [
+                        {"content": "quick ack", "author_email": "ava@a.com"},
+                        {
+                            "content": "the real answer, hours later",
+                            "author_email": "ava@a.com",
+                            "created": "2026-05-01T03:00:00Z",
+                        },
+                        {"content": "thanks", "author_email": "bob@a.com"},
+                    ],
+                }
+            ],
+        ),
+        Settings(data_dir=tmp_path),
+    )
+    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    thread = store.slack_thread(conn, "s-root")
+    base = _epoch("2026-05-01T00:00:00Z")
+    assert [r["created_ts"] for r in thread] == [
+        base,
+        base + 1,  # clockless: one second after the root
+        base + 3 * 3600,  # its own clock
+        base + 3 * 3600 + 1,  # clockless: one second after the clocked reply
+    ]
+    from backlot.routers.slack import _msg_ts
+
+    ts = [_msg_ts(r) for r in thread]
+    assert ts == sorted(ts) and len(set(ts)) == 4
+
+
+def test_byo_slack_reply_clock_must_move_forward(tmp_path):
+    """A Slack ts is identity as well as clock: two thread messages sharing a second
+    would collide at the ts every endpoint resolves, and a reply at or before its
+    parent is a shape real Slack cannot emit. Refused at import, loudly."""
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "content": "root",
+                "channel": "incidents",
+                "author_email": "bob@a.com",
+                "created": "2026-05-01T02:00:00Z",
+                "replies": [
+                    {
+                        "content": "from the past",
+                        "author_email": "ava@a.com",
+                        "created": "2026-05-01T01:00:00Z",
+                    }
+                ],
+            }
+        ],
+    )
+    with pytest.raises(SystemExit, match="after the message before it"):
+        load(corpus, Settings(data_dir=tmp_path))
 
 
 def test_notion_byo_load(tmp_path):

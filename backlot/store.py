@@ -390,7 +390,8 @@ CREATE TABLE IF NOT EXISTS linear_issues (
     -- rule linear_issue_by_identifier applies — makes Issue.parent and Issue.children exact inverses.
     parent_key TEXT, parent_doc_id TEXT,
     -- Release name as the corpus writes it (`runtime-1.19`); served as `Issue.releases`.
-    release TEXT
+    release TEXT,
+    served_id TEXT
 );
 -- (team, doc_id): the Relay connection pages one team ordered by doc_id, so carrying the ordering
 -- column makes a page a range seek rather than a re-sort of the whole team.
@@ -423,10 +424,23 @@ CREATE INDEX IF NOT EXISTS idx_linear_release ON linear_issues(release);
 -- `issue(id: "ENG-123")` resolves an identifier straight to its row; identifiers are NOT unique
 -- (5,055 of them repeat in one real corpus), so this is a lookup index, never a unique constraint.
 CREATE INDEX IF NOT EXISTS idx_linear_identifier ON linear_issues(identifier);
--- COVERING index for the startup reverse-index build (backlot.main._build_index), which reads
--- (doc_id, identifier) for every issue. Without it each wide row is fetched from a scattered page and
--- the scan dominates server startup; as an index-only scan it is negligible.
+-- COVERING index for the importer's parent-resolution pass (backlot.importer.byo, `parent_key` ->
+-- `parent_doc_id`), which reads (doc_id, identifier) for every issue that provides one. Without it
+-- each wide row is fetched from a scattered page and the scan dominates that pass; as an
+-- index-only scan it is negligible. (Formerly also covered main._build_index's startup reverse
+-- map, since replaced by `served_id` below — see idx_linear_served.)
 CREATE INDEX IF NOT EXISTS idx_linear_doc_ident ON linear_issues(doc_id, identifier);
+-- The UUID the API reports (`synth.linear_id`), assigned at import (see backlot.importer.byo)
+-- rather than hashed at serve time -- a get-by-id is a column lookup instead of a reverse map
+-- rebuilt on every boot. Kept distinct from `identifier` on purpose: identifiers are NOT unique
+-- (see idx_linear_identifier above), so they stay a lookup index, never a candidate for this
+-- column or this constraint (see the SERVED_ID comment on why `identifier` is excluded).
+-- No probe, like gmail's: `synth.linear_id` draws from `_uuid_from`'s full digest space, not a
+-- bounded range, so a collision is vanishingly unlikely -- and the shared write path's upsert
+-- (`ON CONFLICT(doc_id) DO UPDATE`) is scoped to doc_id only, so a served_id collision (a
+-- DIFFERENT doc_id) falls through to this index and raises IntegrityError, rather than silently
+-- replacing the issue already holding that value.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_linear_served ON linear_issues(served_id);
 
 CREATE TABLE IF NOT EXISTS linear_comments (
     id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
@@ -1001,6 +1015,17 @@ def count_linear_issues(
     sql += _linear_archived(archived)
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
     return conn.execute(sql + clause, params + cparams).fetchone()[0]
+
+
+def linear_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+    """One issue by the UUID the API reports (``synth.linear_id``), distinct from ``identifier``
+    (see ``linear_issue_by_identifier``) -- unique-indexed, so this is a plain column lookup, not
+    a reverse map built at startup."""
+    col = served_id_column("linear")
+    clause, cp = _acl_clause("linear", visible_ids=visible_ids)
+    return conn.execute(
+        f"SELECT * FROM linear_issues WHERE {col} = ?{clause}", [served_id, *cp]
+    ).fetchone()
 
 
 def linear_issue_by_identifier(conn, identifier, visible_ids=None) -> sqlite3.Row | None:

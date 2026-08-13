@@ -716,21 +716,39 @@ def _comment(row, info) -> dict:
 # --- Query roots ---------------------------------------------------------------------
 
 
+def _resolve_one_issue_id(conn, value: str) -> str:
+    """Translate one filter value -- a served UUID or a human identifier -- to a doc_id. A miss
+    returns the sentinel ``"\x00none"``, which matches no row, so the filter narrows to nothing
+    rather than being silently dropped (see ``_resolve_issue_ids``).
+
+    Unscoped by ACL on purpose, like the startup map this replaces: this is a translation step,
+    not the visibility decision. ``_issue_page``'s own store calls (``list_linear_issues`` /
+    ``count_linear_issues``) apply ``visible_ids`` to the real query, so a value that resolves to
+    an issue the caller cannot see still gets filtered out there -- translating it here to
+    anything other than its real doc_id would just make an invisible-issue filter behave
+    differently from every other predicate instead of consistently answering empty."""
+    row = store.linear_by_served_id(conn, value)
+    if row is None:
+        row = store.linear_issue_by_identifier(conn, value)
+    return row["doc_id"] if row else "\x00none"
+
+
 def _resolve_issue_ids(info, flt):
-    """Rewrite an ``IssueFilter``'s ``id`` comparator from Linear UUIDs to doc_ids, since the
-    UUID is derived from the doc_id and only the app index can invert it. An unknown UUID maps
-    to a sentinel that matches nothing, so it filters everything out instead of being dropped."""
+    """Rewrite an ``IssueFilter``'s ``id`` comparator from Linear UUIDs (or human identifiers)
+    to doc_ids -- a served id is a stored column now, not an in-memory reverse map, so each value
+    costs a lookup rather than a dict access. See ``_resolve_one_issue_id`` for the per-value
+    resolution and its sentinel."""
     if not isinstance(flt, dict):
         return flt
+    conn = _ctx(info)["conn"]
     out = {}
     for k, v in flt.items():
         if k == "id" and isinstance(v, dict):
-            idx = info.context.get("index", {})
             out[k] = {
                 op: (
-                    [idx.get(str(x), "\x00none") for x in val]
+                    [_resolve_one_issue_id(conn, str(x)) for x in val]
                     if isinstance(val, list)
-                    else idx.get(str(val), "\x00none")
+                    else _resolve_one_issue_id(conn, str(val))
                 )
                 for op, val in v.items()
             }
@@ -795,8 +813,7 @@ def resolve_issue(_root, info, id):
     ("Entity not found")."""
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
-    doc_id = ctx.get("index", {}).get(str(id))
-    row = store.get_document(conn, "linear", doc_id, visible_ids=visible) if doc_id else None
+    row = store.linear_by_served_id(conn, str(id), visible_ids=visible)
     if row is None:
         row = store.linear_issue_by_identifier(conn, str(id), visible_ids=visible)
     if row is None:

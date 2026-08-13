@@ -1136,6 +1136,17 @@ class _Loader:
                 # the API had just handed the caller that exact string. Deterministic, so the
                 # served value is unchanged; it is just written down now.
                 cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
+            if src == "linear":
+                # The UUID half of `issue(id:)`, assigned at import like gmail's/notion's rather
+                # than hashed at serve time (#51). No probe: synth.linear_id (via _uuid_from)
+                # draws from the full digest space, not a bounded range, so a collision is
+                # vanishingly unlikely, and the UNIQUE index turns one into a loud import failure
+                # instead of a silent shadow. Written unconditionally (not folded into the
+                # `identifier` branch above, which only fires when the corpus omitted one) --
+                # `names = list(cols)` below feeds the upsert's `DO UPDATE SET col=excluded.col`
+                # list, so a conditionally-written column here would go stale on a re-imported
+                # row, the same bug notion's served_data_source_id shipped.
+                cols[store.served_id_column("linear")] = store.served_id_seed("linear")(did)
             if src == "confluence":
                 # MATERIALIZE the served id the same way, and for the same reason: a hash into
                 # synth.confluence_id's 9,000,000 values collides by the birthday bound, and the

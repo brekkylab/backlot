@@ -378,12 +378,18 @@ def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):
     assert back["identifier"] == "ENG-103"
 
 
-def test_linear_children_is_acl_scoped(client, tokens_yaml):
+def test_linear_children_is_acl_scoped(client, admin_h, tokens_yaml):
     """ENG-103 is restricted to hana, so ava cannot even reach it to ask for its children — and
     the children list must never become a way to observe an issue she is denied."""
     ava = {"Authorization": linear_user_token(tokens_yaml, "ava@acme.com")}
     denied = gql(client, '{ issue(id: "ENG-103") { children { nodes { identifier } } } }', ava)
     assert "Entity not found" in denied.json()["errors"][0]["message"]
+    # Same denial via the OTHER spelling `issue(id:)` accepts: the served UUID. This exercises
+    # `linear_by_served_id`'s own ACL clause rather than `linear_issue_by_identifier`'s (the
+    # denial above never reaches the UUID lookup at all, since ava's query never named one).
+    uuid = gql(client, '{ issue(id: "ENG-103") { id } }', admin_h).json()["data"]["issue"]["id"]
+    denied_by_uuid = gql(client, "{ issue(id: %s) { identifier } }" % lit(uuid), ava)
+    assert "Entity not found" in denied_by_uuid.json()["errors"][0]["message"]
 
 
 def test_linear_relations_and_their_inverse(client, admin_h):
@@ -629,6 +635,26 @@ def test_neq_keeps_rows_whose_column_is_null(fclient):
 def test_empty_in_list_matches_nothing_and_empty_nin_matches_everything(fclient):
     assert ids(fclient, "{priority: {in: []}}") == []
     assert ids(fclient, "{priority: {nin: []}}") == ALL
+
+
+# --- the `id` comparator: a served UUID or the human identifier, not a plain column --------
+
+
+def test_issue_filter_by_id_resolves_both_key_spaces_and_a_bogus_id_matches_nothing(fclient):
+    """`IssueFilter.id` accepts the same two spellings `issue(id:)` does (#51): a served UUID, or
+    the human identifier. `_resolve_issue_ids` translates a filter's `id` values to doc_ids
+    before the query runs, so both must resolve -- and a value that resolves to NEITHER must
+    substitute the sentinel `"\\x00none"`, matching nothing, rather than being dropped (which
+    would silently turn the filter into "match everything")."""
+    uuid = fclient.post(
+        "/linear/graphql",
+        json={"query": '{ issue(id: "ENG-1") { id } }'},
+        headers={"Authorization": fclient.__dict__["_admin"]},
+    ).json()["data"]["issue"]["id"]
+    assert ids(fclient, '{id: {eq: "ENG-1"}}') == ["ENG-1"]  # identifier form
+    assert ids(fclient, '{id: {eq: "%s"}}' % uuid) == ["ENG-1"]  # served UUID form
+    assert ids(fclient, '{id: {eq: "totally-bogus-id"}}') == []  # sentinel: matches nothing
+    assert ids(fclient, '{id: {in: ["%s", "ENG-2", "nope"]}}' % uuid) == ["ENG-1", "ENG-2"]
 
 
 # --- string comparators --------------------------------------------------------------
@@ -889,3 +915,40 @@ def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
         )
         assert missing.status_code == 200
         assert "data" in missing.json() and missing.json()["errors"]
+
+
+def test_linear_issue_resolves_first_by_doc_id_when_identifier_repeats(tmp_path):
+    """`identifier` is not unique -- 107 issues share one key in a real corpus (#51, see the
+    schema comment on `linear_issues.parent_key`) -- so `issue(id: "DUP-1")` deliberately answers
+    the first match BY DOC_ID rather than pretending the lookup is unambiguous. `store.
+    linear_issue_by_identifier` already carries this rule (unchanged by this task); this pins
+    that `resolve_issue`'s new served-id-first stage still falls through to it for an
+    identifier -- a served UUID lookup can never itself be ambiguous like this, since served_id
+    is UNIQUE. Placed after every `client`-fixture test in this module, not beside its sibling
+    `issue(id:)` tests above: it opens a SECOND app over a different DB via `corpus_client`,
+    which overwrites the module-scoped `client` fixture's shared `app.state` (see
+    `tests._helpers.client_for`'s docstring) -- fine here because nothing after it needs `client`."""
+    docs = [
+        {
+            "source_type": "linear",
+            "team": "engineering",
+            "doc_id": "dup-a",
+            "title": "First",
+            "content": "x",
+            "author_email": "a@acme.com",
+            "identifier": "DUP-1",
+        },
+        {
+            "source_type": "linear",
+            "team": "engineering",
+            "doc_id": "dup-b",
+            "title": "Second",
+            "content": "x",
+            "author_email": "a@acme.com",
+            "identifier": "DUP-1",
+        },
+    ]
+    with corpus_client(tmp_path, docs) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+        r = gql(client, '{ issue(id: "DUP-1") { title } }', h)
+        assert r.json()["data"]["issue"]["title"] == "First"

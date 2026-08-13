@@ -103,8 +103,8 @@ def test_acl_table_registry_covers_every_source(tmp_path):
 def test_served_id_registry_covers_every_hashed_source():
     """This registry has to be total over every source that serves a HASHED id -- one resolved by
     reversing a hash back to a doc_id, whether that reversal still lives in `main._build_index`
-    (hubspot, linear, github, jira) or already went through a stored column (confluence, gmail,
-    notion, each in its own task) -- each gets its own column in its own task (#51), one source at
+    (github, jira) or already went through a stored column (confluence, gmail, notion, hubspot,
+    linear, each in its own task) -- each gets its own column in its own task (#51), one source at
     a time, so the registry has to be total from the start or a later task's column goes
     unrecorded. `s3`'s id is `bucket/key`, stored already and never hashed; `slack` has no
     hash->doc_id map to replace; and fireflies' only hash (`fireflies_user_id`) reverses an EMAIL,
@@ -118,9 +118,9 @@ def test_served_id_registry_covers_every_hashed_source():
         "github",
         "jira",
     }
-    # Confluence's own entry -- column name, seed function, corpus-wide scope. (gmail and notion
-    # read theirs too, by now; hubspot/linear/github/jira's are read only by main._build_index,
-    # until their own task converts them.)
+    # Confluence's own entry -- column name, seed function, corpus-wide scope. (gmail, notion,
+    # hubspot and linear read theirs too, by now; github/jira's are read only by
+    # main._build_index, until their own task converts them.)
     assert store.SERVED_ID["confluence"] == ("served_id", synth.confluence_id, None)
 
 
@@ -1159,6 +1159,49 @@ def test_linear_default_order_is_stable_across_pages(db):
 def test_linear_identifier_lookup(db):
     assert store.linear_issue_by_identifier(db, "ENG-101")["doc_id"] == "lin-rl"
     assert store.linear_issue_by_identifier(db, "NOPE-1") is None
+
+
+def test_linear_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
+    """`served_id` is the UUID half of `issue(id:)` (#51), distinct from `identifier` -- the OTHER
+    half, which stays a plain lookup index because it is not unique (see the schema comment on
+    idx_linear_doc_ident / idx_linear_identifier). Like gmail's, no probe: synth.linear_id draws
+    from `_uuid_from`'s full digest space, so the seed is stored as-is, and a forced collision
+    must fail the import loudly rather than resolve through the shared upsert.
+
+    `monkeypatch.setitem` on `store.SERVED_ID`, not `monkeypatch.setattr(synth, ...)` -- the
+    registry captures the seed function object at `backlot.store` import time, so patching the
+    module attribute afterward cannot reach it (see the confluence/gmail tests above)."""
+    from tests._helpers import build_corpus
+
+    docs = [
+        {
+            "source_type": "linear",
+            "team": "engineering",
+            "doc_id": f"i{i}",
+            "title": f"Issue {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i in range(3)
+    ]
+    s = build_corpus(tmp_path / "ok", docs)
+    conn = store.connect_ro(s.db_path)
+    rows = conn.execute("SELECT doc_id, served_id FROM linear_issues").fetchall()
+    assert len(rows) == 3
+    assert {r["served_id"] for r in rows} == {synth.linear_id(r["doc_id"]) for r in rows}
+    for r in rows:
+        assert store.linear_by_served_id(conn, r["served_id"])["doc_id"] == r["doc_id"]
+    # A non-empty, non-matching visible_ids must still exclude the row -- proving _acl_clause
+    # takes its EXISTS branch here rather than the empty-set "AND 0" short-circuit (which every
+    # one of these public rows would otherwise pass regardless of who's asking).
+    served = rows[0]["served_id"]
+    assert store.linear_by_served_id(conn, served, visible_ids={"nobody"}) is None
+    assert store.linear_by_served_id(conn, served, visible_ids=None) is not None  # admin bypass
+    conn.close()
+
+    monkeypatch.setitem(store.SERVED_ID, "linear", ("served_id", lambda doc_id: "dup-uuid", None))
+    with pytest.raises(sqlite3.IntegrityError):
+        build_corpus(tmp_path / "collide", docs)
 
 
 def test_linear_prefilter_is_pushed_into_sql(db):

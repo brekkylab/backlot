@@ -80,7 +80,6 @@ def _build_index(conn) -> dict:
     idx = {
         "github": {},
         "jira": {},
-        "linear": {},
         "linear_teams": {},
         "linear_users": {},
         "linear_states": {},
@@ -177,20 +176,11 @@ def _build_index(conn) -> dict:
                 r["container"]
             )
             idx["jira"].setdefault(synth.jira_key(r["doc_id"], pkey), r["doc_id"])
-    # Linear's `issue(id:)` accepts the UUID *or* the human identifier (ENG-123), and `team(id:)`
-    # the team UUID or its key — so one dict per entity resolves either spelling back to the row.
-    # Identifiers are NOT required to be unique (5,055 keys repeat in one real corpus) and two
-    # containers can reduce to one team key, so both use setdefault: the first row in doc_id/name
-    # order wins and the
-    # mapping stays stable across restarts, while the UUID form always addresses a row exactly.
-    # Exactly (doc_id, identifier), in that order: idx_linear_doc_ident covers it, so this is an
-    # index-only scan and never touches the wide issue rows.
-    for r in conn.execute(
-        f"SELECT doc_id, identifier FROM {store.table('linear')} ORDER BY doc_id"
-    ):
-        idx["linear"][synth.linear_id(r["doc_id"])] = r["doc_id"]
-        if r["identifier"]:
-            idx["linear"].setdefault(r["identifier"], r["doc_id"])
+    # `team(id:)` accepts the team UUID *or* its key (ENG) — one dict resolves either spelling
+    # back to the container. Two containers can reduce to one team key, so setdefault: the first
+    # row in name order wins and the mapping stays stable across restarts. (`issue(id:)`'s own
+    # UUID/identifier resolution is a stored column now, not built here — see
+    # store.linear_by_served_id / linear_issue_by_identifier, #51.)
     for r in store.list_containers(conn, "linear"):
         idx["linear_teams"][synth.linear_team_id(r["name"])] = r["name"]
         idx["linear_teams"].setdefault(synth.linear_team_key(r["name"]), r["name"])

@@ -42,6 +42,79 @@ def _org(request: Request) -> str:
     )
 
 
+# --- API version negotiation ----------------------------------------------------
+#
+# `X-GitHub-Api-Version` selects a PAYLOAD, not an encoding, and real GitHub currently supports two
+# values. On this surface they differ by three fields: `2026-03-10` dropped `assignee` from issues
+# and pulls (superseded by the `assignees` array) and `merge_commit_sha` from pulls.
+#
+# The behaviour to avoid is accepting the header and ignoring it. A client that pins a version then
+# reads fields from a different one with no way to tell it had no effect — which is worse than not
+# supporting the header at all, because the failure is silent and the client's own version handling
+# looks tested. So: an unsupported value is refused, the selected value is echoed on every response
+# (see `backlot.main`), and the builders take it as an argument rather than reading a global.
+
+# Most recent first, which is the order real's own error message lists them in.
+API_VERSIONS = ("2026-03-10", "2022-11-28")
+# What real serves an UNPINNED request — read off the API, not chosen here.
+DEFAULT_API_VERSION = "2022-11-28"
+API_VERSION_HEADER = "X-GitHub-Api-Version"
+SELECTED_VERSION_HEADER = "X-GitHub-Api-Version-Selected"
+
+
+def selected_api_version(request: Request) -> str | None:
+    """The version this request selected, or ``None`` if it pinned one that does not exist."""
+    pinned = request.headers.get(API_VERSION_HEADER)
+    if pinned is None:
+        return DEFAULT_API_VERSION
+    return pinned if pinned in API_VERSIONS else None
+
+
+def _unsupported_version_error(pinned: str) -> HTTPException:
+    """Real's own 400, wording included — a client that matches on the message needs the real text.
+
+    Composed from ``API_VERSIONS`` rather than pasted, so the sentence cannot fall out of step with
+    the list it describes. The "X (most recent) and Y" phrasing is real's for the two versions it
+    supports today; a third would need real's phrasing for three, not a guess at it.
+    """
+    newest, *rest = API_VERSIONS
+    supported = ", ".join(f'"{v}"' for v in rest)
+    exc = HTTPException(status_code=400, detail="Bad Request")
+    # The github envelope, carried on the exception the way backlot.errors.google carries its extra
+    # fields; backlot.errors.github renders it. `errors` is a STRING here, not the usual array.
+    exc.github_body = {
+        "message": "Bad Request",
+        "errors": (
+            f'The version you specified in the "X-GitHub-API-Version" request header, "{pinned}", '
+            f"is not a supported version. The following versions are currently supported: "
+            f'"{newest}" (most recent) and {supported}.'
+        ),
+        "documentation_url": "https://docs.github.com/rest",
+        "status": "400",
+    }
+    return exc
+
+
+def _version(request: Request) -> str:
+    """The API version to build this response for. Never ``None``: ``_validate_api_version`` is a
+    router-wide dependency, so an unsupported one never reaches a handler."""
+    return selected_api_version(request) or DEFAULT_API_VERSION
+
+
+async def _validate_api_version(request: Request) -> None:
+    """400 a pinned version that does not exist — ahead of the credential and the owner check.
+
+    Ordering is real's, and it is verified rather than assumed: api.github.com 400s a bad version on
+    a repo that does not exist while sending no credentials at all. It matters to the caller — a
+    version typo reported as 401 sends them to their token, and as 404 to their path, when the header
+    is what is wrong. Declared before ``_validate_path_owner`` in the router's dependency list, which
+    is what puts it first.
+    """
+    if selected_api_version(request) is None:
+        # `None` is only reachable with the header present, so this read cannot miss.
+        raise _unsupported_version_error(request.headers[API_VERSION_HEADER])
+
+
 async def _validate_path_owner(request: Request) -> None:
     """404 a request whose ``{owner}``/``{org}`` segment is not the org we serve.
 
@@ -57,7 +130,13 @@ async def _validate_path_owner(request: Request) -> None:
         raise HTTPException(status_code=404, detail="Not Found")
 
 
-router = APIRouter(prefix="/github", tags=["github"], dependencies=[Depends(_validate_path_owner)])
+router = APIRouter(
+    prefix="/github",
+    tags=["github"],
+    # Order is the answering order: an unsupported API version is a malformed request and real
+    # refuses it before authenticating or routing, so it is declared first.
+    dependencies=[Depends(_validate_api_version), Depends(_validate_path_owner)],
+)
 
 
 # --- media-type negotiation -----------------------------------------------------
@@ -220,7 +299,8 @@ async def search_issues(
     owner = _org(request)
     idx = request.app.state.index
     items = [
-        _issue_obj(conn, owner, r["repo"], r, ab, idx) for r in matched[start : start + per_page]
+        _issue_obj(conn, owner, r["repo"], r, ab, idx, _version(request))
+        for r in matched[start : start + per_page]
     ]
     return {"total_count": len(matched), "incomplete_results": False, "items": items}
 
@@ -349,7 +429,7 @@ async def list_issues(
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
     idx = request.app.state.index
-    body = [_issue_obj(conn, owner, repo, r, ab, idx) for r in rows]
+    body = [_issue_obj(conn, owner, repo, r, ab, idx, _version(request)) for r in rows]
     return _paged(request, len(all_rows), {"state": state}, body, page, per_page)
 
 
@@ -416,7 +496,9 @@ async def get_issue(owner: str, repo: str, number: int, request: Request):
     row = _resolve(request, conn, repo, number, ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    return _issue_obj(conn, owner, repo, row, _api_base(request), request.app.state.index)
+    return _issue_obj(
+        conn, owner, repo, row, _api_base(request), request.app.state.index, _version(request)
+    )
 
 
 @router.get("/repos/{owner}/{repo}/issues/{number}/comments")
@@ -464,7 +546,9 @@ async def list_pulls(
     repo_files = _RepoFiles(conn, repo, ids)
     idx = request.app.state.index
     body = [
-        _pr_obj(conn, owner, repo, r, ab, idx, ids=ids, repo_files=repo_files)
+        _pr_obj(
+            conn, owner, repo, r, ab, idx, ids=ids, repo_files=repo_files, version=_version(request)
+        )
         for r in prs[start : start + per_page]
     ]
     return _paged(request, len(prs), {"state": state}, body, page, per_page)
@@ -487,9 +571,9 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
     idx = request.app.state.index
     wants_diff, wants_patch = _github_media(request, "diff"), _github_media(request, "patch")
     if not (wants_diff or wants_patch):
-        return _pr_obj(conn, owner, repo, row, ab, idx, ids=ids)
+        return _pr_obj(conn, owner, repo, row, ab, idx, ids=ids, version=_version(request))
     files = _pr_files(conn, owner, repo, row, ab, ids)
-    obj = _pr_obj(conn, owner, repo, row, ab, idx, ids=ids, files=files)
+    obj = _pr_obj(conn, owner, repo, row, ab, idx, ids=ids, files=files, version=_version(request))
     diff = _pr_diff(files, obj["base"]["sha"])
     if wants_patch:
         return Response(
@@ -563,6 +647,65 @@ async def pull_review_comments(owner: str, repo: str, number: int, request: Requ
         f["filename"]: f.get("patch") for f in _pr_files(conn, owner, repo, row, ab, ids, src)
     }
     return [_gh_review_comment(owner, repo, number, row, c, f, patches, ab) for c, f in resolved]
+
+
+@router.get("/repos/{owner}/{repo}/pulls/{number}/commits")
+async def pull_commits(owner: str, repo: str, number: int, request: Request):
+    """The pull's commits — one, the head, which is what the pull object already claims.
+
+    Here because ``_links.commits``/``commits_url`` name it: a field whose whole purpose is to be
+    followed must lead somewhere, and a 404 at the end of an advertised link is a worse answer for
+    the caller than no link at all. Nothing is invented — the sha, the message and the author are the
+    pull's own, and the mock keeps no history to draw a second commit from (see ``get_tree``).
+    """
+    conn = auth.conn(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    row = _resolve(request, conn, repo, number, ids)
+    if row is None or row["kind"] != "pull_request":
+        raise HTTPException(status_code=404, detail="Not Found")
+    ab = _api_base(request)
+    sha = hashlib.sha1(row["doc_id"].encode()).hexdigest()
+    author = _gh_user(row["author_email"], ab)
+    created = synth.rfc3339(row["created_ts"] or synth.epoch(row["doc_id"]))
+    # `commit.author` is a GIT author — name/email/date — and not the GitHub user beside it. Real
+    # serves both because they are different things: one signed the commit, one has an account.
+    git_author = {"name": author["login"], "email": row["author_email"], "date": created}
+    tree_sha = _repo_tree_sha(repo)
+    return [
+        {
+            "sha": sha,
+            "node_id": synth.node_id("Commit", sha[:12]),
+            "commit": {
+                "author": git_author,
+                "committer": git_author,
+                "message": row["title"],
+                "tree": {"sha": tree_sha, "url": f"{ab}/repos/{owner}/{repo}/git/trees/{tree_sha}"},
+                "url": f"{ab}/repos/{owner}/{repo}/git/commits/{sha}",
+                "comment_count": 0,
+            },
+            "url": f"{ab}/repos/{owner}/{repo}/commits/{sha}",
+            "html_url": f"https://github.com/{owner}/{repo}/commit/{sha}",
+            "author": author,
+            "committer": author,
+            "parents": [],  # no history is kept, so the head has no parent to name
+        }
+    ]
+
+
+@router.get("/repos/{owner}/{repo}/statuses/{sha}")
+async def commit_statuses(owner: str, repo: str, sha: str, request: Request):
+    """Statuses for a commit: always empty, and empty is the honest answer rather than a stub.
+
+    A corpus records no CI, and real GitHub answers `[]` for a sha nobody reported a status on — so
+    this is a shape a client will meet in production, not a mock-only degenerate case. It exists
+    because a pull's ``statuses_url`` and ``_links.statuses`` name it.
+    """
+    conn = auth.conn(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    _require_repo(conn, repo, ids)  # a repo this caller cannot see must not answer for its shas
+    return []
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/files")
@@ -1056,9 +1199,26 @@ def _reactions(val, api_url: str = "") -> dict:
 
 
 def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
+    """A repository, carrying a URL template for each sub-resource this mock serves.
+
+    The templates are how an SDK completes a repository lazily — PyGithub expands them for the
+    example this repo ships — so without them the client assembles the URLs from parts, which is the
+    work hypermedia exists to remove. All of them derive from owner/repo; none needs stored data.
+
+    THE RULE IS "a template iff the resource". Real serves 42 of these and this mock has routes for a
+    third, so the rest are absent rather than inviting a caller into a 404: a key set that lies about
+    what can be fetched is a worse deal than a short one, and short is something the caller can
+    detect and work around. Adding a route later means adding its template here. (`git_refs_url` is
+    absent for a subtler version of the same reason — this mock serves `/git/ref/{ref}`, singular,
+    not real's plural `/git/refs{/sha}`.)
+
+    The git-protocol URLs are the exception: they name github.com rather than this mock, so they
+    promise it nothing and cost nothing to state.
+    """
     private = not store.container_has_public(conn, "github", name)
     rid = synth.github_user_id(name)
     ts = synth.epoch("repo:" + name)
+    repo_url = f"{api_base}/repos/{owner}/{name}"
     return {
         "id": rid,
         "node_id": synth.node_id("Repository", rid),
@@ -1068,7 +1228,7 @@ def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
         "visibility": "private" if private else "public",
         "owner": {**_gh_user(f"{owner}@org", api_base), "login": owner, "type": "Organization"},
         "html_url": f"https://github.com/{owner}/{name}",
-        "url": f"{api_base}/repos/{owner}/{name}",
+        "url": repo_url,
         "description": f"{name} service repository.",
         "fork": False,
         "archived": False,
@@ -1077,6 +1237,21 @@ def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
         "updated_at": synth.rfc3339(ts + 3600),
         "pushed_at": synth.rfc3339(ts + 7200),
         "default_branch": "main",
+        "issues_url": f"{repo_url}/issues{{/number}}",
+        "pulls_url": f"{repo_url}/pulls{{/number}}",
+        "issue_comment_url": f"{repo_url}/issues/comments{{/number}}",
+        "contents_url": f"{repo_url}/contents/{{+path}}",
+        "blobs_url": f"{repo_url}/git/blobs{{/sha}}",
+        "trees_url": f"{repo_url}/git/trees{{/sha}}",
+        "branches_url": f"{repo_url}/branches{{/branch}}",
+        "commits_url": f"{repo_url}/commits{{/sha}}",
+        "statuses_url": f"{repo_url}/statuses/{{sha}}",
+        "collaborators_url": f"{repo_url}/collaborators{{/collaborator}}",
+        "teams_url": f"{repo_url}/teams",
+        "clone_url": f"https://github.com/{owner}/{name}.git",
+        "ssh_url": f"git@github.com:{owner}/{name}.git",
+        "git_url": f"git://github.com/{owner}/{name}.git",
+        "svn_url": f"https://github.com/{owner}/{name}",
     }
 
 
@@ -1116,23 +1291,32 @@ def _issue_number(index, row) -> int:
     return resolved.get(row["doc_id"]) or synth.github_number(row["doc_id"])
 
 
-def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "", index=None) -> dict:
+# Which versions still carry a field a later one removed. Stated as "who HAS it" rather than "who
+# dropped it" so that adding a third version has to answer the question instead of inheriting an
+# answer from whichever side the condition happened to be written on.
+_HAS_SINGULAR_ASSIGNEE = frozenset({"2022-11-28"})  # 2026-03-10: superseded by `assignees`
+_HAS_MERGE_COMMIT_SHA = frozenset({"2022-11-28"})  # 2026-03-10: removed from every pull body
+
+
+def _shared_obj(conn, owner: str, repo: str, row, api_base: str, index, version: str) -> dict:
+    """The fields real GitHub's issue body and its pull body BOTH carry.
+
+    Split out because a pull is not an issue with extra keys — real serves each its own field set,
+    and building the pull as ``_issue_obj`` plus additions leaked ten issue-only fields onto it,
+    ``pull_request`` included. That marker exists to tell a caller an ISSUE is really a pull, so a
+    pull carrying one points at itself and tells a client the opposite of the truth.
+
+    ``comments_url`` is shared and shared in VALUE too: a pull's conversation comments are the
+    issue's, and real points both objects at the same collection.
+    """
     created = row["created_ts"] or synth.epoch(row["doc_id"])
     updated = row["updated_ts"] or created + 3600
     number = _issue_number(index, row)
     iid = synth.jira_numeric_id(row["doc_id"])  # a stable large numeric db id (≠ number)
     is_pr = row["kind"] == "pull_request"
-    kind = "pull" if is_pr else "issues"
     state = row["state"] or "open"
     assignees = [_gh_user(a, api_base) for a in store.jcol(row, "assignees")]
-    self_url = f"{api_base}/repos/{owner}/{repo}/issues/{number}"
-    closed_at = (
-        synth.rfc3339(row["closed_ts"])
-        if row["closed_ts"]
-        else synth.rfc3339(updated)
-        if state == "closed"
-        else None
-    )
+    issue_url = f"{api_base}/repos/{owner}/{repo}/issues/{number}"
     obj = {
         "id": iid,
         "node_id": synth.node_id("Issue", iid),
@@ -1140,7 +1324,6 @@ def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "", index=None)
         "title": row["title"],
         "body": row["content"],
         "state": state,
-        "state_reason": ("completed" if state == "closed" else None),
         "locked": False,
         "active_lock_reason": None,
         "user": _gh_user(row["author_email"], api_base),
@@ -1154,25 +1337,55 @@ def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "", index=None)
             }
             for lbl in store.jcol(row, "labels")
         ],
-        "assignee": assignees[0] if assignees else None,
         "assignees": assignees,
         "milestone": _milestone(row, owner, repo, api_base),
         "comments": len(store.github_comments(conn, row["doc_id"], anchored=False)),
-        "reactions": _reactions(store.jcol(row, "reactions", {}), self_url),
         "author_association": "MEMBER",
         "created_at": synth.rfc3339(created),
         "updated_at": synth.rfc3339(updated),
-        "closed_at": closed_at,
-        "closed_by": _gh_user(row["closed_by"], api_base) if row["closed_by"] else None,
-        "url": self_url,
-        "repository_url": f"{api_base}/repos/{owner}/{repo}",
-        "labels_url": f"{self_url}/labels{{/name}}",
-        "comments_url": f"{self_url}/comments",
-        "events_url": f"{self_url}/events",
-        "html_url": f"https://github.com/{owner}/{repo}/{kind}/{number}",
-        "timeline_url": f"{self_url}/timeline",
+        "closed_at": (
+            synth.rfc3339(row["closed_ts"])
+            if row["closed_ts"]
+            else synth.rfc3339(updated)
+            if state == "closed"
+            else None
+        ),
+        "comments_url": f"{issue_url}/comments",
+        "html_url": f"https://github.com/{owner}/{repo}/{'pull' if is_pr else 'issues'}/{number}",
     }
-    if is_pr:  # the marker connectors use to tell PRs apart in the /issues stream
+    if version in _HAS_SINGULAR_ASSIGNEE:
+        # Both objects carried it and both lost it in the same version, so the gate is here rather
+        # than repeated in each builder.
+        obj["assignee"] = assignees[0] if assignees else None
+    return obj
+
+
+def _issue_obj(
+    conn,
+    owner: str,
+    repo: str,
+    row,
+    api_base: str = "",
+    index=None,
+    version: str = DEFAULT_API_VERSION,
+) -> dict:
+    """An issue. A pull seen through ``/issues`` is one of these too — plus the marker saying so."""
+    obj = _shared_obj(conn, owner, repo, row, api_base, index, version)
+    self_url = f"{api_base}/repos/{owner}/{repo}/issues/{obj['number']}"
+    obj.update(
+        {
+            "url": self_url,
+            "state_reason": ("completed" if obj["state"] == "closed" else None),
+            "reactions": _reactions(store.jcol(row, "reactions", {}), self_url),
+            "closed_by": _gh_user(row["closed_by"], api_base) if row["closed_by"] else None,
+            "repository_url": f"{api_base}/repos/{owner}/{repo}",
+            "labels_url": f"{self_url}/labels{{/name}}",
+            "events_url": f"{self_url}/events",
+            "timeline_url": f"{self_url}/timeline",
+        }
+    )
+    if row["kind"] == "pull_request":  # what connectors read to tell PRs apart in the stream
+        number = obj["number"]
         obj["pull_request"] = {
             "url": f"{api_base}/repos/{owner}/{repo}/pulls/{number}",
             "html_url": f"https://github.com/{owner}/{repo}/pull/{number}",
@@ -1193,10 +1406,27 @@ def _pr_obj(
     ids=None,
     files=None,
     repo_files=None,
+    version: str = DEFAULT_API_VERSION,
 ) -> dict:
-    obj = _issue_obj(conn, owner, repo, row, api_base, index)
+    """A pull, in real GitHub's PULL shape — see ``_shared_obj`` for why that is not the issue's.
+
+    The hypermedia half (``_links`` and the ``*_url`` siblings) is the point of the field set: it is
+    how a caller reaches a pull's sub-resources without assembling URLs from parts, which is what
+    hypermedia is for. Every href here names a route this mock serves, so following one gets an
+    answer rather than a 404 — ``review_comment`` excepted, which real serves as a template too.
+    """
+    obj = _shared_obj(conn, owner, repo, row, api_base, index, version)
     sha = hashlib.sha1(row["doc_id"].encode()).hexdigest()
     number = obj["number"]
+    repo_url = f"{api_base}/repos/{owner}/{repo}"
+    self_url = f"{repo_url}/pulls/{number}"
+    issue_url = f"{repo_url}/issues/{number}"
+    commits_url = f"{self_url}/commits"
+    review_comments_url = f"{self_url}/comments"
+    # A template, as real serves it: one comment id is not knowable from the pull alone.
+    review_comment_url = f"{repo_url}/pulls/comments{{/number}}"
+    # Real anchors this on the HEAD sha rather than templating it — the pull knows its own head.
+    statuses_url = f"{repo_url}/statuses/{sha}"
     reviewers = [_gh_user(e, api_base) for e in store.jcol(row, "requested_reviewers")]
     n_comments = obj["comments"]
     # one _RepoFiles for both the changeset and the review-comment resolution below, so a file
@@ -1207,7 +1437,7 @@ def _pr_obj(
     obj.update(
         {
             # A PR's issue view and its pull view are two DISTINCT nodes on real GitHub, so this
-            # overrides the Issue-typed id _issue_obj built. /issues keeps the Issue one on purpose.
+            # overrides the Issue-typed id _shared_obj built. /issues keeps the Issue one on purpose.
             "node_id": synth.node_id("PullRequest", obj["id"]),
             "draft": False,
             "merged": bool(row["merged_at"]),
@@ -1216,7 +1446,8 @@ def _pr_obj(
             "mergeable": None,
             "mergeable_state": "unknown",
             "rebaseable": None,
-            "merge_commit_sha": sha[:40] if row["merged_at"] else None,
+            "auto_merge": None,  # nothing in a corpus says a pull was queued to auto-merge
+            "maintainer_can_modify": False,
             "requested_reviewers": reviewers,
             "requested_teams": [],
             "head": {
@@ -1245,12 +1476,32 @@ def _pr_obj(
             # resolves it, so the count describes the list the caller actually gets.
             "review_comments": len(_resolved_review_comments(conn, row, src)),
             "comments": n_comments,
-            "url": f"{api_base}/repos/{owner}/{repo}/pulls/{number}",
+            "url": self_url,
             "diff_url": f"https://github.com/{owner}/{repo}/pull/{number}.diff",
             "patch_url": f"https://github.com/{owner}/{repo}/pull/{number}.patch",
-            "issue_url": f"{api_base}/repos/{owner}/{repo}/issues/{number}",
+            "issue_url": issue_url,
+            "commits_url": commits_url,
+            "review_comments_url": review_comments_url,
+            "review_comment_url": review_comment_url,
+            "statuses_url": statuses_url,
+            # The same eight targets, in the envelope a client walks instead of reading the flat
+            # fields. Real serves both; a caller following `_links` and a caller reading
+            # `review_comments_url` must land on the same resource, so they are built from one set of
+            # locals rather than assembled twice.
+            "_links": {
+                "self": {"href": self_url},
+                "html": {"href": obj["html_url"]},
+                "issue": {"href": issue_url},
+                "comments": {"href": obj["comments_url"]},
+                "review_comments": {"href": review_comments_url},
+                "review_comment": {"href": review_comment_url},
+                "commits": {"href": commits_url},
+                "statuses": {"href": statuses_url},
+            },
         }
     )
+    if version in _HAS_MERGE_COMMIT_SHA:
+        obj["merge_commit_sha"] = sha[:40] if row["merged_at"] else None
     return obj
 
 

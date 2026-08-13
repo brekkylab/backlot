@@ -18,6 +18,36 @@ import pytest
 from backlot import store
 from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
 
+# Which fields belong to which object, from a key-set diff of api.github.com's issue and pull
+# bodies. Only the ones this mock has reason to serve: real's issue also carries
+# `sub_issues_summary`, `type` and friends, which no corpus here has anything to fill in.
+#
+# `pull_request` is in the issue set because an issue that IS a pull carries that marker — the
+# fixture below is exactly that case. A plain issue has the other seven.
+ISSUE_ONLY_FIELDS = frozenset(
+    {
+        "closed_by",
+        "events_url",
+        "labels_url",
+        "pull_request",
+        "reactions",
+        "repository_url",
+        "state_reason",
+        "timeline_url",
+    }
+)
+PULL_ONLY_FIELDS = frozenset(
+    {
+        "_links",
+        "auto_merge",
+        "commits_url",
+        "maintainer_can_modify",
+        "review_comment_url",
+        "review_comments_url",
+        "statuses_url",
+    }
+)
+
 
 def test_admin_github_crawls_all(client, admin_h, ro_conn, org):
     repos = client.get(
@@ -654,6 +684,101 @@ def test_github_user_repos(gh_client, gh_admin_h, gh_user_tokens, gh_org):
     assert len(page.json()) == 1 and 'rel="next"' in page.headers.get("Link", "")
 
 
+def test_github_repo_carries_a_url_template_for_each_resource_it_serves(
+    gh_client, gh_admin_h, gh_org
+):
+    """An SDK completes a repository lazily by expanding these templates — PyGithub does it for the
+    example this repo ships — so a repo object without them makes the client assemble URLs itself,
+    which is the thing hypermedia is for. All derivable from owner/repo; no stored data.
+
+    Values, not just keys: a template whose placeholder is wrong (`{sha}` where real says `{/sha}`)
+    expands to a URL that 404s, which is the same dead end as omitting the field.
+
+    THE RULE IS "a template iff the resource": real serves 42 of these and this mock has routes for a
+    third of them, so the rest stay absent rather than inviting a client to follow a link into a 404.
+    A key set that lies about what can be fetched is worse for the caller than a short one — and the
+    caller can tell the difference, which is the whole point of hypermedia. Adding a route later
+    means adding its template here."""
+    c, _ = gh_client
+    repo = c.get(f"/github/repos/{gh_org}/gateway", headers=gh_admin_h).json()
+    api = f"/github/repos/{gh_org}/gateway"
+    for field, expected in {
+        "pulls_url": f"{api}/pulls{{/number}}",
+        "issues_url": f"{api}/issues{{/number}}",
+        "issue_comment_url": f"{api}/issues/comments{{/number}}",
+        "contents_url": f"{api}/contents/{{+path}}",
+        "blobs_url": f"{api}/git/blobs{{/sha}}",
+        "trees_url": f"{api}/git/trees{{/sha}}",
+        "branches_url": f"{api}/branches{{/branch}}",
+        "commits_url": f"{api}/commits{{/sha}}",
+        "statuses_url": f"{api}/statuses/{{sha}}",
+        "collaborators_url": f"{api}/collaborators{{/collaborator}}",
+        "teams_url": f"{api}/teams",
+    }.items():
+        assert repo[field].endswith(expected), f"{field}: {repo[field]}"
+    # the git-protocol URLs name github.com, not this mock, so they promise it nothing
+    assert repo["clone_url"] == f"https://github.com/{gh_org}/gateway.git"
+    assert repo["ssh_url"] == f"git@github.com:{gh_org}/gateway.git"
+    assert repo["git_url"] == f"git://github.com/{gh_org}/gateway.git"
+    assert repo["svn_url"] == f"https://github.com/{gh_org}/gateway"
+    # real serves these; this mock has no such route, so it does not advertise one
+    unserved = {
+        "archive_url",
+        "assignees_url",
+        "comments_url",
+        "compare_url",
+        "contributors_url",
+        "deployments_url",
+        "downloads_url",
+        "events_url",
+        "forks_url",
+        "git_commits_url",
+        "git_refs_url",  # this mock serves `/git/ref/{ref}`, not real's plural `/git/refs{/sha}`
+        "git_tags_url",
+        "hooks_url",
+        "issue_events_url",
+        "keys_url",
+        "labels_url",
+        "languages_url",
+        "merges_url",
+        "milestones_url",
+        "notifications_url",
+        "releases_url",
+        "stargazers_url",
+        "subscribers_url",
+        "subscription_url",
+        "tags_url",
+    }
+    assert not unserved & set(repo), sorted(unserved & set(repo))
+    # nothing invented either: the engagement counters real serves are absent, not made up
+    assert not {"stargazers_count", "forks", "watchers", "language", "topics"} & set(repo)
+
+
+def test_github_pull_sub_resources_the_new_links_point_at(gh_client, gh_admin_h, gh_org):
+    """`_links.commits`/`statuses` name resources a client is invited to follow, so the routes have
+    to exist — an emitted URL that 404s is a worse deal for the caller than an absent field.
+
+    `commits` is the one commit the pull object already claims; `statuses` is empty because this mock
+    has no CI, which is what real answers for a sha nobody reported a status on."""
+    c, _ = gh_client
+    from backlot import synth
+
+    num = synth.github_number("gh-pr-1")
+    base = f"/github/repos/{gh_org}/gateway"
+    pull = c.get(f"{base}/pulls/{num}", headers=gh_admin_h).json()
+    commits = c.get(f"{base}/pulls/{num}/commits", headers=gh_admin_h).json()
+    assert len(commits) == pull["commits"] == 1
+    # the pull's head IS that commit, so the sha a client follows here is the one it already has
+    assert commits[0]["sha"] == pull["head"]["sha"]
+    assert commits[0]["author"]["login"] == pull["user"]["login"]
+    assert commits[0]["commit"]["message"] == pull["title"]
+    # `commit.author` is a git author (name/email/date), which is not the GitHub user object
+    assert set(commits[0]["commit"]["author"]) == {"name", "email", "date"}
+    assert commits[0]["commit"]["author"]["date"] == pull["created_at"]
+    statuses = c.get(f"{base}/statuses/{pull['head']['sha']}", headers=gh_admin_h)
+    assert statuses.status_code == 200 and statuses.json() == []
+
+
 # --- GET /repos/{o}/{r}/git/ref/{ref} (issue #49 D4) -------------------------------------
 
 
@@ -710,12 +835,78 @@ def test_github_validates_the_owner_segment(gh_client, gh_admin_h, gh_org):
     assert c.get("/github/orgs/not-the-org/repos", headers=gh_admin_h).status_code == 404
 
 
-# --- a pull's node_id is PullRequest-typed (issue #49 D8) --------------------------------
+# --- X-GitHub-Api-Version negotiation (issue #55) -----------------------------------------
+#
+# The two versions real GitHub currently supports, and the only field-level difference between them
+# on this surface. Both were read off api.github.com rather than the docs: `2026-03-10` drops
+# `assignee` (issues and pulls, superseded by `assignees`) and `merge_commit_sha` (pulls).
 
 
-def test_github_pull_and_issue_views_are_different_nodes(gh_client, gh_admin_h, gh_org):
-    """Real GitHub models a PR's issue view and its pull view as two distinct nodes, so the pull
-    is PullRequest-typed while /issues keeps the Issue-typed id for the same PR."""
+@pytest.mark.parametrize(
+    "pinned, serves_removed_fields",
+    [(None, True), ("2022-11-28", True), ("2026-03-10", False)],
+    ids=["unpinned-defaults-to-2022-11-28", "2022-11-28", "2026-03-10"],
+)
+def test_github_api_version_selects_the_payload(
+    gh_client, gh_admin_h, gh_org, pinned, serves_removed_fields
+):
+    """The header picks which body shape is served, and every response says which it chose.
+
+    Accepting the header and ignoring it is worse than not supporting it: a client that pins a
+    version gets a payload from another one with no way to tell. Unpinned is `2022-11-28`, which is
+    what real GitHub defaults an unpinned request to."""
+    c, _ = gh_client
+    from backlot import synth
+
+    h = {**gh_admin_h, **({"X-GitHub-Api-Version": pinned} if pinned else {})}
+    num = synth.github_number("gh-pr-1")
+    base = f"/github/repos/{gh_org}/gateway"
+    for path, removed in (
+        (f"{base}/pulls/{num}", ("assignee", "merge_commit_sha")),
+        (f"{base}/issues/{num}", ("assignee",)),
+    ):
+        r = c.get(path, headers=h)
+        assert r.status_code == 200, path
+        assert r.headers["X-GitHub-Api-Version-Selected"] == (pinned or "2022-11-28")
+        for field in removed:
+            assert (field in r.json()) is serves_removed_fields, f"{path}: {field}"
+    # the listings serve the same shape as the single-object routes they page over
+    listing = c.get(f"{base}/pulls", headers=h, params={"state": "all"}).json()
+    assert listing and all(("assignee" in p) is serves_removed_fields for p in listing)
+
+
+def test_github_unsupported_api_version_is_refused_ahead_of_everything(gh_client, gh_org):
+    """An unsupported version is a malformed request, so real answers it before authenticating and
+    before routing — verified against api.github.com, which 400s a bad version on a nonexistent repo
+    with no credentials at all. Running this check after either one would report a client's version
+    typo as 401 or 404 and send them looking in the wrong place.
+
+    Real sends no `Selected` echo on this 400 (it selected nothing), and does send one on a 404."""
+    c, _ = gh_client
+    bad = {"X-GitHub-Api-Version": "1999-01-01"}
+    r = c.get(f"/github/repos/{gh_org}/gateway/pulls/1", headers=bad)
+    assert r.status_code == 400
+    body = r.json()
+    assert body["message"] == "Bad Request" and body["status"] == "400"
+    assert '"1999-01-01"' in body["errors"] and "is not a supported version" in body["errors"]
+    assert '"2026-03-10" (most recent) and "2022-11-28"' in body["errors"]
+    assert "X-GitHub-Api-Version-Selected" not in r.headers
+    # no credentials, and an owner the mock does not serve: still the version's 400
+    assert c.get("/github/repos/nope/nope/pulls/1", headers=bad).status_code == 400
+    assert c.get("/github/search/issues", headers=bad, params={"q": "x"}).status_code == 400
+
+
+# --- a pull is a pull, not an issue with extra keys (issue #49 D8, issue #55) -------------
+
+
+def test_github_pull_and_issue_views_are_distinct_objects(gh_client, gh_admin_h, gh_org):
+    """Real GitHub models a PR's issue view and its pull view as two distinct nodes with two
+    distinct field sets, so neither the id nor the body may be the other's.
+
+    The pull carries hypermedia an issue does not (`_links`, `review_comments_url`, …) and carries
+    none of the issue-only fields. `pull_request` is the clearest of those: that marker exists to
+    tell a caller an ISSUE is really a pull, and a pull has no reason to point at itself. Both key
+    sets were diffed against api.github.com."""
     c, _ = gh_client
     from backlot import synth
 
@@ -727,6 +918,29 @@ def test_github_pull_and_issue_views_are_different_nodes(gh_client, gh_admin_h, 
     issue = c.get(f"/github/repos/{gh_org}/gateway/issues/{num}", headers=gh_admin_h).json()
     assert "pull_request" in issue  # sanity: this is the PR seen as an issue
     assert "Issue" in base64.b64decode(issue["node_id"] + "==").decode()
+
+    assert ISSUE_ONLY_FIELDS.isdisjoint(pull), sorted(ISSUE_ONLY_FIELDS & set(pull))
+    assert ISSUE_ONLY_FIELDS <= set(issue), sorted(ISSUE_ONLY_FIELDS - set(issue))
+    assert PULL_ONLY_FIELDS <= set(pull), sorted(PULL_ONLY_FIELDS - set(pull))
+    assert PULL_ONLY_FIELDS.isdisjoint(issue), sorted(PULL_ONLY_FIELDS & set(issue))
+    # ...and the listing serves the same object the single-pull route does
+    listed = c.get(
+        f"/github/repos/{gh_org}/gateway/pulls", headers=gh_admin_h, params={"state": "all"}
+    ).json()
+    assert set(listed[0]) == set(pull)
+
+    # `_links` is the hypermedia the field set exists for: every href is one of the pull's own
+    # sub-resources, and `review_comment` stays the template real serves.
+    links = pull["_links"]
+    assert links["self"]["href"] == pull["url"] and links["issue"]["href"] == pull["issue_url"]
+    assert links["html"]["href"] == pull["html_url"]
+    assert links["review_comments"]["href"] == pull["review_comments_url"]
+    assert links["review_comment"]["href"] == pull["review_comment_url"]
+    assert links["review_comment"]["href"].endswith("/pulls/comments{/number}")
+    assert links["commits"]["href"] == pull["commits_url"]
+    assert links["statuses"]["href"] == pull["statuses_url"]
+    assert pull["statuses_url"].endswith("/statuses/" + pull["head"]["sha"])
+    assert pull["auto_merge"] is None and pull["maintainer_can_modify"] is False
 
 
 # --- pull changeset: /pulls/{n}/files and the diff media types (issue #49 D6, D2) --------
@@ -1299,13 +1513,45 @@ def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
     assert search["items"], "need a search hit to check the URLs it emits"
     seen += [search["items"][0][k] for k in ("url", "repository_url", "comments_url")]
     pull = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}", headers=gh_admin_h).json()
-    seen += [pull["url"], pull["issue_url"], pull["repository_url"]]
+    # `repository_url` is not among these: it is an issue field, and a pull does not carry it.
+    seen += [pull[k] for k in ("url", "issue_url", "comments_url")]
+    # the hypermedia a pull gained with its own field set — a template is not a URL, so
+    # `review_comment_url` is expanded the way a client would rather than fetched verbatim.
+    seen += [pull[k] for k in ("commits_url", "review_comments_url", "statuses_url")]
+    # `_links` minus the two forms this check cannot make: `html` names github.com, which this mock
+    # does not serve at all (like `diff_url`/`clone_url`), and `review_comment` is a template.
+    # Everything else is a route here, and is expected to answer.
+    api_prefix = pull["url"].split("/repos/")[0]
+    followable = [
+        v["href"]
+        for v in pull["_links"].values()
+        if v["href"].startswith(api_prefix) and "{" not in v["href"]
+    ]
+    assert len(followable) == len(pull["_links"]) - 2, sorted(pull["_links"])
+    seen += followable
     files = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/files", headers=gh_admin_h).json()
     seen.append(files[0]["contents_url"])
     review = c.get(f"/github/repos/{gh_org}/diffable/pulls/{num}/comments", headers=gh_admin_h)
     seen += [review.json()[0]["pull_request_url"], review.json()[0]["url"]]
     convo = c.get(f"/github/repos/{gh_org}/diffable/issues/{num}/comments", headers=gh_admin_h)
     seen.append(convo.json()[0]["url"])
+    # A template is not a URL, so each is expanded the way a client would — that is the only form a
+    # caller can actually follow, and an unexpanded one would pass this check while helping nobody.
+    repo = c.get(f"/github/repos/{gh_org}/diffable", headers=gh_admin_h).json()
+    seen += [
+        pull["review_comment_url"].replace("{/number}", f"/{review.json()[0]['id']}"),
+        repo["pulls_url"].replace("{/number}", f"/{num}"),
+        repo["issues_url"].replace("{/number}", f"/{num}"),
+        repo["issue_comment_url"].replace("{/number}", f"/{convo.json()[0]['id']}"),
+        repo["contents_url"].replace("{+path}", "app.py"),
+        repo["trees_url"].replace("{/sha}", "/main"),
+        repo["blobs_url"].replace("{/sha}", "/" + files[0]["sha"]),
+        repo["branches_url"].replace("{/branch}", "/main"),
+        repo["commits_url"].replace("{/sha}", "/" + pull["head"]["sha"]),
+        repo["statuses_url"].replace("{sha}", pull["head"]["sha"]),
+        repo["collaborators_url"].replace("{/collaborator}", ""),
+        repo["teams_url"],
+    ]
     tree = c.get(
         f"/github/repos/{gh_org}/diffable/git/trees/main",
         headers=gh_admin_h,
@@ -1453,7 +1699,8 @@ def test_github_issue_shape(tmp_path):
     # numeric id present and distinct from number (real connectors dedupe on id)
     assert iss["id"] != iss["number"] and isinstance(iss["id"], int)
     assert iss["node_id"]
-    # assignee (singular) present alongside assignees[]
+    # `assignee` (singular) is 2022-11-28's; `2026-03-10` removed it in favour of `assignees[]`,
+    # which every version has. The builders take the version so the two shapes come from one place.
     assert iss["assignee"]["login"] == "a" and iss["assignees"][0]["login"] == "a"
     assert iss["closed_at"].startswith("2026-02-01") and iss["closed_by"]["login"] == "b"
     assert iss["milestone"]["title"] == "v2"
@@ -1462,9 +1709,21 @@ def test_github_issue_shape(tmp_path):
     assert iss["reactions"]["total_count"] == 4 and iss["reactions"]["+1"] == 3
     assert iss["reactions"]["eyes"] == 0
 
-    pr = _pr_obj(conn, "org", "gw", store.get_document(conn, "github", "pr1"), "http://m/github")
+    row = store.get_document(conn, "github", "gh1")
+    newer = _issue_obj(conn, "org", "gw", row, "http://m/github", version="2026-03-10")
+    assert "assignee" not in newer and newer["assignees"][0]["login"] == "a"
+    assert set(iss) - set(newer) == {"assignee"}  # and nothing else moved with it
+
+    pr_row = store.get_document(conn, "github", "pr1")
+    pr = _pr_obj(conn, "org", "gw", pr_row, "http://m/github")
     assert pr["merged"] is True and pr["merged_by"]["login"] == "b"
     assert pr["requested_reviewers"][0]["login"] == "c"
+    # a pull is not an issue with extra keys: the issue-only fields are absent at the builder, not
+    # stripped by a route, so every caller of _pr_obj gets the same object
+    assert ISSUE_ONLY_FIELDS.isdisjoint(pr), sorted(ISSUE_ONLY_FIELDS & set(pr))
+    assert PULL_ONLY_FIELDS <= set(pr), sorted(PULL_ONLY_FIELDS - set(pr))
+    pr_new = _pr_obj(conn, "org", "gw", pr_row, "http://m/github", version="2026-03-10")
+    assert set(pr) - set(pr_new) == {"assignee", "merge_commit_sha"}
 
 
 def test_github_comment_reactions(tmp_path):

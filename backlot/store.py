@@ -806,6 +806,25 @@ def list_s3_objects(
     return conn.execute(sql, params).fetchall()
 
 
+def s3_by_bucket_key(conn, bucket, key, visible_ids=None) -> sqlite3.Row | None:
+    """One object by the (bucket, key) address real S3 itself keys on. `idx_s3_key(bucket, key)`
+    already covers this exactly, so this is a plain indexed lookup — there is nothing to
+    synthesize and no entry in `SERVED_ID` for s3, unlike confluence/gmail/notion/hubspot.
+
+    Unlike those served-id columns, (bucket, key) is unique only by convention here, not by a DB
+    constraint: `idx_s3_key` is a plain index, and the doc_id the importer assigns (a content
+    hash by default) doesn't depend on (bucket, key) at all, so nothing stops two rows from
+    sharing an address. `fetchone()` then picks whichever matching row SQLite's scan visits
+    first — but that is exactly as arbitrary as the map this replaces: `main._build_index`'s old
+    loop had no ORDER BY either, so a duplicate resolved to whichever row the full scan saw
+    last. Neither version guarantees which row wins; both agree that a duplicate was never a
+    supported shape, so this only needs to answer it the same way the map did, not fix it."""
+    clause, cp = _acl_clause("s3", visible_ids=visible_ids)
+    return conn.execute(
+        f"SELECT * FROM s3_objects WHERE bucket = ? AND key = ?{clause}", [bucket, key, *cp]
+    ).fetchone()
+
+
 def hubspot_by_served_id(conn, served_id, visible_ids=None, *, columns="*") -> sqlite3.Row | None:
     """One CRM record by the id the API reports. A unique-indexed column lookup, not a reverse map
     built at startup: the id is assigned at import (see backlot.importer.byo), so it needs neither

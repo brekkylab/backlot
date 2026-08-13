@@ -338,6 +338,20 @@ def test_list_s3_objects_acl_scoped(tmp_path):
     assert none_visible == []
 
 
+def test_s3_by_bucket_key(tmp_path):
+    conn = _s3_mini_db(tmp_path)
+    assert store.s3_by_bucket_key(conn, "b", "logs/2026/01/a.json")["doc_id"] == "d1"
+    # the trap: key alone is not unique -- the same key in a different bucket is a different row
+    assert store.s3_by_bucket_key(conn, "other", "logs/2026/01/a.json")["doc_id"] == "d5"
+    assert store.s3_by_bucket_key(conn, "b", "nope") is None
+    # d2 ("logs/2026/01/b.json") is ACL-restricted to group 'eng'; a non-empty visible_ids
+    # granting nothing must still 404 it (runs _acl_clause's EXISTS branch, not its AND 0
+    # short-circuit), while the granted group finds it.
+    assert store.s3_by_bucket_key(conn, "b", "logs/2026/01/b.json", visible_ids={"nobody"}) is None
+    found = store.s3_by_bucket_key(conn, "b", "logs/2026/01/b.json", visible_ids={"eng"})
+    assert found["doc_id"] == "d2"
+
+
 # --- Drive: storage usage -------------------------------------------------------
 
 

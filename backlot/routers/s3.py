@@ -91,11 +91,8 @@ def _bucket_visible(conn, bucket: str, visible) -> bool:
     return bool(store.list_documents(conn, "s3", container=bucket, visible_ids=visible, limit=1))
 
 
-def _object_row(request: Request, conn, bucket: str, key: str, visible):
-    doc_id = request.app.state.index["s3"].get(f"{bucket}/{key}")
-    if doc_id is None:
-        return None
-    return store.get_document(conn, "s3", doc_id, visible)
+def _object_row(conn, bucket: str, key: str, visible):
+    return store.s3_by_bucket_key(conn, bucket, key, visible_ids=visible)
 
 
 def _encode_key_token(key: str) -> str:
@@ -308,7 +305,7 @@ async def object_get(request: Request, bucket: str, key: str):
     if err:
         return err if request.method == "GET" else Response(status_code=err.status_code)
     conn = auth.conn(request)
-    row = _object_row(request, conn, bucket, key, visible)
+    row = _object_row(conn, bucket, key, visible)
     if row is None:
         if request.method == "HEAD":
             return Response(status_code=404)

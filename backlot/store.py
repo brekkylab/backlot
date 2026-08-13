@@ -814,11 +814,17 @@ def s3_by_bucket_key(conn, bucket, key, visible_ids=None) -> sqlite3.Row | None:
     Unlike those served-id columns, (bucket, key) is unique only by convention here, not by a DB
     constraint: `idx_s3_key` is a plain index, and the doc_id the importer assigns (a content
     hash by default) doesn't depend on (bucket, key) at all, so nothing stops two rows from
-    sharing an address. `fetchone()` then picks whichever matching row SQLite's scan visits
-    first — but that is exactly as arbitrary as the map this replaces: `main._build_index`'s old
-    loop had no ORDER BY either, so a duplicate resolved to whichever row the full scan saw
-    last. Neither version guarantees which row wins; both agree that a duplicate was never a
-    supported shape, so this only needs to answer it the same way the map did, not fix it."""
+    sharing an address. On that unsupported duplicate shape this behaves DIFFERENTLY from the
+    map it replaces, not identically: the old map picked one winning row at boot (whichever the
+    unordered scan saw last) and every caller got that same row-or-404 regardless of their ACL;
+    this reads per-CALL, with the ACL clause folded into the same query, so which of the
+    duplicate rows (if any) a given caller sees now depends on which one THEY are granted —
+    two callers hitting the same duplicate address can get two different rows, where the old map
+    gave everyone the same row and just 404'd whoever lacked a grant on it. Neither version
+    promises a stable winner across the whole corpus; the difference is that resolution is now
+    per-caller and ACL-shaped rather than address-stable. No leak either way — a caller only ever
+    sees a row it holds a grant on — but a duplicate address was never a supported shape, and
+    nothing here is designed to make it behave sensibly, only to not leak while it doesn't."""
     clause, cp = _acl_clause("s3", visible_ids=visible_ids)
     return conn.execute(
         f"SELECT * FROM s3_objects WHERE bucket = ? AND key = ?{clause}", [bucket, key, *cp]

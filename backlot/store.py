@@ -305,10 +305,24 @@ CREATE TABLE IF NOT EXISTS notion_pages (
     doc_id TEXT PRIMARY KEY, teamspace TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, parent_id TEXT, properties TEXT, icon TEXT, cover TEXT,
-    created_ts INTEGER NOT NULL, updated_ts INTEGER
+    created_ts INTEGER NOT NULL, updated_ts INTEGER,
+    served_id TEXT, served_data_source_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notion_teamspace ON notion_pages(teamspace);
 CREATE INDEX IF NOT EXISTS idx_notion_parent ON notion_pages(parent_id);
+-- Notion has TWO synthesized id spaces per row, both assigned at import (see
+-- backlot.importer.byo) rather than derived by hashing at serve time. `served_id` is the
+-- page/database id (synth.notion_id), populated for every row. `served_data_source_id` is the
+-- 2025-09-03 API's data-source (query target) id for a DATABASE (synth.notion_data_source_id) --
+-- real Notion has no such id for a page, so it is populated only when subtype='database' and
+-- stays NULL elsewhere, which a UNIQUE index treats as no claim rather than a collision (SQLite
+-- allows any number of NULLs under UNIQUE). Neither column is probed the way confluence's is:
+-- both draw from synth._uuid_from's full digest space, not a bounded range, so a collision is
+-- vanishingly unlikely -- and the shared write path's upsert (`ON CONFLICT(doc_id) DO UPDATE`) is
+-- scoped to doc_id only, so a served-column conflict (a DIFFERENT doc_id) falls through to these
+-- indexes and raises IntegrityError instead of silently replacing the row that held the value.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notion_served ON notion_pages(served_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notion_served_ds ON notion_pages(served_data_source_id);
 
 -- ── S3: objects live in buckets (flat key namespace); no comments ──
 CREATE TABLE IF NOT EXISTS s3_objects (
@@ -1904,6 +1918,31 @@ def confluence_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | 
     clause, cp = _acl_clause("confluence", visible_ids=visible_ids)
     return conn.execute(
         f"SELECT * FROM confluence_pages WHERE {col} = ?{clause}", [served_id, *cp]
+    ).fetchone()
+
+
+def notion_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+    """One page or database by the id the API reports -- a dashed lowercase UUID. The caller
+    canonicalizes a dashless or mixed-case spelling to that same form before calling (see
+    routers.notion._norm); this is a plain equality lookup, not a case- or dash-insensitive one. A
+    unique-indexed column lookup, not a reverse map built at startup."""
+    col = served_id_column("notion")
+    clause, cp = _acl_clause("notion", visible_ids=visible_ids)
+    return conn.execute(
+        f"SELECT * FROM notion_pages WHERE {col} = ?{clause}", [served_id, *cp]
+    ).fetchone()
+
+
+def notion_by_data_source_id(conn, data_source_id, visible_ids=None) -> sqlite3.Row | None:
+    """One DATABASE by its data source id -- the 2025-09-03 API's query target, a second and
+    unrelated served-id space for the same row (see the schema comment on idx_notion_served_ds).
+    Populated only for subtype='database' rows, so a page's NULL column never matches -- unlike
+    notion_by_served_id (which spans both kinds), a match here already implies the right kind and
+    the caller needs no subtype check of its own."""
+    clause, cp = _acl_clause("notion", visible_ids=visible_ids)
+    return conn.execute(
+        f"SELECT * FROM notion_pages WHERE served_data_source_id = ?{clause}",
+        [data_source_id, *cp],
     ).fetchone()
 
 

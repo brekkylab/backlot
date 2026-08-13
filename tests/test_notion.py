@@ -24,8 +24,17 @@ def test_notion_page_retrieve_and_blocks(client, admin_h):
 
 
 def test_notion_dashless_id_resolves(client, admin_h):
-    pid = synth.notion_id("nt-runbook").replace("-", "")
-    assert client.get(f"/notion/v1/pages/{pid}", headers=admin_h).status_code == 200
+    """Notion accepts a page id dashed, dashless, or in any case -- and all three spellings must
+    resolve to the SAME document, not merely 200: a normalization bug in `_norm` could still land
+    on a different (or no) row while a bare status-code check stayed green. Mutation-verified: see
+    the report -- both the dash-reinsertion and the case-fold in `routers.notion._norm` were
+    individually broken and each turned one of these spellings' response into a 404, then
+    restored."""
+    dashed = synth.notion_id("nt-runbook")
+    dashless = dashed.replace("-", "")
+    for spelling in (dashless, dashless.upper(), dashed.upper()):
+        r = client.get(f"/notion/v1/pages/{spelling}", headers=admin_h)
+        assert r.status_code == 200 and r.json()["id"] == dashed
 
 
 def test_notion_search_and_comments(client, admin_h):

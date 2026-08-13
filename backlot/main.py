@@ -80,7 +80,6 @@ def _build_index(conn) -> dict:
     idx = {
         "github": {},
         "jira": {},
-        "notion": {},
         "s3": {},
         "hubspot": {},
         "linear": {},
@@ -180,10 +179,6 @@ def _build_index(conn) -> dict:
                 r["container"]
             )
             idx["jira"].setdefault(synth.jira_key(r["doc_id"], pkey), r["doc_id"])
-    # Notion ids are dashed UUIDs; key the index by the dashless form so a client sending either
-    # dashed or dashless (both valid to real Notion) resolves — see routers.notion._norm.
-    for r in conn.execute(f"SELECT doc_id FROM {store.table('notion')}"):
-        idx["notion"][synth.notion_id(r["doc_id"]).replace("-", "")] = r["doc_id"]
     for r in conn.execute(f"SELECT doc_id, bucket, key FROM {store.table('s3')}"):
         idx["s3"][f"{r['bucket']}/{r['key']}"] = r["doc_id"]
     # HubSpot record ids are numeric strings; the CRM routes and the v4 association payload both

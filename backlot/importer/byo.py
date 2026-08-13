@@ -1096,6 +1096,21 @@ class _Loader:
                 # what lets _gmail_ids derive a reply's threadId by re-hashing the root's key
                 # instead of reading the root's row.
                 cols[store.served_id_column("gmail")] = store.served_id_seed("gmail")(did)
+            if src == "notion":
+                # Two independent synthesized id spaces for the same row (#51). `served_id` is
+                # the page/database id (synth.notion_id), populated for every row like gmail's:
+                # no probe, since synth._uuid_from draws from the full digest space rather than a
+                # bounded range. `served_data_source_id` is a SEPARATE id -- the 2025-09-03 API's
+                # data source (query target) for a database -- and is set directly from
+                # synth.notion_data_source_id here rather than through store.SERVED_ID: that
+                # registry stays one column per source (see its own comment), so a second column
+                # for the same source gets its own assignment, index and reader instead of
+                # widening the tuple. Only for cols["subtype"] == "database": real Notion has no
+                # data source for a page, and leaving it NULL there is safe under the UNIQUE index
+                # (see the schema comment on idx_notion_served_ds) rather than a collision.
+                cols[store.served_id_column("notion")] = store.served_id_seed("notion")(did)
+                if cols.get("subtype") == "database":
+                    cols["served_data_source_id"] = synth.notion_data_source_id(did)
             # A jira key and a github number are deliberately NOT materialized the way Linear's
             # identifier is: the column holds what the CORPUS wrote and nothing else, so "provided"
             # means exactly "non-NULL" everywhere downstream. Two things depend on that.

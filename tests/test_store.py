@@ -103,9 +103,9 @@ def test_acl_table_registry_covers_every_source(tmp_path):
 def test_served_id_registry_covers_every_hashed_source():
     """This registry has to be total over every source that serves a HASHED id -- one resolved by
     reversing a hash back to a doc_id, whether that reversal still lives in `main._build_index`
-    (gmail, notion, hubspot, linear, github, jira) or already went through a stored column
-    (confluence, since its own task) -- each gets its own column in its own task (#51), one source
-    at a time, so the registry has to be total from the start or a later task's column goes
+    (hubspot, linear, github, jira) or already went through a stored column (confluence, gmail,
+    notion, each in its own task) -- each gets its own column in its own task (#51), one source at
+    a time, so the registry has to be total from the start or a later task's column goes
     unrecorded. `s3`'s id is `bucket/key`, stored already and never hashed; `slack` has no
     hash->doc_id map to replace; and fireflies' only hash (`fireflies_user_id`) reverses an EMAIL,
     not a doc_id -- none of the three belong here."""
@@ -118,8 +118,9 @@ def test_served_id_registry_covers_every_hashed_source():
         "github",
         "jira",
     }
-    # Confluence is the only entry any code reads yet (see confluence_by_served_id and
-    # importer.byo._assign_confluence_id) -- column name, seed function, corpus-wide scope.
+    # Confluence's own entry -- column name, seed function, corpus-wide scope. (gmail and notion
+    # read theirs too, by now; hubspot/linear/github/jira's are read only by main._build_index,
+    # until their own task converts them.)
     assert store.SERVED_ID["confluence"] == ("served_id", synth.confluence_id, None)
 
 
@@ -672,6 +673,81 @@ def test_gmail_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     )
     with pytest.raises(sqlite3.IntegrityError):
         build_corpus(tmp_path / "collide", docs)
+
+
+def test_notion_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
+    """Notion has TWO synthesized id spaces per row (#51): `served_id` (synth.notion_id), every
+    row, like gmail unprobed since synth._uuid_from draws from the full digest space; and
+    `served_data_source_id` (synth.notion_data_source_id), the 2025-09-03 API's data source id for
+    a DATABASE row only -- real Notion has no data source for a page, so a page's column stays
+    NULL rather than colliding with anything.
+
+    `served_data_source_id` is assigned directly from `synth.notion_data_source_id` in
+    importer.byo, not through `store.SERVED_ID` (that registry stays one column per source, see
+    its own comment) -- so forcing ITS collision needs `monkeypatch.setattr(synth, ...)`, the
+    opposite of `served_id`'s: `store.SERVED_ID`'s tuple captures the seed function object at
+    `backlot.store` import time (see the confluence/gmail tests above), so `served_id`'s collision
+    needs `monkeypatch.setitem` on the registry, while `synth.notion_data_source_id` is looked up
+    live off the module at call time in importer.byo (`from backlot import ... synth`), so patching
+    the module attribute reaches it just fine there."""
+    from tests._helpers import build_corpus
+
+    docs = [
+        {
+            "source_type": "notion",
+            "teamspace": "eng",
+            "doc_id": "p0",
+            "title": "Page 0",
+            "content": "x",
+            "author_email": "a@acme.com",
+        },
+        {
+            "source_type": "notion",
+            "teamspace": "eng",
+            "doc_id": "db0",
+            "subtype": "database",
+            "title": "DB 0",
+            "content": "x",
+            "author_email": "a@acme.com",
+        },
+        {
+            "source_type": "notion",
+            "teamspace": "eng",
+            "doc_id": "db1",
+            "subtype": "database",
+            "title": "DB 1",
+            "content": "x",
+            "author_email": "a@acme.com",
+        },
+    ]
+    s = build_corpus(tmp_path / "ok", docs)
+    conn = store.connect_ro(s.db_path)
+    rows = {
+        r["doc_id"]: r
+        for r in conn.execute("SELECT doc_id, served_id, served_data_source_id FROM notion_pages")
+    }
+    assert rows["p0"]["served_id"] == synth.notion_id("p0")
+    assert rows["db0"]["served_id"] == synth.notion_id("db0")
+    assert rows["db0"]["served_data_source_id"] == synth.notion_data_source_id("db0")
+    # a page never gets a data source id -- real Notion has no query target for a page.
+    assert rows["p0"]["served_data_source_id"] is None
+    assert store.notion_by_served_id(conn, synth.notion_id("p0"))["doc_id"] == "p0"
+    assert (
+        store.notion_by_data_source_id(conn, synth.notion_data_source_id("db0"))["doc_id"] == "db0"
+    )
+    # the two id spaces don't alias each other -- a page's own served_id must not also resolve as
+    # SOME row's data source id (the reader must query served_data_source_id, not served_id).
+    assert store.notion_by_data_source_id(conn, synth.notion_id("p0")) is None
+    conn.close()
+
+    monkeypatch.setitem(store.SERVED_ID, "notion", ("served_id", lambda doc_id: "0" * 32, None))
+    with pytest.raises(sqlite3.IntegrityError):
+        build_corpus(tmp_path / "collide-served-id", docs)
+    monkeypatch.undo()
+
+    monkeypatch.setattr(synth, "notion_data_source_id", lambda doc_id: "1" * 32)
+    with pytest.raises(sqlite3.IntegrityError):
+        build_corpus(tmp_path / "collide-data-source-id", docs)
 
 
 def test_connect_ro_tuning(sample_settings):

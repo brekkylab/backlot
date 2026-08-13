@@ -304,7 +304,9 @@ def test_mcp_hubspot_bridge_acl_enforced(live_server):
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "hubspot")
     assert row is not None, f"no HubSpot record is ACL-restricted from {email} in the sample corpus"
-    record_id = synth.hubspot_record_id(row["doc_id"])
+    # The row's own STORED served_id, not a re-hash of doc_id: hubspot's id space is probed on a
+    # collision (#51), so a re-hash can disagree with the value this row was actually assigned.
+    record_id = row["served_id"]
 
     def reads(token):
         return _bridge_call(

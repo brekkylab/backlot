@@ -709,6 +709,34 @@ def test_hubspot_byo_association_infers_missing_target_type(tmp_path):
     conn.close()
 
 
+def test_hubspot_byo_association_to_a_ghost_target_is_an_import_error(tmp_path):
+    """An explicit `to_type` names what KIND the target is (the schema's own words: "default: the
+    target record's own object_type") -- it must not also be a license to link to a doc_id that
+    was never written. Before this test, stating `to_type` for an absent target loaded cleanly
+    and wrote the association anyway, and `store.hubspot_associations` silently returned zero rows
+    for it forever after -- the same "silently shadowed" failure mode #51 exists to remove
+    elsewhere in this project."""
+    settings = Settings(data_dir=tmp_path)
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "hubspot",
+                "object_type": "contacts",
+                "doc_id": "hs-c1",
+                "title": "Ava Stone",
+                "content": "Ava Stone.",
+                "author_email": "rep@acme.com",
+                "properties": {"firstname": "Ava"},
+                "associations": [{"to": "ghost", "to_type": "companies"}],
+            }
+        ],
+    )
+    with pytest.raises(SystemExit) as e:
+        load(corpus, settings)
+    assert "ghost" in str(e.value) and "not found" in str(e.value)
+
+
 def test_append_preserves_prior_roster_and_org(tmp_path, monkeypatch):
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path))
     from backlot.config import get_settings

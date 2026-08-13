@@ -806,7 +806,7 @@ def list_s3_objects(
     return conn.execute(sql, params).fetchall()
 
 
-def hubspot_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+def hubspot_by_served_id(conn, served_id, visible_ids=None, *, columns="*") -> sqlite3.Row | None:
     """One CRM record by the id the API reports. A unique-indexed column lookup, not a reverse map
     built at startup: the id is assigned at import (see backlot.importer.byo), so it needs neither
     the memory nor the per-boot scan, and it cannot be ambiguous.
@@ -815,11 +815,16 @@ def hubspot_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | Non
     (#51: ``synth.hubspot_record_id``'s 9,000,000,000-value space still collides at the corpus
     sizes this project generates) -- which is exactly why a plain equality lookup against a UNIQUE
     column is still correct here: the probe (``_assign_hubspot_id``) is what makes the column
-    unique, this reader just trusts that it did."""
+    unique, this reader just trusts that it did.
+
+    ``columns`` narrows the projection: ``routers.hubspot._doc_id_for`` only ever needs the
+    doc_id, and pulling ``content`` (a note's whole body, the widest column on this table) for
+    every ``after`` cursor on every paged listing/association request would dwarf the lookup it
+    is resolving on the way to a query that is separately ACL-scoped anyway."""
     col = served_id_column("hubspot")
     clause, cp = _acl_clause("hubspot", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM hubspot_objects WHERE {col} = ?{clause}", [served_id, *cp]
+        f"SELECT {columns} FROM hubspot_objects WHERE {col} = ?{clause}", [served_id, *cp]
     ).fetchone()
 
 

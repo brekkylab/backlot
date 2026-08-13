@@ -1491,20 +1491,29 @@ class _Loader:
         # to write it twice.
         for from_doc, from_type, a in hs_links:
             to_doc = a["to"]
-            to_type = a.get("to_type") or hs_types.get(to_doc)
-            if to_type is None:
+            # The target's EXISTENCE is resolved from `hs_types` (this run) or the stored row (a
+            # prior one) regardless of whether `to_type` was stated explicitly -- an explicit
+            # `to_type` names what KIND the target is (the schema's own words: "default: the
+            # target record's own object_type"), not a license to link to a record that was never
+            # written. A corpus that declared `to_type` for a target absent from both used to load
+            # cleanly and write the association anyway, with `store.hubspot_associations` silently
+            # returning zero rows for it forever after -- the same "silently shadowed" failure mode
+            # #51 exists to remove elsewhere in this project.
+            resolved_type = hs_types.get(to_doc)
+            if resolved_type is None:
                 # `--append` loads one file at a time, so a target already in the DB is not in
                 # `hs_types`. Fall back to the stored row before giving up, or appending a contact to a
                 # previously-loaded company would fail for a link that is perfectly resolvable.
                 row = conn.execute(
                     "SELECT object_type FROM hubspot_objects WHERE doc_id = ?", (to_doc,)
                 ).fetchone()
-                to_type = row["object_type"] if row else None
-            if to_type is None:
+                resolved_type = row["object_type"] if row else None
+            if resolved_type is None:
                 raise SystemExit(
-                    f"hubspot association {from_doc} -> {to_doc}: target not found in this corpus or "
-                    f"the existing DB; add the target record or set 'to_type' on the association"
+                    f"hubspot association {from_doc} -> {to_doc}: target not found in this corpus "
+                    f"or the existing DB"
                 )
+            to_type = a.get("to_type") or resolved_type
             category = a.get("category") or "HUBSPOT_DEFINED"
             label = a.get("label")
             # An explicit type_id applies only to the direction the author declared; the reverse gets

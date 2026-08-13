@@ -139,8 +139,11 @@ def _doc_id_for(request: Request, record_id: str) -> str | None:
     separately ACL-scoped query (list_hubspot_objects/hubspot_associations, keyset-paginated past
     this doc_id) rather than to serve this row itself -- see get_object and friends, which call
     store.hubspot_by_served_id directly instead of going through here, so as not to resolve the
-    row once here and refetch it a second time for the ACL check."""
-    row = store.hubspot_by_served_id(auth.conn(request), record_id)
+    row once here and refetch it a second time for the ACL check.
+
+    ``columns="doc_id"``: this runs on every paged listing/association request's ``after``, and
+    the row it would otherwise pull in full is never used for anything but this one column."""
+    row = store.hubspot_by_served_id(auth.conn(request), record_id, columns="doc_id")
     return row["doc_id"] if row is not None else None
 
 
@@ -239,7 +242,18 @@ def _known_type(request: Request, object_type: str) -> bool:
 def _resolve_cursor(request: Request, after: str | None):
     """(doc_id, error) for an ``after`` cursor. A cursor that names no record is an error rather
     than a silent restart — a client resuming with a stale cursor would otherwise re-read the whole
-    object type as though it were the first page."""
+    object type as though it were the first page.
+
+    Pre-existing existence oracle, deliberately unchanged here (#51 review round): `_doc_id_for`
+    is unscoped by ACL, so an `after` naming a record the caller cannot see resolves (400 only for
+    an id that names NOTHING, ever), while the exact same id used as a `GET .../objects/{type}/{id}`
+    path segment is 404 either way. A caller who has already learned an id is restricted (404 on
+    the direct read) can still tell it EXISTS by passing it as `after` and getting a 200 (with
+    results, or an empty page) instead of the 400 an unknown id gets. The reverse map this replaced
+    had no ACL clause either, so this predates the served_id column; it is called out here rather
+    than fixed because closing it is a separate, deliberate change to make (likely: give
+    `_resolve_cursor` a `visible_ids` narrowing, same as every other reader in this file), not a
+    side effect of storing the id."""
     if not after:
         return None, None
     doc_id = _doc_id_for(request, after)

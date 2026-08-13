@@ -507,14 +507,18 @@ def _hubspot_conn(tmp_path):
 
 
 def test_hubspot_record_shape(tmp_path):
-    from backlot import synth
     from backlot.routers.hubspot import _record
 
     conn = _hubspot_conn(tmp_path)
-    obj = _record(store.get_document(conn, "hubspot", "hf-co"))
+    row = store.get_document(conn, "hubspot", "hf-co")
+    obj = _record(row)
     # a CRM record is {id, properties, createdAt, updatedAt, archived} — ids are numeric strings and
-    # the timestamps are ISO 8601 with milliseconds, as the vendor emits them
-    assert obj["id"] == synth.hubspot_record_id("hf-co")
+    # the timestamps are ISO 8601 with milliseconds, as the vendor emits them. `id` must be the
+    # row's own STORED served_id, not a re-hash of doc_id: hubspot's id space is probed on a
+    # collision (#51), so a re-hash can disagree with the value this row was actually assigned --
+    # equality with `synth.hubspot_record_id(row["doc_id"])` only holds here because this fixture
+    # has no collision, which is exactly why that comparison is the wrong one to assert.
+    assert obj["id"] == row["served_id"]
     assert obj["id"].isdigit()
     assert obj["properties"]["domain"] == "acme-health.com"
     assert obj["createdAt"] == "2026-01-05T00:00:00.000Z"
@@ -533,19 +537,97 @@ def test_hubspot_properties_projection(tmp_path):
 
 
 def test_hubspot_association_shape(tmp_path):
-    from backlot import synth
-
     conn = _hubspot_conn(tmp_path)
     rows = store.hubspot_associations(conn, "hf-ct", "companies")
     assert [r["to_doc_id"] for r in rows] == ["hf-co"]
-    # the v4 payload is {toObjectId, associationTypes:[{category, typeId, label}]}
-    assert synth.hubspot_record_id(rows[0]["to_doc_id"]).isdigit()
+    # the v4 payload is {toObjectId, associationTypes:[{category, typeId, label}]} -- toObjectId
+    # reads the target's own STORED served_id (joined in by store.hubspot_associations), not a
+    # re-hash of its doc_id: hubspot's id space is probed on a collision (#51), so a re-hash can
+    # disagree with the value the target row was actually assigned.
+    assert rows[0]["to_served_id"] == store.get_document(conn, "hubspot", "hf-co")["served_id"]
     assert rows[0]["assoc_category"] == "HUBSPOT_DEFINED"
     assert rows[0]["label"] == "Primary"
     # the reverse direction exists and carries its own type id, as real HubSpot does
     back = store.hubspot_associations(conn, "hf-co", "contacts")
     assert [r["to_doc_id"] for r in back] == ["hf-ct"]
     assert back[0]["assoc_type_id"] != rows[0]["assoc_type_id"]
+
+
+def test_hubspot_route_reads_the_stored_served_id_under_a_collision(tmp_path, monkeypatch):
+    """Route-level companion to the store-layer collision tests: `_record`'s `id`, `_page`'s
+    `after` cursor, and `list_associations`' `toObjectId` all have to read the row's own stored
+    `served_id`, not fall back to a live re-hash of doc_id. Reverting all three to
+    `synth.hubspot_record_id(...)` left the FULL suite green (I-1 review round) -- every other
+    route test's fixture happens to have no collision, so the re-hash and the stored column
+    agreed by coincidence. Forced here the same way the store tests force one: the seed collapsed
+    to a constant, so every record but the first import order is walked away from the raw hash.
+    """
+    from backlot import store
+    from tests._helpers import client_for
+
+    monkeypatch.setitem(
+        store.SERVED_ID, "hubspot", ("served_id", lambda doc_id: "1000000000", None)
+    )
+    docs = [
+        {
+            "source_type": "hubspot",
+            "doc_id": f"h{i}",
+            "object_type": "companies",
+            "title": f"Co {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+            "properties": {"name": f"Co {i}"},
+        }
+        for i in range(3)
+    ]
+    docs.append(
+        {
+            "source_type": "hubspot",
+            "doc_id": "hn0",
+            "object_type": "notes",
+            "title": "",
+            "content": "x",
+            "author_email": "a@acme.com",
+            "associations": [{"to": "h0"}],
+        }
+    )
+    s = tiny_corpus(tmp_path, docs)
+    monkeypatch.undo()
+
+    with client_for(s) as client:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+
+        # _page's `after`: walk companies one at a time, so every page but the last carries a
+        # cursor that has to resolve back to the NEXT company, not loop or skip.
+        ids, after, pages = [], None, 0
+        while True:
+            params = {"limit": 1, **({"after": after} if after else {})}
+            page = client.get("/hubspot/crm/v3/objects/companies", headers=h, params=params).json()
+            ids += [r["id"] for r in page["results"]]
+            pages += 1
+            assert pages < 10, "collision-forced pagination did not terminate"
+            nxt = (page.get("paging") or {}).get("next")
+            if not nxt:
+                break
+            after = nxt["after"]
+        assert len(ids) == len(set(ids)) == 3  # every id distinct despite the forced collision
+
+        # _record's `id`: each listed id must round-trip through a direct GET to ITS OWN record,
+        # not some other record that happens to share the raw (un-probed) hash.
+        for i in ids:
+            got = client.get(f"/hubspot/crm/v3/objects/companies/{i}", headers=h).json()
+            assert got["id"] == i
+
+        # list_associations' `toObjectId`: must be h0's own served id (ids[0], since the listing
+        # is doc_id-ordered and "h0" sorts first) -- not a re-hash of "h0" that a collision walk
+        # may have moved h0 away from.
+        note_id = client.get(
+            "/hubspot/crm/v3/objects/notes", headers=h, params={"limit": 10}
+        ).json()["results"][0]["id"]
+        assoc = client.get(
+            f"/hubspot/crm/v4/objects/notes/{note_id}/associations/companies", headers=h
+        ).json()
+        assert assoc["results"][0]["toObjectId"] == ids[0]
 
 
 def test_hubspot_page_omits_paging_next_on_last_page(tmp_path):

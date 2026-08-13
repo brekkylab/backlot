@@ -2627,18 +2627,29 @@ def test_byo_jira_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
     fixture -- so this shrinks `synth.JIRA_KEY_NUMBER_RANGE` itself (a plain module attribute,
     same shape as `GITHUB_NUMBER_RANGE` -- see that test's own docstring for why `monkeypatch.
     setattr` reaches it while `store.SERVED_ID`'s captured seed function needs `setitem`
-    instead) and collapses the seed to one constant. 4 rows, not 3, for the same reason as the
-    github test: with a constant seed and a range of 2, 3 rows leaves one small candidate value
-    never actually probed, which a mutation that silently returns the walk's last (unchecked)
-    value can still slip through by accident.
+    instead) and collapses the seed to one constant.
+
+    The constant MUST land inside the shrunk range (review round 1, M-6): a seed outside it
+    (e.g. the naive `999999`) makes the very first walk step spend its one useful check moving
+    the out-of-range starting value INTO range, rather than checking a real candidate -- so with
+    range 2, the walk only ever genuinely checks one of the two in-range suffixes before its
+    budget runs out, and raises having left the other one actually free. That is a PREMATURE
+    give-up dressed up as a real one: the exception fires, so `pytest.raises` doesn't catch the
+    difference, but the space it claims is exhausted (1) isn't. `1` (inside `1..2`) makes every
+    step of the walk check a real candidate, so the raise reflects both slots being genuinely
+    taken.
+
+    4 rows, past the point (row 3, once both slots are claimed) where exhaustion is first
+    unavoidable -- checked directly: rows 1-2 fill the 2-slot range without incident, and row 3
+    already raises, so a 3-row fixture would already discriminate the `return n` mutation below
+    just as well; the 4th is margin, not a requirement, and doesn't weaken anything by being
+    there.
     """
     from backlot import synth
     from tests._helpers import build_corpus
 
     monkeypatch.setattr(synth, "JIRA_KEY_NUMBER_RANGE", 2)
-    monkeypatch.setitem(
-        store.SERVED_ID, "jira", ("served_number", lambda doc_id: 999999, "project")
-    )
+    monkeypatch.setitem(store.SERVED_ID, "jira", ("served_number", lambda doc_id: 1, "project"))
     docs = [
         {
             "source_type": "jira",
@@ -2753,7 +2764,25 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
     """The jira half of the collision contract: an issue whose derived key was claimed by
     an issue that provided it moves to the next free sequence number in the same project,
     and answers there. Serving and the index read one authority, so the key an issue
-    advertises is the key that fetches it."""
+    advertises is the key that fetches it.
+
+    Also covers two things #51's task 8 changed on purpose, with no prior test asserting either
+    (review round 1, I-3):
+
+    - **Pass 3 of the old boot-time index is gone.** `j-provider` used to ALSO answer at its own
+      synthesized spelling (the old index's third pass registered that alias, "last, so it never
+      takes the number a displaced row wanted") -- dropped when the number moved into a stored
+      column, since a single column holds ONE suffix per row and a provided issue answering at a
+      second, unrequested key is not something real Jira does either.
+    - **The resolver's alias, reintroduced then closed in the SAME review round (I-1).**
+      `_jira_container_for_key`'s three-way tolerance (provided prefix / synthesized key /
+      literal container name) is right for a JQL project TOKEN, but reusing it for issue-KEY
+      resolution briefly let `PAYDF384A-<n>` and `payments-<n>` also resolve `j-provider` even
+      though its project's SERVED prefix is `PAY` -- wider than pass 3 ever was, since it opened
+      two alias NAMESPACES per project rather than one alias per row. Both now 404, same as real
+      Jira's `/issue/PAYDF384A-101` or `/issue/payments-101` would for a project that actually
+      answers at `PAY`.
+    """
     from backlot import synth
     from tests._helpers import build_corpus, client_for
 
@@ -2797,6 +2826,24 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
             got = c.get(f"/atlassian/rest/api/3/issue/{key}", headers=hdr)
             assert got.status_code == 200, (summary, key)
             assert got.json()["fields"]["summary"] == summary
+
+        # Pass 3's dropped alias: j-provider's OWN synthesized spelling under its project's
+        # served prefix ("PAY") is a DIFFERENT key from `stolen` (a different doc_id's hash), and
+        # must 404 rather than resolve j-provider a second way.
+        own_synth_spelling = synth.jira_key("j-provider", "PAY")
+        assert own_synth_spelling != stolen  # sanity: a genuinely distinct spelling to probe
+        alias404 = c.get(f"/atlassian/rest/api/3/issue/{own_synth_spelling}", headers=hdr)
+        assert alias404.status_code == 404
+
+        # I-1: the resolver's OWN alias, over a project that DOES have a provided prefix ("PAY").
+        # Neither the synthesized project key nor the literal container name is what this
+        # project actually serves, so both must 404 despite `_jira_container_for_key` resolving
+        # either one just fine as a JQL project token.
+        suffix = stolen.rsplit("-", 1)[1]
+        synth_prefix = synth.jira_project_key("payments")
+        for alt_key in (f"{synth_prefix}-{suffix}", f"payments-{suffix}"):
+            resp = c.get(f"/atlassian/rest/api/3/issue/{alt_key}", headers=hdr)
+            assert resp.status_code == 404, alt_key
 
 
 def test_byo_meta_cannot_smuggle_a_tracker_id(tmp_path):

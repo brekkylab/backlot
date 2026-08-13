@@ -1193,6 +1193,55 @@ def test_jira_by_served_number_applies_the_acl(tmp_path):
     conn.close()
 
 
+def test_jira_by_served_number_is_scoped_to_its_project(tmp_path, monkeypatch):
+    """(review round 1, I-2) The SAME suffix in two different projects is the NORMAL case here,
+    not an exotic one -- `(project, served_number)` is the whole UNIQUE index's scope, precisely
+    because a suffix is unique only WITHIN its project (see store.SERVED_ID's `scope` for jira).
+    `jira_by_served_number`'s `WHERE project = ? AND {col} = ?` is therefore the ONLY thing that
+    keeps two same-numbered issues in different projects from resolving to each other -- there is
+    no other predicate backing it up.
+
+    Forces the collision directly via a collapsed seed (`monkeypatch.setitem`, not
+    `monkeypatch.setattr` -- see the collision test above for why), rather than hoping two
+    independent hashes coincide."""
+    from tests._helpers import build_corpus
+
+    monkeypatch.setitem(store.SERVED_ID, "jira", ("served_number", lambda doc_id: 7, "project"))
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "pay0",
+                "project": "payments",
+                "title": "Payments issue",
+                "content": "x",
+                "author_email": "a@acme.com",
+            },
+            {
+                "source_type": "jira",
+                "doc_id": "dev0",
+                "project": "devtools",
+                "title": "Devtools issue",
+                "content": "x",
+                "author_email": "a@acme.com",
+            },
+        ],
+    )
+    monkeypatch.undo()
+    conn = store.connect_ro(s.db_path)
+    served = {
+        r["doc_id"]: r["served_number"]
+        for r in conn.execute("SELECT doc_id, served_number FROM jira_issues")
+    }
+    # Sanity: the collision was actually forced -- both rows share the same suffix, in DIFFERENT
+    # projects, otherwise the assertions below would pass even with the scope missing entirely.
+    assert served["pay0"] == served["dev0"] == 7
+    assert store.jira_by_served_number(conn, "payments", 7)["doc_id"] == "pay0"
+    assert store.jira_by_served_number(conn, "devtools", 7)["doc_id"] == "dev0"
+    conn.close()
+
+
 def test_connect_ro_tuning(sample_settings):
     # tuned connection applies the pragmas; a plain one keeps sqlite defaults (tests unaffected)
     c = store.connect_ro(sample_settings.db_path, mmap_mb=64, cache_mb=16, temp_memory=True)

@@ -170,16 +170,27 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
     store.jira_by_served_number), not a startup reverse map (#51, task 8).
 
     Splits `key` into its project prefix and numeric suffix, resolves the prefix to its backing
-    project through `_jira_container_for_key` (the project<->prefix maps, still built at boot —
-    see backlot.main and `idx["jira_project_keys"]`/`idx["jira_project_containers"]`), then looks
-    the suffix up scoped to THAT project (jira's own uniqueness rule — see store.SERVED_ID's
-    `scope` for jira). A key with no parseable numeric suffix, or an unresolvable prefix, is simply
-    not found — never a fallback to the unfiltered corpus."""
+    project through `_jira_container_for_key`, then looks the suffix up scoped to THAT project
+    (jira's own uniqueness rule — see store.SERVED_ID's `scope` for jira). A key with no
+    parseable numeric suffix, or an unresolvable prefix, is simply not found — never a fallback to
+    the unfiltered corpus.
+
+    `_jira_container_for_key`'s three-way tolerance (provided key prefix, synthesized project key,
+    OR the literal container name) is a deliberate affordance for the JQL project TOKEN, and real
+    Jira project pickers do accept any of the three there. Reusing that tolerance for ISSUE-KEY
+    resolution would silently reintroduce the alias `resolve_jira_numbers` was written to drop
+    (review round 1, I-1) — wider than before, since it would open TWO extra namespaces per
+    project (the container's own name, and the synthesized key when a provided one is what's
+    actually served) rather than pass 3's one alias per row. So the container's resolved prefix
+    must AGREE with what was actually typed: `_project_key(request, container)` is the one prefix
+    this project actually serves (the provided one, aliased at boot, if any — else the
+    synthesized one), and a key spelled under any other resolvable-but-unserved prefix 404s, same
+    as real Jira's `/issue/payments-7` (the container's bare name, not its key) does."""
     m = _JIRA_KEY_RE.match(key)
     if not m:
         return None
     container = _jira_container_for_key(conn, m.group(1), request)
-    if container is None:
+    if container is None or _project_key(request, container) != m.group(1):
         return None
     return store.jira_by_served_number(conn, container, int(m.group(2)), visible_ids=ids)
 

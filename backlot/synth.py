@@ -175,8 +175,10 @@ def jira_key_number(doc_id: str) -> int:
     A key's PREFIX is a fact about the container (its project), not this row — a corpus's own key
     always wins (see importer.byo) — but the SUFFIX is a fact about the row alone, and is what a
     served id can be assigned and probed on within one project (see store.SERVED_ID): the prefix
-    is under-constrained (two containers may share one; only the synthesized
-    `jira_project_key` is per-container unique), so a probe scoped by project must never include it.
+    is under-constrained (two containers may share one — a corpus-provided prefix is checked 1:1
+    against its project in importer.byo, but `jira_project_key`'s OWN digest can still collide
+    with an unrelated project's provided one at ~1/16.7M odds; see its own docstring), so a probe
+    scoped by project must never include it.
     """
     return hnum(doc_id, 16, 6) % JIRA_KEY_NUMBER_RANGE + 1
 
@@ -263,10 +265,17 @@ def _key(container: str, fallback: str) -> str:
 
 
 def jira_project_key(container: str) -> str:
-    """A project key unique per container: the readable word-initials prefix (see :func:`_key`)
-    plus a short hash of the full name, so distinct projects never collide on the same key (and the
-    router's reverse key->project lookup + the derived issue keys stay unambiguous). Deterministic,
-    valid Jira shape (uppercase letter start, uppercase alnum)."""
+    """A project key meant to be unique per container: the readable word-initials prefix (see
+    :func:`_key`) plus a short hash of the full name, so two SYNTHESIZED keys practically never
+    collide with each other (the router's reverse key->project lookup + the derived issue keys
+    stay unambiguous). Deterministic, valid Jira shape (uppercase letter start, uppercase alnum).
+
+    NOT guaranteed unique against a corpus-PROVIDED prefix, though: a project with no provided
+    keys of its own is never checked against `importer.byo`'s 1:1 prefix<->project enforcement
+    (that only runs for prefixes a corpus actually writes), so this digest could in principle
+    equal another project's provided prefix — or, symmetrically, another KEYLESS project's own
+    digest, at the identical ~1/16.7M order (6 hex digits). See the residual documented on
+    `store.py`'s `idx_jira_served` schema comment and `importer.byo`'s `resolve_jira_numbers`."""
     return _key(container, "PROJ") + _digest(container)[:6].upper()
 
 

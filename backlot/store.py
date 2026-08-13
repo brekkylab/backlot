@@ -295,12 +295,15 @@ CREATE INDEX IF NOT EXISTS idx_jira_doc_key ON jira_issues(doc_id, project, key,
 -- index and raises IntegrityError rather than being silently resolved.
 --
 -- Residual NOT closed by this index (documented, not fixed — see backlot.importer.byo's `insert`
--- and resolve_jira_numbers for the same note): a project with no provided keys at all is never
--- registered in `jira_prefix_holders`, so its SYNTHESIZED prefix (`synth.jira_project_key`,
--- initials + 6 hex of the digest) could in principle equal another project's PROVIDED prefix.
--- Two documents in different projects would then serve the exact same key while this index (whose
--- scope is `project`, not the prefix string) is perfectly satisfied. ~1 in 16.7M per such pair;
--- closing it is a different change.
+-- and resolve_jira_numbers, and synth.jira_project_key's own docstring, for the same note): a
+-- project with no provided keys at all is never registered in `jira_prefix_holders`, so its
+-- SYNTHESIZED prefix (`synth.jira_project_key`, initials + 6 hex of the digest) could in
+-- principle equal another project's PROVIDED prefix -- and, symmetrically, two KEYLESS projects'
+-- own synthesized prefixes could collide with EACH OTHER, at the identical order (both draw from
+-- the same 6-hex digest space; only the provided-vs-synthesized case above involves a corpus
+-- writing anything at all). Either way, two documents in different projects would then serve the
+-- exact same key while this index (whose scope is `project`, not the prefix string) is perfectly
+-- satisfied. ~1 in 16.7M per such pair; closing it is a different change.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_served ON jira_issues(project, served_number);
 
 CREATE TABLE IF NOT EXISTS confluence_pages (

@@ -68,6 +68,24 @@ def test_jira_search_filtered_by_project(client, admin_h):
     ).json()
     assert {i["fields"]["summary"] for i in by_key["issues"]} == titles
 
+    # "payments" carries no provided key in the SAMPLE corpus, so its served issue-key prefix IS
+    # the synthesized one above -- the served spelling resolves...
+    served_key = by_key["issues"][0]["key"]
+    assert served_key.startswith(synth_key + "-")
+    assert (
+        client.get(f"/atlassian/rest/api/3/issue/{served_key}", headers=admin_h).status_code == 200
+    )
+    # ...but the literal container NAME as an issue-key prefix does not, even though it resolves
+    # perfectly well as a JQL project TOKEN just above (review round 1, I-1): `_jira_container_
+    # for_key`'s three-way tolerance (provided prefix / synthesized key / literal name) is a
+    # deliberate affordance for the project token, where real Jira's own pickers accept any of
+    # the three -- reusing it for ISSUE-KEY resolution would silently resurrect the alias #51 was
+    # written to drop, just widened to two extra namespaces per project. Real Jira 404s
+    # `/issue/payments-7` (the container's bare name, not its key) exactly like this.
+    suffix = served_key.rsplit("-", 1)[1]
+    aliased = client.get(f"/atlassian/rest/api/3/issue/payments-{suffix}", headers=admin_h)
+    assert aliased.status_code == 404
+
     # an unresolvable project is strict: zero results, not the unfiltered corpus
     bogus = client.get(
         "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "project = BOGUS_NOPE"}

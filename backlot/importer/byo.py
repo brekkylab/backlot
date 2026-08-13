@@ -1859,7 +1859,8 @@ class _Loader:
         sharing one prefix is refused outright at `add` time (the `jira_prefix_holders` 1:1 check),
         so a suffix unique within `project` is unambiguous within its prefix too — except for the
         residual documented on `idx_jira_served`'s schema comment (a synthesized prefix colliding
-        with an unrelated project's PROVIDED one), which this pass cannot close either.
+        with an unrelated project's PROVIDED one -- or, symmetrically, with another KEYLESS
+        project's own synthesized prefix), which this pass cannot close either.
 
         Pass 3 of the old boot-time index (a provided row ALSO answering at its own synthesized
         spelling, as an alias) is dropped here on purpose, not by oversight — the same call #51

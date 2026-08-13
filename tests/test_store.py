@@ -101,12 +101,14 @@ def test_acl_table_registry_covers_every_source(tmp_path):
 
 
 def test_served_id_registry_covers_every_hashed_source():
-    """`main._build_index` still reverses a hash back to a doc_id for these sources; each gets its
-    own stored, unique-indexed column in its own task (#51), one source at a time, so this registry
-    has to be total over all of them from the start or a later task's column goes unrecorded.
-    `s3`'s id is `bucket/key`, stored already and never hashed; `slack` has no hash->doc_id map to
-    replace; and fireflies' only hash (`fireflies_user_id`) reverses an EMAIL, not a doc_id -- none
-    of the three belong here (see the source list in main._build_index)."""
+    """This registry has to be total over every source that serves a HASHED id -- one resolved by
+    reversing a hash back to a doc_id, whether that reversal still lives in `main._build_index`
+    (gmail, notion, hubspot, linear, github, jira) or already went through a stored column
+    (confluence, since its own task) -- each gets its own column in its own task (#51), one source
+    at a time, so the registry has to be total from the start or a later task's column goes
+    unrecorded. `s3`'s id is `bucket/key`, stored already and never hashed; `slack` has no
+    hash->doc_id map to replace; and fireflies' only hash (`fireflies_user_id`) reverses an EMAIL,
+    not a doc_id -- none of the three belong here."""
     assert set(store.SERVED_ID) == {
         "confluence",
         "gmail",

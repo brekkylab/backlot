@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 from backlot import synth
@@ -115,20 +116,21 @@ def grouping_col(source_type: str) -> str:
 # source_type -> (served-id column, seed function, uniqueness scope). The column holds an id
 # ASSIGNED at import (see backlot.importer.byo) rather than derived by hashing at serve time: a
 # hash into any fixed range collides by the birthday bound, and the reverse map this replaces
-# resolved a collision last-writer-wins, leaving one document unreachable at its own id (#51).
-# `scope` is None when the vendor's id is unique corpus-wide (a Confluence content id, a Gmail
-# message id), or the source's own GROUPING column when the vendor only guarantees uniqueness
-# WITHIN one container (a GitHub number is unique per repo, not across repos; a Jira key's numeric
-# suffix per project) — assignment then only has to probe ids already taken in that container, not
-# the whole corpus.
+# resolved a collision last-writer-wins, leaving one document unreachable at its own id (#51). The
+# seed function is always `(doc_id) -> a candidate value`, so an assignment method can probe it
+# uniformly regardless of source.
 #
-# Confluence is the only entry any code reads yet (confluence_by_served_id,
-# importer.byo._assign_confluence_id): its own task proved the shape. The rest are populated so the
-# registry is total over every source `main._build_index` still reverses a hash for (see
-# test_served_id_registry_covers_every_hashed_source) — but nothing reads them, and converting one
-# means giving it its own stored column (github's and jira's necessarily differ from their existing
-# `number`/`key` columns, since a corpus-provided id and a synthesized one must stay distinguishable
-# — see #46) plus an assignment method mirroring confluence's, one source at a time.
+# `scope` is the columns the assignment probe must hold fixed for the served value to be
+# unambiguous in BACKLOT'S OWN lookup — not necessarily the vendor's own uniqueness rule. It is
+# `None` when Backlot resolves the id with no container (a flat column/index lookup), or the
+# source's own GROUPING column when Backlot's own lookup is already scoped to one container (a
+# GitHub number is looked up within its repo; a Jira key's numeric suffix within its project — see
+# `synth.jira_key_number`, since the key's PREFIX is a fact about the container that a corpus-
+# provided key can still override, so the probe must never include it). gmail and hubspot are
+# real-world per-container ids (per-mailbox; per-object-type, which is why every HubSpot route
+# carries `{objectType}`) that Backlot nonetheless resolves flat (`routers.google`/`routers.hubspot`
+# look an id up with no container, hubspot only checking `object_type` afterwards) — `None` there
+# is the safe over-constraint Backlot's own lookup needs, not a claim about the vendor.
 SERVED_ID = {
     "confluence": ("served_id", synth.confluence_id, None),
     "gmail": ("served_id", synth.gmail_message_id, None),
@@ -139,7 +141,7 @@ SERVED_ID = {
     # accepts.
     "linear": ("served_id", synth.linear_id, None),
     "github": ("served_number", synth.github_number, grouping_col("github")),
-    "jira": ("served_key", synth.jira_key, grouping_col("jira")),
+    "jira": ("served_number", synth.jira_key_number, grouping_col("jira")),
 }
 
 
@@ -147,7 +149,7 @@ def served_id_column(source_type: str) -> str:
     return SERVED_ID[source_type][0]
 
 
-def served_id_seed(source_type: str):
+def served_id_seed(source_type: str) -> Callable[[str], object]:
     return SERVED_ID[source_type][1]
 
 

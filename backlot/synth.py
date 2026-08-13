@@ -149,8 +149,20 @@ def jira_numeric_id(doc_id: str) -> int:
     return 10_000 + hnum(doc_id, 8, 8) % 900_000
 
 
+def jira_key_number(doc_id: str) -> int:
+    """The numeric suffix of `jira_key(doc_id, project_key)`, split out so the two cannot drift.
+
+    A key's PREFIX is a fact about the container (its project), not this row — a corpus's own key
+    always wins (see importer.byo) — but the SUFFIX is a fact about the row alone, and is what a
+    served id can be assigned and probed on within one project (see store.SERVED_ID): the prefix
+    is under-constrained (two containers may share one; only the synthesized
+    `jira_project_key` is per-container unique), so a probe scoped by project must never include it.
+    """
+    return hnum(doc_id, 16, 6) % 9000 + 1
+
+
 def jira_key(doc_id: str, project_key: str) -> str:
-    return f"{project_key}-{hnum(doc_id, 16, 6) % 9000 + 1}"
+    return f"{project_key}-{jira_key_number(doc_id)}"
 
 
 def hubspot_record_id(doc_id: str) -> str:

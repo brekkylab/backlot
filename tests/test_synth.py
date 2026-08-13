@@ -103,6 +103,20 @@ def test_jira_project_key_unique_for_colliding_names():
     assert synth.jira_project_key("eng-serving-runtime") == a  # deterministic
 
 
+def test_jira_key_number_matches_jira_keys_suffix():
+    """`jira_key_number` is `jira_key`'s numeric suffix, split out so a served id can be assigned
+    and probed on the suffix ALONE (see store.SERVED_ID -- a key's prefix is under-constrained,
+    since a corpus-provided key can claim any prefix for its project). `jira_key` calls
+    `jira_key_number` rather than recomputing it, so the two cannot drift apart -- if they did, a
+    served id assigned from the seed would stop matching the number the key itself carries."""
+    for doc_id in (DOC, DOC2):
+        for project_key in ("PAY", "ENG"):
+            assert (
+                synth.jira_key(doc_id, project_key)
+                == f"{project_key}-{synth.jira_key_number(doc_id)}"
+            )
+
+
 def test_gmail_message_id_matches_the_real_id_shape():
     """Measured against the live API: Gmail hands out 16 lowercase hex digits, and it rejects an id
     whose integer value is >= 2**63 with 400 "Invalid id value" (`7fffffffffffffff` resolves,

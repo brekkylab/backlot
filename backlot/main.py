@@ -378,6 +378,26 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
 
 
 @app.middleware("http")
+async def echo_github_api_version(request: Request, call_next):
+    """Report which API version served the response, as real GitHub does on every github request.
+
+    Middleware rather than a router dependency: a dependency that sets headers on its injected
+    ``Response`` loses them whenever the route returns a ``Response`` itself, which the raw-content
+    and diff media types do (see ``backlot.routers.github``) — so exactly the responses whose SHAPE
+    the header describes would ship without it.
+
+    A rejected version gets no echo, matching real: it selected nothing. That is `None` from
+    ``selected_api_version``, the same call the router's 400 is raised from.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/github"):
+        version = github.selected_api_version(request)
+        if version is not None:
+            response.headers[github.SELECTED_VERSION_HEADER] = version
+    return response
+
+
+@app.middleware("http")
 async def parse_slack_form(request: Request, call_next):
     """Slack SDK POSTs urlencoded params; stash them for the router's param lookup."""
     if request.url.path.startswith("/slack/") and request.method == "POST":

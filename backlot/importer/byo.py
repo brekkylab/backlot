@@ -114,24 +114,148 @@ def _principal(pid: str) -> tuple[str, str]:
     return ("user", pid) if "@" in pid else ("group", pid)
 
 
+def _time_given(v) -> bool:
+    """Whether the corpus wrote a time in this field at all, as opposed to leaving it
+    out. Told apart from an unreadable one, which ``_epoch`` also answers None for: a
+    field the author filled in with something this importer cannot read is a typo to
+    report, not a default to take."""
+    return v is not None and v != ""
+
+
+def _seconds(n):
+    """A number as unix seconds, or None if it is not a second this mock can serve.
+
+    Two ways a number gets here without being a time. ``inf`` and ``nan`` have no
+    integer form at all — `json.loads` accepts both as bare literals, so a corpus can
+    hand them over and `int()` raises rather than returning anything. And a finite
+    second outside `datetime`'s year 1..9999 cannot be rendered: the servers date a row
+    through `datetime.fromtimestamp`, so milliseconds written where seconds belong
+    imports clean and then raises at SERVE time, well after the import said it worked.
+    Asked of the same function the servers use rather than against a hardcoded bound."""
+    from datetime import datetime, timezone
+
+    try:
+        sec = int(n)
+    except (ValueError, OverflowError):  # nan, inf
+        return None
+    try:
+        datetime.fromtimestamp(sec, tz=timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return sec
+
+
+def _epoch_field(v, where, field):
+    """A corpus-supplied time, refusing a value that is filled in but unreadable.
+
+    Used wherever an absent time gets a default in its place — a hash of the doc_id, the
+    previous message's second, the root's clock plus an hour. Taking that default for a
+    typo means the record loads with a time nobody wrote and no way to tell it apart from
+    one that was left blank on purpose, which is the whole reason a reply's clock refuses.
+    Fields whose absence stores NULL keep plain ``_epoch``: nothing is substituted there,
+    so nothing is disguised."""
+    sec = _epoch(v)
+    if sec is None and _time_given(v):
+        raise SystemExit(
+            f"{where}: {field} is not a time this importer can read "
+            f"(got {v!r}; write epoch seconds or ISO 8601)"
+        )
+    return sec
+
+
 def _epoch(v):
     """Parse a BYO time (epoch seconds int/float, or ISO 8601 string) -> unix seconds.
 
     Returns None for a missing/unparseable value, so the router falls back to the
     deterministic synthesized timestamp."""
-    if v is None or v == "":
+    if not _time_given(v):
         return None
     if isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
-        return int(v)
+        return _seconds(v)
     from datetime import datetime
 
     s = str(v).strip().replace("Z", "+00:00")
     try:
         return int(datetime.fromisoformat(s).timestamp())
     except ValueError:
+        pass
+    # Epoch seconds written as a string — `"1770746760"`, or the `<sec>.<frac>` a Slack
+    # ts takes, which is the form an `edited.ts` next door is already in. ISO is tried
+    # first, so an 8-digit basic-format date stays a date rather than becoming a second.
+    try:
+        return _seconds(float(s))
+    except ValueError:
         return None
+
+
+def _thread_seconds(where, root_sec, root_written, replies):
+    """Every second in a slack thread — the root's and each reply's — resolved together,
+    before any of the rows are written. Returns ``(root_second, [reply seconds])``.
+
+    Ordering is judged against clocks the corpus actually supplied. A root with no
+    `created` of its own holds a second hashed from its doc_id, which is not a fact
+    about the thread, and using it as the anchor made the import turn on that hash: for
+    a reply dated inside the synthesizer's own window the hash lands after the reply
+    date about half the time, so the same corpus loads or dies depending on the root's
+    doc_id, and the refusal quotes a second that appears nowhere in the corpus. When it
+    did load, the served thread had a root years before its own reply. Such a root is
+    re-grounded on the first reply that carries a clock instead.
+
+    A clockless reply still lands one second after the message before it, so a thread
+    that supplies no clocks at all resolves exactly where root+position always put it.
+    Re-grounding cannot change an existing corpus either: a reply could not carry
+    `created` at all until this branch added it, `replies.items` being closed.
+    """
+    reps = replies or []
+    written = []
+    for i, rep in enumerate(reps, start=1):
+        v = rep.get("created")
+        sec = _epoch(v)
+        if sec is None and _time_given(v):
+            # A filled-in field this importer cannot read is refused rather than
+            # defaulted: taking the default silently reinstates the metronome the field
+            # exists to replace, and the second that lands is indistinguishable from
+            # what a corpus that never wrote a clock gets.
+            raise SystemExit(
+                f"{where}: reply {i}: created is not a time this importer can read "
+                f"(got {v!r}; write epoch seconds or ISO 8601)"
+            )
+        written.append(sec)
+
+    if not root_written:
+        first = next((i for i, s in enumerate(written) if s is not None), None)
+        if first is not None:
+            # One second for each clockless reply ahead of it, and one more for the root.
+            root_sec = written[first] - (first + 1)
+
+    out = []
+    prev, defaulted = root_sec, False
+    for i, sec in enumerate(written, start=1):
+        if sec is None:
+            prev, defaulted = prev + 1, True
+            out.append(prev)
+            continue
+        if sec <= prev:
+            if defaulted:
+                # The second it collides with is one this importer chose, not one the
+                # author wrote, so say that rather than quoting it as a fact about the
+                # corpus. Two adjacent seconds cannot both hold a message: a Slack ts is
+                # identity as well as clock.
+                raise SystemExit(
+                    f"{where}: reply {i}: created must be after the message before it "
+                    f"(got {reps[i - 1].get('created')!r}), but reply {i - 1} carries no "
+                    f"created of its own and took the next free second, {prev}. Give "
+                    f"reply {i - 1} a created too, or move this one later."
+                )
+            raise SystemExit(
+                f"{where}: reply {i}: created must be after the message before it "
+                f"(got {reps[i - 1].get('created')!r}, the previous message is at {prev})"
+            )
+        prev, defaulted = sec, False
+        out.append(sec)
+    return root_sec, out
 
 
 def _service_columns(
@@ -1060,13 +1184,17 @@ class _Loader:
         # created_ts must never be NULL (the server sorts/filters by it; a NULL would need a
         # runtime null-check). Fall back to the same deterministic synth.epoch the server would have
         # synthesized for a missing ts, so the served time is unchanged — just materialized now.
-        created = _epoch(rec.get("created"))
-        if created is None:
-            created = synth.epoch(doc_id)
-        updated = _epoch(rec.get("updated"))
+        created_written = _epoch_field(rec.get("created"), where, "created")
+        created = synth.epoch(doc_id) if created_written is None else created_written
+        updated = _epoch_field(rec.get("updated"), where, "updated")
 
         replies = rec.get("replies") if src == "slack" else None
         thread_id = doc_id if replies else None
+        # Resolved before the root row is written, because a root whose own clock was
+        # synthesized may be re-grounded on the replies that do carry one.
+        created, reply_seconds = _thread_seconds(
+            where, created, created_written is not None, replies
+        )
         # gmail's own child-row array. `replies` stays Slack-only (a Slack reply is a *reply*,
         # with reactions and files); a Gmail thread is a sequence of full RFC822 messages, each
         # with its own sender, recipients and Message-ID, so it gets an array that reads like one
@@ -1298,7 +1426,9 @@ class _Loader:
             # `Issue.comments` does) serves the thread inverted. Monotonic, so it cannot. For an
             # all-undated thread this is exactly `created + j`, as before. Never a hash of the
             # comment's own id, which would scatter one thread across two years.
-            c_ts = _epoch(c.get("created_ts")) or (prev_c_ts + 1)
+            c_ts = _epoch_field(c.get("created_ts"), f"{where}: comment {j}", "created_ts") or (
+                prev_c_ts + 1
+            )
             prev_c_ts = max(prev_c_ts, c_ts)
             _cid = c.get("id") or f"{doc_id}::c{j}"
             conn.execute(
@@ -1331,10 +1461,10 @@ class _Loader:
                 + hashlib.sha256((doc_id + str(i) + rep["content"]).encode()).hexdigest()[:32]
             )
             seen.add((src, rep_id))
-            # A reply is a full message (reactions/files/subtype/edited carry through);
-            # its time is the root's + its position so the thread stays ordered (created is now
-            # always set, so a reply ts is never NULL).
-            rep_cts = created + i
+            # A reply is a full message (reactions/files/subtype/edited carry through).
+            # Its second was resolved with the rest of the thread's in `_thread_seconds`,
+            # which is where the ordering rule and its refusals live.
+            rep_cts = reply_seconds[i - 1]
             insert(
                 rep_id,
                 rep_author,
@@ -1373,7 +1503,8 @@ class _Loader:
                 # `thread` is forced to the ROOT's thread: a child must never open a thread of
                 # its own, or `users.threads.get` would return a one-message thread.
                 ex={**msg, "thread": gmail_thread},
-                cts=_epoch(msg.get("created")) or (created + i * 3600),
+                cts=_epoch_field(msg.get("created"), f"{where}: message {i}", "created")
+                or (created + i * 3600),
             )
 
     def write_containers(self) -> None:

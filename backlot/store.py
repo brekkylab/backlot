@@ -1652,6 +1652,31 @@ def slack_reply_count(conn, root_doc_id, visible_ids=None) -> int:
     return conn.execute(sql, params).fetchone()[0]
 
 
+def slack_root_created_ts(conn, root_doc_id) -> int | None:
+    """The stored second of a thread's root, for a reply that needs its thread_ts.
+
+    Unfiltered on purpose: every in-thread message already serves its root's ts as
+    `thread_ts` today, so resolving it through the root row reveals nothing an ACL
+    hides. A primary-key lookup."""
+    r = conn.execute(
+        "SELECT created_ts FROM slack_messages WHERE doc_id = ?", (root_doc_id,)
+    ).fetchone()
+    return r["created_ts"] if r else None
+
+
+def slack_last_reply_ts(conn, root_doc_id, visible_ids=None) -> int | None:
+    """MAX(created_ts) over a thread's visible replies — the second `latest_reply`
+    names. Root-plus-reply-count stopped being that once a reply could carry its own
+    clock, and it was already off when a hidden reply sat mid-thread: the count
+    shrank but the survivors kept their seconds."""
+    sql = "SELECT MAX(created_ts) FROM slack_messages WHERE thread_id = ? AND thread_seq > 0"
+    params: list = [root_doc_id]
+    clause, cparams = _acl_clause("slack_messages", visible_ids)
+    sql += clause
+    params += cparams
+    return conn.execute(sql, params).fetchone()[0]
+
+
 def slack_channels_for_principals(conn, principals) -> set[str]:
     """Channels with at least one doc granted to any of ``principals``. Starts from the
     principal-indexed ``doc_acl`` (idx_acl_pid) instead of scanning the whole slack table, so

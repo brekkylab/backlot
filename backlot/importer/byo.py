@@ -149,6 +149,74 @@ def _epoch(v):
         return None
 
 
+def _thread_seconds(where, root_sec, root_written, replies):
+    """Every second in a slack thread — the root's and each reply's — resolved together,
+    before any of the rows are written. Returns ``(root_second, [reply seconds])``.
+
+    Ordering is judged against clocks the corpus actually supplied. A root with no
+    `created` of its own holds a second hashed from its doc_id, which is not a fact
+    about the thread, and using it as the anchor made the import turn on that hash: for
+    a reply dated inside the synthesizer's own window the hash lands after the reply
+    date about half the time, so the same corpus loads or dies depending on the root's
+    doc_id, and the refusal quotes a second that appears nowhere in the corpus. When it
+    did load, the served thread had a root years before its own reply. Such a root is
+    re-grounded on the first reply that carries a clock instead.
+
+    A clockless reply still lands one second after the message before it, so a thread
+    that supplies no clocks at all resolves exactly where root+position always put it.
+    Re-grounding cannot change an existing corpus either: a reply could not carry
+    `created` at all until this branch added it, `replies.items` being closed.
+    """
+    reps = replies or []
+    written = []
+    for i, rep in enumerate(reps, start=1):
+        v = rep.get("created")
+        sec = _epoch(v)
+        if sec is None and _time_given(v):
+            # A filled-in field this importer cannot read is refused rather than
+            # defaulted: taking the default silently reinstates the metronome the field
+            # exists to replace, and the second that lands is indistinguishable from
+            # what a corpus that never wrote a clock gets.
+            raise SystemExit(
+                f"{where}: reply {i}: created is not a time this importer can read "
+                f"(got {v!r}; write epoch seconds or ISO 8601)"
+            )
+        written.append(sec)
+
+    if not root_written:
+        first = next((i for i, s in enumerate(written) if s is not None), None)
+        if first is not None:
+            # One second for each clockless reply ahead of it, and one more for the root.
+            root_sec = written[first] - (first + 1)
+
+    out = []
+    prev, defaulted = root_sec, False
+    for i, sec in enumerate(written, start=1):
+        if sec is None:
+            prev, defaulted = prev + 1, True
+            out.append(prev)
+            continue
+        if sec <= prev:
+            if defaulted:
+                # The second it collides with is one this importer chose, not one the
+                # author wrote, so say that rather than quoting it as a fact about the
+                # corpus. Two adjacent seconds cannot both hold a message: a Slack ts is
+                # identity as well as clock.
+                raise SystemExit(
+                    f"{where}: reply {i}: created must be after the message before it "
+                    f"(got {reps[i - 1].get('created')!r}), but reply {i - 1} carries no "
+                    f"created of its own and took the next free second, {prev}. Give "
+                    f"reply {i - 1} a created too, or move this one later."
+                )
+            raise SystemExit(
+                f"{where}: reply {i}: created must be after the message before it "
+                f"(got {reps[i - 1].get('created')!r}, the previous message is at {prev})"
+            )
+        prev, defaulted = sec, False
+        out.append(sec)
+    return root_sec, out
+
+
 def _service_columns(
     src,
     ex,
@@ -941,13 +1009,17 @@ class _Loader:
         # created_ts must never be NULL (the server sorts/filters by it; a NULL would need a
         # runtime null-check). Fall back to the same deterministic synth.epoch the server would have
         # synthesized for a missing ts, so the served time is unchanged — just materialized now.
-        created = _epoch(rec.get("created"))
-        if created is None:
-            created = synth.epoch(doc_id)
+        created_written = _epoch(rec.get("created"))
+        created = synth.epoch(doc_id) if created_written is None else created_written
         updated = _epoch(rec.get("updated"))
 
         replies = rec.get("replies") if src == "slack" else None
         thread_id = doc_id if replies else None
+        # Resolved before the root row is written, because a root whose own clock was
+        # synthesized may be re-grounded on the replies that do carry one.
+        created, reply_seconds = _thread_seconds(
+            where, created, created_written is not None, replies
+        )
         # gmail's own child-row array. `replies` stays Slack-only (a Slack reply is a *reply*,
         # with reactions and files); a Gmail thread is a sequence of full RFC822 messages, each
         # with its own sender, recipients and Message-ID, so it gets an array that reads like one
@@ -1189,7 +1261,6 @@ class _Loader:
                 ),
             )
 
-        prev_cts = created
         for i, rep in enumerate(replies or [], start=1):
             if not rep.get("content"):
                 raise SystemExit(f"{where}: each reply needs 'content'")
@@ -1201,32 +1272,9 @@ class _Loader:
             )
             seen.add((src, rep_id))
             # A reply is a full message (reactions/files/subtype/edited carry through).
-            # Its time is its own `created` when the corpus wrote one — the gmail
-            # treatment — else one second after the message before it, which lands every
-            # reply of a clockless thread exactly where root+position always put it.
-            # Strictly increasing is enforced rather than assumed: a Slack ts is identity
-            # as well as clock, so two thread messages sharing a second would collide at
-            # the ts every endpoint resolves, and a reply at or before its parent is a
-            # shape real Slack cannot emit.
-            rep_cts = _epoch(rep.get("created"))
-            if rep_cts is None and _time_given(rep.get("created")):
-                # A filled-in field this importer cannot read is refused rather than
-                # defaulted: taking the default silently reinstates the metronome the
-                # field exists to replace, and the value that lands is indistinguishable
-                # from what a corpus that never wrote a clock gets. A backwards clock is
-                # already refused three lines down; a malformed one is no less a typo.
-                raise SystemExit(
-                    f"{where}: reply {i}: created is not a time this importer can read "
-                    f"(got {rep.get('created')!r}; write epoch seconds or ISO 8601)"
-                )
-            if rep_cts is None:
-                rep_cts = prev_cts + 1
-            elif rep_cts <= prev_cts:
-                raise SystemExit(
-                    f"{where}: reply {i}: created must be after the message before it "
-                    f"(got {rep.get('created')!r}, the previous message is at {prev_cts})"
-                )
-            prev_cts = rep_cts
+            # Its second was resolved with the rest of the thread's in `_thread_seconds`,
+            # which is where the ordering rule and its refusals live.
+            rep_cts = reply_seconds[i - 1]
             insert(
                 rep_id,
                 rep_author,

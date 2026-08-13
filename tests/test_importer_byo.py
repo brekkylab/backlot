@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from backlot import store
+from backlot import store, synth
 from backlot.acl import Acl
 from backlot.config import Settings, get_settings
 from backlot.routers.slack import _message
@@ -489,6 +489,109 @@ def test_byo_slack_reply_carries_its_own_clock(tmp_path):
 
     ts = [_msg_ts(r) for r in thread]
     assert ts == sorted(ts) and len(set(ts)) == 4
+
+
+def test_byo_slack_clockless_root_is_grounded_on_its_replies(tmp_path):
+    """A root with no `created` of its own holds a second hashed from its doc_id, which
+    is not a fact about the thread. Left as the ordering anchor it made the import turn
+    on that hash — the same corpus loading or dying depending on the root's doc_id — and
+    when it loaded it served a root years before its own reply. It is re-grounded on the
+    first reply that carries a clock, so every doc_id resolves the same way."""
+    ids = [f"s-root-{n}" for n in range(12)]
+    load(
+        _write(
+            tmp_path,
+            [
+                {
+                    "source_type": "slack",
+                    "content": "root",
+                    "channel": "incidents",
+                    "doc_id": did,
+                    "author_email": "bob@a.com",
+                    "replies": [
+                        {"content": "quick ack", "author_email": "ava@a.com"},
+                        {
+                            "content": "the real answer",
+                            "author_email": "ava@a.com",
+                            "created": "2024-06-01T00:00:00Z",
+                        },
+                    ],
+                }
+                for did in ids
+            ],
+        ),
+        Settings(data_dir=tmp_path),
+    )
+    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    base = _epoch("2024-06-01T00:00:00Z")
+    for did in ids:  # every doc_id, not just the ones whose hash happens to sort early
+        assert [r["created_ts"] for r in store.slack_thread(conn, did)] == [
+            base - 2,  # the root, one second ahead of the clockless reply
+            base - 1,  # clockless: one second before the clock it is grounded on
+            base,
+        ], did
+
+
+def test_byo_slack_clockless_thread_ignores_the_regrounding(tmp_path):
+    """A thread that supplies no clock anywhere keeps the root's synthesized second and
+    lands every reply where root+position always put it — there is nothing to re-ground
+    on, and the whole point of the default is that such a corpus loads unchanged."""
+    load(
+        _write(
+            tmp_path,
+            [
+                {
+                    "source_type": "slack",
+                    "content": "root",
+                    "channel": "incidents",
+                    "doc_id": "s-mute",
+                    "author_email": "bob@a.com",
+                    "replies": [
+                        {"content": "one", "author_email": "ava@a.com"},
+                        {"content": "two", "author_email": "ava@a.com"},
+                    ],
+                }
+            ],
+        ),
+        Settings(data_dir=tmp_path),
+    )
+    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    base = synth.epoch("s-mute")
+    assert [r["created_ts"] for r in store.slack_thread(conn, "s-mute")] == [
+        base,
+        base + 1,
+        base + 2,
+    ]
+
+
+def test_byo_slack_reply_clock_refusal_owns_up_to_a_defaulted_second(tmp_path):
+    """When an explicit clock collides with a second this importer chose rather than one
+    the author wrote, the error says so. Two adjacent seconds cannot both hold a message
+    — a Slack ts is identity as well as clock — so the refusal stands, but quoting the
+    defaulted second as though the corpus had supplied it sent authors hunting for a
+    value that is nowhere in their file."""
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "content": "Anyone else seeing 502s?",
+                "channel": "incidents",
+                "author_email": "bob@a.com",
+                "created": "2026-02-10T18:00:00Z",
+                "replies": [
+                    {"content": "on it", "author_email": "ava@a.com"},
+                    {
+                        "content": "the real answer",
+                        "author_email": "ava@a.com",
+                        "created": "2026-02-10T18:00:01Z",
+                    },
+                ],
+            }
+        ],
+    )
+    with pytest.raises(SystemExit, match="reply 1 carries no created of its own"):
+        load(corpus, Settings(data_dir=tmp_path))
 
 
 def test_byo_slack_reply_clock_must_move_forward(tmp_path):

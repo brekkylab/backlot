@@ -273,8 +273,9 @@ def resolve_transcripts(
 
 
 def _email_for_user_id(ctx, user_id):
-    """Reverse a served `user_id` to its address via the startup index."""
-    return (ctx.get("user_index") or {}).get(user_id)
+    """Reverse a served `user_id` to its address. A unique-indexed column lookup now (#51), not
+    the startup reverse map `main._build_index` used to build."""
+    return store.fireflies_user_by_served_id(ctx["conn"], user_id)
 
 
 def resolve_transcript(_root, info, id):

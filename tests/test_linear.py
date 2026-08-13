@@ -144,6 +144,12 @@ def test_linear_team_resolves_by_key_and_uuid(client, admin_h):
         ]
         == "ENG"
     )
+    # The container's own raw name is a third, mock-only affordance on top of the two real
+    # spellings above (key, uuid) -- costs nothing, so it stays alongside them.
+    assert (
+        gql(client, '{ team(id: "engineering") { key } }', admin_h).json()["data"]["team"]["key"]
+        == "ENG"
+    )
 
 
 def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_yaml):
@@ -165,6 +171,11 @@ def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_ya
     }
     # ava cannot see lin-secret or the blackops team at all.
     assert ava == {"ENG": 2, "DES": 1}
+    # `team(id:)` applies the same scoping directly, not only through the `teams` connection ava's
+    # own count above already exercises for the LIST root.
+    hidden = gql(client, '{ team(id: "BLA") { key } }', ava_h)
+    assert hidden.json()["data"] is None
+    assert "Entity not found" in hidden.json()["errors"][0]["message"]
 
 
 def test_linear_state_type_is_linears_category(client, admin_h):
@@ -952,3 +963,26 @@ def test_linear_issue_resolves_first_by_doc_id_when_identifier_repeats(tmp_path)
         h = {"Authorization": settings.admin_token}
         r = gql(client, '{ issue(id: "DUP-1") { title } }', h)
         assert r.json()["data"]["issue"]["title"] == "First"
+
+
+def test_linear_team_key_collision_resolves_to_the_first_team_by_name(tmp_path):
+    """`synth.linear_team_key` is NOT injective: "night-shift" and "north-star" both reduce to
+    "NS" (see the schema comment on `linear_teams`). The resolution must keep picking the same
+    team every time -- the first by container NAME -- or a key that used to resolve to one team
+    silently resolves to a different one after a reimport."""
+    assert synth.linear_team_key("night-shift") == synth.linear_team_key("north-star") == "NS"
+    docs = [
+        {
+            "source_type": "linear",
+            "team": t,
+            "doc_id": f"{t}-1",
+            "title": t,
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for t in ("night-shift", "north-star")
+    ]
+    with corpus_client(tmp_path, docs) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+        got = gql(client, '{ team(id: "NS") { name } }', h).json()["data"]["team"]
+        assert got["name"] == "night-shift"  # "night-shift" < "north-star" by name

@@ -1628,12 +1628,35 @@ class _Loader:
     def write_containers(self) -> None:
         """The per-service grouping rows (``slack_channels``, ``linear_teams``, ``gdrive_folders``,
         …). Deferred to the end of a load rather than written per record: a container's owning
-        group is whatever its records agreed on, and the last one wins."""
+        group is whatever its records agreed on, and the last one wins.
+
+        Linear also gets ``served_id``/``served_key`` here, unconditionally for every row: the
+        other two spellings ``team(id:)`` accepts alongside this table's own primary key (the raw
+        name), replacing the reverse map ``main._build_index`` used to rebuild on every boot
+        (#51). No probe -- like gmail/notion's own served ids, the raw seed is stored as-is; a
+        collision is not a realistic concern at this seed's digest width (see the schema comment
+        on ``idx_linear_teams_served``), but it must still be a LOUD import failure rather than a
+        silent one if it ever happened -- hence the upsert keyed explicitly on ``team`` (this
+        table's PRIMARY KEY) below, not a blanket ``INSERT OR REPLACE``: unlike the doc tables'
+        own upsert (see ``insert``'s comment on this exact hazard), ``OR REPLACE`` here would
+        resolve a ``served_id`` collision by silently deleting the OTHER team's row instead of
+        raising. ``served_key`` needs no such guard -- it isn't unique to begin with (see
+        ``linear_team_by_served_key``)."""
         for (src, name), group_id in self.containers.items():
             gtable, gcol = store.GROUPING[src]
-            self.conn.execute(
-                f"INSERT OR REPLACE INTO {gtable}({gcol}, group_id) VALUES (?,?)", (name, group_id)
-            )
+            if src == "linear":
+                self.conn.execute(
+                    f"INSERT INTO {gtable}({gcol}, group_id, served_id, served_key) "
+                    f"VALUES (?,?,?,?) ON CONFLICT({gcol}) DO UPDATE SET "
+                    "group_id=excluded.group_id, served_id=excluded.served_id, "
+                    "served_key=excluded.served_key",
+                    (name, group_id, synth.linear_team_id(name), synth.linear_team_key(name)),
+                )
+            else:
+                self.conn.execute(
+                    f"INSERT OR REPLACE INTO {gtable}({gcol}, group_id) VALUES (?,?)",
+                    (name, group_id),
+                )
 
     def resolve_cross_references(self) -> None:
         """Resolve the links whose target may only have arrived on a later record."""
@@ -2042,6 +2065,19 @@ def load_records(
     for email, name in users.items():
         conn.execute(
             "INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (email, "user", name, email)
+        )
+    # Every USER principal, unconditionally -- no org/group row ever reaches this loop, so there
+    # is no NULL case to get wrong (see the schema comment on fireflies_users, #51). Replaces the
+    # reverse map `main._build_index` used to rebuild from `list_users` on every boot. Keyed
+    # explicitly on `email` (this table's PRIMARY KEY), not a blanket `INSERT OR REPLACE`: a
+    # `served_id` collision between two DIFFERENT emails must raise through the unique index
+    # rather than have `OR REPLACE` silently delete the other email's row out from under it (the
+    # same hazard the doc tables' own upsert avoids -- see `insert`'s comment on it).
+    for email in users:
+        conn.execute(
+            "INSERT INTO fireflies_users(email, served_id) VALUES (?,?) "
+            "ON CONFLICT(email) DO UPDATE SET served_id=excluded.served_id",
+            (email, synth.fireflies_user_id(email)),
         )
     loader.write_containers()
     for g, email in memberships:

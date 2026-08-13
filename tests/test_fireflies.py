@@ -6,6 +6,10 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import sqlite3
+
+import pytest
+
 from backlot import store
 from tests._helpers import client_for, corpus_client, gql, tiny_corpus
 
@@ -459,7 +463,7 @@ def test_fireflies_no_openapi_entry_for_the_graphql_route(tmp_path):
         assert "fireflies" not in openapi.SOURCE_PREFIXES
 
 
-def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path):
+def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path, monkeypatch):
     """`users` must be the people with an ACCOUNT. The mock's principals table registers every
     internal reference across every source — 16,034 on the deployed bench corpus, of whom 327 have
     a token — so serving all of them would be wrong (they have no Fireflies account) AND a 1.6 MB
@@ -472,13 +476,19 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
     from backlot import store, synth
 
     settings = tiny_corpus(tmp_path, FIREFLIES_CORPUS)
-    # A principal the corpus names but who has no token — what an ERB append creates. Inserted
-    # BEFORE startup because the user_id -> email index is built in the lifespan, exactly as
-    # Linear's by-id indexes are.
+    # A principal the corpus names but who has no token — what an ERB append creates. `served_id`
+    # -> email is written AT IMPORT now (#51), not rebuilt from `principals` on every boot, so a
+    # principal inserted straight into the table — bypassing byo's own principal-writing loop —
+    # needs its own `fireflies_users` row too, exactly as a real out-of-band write would have to
+    # supply one.
     conn = store.connect_rw(settings.db_path)
     conn.execute(
         "INSERT OR REPLACE INTO principals(id, type, display_name, email) VALUES (?,?,?,?)",
         ("ghost@acme.com", "user", "Ghost Person", "ghost@acme.com"),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO fireflies_users VALUES (?,?)",
+        ("ghost@acme.com", synth.fireflies_user_id("ghost@acme.com")),
     )
     conn.commit()
     conn.close()
@@ -497,6 +507,28 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
             i=synth.fireflies_user_id("ghost@acme.com"),
         )["data"]["user"]
         assert got["email"] == "ghost@acme.com" and got["name"] == "Ghost Person"
+
+    # No probe (#51): `synth.fireflies_user_id` draws from a 96-bit digest, so the raw seed is
+    # stored as-is -- a forced collision between two DIFFERENT users must fail the import loudly
+    # through `idx_fireflies_user_served`, not silently let one user's row overwrite the other's.
+    # A fresh two-host corpus, not FIREFLIES_CORPUS: that fixture's only ACCOUNT is ava (organizer
+    # ops@acme.com never becomes a `type='user'` principal), so it has just one row to collide.
+    monkeypatch.setattr(synth, "fireflies_user_id", lambda email: "dup-user-id")
+    collide_docs = [
+        {
+            "source_type": "fireflies",
+            "doc_id": f"ff-collide-{i}",
+            "channel": "general",
+            "title": "t",
+            "host_email": e,
+            "duration": 1.0,
+            "created": "2026-01-01T00:00:00Z",
+            "sentences": [{"speaker_name": "x", "author_email": e, "start_time": 0, "text": "hi"}],
+        }
+        for i, e in enumerate(("one@acme.com", "two@acme.com"))
+    ]
+    with pytest.raises(sqlite3.IntegrityError):
+        tiny_corpus(tmp_path / "collide", collide_docs)
 
 
 def _roster_emails(settings):

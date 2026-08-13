@@ -57,9 +57,6 @@ async def graphql(request: Request):
         "caller_email": None if caller.is_admin else caller.email,
         "org": getattr(state.acl, "org_name", None),
         "org_domain": get_settings().org_domain,
-        # user_id -> email, built once at startup (backlot.main), so `user(id:)` and the
-        # `transcripts(user_id:)` filter can reverse a served id without scanning.
-        "user_index": state.index.get("fireflies_users", {}),
         # The workspace roster: the addresses that can actually authenticate. `users` is scoped to
         # it, because the principals table holds every person the whole corpus names (16k at the
         # scale measured) and almost none of them have a Fireflies account. See resolve_users.

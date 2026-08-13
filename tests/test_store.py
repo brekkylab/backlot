@@ -217,6 +217,12 @@ def test_users(db):
     assert "ava@acme.com" in emails
     assert store.get_user(db, "ava@acme.com") is not None
     assert store.get_user(db, "nobody@acme.com") is None
+    # `fireflies_users` is written at import, one row per user principal (#51) -- a unique-indexed
+    # column lookup now, not the reverse map `main._build_index` used to build from `list_users`.
+    assert store.fireflies_user_by_served_id(db, synth.fireflies_user_id("ava@acme.com")) == (
+        "ava@acme.com"
+    )
+    assert store.fireflies_user_by_served_id(db, "not-a-real-served-id") is None
 
 
 def test_jcol_parses_json_columns(db):
@@ -1499,6 +1505,55 @@ def test_linear_comments_across_the_corpus(db):
 
 def test_linear_team_issue_counts(db):
     assert store.linear_team_issue_counts(db) == {"engineering": 3, "design": 1, "blackops": 1}
+
+
+def test_linear_team_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
+    """`served_id` (the team UUID) and `served_key` (its short key, e.g. "ENG") are the OTHER two
+    spellings `team(id:)` accepts, alongside the container's own raw name -- already a plain
+    primary-key lookup (`get_container`). Both are written at import now (#51), not rebuilt into a
+    startup reverse map by `main._build_index`.
+
+    `synth.linear_team_key` is NOT injective: "night-shift" and "north-star" both reduce to "NS".
+    `served_key` therefore carries no UNIQUE index, and the tie must break by team NAME order --
+    the same order `store.list_containers` returns and `main._build_index`'s old `setdefault` loop
+    walked -- so a key that used to resolve to one team keeps resolving to that same team."""
+    from tests._helpers import build_corpus
+
+    assert synth.linear_team_key("night-shift") == synth.linear_team_key("north-star") == "NS"
+    docs = [
+        {
+            "source_type": "linear",
+            "team": t,
+            "doc_id": f"{t}-1",
+            "title": "x",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for t in ("night-shift", "north-star")
+    ]
+    s = build_corpus(tmp_path, docs)
+    conn = store.connect_ro(s.db_path)
+    rows = {
+        r["team"]: r for r in conn.execute("SELECT team, served_id, served_key FROM linear_teams")
+    }
+    assert rows["night-shift"]["served_id"] == synth.linear_team_id("night-shift")
+    assert rows["north-star"]["served_id"] == synth.linear_team_id("north-star")
+    assert rows["night-shift"]["served_key"] == rows["north-star"]["served_key"] == "NS"
+
+    assert store.linear_team_by_served_id(conn, rows["night-shift"]["served_id"]) == "night-shift"
+    assert store.linear_team_by_served_id(conn, rows["north-star"]["served_id"]) == "north-star"
+    # The collision: both reduce to "NS", and the FIRST by name ("night-shift" < "north-star")
+    # must keep winning.
+    assert store.linear_team_by_served_key(conn, "NS") == "night-shift"
+    assert store.linear_team_by_served_key(conn, "nope") is None
+    conn.close()
+
+    # No probe (#51): `synth.linear_team_id` draws from `_uuid_from`'s full digest space, so the
+    # raw seed is stored as-is -- a forced collision must fail the import loudly through
+    # `idx_linear_teams_served`, not silently let one team's row overwrite the other's.
+    monkeypatch.setattr(synth, "linear_team_id", lambda name: "dup-team-uuid")
+    with pytest.raises(sqlite3.IntegrityError):
+        build_corpus(tmp_path / "collide", docs)
 
 
 def test_linear_distinct_values_feed_the_reverse_index(db):

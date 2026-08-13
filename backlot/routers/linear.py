@@ -64,10 +64,9 @@ async def graphql(request: Request):
         # service identity's address is built from (an org NAME is not a domain).
         "org": getattr(state.acl, "org_name", None),
         "org_domain": get_settings().org_domain,
-        # uuid/key -> team, built once at startup (backlot.main). Issue resolution (uuid or
-        # identifier) reads a stored column instead -- see store.linear_by_served_id /
-        # linear_issue_by_identifier, called directly by the resolvers (#51).
-        "team_index": state.index.get("linear_teams", {}),
+        # Team resolution (uuid, key, or raw name) reads stored columns instead of a startup
+        # reverse map now -- see store.linear_team_by_served_id / linear_team_by_served_key /
+        # get_container, called directly by resolve_team (#51, task 9).
         # Reverse maps for the by-id roots the SDK's lazy relation accessors call.
         "user_index": state.index.get("linear_users", {}),
         "state_index": state.index.get("linear_states", {}),

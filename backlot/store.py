@@ -591,12 +591,37 @@ CREATE TABLE IF NOT EXISTS confluence_spaces (space   TEXT PRIMARY KEY, group_id
 CREATE TABLE IF NOT EXISTS notion_teamspaces (teamspace TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS s3_buckets        (bucket  TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS hubspot_object_types (object_type TEXT PRIMARY KEY, group_id TEXT);
-CREATE TABLE IF NOT EXISTS linear_teams      (team    TEXT PRIMARY KEY, group_id TEXT);
+-- `served_id` (`synth.linear_team_id`, a UUID) and `served_key` (`synth.linear_team_key`, "ENG")
+-- are the OTHER two spellings real `team(id:)` accepts, alongside this table's own primary key
+-- (the raw container name -- a mock affordance, see resolve_team's docstring). Both are written
+-- unconditionally at import (backlot.importer.byo's write_containers), replacing the reverse map
+-- `main._build_index` used to rebuild on every boot (#51). `served_key` carries NO unique index:
+-- `linear_team_key` is not injective -- two containers can reduce to one key -- so a lookup
+-- breaks the tie by team NAME order instead (see linear_team_by_served_key).
+CREATE TABLE IF NOT EXISTS linear_teams (
+    team TEXT PRIMARY KEY, group_id TEXT, served_id TEXT, served_key TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_linear_teams_served ON linear_teams(served_id);
+CREATE INDEX IF NOT EXISTS idx_linear_teams_served_key ON linear_teams(served_key);
 CREATE TABLE IF NOT EXISTS fireflies_channels (channel TEXT PRIMARY KEY, group_id TEXT);
 
 CREATE TABLE IF NOT EXISTS principals (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, display_name TEXT, email TEXT
 );
+
+-- Fireflies' own per-user id (`synth.fireflies_user_id`, a one-way hash of the address) needs a
+-- row to live on, but `principals` also holds org/group rows the id is meaningless for (only
+-- `type = 'user'` rows have a Fireflies account -- see list_users), and #51's whole point is
+-- keeping vendor concerns off the deliberately central roster. A dedicated table sidesteps both:
+-- every row here IS a user, written unconditionally (backlot.importer.byo), so there is no NULL
+-- branch and no column that stays empty for every non-user principal.
+CREATE TABLE IF NOT EXISTS fireflies_users (
+    email TEXT PRIMARY KEY REFERENCES principals(id), served_id TEXT NOT NULL
+);
+-- `synth.fireflies_user_id` is 24 hex characters (96 bits) -- like gmail/notion's own served ids,
+-- the raw seed is stored as-is and a collision (vanishingly unlikely at any real scale) fails the
+-- import loudly through this index rather than resolving silently.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fireflies_user_served ON fireflies_users(served_id);
 
 CREATE TABLE IF NOT EXISTS group_members (
     group_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (group_id, user_id)
@@ -2196,6 +2221,28 @@ def get_container(conn, source_type, name) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def linear_team_by_served_id(conn, served_id) -> str | None:
+    """Resolve a team UUID (`synth.linear_team_id`) to its container name. Unique-indexed, so a
+    plain column lookup rather than the reverse map `main._build_index` used to build (#51)."""
+    row = conn.execute("SELECT team FROM linear_teams WHERE served_id = ?", (served_id,)).fetchone()
+    return row["team"] if row else None
+
+
+def linear_team_by_served_key(conn, served_key) -> str | None:
+    """Resolve a team KEY (`synth.linear_team_key`, e.g. "ENG") to its container name.
+
+    The key is NOT injective -- two containers can reduce to the same one -- so `served_key`
+    carries no UNIQUE index, and this breaks the tie exactly as the reverse map it replaced did:
+    `main._build_index`'s old loop walked `list_containers`'s own team-NAME order and kept the
+    FIRST team a key was seen on (`setdefault`). `ORDER BY team LIMIT 1` reproduces that -- change
+    either without the other and a key that used to resolve to one team silently resolves to a
+    different one."""
+    row = conn.execute(
+        "SELECT team FROM linear_teams WHERE served_key = ? ORDER BY team LIMIT 1", (served_key,)
+    ).fetchone()
+    return row["team"] if row else None
+
+
 def list_users(conn) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT id, display_name, email FROM principals WHERE type = 'user' ORDER BY id"
@@ -2206,6 +2253,15 @@ def get_user(conn, email) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT id, display_name, email FROM principals WHERE type = 'user' AND id = ?", (email,)
     ).fetchone()
+
+
+def fireflies_user_by_served_id(conn, served_id) -> str | None:
+    """Reverse a served Fireflies `user_id` (`synth.fireflies_user_id`) to the address it hashes.
+    Unique-indexed column lookup, not the reverse map `main._build_index` used to build (#51)."""
+    row = conn.execute(
+        "SELECT email FROM fireflies_users WHERE served_id = ?", (served_id,)
+    ).fetchone()
+    return row["email"] if row else None
 
 
 def user_group_ids(conn, email) -> list[str]:

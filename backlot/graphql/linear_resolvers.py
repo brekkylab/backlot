@@ -822,13 +822,25 @@ def resolve_issue(_root, info, id):
 
 
 def resolve_team(_root, info, id):
-    """``team(id:)`` takes a team UUID or its key (``ENG``).
+    """``team(id:)`` takes a team UUID, its key (``ENG``), or the container's own raw name -- a
+    mock affordance on top of the two real spellings, kept and documented because it costs nothing
+    (see the schema comment on ``linear_teams``). Tried in that order, so the UUID always wins a
+    three-way tie: it is unique-indexed, so a match there can never be ambiguous, while a key
+    that two containers reduce to breaks the tie by team-name order (see
+    ``store.linear_team_by_served_key``) before the raw-name lookup even runs.
 
     Scoped the same way ``teams`` is: a team the caller can see no issue in is not a team they can
     see. Without this the two roots contradict each other — ``teams`` would omit the team while
     ``team(id: "BLA")`` confirmed its existence and name."""
     ctx = _ctx(info)
-    container = ctx.get("team_index", {}).get(str(id))
+    conn = ctx["conn"]
+    sid = str(id)
+    container = store.linear_team_by_served_id(conn, sid)
+    if container is None:
+        container = store.linear_team_by_served_key(conn, sid)
+    if container is None:
+        row = store.get_container(conn, "linear", sid)
+        container = row["name"] if row else None
     if (
         container is not None
         and ctx["visible_ids"] is not None

@@ -1,10 +1,16 @@
 """FastAPI app hosting every vendor mock under path prefixes.
 
 Startup opens the read-only SQLite DB, loads the ACL/token map, and builds the reverse indexes
-still needed for O(1) get-by-id: Linear's and Fireflies' one-way-hashed entity ids, none of which
-have a column of their own to be stored in. Every per-document served id (confluence/gmail/
+still needed for O(1) get-by-id: six of Linear's one-way-hashed entity ids (`linear_users`,
+`linear_states`, `linear_projects`, `linear_cycles`, `linear_labels`, `linear_releases`), none of
+which have a column of their own to be stored in -- they are `SELECT DISTINCT` projections over
+`linear_issues` with no entity table to hold one. Every per-document served id (confluence/gmail/
 notion/hubspot/linear/github/jira, #51) now resolves through a stored column instead — see
-backlot.store's SERVED_ID. Jira's own project<->prefix maps (`jira_project_keys`/
+backlot.store's SERVED_ID -- and so, since task 9, do Linear's team id/key (`store.
+linear_team_by_served_id`/`linear_team_by_served_key`, on `linear_teams`) and Fireflies' user id
+(`store.fireflies_user_by_served_id`, on `fireflies_users`): both reverse a hash of a value
+belonging to a real row (a team, a principal), not a doc_id, so they got their own small readers
+instead of an entry in SERVED_ID. Jira's own project<->prefix maps (`jira_project_keys`/
 `jira_project_containers`) also stay here: they are CONTAINER-level (one entry per project, not
 per document), and the deferred assignment pass in backlot.importer.byo (`resolve_jira_numbers`)
 needs the corpus-provided prefix to compose a key at serve time (see routers.atlassian).
@@ -44,14 +50,12 @@ from backlot.routers import (
 
 def _build_index(conn) -> dict:
     idx = {
-        "linear_teams": {},
         "linear_users": {},
         "linear_states": {},
         "linear_projects": {},
         "linear_cycles": {},
         "linear_labels": {},
         "linear_releases": {},
-        "fireflies_users": {},
         # container -> the project-key prefix its corpus-provided issue keys carry, and
         # the reverse — so `project = PAY` JQL, the project picker and every issue's
         # `fields.project.key` speak the spelling the documents cite. CONTAINER-level (one
@@ -95,17 +99,6 @@ def _build_index(conn) -> dict:
         if prefix:
             idx["jira_project_keys"].setdefault(r["container"], prefix)
             idx["jira_project_containers"].setdefault(prefix.upper(), r["container"])
-    # `team(id:)` accepts the team UUID *or* its key (ENG) — one dict resolves either spelling
-    # back to the container. Two containers can reduce to one team key, so setdefault: the first
-    # row in name order wins and the mapping stays stable across restarts. (`issue(id:)`'s own
-    # UUID/identifier resolution is a stored column now, not built here — see
-    # store.linear_by_served_id / linear_issue_by_identifier, #51.)
-    for r in store.list_containers(conn, "linear"):
-        idx["linear_teams"][synth.linear_team_id(r["name"])] = r["name"]
-        idx["linear_teams"].setdefault(synth.linear_team_key(r["name"]), r["name"])
-        # A mock affordance on top of the two real spellings: the container's own name. Costs
-        # nothing and saves a caller from having to derive `ENG` from `engineering` by hand.
-        idx["linear_teams"].setdefault(r["name"], r["name"])
     # `@linear/sdk` resolves an issue's relations LAZILY: `await issue.state` issues a fresh
     # `workflowState(id: <uuid>)`. Those uuids are one-way hashes of a name, so the only way to
     # answer is a reverse map built here. Each source list is a DISTINCT over one column (see
@@ -123,12 +116,6 @@ def _build_index(conn) -> dict:
         idx["linear_labels"][synth.linear_label_id(name)] = name
     for name in distinct["releases"]:
         idx["linear_releases"][synth.linear_release_id(name)] = name
-    # Fireflies needs NO transcript-id index: `transcript(id:)` resolves against the stored
-    # `transcript_id` column (indexed), because unlike Linear's identifier that id is unique by
-    # construction. Only `user_id` needs reversing — it is a one-way hash of an address, and both
-    # `user(id:)` and the `transcripts(user_id:)` filter accept it.
-    for r in store.list_users(conn):
-        idx["fireflies_users"][synth.fireflies_user_id(r["email"])] = r["email"]
     return idx
 
 

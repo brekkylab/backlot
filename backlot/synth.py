@@ -118,7 +118,10 @@ def gmail_message_id(key: str) -> str:
 
     Threads share this space, as they do in real Gmail — a thread key is the root message's
     ``doc_id``, so a single-message thread reports the same value for ``id`` and ``threadId``, which
-    is exactly what the real API does. That is also why one reverse index resolves both."""
+    is exactly what the real API does. That is also why the stored ``served_id`` column and a
+    re-hash of the thread key resolve both: a message's own id is a column read
+    (``store.gmail_by_served_id``), while its ``threadId`` re-derives this same function over
+    ``thread_id or doc_id`` rather than reading the root row (see ``routers.google._gmail_ids``)."""
     return f"{hnum(key, salt='msg', length=16) % GMAIL_ID_MAX:016x}"
 
 

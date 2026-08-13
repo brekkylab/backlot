@@ -96,6 +96,13 @@ def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     ).json()
     assert m["id"] == hexid
     assert base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode() == row["content"]
+    # The stored column is lowercase hex, but a client may spell the id in either case (Gmail's ids
+    # are case-insensitive hex) -- resolution must fold case rather than requiring the exact stored
+    # spelling. `store.gmail_by_served_id` is the one place that has to do this.
+    upper = client.get(
+        f"/gmail/v1/users/me/messages/{hexid.upper()}", headers=admin_h, params={"format": "full"}
+    ).json()
+    assert upper["id"] == m["id"]
 
 
 def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin_h, ro_conn):
@@ -190,9 +197,11 @@ def test_gmail_an_unparsable_id_is_an_invalid_argument(client, admin_h, mid):
 
 
 def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_conn):
-    """Resolving through the index must not become a way around the ACL. The index is global — it
-    maps every hex id, visible or not — so the ACL read after it is the only thing standing between
-    a scoped caller and someone else's mail. The CFO's comp review is granted to cfo alone."""
+    """Resolving a served id must not become a way around the ACL. `served_id` is a column, not a
+    per-caller view — it names the SAME row regardless of who asks — so `visible_ids` has to be
+    part of the query that reads it (`store.gmail_by_served_id`'s ACL-scoped lookup), not a
+    separate check applied only after an unscoped resolve. The CFO's comp review is granted to cfo
+    alone."""
     from backlot import synth
 
     row = ro_conn.execute(

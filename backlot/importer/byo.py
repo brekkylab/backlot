@@ -1292,6 +1292,13 @@ class _Loader:
             c_ts = _epoch(c.get("created_ts")) or (prev_c_ts + 1)
             prev_c_ts = max(prev_c_ts, c_ts)
             _cid = c.get("id") or f"{doc_id}::c{j}"
+            # `served_id` MUST stay out of this column list. This INSERT is still `OR REPLACE`
+            # (unlike the per-document insert above, its conflict target is just `id`, which has no
+            # second unique index, so a same-id re-import is harmless either way) — folding
+            # `served_id` in here would put a served_id collision back through OR REPLACE's
+            # silently-delete-the-row behavior (see the per-document insert's comment). Leaving it
+            # out means a fresh row always lands with `served_id` NULL, and the plain UPDATE right
+            # below (no OR REPLACE) is what actually enforces the UNIQUE index, raising on conflict.
             conn.execute(
                 f"INSERT OR REPLACE INTO {ctable}"
                 "(id, doc_id, seq, author_email, body, created_ts, reactions) VALUES (?,?,?,?,?,?,?)",

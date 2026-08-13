@@ -452,30 +452,41 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
 _GMAIL_HEX = re.compile(r"[0-9a-fA-F]+\Z")
 
 
-def _gmail_resolve(conn, served_id: str) -> str | None:
-    """The ``doc_id`` behind a served Gmail id, or ``None`` if it names nothing.
+def _gmail_check_shape(served_id: str) -> None:
+    """Raises if ``served_id`` isn't a parsable, in-range hex id — the check every gmail
+    id-resolving path must run BEFORE any lookup, so an unparsable id is 400 INVALID_ARGUMENT
+    regardless of whether it would otherwise resolve.
 
-    An id that Gmail could not parse at all raises instead: measured, the real API answers 400
-    INVALID_ARGUMENT "Invalid id value" for a non-hex id or one >= 2**63, and 404 only for a
-    well-formed id it does not hold. `7fffffffffffffff` is well-formed; `8000000000000000` is
-    not.
-
-    No ``visible_ids`` here on purpose: this only resolves the *shape*-valid id to a doc_id. The
-    ACL read stays in the caller (`_gmail_doc` / `store.gmail_thread`), so an id that resolves to a
-    document the caller cannot see is not-found, never a different answer."""
+    Measured against the real API: 400 INVALID_ARGUMENT "Invalid id value" for a non-hex id or one
+    >= 2**63, 404 only for a well-formed id it does not hold. `7fffffffffffffff` is well-formed;
+    `8000000000000000` is not."""
     if not _GMAIL_HEX.fullmatch(served_id) or int(served_id, 16) >= synth.GMAIL_ID_MAX:
         raise gerr.invalid_id_value()
+
+
+def _gmail_resolve(conn, served_id: str) -> str | None:
+    """The ``doc_id`` behind a served Gmail id, or ``None`` if it names nothing. Needed only where a
+    doc_id, not a row, is the thing being resolved — `gmail_thread_get`'s `thread_key` — since
+    `store.gmail_thread` matches on `thread_id`, not `served_id`.
+
+    No ``visible_ids`` here on purpose: this only resolves the *shape*-valid id to a doc_id. The
+    ACL read stays in the caller (`store.gmail_thread` for threads; `_gmail_doc` collapses
+    resolution and the ACL read into one query for a single message, see below), so an id that
+    resolves to a document the caller cannot see is not-found, never a different answer."""
+    _gmail_check_shape(served_id)
     row = store.gmail_by_served_id(conn, served_id)
     return row["doc_id"] if row is not None else None
 
 
 def _gmail_doc(conn, ids, served_id: str):
-    """The visible row behind a served id. Resolution happens before the ACL read, so an id that
-    resolves to a document the caller cannot see is still not-found, never a different answer."""
-    doc_id = _gmail_resolve(conn, served_id)
-    if doc_id is None:
-        return None
-    return store.get_document(conn, "gmail", doc_id, visible_ids=ids)
+    """The visible row behind a served id, one query: shape validation first (400 before any
+    lookup), then a single ACL-scoped column lookup — not a resolve-then-refetch, which would cost
+    two full-row reads of the same wide table per call. Resolution and the ACL read still can't be
+    pulled apart: the query is scoped to `visible_ids` from the start, so a served_id that names a
+    document the caller cannot see comes back as no row, i.e. not-found, never a different answer
+    (that invariant no longer needs two round trips to hold, just the one WHERE clause)."""
+    _gmail_check_shape(served_id)
+    return store.gmail_by_served_id(conn, served_id, visible_ids=ids)
 
 
 def _gmail_ids(row) -> tuple[str, str]:

@@ -518,6 +518,74 @@ def test_byo_slack_reply_clock_must_move_forward(tmp_path):
         load(corpus, Settings(data_dir=tmp_path))
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "2026-05-01 03:00 PM",  # a time, in a format nothing here reads
+        "2026-13-01T00:00:00Z",  # month 13
+        "yesterday",
+    ],
+)
+def test_byo_slack_reply_clock_must_be_readable(tmp_path, bad):
+    """A filled-in `created` the importer cannot read is refused, not defaulted. Taking
+    the default would silently reinstate the metronome the field exists to replace, and
+    land a second indistinguishable from what a corpus that wrote no clock at all gets."""
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "content": "root",
+                "channel": "incidents",
+                "author_email": "bob@a.com",
+                "created": "2026-05-01T02:00:00Z",
+                "replies": [{"content": "typo", "author_email": "ava@a.com", "created": bad}],
+            }
+        ],
+    )
+    with pytest.raises(SystemExit, match="not a time this importer can read"):
+        load(corpus, Settings(data_dir=tmp_path))
+
+
+def test_byo_epoch_seconds_as_a_string(tmp_path):
+    """Epoch seconds written as a string are read, including the `<sec>.<frac>` form a
+    Slack ts takes — the shape an `edited.ts` in the same record is already in, and the
+    natural thing to write next to it. ISO is still tried first, so an 8-digit
+    basic-format date stays a 2026 date rather than becoming a 1970 second."""
+    import datetime as dt
+
+    from backlot.importer.byo import _epoch
+
+    assert _epoch("1770746760") == 1770746760
+    assert _epoch("1770746760.000000") == 1770746760
+    assert dt.datetime.fromtimestamp(_epoch("20260501"), dt.timezone.utc).year == 2026
+    load(
+        _write(
+            tmp_path,
+            [
+                {
+                    "source_type": "slack",
+                    "content": "root",
+                    "channel": "incidents",
+                    "doc_id": "s-str",
+                    "author_email": "bob@a.com",
+                    "created": "1770746400",
+                    "replies": [
+                        {
+                            "content": "six minutes later",
+                            "author_email": "ava@a.com",
+                            "created": "1770746760.000000",
+                        }
+                    ],
+                }
+            ],
+        ),
+        Settings(data_dir=tmp_path),
+    )
+    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    assert [r["created_ts"] for r in store.slack_thread(conn, "s-str")] == [1770746400, 1770746760]
+
+
 def test_notion_byo_load(tmp_path):
     corpus = _write(
         tmp_path,

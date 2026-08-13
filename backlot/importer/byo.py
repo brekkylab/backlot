@@ -114,12 +114,20 @@ def _principal(pid: str) -> tuple[str, str]:
     return ("user", pid) if "@" in pid else ("group", pid)
 
 
+def _time_given(v) -> bool:
+    """Whether the corpus wrote a time in this field at all, as opposed to leaving it
+    out. Told apart from an unreadable one, which ``_epoch`` also answers None for: a
+    field the author filled in with something this importer cannot read is a typo to
+    report, not a default to take."""
+    return v is not None and v != ""
+
+
 def _epoch(v):
     """Parse a BYO time (epoch seconds int/float, or ISO 8601 string) -> unix seconds.
 
     Returns None for a missing/unparseable value, so the router falls back to the
     deterministic synthesized timestamp."""
-    if v is None or v == "":
+    if not _time_given(v):
         return None
     if isinstance(v, bool):
         return None
@@ -130,6 +138,13 @@ def _epoch(v):
     s = str(v).strip().replace("Z", "+00:00")
     try:
         return int(datetime.fromisoformat(s).timestamp())
+    except ValueError:
+        pass
+    # Epoch seconds written as a string — `"1770746760"`, or the `<sec>.<frac>` a Slack
+    # ts takes, which is the form an `edited.ts` next door is already in. ISO is tried
+    # first, so an 8-digit basic-format date stays a date rather than becoming a second.
+    try:
+        return int(float(s))
     except ValueError:
         return None
 
@@ -1194,6 +1209,16 @@ class _Loader:
             # the ts every endpoint resolves, and a reply at or before its parent is a
             # shape real Slack cannot emit.
             rep_cts = _epoch(rep.get("created"))
+            if rep_cts is None and _time_given(rep.get("created")):
+                # A filled-in field this importer cannot read is refused rather than
+                # defaulted: taking the default silently reinstates the metronome the
+                # field exists to replace, and the value that lands is indistinguishable
+                # from what a corpus that never wrote a clock gets. A backwards clock is
+                # already refused three lines down; a malformed one is no less a typo.
+                raise SystemExit(
+                    f"{where}: reply {i}: created is not a time this importer can read "
+                    f"(got {rep.get('created')!r}; write epoch seconds or ISO 8601)"
+                )
             if rep_cts is None:
                 rep_cts = prev_cts + 1
             elif rep_cts <= prev_cts:

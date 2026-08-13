@@ -122,6 +122,29 @@ def _time_given(v) -> bool:
     return v is not None and v != ""
 
 
+def _seconds(n):
+    """A number as unix seconds, or None if it is not a second this mock can serve.
+
+    Two ways a number gets here without being a time. ``inf`` and ``nan`` have no
+    integer form at all — `json.loads` accepts both as bare literals, so a corpus can
+    hand them over and `int()` raises rather than returning anything. And a finite
+    second outside `datetime`'s year 1..9999 cannot be rendered: the servers date a row
+    through `datetime.fromtimestamp`, so milliseconds written where seconds belong
+    imports clean and then raises at SERVE time, well after the import said it worked.
+    Asked of the same function the servers use rather than against a hardcoded bound."""
+    from datetime import datetime, timezone
+
+    try:
+        sec = int(n)
+    except (ValueError, OverflowError):  # nan, inf
+        return None
+    try:
+        datetime.fromtimestamp(sec, tz=timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return sec
+
+
 def _epoch(v):
     """Parse a BYO time (epoch seconds int/float, or ISO 8601 string) -> unix seconds.
 
@@ -132,7 +155,7 @@ def _epoch(v):
     if isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
-        return int(v)
+        return _seconds(v)
     from datetime import datetime
 
     s = str(v).strip().replace("Z", "+00:00")
@@ -144,7 +167,7 @@ def _epoch(v):
     # ts takes, which is the form an `edited.ts` next door is already in. ISO is tried
     # first, so an 8-digit basic-format date stays a date rather than becoming a second.
     try:
-        return int(float(s))
+        return _seconds(float(s))
     except ValueError:
         return None
 

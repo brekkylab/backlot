@@ -650,6 +650,58 @@ def test_byo_slack_reply_clock_must_be_readable(tmp_path, bad):
         load(corpus, Settings(data_dir=tmp_path))
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "inf",
+        "-inf",
+        "Infinity",
+        "1e400",  # overflows to inf
+        "1e309",
+        "nan",
+        "1e18",  # finite, but past the last year datetime can render
+        "1770746760000",  # milliseconds where seconds belong
+    ],
+)
+def test_byo_reply_clock_refuses_unservable_numbers(tmp_path, bad):
+    """A number with no usable second refuses the import like any other unreadable
+    value. `int()` raises rather than returning for inf and nan, and a finite second
+    past year 9999 imports clean and then raises when a router dates the row — so
+    neither may reach the database, and neither may escape as a traceback."""
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "content": "root",
+                "channel": "incidents",
+                "author_email": "bob@a.com",
+                "created": "2026-05-01T02:00:00Z",
+                "replies": [{"content": "x", "author_email": "ava@a.com", "created": bad}],
+            }
+        ],
+    )
+    with pytest.raises(SystemExit, match="not a time this importer can read"):
+        load(corpus, Settings(data_dir=tmp_path))
+
+
+def test_byo_epoch_handles_every_number_without_raising(tmp_path):
+    """`_epoch` answers None rather than raising, for every shape a corpus can put in a
+    time field. `json.loads` accepts bare `Infinity` and `NaN`, so these arrive as floats
+    as well as strings, and an uncaught `OverflowError` there came out of `load()` as a
+    traceback — the outcome the refusal exists to replace."""
+    from backlot.importer.byo import _epoch
+
+    for v in ["inf", "-inf", "Infinity", "-Infinity", "1e400", "1e309", "nan", "1e18"]:
+        assert _epoch(v) is None, v
+    for v in [float("inf"), float("-inf"), float("nan"), 1e18, 1770746760000]:
+        assert _epoch(v) is None, v
+    # the seconds a corpus legitimately writes still parse, including 0 and pre-1970
+    assert _epoch(0) == 0 and _epoch("0") == 0
+    assert _epoch("-86400") == -86400
+    assert _epoch("1770746760") == 1770746760
+
+
 def test_byo_epoch_seconds_as_a_string(tmp_path):
     """Epoch seconds written as a string are read, including the `<sec>.<frac>` form a
     Slack ts takes — the shape an `edited.ts` in the same record is already in, and the

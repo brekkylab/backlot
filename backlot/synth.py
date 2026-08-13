@@ -395,14 +395,21 @@ def linear_team_key(container: str) -> str:
     NO hash suffix, unlike :func:`jira_project_key` / :func:`confluence_space_key`: the readable
     form reproduces the corpus's own prefixes exactly (``engineering`` -> ``ENG``,
     ``product-management`` -> ``PM``), so a served identifier matches the key written in the issue
-    text and in every source that cites it. Two containers CAN collide on one key — the app index
-    resolves that to the first team by name, and the team UUID always addresses it exactly."""
+    text and in every source that cites it. Two containers CAN collide on one key — a team whose
+    own identifiers spell the key out wins it in the app index, then the first team by name; the
+    team UUID always addresses one exactly."""
     return _key(container, "TEAM")
+
+
+# The numbers `linear_identifier` draws from, 1..LINEAR_NUMBER_SPACE. Named because the loader
+# probes over the same range when a derived identifier lands on one already spoken for, and a
+# probe walking a different space than the hash would either skip numbers or revisit them.
+LINEAR_NUMBER_SPACE = 9000
 
 
 def linear_identifier(doc_id: str, team_key: str) -> str:
     """A synthesized ``TEAM-123`` identifier, for a corpus that carries no issue key of its own."""
-    return f"{team_key}-{hnum(doc_id, 16, 6) % 9000 + 1}"
+    return f"{team_key}-{hnum(doc_id, 16, 6) % LINEAR_NUMBER_SPACE + 1}"
 
 
 def linear_issue_number(identifier: str) -> int:

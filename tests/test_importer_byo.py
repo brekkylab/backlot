@@ -3284,6 +3284,366 @@ def test_byo_two_projects_cannot_share_a_provided_key_prefix(tmp_path):
     load(first, settings, reset=False)
 
 
+def test_byo_a_superseded_tracker_id_claim_is_released(tmp_path):
+    """A repeated doc_id re-stating a DIFFERENT id keeps only the new one on its row,
+    so the claim on the old one goes with it: a third record providing that id was
+    refused and told this doc_id holds it, when the row had already moved on. Named
+    as a residue in the #46 review; holds across --append too, since seeding now
+    rebuilds which claim each doc_id holds, not only the claims themselves."""
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    def rec(did, key, title="t"):
+        return {
+            "source_type": "jira",
+            "doc_id": did,
+            "project": "payments",
+            "title": title,
+            "content": "c",
+            "author_email": "ava@acme.com",
+            "key": key,
+        }
+
+    def shard(name, recs):
+        p = tmp_path / name
+        p.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        return p
+
+    # within one run: PAY-7 -> PAY-8, then a third record takes the freed PAY-7
+    s1 = Settings(data_dir=tmp_path / "one")
+    load(shard("a.jsonl", [rec("j-x", "PAY-7"), rec("j-x", "PAY-8"), rec("j-y", "PAY-7")]), s1)
+    conn = store.connect_ro(s1.db_path)
+    rows = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
+    assert rows == {"j-x": "PAY-8", "j-y": "PAY-7"}
+
+    # across --append: the re-statement arrives in a later shard
+    s2 = Settings(data_dir=tmp_path / "two")
+    load(shard("b1.jsonl", [rec("j-x", "PAY-7")]), s2)
+    load(shard("b2.jsonl", [rec("j-x", "PAY-8"), rec("j-y", "PAY-7")]), s2, reset=False)
+    conn = store.connect_ro(s2.db_path)
+    rows = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
+    assert rows == {"j-x": "PAY-8", "j-y": "PAY-7"}
+
+
+def test_byo_linear_provided_prefix_teaches_the_team(tmp_path):
+    """A provided identifier's prefix is a fact about its TEAM: real Linear derives an
+    identifier from its team's key, so one team never serves two spellings. A keyless
+    sibling loaded after the provided one materializes with the claimed prefix; one
+    loaded before it (or in an earlier --append shard) is re-stamped at load end,
+    where the whole container is visible; one whose re-stamped number would collide
+    with a provided identifier probes forward to the next free number."""
+    from backlot import synth
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    def rec(did, title, identifier=None, team="payments-platform"):
+        r = {
+            "source_type": "linear",
+            "doc_id": did,
+            "team": team,
+            "title": title,
+            "content": "c",
+            "author_email": "ava@acme.com",
+            "created": "2026-02-01T00:00:00Z",
+        }
+        if identifier:
+            r["identifier"] = identifier
+        return r
+
+    def shard(name, recs):
+        p = tmp_path / name
+        p.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        return p
+
+    # keyless BEFORE the provided one (re-stamp), keyless AFTER it (in-flow), and a
+    # provided identifier squatting exactly on the number the re-stamp would take.
+    before_n = synth.linear_issue_number(synth.linear_identifier("ln-before", "ENG"))
+    s = Settings(data_dir=tmp_path / "one")
+    load(
+        shard(
+            "a.jsonl",
+            [
+                rec("ln-before", "keyless, loaded first"),
+                rec("ln-a", "provides the prefix", identifier="ENG-7"),
+                rec("ln-squat", "squats the re-stamp number", identifier=f"ENG-{before_n}"),
+                rec("ln-after", "keyless, loaded after"),
+            ],
+        ),
+        s,
+    )
+    conn = store.connect_ro(s.db_path)
+    idents = {
+        r["doc_id"]: r["identifier"]
+        for r in conn.execute("SELECT doc_id, identifier FROM linear_issues")
+    }
+    assert all(v.startswith("ENG-") for v in idents.values()), idents
+    assert idents["ln-after"] == synth.linear_identifier("ln-after", "ENG")
+    # the squatted number forced the re-stamp one step forward
+    assert idents["ln-before"] == f"ENG-{before_n % 9000 + 1}"
+    assert len(set(idents.values())) == 4
+
+    # across --append: a stored keyless shard re-stamps when the prefix first arrives,
+    # and a later keyless shard materializes with the seeded prefix directly.
+    s2 = Settings(data_dir=tmp_path / "two")
+    load(shard("b1.jsonl", [rec("ln-b", "keyless shard")]), s2)
+    conn = store.connect_ro(s2.db_path)
+    (old,) = [r["identifier"] for r in conn.execute("SELECT identifier FROM linear_issues")]
+    assert old == synth.linear_identifier("ln-b", synth.linear_team_key("payments-platform"))
+    load(shard("b2.jsonl", [rec("ln-a", "provided", identifier="ENG-7")]), s2, reset=False)
+    load(shard("b3.jsonl", [rec("ln-c", "keyless, after seed")]), s2, reset=False)
+    conn = store.connect_ro(s2.db_path)
+    idents = {
+        r["doc_id"]: r["identifier"]
+        for r in conn.execute("SELECT doc_id, identifier FROM linear_issues")
+    }
+    assert all(v.startswith("ENG-") for v in idents.values()), idents
+
+
+def test_byo_linear_prefixes_hold_one_to_one(tmp_path):
+    """A team has one key and a key names one team — real Linear keeps keys
+    workspace-unique, and the identifier scheme depends on it. Both directions are
+    refused at load with the holder named, this run or seeded across --append."""
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    def rec(did, team, identifier):
+        return {
+            "source_type": "linear",
+            "doc_id": did,
+            "team": team,
+            "title": did,
+            "content": "c",
+            "author_email": "ava@acme.com",
+            "identifier": identifier,
+            "created": "2026-02-01T00:00:00Z",
+        }
+
+    def shard(name, recs):
+        p = tmp_path / name
+        p.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        return p
+
+    with pytest.raises(SystemExit, match="which team 'payments-platform' already holds"):
+        load(
+            shard(
+                "a.jsonl",
+                [rec("ln-a", "payments-platform", "ENG-7"), rec("ln-b", "growth", "ENG-9")],
+            ),
+            Settings(data_dir=tmp_path / "one"),
+        )
+    with pytest.raises(SystemExit, match="already name it 'ENG'"):
+        load(
+            shard(
+                "b.jsonl",
+                [
+                    rec("ln-a", "payments-platform", "ENG-7"),
+                    rec("ln-b", "payments-platform", "PAY-9"),
+                ],
+            ),
+            Settings(data_dir=tmp_path / "two"),
+        )
+    # across --append: the earlier claim is seeded from the stored rows
+    s = Settings(data_dir=tmp_path / "three")
+    load(shard("c1.jsonl", [rec("ln-a", "payments-platform", "ENG-7")]), s)
+    with pytest.raises(SystemExit, match="which team 'payments-platform' already holds"):
+        load(shard("c2.jsonl", [rec("ln-b", "growth", "ENG-9")]), s, reset=False)
+
+
+def _linear_rec(did, team="payments-platform", identifier=None):
+    r = {
+        "source_type": "linear",
+        "doc_id": did,
+        "team": team,
+        "title": did,
+        "content": "c",
+        "author_email": "ava@acme.com",
+        "created": "2026-02-01T00:00:00Z",
+    }
+    if identifier:
+        r["identifier"] = identifier
+    return r
+
+
+def _stored_identifiers(settings):
+    conn = store.connect_ro(settings.db_path)
+    return {
+        r["doc_id"]: r["identifier"]
+        for r in conn.execute("SELECT doc_id, identifier FROM linear_issues")
+    }
+
+
+def test_byo_linear_identifiers_do_not_depend_on_where_the_provided_line_sits(tmp_path):
+    """The identifier a keyless row ends up with is a function of the container, not of the
+    file. Stamping in the record loop can only use the prefix known SO FAR, so a row before
+    the provided line and a row after it were settled by different rules: the same corpus,
+    with that one line moved, produced a different identifier for every keyless row and a
+    different number of distinct ones. Both orders are loaded here and compared row by row."""
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    # Enough rows that the derived numbers collide (600 in a 9,000 space collides ~20
+    # times), which is what makes the two orders settle differently at all.
+    keyless = [_linear_rec(f"ln-{i:04d}") for i in range(600)]
+    provided = _linear_rec("ln-states-it", identifier="ENG-7")
+    out = []
+    for name, recs in (("first", [provided, *keyless]), ("last", [*keyless, provided])):
+        corpus = tmp_path / f"{name}.jsonl"
+        corpus.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        settings = Settings(data_dir=tmp_path / name)
+        load(corpus, settings)
+        out.append(_stored_identifiers(settings))
+    assert out[0] == out[1], "the provided line's position changed the identifiers"
+    assert all(v.startswith("ENG-") for v in out[0].values())
+    assert len(set(out[0].values())) == len(out[0]), "a container's identifiers collided"
+
+
+def test_byo_a_team_larger_than_the_identifier_space_still_imports(tmp_path):
+    """A team with more issues than `linear_identifier` has numbers loads, with repeats.
+    Re-stamping used to refuse the whole import at that point — a corpus a plain import
+    accepts, failing only because one of its issues wrote its identifier down. The index
+    resolves a repeat to the first row by doc_id, which is what it already does for the
+    5,055 repeating keys one real corpus carries, and what `main._free_key` falls back to."""
+    from backlot import synth
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    over = synth.LINEAR_NUMBER_SPACE + 200
+    recs = [_linear_rec("ln-states-it", identifier="ENG-7")]
+    recs += [_linear_rec(f"ln-{i:06d}") for i in range(over)]
+    corpus = tmp_path / "big.jsonl"
+    corpus.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    settings = Settings(data_dir=tmp_path / "d")
+    load(corpus, settings)  # the assertion is that this returns at all
+    idents = _stored_identifiers(settings)
+    assert len(idents) == over + 1
+    assert all(v.startswith("ENG-") for v in idents.values())
+    # every number the space has is used before any is reused
+    assert len(set(idents.values())) == synth.LINEAR_NUMBER_SPACE
+
+
+def test_byo_a_restamp_never_lands_on_another_teams_identifier(tmp_path):
+    """The prefix a team states can be the key another team derives from its NAME, and the
+    1:1 refusal does not cover that pairing — nothing was written down twice. Re-stamping
+    into the shared prefix then put two teams' rows on one spelling, and the reverse index
+    can only give it to one: the other document answered at an id that fetches its
+    neighbour. So the free-number search spans the workspace, not the container."""
+    from backlot import synth
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    assert synth.linear_team_key("engineering") == "ENG"  # the pairing this test needs
+    # a doc_id in the stating team whose ENG-materialisation is some engineering row's too
+    wanted = synth.linear_identifier("ln-collide", "ENG")
+    twin = next(
+        c
+        for c in (f"pp-{i}" for i in range(200_000))
+        if synth.linear_identifier(c, "ENG") == wanted
+    )
+    corpus = tmp_path / "c.jsonl"
+    corpus.write_text(
+        "".join(
+            json.dumps(r) + "\n"
+            for r in (
+                _linear_rec("ln-collide", team="engineering"),
+                _linear_rec("ln-states-it", identifier="ENG-7"),
+                _linear_rec(twin),
+            )
+        )
+    )
+    settings = Settings(data_dir=tmp_path / "d")
+    load(corpus, settings)
+    idents = _stored_identifiers(settings)
+    assert idents["ln-collide"] == wanted, "the engineering row kept its derived spelling"
+    assert idents[twin] != wanted, "the re-stamp landed on another team's identifier"
+    assert len(set(idents.values())) == 3
+
+
+def test_byo_a_materialized_identifier_yields_to_a_corpus_that_states_it(tmp_path):
+    """A materialized identifier is a hash, not a claim. Seeding it as one refused a later
+    shard that stated that exact spelling — the corpus's own id losing to a synthesized one,
+    the inversion #46 exists to prevent — and named a holder that had only landed there. The
+    stated id wins and the materialized row steps aside at the end of the same load."""
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    def shard(name, recs):
+        p = tmp_path / name
+        p.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        return p
+
+    settings = Settings(data_dir=tmp_path / "d")
+    load(shard("s1.jsonl", [_linear_rec("ln-keyless")]), settings)
+    load(
+        shard("s2.jsonl", [_linear_rec("ln-states-it", identifier="ENG-7")]), settings, reset=False
+    )
+    materialized = _stored_identifiers(settings)["ln-keyless"]
+    assert materialized.startswith("ENG-")
+    load(
+        shard("s3.jsonl", [_linear_rec("ln-real", identifier=materialized)]),
+        settings,
+        reset=False,
+    )
+    idents = _stored_identifiers(settings)
+    assert idents["ln-real"] == materialized
+    assert idents["ln-keyless"] != materialized
+    assert len(set(idents.values())) == 3
+
+
+def test_byo_appending_to_a_restamped_team_leaves_every_identifier_alone(tmp_path):
+    """Re-stamping runs on every load, so it has to be idempotent: an identifier a client
+    may already hold must survive both a re-import of the same records and an append of new
+    ones. A row probed off its derived spelling reads as stated on the next run, which is
+    what keeps it still."""
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    def shard(name, recs):
+        p = tmp_path / name
+        p.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        return p
+
+    settings = Settings(data_dir=tmp_path / "d")
+    load(
+        shard(
+            "a.jsonl",
+            [
+                *(_linear_rec(f"ln-{i:04d}") for i in range(200)),
+                _linear_rec("ln-p", identifier="ENG-7"),
+            ],
+        ),
+        settings,
+    )
+    before = _stored_identifiers(settings)
+    assert len(set(before.values())) == len(before)
+    load(shard("again.jsonl", [_linear_rec("ln-p", identifier="ENG-7")]), settings, reset=False)
+    assert _stored_identifiers(settings) == before
+    load(
+        shard("more.jsonl", [_linear_rec(f"ln-x{i:04d}") for i in range(50)]), settings, reset=False
+    )
+    after = _stored_identifiers(settings)
+    assert {d: after[d] for d in before} == before, "an append renumbered an existing row"
+    assert len(set(after.values())) == len(after)
+
+
+@pytest.mark.parametrize("bad", ["eng-7", "ENG 7", "7", "ENG-0007", "TOOLONGPREFIX-7"])
+def test_byo_a_mistyped_linear_identifier_is_refused(tmp_path, bad):
+    """The prefix is a fact about the whole team, so a typo in one issue renames every one
+    of them — `identifier: "7"` made the team answer at `7` and stamped its siblings `7-n`.
+    That is why jira's key carries a pattern, and the same reasoning now reaches Linear's
+    identifier."""
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    corpus = tmp_path / "c.jsonl"
+    corpus.write_text(
+        "".join(
+            json.dumps(r) + "\n" for r in (_linear_rec("ln-a", identifier=bad), _linear_rec("ln-b"))
+        )
+    )
+    with pytest.raises(SystemExit, match=r"\[identifier\]"):
+        load(corpus, Settings(data_dir=tmp_path / "d"))
+
+
 def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):
     """`PAY-1` beside `BILL-2` in one project is the other direction of the same 1:1: the
     project can only have one key, so whichever the index picked, the other issue served a

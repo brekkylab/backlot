@@ -114,6 +114,25 @@ def _principal(pid: str) -> tuple[str, str]:
     return ("user", pid) if "@" in pid else ("group", pid)
 
 
+def _free_identifier(taken: set, prefix: str, start: str) -> str:
+    """A ``PREFIX-n`` nothing else holds, walking forward from the derived one.
+
+    The loader-side twin of ``main._free_key``, and it ends the same way: when every number
+    is spoken for it hands the derived value back rather than failing. A repeated identifier
+    is a shape this mock already serves — Linear's own key space is per-team and finite, one
+    real corpus repeats 5,055 keys, and `issue(id:)` answers a repeat with the first row by
+    doc_id. Refusing the import instead would turn a corpus that loads today into an error,
+    and it would do so only for teams big enough to fill the space, which are exactly the
+    ones worth having."""
+    n = synth.linear_issue_number(start)
+    for _ in range(synth.LINEAR_NUMBER_SPACE):
+        candidate = f"{prefix}-{n}"
+        if candidate not in taken:
+            return candidate
+        n = n % synth.LINEAR_NUMBER_SPACE + 1
+    return start
+
+
 def _time_given(v) -> bool:
     """Whether the corpus wrote a time in this field at all, as opposed to leaving it
     out. Told apart from an unreadable one, which ``_epoch`` also answers None for: a
@@ -902,6 +921,59 @@ class _Loader:
         # A pull's declared changeset, resolved after the whole corpus is read: the `file` document
         # a path names may be on a later line, or in a shard already loaded.
         self.gh_changesets = []  # (where, repo, paths)
+        # Linear's analogue, held to the same 1:1: a team has one key, a key names one
+        # team (real Linear keeps keys workspace-unique — the identifier scheme depends
+        # on it). Distinct maps rather than reusing jira's: the wording of a refusal
+        # names teams, and the two namespaces must not collide with each other.
+        self.linear_prefixes = {}  # container -> prefix
+        self.linear_prefix_holders = {}  # prefix -> container
+        # Which full-id claim a doc_id currently holds, so a repeat that re-states a
+        # DIFFERENT id (or none) takes its old claim with it. Without this, a third
+        # record providing the superseded id was refused and told this doc_id holds
+        # it — when the row had already moved on. (Named as a residue in the #46
+        # review; reachable only by a corpus that contradicts itself about one
+        # document, but the refusal pointed at a holder that held nothing.)
+        self.tracker_id_of = {}  # (source_type, doc_id) -> (source_type, scope, id)
+
+    def _claim_tracker_id(self, where, src, scope, value, did, label, scope_label=""):
+        """Claim one full id for ``did``, releasing any different claim it held."""
+        claim = (src, scope, str(value))
+        prior = self.tracker_id_of.get((src, did))
+        if prior is not None and prior != claim and self.tracker_ids.get(prior) == did:
+            del self.tracker_ids[prior]
+        claimed = self.tracker_ids.get(claim)
+        if claimed is not None and claimed != did:
+            raise SystemExit(
+                f"{where}: {label} {value!r} is already claimed by "
+                f"{claimed!r}" + (f" in {scope_label} {scope!r}" if scope_label else "")
+            )
+        self.tracker_ids[claim] = did
+        self.tracker_id_of[(src, did)] = claim
+
+    def _release_tracker_id(self, src, did):
+        """A repeat that provides no id keeps none: drop the claim its row just lost."""
+        prior = self.tracker_id_of.pop((src, did), None)
+        if prior is not None and self.tracker_ids.get(prior) == did:
+            del self.tracker_ids[prior]
+
+    def _claim_prefix(self, where, holders, prefixes, container, prefix, value, kind):
+        """The prefix claims, both directions: a container has one prefix, a prefix
+        names one container. Shared by jira (kind='project') and linear (kind='team')."""
+        holder = holders.get(prefix)
+        if holder is not None and holder != container:
+            raise SystemExit(
+                f"{where}: {'key' if kind == 'project' else 'identifier'} {value!r} "
+                f"carries {kind} key {prefix!r}, which {kind} {holder!r} already holds"
+            )
+        held = prefixes.get(container)
+        if held is not None and held != prefix:
+            raise SystemExit(
+                f"{where}: {'key' if kind == 'project' else 'identifier'} {value!r} "
+                f"would name {kind} {container!r} {prefix!r}, but its "
+                f"{'keys' if kind == 'project' else 'identifiers'} already name it {held!r}"
+            )
+        holders[prefix] = container
+        prefixes[container] = prefix
 
     def seed_tracker_ids(self) -> None:
         """Re-read the ids already in the DB, so a claim holds ACROSS runs too.
@@ -933,10 +1005,47 @@ class _Loader:
             ):
                 scope = str(row["c"]) if src == "github" else ""
                 self.tracker_ids[(src, scope, str(row["v"]))] = row["doc_id"]
+                self.tracker_id_of[(src, row["doc_id"])] = (src, scope, str(row["v"]))
                 if src == "jira":
                     prefix = str(row["v"]).rsplit("-", 1)[0]
                     self.jira_prefixes[str(row["c"])] = prefix
                     self.jira_prefix_holders[prefix] = str(row["c"])
+        # Linear rows: provided and materialized identifiers share the column, so which is
+        # which has to be worked out rather than read off. A materialized one is
+        # recomputable — it is what materialization writes for (doc_id, the container's
+        # key) — and the container's key is itself only known once the rows have been read,
+        # hence two passes over them.
+        rows = self.conn.execute(
+            f"SELECT doc_id, {store.grouping_col('linear')} AS team, identifier "
+            f"FROM {store.table('linear')} WHERE identifier IS NOT NULL ORDER BY doc_id"
+        ).fetchall()
+        for row in rows:
+            ident, team = str(row["identifier"]), str(row["team"])
+            if ident == synth.linear_identifier(row["doc_id"], synth.linear_team_key(team)):
+                continue
+            # First row by doc_id decides, the same tie-break `main._build_index` applies to
+            # a container whose rows disagree. The 1:1 refusal means an import this loader
+            # accepted cannot produce one; a DB from before it could.
+            prefix = ident.rsplit("-", 1)[0]
+            self.linear_prefixes.setdefault(team, prefix)
+            self.linear_prefix_holders.setdefault(prefix, team)
+        for row in rows:
+            did, ident, team = row["doc_id"], str(row["identifier"]), str(row["team"])
+            key = self.linear_prefixes.get(team) or synth.linear_team_key(team)
+            if ident in (
+                synth.linear_identifier(did, synth.linear_team_key(team)),
+                synth.linear_identifier(did, key),
+            ):
+                # Recomputable, so nobody wrote it down: claiming it would refuse a later
+                # shard that provides that exact spelling, and hand the refusal a holder
+                # that is only sitting there because a hash put it there. The row moves out
+                # of the way in restamp_linear_identifiers instead. (A value an earlier run
+                # PROBED away from its derived spelling is not recomputable and does read as
+                # provided here — the residue of storing a resolved id in the same column,
+                # which is what #51's identity work removes.)
+                continue
+            self.tracker_ids[("linear", "", ident)] = did
+            self.tracker_id_of[("linear", did)] = ("linear", "", ident)
 
     def add(self, rec: dict, where: str = "record") -> None:
         """Insert one BYO record's row(s). ``where`` names the record in an error message.
@@ -1253,7 +1362,32 @@ class _Loader:
                 # identifier came back "Entity not found" from `issue(id: "ENG-749")` even though
                 # the API had just handed the caller that exact string. Deterministic, so the
                 # served value is unchanged; it is just written down now.
-                cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
+                # The prefix is the container's claimed one when a sibling has provided
+                # it (this run or a seeded earlier shard) — else the name-derived key.
+                # Either way this value is provisional: a container whose rows do not all
+                # agree on one prefix is settled by restamp_linear_identifiers at the end
+                # of the load, where the whole container is visible. Written here anyway
+                # so a container that never needs settling costs no second pass.
+                key = self.linear_prefixes.get(container) or synth.linear_team_key(container)
+                cols["identifier"] = synth.linear_identifier(did, key)
+                # A repeat that stops providing keeps no claim (a materialized value
+                # is not the corpus's spelling) — the release jira and github get.
+                self._release_tracker_id(src, did)
+            elif src == "linear":
+                # A provided identifier is a claim on its spelling AND on its prefix:
+                # real Linear derives an identifier from its team's key, so a team has
+                # one prefix and a prefix names one team — the same 1:1 jira's project
+                # keys get, refused at load with the holder named.
+                self._claim_tracker_id(where, src, "", cols["identifier"], did, "identifier")
+                self._claim_prefix(
+                    where,
+                    self.linear_prefix_holders,
+                    self.linear_prefixes,
+                    container,
+                    str(cols["identifier"]).rsplit("-", 1)[0],
+                    cols["identifier"],
+                    "team",
+                )
             # A jira key and a github number are deliberately NOT materialized the way Linear's
             # identifier is: the column holds what the CORPUS wrote and nothing else, so "provided"
             # means exactly "non-NULL" everywhere downstream. Two things depend on that.
@@ -1281,47 +1415,35 @@ class _Loader:
                 cols["number"] = None
             # A provided id is a claim on one spelling, and two records cannot hold the same
             # one: whichever the index gave it to, the other would be unreachable at the only
-            # id it advertises. A github number is per repository, a jira key per instance.
-            provided_id = (
-                cols.get("number")
-                if src == "github"
-                else (cols.get("key") if src == "jira" else None)
-            )
-            if provided_id is not None:
-                scope = container if src == "github" else ""
-                claim = (src, scope, str(provided_id))
-                # Only a DIFFERENT document violates the claim. Two records may share a
-                # (source, doc_id) — both are written and the row-level INSERT OR REPLACE leaves
-                # the later one, which is what a direct import of the same documents produces —
-                # and such a repeat re-stating its own id was aborting the import by naming the
-                # very doc_id it was inserting.
-                claimed = self.tracker_ids.get(claim)
-                if claimed is not None and claimed != did:
-                    label = "number" if src == "github" else "key"
-                    raise SystemExit(
-                        f"{where}: {label} {provided_id!r} is already claimed by "
-                        f"{claimed!r}" + (f" in repo {scope!r}" if scope else "")
+            # id it advertises. A github number is per repository, a jira key per instance,
+            # a linear identifier per workspace (its prefix IS its team's key, so uniqueness
+            # follows from the team keys being unique). Only a DIFFERENT document violates a
+            # claim — two records may share a (source, doc_id), and a repeat re-stating its
+            # own id was aborting the import by naming the very doc_id it was inserting.
+            if src == "github":
+                if cols.get("number") is not None:
+                    self._claim_tracker_id(
+                        where, src, container, cols["number"], did, "number", "repo"
                     )
-                self.tracker_ids[claim] = did
-                if src == "jira":
-                    # The prefix claims, both directions (see __init__). Distinct from the
-                    # full-key claim above: PAY-1 and PAY-2 are different keys, but if they
-                    # sit in different projects they still fight over who *is* PAY.
-                    prefix = str(provided_id).rsplit("-", 1)[0]
-                    holder = self.jira_prefix_holders.get(prefix)
-                    if holder is not None and holder != container:
-                        raise SystemExit(
-                            f"{where}: key {provided_id!r} carries project key {prefix!r}, "
-                            f"which project {holder!r} already holds"
-                        )
-                    held = self.jira_prefixes.get(container)
-                    if held is not None and held != prefix:
-                        raise SystemExit(
-                            f"{where}: key {provided_id!r} would name project {container!r} "
-                            f"{prefix!r}, but its keys already name it {held!r}"
-                        )
-                    self.jira_prefix_holders[prefix] = container
-                    self.jira_prefixes[container] = prefix
+                else:
+                    self._release_tracker_id(src, did)
+            elif src == "jira":
+                if cols.get("key") is not None:
+                    # The prefix claims are distinct from the full-key claim: PAY-1 and
+                    # PAY-2 are different keys, but in different projects they still
+                    # fight over who *is* PAY.
+                    self._claim_tracker_id(where, src, "", cols["key"], did, "key")
+                    self._claim_prefix(
+                        where,
+                        self.jira_prefix_holders,
+                        self.jira_prefixes,
+                        container,
+                        str(cols["key"]).rsplit("-", 1)[0],
+                        cols["key"],
+                        "project",
+                    )
+                else:
+                    self._release_tracker_id(src, did)
             names = list(cols)
             conn.execute(
                 f"INSERT OR REPLACE INTO {store.table(src)} ({', '.join(names)}) "
@@ -1505,6 +1627,78 @@ class _Loader:
                 ex={**msg, "thread": gmail_thread},
                 cts=_epoch_field(msg.get("created"), f"{where}: message {i}", "created")
                 or (created + i * 3600),
+            )
+
+    def restamp_linear_identifiers(self) -> None:
+        """A container's materialized identifiers, re-stamped once its provided prefix
+        is known — the 'container decides once, with every row visible' rule jira gets
+        at index build. Linear cannot get it there: `issue(id:)` resolves through the
+        stored column, so an identifier must live in its row, and a row stamped before
+        the container's first provided identifier arrived (earlier in the file, or in
+        an earlier ``--append`` shard) carries the name-derived prefix.
+
+        Every materialized row in such a container is assigned here, not only the ones
+        still carrying the name-derived prefix. Stamping in the record loop can only use
+        the prefix known SO FAR, so the two halves of a container would otherwise be
+        settled by different rules and the identifier a row ends up with would depend on
+        which side of the provided line it sat on. Assigned in doc_id order over the whole
+        container, the result is a function of the row set alone.
+
+        A provided identifier is the corpus's own spelling and never moves; so is a value
+        an earlier run already probed away from its derived spelling, which keeps a
+        re-import from renumbering an id a client may already hold. Everything else is
+        recomputable — exactly what materialization writes for (doc_id, the container's
+        key) — and that is what makes it safe to move."""
+        targets = {
+            c: p for c, p in sorted(self.linear_prefixes.items()) if p != synth.linear_team_key(c)
+        }
+        if not targets:
+            return  # every container's stamped spelling already is its own
+        rows = self.conn.execute(
+            f"SELECT doc_id, {store.grouping_col('linear')} AS team, identifier "
+            f"FROM {store.table('linear')} ORDER BY doc_id"
+        ).fetchall()
+
+        def _materialized(row) -> bool:
+            did, team, ident = row["doc_id"], str(row["team"]), str(row["identifier"] or "")
+            prefix = targets.get(team)
+            if prefix is None:
+                return False
+            return ident in (
+                synth.linear_identifier(did, synth.linear_team_key(team)),
+                synth.linear_identifier(did, prefix),
+            )
+
+        movable = [r for r in rows if _materialized(r)]
+        if not movable:
+            return
+        moving = {r["doc_id"] for r in movable}
+        # Workspace-wide, not per-team: a claimed prefix may be some OTHER team's
+        # name-derived key, and a re-stamp landing on that team's row would leave one
+        # document unreachable at the only id it advertises — the failure the provided-id
+        # claims exist to remove, arrived at by a route no claim covers.
+        taken = {
+            str(r["identifier"]) for r in rows if r["identifier"] and r["doc_id"] not in moving
+        }
+        # How many of a prefix's numbers are spoken for, so a team larger than the space
+        # stops walking all of it once per row. Without the count the probe is quadratic
+        # exactly where the corpus is biggest: 12,000 issues in one team took 3.1s of it.
+        used: dict[str, int] = {}
+        for value in taken:
+            prefix, _, number = value.rpartition("-")
+            if number.isdigit():
+                used[prefix] = used.get(prefix, 0) + 1
+        for r in movable:
+            did, prefix = r["doc_id"], targets[str(r["team"])]
+            start = synth.linear_identifier(did, prefix)
+            saturated = used.get(prefix, 0) >= synth.LINEAR_NUMBER_SPACE
+            new = start if saturated else _free_identifier(taken, prefix, start)
+            if new not in taken:
+                taken.add(new)
+                used[prefix] = used.get(prefix, 0) + 1
+            self.conn.execute(
+                f"UPDATE {store.table('linear')} SET identifier = ? WHERE doc_id = ?",
+                (new, did),
             )
 
     def write_containers(self) -> None:
@@ -1736,6 +1930,9 @@ def load_records(
     for lineno, rec in records_factory():
         source_docs += 1
         loader.add(rec, f"line {lineno}")
+    # Before cross-references: parent links resolve through the identifier column,
+    # and re-stamping after that resolution would strand them on retired spellings.
+    loader.restamp_linear_identifiers()
     loader.resolve_cross_references()
     users, groups = loader.users, loader.groups
     memberships, grants = loader.memberships, loader.grants

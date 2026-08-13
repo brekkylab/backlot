@@ -24,7 +24,7 @@
     },
     "team": {
       "type": "string",
-      "description": "The owning team, e.g. \"engineering\". Its short key (ENG) is derived from the name and is what identifiers are prefixed with. Default: the source_type."
+      "description": "The owning team, e.g. \"engineering\". Its short key (ENG) is the prefix its identifiers carry: derived from the name, unless the team's own issues spell a different one out, in which case that is the key on every surface — real Linear derives an identifier FROM its team's key, so the two can never disagree. Default: the source_type."
     },
     "group": {
       "type": [
@@ -35,7 +35,8 @@
     },
     "identifier": {
       "type": "string",
-      "description": "Human identifier, e.g. \"ENG-123\". Default: synthesized as <TEAMKEY>-<n> from the doc_id. Not required to be unique — the bench's own keys repeat — and `issue(id:)` resolves a repeated identifier to the first matching issue."
+      "pattern": "^[A-Z][A-Z0-9]{0,4}-[1-9][0-9]*$",
+      "description": "Human identifier, e.g. \"ENG-123\". Default: synthesized as <TEAMKEY>-<n> from the doc_id, under the prefix this team's provided identifiers carry — one issue spelling out ENG-7 makes the whole team answer at ENG, so a corpus need only write the identifiers its documents actually cite. The shape is real Linear's (a key is 1-5 uppercase alphanumerics), and it is enforced because the prefix is a fact about the whole team: a single mistyped identifier would otherwise rename it for every one of its issues. Not required to be unique — the bench's own keys repeat — and `issue(id:)` resolves a repeated identifier to the first matching issue, preferring one the corpus wrote over one this mock derived."
     },
     "parent": {
       "type": "string",

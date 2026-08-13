@@ -67,6 +67,8 @@ async def graphql(request: Request):
         # uuid/identifier -> doc_id and uuid/key -> team, built once at startup (backlot.main).
         "index": state.index.get("linear", {}),
         "team_index": state.index.get("linear_teams", {}),
+        # container -> the key its own identifiers carry (name-derived when none do).
+        "team_keys": state.index.get("linear_team_keys", {}),
         # Reverse maps for the by-id roots the SDK's lazy relation accessors call.
         "user_index": state.index.get("linear_users", {}),
         "state_index": state.index.get("linear_states", {}),

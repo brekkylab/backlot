@@ -87,6 +87,7 @@ def _build_index(conn) -> dict:
         "gmail": {},
         "linear": {},
         "linear_teams": {},
+        "linear_team_keys": {},
         "linear_users": {},
         "linear_states": {},
         "linear_projects": {},
@@ -204,20 +205,61 @@ def _build_index(conn) -> dict:
     # Linear's `issue(id:)` accepts the UUID *or* the human identifier (ENG-123), and `team(id:)`
     # the team UUID or its key — so one dict per entity resolves either spelling back to the row.
     # Identifiers are NOT required to be unique (5,055 keys repeat in one real corpus) and two
-    # containers can reduce to one team key, so both use setdefault: the first row in doc_id/name
-    # order wins and the
-    # mapping stays stable across restarts, while the UUID form always addresses a row exactly.
-    # Exactly (doc_id, identifier), in that order: idx_linear_doc_ident covers it, so this is an
-    # index-only scan and never touches the wide issue rows.
-    for r in conn.execute(
-        f"SELECT doc_id, identifier FROM {store.table('linear')} ORDER BY doc_id"
-    ):
+    # containers can reduce to one team key, so the passes below settle a tie the way github's and
+    # jira's do: what the CORPUS wrote claims its spelling first, and only then does a derived one
+    # take what is left, by doc_id order. The mapping stays stable across restarts, and the UUID
+    # form always addresses a row exactly.
+    l_rows = _scan(
+        f"SELECT doc_id, {store.grouping_col('linear')} AS team, identifier ",
+        f"SELECT doc_id, {store.grouping_col('linear')} AS team, NULL AS identifier ",
+        f"FROM {store.table('linear')} ORDER BY doc_id",
+    )
+    # A team's key comes from its rows: post-import every identifier in a container carries one
+    # prefix (the loader claims provided prefixes 1:1 and re-stamps the materialized rest), and
+    # that prefix IS the team's key — real Linear derives an identifier from its team's key, so
+    # serving `ENG-7` under `team.key: PP` was the object contradicting itself. A prefix that
+    # differs from the name-derived key is a corpus-provided fact and wins. A container whose
+    # rows disagree — one an importer other than `byo` can still write, and one any DB built
+    # before the loader started settling them already holds — is decided by its first row in
+    # doc_id order, the same tie-break the identifier map uses; there is no reading of such a
+    # container under which every one of its rows is consistent with the team's key.
+    for r in l_rows:
+        if not r["identifier"]:
+            continue
+        team, prefix = str(r["team"]), str(r["identifier"]).rsplit("-", 1)[0]
+        if prefix != synth.linear_team_key(team):
+            idx["linear_team_keys"].setdefault(team, prefix)
+
+    def _derived_identifier(r) -> str:
+        team = str(r["team"])
+        key = idx["linear_team_keys"].get(team) or synth.linear_team_key(team)
+        return synth.linear_identifier(r["doc_id"], key)
+
+    for r in l_rows:
         idx["linear"][synth.linear_id(r["doc_id"])] = r["doc_id"]
+    # What the corpus wrote first. A derived identifier is recomputable from (doc_id, the team's
+    # key), so it is exactly the ones that are NOT that. Without this pass a document reached the
+    # id it advertises only when it happened to sort first: a provided `ENG-8774` lost to another
+    # team's derived `ENG-8774` on doc_id order, and answered "Entity not found" at its own key.
+    for r in l_rows:
+        if r["identifier"] and r["identifier"] != _derived_identifier(r):
+            idx["linear"].setdefault(r["identifier"], r["doc_id"])
+    for r in l_rows:
         if r["identifier"]:
             idx["linear"].setdefault(r["identifier"], r["doc_id"])
-    for r in store.list_containers(conn, "linear"):
+    # Same order for the team keys: a key a team's own identifiers spell out beats one another
+    # team merely derives from its name, so `team(id: "ENG")` answers with the team the corpus
+    # called ENG rather than the one whose name happens to shorten that way.
+    teams = list(store.list_containers(conn, "linear"))
+    for r in teams:
         idx["linear_teams"][synth.linear_team_id(r["name"])] = r["name"]
-        idx["linear_teams"].setdefault(synth.linear_team_key(r["name"]), r["name"])
+    for r in teams:
+        stated = idx["linear_team_keys"].get(r["name"])
+        if stated:
+            idx["linear_teams"].setdefault(stated, r["name"])
+    for r in teams:
+        key = idx["linear_team_keys"].setdefault(r["name"], synth.linear_team_key(r["name"]))
+        idx["linear_teams"].setdefault(key, r["name"])
         # A mock affordance on top of the two real spellings: the container's own name. Costs
         # nothing and saves a caller from having to derive `ENG` from `engineering` by hand.
         idx["linear_teams"].setdefault(r["name"], r["name"])

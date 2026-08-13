@@ -28,6 +28,15 @@ def _ctx(info):
     return info.context
 
 
+def _team_key(container: str, info) -> str:
+    """The key this team's own identifiers carry — a corpus-provided prefix when its
+    rows have one (built at startup from the stored column), else the name-derived
+    key. Deriving from the name unconditionally served `identifier: "ENG-7"` under
+    `team { key: "PP" }` — the object contradicting itself, since real Linear derives
+    an identifier FROM its team's key."""
+    return info.context.get("team_keys", {}).get(container) or synth.linear_team_key(container)
+
+
 def _org(info) -> str:
     """The workspace slug, which is what a Linear URL is keyed on."""
     return _ctx(info).get("org") or "org"
@@ -171,12 +180,12 @@ def _match_fields(spec: dict | None, fields: dict) -> bool:
     return True
 
 
-def _match_team(container: str, spec) -> bool:
+def _match_team(container: str, spec, info) -> bool:
     return _match_fields(
         spec,
         {
             "name": container,
-            "key": synth.linear_team_key(container),
+            "key": _team_key(container, info),
             "id": synth.linear_team_id(container),
         },
     )
@@ -518,7 +527,7 @@ def _team(container: str, info) -> dict:
     """A ``Team``. 42 of its fields are non-null in the SDK's fragment; the ones the mock cannot
     know take Linear's own product defaults (cycles off, 2-week duration, estimate scale
     ``notUsed``) rather than zero values that would read as configured."""
-    key = synth.linear_team_key(container)
+    key = _team_key(container, info)
     created = synth.rfc3339(synth.epoch("linear-team:" + container))
     return {
         "id": synth.linear_team_id(container),
@@ -585,7 +594,7 @@ def _issue(row, info) -> dict:
     sort orders, bot actors and shared access are declared because `@linear/sdk`'s fragment
     selects them, and resolve empty because a document corpus has nothing behind them."""
     identifier = row["identifier"] or synth.linear_identifier(
-        row["doc_id"], synth.linear_team_key(row["team"])
+        row["doc_id"], _team_key(row["team"], info)
     )
     title = row["title"] or ""
     created = row["created_ts"]
@@ -758,7 +767,9 @@ def _issue_page(
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
-    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter))
+    prefilter = compile_issue_filter(
+        conn, _resolve_issue_ids(info, filter), _ctx(info).get("team_keys")
+    )
     if offset is None:
         # `last:` with no `before:` is the only shape that needs a total, so the COUNT is paid
         # here and not on every page.
@@ -839,7 +850,7 @@ def resolve_teams(
         if ctx["visible_ids"] is None
         or store.linear_team_has_visible(ctx["conn"], r["name"], ctx["visible_ids"])
     ]
-    names = [n for n in names if _match_team(n, filter)]
+    names = [n for n in names if _match_team(n, filter, info)]
     offset = _from_end(offset, limit, floor, len(names))
     page = names[offset : offset + limit]
     return _connection([_team(n, info) for n in page], offset, offset + limit < len(names))
@@ -1048,7 +1059,9 @@ def resolve_issue_children(
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
     doc_id = issue["_row"]["doc_id"]
-    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter))
+    prefilter = compile_issue_filter(
+        conn, _resolve_issue_ids(info, filter), _ctx(info).get("team_keys")
+    )
     if offset is None:
         offset = _from_end(
             None,

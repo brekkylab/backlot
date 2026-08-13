@@ -393,3 +393,38 @@ def test_thread_ts_and_latest_reply_follow_a_replys_own_clock(tmp_path):
     # the replies endpoint's fast path (resolve a public ts by its second) finds it
     hits = store.slack_messages_at_created_ts(conn, "inc", base + 3 * 3600)
     assert any(_msg_ts(r) == _msg_ts(late) for r in hits)
+
+
+def test_thread_rooted_at_epoch_zero_stays_coherent(tmp_path):
+    """1970-01-01T00:00:00Z is a second a corpus can write, and it stores as 0. Under a
+    truthiness test the root served a synthesized ts while its replies served real ones,
+    and the replies' thread_ts came from the position arithmetic — a root ts, a
+    thread_ts and a reply ts that agreed with nothing, so a client could not fetch the
+    thread with the thread_ts it had just been handed."""
+    from backlot.routers.slack import _message, _msg_ts
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "doc_id": "s-zero",
+                "channel": "inc",
+                "content": "root",
+                "author_email": "bob@x.com",
+                "visibility": "public",
+                "created": 0,
+                "replies": [
+                    {"content": "r1", "author_email": "ava@x.com", "created": 1},
+                    {"content": "r2", "author_email": "ava@x.com", "created": 5000},
+                ],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    thread = store.slack_thread(conn, "s-zero")
+    assert [r["created_ts"] for r in thread] == [0, 1, 5000]
+    # the root serves its own second, not a hash of its doc_id
+    assert _msg_ts(thread[0]).split(".")[0] == "0"
+    # and every message in the thread points at that same root ts
+    assert {_message(conn, r)["thread_ts"] for r in thread} == {_msg_ts(thread[0])}

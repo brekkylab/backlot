@@ -740,13 +740,22 @@ def _root_epoch(conn, row) -> int:
     its position backed out — assumed every reply sits exactly its position in
     seconds after the root, which stopped holding once a corpus could write a
     reply's own clock. Corpora without one resolve identically either way: the
-    root's stored second is the same number the subtraction produced."""
+    root's stored second is the same number the subtraction produced.
+
+    Every test here is against None rather than truthiness, because 1970-01-01T00:00:00Z
+    is a second a corpus can write and the importer stores it as 0 — under `if base:` a
+    thread rooted there fell into the position arithmetic this function retires and
+    served a root, a `thread_ts` and a reply `ts` that agreed with nothing."""
     if not row["thread_id"] or row["thread_seq"] == 0:
-        return row["created_ts"] or synth.epoch(row["thread_id"] or row["doc_id"])
+        base = row["created_ts"]
+        return synth.epoch(row["thread_id"] or row["doc_id"]) if base is None else base
     base = store.slack_root_created_ts(conn, row["thread_id"])
-    if base:
+    if base is not None:
         return base
-    if row["created_ts"]:  # a reply whose root row is absent
+    # No root second to ground on: either the root row is outside this corpus or it
+    # stores no clock at all. Fall back to the old arithmetic, which is right for the
+    # clockless thread it was written for.
+    if row["created_ts"] is not None:
         return row["created_ts"] - row["thread_seq"]
     return synth.epoch(row["thread_id"])
 
@@ -794,7 +803,9 @@ def _member_count(request: Request, conn, name: str) -> int:
 
 
 def _msg_ts(row) -> str:
-    if row["created_ts"]:
+    # None, not truthiness: a corpus may write 1970-01-01T00:00:00Z, which stores as 0,
+    # and a message that has a second should serve it rather than a synthesized one.
+    if row["created_ts"] is not None:
         return synth.slack_fmt_ts(row["created_ts"], row["thread_id"] or row["doc_id"])
     if row["thread_id"]:
         return synth.slack_thread_ts(row["thread_id"], row["thread_seq"])

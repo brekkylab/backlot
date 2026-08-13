@@ -109,6 +109,29 @@ def _restricted_doc(settings, user_token: str, source: str, where: str = "1=1"):
     return None, caller.email
 
 
+def _jira_key(settings, row) -> str:
+    """The key `row` actually answers to -- its own `served_number` column composed with the
+    project's own prefix (#51, task 8), not a freshly re-derived hash: jira is a PROBED source, so
+    the raw hash can disagree with what is actually served whenever a collision moved this row off
+    it, or whenever the project's prefix comes from a PROVIDED sibling key rather than
+    `synth.jira_project_key` -- the same class of bug github's own MCP ACL test (`_issue_number`
+    reading `row["served_number"]`, not `synth.github_number(row["doc_id"])`) was fixed for."""
+    conn = store.connect_ro(settings.db_path)
+    try:
+        prefix_row = conn.execute(
+            "SELECT key FROM jira_issues WHERE project = ? AND key IS NOT NULL LIMIT 1",
+            (row["project"],),
+        ).fetchone()
+    finally:
+        conn.close()
+    pkey = (
+        str(prefix_row["key"]).rsplit("-", 1)[0]
+        if prefix_row is not None
+        else synth.jira_project_key(row["project"])
+    )
+    return f"{pkey}-{row['served_number']}"
+
+
 async def _call(params, tool_pred, args, ok_pred) -> bool:
     """Connect via ``params``, call the tool matched by ``tool_pred`` with ``args``, and return
     ``ok_pred(text)`` over the response text."""
@@ -134,7 +157,7 @@ def test_mcp_atlassian_acl_enforced(live_server):
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "jira")
     assert row is not None, f"no Jira issue is ACL-restricted from {email} in the sample corpus"
-    key = synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"]))
+    key = _jira_key(settings, row)
 
     def reads(token):
         return asyncio.run(
@@ -466,7 +489,7 @@ def test_mcp_atlassian_bridge_acl_enforced(live_server):
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "jira")
     assert row is not None, f"no Jira issue is ACL-restricted from {email} in the sample corpus"
-    key = synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"]))
+    key = _jira_key(settings, row)
 
     def reads(token):
         return _bridge_call(

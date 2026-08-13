@@ -159,6 +159,31 @@ def _jira_container_for_key(conn, token: str, request: Request | None = None) ->
     return None
 
 
+# `PREFIX-N` (see jira.schema.json's `key` pattern — an uppercase-led alnum prefix, a literal `-`,
+# then a positive integer with no leading zero). Anchored, so a malformed key (no trailing digits,
+# or none at all) simply fails to match rather than mis-splitting on an earlier `-`.
+_JIRA_KEY_RE = re.compile(r"^(.+)-([1-9][0-9]*)$")
+
+
+def _resolve_jira_key(request: Request, conn, key: str, ids):
+    """One issue by its served key, ACL-scoped — a unique-indexed column lookup (see
+    store.jira_by_served_number), not a startup reverse map (#51, task 8).
+
+    Splits `key` into its project prefix and numeric suffix, resolves the prefix to its backing
+    project through `_jira_container_for_key` (the project<->prefix maps, still built at boot —
+    see backlot.main and `idx["jira_project_keys"]`/`idx["jira_project_containers"]`), then looks
+    the suffix up scoped to THAT project (jira's own uniqueness rule — see store.SERVED_ID's
+    `scope` for jira). A key with no parseable numeric suffix, or an unresolvable prefix, is simply
+    not found — never a fallback to the unfiltered corpus."""
+    m = _JIRA_KEY_RE.match(key)
+    if not m:
+        return None
+    container = _jira_container_for_key(conn, m.group(1), request)
+    if container is None:
+        return None
+    return store.jira_by_served_number(conn, container, int(m.group(2)), visible_ids=ids)
+
+
 @router.get(
     "/rest/api/2/serverInfo", response_model=JiraServerInfo
 )  # jira PyPI client probes this on connect
@@ -282,10 +307,7 @@ async def jira_get_issue(key: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = request.app.state.index["jira"].get(key)
-    if doc_id is None:
-        raise HTTPException(status_code=404, detail="Issue does not exist")
-    row = store.get_document(conn, "jira", doc_id, visible_ids=ids)
+    row = _resolve_jira_key(request, conn, key, ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Issue does not exist")
     return _jira_issue(conn, request, row, expand=request.query_params.get("expand", ""))
@@ -297,10 +319,10 @@ async def jira_issue_comments(key: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = request.app.state.index["jira"].get(key)
-    if doc_id is None or store.get_document(conn, "jira", doc_id, visible_ids=ids) is None:
+    row = _resolve_jira_key(request, conn, key, ids)
+    if row is None:
         raise HTTPException(status_code=404, detail="Issue does not exist")
-    cs = store.doc_comments(conn, "jira", doc_id)
+    cs = store.doc_comments(conn, "jira", row["doc_id"])
     site = _site(request)
     return {
         "startAt": 0,
@@ -546,22 +568,24 @@ def _jira_actor(email: str, site: str = "") -> dict:
 
 
 def _issue_key(request: Request, row) -> str:
-    """The key this issue answers to, as the reverse index resolved it.
+    """The key this issue answers to: PREFIX-SUFFIX composed at serve time (`synth.jira_key`'s own
+    shape), where the suffix is the row's own `served_number` column (#51, task 8 — assigned at
+    import by `resolve_jira_numbers`, not derived here) and the prefix is the project's own key
+    (`_project_key`, container-level and still resolved through the boot-time index — see
+    `idx["jira_project_keys"]`/`idx["jira_project_containers"]` in backlot.main).
 
-    Deriving it here instead would disagree with the index whenever the derived key was
-    already held by an issue that provided it: the row then advertised a key that fetched
-    somebody else, and was reachable at nothing."""
-    provided = synth.stored(row, "key")
-    if provided:
-        return str(provided)
-    # Shape tests call the builders with a bare Request that carries no app, and they only
-    # read the derived spelling — so reach the index through the scope rather than the
-    # `app` property, which raises there.
-    state = getattr(request.scope.get("app"), "state", None)
-    resolved = (getattr(state, "index", None) or {}).get("jira_key") or {}
-    return resolved.get(row["doc_id"]) or synth.jira_key(
-        row["doc_id"], _project_key(request, row["project"])
-    )
+    A provided key is served EXACTLY that value: `resolve_jira_numbers` writes
+    `served_number = <the provided suffix>` for it, so there is no separate provided-vs-derived
+    branch to make here — same shape as github's own `_issue_number` (#51, task 7).
+
+    The `or` fallback is defensive only: every jira row gets a served_number at import
+    (`resolve_jira_numbers` raises rather than leave one NULL — see its docstring), so a caller
+    reaching this with a NULL one is a bug upstream, not a state meant to be papered over here.
+    `_project_key` already tolerates a bare Request with no app scope (shape tests build one —
+    see its own `_index_maps` helper), so this needs no separate accommodation for that."""
+    pkey = _project_key(request, row["project"])
+    suffix = row["served_number"] or synth.jira_key_number(row["doc_id"])
+    return f"{pkey}-{suffix}"
 
 
 def _jira_ref(request: Request, row, site: str = "") -> dict:

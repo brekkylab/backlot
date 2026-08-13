@@ -1645,14 +1645,17 @@ def test_byo_server_boots_read_only_on_a_pre_column_db(tmp_path):
     before the `key` column existed must boot and serve the synthesized spelling exactly as that
     version did, not crash in lifespan.
 
-    jira only now: github's own equivalent DB-predates-the-column scenario is gone with #51 --
-    `number` is a real corpus-provided value with no boot-time fallback to defend (that never
-    changed), but the ACTUAL served value now lives in `served_number`, which -- unlike `number`,
-    jira's `key`, and the OLDER `github_comments.served_id` (predates this #51 series, and is
-    self-healed) -- carries NO self-heal ALTER: no back-compat for the per-document served-id-
-    style columns tasks 3-7 added (see idx_github_served's schema comment). A DB missing it is not
-    a supported shape to boot against at all, so there is nothing left to characterize here for
-    github specifically."""
+    `key` IS self-healed by connect_rw (the ALTER list), which is why dropping it here still
+    characterizes a real upgrade path -- github's own equivalent DB-predates-the-column scenario
+    is gone with #51: `number` is a real corpus-provided value with no boot-time fallback to
+    defend (that never changed). The ACTUAL served value for BOTH sources now lives in a
+    `served_number` column (github's own, task 7; jira's, task 8) which -- unlike `key`/`number`
+    and the OLDER `github_comments.served_id` (predates this #51 series, and is self-healed) --
+    carries NO self-heal ALTER: no back-compat for the per-document served-id-style columns tasks
+    3-8 added (see idx_github_served's/idx_jira_served's schema comments). A DB missing either
+    `served_number` column is not a supported shape to boot against at all, so there is nothing
+    left to characterize for THAT column here -- this test's subject stays exactly `key`'s
+    self-heal (never touched below; only `key` is dropped)."""
     import sqlite3 as _sq
 
     from backlot import synth
@@ -2614,6 +2617,43 @@ def test_byo_github_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
         build_corpus(tmp_path, docs)
 
 
+def test_byo_jira_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
+    """jira's own equivalent of the github test above (#51, task 8): `_assign_jira_number`'s
+    bounded walk raises past `synth.JIRA_KEY_NUMBER_RANGE` steps rather than return a suffix it
+    already knows is taken, which would duplicate it under the UNIQUE (project, served_number)
+    index instead of failing where the problem actually is.
+
+    "Genuinely exhausted" is 9,000 issues in one project in reality -- not a practical test
+    fixture -- so this shrinks `synth.JIRA_KEY_NUMBER_RANGE` itself (a plain module attribute,
+    same shape as `GITHUB_NUMBER_RANGE` -- see that test's own docstring for why `monkeypatch.
+    setattr` reaches it while `store.SERVED_ID`'s captured seed function needs `setitem`
+    instead) and collapses the seed to one constant. 4 rows, not 3, for the same reason as the
+    github test: with a constant seed and a range of 2, 3 rows leaves one small candidate value
+    never actually probed, which a mutation that silently returns the walk's last (unchecked)
+    value can still slip through by accident.
+    """
+    from backlot import synth
+    from tests._helpers import build_corpus
+
+    monkeypatch.setattr(synth, "JIRA_KEY_NUMBER_RANGE", 2)
+    monkeypatch.setitem(
+        store.SERVED_ID, "jira", ("served_number", lambda doc_id: 999999, "project")
+    )
+    docs = [
+        {
+            "source_type": "jira",
+            "doc_id": f"j{i}",
+            "project": "payments",
+            "title": f"Issue {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i in range(4)  # more rows than the shrunk 2-number range holds
+    ]
+    with pytest.raises(SystemExit, match="exhausted"):
+        build_corpus(tmp_path, docs)
+
+
 def test_byo_two_records_cannot_claim_one_tracker_id(tmp_path):
     """Two records providing the same github number, or the same jira key, used to load
     without a word: the reverse index gave the id to one of them and the other was
@@ -3287,6 +3327,68 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
     assert served["z-provider"] == stolen  # the provider wins the spelling it stated
     assert served["a-victim"] != stolen  # the untouched row moved off it, not left duplicated
     assert served["a-victim"] is not None
+
+
+def test_byo_a_jira_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_path):
+    """jira's own equivalent of the github regression just above (#51, task 8):
+    `resolve_jira_numbers` has the identical two-pass-then-single-write-order defect if its
+    two-sweep NULL-first write were ever dropped -- see that method's docstring for why. Needs no
+    monkeypatching: `j-victim` is loaded alone first (gets `synth.jira_key_number("j-victim")`
+    outright, nothing else in the project to collide with), then a SECOND batch (`--append`, i.e.
+    `reset=False`) provides a key carrying that exact suffix for a different doc_id. `j-victim` is
+    never touched by the second batch's insert -- its row is exactly the "untouched, only exposed
+    via seed_tracker_ids' preload" shape the brief asked this conversion to handle."""
+    from backlot import synth
+    from backlot.importer.byo import load
+
+    stolen = synth.jira_key_number("j-victim")
+    shard1 = tmp_path / "s1.jsonl"
+    shard1.write_text(
+        json.dumps(
+            {
+                "source_type": "jira",
+                "doc_id": "j-victim",
+                "project": "payments",
+                "title": "v",
+                "content": "v",
+                "author_email": "ava@acme.com",
+            }
+        )
+    )
+    settings = Settings(data_dir=tmp_path)
+    load(shard1, settings, reset=True)
+    conn = store.connect_ro(settings.db_path)
+    before = conn.execute(
+        "SELECT served_number FROM jira_issues WHERE doc_id = 'j-victim'"
+    ).fetchone()["served_number"]
+    assert before == stolen  # sanity: nothing to collide with yet, so it got its own hash
+    conn.close()
+
+    shard2 = tmp_path / "s2.jsonl"
+    shard2.write_text(
+        json.dumps(
+            {
+                "source_type": "jira",
+                "doc_id": "z-provider",
+                "project": "payments",
+                "title": "p",
+                "content": "p",
+                "author_email": "ava@acme.com",
+                "key": f"PAY-{stolen}",
+            }
+        )
+    )
+    load(shard2, settings, reset=False)  # must not raise IntegrityError
+
+    conn = store.connect_ro(settings.db_path)
+    served = {
+        r["doc_id"]: r["served_number"]
+        for r in conn.execute("SELECT doc_id, served_number FROM jira_issues")
+    }
+    conn.close()
+    assert served["z-provider"] == stolen  # the provider wins the spelling it stated
+    assert served["j-victim"] != stolen  # the untouched row moved off it, not left duplicated
+    assert served["j-victim"] is not None
 
 
 # --- github pull changesets and review comments (issue #49 group B) ---------------------

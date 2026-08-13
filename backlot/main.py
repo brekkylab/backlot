@@ -1,10 +1,13 @@
 """FastAPI app hosting every vendor mock under path prefixes.
 
 Startup opens the read-only SQLite DB, loads the ACL/token map, and builds the reverse indexes
-still needed for O(1) get-by-id: Jira key -> doc_id (the last hashed id resolved this way, #51 —
-confluence/gmail/notion/hubspot/linear/github's ids/numbers already resolve through a stored
-column instead, see backlot.store's SERVED_ID) plus Linear's and Fireflies' one-way-hashed entity
-ids, none of which have a column of their own to be stored in.
+still needed for O(1) get-by-id: Linear's and Fireflies' one-way-hashed entity ids, none of which
+have a column of their own to be stored in. Every per-document served id (confluence/gmail/
+notion/hubspot/linear/github/jira, #51) now resolves through a stored column instead — see
+backlot.store's SERVED_ID. Jira's own project<->prefix maps (`jira_project_keys`/
+`jira_project_containers`) also stay here: they are CONTAINER-level (one entry per project, not
+per document), and the deferred assignment pass in backlot.importer.byo (`resolve_jira_numbers`)
+needs the corpus-provided prefix to compose a key at serve time (see routers.atlassian).
 """
 
 from __future__ import annotations
@@ -39,31 +42,8 @@ from backlot.routers import (
 )
 
 
-# Sequence numbers a derived jira key may take before the search gives up. A project with more
-# issues than this has run out of the space `synth.jira_key` draws from, which is a corpus-scale
-# problem and not something a silent duplicate should paper over. (github had the same limit for
-# its own derived numbers, `_free_number`, until #51 replaced that boot-time search with a stored
-# `served_number` column — see backlot.importer.byo's `resolve_github_numbers` and
-# `_assign_github_number`.)
-_PROBE_LIMIT = 90_000
-
-
-def _free_key(taken: dict, prefix: str, start: str) -> str:
-    """The last of this project's boot-time probes (github's own `_free_number` did the same
-    search over derived issue numbers, until #51 replaced it with a stored column — see the
-    module constant's comment above): same prefix, next free sequence number."""
-    n = int(start.rsplit("-", 1)[-1]) if "-" in start else 1
-    for _ in range(_PROBE_LIMIT):
-        key = f"{prefix}-{n}"
-        if key not in taken:
-            return key
-        n = n % _PROBE_LIMIT + 1
-    return start
-
-
 def _build_index(conn) -> dict:
     idx = {
-        "jira": {},
         "linear_teams": {},
         "linear_users": {},
         "linear_states": {},
@@ -74,25 +54,18 @@ def _build_index(conn) -> dict:
         "fireflies_users": {},
         # container -> the project-key prefix its corpus-provided issue keys carry, and
         # the reverse — so `project = PAY` JQL, the project picker and every issue's
-        # `fields.project.key` speak the spelling the documents cite.
+        # `fields.project.key` speak the spelling the documents cite. CONTAINER-level (one
+        # entry per project, not per document) — unlike the per-document key resolution,
+        # which is now a stored `served_number` column instead (#51, task 8; see
+        # backlot.importer.byo's `resolve_jira_numbers` and store.jira_by_served_number).
         "jira_project_keys": {},
         "jira_project_containers": {},
-        # doc_id -> the key the document answers to. The routers read this rather than
-        # deriving it themselves: a keyless row's derived spelling can already be held by
-        # a row that provided it, and then the row served a key that fetched somebody else
-        # while being reachable at nothing. Resolving it belongs here, the one place the
-        # whole container is visible. (github's own equivalent, `idx["github_number"]`, is
-        # gone — #51 replaced it with the stored `served_number` column; see
-        # backlot.importer.byo's `resolve_github_numbers`.)
-        "jira_key": {},
     }
 
-    # Two passes: corpus-provided ids claim their spelling first, then every row's
-    # synthesized spelling registers as an alias — a collision can therefore never make the
-    # losing document unreachable, it just answers to its synthesized id. Scans are in doc_id
-    # order with setdefault (first row wins, stable across restarts — Linear's contract for
-    # repeated identifiers). A DB from before the columns existed is opened READ-ONLY here, so
-    # no migration can run; the column-less query serves it exactly as that version did.
+    # A DB from before the `key` column existed is opened READ-ONLY here, so no migration can
+    # run; the column-less query below serves it exactly as that version did (no provided prefix
+    # to register — every project falls back to its synthesized key, see routers.atlassian's
+    # `_project_key`).
     def _scan(with_cols: str, without_cols: str, tail: str):
         try:
             return list(conn.execute(with_cols + tail))
@@ -110,32 +83,18 @@ def _build_index(conn) -> dict:
         f"SELECT doc_id, {store.grouping_col('jira')} AS container, NULL AS key ",
         f"FROM {store.table('jira')} ORDER BY doc_id",
     )
+    # Only the corpus-PROVIDED prefix is registered — a keyless project's synthesized prefix
+    # (`synth.jira_project_key`) is derived at serve time instead, never written into this map.
+    # One pass, doc_id order with setdefault (first row wins, stable across restarts): unlike the
+    # old per-document resolution this replaced, nothing here depends on which row a collision
+    # displaces, so there is no second pass to run.
     for r in j_rows:
-        if r["key"]:
-            idx["jira"].setdefault(r["key"], r["doc_id"])
-            idx["jira_key"][r["doc_id"]] = r["key"]
-            prefix = str(r["key"]).rsplit("-", 1)[0]
-            if prefix:
-                idx["jira_project_keys"].setdefault(r["container"], prefix)
-                idx["jira_project_containers"].setdefault(prefix.upper(), r["container"])
-    for r in j_rows:
-        if r["key"]:
+        if not r["key"]:
             continue
-        # The synthesized alias carries the container's provided prefix when one exists,
-        # so a keyless row in a keyed project still serves `<PAY>-<n>` — real Jira
-        # guarantees an issue key's prefix IS its project's key.
-        pkey = idx["jira_project_keys"].get(r["container"]) or synth.jira_project_key(
-            r["container"]
-        )
-        key = _free_key(idx["jira"], pkey, synth.jira_key(r["doc_id"], pkey))
-        idx["jira"][key] = r["doc_id"]
-        idx["jira_key"][r["doc_id"]] = key
-    for r in j_rows:
-        if r["key"]:
-            pkey = idx["jira_project_keys"].get(r["container"]) or synth.jira_project_key(
-                r["container"]
-            )
-            idx["jira"].setdefault(synth.jira_key(r["doc_id"], pkey), r["doc_id"])
+        prefix = str(r["key"]).rsplit("-", 1)[0]
+        if prefix:
+            idx["jira_project_keys"].setdefault(r["container"], prefix)
+            idx["jira_project_containers"].setdefault(prefix.upper(), r["container"])
     # `team(id:)` accepts the team UUID *or* its key (ENG) — one dict resolves either spelling
     # back to the container. Two containers can reduce to one team key, so setdefault: the first
     # row in name order wins and the mapping stays stable across restarts. (`issue(id:)`'s own

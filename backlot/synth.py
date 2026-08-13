@@ -160,6 +160,15 @@ def jira_numeric_id(doc_id: str) -> int:
     return 10_000 + hnum(doc_id, 8, 8) % 900_000
 
 
+# The size of the per-project space `jira_key_number` draws from (1..JIRA_KEY_NUMBER_RANGE). A
+# project with more issues than this has run out of that space, which is a corpus-scale problem
+# and not something a silent duplicate should paper over — see importer.byo's
+# `_assign_jira_number`. Exported (not a private literal inside `jira_key_number`) for the same
+# reason `GITHUB_NUMBER_RANGE` is: the importer's probe walk and exhaustion check both read this
+# SAME constant rather than an uncoupled copy.
+JIRA_KEY_NUMBER_RANGE = 9_000
+
+
 def jira_key_number(doc_id: str) -> int:
     """The numeric suffix of `jira_key(doc_id, project_key)`, split out so the two cannot drift.
 
@@ -169,7 +178,7 @@ def jira_key_number(doc_id: str) -> int:
     is under-constrained (two containers may share one; only the synthesized
     `jira_project_key` is per-container unique), so a probe scoped by project must never include it.
     """
-    return hnum(doc_id, 16, 6) % 9000 + 1
+    return hnum(doc_id, 16, 6) % JIRA_KEY_NUMBER_RANGE + 1
 
 
 def jira_key(doc_id: str, project_key: str) -> str:
@@ -877,10 +886,3 @@ def s3_iso(ts: int) -> str:
 def s3_http_date(ts: int) -> str:
     """The Last-Modified response header, RFC 1123: Fri, 05 Apr 2024 17:00:00 GMT."""
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
-
-
-def stored(row, col: str):
-    """A materialized column when present — a DB from before the column existed is
-    served through read-only opens (no migration runs on that path), so absence is an
-    expected state that falls through to the synthesized value at the call site."""
-    return row[col] if col in row.keys() else None

@@ -102,13 +102,12 @@ def test_acl_table_registry_covers_every_source(tmp_path):
 
 def test_served_id_registry_covers_every_hashed_source():
     """This registry has to be total over every source that serves a HASHED id -- one resolved by
-    reversing a hash back to a doc_id, whether that reversal still lives in `main._build_index`
-    (jira, the last one) or already went through a stored column (confluence, gmail, notion,
-    hubspot, linear, github, each in its own task) -- each gets its own column in its own task
-    (#51), one source at a time, so the registry has to be total from the start or a later task's
-    column goes unrecorded. `s3`'s id is `bucket/key`, stored already and never hashed; `slack`
-    has no hash->doc_id map to replace; and fireflies' only hash (`fireflies_user_id`) reverses an
-    EMAIL, not a doc_id -- none of the three belong here."""
+    reversing a hash back to a doc_id through a stored column assigned at import, each converted
+    in its own task (#51) -- confluence, gmail, notion, hubspot, linear, github and, last, jira
+    (task 8) -- so the registry has to be total from the start or a later task's column goes
+    unrecorded. `s3`'s id is `bucket/key`, stored already and never hashed; `slack` has no
+    hash->doc_id map to replace; and fireflies' only hash (`fireflies_user_id`) reverses an EMAIL,
+    not a doc_id -- none of the three belong here."""
     assert set(store.SERVED_ID) == {
         "confluence",
         "gmail",
@@ -118,9 +117,9 @@ def test_served_id_registry_covers_every_hashed_source():
         "github",
         "jira",
     }
-    # Confluence's own entry -- column name, seed function, corpus-wide scope. (gmail, notion,
-    # hubspot, linear and github read theirs too, by now; jira's is read only by
-    # main._build_index, until its own later task converts it.)
+    # Confluence's own entry -- column name, seed function, corpus-wide scope. Every entry in the
+    # registry is read by its own stored-column reader now (github_by_served_number,
+    # jira_by_served_number, etc.) -- none is left to main._build_index's reverse map.
     assert store.SERVED_ID["confluence"] == ("served_id", synth.confluence_id, None)
 
 
@@ -1094,6 +1093,103 @@ def test_github_by_served_number_applies_the_acl(tmp_path):
     served = conn.execute("SELECT served_number FROM github_items").fetchone()["served_number"]
     assert store.github_by_served_number(conn, "core", served)["doc_id"] == "g0"
     assert store.github_by_served_number(conn, "core", served, visible_ids={"nobody"}) is None
+    conn.close()
+
+
+def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
+    tmp_path, monkeypatch
+):
+    """jira's served suffix, like github's served number, is PROBED against a collision, not
+    stored as the bare hash: `synth.jira_key_number`'s space is only 1..9,000 PER PROJECT (#51's
+    task 8 -- see store.SERVED_ID's `scope`), so a real project collides far short of the birthday
+    bound. Forced here by collapsing the seed to a constant, the same shape as the github test
+    above (no `kind='file'` exclusion to also cover -- jira has no file-shaped row).
+
+    Also covers stability across a re-import: like github's assignment (and unlike confluence's/
+    hubspot's inline probe), jira's is a DEFERRED pass (`resolve_jira_numbers`) run once every
+    record has loaded, and it is THAT method's own `_jira_numbers` memo -- populated by
+    `seed_tracker_ids` before this run's insert can reset the column to NULL -- that a replay
+    actually depends on to reproduce the same suffixes, not the corpus alone.
+
+    Patches `store.SERVED_ID` directly, NOT `synth.jira_key_number`: `store.served_id_seed
+    ("jira")` -- what `_assign_jira_number` actually calls -- returns the tuple element
+    `SERVED_ID` captured when `backlot.store` was first imported, a bound reference to the
+    function object, not a live attribute lookup (see the github/hubspot/confluence tests above
+    for the same defect with `monkeypatch.setattr`).
+    """
+    from backlot.importer import byo
+    from tests._helpers import build_corpus
+
+    monkeypatch.setitem(store.SERVED_ID, "jira", ("served_number", lambda doc_id: 7, "project"))
+    docs = [
+        {
+            "source_type": "jira",
+            "doc_id": f"j{i}",
+            "project": "payments",
+            "title": f"Issue {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i in range(5)
+    ]
+    s = build_corpus(tmp_path, docs)
+    monkeypatch.undo()
+    conn = store.connect_ro(s.db_path)
+    issues = {
+        r["doc_id"]: r["served_number"]
+        for r in conn.execute("SELECT doc_id, served_number FROM jira_issues")
+    }
+    # The collapsed seed actually landed -- j0, the first row processed (before anything is
+    # taken), is served exactly the forced value, not some real hash -- AND resolved to 5 DISTINCT
+    # suffixes, otherwise the collision below never actually happened and the rest of this test
+    # passed for the wrong reason.
+    assert issues["j0"] == 7
+    assert len(issues) == 5 and len(set(issues.values())) == 5
+    for doc_id, n in issues.items():
+        assert store.jira_by_served_number(conn, "payments", n)["doc_id"] == doc_id
+    conn.close()
+
+    # A re-import (e.g. --append re-running over the same shard) must not renumber an issue a
+    # client may already hold a url for -- more load-bearing here than for confluence's/hubspot's
+    # own version of this check: a probed suffix is not a pure function of doc_id, and jira's
+    # assignment is not even memoized as it runs -- resolve_jira_numbers rebuilds its whole
+    # taken-set fresh every call, so ONLY seed_tracker_ids' preload stands between a replay and a
+    # fully reshuffled project.
+    byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
+    conn = store.connect_ro(s.db_path)
+    replay = {
+        r["doc_id"]: r["served_number"]
+        for r in conn.execute("SELECT doc_id, served_number FROM jira_issues")
+    }
+    assert replay == issues
+    conn.close()
+
+
+def test_jira_by_served_number_applies_the_acl(tmp_path):
+    """A regression `notion_by_served_id` shipped without (#51 review round), and every reader
+    since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
+    None, not the unscoped row -- otherwise the ACL clause could be deleted from
+    `jira_by_served_number` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
+    rather than the empty-set "AND 0" short-circuit."""
+    from tests._helpers import tiny_corpus
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j0",
+                "project": "payments",
+                "title": "Issue 0",
+                "content": "x",
+                "author_email": "a@acme.com",
+            }
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    served = conn.execute("SELECT served_number FROM jira_issues").fetchone()["served_number"]
+    assert store.jira_by_served_number(conn, "payments", served)["doc_id"] == "j0"
+    assert store.jira_by_served_number(conn, "payments", served, visible_ids={"nobody"}) is None
     conn.close()
 
 

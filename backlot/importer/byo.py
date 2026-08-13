@@ -656,6 +656,41 @@ class _Loader:
             f"no served number is free for {doc_id!r}"
         )
 
+    def _assign_jira_number(self, doc_id: str, project: str, taken: dict[str, set[int]]) -> int:
+        """A served key SUFFIX for a jira issue with no corpus-provided key, unique within
+        `project` among the suffixes `taken` already holds for it (jira's own uniqueness rule —
+        see store.SERVED_ID's `scope` for jira).
+
+        Called only from :meth:`resolve_jira_numbers`'s second pass, never from `add`: which
+        suffixes are already taken in this project depends on the WHOLE corpus, including rows
+        that may not have been loaded yet, so this cannot run while records are still streaming in
+        (see that method's docstring).
+
+        Same probe shape as `_assign_github_number`: seeded from the doc_id so the same corpus
+        produces the same suffix, re-seeded a few times to spread out, THEN walked
+        unconditionally — re-seeding alone only terminates if the hash actually varies with the
+        salt, and an unbounded re-seed loop hung the importer once already. The walk is BOUNDED:
+        past `synth.JIRA_KEY_NUMBER_RANGE` steps every suffix `synth.jira_key_number` can produce
+        has been visited, so `project` has more issues than the space holds, and returning one
+        anyway would duplicate it under the UNIQUE (project, served_number) index instead of
+        failing where the problem actually is.
+        """
+        bucket = taken.setdefault(project, set())
+        seed = store.served_id_seed("jira")
+        n = int(seed(doc_id))
+        for salt in range(1, 9):
+            if n not in bucket:
+                break
+            n = int(seed(f"{doc_id}\x00{salt}"))
+        for _ in range(synth.JIRA_KEY_NUMBER_RANGE):
+            if n not in bucket:
+                return n
+            n = n % synth.JIRA_KEY_NUMBER_RANGE + 1
+        raise SystemExit(
+            f"jira: project {project!r} has exhausted its {synth.JIRA_KEY_NUMBER_RANGE}-number "
+            f"range; no served key is free for {doc_id!r}"
+        )
+
     def _assign_github_comment_id(self, stored_id: str) -> int:
         """The `id` this comment will be served as: unique, 10 digits like real GitHub's, and stable.
 
@@ -800,6 +835,14 @@ class _Loader:
         # `insert`'s github block), the only remaining record of what it used to serve. Populated
         # by seed_tracker_ids, BEFORE this run's inserts can overwrite the column.
         self._github_numbers = {}  # doc_id -> served number, for github rows already in the DB
+        # jira served-key SUFFIXES are assigned the same way (#51, task 8) -- deferred, not
+        # per-record while streaming, for the same provided-claims-first reason (see
+        # resolve_jira_numbers). This memo exists only so a re-import/--append does not renumber a
+        # row a client already holds a key for: resolve_jira_numbers reads it for a row whose
+        # served_number the streaming insert just reset to NULL (see `insert`'s jira block), the
+        # only remaining record of what it used to serve. Populated by seed_tracker_ids, BEFORE
+        # this run's inserts can overwrite the column.
+        self._jira_numbers = {}  # doc_id -> served suffix, for jira rows already in the DB
         self.fts_ids = {}
         # HubSpot associations are resolved after the whole corpus is read: a link may name a target
         # that appears on a later line, and an omitted `to_type` is filled in from the target's own
@@ -874,6 +917,16 @@ class _Loader:
             f"SELECT doc_id, {gh_col} AS served FROM github_items WHERE {gh_col} IS NOT NULL"
         ):
             self._github_numbers[row["doc_id"]] = row["served"]
+        # Same claim, for jira served suffixes -- more load-bearing than confluence's/hubspot's,
+        # same reason as github's own served_number memo just above: resolve_jira_numbers reads
+        # this for a row this run's insert is about to reset to NULL (see `insert`'s jira block),
+        # which is the ONLY way a re-import/--append can still tell "this row used to serve suffix
+        # N" once the live column has been overwritten.
+        jira_col = store.served_id_column("jira")
+        for row in self.conn.execute(
+            f"SELECT doc_id, {jira_col} AS served FROM jira_issues WHERE {jira_col} IS NOT NULL"
+        ):
+            self._jira_numbers[row["doc_id"]] = row["served"]
         for src, col in (("github", "number"), ("jira", "key")):
             for row in self.conn.execute(
                 f"SELECT doc_id, {col} AS v, {store.grouping_col(src)} AS c "
@@ -1253,39 +1306,47 @@ class _Loader:
                 # actually resolved unique by _assign_hubspot_id, not a raw hash that a collision
                 # walk may have moved the record away from.
                 cols[store.served_id_column("hubspot")] = self._assign_hubspot_id(did)
-            # A jira key is deliberately NOT materialized the way Linear's identifier is: the
-            # column holds what the CORPUS wrote and nothing else, so "provided" means exactly
-            # "non-NULL" everywhere downstream. (jira is a separate, later task from github's own
-            # #51 conversion below — this reasoning, and every structure it depends on, is
-            # UNCHANGED for it.)
-            #
-            # A key carries the PROJECT's key as its prefix — a fact about the container, not about
+            # A jira key's PREFIX carries the PROJECT's key — a fact about the container, not about
             # this row. Written here the prefix would be the synthesized one, since the record
             # cannot know whether a sibling issue in the same project provides `PAY-7`, and a
             # project mixing provided and absent keys would then serve two spellings at once.
+            # `idx["jira_project_keys"]`/`idx["jira_project_containers"]` (container-level, still
+            # built at boot — see backlot.main) are what let a provided prefix claim its spelling
+            # ahead of every synthesized one; #51's task 8 (this jira conversion) leaves that
+            # reasoning, and those maps, alone.
             #
-            # And jira's reverse index still lets a provided id claim its spelling ahead of every
-            # synthesized one (main._build_index scans in two passes). A synthesized value written
-            # into the same column would be indistinguishable from a provided one, which would put
-            # the passes in doc_id order instead: a record that provided a key would lose it to
-            # whichever row synthesized the same key and sorted first, and answer 404 at the key it
-            # had asked for.
-            #
-            # github used to share this EXACT constraint, and this comment used to say so — #51
-            # answered it for github with a SECOND column instead of a smarter index: `number`
-            # still holds only what the corpus wrote, but the value actually served is now
-            # materialized separately in `served_number`, assigned by resolve_github_numbers (a
-            # DEFERRED pass run once every record has been loaded, since the provided-claims-first
-            # ordering needs the whole corpus visible, not just the rows seen so far while
-            # streaming — see that method's docstring). Two columns is what makes a materialized
-            # synthesized value distinguishable from a provided one, which a single shared column
-            # never could be — the reasoning constraint #46 raised when it rejected storing.
-            #
-            # jira still needs neither value stored: unlike Linear's identifier (resolvable ONLY
-            # from its own column), the boot-time index registers each row's synthesized spelling
-            # as an alias, and the routers read through synth.stored() with that same value as the
-            # fallback — so an absent key stays absent and is derived where the whole project is
-            # visible, once.
+            # The SUFFIX is a different story, and #51 answers it for jira the same way it already
+            # did for github below: `key` still holds exactly what the corpus wrote — "provided"
+            # continues to mean precisely "key IS NOT NULL" everywhere downstream — but the suffix
+            # actually served is materialized SEPARATELY in `served_number`, assigned by
+            # resolve_jira_numbers (a DEFERRED pass run once every record has been loaded, since
+            # the provided-claims-first ordering needs the whole corpus visible, not just the rows
+            # seen so far while streaming — see that method's docstring). `synth.jira_key` COMPOSES
+            # the prefix and `synth.jira_key_number`'s suffix, so a materialized suffix and a
+            # synthesized prefix can never drift apart, and store.SERVED_ID's jira entry names
+            # `served_number` as holding only the numeric suffix, never the full key.
+            if src == "jira":
+                # Written UNCONDITIONALLY, matching github's own `served_number` write just below
+                # (`names = list(cols)` feeds the upsert's `DO UPDATE SET col=excluded.col` list,
+                # so a conditionally-written column risks going stale on a re-imported row --
+                # notion shipped exactly that bug with served_data_source_id). The real value
+                # cannot be resolved HERE even for a row that provides `key`: a LATER record in
+                # this same corpus may still claim that exact suffix outright, and provided keys
+                # must win that race regardless of load order — resolve_jira_numbers assigns it
+                # once every record has been seen.
+                #
+                # Verified NOT load-bearing today, unlike github's identical-looking write: making
+                # this conditional and dropping it entirely left the full suite green, because
+                # (unlike github's `kind='file'` exclusion) resolve_jira_numbers' row set has no
+                # subset a stale value can hide in — it scans every jira row on every call, and
+                # both its passes compare the LIVE `served_number` against what `key` says it
+                # should be (pass 1) or check membership in `bucket` (pass 2), so a stale
+                # untouched value gets corrected exactly as a freshly-NULLed one would. Kept
+                # unconditional anyway: matching the shape of every sibling write here is simpler
+                # to read than a special case, and it stops being merely cosmetic the moment
+                # resolve_jira_numbers ever grows a row-exclusion filter of its own (github's
+                # `kind='file'` precedent).
+                cols[store.served_id_column("jira")] = None
             if src == "github" and cols.get("kind") == "file":
                 # The schema says a file row's number is ignored — make that true in the table
                 # too, not only in served_number's own exclusion (resolve_github_numbers skips
@@ -1776,6 +1837,97 @@ class _Loader:
                 (served_number, doc_id),
             )
 
+    def resolve_jira_numbers(self) -> None:
+        """Assign `served_number` (the numeric SUFFIX of the key served — see
+        `synth.jira_key_number`) to every jira row, in the same two-phase order
+        `resolve_github_numbers` uses (#51, task 8) — corpus-provided keys claim their suffix
+        FIRST, corpus-wide, and only THEN does every remaining row probe.
+
+        This cannot happen inside `add`'s per-record insert, which is why it is here rather than
+        there: which suffixes a project's rows without a key may take depends on which suffixes
+        the REST of the project's rows — including ones not yet loaded — claim outright. A row
+        processed early has no way to know that a later record in the same corpus will provide the
+        exact key it is about to probe into; running the probe while streaming would let that
+        early row win a race real Jira never lets it enter. Two separate passes over the same
+        doc_id-ordered row set (not one combined pass) is what keeps the ordering deterministic
+        and independent of insertion order: every provided key's suffix is registered as taken
+        before any row without one is even considered.
+
+        Only the SUFFIX is resolved here — the PREFIX is a container-level fact
+        (`idx["jira_project_keys"]`/`idx["jira_project_containers"]`, still built at boot; see
+        backlot.main) that this pass does not touch and does not need to: two different projects
+        sharing one prefix is refused outright at `add` time (the `jira_prefix_holders` 1:1 check),
+        so a suffix unique within `project` is unambiguous within its prefix too — except for the
+        residual documented on `idx_jira_served`'s schema comment (a synthesized prefix colliding
+        with an unrelated project's PROVIDED one), which this pass cannot close either.
+
+        Pass 3 of the old boot-time index (a provided row ALSO answering at its own synthesized
+        spelling, as an alias) is dropped here on purpose, not by oversight — the same call #51
+        made for github: a single column holds ONE suffix per row, and a provided issue answering
+        at a second, unrequested key is not something real Jira does either —
+        `/issue/<not-this-issue's-key>` 404s there. Closing that gap is the point of the stored
+        column, not a side effect of it.
+
+        Stability across a re-import/--append (a probed suffix is NOT a pure function of doc_id,
+        unlike gmail's/notion's/linear's, so this needs it): a row this run's insert touched had
+        its served_number reset to NULL (see `insert`'s jira block) even if it already had a
+        stable one before this run started, so `self._jira_numbers` — populated by
+        `seed_tracker_ids` BEFORE any insert in this run could clobber the live column — is the
+        only remaining record of what such a row used to serve. A row this run never touched still
+        carries its old served_number in the live table, read straight off `rows` below, so it
+        needs no memo at all. Either way, the OLD suffix is kept unless a NEW provided claim this
+        run needs it — the same "provided beats synthesized" rule pass 1 already enforces — in
+        which case the row probes a fresh one, same as a genuinely new row would.
+        """
+        if not self.counts.get("jira"):
+            return
+        rows = self.conn.execute(
+            "SELECT doc_id, project, key, served_number FROM jira_issues ORDER BY doc_id"
+        ).fetchall()
+        taken: dict[str, set[int]] = {}
+        updates: list[tuple[int, str]] = []
+        # Pass 1: every provided key's suffix claims its spelling, before anything else is even
+        # looked at — see the docstring above for why this has to be a separate pass over ALL rows.
+        for r in rows:
+            if r["key"] is None:
+                continue
+            n = int(str(r["key"]).rsplit("-", 1)[-1])
+            taken.setdefault(r["project"], set()).add(n)
+            if r["served_number"] != n:
+                updates.append((n, r["doc_id"]))
+        # Pass 2: everything else, in doc_id order — a row keeps its previous served_number
+        # (live, or from the pre-run memo if this run's insert just cleared it) when nothing in
+        # pass 1 wanted it, and otherwise probes a fresh one.
+        for r in rows:
+            if r["key"] is not None:
+                continue
+            project, doc_id = r["project"], r["doc_id"]
+            bucket = taken.setdefault(project, set())
+            candidate = r["served_number"]
+            if candidate is None:
+                candidate = self._jira_numbers.get(doc_id)
+            if candidate is None or candidate in bucket:
+                candidate = self._assign_jira_number(doc_id, project, taken)
+            bucket.add(candidate)
+            if candidate != r["served_number"]:
+                updates.append((candidate, doc_id))
+        # Two sweeps, not one — see resolve_github_numbers' identical comment for why writing
+        # `updates` in one pass can transiently duplicate a live value under the UNIQUE
+        # (project, served_number) index across an `--append` boundary. Clearing every changing
+        # row to NULL first removes the collision entirely: NULL is exempt from the UNIQUE index,
+        # so no order of the second sweep can ever collide with another row still in `updates`, or
+        # with a row NOT in `updates` (those keep their current value throughout, untouched by
+        # either sweep).
+        for _, doc_id in updates:
+            self.conn.execute(
+                "UPDATE jira_issues SET served_number = NULL WHERE doc_id = ?", (doc_id,)
+            )
+        for served_number, doc_id in updates:
+            self.conn.execute(
+                "UPDATE jira_issues SET served_number = ? WHERE doc_id = ?",
+                (served_number, doc_id),
+            )
+
 
 def load(
     path: Path, settings: Settings | None = None, reset: bool = True, roster: Path | None = None
@@ -1870,6 +2022,7 @@ def load_records(
         loader.add(rec, f"line {lineno}")
     loader.resolve_cross_references()
     loader.resolve_github_numbers()
+    loader.resolve_jira_numbers()
     users, groups = loader.users, loader.groups
     memberships, grants = loader.memberships, loader.grants
     counts, fts_ids = loader.counts, loader.fts_ids

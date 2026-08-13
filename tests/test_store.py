@@ -103,12 +103,12 @@ def test_acl_table_registry_covers_every_source(tmp_path):
 def test_served_id_registry_covers_every_hashed_source():
     """This registry has to be total over every source that serves a HASHED id -- one resolved by
     reversing a hash back to a doc_id, whether that reversal still lives in `main._build_index`
-    (github, jira) or already went through a stored column (confluence, gmail, notion, hubspot,
-    linear, each in its own task) -- each gets its own column in its own task (#51), one source at
-    a time, so the registry has to be total from the start or a later task's column goes
-    unrecorded. `s3`'s id is `bucket/key`, stored already and never hashed; `slack` has no
-    hash->doc_id map to replace; and fireflies' only hash (`fireflies_user_id`) reverses an EMAIL,
-    not a doc_id -- none of the three belong here."""
+    (jira, the last one) or already went through a stored column (confluence, gmail, notion,
+    hubspot, linear, github, each in its own task) -- each gets its own column in its own task
+    (#51), one source at a time, so the registry has to be total from the start or a later task's
+    column goes unrecorded. `s3`'s id is `bucket/key`, stored already and never hashed; `slack`
+    has no hash->doc_id map to replace; and fireflies' only hash (`fireflies_user_id`) reverses an
+    EMAIL, not a doc_id -- none of the three belong here."""
     assert set(store.SERVED_ID) == {
         "confluence",
         "gmail",
@@ -119,8 +119,8 @@ def test_served_id_registry_covers_every_hashed_source():
         "jira",
     }
     # Confluence's own entry -- column name, seed function, corpus-wide scope. (gmail, notion,
-    # hubspot and linear read theirs too, by now; github/jira's are read only by
-    # main._build_index, until their own task converts them.)
+    # hubspot, linear and github read theirs too, by now; jira's is read only by
+    # main._build_index, until its own later task converts it.)
     assert store.SERVED_ID["confluence"] == ("served_id", synth.confluence_id, None)
 
 
@@ -504,7 +504,13 @@ def test_connect_rw_busy_timeout(tmp_path):
 def test_connect_rw_self_heals_missing_path_column(tmp_path):
     """A pre-existing github_items table built before the `path` column existed must not make
     connect_rw's executescript(SCHEMA) blow up on `CREATE INDEX ... ON github_items(repo, path)`
-    (IF NOT EXISTS only guards the index name, not the referenced column)."""
+    (IF NOT EXISTS only guards the index name, not the referenced column).
+
+    `served_number` is included in the hand-rolled table on purpose, even though this fixture
+    predates it: unlike `path`/`changed_paths`/`number`, it is NOT in connect_rw's self-heal ALTER
+    list (#51 — no back-compat for the served-id-style columns tasks 3-7 added; see idx_github_
+    served's schema comment), so a table missing it would fail at the UNIQUE index in SCHEMA for
+    a reason this test isn't about. This test's own subject stays exactly `path`'s self-heal."""
     p = tmp_path / "old.sqlite"
     conn = sqlite3.connect(p)
     conn.execute(
@@ -513,7 +519,8 @@ def test_connect_rw_self_heals_missing_path_column(tmp_path):
         "title TEXT NOT NULL, content TEXT NOT NULL, kind TEXT, state TEXT, labels TEXT, "
         "assignees TEXT, merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, "
         "reactions TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER, closed_ts INTEGER, "
-        "closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT, owner_display TEXT"
+        "closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT, "
+        "owner_display TEXT, served_number INTEGER"
         ")"
     )
     conn.execute(
@@ -963,6 +970,127 @@ def test_hubspot_associations_carry_the_targets_own_served_id_through_a_collisio
     assert rows[0]["to_served_id"] == actual["co0"]
     back = store.hubspot_associations(conn, "co0", "companies")
     assert back[0]["to_served_id"] == actual["co1"]
+
+
+def test_github_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
+    tmp_path, monkeypatch
+):
+    """github's served number, like hubspot's/confluence's, is PROBED against a collision, not
+    stored as the bare hash: `synth.github_number`'s space is only 1..90,000 PER REPO (#51's
+    tightest of the probed sources -- see store.SERVED_ID's `scope`), so a real corpus collides
+    far short of the birthday bound. Forced here by collapsing the seed to a constant, the same
+    shape as the hubspot test above.
+
+    Also covers, in one corpus, the two things specific to github among the probed sources:
+    - `kind='file'` rows are excluded from the number space entirely, not merely probed around --
+      their served_number stays NULL, and several coexist under the UNIQUE (repo, served_number)
+      index alongside the 5 resolved issue numbers IN THE SAME REPO, which this import succeeding
+      at all already proves (SQLite exempts NULL from a UNIQUE constraint).
+    - Stability across a re-import: unlike confluence's/hubspot's assignment (computed inline per
+      record, memoized on the `_Loader` as it goes), github's is a DEFERRED pass
+      (`resolve_github_numbers`) run once every record has loaded, and it is THAT method's own
+      `_github_numbers` memo -- populated by `seed_tracker_ids` before this run's insert can reset
+      the column to NULL -- that a replay actually depends on to reproduce the same numbers, not
+      the corpus alone.
+
+    Patches `store.SERVED_ID` directly, NOT `synth.github_number`: `store.served_id_seed
+    ("github")` -- what `_assign_github_number` actually calls -- returns the tuple element
+    `SERVED_ID` captured when `backlot.store` was first imported, a bound reference to the
+    function object, not a live attribute lookup (see the confluence/gmail/notion/hubspot tests
+    above for the same defect with `monkeypatch.setattr`).
+    """
+    from backlot.importer import byo
+    from tests._helpers import build_corpus
+
+    monkeypatch.setitem(store.SERVED_ID, "github", ("served_number", lambda doc_id: 7, "repo"))
+    docs = [
+        {
+            "source_type": "github",
+            "doc_id": f"g{i}",
+            "repo": "core",
+            "title": f"Issue {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i in range(5)
+    ] + [
+        {
+            "source_type": "github",
+            "doc_id": f"g-file-{i}",
+            "repo": "core",
+            "subtype": "file",
+            "path": f"src/f{i}.py",
+            "title": f"f{i}.py",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i in range(3)
+    ]
+    s = build_corpus(tmp_path, docs)
+    monkeypatch.undo()
+    conn = store.connect_ro(s.db_path)
+    issues = {
+        r["doc_id"]: r["served_number"]
+        for r in conn.execute("SELECT doc_id, served_number FROM github_items WHERE kind != 'file'")
+    }
+    files = [
+        r["served_number"]
+        for r in conn.execute("SELECT served_number FROM github_items WHERE kind = 'file'")
+    ]
+    # The collapsed seed actually landed -- g0, the first row processed (before anything is
+    # taken), is served exactly the forced value, not some real hash -- AND resolved to 5
+    # DISTINCT numbers, otherwise the collision below never actually happened and the rest of
+    # this test passed for the wrong reason.
+    assert issues["g0"] == 7
+    assert len(issues) == 5 and len(set(issues.values())) == 5
+    for doc_id, n in issues.items():
+        assert store.github_by_served_number(conn, "core", n)["doc_id"] == doc_id
+    # file rows stay NULL, several of them, coexisting under the UNIQUE index with the 5 real
+    # numbers above IN THE SAME REPO -- proven by this import having succeeded at all.
+    assert len(files) == 3 and all(n is None for n in files)
+    conn.close()
+
+    # A re-import (e.g. --append re-running over the same shard) must not renumber an issue a
+    # client may already hold a url for -- more load-bearing here than for confluence's/
+    # hubspot's own version of this check: a probed number is not a pure function of doc_id, and
+    # unlike those two, github's assignment is not even memoized as it runs -- resolve_github_
+    # numbers rebuilds its whole taken-set fresh every call, so ONLY seed_tracker_ids' preload
+    # stands between a replay and a fully reshuffled repo.
+    byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
+    conn = store.connect_ro(s.db_path)
+    replay = {
+        r["doc_id"]: r["served_number"]
+        for r in conn.execute("SELECT doc_id, served_number FROM github_items WHERE kind != 'file'")
+    }
+    assert replay == issues
+    conn.close()
+
+
+def test_github_by_served_number_applies_the_acl(tmp_path):
+    """A regression `notion_by_served_id` shipped without (#51 review round), and every reader
+    since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
+    None, not the unscoped row -- otherwise the ACL clause could be deleted from
+    `github_by_served_number` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
+    rather than the empty-set "AND 0" short-circuit."""
+    from tests._helpers import tiny_corpus
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "g0",
+                "repo": "core",
+                "title": "Issue 0",
+                "content": "x",
+                "author_email": "a@acme.com",
+            }
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    served = conn.execute("SELECT served_number FROM github_items").fetchone()["served_number"]
+    assert store.github_by_served_number(conn, "core", served)["doc_id"] == "g0"
+    assert store.github_by_served_number(conn, "core", served, visible_ids={"nobody"}) is None
 
 
 def test_connect_ro_tuning(sample_settings):

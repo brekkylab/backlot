@@ -468,16 +468,25 @@ def test_github_file_excluded_from_search_issues(gh_client, gh_admin_h):
 
 
 def test_github_file_number_index_excludes_files(gh_client, gh_admin_h, gh_org):
-    """`kind='file'` rows must never populate app.state.index["github"] (the (repo, number)
-    reverse index): a file's synthesized number can collide with a real issue/PR's number
-    (see gh-file-collide-88814, which deliberately collides with gh-issue-1's), and if the
-    file's doc_id ends up as the map value, a real issue/PR 404s."""
-    c, _ = gh_client
-    from backlot import synth
+    """`kind='file'` rows must never take a `served_number`: a file's synthesized number can
+    collide with (and, before #51, shadow) a real issue/PR's (see gh-file-collide-88814, which
+    deliberately collides with gh-issue-1's hash). resolve_github_numbers excludes them from the
+    number space entirely rather than resolving the collision, so their served_number stays NULL
+    -- and this fixture's own import succeeding at all (SAMPLE + _GH_FILE_DOCS + _GH_DIFF_DOCS,
+    well over one file doc) is proof several NULLs coexist under the UNIQUE (repo, served_number)
+    index, which treats them as no claim rather than a collision."""
+    from backlot import store, synth
 
+    c, settings = gh_client
+    conn = store.connect_ro(settings.db_path)
     file_doc_ids = {d["doc_id"] for d in _GH_FILE_DOCS}
-    idx = c.app.state.index["github"]
-    assert not (set(idx.values()) & file_doc_ids)
+    file_rows = conn.execute(
+        "SELECT doc_id, served_number FROM github_items WHERE kind = 'file'"
+    ).fetchall()
+    assert file_doc_ids <= {r["doc_id"] for r in file_rows}
+    assert len(file_rows) > 1  # several file rows, all NULL, coexisting under the UNIQUE index
+    assert all(r["served_number"] is None for r in file_rows)
+    conn.close()
 
     # the real issue is still resolvable by number even though a file doc collides with it
     issue_num = synth.github_number("gh-issue-1")

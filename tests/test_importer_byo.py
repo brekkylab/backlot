@@ -1513,11 +1513,19 @@ def test_byo_one_provided_key_sets_the_prefix_for_its_keyless_siblings(tmp_path)
 
 
 def test_byo_colliding_provided_id_claims_the_spelling_and_the_other_row_moves(tmp_path):
-    """Provided ids claim their spelling first, and a row whose derived id was taken moves
-    to the next free one — it does not merely stay listable. Left as an alias that
+    """Provided numbers claim their spelling first, and a row whose derived number was taken
+    moves to the next free one — it does not merely stay listable. Left as an alias that
     setdefault silently dropped, that row advertised a number which fetched the provider
     and was reachable at nothing: the index and the serving path disagreed about the same
-    document. Both now read the number the index resolved."""
+    document. Both now read the number `resolve_github_numbers` assigned.
+
+    Also covers the OTHER half of #51's decided change: the provider does NOT additionally
+    answer at its own synthesized spelling. The old boot-time index's third pass registered
+    that alias (`main._build_index` used to run it "last, so it never takes the number a
+    displaced row wanted") — dropped on purpose when the number moved into a stored column,
+    because a single column holds ONE number per row and a provided issue answering at a
+    second, unrequested number is not something real GitHub does either
+    (`/issues/<not-this-issue's-number>` 404s there)."""
     from backlot import synth
     from tests._helpers import build_corpus, client_for
 
@@ -1553,9 +1561,12 @@ def test_byo_colliding_provided_id_claims_the_spelling_and_the_other_row_moves(t
     with client_for(settings, reload=True) as c:
         got = c.get(f"/github/repos/acme/core/pulls/{stolen}", headers=hdr).json()
         assert got["title"] == "t"  # the provided id wins the spelling
+        # The provider's own synthesized spelling is NOT a second way to reach it (pass 3 of
+        # the old boot-time index is gone) -- a real GitHub 404s an issue's own number
+        # spelled differently, and so does this now.
         alias = synth.github_number("g-a-thief")
         got2 = c.get(f"/github/repos/acme/core/pulls/{alias}", headers=hdr)
-        assert got2.status_code == 200 and got2.json()["title"] == "t"
+        assert got2.status_code == 404
         listing = c.get(
             "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
         ).json()
@@ -1631,8 +1642,16 @@ def test_byo_a_provided_number_wins_whichever_doc_id_sorts_first(tmp_path):
 
 def test_byo_server_boots_read_only_on_a_pre_column_db(tmp_path):
     """The serving path opens the DB read-only — no migration can run there. A DB built
-    before the key/number columns existed must boot and serve the synthesized spellings
-    exactly as that version did, not crash in lifespan."""
+    before the `key` column existed must boot and serve the synthesized spelling exactly as that
+    version did, not crash in lifespan.
+
+    jira only now: github's own equivalent DB-predates-the-column scenario is gone with #51 --
+    `number` is a real corpus-provided value with no boot-time fallback to defend (that never
+    changed), but the ACTUAL served value now lives in `served_number`, which -- unlike `number`
+    and jira's `key` -- carries NO self-heal ALTER (see idx_github_served's schema comment: no
+    back-compat for the served-id-style columns tasks 3-7 added). A DB missing it is not a
+    supported shape to boot against at all, so there is nothing left to characterize here for
+    github specifically."""
     import sqlite3 as _sq
 
     from backlot import synth
@@ -1649,22 +1668,11 @@ def test_byo_server_boots_read_only_on_a_pre_column_db(tmp_path):
                 "content": "c",
                 "author_email": "ava@acme.com",
             },
-            {
-                "source_type": "github",
-                "doc_id": "g-old",
-                "repo": "core",
-                "title": "t",
-                "content": "c",
-                "author_email": "ava@acme.com",
-            },
         ],
     )
     conn = _sq.connect(settings.db_path)
     conn.executescript(
-        "DROP INDEX IF EXISTS idx_jira_doc_key;"
-        "DROP INDEX IF EXISTS idx_github_doc_number;"
-        "ALTER TABLE jira_issues DROP COLUMN key;"
-        "ALTER TABLE github_items DROP COLUMN number;"
+        "DROP INDEX IF EXISTS idx_jira_doc_key;ALTER TABLE jira_issues DROP COLUMN key;"
     )
     conn.commit()
     conn.close()
@@ -1676,8 +1684,6 @@ def test_byo_server_boots_read_only_on_a_pre_column_db(tmp_path):
     with client_for(settings, reload=True) as c:
         jkey = synth.jira_key("j-old", synth.jira_project_key("payments"))
         assert c.get(f"/atlassian/rest/api/3/issue/{jkey}", headers=hdr).status_code == 200
-        num = synth.github_number("g-old")
-        assert c.get(f"/github/repos/acme/core/issues/{num}", headers=hdr).status_code == 200
 
 
 # --- roster sidecar ---------------------------------------------------------------
@@ -2566,6 +2572,45 @@ def test_byo_roster_group_and_groups_read_the_same_in_every_shape(tmp_path):
     assert users["e@x.com"]["groups"] == ["engineering", "squad-checkout"]
 
 
+def test_byo_github_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
+    """The old boot-time probe (`main._free_number`, gone with #51) fell back to `return start`
+    after `_PROBE_LIMIT` steps -- a value it ALREADY knew was taken -- producing a silent
+    duplicate under the reverse map with no error. `_assign_github_number`'s bounded walk raises
+    instead: past `_GITHUB_NUMBER_RANGE` steps every number the probe can produce has been
+    visited, so the repo genuinely has more non-file rows than the space holds, and writing one
+    anyway would duplicate it under the UNIQUE (repo, served_number) index rather than fail where
+    the problem actually is.
+
+    "Genuinely exhausted" is 90,000 non-file rows in one repo in reality -- not a practical test
+    fixture -- so this shrinks `_GITHUB_NUMBER_RANGE` itself (a module constant, not a closure
+    capture, so a plain `monkeypatch.setattr` reaches it) and collapses the seed to one constant
+    (`monkeypatch.setitem` on `store.SERVED_ID`, for the same reason as the collision test above).
+    4 rows, not 3: with a constant seed each walk's FIRST checked candidate is always the
+    already-taken raw seed, so a range this small (2) only gets ONE real chance per row to land
+    on a free small number -- 3 rows leaves one candidate value never even probed, which a
+    mutation that silently returns the walk's last (unchecked) value can still slip through by
+    accident. 4 rows is the smallest count that forces a real collision on the fourth.
+    """
+    from backlot.importer import byo
+    from tests._helpers import build_corpus
+
+    monkeypatch.setattr(byo, "_GITHUB_NUMBER_RANGE", 2)
+    monkeypatch.setitem(store.SERVED_ID, "github", ("served_number", lambda doc_id: 999999, "repo"))
+    docs = [
+        {
+            "source_type": "github",
+            "doc_id": f"g{i}",
+            "repo": "core",
+            "title": f"Issue {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i in range(4)  # more rows than the shrunk 2-number range holds
+    ]
+    with pytest.raises(SystemExit, match="exhausted"):
+        build_corpus(tmp_path, docs)
+
+
 def test_byo_two_records_cannot_claim_one_tracker_id(tmp_path):
     """Two records providing the same github number, or the same jira key, used to load
     without a word: the reverse index gave the id to one of them and the other was
@@ -2972,14 +3017,20 @@ def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):
     assert "BILL" in str(e.value) and "PAY-1" in str(e.value)
 
 
-def test_byo_a_derived_id_may_move_across_append_but_always_fetches_its_advertiser(tmp_path):
-    """Characterization of a deliberate choice (see `_free_number`'s docstring): a served id
-    is a function of the container's whole row set. Appending a row whose derived number
-    lands between two existing rows moves one of them — including `gh-054074`, whose own
-    derived number never collided with anything; the displaced `gh-014031` reaches it first.
-    What IS guaranteed, before and after, is that every advertised number fetches the row
-    that advertised it. If a future change wants numbers stable across `--append`, it has to
-    store the resolved value, which `byo._Loader.add`'s comment explains the cost of."""
+def test_byo_a_derived_number_no_longer_moves_across_append(tmp_path):
+    """#51 FIXES something the old boot-time index accepted: its own docstring (`_free_number`,
+    now gone) said a served number was "free to move when --append changes the set" — stable only
+    while the server kept running, but a later append's `_free_number` probe could still reshuffle
+    a number a client had already saved a link to. `gh-054074`'s own hash never collided with
+    anything, yet the OLD design moved it anyway when `gh-014031` (hashing to the same value as
+    `gh-000000`) was appended and displaced onto it in turn.
+
+    With a stored column, appending `gh-014031` must NOT touch `gh-000000` or `gh-054074`'s
+    numbers at all: `resolve_github_numbers`'s `_github_numbers` preload (seeded before this run's
+    insert can clear the column) is what keeps a row untouched THIS run reading back the same
+    served_number it already had, and a row that IS touched (there is none here — the append adds
+    only `gh-014031`) would only be knocked off it by a NEW provided number, which nothing here
+    provides."""
     from backlot import synth
     from tests._helpers import client_for
 
@@ -3018,13 +3069,80 @@ def test_byo_a_derived_id_may_move_across_append_but_always_fetches_its_advertis
     shard.write_text("\n".join(json.dumps(rec(d)) for d in (A, C)))
     load(shard, settings, reset=True)
     n = synth.github_number(A)
-    assert served(settings) == {A: n, C: n + 1}
+    first = served(settings)
+    assert first == {A: n, C: n + 1}
 
     shard2 = tmp_path / "s2.jsonl"
     shard2.write_text(json.dumps(rec(B)))
     load(shard2, settings, reset=False)
-    # B displaced to n+1, which displaces C to n+2 — C moved without ever colliding.
-    assert served(settings) == {A: n, B: n + 1, C: n + 2}
+    # A and C keep the EXACT numbers they served before the append -- the old design's own
+    # instability (both moving, C onto a number it never collided with) is gone. B gets some
+    # probed number of its own, distinct from both -- which one is an implementation detail of
+    # the probe's re-seed salts, not a contract this test pins down.
+    second = served(settings)
+    assert second[A] == first[A] and second[C] == first[C]
+    assert second[B] not in (first[A], first[C])
+
+
+def test_byo_a_document_demoted_to_a_file_loses_its_served_number(tmp_path):
+    """Regression the plan explicitly flags (see the `insert` comment on why `served_number` is
+    written UNCONDITIONALLY): `served_number` MUST be in the upsert's column list on every github
+    row, including a file's, or a doc_id re-imported as a file after having been an issue keeps
+    the issue's OLD served_number -- notion shipped exactly this bug with
+    `served_data_source_id` when a database was demoted to a page.
+
+    Two SEPARATE loads (not two records in one corpus): `flip` needs a REAL, resolved
+    served_number already sitting in the column before it is demoted, or there would be nothing
+    for a conditional write to leave stale -- `resolve_github_numbers` only runs once, at the end
+    of a `load_records` call, so two records for the same doc_id in ONE corpus never gives the
+    first version a served_number to begin with (the second upsert wins before the deferred pass
+    ever sees the row). `--append` (`reset=False`) is what makes the bug's precondition real."""
+    from backlot.importer.byo import load
+    from tests._helpers import build_corpus
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "flip",
+                "repo": "core",
+                "title": "Was an issue",
+                "content": "x",
+                "author_email": "ava@acme.com",
+            }
+        ],
+    )
+    conn = store.connect_ro(settings.db_path)
+    before = conn.execute(
+        "SELECT kind, served_number FROM github_items WHERE doc_id = 'flip'"
+    ).fetchone()
+    assert before["kind"] != "file" and before["served_number"] is not None
+    conn.close()
+
+    later = tmp_path / "later.jsonl"
+    later.write_text(
+        json.dumps(
+            {
+                "source_type": "github",
+                "doc_id": "flip",
+                "repo": "core",
+                "subtype": "file",
+                "path": "src/flip.py",
+                "title": "flip.py",
+                "content": "x",
+                "author_email": "ava@acme.com",
+            }
+        )
+    )
+    load(later, settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    after = conn.execute(
+        "SELECT kind, served_number FROM github_items WHERE doc_id = 'flip'"
+    ).fetchone()
+    assert after["kind"] == "file"
+    assert after["served_number"] is None
+    conn.close()
 
 
 # --- github pull changesets and review comments (issue #49 group B) ---------------------

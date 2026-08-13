@@ -607,6 +607,12 @@ def load_roster(path) -> dict:
     return {"org": data.get("org"), "org_domain": data.get("org_domain"), "users": users}
 
 
+# The size of the per-repo space `synth.github_number` draws from (1..90_000). A repo with more
+# non-file documents than this has run out of that space, which is a corpus-scale problem and not
+# something a silent duplicate should paper over — see _assign_github_number.
+_GITHUB_NUMBER_RANGE = 90_000
+
+
 class _Loader:
     """Inserts BYO records into an open DB, accumulating the corpus-level state the principal, ACL
     and cross-reference passes need afterwards.
@@ -617,6 +623,42 @@ class _Loader:
     HubSpot association's target, a Linear parent's identifier — is deferred to
     :meth:`resolve_cross_references`, since the target may arrive on a later record.
     """
+
+    def _assign_github_number(self, doc_id: str, repo: str, taken: dict[str, set[int]]) -> int:
+        """A served number for a github row with no corpus-provided one, unique within `repo`
+        among the numbers `taken` already holds for it (github's own uniqueness rule — see
+        store.SERVED_ID's `scope` for github).
+
+        Called only from :meth:`resolve_github_numbers`'s second pass, never from `add`: which
+        numbers are already taken in this repo depends on the WHOLE corpus, including rows that
+        may not have been loaded yet, so this cannot run while records are still streaming in (see
+        that method's docstring).
+
+        Same probe shape as `_assign_confluence_id`/`_assign_hubspot_id`: seeded from the doc_id so
+        the same corpus produces the same number, re-seeded a few times to spread out, THEN walked
+        unconditionally — re-seeding alone only terminates if the hash actually varies with the
+        salt, and an unbounded re-seed loop hung the importer once already. Unlike the old
+        `_free_number` this replaces, the walk is BOUNDED: past `_GITHUB_NUMBER_RANGE` steps every
+        number `synth.github_number` can produce has been visited, so `repo` has more non-file
+        rows than the space holds, and returning one anyway (as `_free_number` did, silently) would
+        duplicate it under the UNIQUE (repo, served_number) index instead of failing where the
+        problem actually is.
+        """
+        bucket = taken.setdefault(repo, set())
+        seed = store.served_id_seed("github")
+        n = int(seed(doc_id))
+        for salt in range(1, 9):
+            if n not in bucket:
+                break
+            n = int(seed(f"{doc_id}\x00{salt}"))
+        for _ in range(_GITHUB_NUMBER_RANGE):
+            if n not in bucket:
+                return n
+            n = n % _GITHUB_NUMBER_RANGE + 1
+        raise SystemExit(
+            f"github: repo {repo!r} has exhausted its {_GITHUB_NUMBER_RANGE}-number range; no "
+            f"served number is free for {doc_id!r}"
+        )
 
     def _assign_github_comment_id(self, stored_id: str) -> int:
         """The `id` this comment will be served as: unique, 10 digits like real GitHub's, and stable.
@@ -752,6 +794,16 @@ class _Loader:
         # different id than the one already served, and a client holding the old id gets a 404.
         self._hubspot_ids = {}  # doc_id -> served id, for records already in the DB
         self._hubspot_ids_taken = set()
+        # github served numbers are ASSIGNED like confluence's/hubspot's, but unlike either the
+        # assignment cannot happen per-record while the corpus streams: a provided `number` must
+        # claim its spelling ahead of every synthesized one, corpus-wide, and a record arriving
+        # early cannot know what a LATER record will provide (see resolve_github_numbers, which
+        # runs once every record has been loaded). This memo exists only so a re-import/--append
+        # does not renumber a row a client already holds a number for: `resolve_github_numbers`
+        # reads it for a row whose served_number the streaming insert just reset to NULL (see
+        # `insert`'s github block), the only remaining record of what it used to serve. Populated
+        # by seed_tracker_ids, BEFORE this run's inserts can overwrite the column.
+        self._github_numbers = {}  # doc_id -> served number, for github rows already in the DB
         self.fts_ids = {}
         # HubSpot associations are resolved after the whole corpus is read: a link may name a target
         # that appears on a later line, and an omitted `to_type` is filled in from the target's own
@@ -817,6 +869,15 @@ class _Loader:
         ):
             self._hubspot_ids[row["doc_id"]] = row["served_id"]
             self._hubspot_ids_taken.add(int(row["served_id"]))
+        # Same claim, for github served numbers -- more load-bearing than confluence's/hubspot's:
+        # `resolve_github_numbers` reads this memo for a row this run's insert is about to reset
+        # to NULL (see `insert`'s github block), which is the ONLY way a re-import/--append can
+        # still tell "this row used to serve number N" once the live column has been overwritten.
+        gh_col = store.served_id_column("github")
+        for row in self.conn.execute(
+            f"SELECT doc_id, {gh_col} AS served FROM github_items WHERE {gh_col} IS NOT NULL"
+        ):
+            self._github_numbers[row["doc_id"]] = row["served"]
         for src, col in (("github", "number"), ("jira", "key")):
             for row in self.conn.execute(
                 f"SELECT doc_id, {col} AS v, {store.grouping_col(src)} AS c "
@@ -1196,31 +1257,55 @@ class _Loader:
                 # actually resolved unique by _assign_hubspot_id, not a raw hash that a collision
                 # walk may have moved the record away from.
                 cols[store.served_id_column("hubspot")] = self._assign_hubspot_id(did)
-            # A jira key and a github number are deliberately NOT materialized the way Linear's
-            # identifier is: the column holds what the CORPUS wrote and nothing else, so "provided"
-            # means exactly "non-NULL" everywhere downstream. Two things depend on that.
+            # A jira key is deliberately NOT materialized the way Linear's identifier is: the
+            # column holds what the CORPUS wrote and nothing else, so "provided" means exactly
+            # "non-NULL" everywhere downstream. (jira is a separate, later task from github's own
+            # #51 conversion below — this reasoning, and every structure it depends on, is
+            # UNCHANGED for it.)
             #
             # A key carries the PROJECT's key as its prefix — a fact about the container, not about
             # this row. Written here the prefix would be the synthesized one, since the record
             # cannot know whether a sibling issue in the same project provides `PAY-7`, and a
             # project mixing provided and absent keys would then serve two spellings at once.
             #
-            # And the reverse indexes let a provided id claim its spelling ahead of every
+            # And jira's reverse index still lets a provided id claim its spelling ahead of every
             # synthesized one (main._build_index scans in two passes). A synthesized value written
-            # into the same column is indistinguishable from a provided one, which put the passes
-            # in doc_id order instead: a record that provided number N lost it to whichever row
-            # synthesized N and sorted first, and answered 404 at the number it had asked for.
+            # into the same column would be indistinguishable from a provided one, which would put
+            # the passes in doc_id order instead: a record that provided a key would lose it to
+            # whichever row synthesized the same key and sorted first, and answer 404 at the key it
+            # had asked for.
             #
-            # Nothing needs either value stored. Unlike Linear, whose identifier is resolvable ONLY
-            # from its column, the index registers each row's synthesized spelling as an alias at
-            # build time, and the routers read through synth.stored() with that same value as the
-            # fallback — so an absent id stays absent and is derived where the whole container is
+            # github used to share this EXACT constraint, and this comment used to say so — #51
+            # answered it for github with a SECOND column instead of a smarter index: `number`
+            # still holds only what the corpus wrote, but the value actually served is now
+            # materialized separately in `served_number`, assigned by resolve_github_numbers (a
+            # DEFERRED pass run once every record has been loaded, since the provided-claims-first
+            # ordering needs the whole corpus visible, not just the rows seen so far while
+            # streaming — see that method's docstring). Two columns is what makes a materialized
+            # synthesized value distinguishable from a provided one, which a single shared column
+            # never could be — the reasoning constraint #46 raised when it rejected storing.
+            #
+            # jira still needs neither value stored: unlike Linear's identifier (resolvable ONLY
+            # from its own column), the boot-time index registers each row's synthesized spelling
+            # as an alias, and the routers read through synth.stored() with that same value as the
+            # fallback — so an absent key stays absent and is derived where the whole project is
             # visible, once.
             if src == "github" and cols.get("kind") == "file":
                 # The schema says a file row's number is ignored — make that true in the table
-                # too, not only in the reverse index: file rows stay NULL, provided or not, so a
-                # stored number can never shadow a real issue or PR.
+                # too, not only in served_number's own exclusion (resolve_github_numbers skips
+                # kind='file' rows entirely, see its docstring): file rows stay NULL, provided or
+                # not, so a stored number can never shadow a real issue or PR.
                 cols["number"] = None
+            if src == "github":
+                # Written UNCONDITIONALLY, including for a file row (where it then stays None) --
+                # `names = list(cols)` below feeds the upsert's `DO UPDATE SET col=excluded.col`
+                # list, so a conditionally-written column would go stale on a re-imported row
+                # (notion shipped exactly that bug with served_data_source_id). The real value
+                # cannot be resolved HERE even for a row that provides `number`: a LATER record in
+                # this same corpus may still claim that exact number outright, and provided numbers
+                # must win that race regardless of load order — resolve_github_numbers assigns it
+                # once every record has been seen.
+                cols[store.served_id_column("github")] = None
             # A provided id is a claim on one spelling, and two records cannot hold the same
             # one: whichever the index gave it to, the other would be unreachable at the only
             # id it advertises. A github number is per repository, a jira key per instance.
@@ -1605,6 +1690,81 @@ class _Loader:
                 ),
             )
 
+    def resolve_github_numbers(self) -> None:
+        """Assign `served_number` to every non-file github row, in the same two-phase order
+        `main._build_index` used to resolve at boot (#51) — corpus-provided numbers claim their
+        spelling FIRST, corpus-wide, and only THEN does every remaining row probe.
+
+        This cannot happen inside `add`'s per-record insert, which is why it is here rather than
+        there: which numbers a repo's rows without one may take depends on which numbers the
+        REST of the repo's rows — including ones not yet loaded — claim outright. A row processed
+        early has no way to know that a later record in the same corpus will provide the exact
+        number it is about to probe into; running the probe while streaming would let that early
+        row win a race a real GitHub numbering scheme never lets it enter. Two separate passes
+        over the same doc_id-ordered row set (not one combined pass) is what keeps the ordering
+        deterministic and independent of insertion order: every provided number is registered as
+        taken before any row without one is even considered.
+
+        `kind='file'` rows are excluded entirely — their served_number stays NULL (see the schema
+        comment on idx_github_doc_number): a file's synthesized number must never shadow a real
+        issue/PR's.
+
+        Pass 3 of the old boot-time index (a provided row ALSO answering at its own synthesized
+        spelling, as an alias) is dropped here on purpose, not by oversight: a single column holds
+        ONE number per row, and a provided issue answering at a second, unrequested number is not
+        something real GitHub does either — `/issues/<a-number-that-isn't-this-issue's>` 404s
+        there. Closing that gap is the point of the stored column, not a side effect of it.
+
+        Stability across a re-import/--append (a probed number is NOT a pure function of doc_id,
+        unlike gmail's/notion's/linear's, so this needs it): a row this run's insert touched had
+        its served_number reset to NULL (see `insert`'s github block) even if it already had a
+        stable one before this run started, so `self._github_numbers` — populated by
+        `seed_tracker_ids` BEFORE any insert in this run could clobber the live column — is the
+        only remaining record of what such a row used to serve. A row this run never touched
+        still carries its old served_number in the live table, read straight off `rows` below, so
+        it needs no memo at all. Either way, the OLD number is kept unless a NEW provided claim
+        this run needs it — the same "provided beats synthesized" rule pass 1 already enforces —
+        in which case the row probes a fresh one, same as a genuinely new row would.
+        """
+        if not self.counts.get("github"):
+            return
+        rows = self.conn.execute(
+            "SELECT doc_id, repo, number, served_number FROM github_items "
+            "WHERE kind IS NULL OR kind != 'file' ORDER BY doc_id"
+        ).fetchall()
+        taken: dict[str, set[int]] = {}
+        updates: list[tuple[int, str]] = []
+        # Pass 1: every provided number claims its spelling, before anything else is even looked
+        # at — see the docstring above for why this has to be a separate pass over ALL rows.
+        for r in rows:
+            if r["number"] is None:
+                continue
+            n = int(r["number"])
+            taken.setdefault(r["repo"], set()).add(n)
+            if r["served_number"] != n:
+                updates.append((n, r["doc_id"]))
+        # Pass 2: everything else, in doc_id order — a row keeps its previous served_number
+        # (live, or from the pre-run memo if this run's insert just cleared it) when nothing in
+        # pass 1 wanted it, and otherwise probes a fresh one.
+        for r in rows:
+            if r["number"] is not None:
+                continue
+            repo, doc_id = r["repo"], r["doc_id"]
+            bucket = taken.setdefault(repo, set())
+            candidate = r["served_number"]
+            if candidate is None:
+                candidate = self._github_numbers.get(doc_id)
+            if candidate is None or candidate in bucket:
+                candidate = self._assign_github_number(doc_id, repo, taken)
+            bucket.add(candidate)
+            if candidate != r["served_number"]:
+                updates.append((candidate, doc_id))
+        for served_number, doc_id in updates:
+            self.conn.execute(
+                "UPDATE github_items SET served_number = ? WHERE doc_id = ?",
+                (served_number, doc_id),
+            )
+
 
 def load(
     path: Path, settings: Settings | None = None, reset: bool = True, roster: Path | None = None
@@ -1698,6 +1858,7 @@ def load_records(
         source_docs += 1
         loader.add(rec, f"line {lineno}")
     loader.resolve_cross_references()
+    loader.resolve_github_numbers()
     users, groups = loader.users, loader.groups
     memberships, grants = loader.memberships, loader.grants
     counts, fts_ids = loader.counts, loader.fts_ids

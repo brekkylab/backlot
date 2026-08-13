@@ -1,7 +1,10 @@
 """FastAPI app hosting every vendor mock under path prefixes.
 
-Startup opens the read-only SQLite DB, loads the ACL/token map, and builds reverse
-indexes (issue number / Jira key / Confluence id -> doc_id) for O(1) get-by-id.
+Startup opens the read-only SQLite DB, loads the ACL/token map, and builds the reverse indexes
+still needed for O(1) get-by-id: Jira key -> doc_id (the last hashed id resolved this way, #51 —
+confluence/gmail/notion/hubspot/linear/github's ids/numbers already resolve through a stored
+column instead, see backlot.store's SERVED_ID) plus Linear's and Fireflies' one-way-hashed entity
+ids, none of which have a column of their own to be stored in.
 """
 
 from __future__ import annotations
@@ -36,37 +39,19 @@ from backlot.routers import (
 )
 
 
-# Numbers a derived id may take before the search gives up. A repository with more
-# documents than this has run out of the space `synth.github_number` draws from, which is
-# a corpus-scale problem and not something a silent duplicate should paper over.
+# Sequence numbers a derived jira key may take before the search gives up. A project with more
+# issues than this has run out of the space `synth.jira_key` draws from, which is a corpus-scale
+# problem and not something a silent duplicate should paper over. (github had the same limit for
+# its own derived numbers, `_free_number`, until #51 replaced that boot-time search with a stored
+# `served_number` column — see backlot.importer.byo's `resolve_github_numbers` and
+# `_assign_github_number`.)
 _PROBE_LIMIT = 90_000
 
 
-def _free_number(taken: dict, container: str, start: int) -> int:
-    """A number in `container` that nothing has claimed, starting from the derived one.
-
-    A derived number is a hash, so it can land on one a document provided outright — or on
-    another row's derived one. The earlier claimant keeps it and this row moves,
-    deterministically, to the next free number. That next number may itself be a later
-    row's derived spelling, so one collision can move rows that never collided themselves.
-
-    What this makes a served id is a function of the container's WHOLE row set, not of the
-    row alone: stable across restarts of the same DB, free to move when `--append` changes
-    the set. That is the deliberate choice — the alternative, storing the resolved value,
-    is what the loader comment in `byo._Loader.add` rejects, since a stored synthesized id
-    is indistinguishable from a provided one. The invariant kept instead is
-    self-consistency at every moment: the id a row advertises is the id that fetches it,
-    because the routers read the same map this function fills."""
-    n = start
-    for _ in range(_PROBE_LIMIT):
-        if (container, n) not in taken:
-            return n
-        n = n % _PROBE_LIMIT + 1
-    return start
-
-
 def _free_key(taken: dict, prefix: str, start: str) -> str:
-    """The jira analogue of `_free_number`: same prefix, next free sequence number."""
+    """The last of this project's boot-time probes (github's own `_free_number` did the same
+    search over derived issue numbers, until #51 replaced it with a stored column — see the
+    module constant's comment above): same prefix, next free sequence number."""
     n = int(start.rsplit("-", 1)[-1]) if "-" in start else 1
     for _ in range(_PROBE_LIMIT):
         key = f"{prefix}-{n}"
@@ -78,7 +63,6 @@ def _free_key(taken: dict, prefix: str, start: str) -> str:
 
 def _build_index(conn) -> dict:
     idx = {
-        "github": {},
         "jira": {},
         "linear_teams": {},
         "linear_users": {},
@@ -93,18 +77,17 @@ def _build_index(conn) -> dict:
         # `fields.project.key` speak the spelling the documents cite.
         "jira_project_keys": {},
         "jira_project_containers": {},
-        # doc_id -> the number/key the document answers to. The routers read these rather
-        # than deriving the id themselves: a keyless row's derived spelling can already be
-        # held by a row that provided it, and then the row served a number that fetched
-        # somebody else while being reachable at nothing. Resolving it belongs here, the
-        # one place the whole container is visible.
-        "github_number": {},
+        # doc_id -> the key the document answers to. The routers read this rather than
+        # deriving it themselves: a keyless row's derived spelling can already be held by
+        # a row that provided it, and then the row served a key that fetched somebody else
+        # while being reachable at nothing. Resolving it belongs here, the one place the
+        # whole container is visible. (github's own equivalent, `idx["github_number"]`, is
+        # gone — #51 replaced it with the stored `served_number` column; see
+        # backlot.importer.byo's `resolve_github_numbers`.)
         "jira_key": {},
     }
 
-    # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
-    # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
-    # Two passes each: corpus-provided ids claim their spelling first, then every row's
+    # Two passes: corpus-provided ids claim their spelling first, then every row's
     # synthesized spelling registers as an alias — a collision can therefore never make the
     # losing document unreachable, it just answers to its synthesized id. Scans are in doc_id
     # order with setdefault (first row wins, stable across restarts — Linear's contract for
@@ -121,29 +104,6 @@ def _build_index(conn) -> dict:
             if "no such column" not in str(e).lower():
                 raise
             return list(conn.execute(without_cols + tail))
-
-    gh_rows = _scan(
-        f"SELECT doc_id, {store.grouping_col('github')} AS container, number ",
-        f"SELECT doc_id, {store.grouping_col('github')} AS container, NULL AS number ",
-        f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file' ORDER BY doc_id",
-    )
-    for r in gh_rows:
-        if r["number"]:
-            idx["github"].setdefault((r["container"], r["number"]), r["doc_id"])
-            idx["github_number"][r["doc_id"]] = r["number"]
-    for r in gh_rows:
-        if r["doc_id"] in idx["github_number"]:
-            continue
-        n = _free_number(idx["github"], r["container"], synth.github_number(r["doc_id"]))
-        idx["github"][(r["container"], n)] = r["doc_id"]
-        idx["github_number"][r["doc_id"]] = n
-    # A record that provided a number keeps answering at its derived spelling too, where
-    # that is still free. Last, so it never takes the number a displaced row wanted.
-    for r in gh_rows:
-        if r["number"]:
-            idx["github"].setdefault(
-                (r["container"], synth.github_number(r["doc_id"])), r["doc_id"]
-            )
 
     j_rows = _scan(
         f"SELECT doc_id, {store.grouping_col('jira')} AS container, key ",

@@ -145,6 +145,24 @@ def _seconds(n):
     return sec
 
 
+def _epoch_field(v, where, field):
+    """A corpus-supplied time, refusing a value that is filled in but unreadable.
+
+    Used wherever an absent time gets a default in its place — a hash of the doc_id, the
+    previous message's second, the root's clock plus an hour. Taking that default for a
+    typo means the record loads with a time nobody wrote and no way to tell it apart from
+    one that was left blank on purpose, which is the whole reason a reply's clock refuses.
+    Fields whose absence stores NULL keep plain ``_epoch``: nothing is substituted there,
+    so nothing is disguised."""
+    sec = _epoch(v)
+    if sec is None and _time_given(v):
+        raise SystemExit(
+            f"{where}: {field} is not a time this importer can read "
+            f"(got {v!r}; write epoch seconds or ISO 8601)"
+        )
+    return sec
+
+
 def _epoch(v):
     """Parse a BYO time (epoch seconds int/float, or ISO 8601 string) -> unix seconds.
 
@@ -1032,9 +1050,9 @@ class _Loader:
         # created_ts must never be NULL (the server sorts/filters by it; a NULL would need a
         # runtime null-check). Fall back to the same deterministic synth.epoch the server would have
         # synthesized for a missing ts, so the served time is unchanged — just materialized now.
-        created_written = _epoch(rec.get("created"))
+        created_written = _epoch_field(rec.get("created"), where, "created")
         created = synth.epoch(doc_id) if created_written is None else created_written
-        updated = _epoch(rec.get("updated"))
+        updated = _epoch_field(rec.get("updated"), where, "updated")
 
         replies = rec.get("replies") if src == "slack" else None
         thread_id = doc_id if replies else None
@@ -1268,7 +1286,9 @@ class _Loader:
             # `Issue.comments` does) serves the thread inverted. Monotonic, so it cannot. For an
             # all-undated thread this is exactly `created + j`, as before. Never a hash of the
             # comment's own id, which would scatter one thread across two years.
-            c_ts = _epoch(c.get("created_ts")) or (prev_c_ts + 1)
+            c_ts = _epoch_field(c.get("created_ts"), f"{where}: comment {j}", "created_ts") or (
+                prev_c_ts + 1
+            )
             prev_c_ts = max(prev_c_ts, c_ts)
             conn.execute(
                 f"INSERT OR REPLACE INTO {ctable}"
@@ -1336,7 +1356,8 @@ class _Loader:
                 # `thread` is forced to the ROOT's thread: a child must never open a thread of
                 # its own, or `users.threads.get` would return a one-message thread.
                 ex={**msg, "thread": gmail_thread},
-                cts=_epoch(msg.get("created")) or (created + i * 3600),
+                cts=_epoch_field(msg.get("created"), f"{where}: message {i}", "created")
+                or (created + i * 3600),
             )
 
     def write_containers(self) -> None:

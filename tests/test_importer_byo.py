@@ -650,6 +650,88 @@ def test_byo_slack_reply_clock_must_be_readable(tmp_path, bad):
         load(corpus, Settings(data_dir=tmp_path))
 
 
+def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
+    """The asymmetry a reply's refusal created: a root's own `created` took the
+    synthesized `epoch(doc_id)` for a typo without a word, so a record whose author
+    wrote a real date loaded with a hash of its id instead and read as one that had
+    been left blank. Every time field whose absence gets a default in its place now
+    refuses an unreadable value, across source types."""
+    base = {
+        "source_type": "confluence",
+        "title": "T",
+        "content": "c",
+        "space": "handbook",
+        "author_email": "b@a.com",
+        "visibility": "public",
+    }
+    cases = [
+        ("created", {**base, "doc_id": "c1", "created": "2026-13-01T00:00:00Z"}),
+        ("updated", {**base, "doc_id": "c2", "updated": "2026-05-01 03:00 PM"}),
+        (
+            "created_ts",
+            {
+                **base,
+                "doc_id": "c3",
+                "comments": [{"content": "hi", "author_email": "a@a.com", "created_ts": "nope"}],
+            },
+        ),
+        (
+            "created",
+            {
+                "source_type": "gmail",
+                "title": "S",
+                "content": "c",
+                "doc_id": "g1",
+                "author_email": "b@a.com",
+                "visibility": "public",
+                "messages": [
+                    {"content": "m", "author_email": "a@a.com", "created": "2026-13-01T00:00:00Z"}
+                ],
+            },
+        ),
+        # the numeric door: json.loads reads a bare Infinity as a float
+        ("created", {**base, "doc_id": "c4", "created": float("inf")}),
+    ]
+    for field, rec in cases:
+        corpus = _write(tmp_path, [rec])
+        with pytest.raises(SystemExit, match=f"{field} is not a time this importer can read"):
+            load(corpus, Settings(data_dir=tmp_path))
+
+
+def test_byo_absent_clocks_still_take_their_defaults(tmp_path):
+    """Refusing an unreadable time must not refuse an absent one. A record with no
+    `created` keeps `epoch(doc_id)`; `updated` left out stays NULL; an undated comment
+    follows the one before it."""
+    load(
+        _write(
+            tmp_path,
+            [
+                {
+                    "source_type": "confluence",
+                    "title": "T",
+                    "content": "c",
+                    "doc_id": "cf-bare",
+                    "space": "handbook",
+                    "author_email": "b@a.com",
+                    "visibility": "public",
+                    "comments": [{"content": "hi", "author_email": "a@a.com"}],
+                }
+            ],
+        ),
+        Settings(data_dir=tmp_path),
+    )
+    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    row = conn.execute(
+        "SELECT created_ts, updated_ts FROM confluence_pages WHERE doc_id = 'cf-bare'"
+    ).fetchone()
+    assert row["created_ts"] == synth.epoch("cf-bare")
+    assert row["updated_ts"] is None
+    c = conn.execute(
+        "SELECT created_ts FROM confluence_comments WHERE doc_id = 'cf-bare'"
+    ).fetchone()
+    assert c["created_ts"] == synth.epoch("cf-bare") + 1
+
+
 @pytest.mark.parametrize(
     "bad",
     [

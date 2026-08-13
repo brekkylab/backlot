@@ -718,7 +718,7 @@ def _comment(row, info) -> dict:
 
 def _resolve_one_issue_id(conn, value: str) -> str:
     """Translate one filter value -- a served UUID or a human identifier -- to a doc_id. A miss
-    returns the sentinel ``"\x00none"``, which matches no row, so the filter narrows to nothing
+    returns the sentinel ``"\\x00none"``, which matches no row, so the filter narrows to nothing
     rather than being silently dropped (see ``_resolve_issue_ids``).
 
     Unscoped by ACL on purpose, like the startup map this replaces: this is a translation step,

@@ -269,9 +269,10 @@ def _issue_filter(conn, flt: dict) -> tuple[str, list]:
                 parts.append("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
             continue
         if key == "id":
-            # The filter speaks Linear UUIDs; the column is the doc_id they are derived from, so
-            # the values are mapped through the app's uuid->doc_id index by the caller before
-            # they get here (see linear_resolvers._resolve_issue_ids).
+            # The filter speaks a Linear UUID or a human identifier; the column is the doc_id
+            # either is resolved to, so the caller translates every value to its doc_id (a
+            # served_id column lookup, falling back to identifier) before it gets here — see
+            # linear_resolvers._resolve_issue_ids / _resolve_one_issue_id (#51).
             add(*_Comparator("doc_id").render(spec))
         elif key == "title":
             add(*_Comparator("title").render(spec))

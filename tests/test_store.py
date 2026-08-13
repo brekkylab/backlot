@@ -584,6 +584,16 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
         assert store.confluence_by_served_id(conn, sid)["served_id"] == sid
     conn.close()
 
+    # A re-import (e.g. --append re-running over the same shard) must not renumber a page a
+    # client may already hold a url for -- seed_tracker_ids preloads the ids already assigned so
+    # the same collision, replayed, resolves to the same served_ids.
+    byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
+    conn = store.connect_ro(s.db_path)
+    assert sorted(
+        r["served_id"] for r in conn.execute("SELECT served_id FROM confluence_pages")
+    ) == sorted(served)
+    conn.close()
+
 
 def test_connect_ro_tuning(sample_settings):
     # tuned connection applies the pragmas; a plain one keeps sqlite defaults (tests unaffected)

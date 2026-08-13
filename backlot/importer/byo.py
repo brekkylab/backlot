@@ -1158,25 +1158,47 @@ class _Loader:
                 f"already in means re-importing from scratch. (a fresh import needs no {label}.)"
             )
 
-    def _claim_jira_prefix(self, provided_key, container: str, where: str) -> None:
-        """A jira key's prefix is its PROJECT's key, held 1:1 in both directions as real Jira does.
-        Distinct from the full-key claim: PAY-1 and PAY-2 are different keys, but in different
-        projects they still fight over which project *is* PAY."""
-        prefix = str(provided_key).rsplit("-", 1)[0]
-        holder = self.jira_prefix_holders.get(prefix)
+    # How a prefix refusal is worded, per source: what the container is called, the field the corpus
+    # stated it in, and that field's plural.
+    _PREFIX_NOUNS = {
+        "jira": ("project", "key", "keys"),
+        "linear": ("team", "identifier", "identifiers"),
+    }
+
+    def _claim_prefix(self, src: str, provided, container: str, where: str) -> None:
+        """A provided id's prefix is its CONTAINER's key, held 1:1 in both directions as both real
+        services are: a project/team has one key, and a key names one project/team.
+
+        Distinct from the full-id claim: PAY-1 and PAY-2 are different keys, but in different
+        projects they still fight over which project *is* PAY. And for linear it is the whole
+        reason a provided identifier is worth reading at all -- an identifier is DERIVED from its
+        team's key there, so `identifier: "ENG-7"` beside `team { key: "PP" }` is the issue object
+        contradicting itself. Claiming the prefix here is what puts the team on ENG instead, on
+        every surface that serves a key.
+
+        Jira and linear keep separate maps: they are separate namespaces, and a refusal names the
+        one it came from."""
+        kind, label, plural = self._PREFIX_NOUNS[src]
+        prefixes, holders = (
+            (self.jira_prefixes, self.jira_prefix_holders)
+            if src == "jira"
+            else (self.linear_prefixes, self.linear_prefix_holders)
+        )
+        prefix = str(provided).rsplit("-", 1)[0]
+        holder = holders.get(prefix)
         if holder is not None and holder != container:
             raise SystemExit(
-                f"{where}: key {provided_key!r} carries project key {prefix!r}, "
-                f"which project {holder!r} already holds"
+                f"{where}: {label} {provided!r} carries {kind} key {prefix!r}, "
+                f"which {kind} {holder!r} already holds"
             )
-        held = self.jira_prefixes.get(container)
+        held = prefixes.get(container)
         if held is not None and held != prefix:
             raise SystemExit(
-                f"{where}: key {provided_key!r} would name project {container!r} "
-                f"{prefix!r}, but its keys already name it {held!r}"
+                f"{where}: {label} {provided!r} would name {kind} {container!r} "
+                f"{prefix!r}, but its {plural} already name it {held!r}"
             )
-        self.jira_prefix_holders[prefix] = container
-        self.jira_prefixes[container] = prefix
+        holders[prefix] = container
+        prefixes[container] = prefix
 
     def _existing_file_number(self, repo: str, path):
         """The number a github `file` row already holds in this repo, or None for a new file.
@@ -1410,6 +1432,29 @@ class _Loader:
         # A pull's declared changeset, resolved after the whole corpus is read: the `file` document
         # a path names may be on a later line, or in a shard already loaded.
         self.gh_changesets = []  # (where, repo, paths)
+        # Linear's teams, held to the same 1:1 as jira's projects above: real Linear keeps team
+        # keys workspace-unique because an identifier is DERIVED from its team's key, so a team
+        # answering at two prefixes (or two teams answering at one) is a shape only the loader can
+        # see. Separate maps rather than jira's: the two are different namespaces, and a refusal
+        # has to name teams rather than projects.
+        #
+        # A container is here only once something SETTLES its key -- a provided identifier this
+        # run, or the `served_key` a previous run stored (see seed_tracker_ids). A team with a
+        # purely derived key is deliberately absent, so `.get(name) or synth.linear_team_key(name)`
+        # is the one reading of "this team's key" everywhere.
+        self.linear_prefixes = {}  # container -> prefix
+        self.linear_prefix_holders = {}  # prefix -> container
+        # The identifiers this run MATERIALIZED: dataset id -> (container, the prefix it was
+        # stamped under, the value written). A container whose provided prefix only shows up half
+        # way down the file has its keyless rows re-stamped from this once every record has been
+        # seen -- see restamp_linear_identifiers.
+        self._linear_stamped = {}
+        # The identifiers this run's corpus STATED. A materialized value has to give one of these
+        # up: a keyless row stamped before the record that states its spelling arrived took it
+        # first, and the corpus's own issue then answered "Entity not found" at the id its
+        # documents cite. Which of the two moves is not a tie -- what the corpus wrote is the id it
+        # asked for, and what this mock derived is a hash it can re-derive elsewhere.
+        self._linear_provided = set()
 
     def seed_tracker_ids(self) -> None:
         """Re-read the ids already in the DB, so a claim holds ACROSS runs too.
@@ -1457,13 +1502,18 @@ class _Loader:
             self._preexisting[src] = {
                 tuple(r) for r in self.conn.execute(f"SELECT {cols} FROM {store.table(src)}")
             }
-        # Same claim, per team, for synthesized linear identifiers.
-        for team, identifier in self.conn.execute(
-            "SELECT team, identifier FROM linear_issues WHERE identifier IS NOT NULL"
+        # Same claim, per team key, for synthesized linear identifiers. Bucketed by the
+        # identifier's OWN prefix rather than by its team's derived key: a team served under a
+        # corpus-provided prefix holds identifiers the derived key never names, and filing those
+        # under the derivation left the probe walking a set that did not contain them -- handing a
+        # new issue a spelling an existing one already answers at. The prefix IS the bucket
+        # `_assign_linear_identifier` probes, which is also why two teams that reduce to one key
+        # correctly share one.
+        for (identifier,) in self.conn.execute(
+            "SELECT identifier FROM linear_issues WHERE identifier IS NOT NULL"
         ):
-            self._linear_identifiers.setdefault(synth.linear_team_key(str(team)), set()).add(
-                identifier
-            )
+            prefix = str(identifier).rsplit("-", 1)[0]
+            self._linear_identifiers.setdefault(prefix, set()).add(identifier)
         # Every row carries a key, stated or derived, and for a claim the difference is immaterial:
         # both mean the value is taken. The `dataset id` side of `tracker_ids` is unknowable for a
         # row from an earlier run, so it is recorded as None; the check that reads it only needs to
@@ -1488,6 +1538,30 @@ class _Loader:
                     prefix = str(row["v"]).rsplit("-", 1)[0]
                     self.jira_prefixes[str(row["c"])] = prefix
                     self.jira_prefix_holders[prefix] = str(row["c"])
+        # Linear teams: the key a team answers at is settled by its FIRST import and read back
+        # from `linear_teams.served_key`, not re-derived from the identifiers. That column is
+        # exactly what the previous run decided (`write_containers` writes it), where an identifier
+        # cannot say whether its prefix was the corpus's or this mock's -- both spellings share the
+        # one column, and the value a probe walked away from its derived spelling is recomputable
+        # from neither.
+        #
+        # `linear_prefixes` is seeded for every team, DERIVED keys included, and that is what makes
+        # an --append's rows agree with the ones already stored: a team whose first import wrote
+        # only keyless issues answers at `PP-…`, and without the seed a later shard providing
+        # `ENG-3` would rename the team to ENG and leave every stored row carrying a prefix that is
+        # no longer its key. Seeded, that shard is refused instead.
+        #
+        # `linear_prefix_holders` takes only the keys a corpus SPELLED OUT. Two containers are
+        # allowed to derive one key (see `synth.linear_team_key`), so holding a derived key against
+        # the workspace would refuse a provided prefix that a fresh import of the same corpus
+        # accepts — the append and the fresh load would disagree about the same file.
+        for team, served_key in self.conn.execute(
+            f"SELECT {store.grouping_col('linear')} AS team, served_key FROM linear_teams"
+        ):
+            team, served_key = str(team), str(served_key)
+            self.linear_prefixes[team] = served_key
+            if served_key != synth.linear_team_key(team):
+                self.linear_prefix_holders[served_key] = team
 
     def add(self, rec: dict, where: str = "record") -> None:
         """Insert one BYO record's row(s). ``where`` names the record in an error message.
@@ -1857,7 +1931,27 @@ class _Loader:
             # the same value twice by construction -- and the ones the corpus STATES must not have
             # it, since there the record, not the dataset id, says which document this is.
             repeat = self.keys.get((src, did))
-            if src == "linear" and not cols.get("identifier"):
+            if src == "linear" and cols.get("identifier"):
+                # A provided identifier is a claim on its team's KEY, not just on its own spelling:
+                # real Linear derives an identifier from its team's key, so one issue spelling out
+                # `ENG-7` is the corpus saying this team is ENG -- and its keyless siblings, its
+                # `team { key }`, `team(id: "ENG")` and every filter on a team key all have to
+                # agree with it. Refused here when they cannot (see `_claim_prefix`).
+                self._claim_prefix("linear", cols["identifier"], container, where)
+                # A repeat that now STATES its identifier is no longer a materialized row: the
+                # upsert below writes the corpus's spelling over the stamped one, so leaving it
+                # listed would have the re-stamp pass move an identifier the corpus wrote.
+                self._linear_stamped.pop(did, None)
+                # Taken, so a keyless sibling's probe never lands on it. Identifiers are not
+                # required to be unique corpus-wide (5,055 repeat in one real corpus), so a
+                # provided one that repeats another provided one is left alone; what this stops is
+                # a SYNTHESIZED value shadowing a spelling the corpus wrote, which would leave the
+                # corpus's own issue unreachable at the id its documents cite.
+                self._linear_identifiers.setdefault(
+                    str(cols["identifier"]).rsplit("-", 1)[0], set()
+                ).add(str(cols["identifier"]))
+                self._linear_provided.add(str(cols["identifier"]))
+            elif src == "linear":
                 # MATERIALIZE the identifier the server would otherwise synthesize per request.
                 # An id that is served has to be resolvable, and every lookup reads a stored
                 # column — so a serve-time-only identifier came back "Entity not found" from
@@ -1869,9 +1963,16 @@ class _Loader:
                 # and two issues sharing `ENG-2686` leaves one of them unreachable at the only
                 # human-facing id it advertises, since `issue(id:)` answers the first. The same
                 # probe shape as confluence's and hubspot's, and for the same reason.
-                cols["identifier"] = self._assign_linear_identifier(
-                    did, synth.linear_team_key(container)
-                )
+                #
+                # Under the team's key so far, which is PROVISIONAL: a provided identifier further
+                # down the file, or in a later shard of the same load, moves the team onto a prefix
+                # this row has not seen yet. `restamp_linear_identifiers` settles the container at
+                # the end of the load, where every one of its rows is visible; the value written
+                # here is what a container that never needs settling keeps, so the common case pays
+                # no second pass.
+                key = self.linear_prefixes.get(container) or synth.linear_team_key(container)
+                cols["identifier"] = self._assign_linear_identifier(did, key)
+                self._linear_stamped[did] = (container, key, cols["identifier"])
             if src in ("gmail", "google_drive", "notion", "linear"):
                 cols["id"] = store.id_seed(src)(did)
             elif src == "slack":
@@ -1961,7 +2062,7 @@ class _Loader:
                         )
                     self.tracker_ids[claim] = did
                     if src == "jira":
-                        self._claim_jira_prefix(provided, container, where)
+                        self._claim_prefix("jira", provided, container, where)
                 elif repeat is not None:
                     cols[col] = repeat[-1]  # the same document, named twice
                 else:
@@ -2283,6 +2384,75 @@ class _Loader:
                     conn.execute(f"DELETE FROM {store.acl_table(src)} WHERE {where_key}", k)
                 store.fts_add_docs(conn, src, stale)  # delete-then-reinsert: the row is gone
 
+    def _linear_team_key(self, container: str) -> str:
+        """The key this team's identifiers are prefixed with: the one its own corpus spelled out
+        (this run or a stored earlier one), else the derivation from its name."""
+        return self.linear_prefixes.get(container) or synth.linear_team_key(container)
+
+    def restamp_linear_identifiers(self) -> None:
+        """Re-stamp the identifiers this run materialized under the key their team ENDED UP with.
+
+        A keyless issue is stamped the moment its record lands, and the team's key is only what the
+        corpus has spelled out SO FAR at that point: a provided `PP-3` further down the file moves
+        the team onto PP and leaves every row stamped before it under the name-derived `ENG`, so one
+        team serves two prefixes at once. This pass runs once every record has been read, which is
+        the first moment a container's key is a fact rather than a guess.
+
+        Every materialized row of an affected container is reassigned, not only the ones carrying
+        the superseded prefix, and in dataset-id order rather than arrival order. Stamping in the
+        record loop can only use the prefix known so far, so the two halves of a container would
+        otherwise be numbered under different rules and the identifier a keyless row ends up with
+        would depend on which side of the provided line it sat on. Reassigned over the whole
+        container at once, it is a function of the row set alone.
+
+        The pass also settles the other way a stamp can go wrong, which needs no re-keying at all:
+        a keyless row can be stamped with a spelling a LATER record states outright, and the probe
+        that placed it had no way to know. The stamped row gives it up here, so the issue the corpus
+        wrote `ENG-8774` for is the one `issue(id: "ENG-8774")` answers with.
+
+        A PROVIDED identifier is the corpus's own spelling and never moves. Neither does anything an
+        earlier run wrote: `seed_tracker_ids` reads that run's decision back off
+        `linear_teams.served_key`, so a team whose stored rows are `ENG-…` is already on ENG before
+        this run's first record, and an identifier that disagrees with it is refused rather than
+        re-stamped (see `_claim_prefix`)."""
+        stale = {
+            container
+            for container, key, _ in self._linear_stamped.values()
+            if key != self._linear_team_key(container)
+        }
+        # Two reasons a stamped identifier moves. Its team's key changed, in which case the
+        # container's WHOLE set is reassigned (see above); or the corpus itself states that exact
+        # spelling somewhere, in which case only this row moves and the provided one stays put.
+        movable = sorted(
+            (did, container, key, identifier)
+            for did, (container, key, identifier) in self._linear_stamped.items()
+            if container in stale or identifier in self._linear_provided
+        )
+        if not movable:
+            return  # every container was stamped under the key it ended up with, and none clashed
+        # Freed FIRST, all of them, so a row can take a spelling another moving row is vacating:
+        # numbers are per prefix and a container's whole set moves at once, so without this the
+        # probe would walk around values nothing will hold by the time the pass returns. A spelling
+        # the corpus PROVIDED is not freed — that is the row that keeps it, and the walk has to see
+        # it as taken.
+        for _, _, key, identifier in movable:
+            if identifier not in self._linear_provided:
+                self._linear_identifiers.get(key, set()).discard(identifier)
+        for did, container, _, _ in movable:
+            key = self._linear_team_key(container)
+            identifier = self._assign_linear_identifier(did, key)
+            self._linear_stamped[did] = (container, key, identifier)
+            # By the row's own primary key, taken from `keys` rather than re-derived: it is what
+            # the row actually landed under, including for two records that shared a dataset id.
+            written = self.keys.get(("linear", did))
+            if written is None:
+                continue  # the row was never written
+            self.conn.execute(
+                f"UPDATE {store.table('linear')} SET identifier = ? "
+                f"WHERE {store.id_column('linear')} = ?",
+                (identifier, written[-1]),
+            )
+
     def write_containers(self) -> None:
         """The per-service grouping rows (``slack_channels``, ``linear_teams``, ``gdrive_folders``,
         …). Deferred to the end of a load rather than written per record: a container's owning
@@ -2297,7 +2467,13 @@ class _Loader:
         It must still fail LOUDLY if one happens, which is why the upsert below is keyed explicitly
         on ``team`` rather than being a blanket ``INSERT OR REPLACE`` -- that would resolve a
         ``served_id`` collision by silently deleting the other team's row. ``served_key`` needs no
-        such guard; it is not unique to begin with (see ``linear_team_by_served_key``)."""
+        such guard; it is not unique to begin with (see ``linear_team_by_served_key``).
+
+        ``served_key`` is the team's SETTLED key, not the derivation: a team whose issues spell a
+        prefix out is served under that prefix everywhere, and this column is where every serving
+        surface reads it from (``store.linear_team_keys``). It is also what the next
+        ``--append`` seeds its prefix maps from, which is the only record of what this run decided
+        -- an identifier cannot say whether its prefix was the corpus's or this mock's."""
         for (src, name), group_id in self.containers.items():
             gtable, gcol = store.GROUPING[src]
             if src == "linear":
@@ -2306,7 +2482,7 @@ class _Loader:
                     f"VALUES (?,?,?,?) ON CONFLICT({gcol}) DO UPDATE SET "
                     "group_id=excluded.group_id, served_id=excluded.served_id, "
                     "served_key=excluded.served_key",
-                    (name, group_id, synth.linear_team_id(name), synth.linear_team_key(name)),
+                    (name, group_id, synth.linear_team_id(name), self._linear_team_key(name)),
                 )
             elif src == "jira":
                 # The project's own key -- the prefix its issue keys carry. `resolve_jira_keys`
@@ -2848,6 +3024,12 @@ def _load_records(
     for lineno, rec in records_factory():
         source_docs += 1
         loader.add(rec, f"line {lineno}")
+    # First, and before `resolve_cross_references` in particular: a linear team's key is settled by
+    # the identifiers its own issues provided, and the rows stamped under a superseded prefix are
+    # re-numbered here (see restamp_linear_identifiers). A linear `parent` names its target by
+    # IDENTIFIER and is resolved against the stored column, so re-stamping after that resolution
+    # would leave those links pointing at spellings no row answers to any more.
+    loader.restamp_linear_identifiers()
     # Order matters. The two deferred passes settle every provisional key FIRST, so that
     # everything downstream — the jira parent links, the cross-reference targets, the ACL grants
     # and the FTS ids, all of which name a document by the dataset id it came in under — resolves

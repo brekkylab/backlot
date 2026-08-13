@@ -3561,6 +3561,267 @@ def test_byo_two_projects_cannot_share_a_provided_key_prefix(tmp_path):
         load(first, settings, reset=False)
 
 
+def _linear_rec(did, team="payments-platform", identifier=None):
+    r = {
+        "source_type": "linear",
+        "doc_id": did,
+        "team": team,
+        "title": did,
+        "content": "c",
+        "author_email": "ava@acme.com",
+        "created": "2026-02-01T00:00:00Z",
+    }
+    if identifier:
+        r["identifier"] = identifier
+    return r
+
+
+def _linear_shard(tmp_path, name, recs):
+    p = tmp_path / name
+    p.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    return p
+
+
+def _stored_identifiers(settings, dids):
+    """dataset id -> the identifier its row landed on.
+
+    Read back through `served_id`, because a corpus's own identifier does not outlive the import: a
+    linear row's served `id` is a pure function of it, so the mapping is recomputable even though
+    the DB carries no column for it.
+    """
+    conn = store.connect_ro(settings.db_path)
+    rows = {
+        r["id"]: r["identifier"] for r in conn.execute("SELECT id, identifier FROM linear_issues")
+    }
+    return {d: rows[served_id("linear", d)] for d in dids}
+
+
+def test_byo_linear_provided_prefix_teaches_the_team(tmp_path):
+    """A provided identifier's prefix is a fact about its TEAM: real Linear derives an identifier
+    from its team's key, so one team never serves two spellings. A keyless sibling loaded after the
+    provided one materializes with the claimed prefix; one loaded BEFORE it is re-stamped at load
+    end, where the whole container is visible; and one whose re-stamped number would collide with a
+    provided identifier probes forward to the next free number."""
+    # keyless BEFORE the provided one (re-stamped), keyless AFTER it (in flow), and a provided
+    # identifier squatting exactly on the number the re-stamp would otherwise take.
+    before_n = synth.linear_issue_number(synth.linear_identifier("ln-before", "ENG"))
+    settings = Settings(data_dir=tmp_path / "one")
+    load(
+        _linear_shard(
+            tmp_path,
+            "a.jsonl",
+            [
+                _linear_rec("ln-before"),
+                _linear_rec("ln-a", identifier="ENG-7"),
+                _linear_rec("ln-squat", identifier=f"ENG-{before_n}"),
+                _linear_rec("ln-after"),
+            ],
+        ),
+        settings,
+    )
+    dids = ["ln-before", "ln-a", "ln-squat", "ln-after"]
+    idents = _stored_identifiers(settings, dids)
+    assert all(v.startswith("ENG-") for v in idents.values()), idents
+    assert idents["ln-after"] == synth.linear_identifier("ln-after", "ENG")
+    # the squatted number forced the re-stamp one step forward
+    assert idents["ln-before"] == f"ENG-{before_n % synth.LINEAR_ISSUE_NUMBER_RANGE + 1}"
+    assert len(set(idents.values())) == 4
+    # and the team is served under the key its issues spell out, not the one its name derives
+    conn = store.connect_ro(settings.db_path)
+    assert store.linear_team_keys(conn) == {"payments-platform": "ENG"}
+    assert synth.linear_team_key("payments-platform") == "PP"  # the derivation it overrode
+
+    # across --append: the stored `served_key` is what the next shard materializes under, so a
+    # keyless row arriving in a later shard carries the claimed prefix with no re-stamp at all.
+    s2 = Settings(data_dir=tmp_path / "two")
+    load(_linear_shard(tmp_path, "b1.jsonl", [_linear_rec("ln-a", identifier="ENG-7")]), s2)
+    load(_linear_shard(tmp_path, "b2.jsonl", [_linear_rec("ln-c")]), s2, reset=False)
+    appended = _stored_identifiers(s2, ["ln-a", "ln-c"])
+    assert appended["ln-a"] == "ENG-7"
+    assert appended["ln-c"] == synth.linear_identifier("ln-c", "ENG")
+
+
+def test_byo_linear_prefixes_hold_one_to_one(tmp_path):
+    """A team has one key and a key names one team — real Linear keeps keys workspace-unique, and
+    the identifier scheme depends on it. Both directions are refused at load with the holder
+    named, this run or seeded across --append."""
+    with pytest.raises(SystemExit, match="which team 'payments-platform' already holds"):
+        load(
+            _linear_shard(
+                tmp_path,
+                "a.jsonl",
+                [
+                    _linear_rec("ln-a", identifier="ENG-7"),
+                    _linear_rec("ln-b", team="growth", identifier="ENG-9"),
+                ],
+            ),
+            Settings(data_dir=tmp_path / "one"),
+        )
+    with pytest.raises(SystemExit, match="already name it 'ENG'"):
+        load(
+            _linear_shard(
+                tmp_path,
+                "b.jsonl",
+                [_linear_rec("ln-a", identifier="ENG-7"), _linear_rec("ln-b", identifier="PAY-9")],
+            ),
+            Settings(data_dir=tmp_path / "two"),
+        )
+    # across --append: the earlier claim is seeded from the team's stored `served_key`
+    s = Settings(data_dir=tmp_path / "three")
+    load(_linear_shard(tmp_path, "c1.jsonl", [_linear_rec("ln-a", identifier="ENG-7")]), s)
+    with pytest.raises(SystemExit, match="which team 'payments-platform' already holds"):
+        load(
+            _linear_shard(
+                tmp_path, "c2.jsonl", [_linear_rec("ln-b", team="growth", identifier="ENG-9")]
+            ),
+            s,
+            reset=False,
+        )
+
+
+def test_byo_a_teams_key_is_settled_by_its_first_import(tmp_path):
+    """An --append cannot rename a team. Every identifier already stored is prefixed with the key
+    that import settled on, and re-stamping them is not on the table: they are the ids clients hold,
+    and a stored identifier cannot even say whether its prefix was the corpus's or this mock's --
+    both spellings share the one column. So the shard that would rename the team is refused
+    instead, naming the key its issues already carry."""
+    settings = Settings(data_dir=tmp_path / "d")
+    load(_linear_shard(tmp_path, "s1.jsonl", [_linear_rec("ln-keyless")]), settings)
+    conn = store.connect_ro(settings.db_path)
+    assert store.linear_team_keys(conn) == {"payments-platform": "PP"}
+    with pytest.raises(SystemExit, match="already name it 'PP'"):
+        load(
+            _linear_shard(tmp_path, "s2.jsonl", [_linear_rec("ln-states-it", identifier="ENG-7")]),
+            settings,
+            reset=False,
+        )
+    # A shard that agrees with the settled key is fine, and claims its own spelling.
+    load(
+        _linear_shard(tmp_path, "s3.jsonl", [_linear_rec("ln-states-it", identifier="PP-7")]),
+        settings,
+        reset=False,
+    )
+    assert _stored_identifiers(settings, ["ln-states-it"])["ln-states-it"] == "PP-7"
+
+
+def test_byo_linear_identifiers_do_not_depend_on_where_the_provided_line_sits(tmp_path):
+    """The identifier a keyless row ends up with is a function of the container, not of the file.
+    Stamping in the record loop can only use the prefix known SO FAR, so a row before the provided
+    line and a row after it were settled by different rules: the same corpus, with that one line
+    moved, produced a different identifier for every keyless row and a different number of distinct
+    ones. Both orders are loaded here and compared row by row."""
+    # Enough rows that the derived numbers collide (600 in a 9,000 space collides ~20 times),
+    # which is what makes the two orders settle differently at all.
+    keyless = [_linear_rec(f"ln-{i:04d}") for i in range(600)]
+    provided = _linear_rec("ln-states-it", identifier="ENG-7")
+    dids = [r["doc_id"] for r in (*keyless, provided)]
+    out = []
+    for name, recs in (("first", [provided, *keyless]), ("last", [*keyless, provided])):
+        settings = Settings(data_dir=tmp_path / name)
+        load(_linear_shard(tmp_path, f"{name}.jsonl", recs), settings)
+        out.append(_stored_identifiers(settings, dids))
+    assert out[0] == out[1], "the provided line's position changed the identifiers"
+    assert all(v.startswith("ENG-") for v in out[0].values())
+    assert len(set(out[0].values())) == len(out[0]), "a container's identifiers collided"
+
+
+def test_byo_a_restamp_never_lands_on_another_teams_identifier(tmp_path):
+    """The prefix a team states can be the key another team derives from its NAME, and the 1:1
+    refusal deliberately does not cover that pairing — the derived one was never written down, so
+    two containers reducing to one key stays as legal as it has always been. Re-stamping into the
+    shared prefix then put two teams' rows on one spelling, and `issue(id:)` can only answer with
+    one: the other document answers at an id that fetches its neighbour. So the free-number search
+    is bucketed by PREFIX, which spans the workspace, and not by container."""
+    assert synth.linear_team_key("engineering") == "ENG"  # the pairing this test needs
+    # a dataset id in the stating team whose ENG-materialisation is some engineering row's too
+    wanted = synth.linear_identifier("ln-collide", "ENG")
+    twin = next(
+        c
+        for c in (f"pp-{i}" for i in range(200_000))
+        if synth.linear_identifier(c, "ENG") == wanted
+    )
+    settings = Settings(data_dir=tmp_path / "d")
+    load(
+        _linear_shard(
+            tmp_path,
+            "c.jsonl",
+            [
+                _linear_rec("ln-collide", team="engineering"),
+                _linear_rec("ln-states-it", identifier="ENG-7"),
+                _linear_rec(twin),
+            ],
+        ),
+        settings,
+    )
+    idents = _stored_identifiers(settings, ["ln-collide", "ln-states-it", twin])
+    assert idents["ln-collide"] == wanted, "the engineering row lost its derived spelling"
+    assert idents[twin] != wanted, "the re-stamp landed on another team's identifier"
+    assert len(set(idents.values())) == 3
+
+
+def test_byo_a_materialized_identifier_yields_to_a_corpus_that_states_it(tmp_path):
+    """A materialized identifier is a hash, not a claim. A keyless row is stamped the moment its
+    record lands, so it can take a spelling a LATER record states outright — and the probe that
+    placed it had no way to know. The stated id wins and the stamped row steps aside at the end of
+    the same load, because the corpus's own issue is the one whose documents cite that id."""
+    # The value `ln-keyless` materializes under its own team's key, then stated by another record.
+    stated = synth.linear_identifier("ln-keyless", "PP")
+    settings = Settings(data_dir=tmp_path / "d")
+    load(
+        _linear_shard(
+            tmp_path,
+            "c.jsonl",
+            [_linear_rec("ln-keyless"), _linear_rec("ln-states-it", identifier=stated)],
+        ),
+        settings,
+    )
+    idents = _stored_identifiers(settings, ["ln-keyless", "ln-states-it"])
+    assert idents["ln-states-it"] == stated
+    assert idents["ln-keyless"] != stated
+    assert idents["ln-keyless"].startswith("PP-")
+
+
+def test_byo_appending_to_a_settled_team_leaves_every_identifier_alone(tmp_path):
+    """Re-stamping runs on every load, so it has to be idempotent: an identifier a client may
+    already hold must survive both a re-import of the same records and an append of new ones. The
+    team's key is read back off `served_key`, so the second load stamps under the prefix the first
+    settled on and has nothing to move."""
+    settings = Settings(data_dir=tmp_path / "d")
+    first = [
+        *(_linear_rec(f"ln-{i:04d}") for i in range(200)),
+        _linear_rec("ln-p", identifier="ENG-7"),
+    ]
+    load(_linear_shard(tmp_path, "a.jsonl", first), settings)
+    dids = [r["doc_id"] for r in first]
+    before = _stored_identifiers(settings, dids)
+    assert len(set(before.values())) == len(before)
+    load(
+        _linear_shard(tmp_path, "again.jsonl", [_linear_rec("ln-p", identifier="ENG-7")]),
+        settings,
+        reset=False,
+    )
+    assert _stored_identifiers(settings, dids) == before
+    more = [_linear_rec(f"ln-x{i:04d}") for i in range(50)]
+    load(_linear_shard(tmp_path, "more.jsonl", more), settings, reset=False)
+    after = _stored_identifiers(settings, dids + [r["doc_id"] for r in more])
+    assert {d: after[d] for d in before} == before, "an append renumbered an existing row"
+    assert len(set(after.values())) == len(after)
+
+
+@pytest.mark.parametrize("bad", ["eng-7", "ENG 7", "7", "ENG-0007", "TOOLONGPREFIX-7"])
+def test_byo_a_mistyped_linear_identifier_is_refused(tmp_path, bad):
+    """The prefix is a fact about the whole team, so a typo in one issue renames every one of them
+    — `identifier: "7"` made the team answer at `7` and stamped its siblings `7-n`. That is why
+    jira's key carries a pattern, and the same reasoning now reaches Linear's identifier."""
+    with pytest.raises(SystemExit, match=r"\[identifier\]"):
+        load(
+            _linear_shard(
+                tmp_path, "c.jsonl", [_linear_rec("ln-a", identifier=bad), _linear_rec("ln-b")]
+            ),
+            Settings(data_dir=tmp_path / "d"),
+        )
+
+
 def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):
     """`PAY-1` beside `BILL-2` in one project is the other direction of the same 1:1: the
     project can only have one key, so whichever the index picked, the other issue served a

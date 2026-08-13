@@ -495,8 +495,14 @@ def linear_team_key(container: str) -> str:
     NO hash suffix, unlike :func:`jira_project_key` / :func:`confluence_space_key`: the readable
     form reproduces the corpus's own prefixes exactly (``engineering`` -> ``ENG``,
     ``product-management`` -> ``PM``), so a served identifier matches the key written in the issue
-    text and in every source that cites it. Two containers CAN collide on one key — the app index
-    resolves that to the first team by name, and the team UUID always addresses it exactly."""
+    text and in every source that cites it. Two containers CAN collide on one key — a lookup
+    breaks that tie by team name order (see :func:`backlot.store.linear_team_by_served_key`), and
+    the team UUID always addresses one exactly.
+
+    The DERIVATION, not the last word: a team whose own issues spell a different prefix out is
+    served under that prefix instead, and the importer stores it as the team's ``served_key`` (see
+    ``byo._Loader._claim_linear_prefix``). Read a served key from ``linear_teams``, not from here,
+    anywhere a corpus-provided one can reach."""
     return _key(container, "TEAM")
 
 

@@ -92,7 +92,7 @@
         "number",
         "string"
       ],
-      "description": "Creation time (epoch seconds or ISO 8601). Default: synthesized from doc_id. Sets the message ts; thread replies follow at created+position."
+      "description": "Creation time (epoch seconds or ISO 8601). Default: synthesized from doc_id. Sets the message ts. A thread reply times itself: its own `created` when it has one, else one second after the message before it."
     },
     "replies": {
       "type": "array",

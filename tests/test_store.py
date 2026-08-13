@@ -13,7 +13,7 @@ import sqlite3
 
 import pytest
 
-from backlot import store
+from backlot import store, synth
 
 ALL_SOURCES = [
     "slack",
@@ -98,6 +98,27 @@ def test_acl_table_registry_covers_every_source(tmp_path):
     # within a source) — it must not come back now that every source has its own table.
     assert "doc_acl" not in names
     conn.close()
+
+
+def test_served_id_registry_covers_every_hashed_source():
+    """`main._build_index` still reverses a hash back to a doc_id for these sources; each gets its
+    own stored, unique-indexed column in its own task (#51), one source at a time, so this registry
+    has to be total over all of them from the start or a later task's column goes unrecorded.
+    `s3`'s id is `bucket/key`, stored already and never hashed; `slack` has no hash->doc_id map to
+    replace; and fireflies' only hash (`fireflies_user_id`) reverses an EMAIL, not a doc_id -- none
+    of the three belong here (see the source list in main._build_index)."""
+    assert set(store.SERVED_ID) == {
+        "confluence",
+        "gmail",
+        "notion",
+        "hubspot",
+        "linear",
+        "github",
+        "jira",
+    }
+    # Confluence is the only entry any code reads yet (see confluence_by_served_id and
+    # importer.byo._assign_confluence_id) -- column name, seed function, corpus-wide scope.
+    assert store.SERVED_ID["confluence"] == ("served_id", synth.confluence_id, None)
 
 
 def test_acl_clause_rejects_a_wrong_but_valid_table_pairing():

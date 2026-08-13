@@ -21,6 +21,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+from backlot import synth
+
 # source_type -> its dedicated table
 SOURCE_TABLE = {
     "slack": "slack_messages",
@@ -108,6 +110,49 @@ def grouping_table(source_type: str) -> str:
 
 def grouping_col(source_type: str) -> str:
     return GROUPING[source_type][1]
+
+
+# source_type -> (served-id column, seed function, uniqueness scope). The column holds an id
+# ASSIGNED at import (see backlot.importer.byo) rather than derived by hashing at serve time: a
+# hash into any fixed range collides by the birthday bound, and the reverse map this replaces
+# resolved a collision last-writer-wins, leaving one document unreachable at its own id (#51).
+# `scope` is None when the vendor's id is unique corpus-wide (a Confluence content id, a Gmail
+# message id), or the source's own GROUPING column when the vendor only guarantees uniqueness
+# WITHIN one container (a GitHub number is unique per repo, not across repos; a Jira key's numeric
+# suffix per project) — assignment then only has to probe ids already taken in that container, not
+# the whole corpus.
+#
+# Confluence is the only entry any code reads yet (confluence_by_served_id,
+# importer.byo._assign_confluence_id): its own task proved the shape. The rest are populated so the
+# registry is total over every source `main._build_index` still reverses a hash for (see
+# test_served_id_registry_covers_every_hashed_source) — but nothing reads them, and converting one
+# means giving it its own stored column (github's and jira's necessarily differ from their existing
+# `number`/`key` columns, since a corpus-provided id and a synthesized one must stay distinguishable
+# — see #46) plus an assignment method mirroring confluence's, one source at a time.
+SERVED_ID = {
+    "confluence": ("served_id", synth.confluence_id, None),
+    "gmail": ("served_id", synth.gmail_message_id, None),
+    "notion": ("served_id", synth.notion_id, None),
+    "hubspot": ("served_id", synth.hubspot_record_id, None),
+    # Linear's hashed uuid, kept distinct from `identifier` (already stored, and which must keep
+    # winning — see GROUPING's linear comment) — this column is the OTHER spelling `issue(id:)`
+    # accepts.
+    "linear": ("served_id", synth.linear_id, None),
+    "github": ("served_number", synth.github_number, grouping_col("github")),
+    "jira": ("served_key", synth.jira_key, grouping_col("jira")),
+}
+
+
+def served_id_column(source_type: str) -> str:
+    return SERVED_ID[source_type][0]
+
+
+def served_id_seed(source_type: str):
+    return SERVED_ID[source_type][1]
+
+
+def served_id_scope(source_type: str) -> str | None:
+    return SERVED_ID[source_type][2]
 
 
 SCHEMA = """
@@ -1834,9 +1879,10 @@ def confluence_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | 
     """One page by the id the API reports. A unique-indexed column lookup, not a reverse map built
     at startup: the id is assigned at import, so it costs neither the per-boot scan nor the memory,
     and it cannot be ambiguous."""
+    col = served_id_column("confluence")
     clause, cp = _acl_clause("confluence", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM confluence_pages WHERE served_id = ?{clause}", [served_id, *cp]
+        f"SELECT * FROM confluence_pages WHERE {col} = ?{clause}", [served_id, *cp]
     ).fetchone()
 
 

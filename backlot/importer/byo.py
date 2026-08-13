@@ -657,14 +657,15 @@ class _Loader:
         """
         if doc_id in self._confluence_ids:
             return self._confluence_ids[doc_id]
-        served = synth.confluence_id(doc_id)
+        seed = store.served_id_seed("confluence")
+        served = seed(doc_id)
         # Re-seed a few times, then walk. Re-seeding keeps ids spread out, but it only terminates
         # if the hash actually varies with the salt — walking is what makes termination
         # unconditional, and it cannot spin as long as the range has a free value.
         for salt in range(1, 9):
             if served not in self._confluence_ids_taken:
                 break
-            served = synth.confluence_id(f"{doc_id}\x00{salt}")
+            served = seed(f"{doc_id}\x00{salt}")
         while served in self._confluence_ids_taken:
             served = (
                 synth.CONFLUENCE_ID_MIN
@@ -755,8 +756,9 @@ class _Loader:
             self._gh_ids_taken.add(row["served_id"])
         # Same claim, for confluence pages: an id already issued (this run or a previous one)
         # must not be handed to a second page.
+        cf_col = store.served_id_column("confluence")
         for row in self.conn.execute(
-            "SELECT doc_id, served_id FROM confluence_pages WHERE served_id IS NOT NULL"
+            f"SELECT doc_id, {cf_col} AS served_id FROM confluence_pages WHERE {cf_col} IS NOT NULL"
         ):
             self._confluence_ids[row["doc_id"]] = row["served_id"]
             self._confluence_ids_taken.add(row["served_id"])
@@ -1085,7 +1087,7 @@ class _Loader:
                 # reverse map this replaces resolved a collision last-writer-wins, so serving the
                 # hash directly could still leave one page unreachable at its own id (#51).
                 # Assigning here, probed against every id already taken, is what makes it unique.
-                cols["served_id"] = self._assign_confluence_id(did)
+                cols[store.served_id_column("confluence")] = self._assign_confluence_id(did)
             # A jira key and a github number are deliberately NOT materialized the way Linear's
             # identifier is: the column holds what the CORPUS wrote and nothing else, so "provided"
             # means exactly "non-NULL" everywhere downstream. Two things depend on that.

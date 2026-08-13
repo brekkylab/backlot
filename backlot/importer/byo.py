@@ -607,12 +607,6 @@ def load_roster(path) -> dict:
     return {"org": data.get("org"), "org_domain": data.get("org_domain"), "users": users}
 
 
-# The size of the per-repo space `synth.github_number` draws from (1..90_000). A repo with more
-# non-file documents than this has run out of that space, which is a corpus-scale problem and not
-# something a silent duplicate should paper over — see _assign_github_number.
-_GITHUB_NUMBER_RANGE = 90_000
-
-
 class _Loader:
     """Inserts BYO records into an open DB, accumulating the corpus-level state the principal, ACL
     and cross-reference passes need afterwards.
@@ -638,11 +632,13 @@ class _Loader:
         the same corpus produces the same number, re-seeded a few times to spread out, THEN walked
         unconditionally — re-seeding alone only terminates if the hash actually varies with the
         salt, and an unbounded re-seed loop hung the importer once already. Unlike the old
-        `_free_number` this replaces, the walk is BOUNDED: past `_GITHUB_NUMBER_RANGE` steps every
-        number `synth.github_number` can produce has been visited, so `repo` has more non-file
-        rows than the space holds, and returning one anyway (as `_free_number` did, silently) would
-        duplicate it under the UNIQUE (repo, served_number) index instead of failing where the
-        problem actually is.
+        `_free_number` this replaces, the walk is BOUNDED: past `synth.GITHUB_NUMBER_RANGE` steps
+        every number `synth.github_number` can produce has been visited, so `repo` has more
+        non-file rows than the space holds, and returning one anyway (as `_free_number` did,
+        silently) would duplicate it under the UNIQUE (repo, served_number) index instead of
+        failing where the problem actually is. Reads the range off `synth` rather than a private
+        copy of the literal, so raising `synth.github_number`'s own modulus can never silently
+        leave this walk still wrapping at the old, smaller one.
         """
         bucket = taken.setdefault(repo, set())
         seed = store.served_id_seed("github")
@@ -651,13 +647,13 @@ class _Loader:
             if n not in bucket:
                 break
             n = int(seed(f"{doc_id}\x00{salt}"))
-        for _ in range(_GITHUB_NUMBER_RANGE):
+        for _ in range(synth.GITHUB_NUMBER_RANGE):
             if n not in bucket:
                 return n
-            n = n % _GITHUB_NUMBER_RANGE + 1
+            n = n % synth.GITHUB_NUMBER_RANGE + 1
         raise SystemExit(
-            f"github: repo {repo!r} has exhausted its {_GITHUB_NUMBER_RANGE}-number range; no "
-            f"served number is free for {doc_id!r}"
+            f"github: repo {repo!r} has exhausted its {synth.GITHUB_NUMBER_RANGE}-number range; "
+            f"no served number is free for {doc_id!r}"
         )
 
     def _assign_github_comment_id(self, stored_id: str) -> int:
@@ -1759,6 +1755,21 @@ class _Loader:
             bucket.add(candidate)
             if candidate != r["served_number"]:
                 updates.append((candidate, doc_id))
+        # Two sweeps, not one: `updates` is a CORRECT, collision-free final assignment, but
+        # writing it in this order can still hit the UNIQUE (repo, served_number) index on an
+        # INTERMEDIATE state. Pass 1 above queues a provider's claim before pass 2 queues the
+        # row it displaces moving OFF that same number — so a row moving ONTO N can be written
+        # before the row currently sitting on N has been moved away from it, and the two rows
+        # transiently share N. That is only reachable across `--append` (a fresh import touches
+        # every row in the same run and starts from an empty table), which is exactly the
+        # boundary a real corpus crosses constantly. Clearing every changing row to NULL first
+        # removes the collision entirely: NULL is exempt from the UNIQUE index, so no order of
+        # the second sweep can ever collide with another row still in `updates`, or with a row
+        # NOT in `updates` (those keep their current value throughout, untouched by either sweep).
+        for _, doc_id in updates:
+            self.conn.execute(
+                "UPDATE github_items SET served_number = NULL WHERE doc_id = ?", (doc_id,)
+            )
         for served_number, doc_id in updates:
             self.conn.execute(
                 "UPDATE github_items SET served_number = ? WHERE doc_id = ?",

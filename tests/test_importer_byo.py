@@ -1647,10 +1647,11 @@ def test_byo_server_boots_read_only_on_a_pre_column_db(tmp_path):
 
     jira only now: github's own equivalent DB-predates-the-column scenario is gone with #51 --
     `number` is a real corpus-provided value with no boot-time fallback to defend (that never
-    changed), but the ACTUAL served value now lives in `served_number`, which -- unlike `number`
-    and jira's `key` -- carries NO self-heal ALTER (see idx_github_served's schema comment: no
-    back-compat for the served-id-style columns tasks 3-7 added). A DB missing it is not a
-    supported shape to boot against at all, so there is nothing left to characterize here for
+    changed), but the ACTUAL served value now lives in `served_number`, which -- unlike `number`,
+    jira's `key`, and the OLDER `github_comments.served_id` (predates this #51 series, and is
+    self-healed) -- carries NO self-heal ALTER: no back-compat for the per-document served-id-
+    style columns tasks 3-7 added (see idx_github_served's schema comment). A DB missing it is not
+    a supported shape to boot against at all, so there is nothing left to characterize here for
     github specifically."""
     import sqlite3 as _sq
 
@@ -2576,25 +2577,27 @@ def test_byo_github_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
     """The old boot-time probe (`main._free_number`, gone with #51) fell back to `return start`
     after `_PROBE_LIMIT` steps -- a value it ALREADY knew was taken -- producing a silent
     duplicate under the reverse map with no error. `_assign_github_number`'s bounded walk raises
-    instead: past `_GITHUB_NUMBER_RANGE` steps every number the probe can produce has been
+    instead: past `synth.GITHUB_NUMBER_RANGE` steps every number the probe can produce has been
     visited, so the repo genuinely has more non-file rows than the space holds, and writing one
     anyway would duplicate it under the UNIQUE (repo, served_number) index rather than fail where
     the problem actually is.
 
     "Genuinely exhausted" is 90,000 non-file rows in one repo in reality -- not a practical test
-    fixture -- so this shrinks `_GITHUB_NUMBER_RANGE` itself (a module constant, not a closure
-    capture, so a plain `monkeypatch.setattr` reaches it) and collapses the seed to one constant
-    (`monkeypatch.setitem` on `store.SERVED_ID`, for the same reason as the collision test above).
+    fixture -- so this shrinks `synth.GITHUB_NUMBER_RANGE` itself (a plain module attribute read
+    at call time, not a closure capture, so `monkeypatch.setattr` reaches it -- unlike
+    `store.SERVED_ID`'s captured seed FUNCTION, this is just an int looked up live off the
+    module) and collapses the seed to one constant (`monkeypatch.setitem` on `store.SERVED_ID`,
+    for the same reason as the collision test above).
     4 rows, not 3: with a constant seed each walk's FIRST checked candidate is always the
     already-taken raw seed, so a range this small (2) only gets ONE real chance per row to land
     on a free small number -- 3 rows leaves one candidate value never even probed, which a
     mutation that silently returns the walk's last (unchecked) value can still slip through by
     accident. 4 rows is the smallest count that forces a real collision on the fourth.
     """
-    from backlot.importer import byo
+    from backlot import synth
     from tests._helpers import build_corpus
 
-    monkeypatch.setattr(byo, "_GITHUB_NUMBER_RANGE", 2)
+    monkeypatch.setattr(synth, "GITHUB_NUMBER_RANGE", 2)
     monkeypatch.setitem(store.SERVED_ID, "github", ("served_number", lambda doc_id: 999999, "repo"))
     docs = [
         {
@@ -3026,11 +3029,14 @@ def test_byo_a_derived_number_no_longer_moves_across_append(tmp_path):
     `gh-000000`) was appended and displaced onto it in turn.
 
     With a stored column, appending `gh-014031` must NOT touch `gh-000000` or `gh-054074`'s
-    numbers at all: `resolve_github_numbers`'s `_github_numbers` preload (seeded before this run's
-    insert can clear the column) is what keeps a row untouched THIS run reading back the same
-    served_number it already had, and a row that IS touched (there is none here — the append adds
-    only `gh-014031`) would only be knocked off it by a NEW provided number, which nothing here
-    provides."""
+    numbers at all. Review round 1 caught this docstring overclaiming WHY: `gh-000000` and
+    `gh-054074` are never re-inserted by the second batch (which only ADDS `gh-014031`), so their
+    served_number sits untouched in the live column throughout -- this property holds even with
+    `resolve_github_numbers`'s `_github_numbers` preload (or `seed_tracker_ids` itself) disabled,
+    since nothing here ever resets their column to NULL for the preload to have to restore. See
+    `test_byo_a_touched_rows_served_number_is_restored_from_the_preload_not_reprobed` below for the
+    test that actually forces reliance on the preload, by re-stating an ALREADY-served row in the
+    append batch."""
     from backlot import synth
     from tests._helpers import client_for
 
@@ -3082,6 +3088,77 @@ def test_byo_a_derived_number_no_longer_moves_across_append(tmp_path):
     second = served(settings)
     assert second[A] == first[A] and second[C] == first[C]
     assert second[B] not in (first[A], first[C])
+
+
+def test_byo_a_touched_rows_served_number_is_restored_from_the_preload_not_reprobed(
+    tmp_path, monkeypatch
+):
+    """The test above shows appending a NEW row leaves an untouched one alone -- true, but it
+    passes even with `resolve_github_numbers`'s `_github_numbers` preload (or `seed_tracker_ids`
+    itself) disabled, since neither row's column is ever reset to NULL for a broken preload to
+    fail to restore (review round 1 caught this).
+
+    This one actually exercises the preload: `a0`/`a1` are RE-STATED in the append batch (same
+    doc_ids, same content -- `insert`'s github block writes `served_number = None`
+    UNCONDITIONALLY, so restating a doc_id resets its column exactly like any other write to it
+    would), and the append's seed is swapped to a DIFFERENT deterministic function before it
+    runs. A reprobe-from-scratch that bypassed the preload would therefore compute DIFFERENT
+    numbers for `a0`/`a1` under the new seed -- so their numbers coming back UNCHANGED can only
+    be the preload doing its job, not an accident of the corpus reproducing its own hashes."""
+    from backlot import store, synth
+    from backlot.importer.byo import load
+
+    def rec(did):
+        return {
+            "source_type": "github",
+            "doc_id": did,
+            "repo": "core",
+            "subtype": "issue",
+            "title": did,
+            "content": "c",
+            "author_email": "ava@acme.com",
+        }
+
+    settings = Settings(data_dir=tmp_path)
+    shard1 = tmp_path / "s1.jsonl"
+    shard1.write_text("\n".join(json.dumps(rec(d)) for d in ("a0", "a1")))
+    load(shard1, settings, reset=True)
+
+    conn = store.connect_ro(settings.db_path)
+    before = {
+        r["doc_id"]: r["served_number"]
+        for r in conn.execute("SELECT doc_id, served_number FROM github_items")
+    }
+    conn.close()
+    assert len(before) == 2 and len(set(before.values())) == 2
+
+    # A different seed for the append run -- salted the same way _assign_github_number's own
+    # re-seed salts a collision, so it stays within synth.github_number's real shape rather than
+    # drawing from an unrelated space.
+    monkeypatch.setitem(
+        store.SERVED_ID,
+        "github",
+        ("served_number", lambda doc_id: synth.github_number(f"{doc_id}\x00salted"), "repo"),
+    )
+    # Sanity: the new seed actually differs from the old one for both rows, or restoring the OLD
+    # value below would be indistinguishable from just reprobing with the "new" (== old) seed.
+    for did in ("a0", "a1"):
+        assert synth.github_number(f"{did}\x00salted") != synth.github_number(did)
+
+    shard2 = tmp_path / "s2.jsonl"
+    shard2.write_text("\n".join(json.dumps(rec(d)) for d in ("a0", "a1", "a2")))
+    load(shard2, settings, reset=False)
+    monkeypatch.undo()
+
+    conn = store.connect_ro(settings.db_path)
+    after = {
+        r["doc_id"]: r["served_number"]
+        for r in conn.execute("SELECT doc_id, served_number FROM github_items")
+    }
+    conn.close()
+    assert after["a0"] == before["a0"]
+    assert after["a1"] == before["a1"]
+    assert after["a2"] is not None and after["a2"] not in before.values()
 
 
 def test_byo_a_document_demoted_to_a_file_loses_its_served_number(tmp_path):
@@ -3143,6 +3220,73 @@ def test_byo_a_document_demoted_to_a_file_loses_its_served_number(tmp_path):
     assert after["kind"] == "file"
     assert after["served_number"] is None
     conn.close()
+
+
+def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_path):
+    """Regression: `resolve_github_numbers`'s two passes compute a correct, collision-free final
+    assignment, but WRITING it in that order transiently duplicated a live value across an
+    `--append` boundary. Pass 1 queues the provider's claim on N; pass 2 queues the row already
+    sitting on N moving OFF it -- and pass 1's update always precedes pass 2's in `updates`, so
+    the provider's UPDATE ran while the displaced row -- untouched by THIS run, so still holding
+    its old value in the live table -- still held N too. The UNIQUE (repo, served_number) index
+    caught the transient duplicate and the whole import aborted.
+
+    Needs no monkeypatching: `a-victim` is loaded alone first (gets `synth.github_number
+    ("a-victim")` outright, nothing else in the repo to collide with), then a SECOND batch
+    (`--append`, i.e. `reset=False`) provides that exact number for a different doc_id. `a-victim`
+    is never touched by the second batch's insert -- its row is exactly the "untouched, only
+    exposed via seed_tracker_ids' preload" shape the brief asked this conversion to handle."""
+    from backlot import synth
+    from backlot.importer.byo import load
+
+    stolen = synth.github_number("a-victim")
+    shard1 = tmp_path / "s1.jsonl"
+    shard1.write_text(
+        json.dumps(
+            {
+                "source_type": "github",
+                "doc_id": "a-victim",
+                "repo": "core",
+                "title": "v",
+                "content": "v",
+                "author_email": "ava@acme.com",
+            }
+        )
+    )
+    settings = Settings(data_dir=tmp_path)
+    load(shard1, settings, reset=True)
+    conn = store.connect_ro(settings.db_path)
+    before = conn.execute(
+        "SELECT served_number FROM github_items WHERE doc_id = 'a-victim'"
+    ).fetchone()["served_number"]
+    assert before == stolen  # sanity: nothing to collide with yet, so it got its own hash
+    conn.close()
+
+    shard2 = tmp_path / "s2.jsonl"
+    shard2.write_text(
+        json.dumps(
+            {
+                "source_type": "github",
+                "doc_id": "z-provider",
+                "repo": "core",
+                "title": "p",
+                "content": "p",
+                "author_email": "ava@acme.com",
+                "number": stolen,
+            }
+        )
+    )
+    load(shard2, settings, reset=False)  # must not raise IntegrityError
+
+    conn = store.connect_ro(settings.db_path)
+    served = {
+        r["doc_id"]: r["served_number"]
+        for r in conn.execute("SELECT doc_id, served_number FROM github_items")
+    }
+    conn.close()
+    assert served["z-provider"] == stolen  # the provider wins the spelling it stated
+    assert served["a-victim"] != stolen  # the untouched row moved off it, not left duplicated
+    assert served["a-victim"] is not None
 
 
 # --- github pull changesets and review comments (issue #49 group B) ---------------------

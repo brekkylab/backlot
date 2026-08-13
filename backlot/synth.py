@@ -129,8 +129,16 @@ def drive_folder_id(container: str) -> str:
     return "0A" + _digest("folder:" + container)[:26]
 
 
+# The size of the per-repo space a github issue/PR number is drawn from (1..GITHUB_NUMBER_RANGE).
+# Exported (not a private literal inside github_number) so importer.byo's probe walk and
+# exhaustion check -- both bounded to "every number this function can produce" -- read this SAME
+# constant rather than an uncoupled copy: bumping it here immediately widens both without a
+# second edit to find and keep in sync.
+GITHUB_NUMBER_RANGE = 90_000
+
+
 def github_number(doc_id: str) -> int:
-    return hnum(doc_id, 0, 8) % 90_000 + 1
+    return hnum(doc_id, 0, 8) % GITHUB_NUMBER_RANGE + 1
 
 
 GITHUB_COMMENT_ID_MIN = 1_000_000_000

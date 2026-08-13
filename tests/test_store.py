@@ -507,10 +507,13 @@ def test_connect_rw_self_heals_missing_path_column(tmp_path):
     (IF NOT EXISTS only guards the index name, not the referenced column).
 
     `served_number` is included in the hand-rolled table on purpose, even though this fixture
-    predates it: unlike `path`/`changed_paths`/`number`, it is NOT in connect_rw's self-heal ALTER
-    list (#51 — no back-compat for the served-id-style columns tasks 3-7 added; see idx_github_
-    served's schema comment), so a table missing it would fail at the UNIQUE index in SCHEMA for
-    a reason this test isn't about. This test's own subject stays exactly `path`'s self-heal."""
+    predates it: unlike `path`/`changed_paths`/`number` (and unlike `github_comments.served_id`,
+    an OLDER feature that predates this whole #51 series and IS self-healed below), it is NOT in
+    connect_rw's self-heal ALTER list -- no back-compat for the per-DOCUMENT served-id-style
+    columns tasks 3-7 added (confluence_pages/hubspot_objects/notion_pages/linear_issues/
+    github_items's own `served_id`/`served_number`; see idx_github_served's schema comment), so a
+    table missing it would fail at the UNIQUE index in SCHEMA for a reason this test isn't about.
+    This test's own subject stays exactly `path`'s self-heal."""
     p = tmp_path / "old.sqlite"
     conn = sqlite3.connect(p)
     conn.execute(
@@ -1091,6 +1094,7 @@ def test_github_by_served_number_applies_the_acl(tmp_path):
     served = conn.execute("SELECT served_number FROM github_items").fetchone()["served_number"]
     assert store.github_by_served_number(conn, "core", served)["doc_id"] == "g0"
     assert store.github_by_served_number(conn, "core", served, visible_ids={"nobody"}) is None
+    conn.close()
 
 
 def test_connect_ro_tuning(sample_settings):

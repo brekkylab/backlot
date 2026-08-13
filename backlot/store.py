@@ -249,10 +249,11 @@ CREATE INDEX IF NOT EXISTS idx_github_doc_number
 -- than a collision, so any number of file rows coexist under it. Uniqueness is primarily enforced
 -- by the assignment itself -- resolve_github_numbers' two-phase pass (provided numbers claim
 -- first, corpus-wide, before anything probes) -- so a genuine collision essentially never reaches
--- this index; if one somehow did, the shared write path's upsert (`ON CONFLICT(doc_id) DO
--- UPDATE`) is scoped to the doc_id conflict target only, so a served_number collision (a
--- DIFFERENT doc_id) falls through to this index and raises IntegrityError rather than being
--- silently resolved.
+-- this index; if one somehow did, it would raise there directly. NOT through the shared write
+-- path's `ON CONFLICT(doc_id) DO UPDATE` (that reasoning is confluence's/gmail's/hubspot's, whose
+-- served id IS written by that same insert) -- served_number is written by resolve_github_numbers'
+-- own plain `UPDATE ... WHERE doc_id = ?`, a separate deferred pass with no ON CONFLICT clause at
+-- all, so a collision there raises IntegrityError from that UPDATE itself.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_github_served ON github_items(repo, served_number);
 
 CREATE TABLE IF NOT EXISTS jira_issues (
@@ -290,9 +291,11 @@ CREATE INDEX IF NOT EXISTS idx_jira_doc_key ON jira_issues(doc_id, project, key,
 -- own docstring). Uniqueness is primarily enforced by the assignment itself —
 -- resolve_jira_numbers' two-phase pass (provided suffixes claim first, corpus-wide, before
 -- anything probes) — so a genuine collision essentially never reaches this index; if one somehow
--- did, the shared write path's upsert (`ON CONFLICT(doc_id) DO UPDATE`) is scoped to the doc_id
--- conflict target only, so a served_number collision (a DIFFERENT doc_id) falls through to this
--- index and raises IntegrityError rather than being silently resolved.
+-- did, it would raise there directly. NOT through the shared write path's `ON CONFLICT(doc_id) DO
+-- UPDATE` (that reasoning is confluence's/gmail's/hubspot's, whose served id IS written by that
+-- same insert) — served_number is written by resolve_jira_numbers' own plain
+-- `UPDATE ... WHERE doc_id = ?`, a separate deferred pass with no ON CONFLICT clause at all, so a
+-- collision there raises IntegrityError from that UPDATE itself.
 --
 -- Residual NOT closed by this index (documented, not fixed — see backlot.importer.byo's `insert`
 -- and resolve_jira_numbers, and synth.jira_project_key's own docstring, for the same note): a

@@ -801,6 +801,38 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
     conn.close()
 
 
+def test_confluence_by_served_id_applies_the_acl(tmp_path):
+    """A regression `notion_by_served_id` shipped without (#51 review round), and every reader
+    since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
+    None, not the unscoped row -- otherwise the ACL clause could be deleted from
+    `confluence_by_served_id` invisibly. Confluence is the FIRST source #51 converted and the one
+    it was chartered on, and this test was the missing sibling of the family that already guards
+    the other three (`test_hubspot_by_served_id_applies_the_acl`,
+    `test_github_by_served_number_applies_the_acl`, `test_jira_by_served_number_applies_the_acl`).
+    A non-empty set, so `_acl_clause` takes its EXISTS branch rather than the empty-set "AND 0"
+    short-circuit."""
+    from tests._helpers import tiny_corpus
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "space": "wiki",
+                "doc_id": "p0",
+                "title": "Page 0",
+                "content": "x",
+                "author_email": "a@acme.com",
+            }
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    served = conn.execute("SELECT served_id FROM confluence_pages").fetchone()["served_id"]
+    assert store.confluence_by_served_id(conn, served)["doc_id"] == "p0"
+    assert store.confluence_by_served_id(conn, served, visible_ids={"nobody"}) is None
+    conn.close()
+
+
 def test_gmail_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     """Gmail's id space is 2**63, so unlike confluence it does not probe: the seed is stored as-is.
     Keeping it a pure hash is what lets `_gmail_ids` derive `threadId` by re-hashing the root's key
@@ -1238,6 +1270,56 @@ def test_github_by_served_number_applies_the_acl(tmp_path):
     served = conn.execute("SELECT served_number FROM github_items").fetchone()["served_number"]
     assert store.github_by_served_number(conn, "core", served)["doc_id"] == "g0"
     assert store.github_by_served_number(conn, "core", served, visible_ids={"nobody"}) is None
+    conn.close()
+
+
+def test_github_by_served_number_is_scoped_to_its_repo(tmp_path, monkeypatch):
+    """(final review, I-2) The SAME number in two different repos is the NORMAL case here, not an
+    exotic one -- GitHub numbers restart per repo, and `(repo, served_number)` is the whole UNIQUE
+    index's scope (see store.SERVED_ID's `scope` for github, and idx_github_served).
+    `github_by_served_number`'s `WHERE repo = ? AND {col} = ?` is therefore the ONLY thing that
+    keeps two same-numbered issues in different repos from resolving to each other -- there is no
+    other predicate backing it up. jira's byte-identical predicate already has this sibling
+    (`test_jira_by_served_number_is_scoped_to_its_project`); github never got its own.
+
+    Forces the collision directly via a collapsed seed (`monkeypatch.setitem`, not
+    `monkeypatch.setattr` -- see the collision test above for why), rather than hoping two
+    independent hashes coincide."""
+    from tests._helpers import build_corpus
+
+    monkeypatch.setitem(store.SERVED_ID, "github", ("served_number", lambda doc_id: 7, "repo"))
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "a0",
+                "repo": "alpha",
+                "title": "gh-a in alpha",
+                "content": "x",
+                "author_email": "a@acme.com",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "b0",
+                "repo": "bravo",
+                "title": "gh-b in bravo",
+                "content": "x",
+                "author_email": "a@acme.com",
+            },
+        ],
+    )
+    monkeypatch.undo()
+    conn = store.connect_ro(s.db_path)
+    served = {
+        r["doc_id"]: r["served_number"]
+        for r in conn.execute("SELECT doc_id, served_number FROM github_items")
+    }
+    # Sanity: the collision was actually forced -- both rows share the same number, in DIFFERENT
+    # repos, otherwise the assertions below would pass even with the scope missing entirely.
+    assert served["a0"] == served["b0"] == 7
+    assert store.github_by_served_number(conn, "alpha", 7)["doc_id"] == "a0"
+    assert store.github_by_served_number(conn, "bravo", 7)["doc_id"] == "b0"
     conn.close()
 
 

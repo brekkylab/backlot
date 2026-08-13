@@ -442,12 +442,13 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
 
 
 # --- Gmail ids ------------------------------------------------------------------------------
-# Served ids are 16-hex integers (`synth.gmail_message_id`), not the corpus's dsids, but unlike
-# github / jira / confluence / notion / s3 (whose routes still resolve through a startup reverse
-# index) Gmail's id is a stored column (`gmail_messages.served_id`, assigned at import — see
-# `backlot.importer.byo`), so resolution is a unique-indexed column lookup rather than a map rebuilt
-# on every boot. Threads still resolve through the same column, because a thread key IS the root
-# message's doc_id.
+# Served ids are 16-hex integers (`synth.gmail_message_id`), not the corpus's dsids. Gmail's id is
+# a stored column (`gmail_messages.served_id`, assigned at import — see `backlot.importer.byo`),
+# so resolution is a unique-indexed column lookup rather than a map rebuilt on every boot — like
+# every other per-document served id now (#51: github / jira / confluence / notion / hubspot /
+# linear each got their own stored column too; s3's own address was never hashed and its map was
+# pure redundancy over an existing index, see task 5a). Threads still resolve through the same
+# column, because a thread key IS the root message's doc_id.
 
 _GMAIL_HEX = re.compile(r"[0-9a-fA-F]+\Z")
 

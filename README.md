@@ -92,9 +92,11 @@ documents, or load a public dataset.
 You describe each document the way its own service would, and a per-source JSON Schema says what
 that record may carry. `title` and `content` are served verbatim; so is every other field you set —
 authors, timestamps, threads, comments, labels, states, ACLs — so no part of a response *has* to be
-synthesized. What you leave out is filled in **deterministically**, each value hashed from the
-stable key it belongs to (a document's `doc_id`, a container's name, an author's address), so ids
-never move between calls or pages.
+synthesized. What you leave out is filled in **deterministically**, each value derived from the
+stable key it belongs to (a document's `doc_id`, a container's name, an author's address) — a
+straight hash for most; for the handful of ids assigned at import against a bounded id space
+(confluence, hubspot, github, jira) that hash is a starting point that walks to the nearest free
+value on a collision, then keeps it — so ids never move between calls or pages.
 
 ### Bring your own corpus
 

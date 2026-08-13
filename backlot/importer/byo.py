@@ -876,8 +876,10 @@ class _Loader:
         other row would advertise an id that fetches somebody else. That is the failure this
         check exists to remove, and ``--append`` is a route straight back into it.
 
-        Only provided ids are stored (a derived one stays NULL and is resolved at index-build
-        time), so the column is exactly the set of claims already made. The jira prefix maps
+        Only provided ids are stored (a derived one stays NULL and is resolved by
+        `resolve_github_numbers`/`resolve_jira_numbers`'s deferred pass, run later in this same
+        load — not at boot, and not `main._build_index`, which #51 removed for these two), so the
+        column is exactly the set of claims already made. The jira prefix maps
         are seeded from the same rows: a later shard bringing `BILL-` keys into a project
         that already answers at `PAY`, or claiming `PAY` for a second project, is the same
         1:1 violation whether the earlier keys arrived this run or a previous one.

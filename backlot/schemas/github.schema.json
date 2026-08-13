@@ -251,7 +251,7 @@
     "number": {
       "type": "integer",
       "minimum": 1,
-      "description": "Issue/PR number as the corpus writes it. Stored and served verbatim. An omitted number is synthesized from the doc_id at serve time, and a provided one claims that number ahead of every synthesized one in the same repository — so a corpus need only write the numbers its documents actually cite. Ignored on subtype: file rows."
+      "description": "Issue/PR number as the corpus writes it. Stored and served verbatim. An omitted number is synthesized from the doc_id and assigned at import (not at serve time), and a provided one claims that number ahead of every synthesized one in the same repository — so a corpus need only write the numbers its documents actually cite. Ignored on subtype: file rows."
     }
   },
   "required": [

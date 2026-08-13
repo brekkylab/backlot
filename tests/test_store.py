@@ -460,9 +460,39 @@ def test_connect_rw_fresh_db_still_works(tmp_path):
     conn = store.connect_rw(tmp_path / "fresh.sqlite")
     try:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(github_items)")}
-        assert "path" in cols
+        assert {"path", "changed_paths"} <= cols
+        ccols = {r[1] for r in conn.execute("PRAGMA table_info(github_comments)")}
+        assert {"path", "line", "diff_hunk"} <= ccols
     finally:
         conn.close()
+
+
+def test_github_comments_splits_review_from_conversation(tmp_path):
+    """github_comments holds two resources real GitHub keeps apart, discriminated by `path`: a row
+    WITH one is a line-anchored review comment (/pulls/{n}/comments), one without is a conversation
+    comment (/issues/{n}/comments). Serving either from an unsplit read duplicates it under a
+    resource that means something else.
+
+    A github-specific reader because the shared doc_comments SELECT is one column list for six
+    tables and cannot carry github-only columns."""
+    conn = store.connect_rw(tmp_path / "c.sqlite")
+    rows = [
+        ("c1", 1, "looks good overall", None, None),
+        ("c2", 2, "this branch is dead", "src/a.py", 12),
+        ("c3", 3, "and here too", "src/a.py", 40),
+    ]
+    for cid, seq, body, path, line in rows:
+        conn.execute(
+            "INSERT INTO github_comments(id,doc_id,seq,author_email,body,created_ts,path,line) "
+            "VALUES(?,'p1',?,'a@x',?,1,?,?)",
+            (cid, seq, body, path, line),
+        )
+    conn.commit()
+    assert [c["id"] for c in store.github_comments(conn, "p1")] == ["c1", "c2", "c3"]
+    assert [c["id"] for c in store.github_comments(conn, "p1", anchored=False)] == ["c1"]
+    anchored = store.github_comments(conn, "p1", anchored=True)
+    assert [c["id"] for c in anchored] == ["c2", "c3"]
+    assert (anchored[0]["path"], anchored[0]["line"]) == ("src/a.py", 12)
 
 
 def test_connect_ro_tuning(sample_settings):
@@ -545,6 +575,42 @@ def test_repo_files_listing_and_kind_isolation(tmp_path):
     got = store.get_repo_file(conn, "svc", "src/b.py")
     assert got["content"] == "print(2)"
     assert store.get_repo_file(conn, "svc", "nope.py") is None
+
+
+def test_list_repo_file_paths_agrees_with_the_full_listing(tmp_path):
+    """The paths-only listing must select exactly what list_repo_files does — same repo, same
+    kind='file' filter, same order, same ACL scoping. It exists because a caller that only needs to
+    CHOOSE among a repo's files (github's pull changeset) would otherwise pull every file's content
+    to do it, which on a 3000-file repo is a ~1.4 MB read per pull."""
+    conn = store.connect_rw(tmp_path / "g.sqlite")
+    rows = [
+        ("f1", "src/b.py", "everyone"),
+        ("f2", "src/a.py", "everyone"),
+        ("f3", "s.py", "people"),
+    ]
+    for doc_id, path, principal in rows:
+        conn.execute(
+            "INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,path,created_ts)"
+            " VALUES(?,'svc','a@x',?,'body','file',?,1)",
+            (doc_id, path.rsplit("/", 1)[-1], path),
+        )
+        conn.execute(
+            "INSERT INTO doc_acl(doc_id, principal_id, principal_type) VALUES(?,?,'group')",
+            (doc_id, principal),
+        )
+    conn.execute(
+        "INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,created_ts) "
+        "VALUES('i1','svc','a@x','a bug','...','issue',1)"
+    )
+    conn.commit()
+    assert store.list_repo_file_paths(conn, "svc") == [
+        f["path"] for f in store.list_repo_files(conn, "svc")
+    ]
+    for ids in (None, {"everyone"}, {"everyone", "people"}, set()):
+        assert store.list_repo_file_paths(conn, "svc", ids) == [
+            f["path"] for f in store.list_repo_files(conn, "svc", ids)
+        ]
+    assert store.list_repo_file_paths(conn, "svc", {"everyone"}) == ["src/a.py", "src/b.py"]
 
 
 def test_hubspot_listing_is_an_index_range_seek(tmp_path):

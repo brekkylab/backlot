@@ -39,7 +39,7 @@ Slack** (Slack messages have no title). One JSON object per line (JSONL) — for
 ```json
 {"source_type": "slack", "channel": "incidents", "author_email": "bob@acme.com", "content": "Anyone seeing 502s from the gateway?", "reactions": [{"name": "eyes", "count": 2}], "replies": [{"content": "Looking now.", "author_email": "ava@acme.com"}, {"content": "Rolled back — clearing up.", "author_email": "bob@acme.com"}]}
 {"source_type": "gmail", "mailbox": "ceo", "title": "Q1 board deck draft", "content": "Draft narrative for the Q1 board meeting.", "author_email": "ceo@acme.com", "to": "ava@acme.com", "cc": "cfo@acme.com", "readers": ["ceo@acme.com", "ava@acme.com"]}
-{"source_type": "github", "repo": "gateway", "subtype": "pull_request", "title": "Fix token-bucket refill off-by-one", "content": "Corrects the refill tick; adds a test.", "author_email": "bob@acme.com", "state": "closed", "merged_at": "2026-02-10T12:00:00Z", "reviews": [{"author_email": "ava@acme.com", "state": "APPROVED", "body": "LGTM"}]}
+{"source_type": "github", "repo": "gateway", "subtype": "pull_request", "title": "Fix token-bucket refill off-by-one", "content": "Corrects the refill tick; adds a test.", "author_email": "bob@acme.com", "state": "closed", "merged_at": "2026-02-10T12:00:00Z", "reviews": [{"author_email": "ava@acme.com", "state": "APPROVED", "body": "LGTM"}], "changed_paths": ["gateway/limiter.py"], "comments": [{"content": "clamp against `burst`, not `tokens`", "author_email": "ava@acme.com", "path": "gateway/limiter.py", "line": 5}]}
 {"source_type": "jira", "project": "payments", "title": "SEV2: checkout latency spike", "content": "p95 checkout latency jumped to 2.1s.", "author_email": "bob@acme.com", "author_groups": ["payments"], "visibility": "group", "status": "In Progress", "issuetype": "Incident", "assignee": "ava@acme.com"}
 {"source_type": "google_drive", "folder": "marketing", "subtype": "spreadsheet", "title": "Q1 Revenue Model", "content": "month,revenue\nJan,120000\nFeb,135000", "author_email": "cfo@acme.com", "author_groups": ["finance"], "visibility": "group"}
 {"source_type": "confluence", "space": "handbook", "title": "On-call Runbook", "content": "Respond to gateway 502s: check dashboards, roll back, page on-call.", "author_email": "ava@acme.com", "author_groups": ["engineering"], "labels": ["oncall", "runbook"]}
@@ -89,6 +89,23 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   things, and only the latter has recipients and a Message-ID of its own. A message's `content`
   may be empty — a header-only auto-ack is still a message, and dropping it would renumber the
   rest of the thread.
+- **GitHub pull changesets:** a `pull_request` record may carry `changed_paths` — the `path` values
+  of `subtype: "file"` records in the same repo — and that becomes the pull's changed-file list
+  (`GET /pulls/{n}/files`, and the diff served for `Accept: application/vnd.github.diff`). Only
+  *which* files: the hunks are always derived from each file's own content, so the diff applies with
+  real `git` either way. Omit it and the mock picks a few files deterministically instead — a
+  well-formed diff, but unrelated to what the pull is about. A path naming no file the caller can
+  read is skipped, so declaring one does not publish its name — and a path naming no file *at all*
+  is skipped the same way, since telling the two apart per caller is what would publish it. That
+  second case is usually a typo, so the import reports it and `--dry-run` names the line and the
+  path; it is not refused, because a corpus is often a slice of a repo that legitimately stops short
+  of a file its pulls touched.
+- **GitHub review comments:** a comment on a `pull_request` becomes a line-anchored **review**
+  comment (`GET /pulls/{n}/comments`) when it carries a `path`, with an optional `line` (omit it for
+  a file-level comment) and an optional `diff_hunk` (derived from the file otherwise). Without a
+  `path` it stays a conversation comment (`GET /issues/{n}/comments`). Real GitHub keeps the two
+  resources apart and reports them as separate counts (`comments` vs `review_comments`), so a
+  comment belongs to exactly one of them.
 - **Owner display name:** `author_name` is served as the document's owner, under each service's
   own name for it — gmail uses `mailbox_owner` (a mailbox's owner is usually not the sender of a
   given message in it) and fireflies `host_name` (the meeting's host).

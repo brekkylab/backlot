@@ -2993,3 +2993,166 @@ def test_byo_a_derived_id_may_move_across_append_but_always_fetches_its_advertis
     load(shard2, settings, reset=False)
     # B displaced to n+1, which displaces C to n+2 — C moved without ever colliding.
     assert served(settings) == {A: n, B: n + 1, C: n + 2}
+
+
+# --- github pull changesets and review comments (issue #49 group B) ---------------------
+
+
+def _gh_changeset_corpus(**pr_extra):
+    """A repo of two files plus one PR, with whatever the caller wants on the PR."""
+    files = [
+        {
+            "source_type": "github",
+            "doc_id": f"cs-file-{i}",
+            "repo": "cs",
+            "subtype": "file",
+            "path": path,
+            "title": path,
+            "content": "a\nb\nc\n",
+            "author_email": "a@x.com",
+        }
+        for i, path in enumerate(["src/a.py", "src/b.py"])
+    ]
+    return files + [
+        {
+            "source_type": "github",
+            "doc_id": "cs-pr",
+            "repo": "cs",
+            "subtype": "pull_request",
+            "title": "A pull",
+            "content": "body",
+            "author_email": "a@x.com",
+            **pr_extra,
+        }
+    ]
+
+
+def test_github_changeset_fields_round_trip(tmp_path):
+    """`changed_paths` says which files a pull touched — without it the router picks
+    deterministically, which is well-formed but unrelated to what the pull is about. A comment
+    carrying `path` is a line-anchored REVIEW comment; one without is a conversation comment. Both
+    live in github_comments, discriminated by `path`."""
+    load(
+        _write(
+            tmp_path,
+            _gh_changeset_corpus(
+                changed_paths=["src/b.py", "src/a.py"],
+                comments=[
+                    {"content": "overall looks fine", "author_email": "b@x.com"},
+                    {
+                        "content": "this line is dead",
+                        "author_email": "b@x.com",
+                        "path": "src/a.py",
+                        "line": 2,
+                    },
+                    {
+                        "content": "file-level note",
+                        "author_email": "b@x.com",
+                        "path": "src/a.py",
+                        "diff_hunk": "@@ -1,2 +1,2 @@\n a\n-b\n",
+                    },
+                ],
+            ),
+        ),
+        Settings(data_dir=tmp_path),
+    )
+    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    row = store.get_document(conn, "github", "cs-pr")
+    assert store.jcol(row, "changed_paths") == ["src/b.py", "src/a.py"]  # order preserved
+    assert store.get_document(conn, "github", "cs-file-0")["changed_paths"] is None
+
+    assert [c["body"] for c in store.github_comments(conn, "cs-pr", anchored=False)] == [
+        "overall looks fine"
+    ]
+    anchored = store.github_comments(conn, "cs-pr", anchored=True)
+    assert [(c["path"], c["line"]) for c in anchored] == [("src/a.py", 2), ("src/a.py", None)]
+    assert anchored[1]["diff_hunk"].startswith("@@ -1,2 +1,2 @@")
+
+
+@pytest.mark.parametrize(
+    "records, expected",
+    [
+        # a changeset and a review comment are both pull-only; on an issue they would be stored and
+        # then be unservable
+        (
+            lambda: [
+                {
+                    "source_type": "github",
+                    "doc_id": "cs-issue",
+                    "repo": "cs",
+                    "title": "An issue",
+                    "content": "body",
+                    "author_email": "a@x.com",
+                    "changed_paths": ["src/a.py"],
+                }
+            ],
+            "changed_paths",
+        ),
+        (
+            lambda: [
+                {
+                    "source_type": "github",
+                    "doc_id": "cs-issue",
+                    "repo": "cs",
+                    "title": "An issue",
+                    "content": "body",
+                    "author_email": "a@x.com",
+                    "comments": [{"content": "x", "author_email": "b@x.com", "path": "src/a.py"}],
+                }
+            ],
+            "review comment",
+        ),
+        # `changed_paths` is a list of paths, not one path
+        (lambda: _gh_changeset_corpus(changed_paths="src/a.py"), "changed_paths"),
+        # `path` is what marks a comment as line-anchored, so line/diff_hunk without one would be
+        # served by neither endpoint
+        (
+            lambda: _gh_changeset_corpus(
+                comments=[{"content": "where?", "author_email": "b@x.com", "line": 3}]
+            ),
+            "path",
+        ),
+    ],
+    ids=[
+        "changed_paths-on-issue",
+        "review-comment-on-issue",
+        "changed_paths-not-a-list",
+        "no-path",
+    ],
+)
+def test_github_changeset_misuse_is_refused(tmp_path, records, expected, capsys):
+    corpus = _write(tmp_path, records())
+    with pytest.raises(SystemExit) as e:
+        load(corpus, Settings(data_dir=tmp_path))
+    assert expected in str(e.value)
+    # `--dry-run` reports what a load refuses, or a corpus passes the check that exists to spare
+    # the author a failed import and then fails the import.
+    assert byo.run(corpus, dry_run=True) == 1
+    assert expected in capsys.readouterr().err
+
+
+def test_a_changed_path_matching_no_file_is_reported_and_loaded(tmp_path, capsys):
+    """A declared path that names no `file` document is a corpus typo the mock cannot prove is one:
+    a corpus is routinely a SLICE of a repo, and under `--append` the file may land in a later
+    shard. So it is REPORTED — naming the pull and the path — and loaded verbatim, leaving the
+    router to drop it from the changeset. Refusing would make a pull that states the files it
+    really touched unimportable whenever the slice stopped short of one of them."""
+    corpus = _write(tmp_path, _gh_changeset_corpus(changed_paths=["src/a.py", "src/typo.py"]))
+
+    assert byo.run(corpus, dry_run=True) == 0  # a report, not a verdict on the corpus
+    dry = capsys.readouterr()
+    assert "OK: 3 records valid." in dry.out
+    assert "changed_paths" in dry.err and "line 3: src/typo.py" in dry.err
+    assert "src/a.py" not in dry.err  # only the unresolved one is named
+
+    # A load counts them and points at the report, rather than printing one line per path in among
+    # its own ten lines of summary — the same split as a dangling linear `parent`.
+    load(corpus, Settings(data_dir=tmp_path))
+    err = capsys.readouterr().err
+    assert "1 changed_paths" in err and "--dry-run" in err
+    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    # stored as the corpus stated it — the report does not edit the record
+    assert store.jcol(store.get_document(conn, "github", "cs-pr"), "changed_paths") == [
+        "src/a.py",
+        "src/typo.py",
+    ]

@@ -130,6 +130,21 @@ def github_number(doc_id: str) -> int:
     return hnum(doc_id, 0, 8) % 90_000 + 1
 
 
+GITHUB_COMMENT_ID_MIN = 1_000_000_000
+GITHUB_COMMENT_ID_RANGE = 9_000_000_000
+
+
+def github_comment_id(comment_id: str) -> int:
+    """The SEED for a comment's own id — 10 digits, as real GitHub's are.
+
+    Only a seed: the id served is assigned at import and probed for uniqueness from here (see
+    ``backlot.importer.byo``). A hash alone cannot be relied on, because a comment's `url` resolves
+    through its id and any fixed range collides by the birthday bound long before a corpus runs out
+    of comments. Wide anyway, so the probe almost never has to run.
+    """
+    return GITHUB_COMMENT_ID_MIN + hnum(comment_id, 0, 12) % GITHUB_COMMENT_ID_RANGE
+
+
 def jira_numeric_id(doc_id: str) -> int:
     return 10_000 + hnum(doc_id, 8, 8) % 900_000
 

@@ -168,6 +168,14 @@
       },
       "description": "PR only: emails of requested reviewers."
     },
+    "changed_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "PR only: paths of the files this pull changed, as `path` values of this repo's subtype='file' docs. Omit it and the changeset is chosen deterministically instead, which is well-formed but unrelated to what the pull is about. The hunks themselves are always synthesized from the file's own snapshot. A path matching no such doc is dropped from the changeset — the import reports it and `--dry-run` names it, but loads the record as written, since a corpus may legitimately be a slice of the repo."
+    },
     "comments": {
       "type": "array",
       "items": {
@@ -209,6 +217,20 @@
               "array"
             ],
             "description": "Reaction rollup ({\"+1\": n, heart: n, ...})."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "PR only: makes this a line-anchored REVIEW comment (GET /pulls/{n}/comments) on that file, rather than a conversation comment (GET /issues/{n}/comments). Real GitHub keeps the two resources apart; `path` is how a corpus says which one it means."
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Review comment only: the line in `path` it is anchored to. Omit for a file-level comment, as real GitHub allows."
+          },
+          "diff_hunk": {
+            "type": "string",
+            "description": "Review comment only: the hunk it is anchored to. Derived from the file's snapshot around `line` when omitted."
           }
         },
         "anyOf": [

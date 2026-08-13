@@ -657,14 +657,7 @@ def test_connect_rw_fresh_db_still_works(tmp_path):
         conn.close()
 
 
-def test_connect_rw_refuses_a_pre_per_source_acl_db(tmp_path):
-    """A DB built before this branch has one shared `doc_acl` table. Appending to it would write
-    the new source's grants into the empty per-source tables SCHEMA creates while every
-    pre-existing grant stays behind in `doc_acl`, which nothing reads any more — every
-    pre-existing document would silently become invisible to every scoped token. There is no
-    backfill: `doc_acl` cannot say which source a colliding `doc_id`'s grant belonged to, so
-    connect_rw must refuse outright rather than quietly leaving the old grants orphaned."""
-    p = tmp_path / "old.sqlite"
+def _write_pre_acl_db(p):
     conn = sqlite3.connect(p)
     conn.execute(
         "CREATE TABLE doc_acl (doc_id TEXT NOT NULL, principal_type TEXT NOT NULL, "
@@ -673,6 +666,54 @@ def test_connect_rw_refuses_a_pre_per_source_acl_db(tmp_path):
     conn.commit()
     conn.close()
 
+
+def _write_pre_served_columns_db(p):
+    conn = sqlite3.connect(p)
+    # A hand-rolled jira_issues predating #51's `served_number` — every OTHER column real
+    # jira_issues has (see SCHEMA), so the failure this triggers is specifically the missing
+    # served_number column, not some unrelated column this fixture happened to omit. linear_teams
+    # (a task-9 column, added to an EXISTING table) is included too, so the assertion below
+    # checks more than one source's worth.
+    conn.execute(
+        "CREATE TABLE jira_issues (doc_id TEXT PRIMARY KEY, project TEXT NOT NULL, "
+        "author_email TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, "
+        "status TEXT, issuetype TEXT, priority TEXT, labels TEXT, components TEXT, "
+        "issuelinks TEXT, parent_id TEXT, changelog TEXT, created_ts INTEGER NOT NULL, "
+        "updated_ts INTEGER, assignee_email TEXT, reporter_email TEXT, resolution TEXT, "
+        "resolution_ts INTEGER, duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, "
+        "owner_display TEXT, key TEXT)"
+    )
+    conn.execute("CREATE TABLE linear_teams (team TEXT PRIMARY KEY, group_id TEXT)")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "setup, match",
+    [
+        (_write_pre_acl_db, "doc_acl"),
+        (_write_pre_served_columns_db, "served_number"),
+    ],
+)
+def test_connect_rw_refuses_a_pre_served_db(tmp_path, setup, match):
+    """Two DB shapes connect_rw must refuse outright rather than let SCHEMA fail on, or migrate:
+
+    - built before per-source ACL tables (still has one shared `doc_acl`) — appending would
+      write a new source's grants into the empty per-source tables SCHEMA creates while every
+      pre-existing grant stays behind in `doc_acl`, which nothing reads any more, silently
+      hiding every pre-existing document from every scoped token.
+    - built before #51's served_* columns (`served_id`/`served_number`/`served_key`, assigned at
+      import on tasks 3-9's tables) — `CREATE INDEX IF NOT EXISTS` in SCHEMA guards only the
+      index's own name, so it still raises a bare `OperationalError: no such column` reaching a
+      table SCHEMA's text happens to name first, saying nothing about why. Neither case has a
+      backfill (see connect_rw's own comments on both checks), so the only correct move for
+      either is a fresh re-import — which is what both readable errors say, instead of a raw
+      SQLite one or a silent migration of ids that were never meant to move."""
+    p = tmp_path / "old.sqlite"
+    setup(p)
+
+    with pytest.raises(ValueError, match=match):
+        store.connect_rw(p)
     with pytest.raises(ValueError, match="re-import"):
         store.connect_rw(p)
 

@@ -196,7 +196,7 @@ def test_fireflies_request_errors_are_400_with_no_data_key(client, admin_h):
         assert r.json()["errors"], query
 
 
-def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_yaml):
+def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_yaml, ro_conn):
     """`user` with no id is the authenticated user. An admin/service token is not a person."""
     assert ff_gql(client, "{ user { user_id email } }", admin_h).json()["data"]["user"] is None
     ava = next(u["token"] for u in tokens_yaml["users"] if u["email"] == "ava@acme.com")
@@ -208,6 +208,17 @@ def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_y
         "data"
     ]["user"]
     assert again["email"] == "ava@acme.com"
+    # PIN, not a correctness check: `_user`'s `user_id` (fireflies_resolvers.py) recomputes
+    # `synth.fireflies_user_id(email)` rather than reading `fireflies_users.served_id` off a row
+    # it does not have (#51 -- fireflies is unprobed, so the two agree by construction and this
+    # is the plan's established pattern for an unprobed source; see the linear analogue in
+    # test_linear.py). This assertion is trivially true TODAY and exists to fail the day
+    # fireflies gains a probe (the exact shape hubspot's own bug took once IT started probing),
+    # which is precisely when someone needs to be told the two can now disagree.
+    stored = ro_conn.execute(
+        "SELECT served_id FROM fireflies_users WHERE email = ?", ("ava@acme.com",)
+    ).fetchone()[0]
+    assert me["user_id"] == stored
 
 
 def test_fireflies_introspection_describes_the_schema(client, admin_h):

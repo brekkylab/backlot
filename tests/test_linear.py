@@ -102,12 +102,23 @@ def test_linear_reader_field_set_all_resolves(client, admin_h):
     assert rl["dueDate"] == "2026-03-15"
 
 
-def test_linear_issue_by_uuid_and_by_identifier(client, admin_h):
+def test_linear_issue_by_uuid_and_by_identifier(client, admin_h, ro_conn):
     by_key = gql(client, '{ issue(id: "ENG-101") { id identifier title } }', admin_h)
     issue = by_key.json()["data"]["issue"]
     assert issue["identifier"] == "ENG-101"
     by_uuid = gql(client, "{ issue(id: %s) { identifier } }" % lit(issue["id"]), admin_h)
     assert by_uuid.json()["data"]["issue"]["identifier"] == "ENG-101"
+    # PIN, not a correctness check: `_issue`'s `id` (linear_resolvers.py) recomputes
+    # `synth.linear_id(row["doc_id"])` rather than reading `linear_issues.served_id` off the row
+    # it already has (#51 -- linear's own document id is unprobed, so the two agree by
+    # construction and this is the plan's established pattern for an unprobed source). Trivially
+    # true today; it exists to fail the day linear gains a probe -- the exact shape hubspot's own
+    # bug took once IT started probing, which is precisely when someone needs to be told the two
+    # can now disagree.
+    stored = ro_conn.execute(
+        "SELECT served_id FROM linear_issues WHERE identifier = 'ENG-101'"
+    ).fetchone()[0]
+    assert issue["id"] == stored
 
 
 def test_linear_issue_url_is_the_real_vendor_domain(client, admin_h):
@@ -135,7 +146,7 @@ def test_linear_missing_issue_is_a_field_error_not_a_400(client, admin_h):
     assert "Entity not found" in r.json()["errors"][0]["message"]
 
 
-def test_linear_team_resolves_by_key_and_uuid(client, admin_h):
+def test_linear_team_resolves_by_key_and_uuid(client, admin_h, ro_conn):
     key = gql(client, '{ team(id: "ENG") { id key name } }', admin_h).json()["data"]["team"]
     assert (key["key"], key["name"]) == ("ENG", "engineering")
     assert (
@@ -150,6 +161,16 @@ def test_linear_team_resolves_by_key_and_uuid(client, admin_h):
         gql(client, '{ team(id: "engineering") { key } }', admin_h).json()["data"]["team"]["key"]
         == "ENG"
     )
+    # PIN, not a correctness check: `_team`'s `id` (linear_resolvers.py) recomputes
+    # `synth.linear_team_id(container)` rather than reading `linear_teams.served_id` off a row it
+    # does not have (#51 -- same established pattern as `_issue`'s own `id`, see
+    # test_linear_issue_by_uuid_and_by_identifier). Trivially true today; it exists to fail the
+    # day team resolution gains a probe, which is precisely when someone needs to be told the two
+    # can now disagree.
+    stored = ro_conn.execute(
+        "SELECT served_id FROM linear_teams WHERE team = 'engineering'"
+    ).fetchone()[0]
+    assert key["id"] == stored
 
 
 def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_yaml):

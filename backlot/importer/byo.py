@@ -912,9 +912,16 @@ class _Loader:
         # `resolve_github_numbers` reads this memo for a row this run's insert is about to reset
         # to NULL (see `insert`'s github block), which is the ONLY way a re-import/--append can
         # still tell "this row used to serve number N" once the live column has been overwritten.
+        # `kind IS NULL OR kind != 'file'` is redundant with `served_number IS NOT NULL` (a
+        # kind='file' row's served_number is always NULL, see idx_github_doc_number) but it is
+        # not redundant to the PLANNER: without it verbatim, SQLite cannot see this query implies
+        # the partial index's own condition and falls back to `SCAN github_items` over every wide
+        # file row. With it, this plans as a covering-index scan of idx_github_doc_number, the
+        # same index `resolve_github_numbers` already uses below.
         gh_col = store.served_id_column("github")
         for row in self.conn.execute(
-            f"SELECT doc_id, {gh_col} AS served FROM github_items WHERE {gh_col} IS NOT NULL"
+            f"SELECT doc_id, {gh_col} AS served FROM github_items "
+            f"WHERE {gh_col} IS NOT NULL AND (kind IS NULL OR kind != 'file')"
         ):
             self._github_numbers[row["doc_id"]] = row["served"]
         # Same claim, for jira served suffixes -- more load-bearing than confluence's/hubspot's,

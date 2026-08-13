@@ -672,6 +672,37 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
             "re-import this corpus from scratch instead of appending to it; the old grants "
             "cannot be safely migrated"
         )
+    # Same shape as the doc_acl check above, for #51's served_* columns. Each is the target of a
+    # `CREATE INDEX` in SCHEMA below (`idx_gmail_served`, `idx_linear_teams_served`, ...), and
+    # `CREATE INDEX IF NOT EXISTS` guards only the INDEX's name -- it still raises `no such
+    # column` if a table that already exists (built before #51) lacks the column. Which one that
+    # is depends on SCHEMA's own text order, not on anything the caller did, so the raw error
+    # would name whichever table happens to come first and explain nothing. These are explicitly
+    # NOT self-healed by the `ALTER TABLE` loop below: #51 assigns them at import, on purpose
+    # never migrates them (see the plan's Global Constraints), so the only correct move for a DB
+    # missing them is a fresh re-import, same as `doc_acl`'s.
+    missing_served_columns = [
+        f"{tbl}.{col}"
+        for tbl, col in (
+            [(table(src), served_id_column(src)) for src in SERVED_ID]
+            + [
+                ("notion_pages", "served_data_source_id"),
+                ("linear_teams", "served_id"),
+                ("linear_teams", "served_key"),
+                ("fireflies_users", "served_id"),
+            ]
+        )
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (tbl,)
+        ).fetchone()
+        and col not in {r["name"] for r in conn.execute(f"PRAGMA table_info({tbl})")}
+    ]
+    if missing_served_columns:
+        raise ValueError(
+            f"{path} predates the served_* id columns ({', '.join(missing_served_columns)} "
+            "missing) -- re-import this corpus from scratch instead of appending to it; these "
+            "ids are assigned at import, not migrated"
+        )
     # Self-heal tables built before a column was added. `CREATE TABLE IF NOT EXISTS` in SCHEMA
     # below does NOT alter an existing table, so a DB created by an earlier version keeps the old
     # column set -- and then every INSERT naming the new column fails. (For github_items the
@@ -679,7 +710,7 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # idx_github_repo_path ON github_items(repo, path)` guards only the index NAME and still
     # raises if the referenced column is missing.) Each ALTER is idempotent: it no-ops on a fresh
     # DB (table absent) and on a DB that already has the column.
-    for table, column, decl in (
+    for heal_table, column, decl in (
         ("github_items", "path", "TEXT"),
         ("github_items", "changed_paths", "TEXT"),
         ("github_items", "number", "INTEGER"),
@@ -693,7 +724,7 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
         ("jira_issues", "key", "TEXT"),
     ):
         try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            conn.execute(f"ALTER TABLE {heal_table} ADD COLUMN {column} {decl}")
         except sqlite3.OperationalError:
             pass  # table absent (fresh DB) or column already present
     conn.executescript(SCHEMA)

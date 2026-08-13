@@ -263,7 +263,8 @@ def _uuid_from(seed: str) -> str:
 
 
 def notion_id(doc_id: str) -> str:
-    """Stable dashed-UUID page/database id keyed on the doc_id (reversible via the app index)."""
+    """Stable dashed-UUID page/database id keyed on the doc_id (reversible via the stored
+    notion_pages.served_id column -- see store.notion_by_served_id)."""
     return _uuid_from("notion:" + doc_id)
 
 

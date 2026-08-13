@@ -120,10 +120,11 @@ def _norm(nid: str) -> str:
 def _doc_id_for(request: Request, page_id: str) -> str | None:
     """The doc_id behind a served page/database/block id -- a unique-indexed column lookup (see
     store.notion_by_served_id), not the removed startup reverse index. Unscoped by ACL on purpose:
-    used only where a bare doc_id is needed to drive a further, separately ACL-scoped query
-    (list_comments, _query_rows) rather than to serve the row itself -- see get_page and friends,
-    which call store.notion_by_served_id directly instead of going through here, so as not to
-    resolve the row once here and refetch it a second time for the ACL check."""
+    used only by query_database (via _query_rows), which needs a bare doc_id to drive a further,
+    separately ACL-scoped query (store.children, a DIFFERENT table) rather than to serve this row
+    itself -- see get_page and friends (and list_comments), which call store.notion_by_served_id
+    directly instead of going through here, so as not to resolve the row once here and refetch it
+    a second time for the ACL check."""
     row = store.notion_by_served_id(auth.conn(request), _norm(page_id))
     return row["doc_id"] if row is not None else None
 
@@ -366,8 +367,10 @@ async def get_data_source(data_source_id: str, request: Request):
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
     # No subtype check needed here, unlike get_database's lookup by served_id (which spans both
-    # pages and databases): served_data_source_id is populated only for subtype='database' rows
-    # (see the schema comment on idx_notion_served_ds), so a match already implies the right kind.
+    # pages and databases): served_data_source_id is populated only for subtype='database' rows,
+    # and the importer writes it (or NULL) on EVERY import of a row, never leaving a stale value
+    # from an earlier import behind when a row's subtype changes (see the comment on the notion
+    # block in importer.byo._Loader.add) -- so a match here already implies the right kind.
     row = store.notion_by_data_source_id(
         conn, _norm(data_source_id), auth.visible_ids(request, caller)
     )
@@ -511,16 +514,17 @@ async def list_comments(request: Request):
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
     block_id = request.query_params.get("block_id")
-    doc_id = _doc_id_for(request, block_id) if block_id else None
-    # the parent must itself be visible to the caller
+    # One ACL-scoped query (the parent must itself be visible to the caller), not
+    # _doc_id_for followed by a get_document refetch of the same row -- see get_page and friends.
     row = (
-        store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller))
-        if doc_id
+        store.notion_by_served_id(conn, _norm(block_id), auth.visible_ids(request, caller))
+        if block_id
         else None
     )
     if row is None:
         return _list_obj([], 0, 0, 0, "comment")
-    parent_id = synth.notion_id(row["doc_id"])
+    doc_id = row["doc_id"]
+    parent_id = synth.notion_id(doc_id)
     comments = store.doc_comments(conn, "notion", doc_id)
     offset = pagination.decode_cursor(request.query_params.get("start_cursor"))
     limit = _page_size(request.query_params.get("page_size"))

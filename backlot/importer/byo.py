@@ -1108,9 +1108,20 @@ class _Loader:
                 # widening the tuple. Only for cols["subtype"] == "database": real Notion has no
                 # data source for a page, and leaving it NULL there is safe under the UNIQUE index
                 # (see the schema comment on idx_notion_served_ds) rather than a collision.
+                #
+                # Written unconditionally (the ternary, not a bare `if`), even though it's NULL
+                # off the else branch: `names = list(cols)` below feeds the upsert's `DO UPDATE
+                # SET col=excluded.col` list, which only clears a column that's IN it. Two records
+                # sharing one doc_id are explicitly supported (see the `seen.add` comment above) --
+                # if an earlier import made this row a database and a later one demotes it to a
+                # page, an `if`-only assignment would leave `cols` without the key on the second
+                # pass, DO UPDATE would never mention it, and the stale data-source id would keep
+                # resolving -- serving a page as a data source, since get_data_source relies on a
+                # match here implying subtype='database' (see store.notion_by_data_source_id).
                 cols[store.served_id_column("notion")] = store.served_id_seed("notion")(did)
-                if cols.get("subtype") == "database":
-                    cols["served_data_source_id"] = synth.notion_data_source_id(did)
+                cols["served_data_source_id"] = (
+                    synth.notion_data_source_id(did) if cols.get("subtype") == "database" else None
+                )
             # A jira key and a github number are deliberately NOT materialized the way Linear's
             # identifier is: the column holds what the CORPUS wrote and nothing else, so "provided"
             # means exactly "non-NULL" everywhere downstream. Two things depend on that.

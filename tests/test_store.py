@@ -689,7 +689,13 @@ def test_notion_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     `backlot.store` import time (see the confluence/gmail tests above), so `served_id`'s collision
     needs `monkeypatch.setitem` on the registry, while `synth.notion_data_source_id` is looked up
     live off the module at call time in importer.byo (`from backlot import ... synth`), so patching
-    the module attribute reaches it just fine there."""
+    the module attribute reaches it just fine there.
+
+    Also covers a regression the review round found: a database demoted to a non-database on a
+    later import of the SAME doc_id (two records sharing one doc_id are both written, the later
+    one winning -- see importer.byo's `seen.add` comment) must clear the stale
+    served_data_source_id, not leave the earlier import's value in place for a row that is now a
+    page."""
     from tests._helpers import build_corpus
 
     docs = [
@@ -738,6 +744,48 @@ def test_notion_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     # the two id spaces don't alias each other -- a page's own served_id must not also resolve as
     # SOME row's data source id (the reader must query served_data_source_id, not served_id).
     assert store.notion_by_data_source_id(conn, synth.notion_id("p0")) is None
+    # notion_by_data_source_id must apply visible_ids like notion_by_served_id does -- a
+    # principal with no grant on db0 gets no row, not the unscoped one. A non-empty set, so
+    # _acl_clause takes its EXISTS branch rather than the empty-set "AND 0" short-circuit.
+    assert (
+        store.notion_by_data_source_id(
+            conn, synth.notion_data_source_id("db0"), visible_ids={"nobody"}
+        )
+        is None
+    )
+    conn.close()
+
+    # Regression: a doc_id imported once as a database, then again (later in the same corpus) as
+    # a non-database, must not keep answering to its old data-source id -- that would serve a page
+    # as a data source (get_data_source relies on a served_data_source_id match implying
+    # subtype='database'; see the comment on the importer's notion block).
+    flip_docs = [
+        {
+            "source_type": "notion",
+            "teamspace": "eng",
+            "doc_id": "flip",
+            "subtype": "database",
+            "title": "Was a DB",
+            "content": "x",
+            "author_email": "a@acme.com",
+        },
+        {
+            "source_type": "notion",
+            "teamspace": "eng",
+            "doc_id": "flip",
+            "title": "Now a page",
+            "content": "x",
+            "author_email": "a@acme.com",
+        },
+    ]
+    s = build_corpus(tmp_path / "flip", flip_docs)
+    conn = store.connect_ro(s.db_path)
+    row = conn.execute(
+        "SELECT subtype, served_data_source_id FROM notion_pages WHERE doc_id = 'flip'"
+    ).fetchone()
+    assert row["subtype"] != "database"
+    assert row["served_data_source_id"] is None
+    assert store.notion_by_data_source_id(conn, synth.notion_data_source_id("flip")) is None
     conn.close()
 
     monkeypatch.setitem(store.SERVED_ID, "notion", ("served_id", lambda doc_id: "0" * 32, None))

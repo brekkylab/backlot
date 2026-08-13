@@ -842,10 +842,10 @@ class _Loader:
         doc_id = _doc_id(rec)
         # Recorded, not deduplicated: `seen` answers "is this document in the corpus" for the
         # cross-reference resolution further down. Two records sharing a (source, doc_id) are both
-        # written, and the row-level `INSERT OR REPLACE` leaves the later one — which is what a
-        # direct import of the same documents produces. One real corpus has four such pairs (three
-        # across sources, one within jira); skipping the repeat instead would keep the earlier
-        # document and diverge.
+        # written, and the row-level upsert (`ON CONFLICT(doc_id) DO UPDATE`, below) leaves the
+        # later one — which is what a direct import of the same documents produces. One real corpus
+        # has four such pairs (three across sources, one within jira); skipping the repeat instead
+        # would keep the earlier document and diverge.
         seen.add((src, doc_id))
         gcol = store.grouping_col(src)
         container = str(rec.get(gcol) or src)  # channel / mailbox / folder / repo / project / space
@@ -1125,10 +1125,10 @@ class _Loader:
                 scope = container if src == "github" else ""
                 claim = (src, scope, str(provided_id))
                 # Only a DIFFERENT document violates the claim. Two records may share a
-                # (source, doc_id) — both are written and the row-level INSERT OR REPLACE leaves
-                # the later one, which is what a direct import of the same documents produces —
-                # and such a repeat re-stating its own id was aborting the import by naming the
-                # very doc_id it was inserting.
+                # (source, doc_id) — both are written and the row-level upsert leaves the later
+                # one, which is what a direct import of the same documents produces — and such a
+                # repeat re-stating its own id was aborting the import by naming the very doc_id
+                # it was inserting.
                 claimed = self.tracker_ids.get(claim)
                 if claimed is not None and claimed != did:
                     label = "number" if src == "github" else "key"
@@ -1157,9 +1157,22 @@ class _Loader:
                     self.jira_prefix_holders[prefix] = container
                     self.jira_prefixes[container] = prefix
             names = list(cols)
+            # An upsert keyed explicitly on doc_id (the table's PRIMARY KEY in every source), not a
+            # blanket `INSERT OR REPLACE`: two records sharing a (source, doc_id) still resolve to
+            # the later one (DO UPDATE), which is what a direct import of the same documents
+            # produces (see the `seen.add` comment above) — but a conflict on any OTHER unique
+            # index (a source's SERVED_ID column) now raises IntegrityError instead of SQLite's
+            # REPLACE algorithm silently deleting the row already holding that value. `names`
+            # always includes every column `_service_columns` + the additions above set for this
+            # src, so DO UPDATE overwrites every one of them, same as OR REPLACE did — the only
+            # difference is what happens to a row OR REPLACE would have deleted out from under a
+            # different doc_id.
+            update_cols = [n for n in names if n != "doc_id"]
             conn.execute(
-                f"INSERT OR REPLACE INTO {store.table(src)} ({', '.join(names)}) "
-                f"VALUES ({', '.join('?' for _ in names)})",
+                f"INSERT INTO {store.table(src)} ({', '.join(names)}) "
+                f"VALUES ({', '.join('?' for _ in names)}) "
+                f"ON CONFLICT(doc_id) DO UPDATE SET "
+                + ", ".join(f"{n}=excluded.{n}" for n in update_cols),
                 [cols[n] for n in names],
             )
             fts_ids.setdefault(src, []).append(did)

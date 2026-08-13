@@ -580,11 +580,21 @@ def test_github_comments_splits_review_from_conversation(tmp_path):
 def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, monkeypatch):
     """`synth.confluence_id` draws from 9,000,000 values, so a large space collides by the birthday
     bound — ~222 in a 60,000-page corpus. The old reverse map was last-writer-wins, so a collision
-    made a page unreachable by its own id. Forced here by collapsing the seed."""
+    made a page unreachable by its own id. Forced here by collapsing the seed.
+
+    Patches `store.SERVED_ID` directly, NOT `synth.confluence_id` (`monkeypatch.setattr(byo.synth,
+    "confluence_id", ...)`, the original shape of this test): `store.served_id_seed("confluence")`
+    — what `_assign_confluence_id` actually calls — returns the tuple element `SERVED_ID` captured
+    when `backlot.store` was first imported, a bound reference to the function object, not a live
+    attribute lookup. Patching the module attribute afterward cannot reach it — verified: it left
+    every page with a distinct, real hash, so the collision below never actually happened and the
+    assertions passed for the wrong reason. `monkeypatch.setitem` replaces the tuple the accessor
+    actually reads.
+    """
     from backlot.importer import byo
     from tests._helpers import build_corpus
 
-    monkeypatch.setattr(byo.synth, "confluence_id", lambda doc_id: 7)
+    monkeypatch.setitem(store.SERVED_ID, "confluence", ("served_id", lambda doc_id: 7, None))
     s = build_corpus(
         tmp_path,
         [
@@ -603,6 +613,10 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
     conn = store.connect_ro(s.db_path)
     served = [r["served_id"] for r in conn.execute("SELECT served_id FROM confluence_pages")]
     assert len(served) == 5 and len(set(served)) == 5 and all(served)
+    # The collapsed seed actually landed: p0 (the first page processed, before anything is taken)
+    # is served exactly 7, the forced value -- not some real hash. If this drifts back to a real
+    # hash, the patch has gone inert again, silently, the same way it did before.
+    assert store.confluence_by_served_id(conn, 7)["doc_id"] == "p0"
     for sid in served:
         assert store.confluence_by_served_id(conn, sid)["served_id"] == sid
     conn.close()

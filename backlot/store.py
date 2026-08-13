@@ -245,12 +245,13 @@ CREATE INDEX IF NOT EXISTS idx_confluence_parent ON confluence_pages(parent_id);
 -- The id the API reports, assigned at import (see backlot.importer.byo) rather than hashed at
 -- serve time: a hash into `synth.confluence_id`'s 9,000,000 values collides by the birthday
 -- bound, and the reverse map this replaces was last-writer-wins, so a collision made a page
--- unreachable by its own id. Uniqueness is actually enforced by the assignment itself --
+-- unreachable by its own id. Uniqueness is primarily enforced by the assignment itself --
 -- _assign_confluence_id's in-run memo plus seed_tracker_ids' cross-run preload, both probed
--- against every id already taken -- not by this index: the shared INSERT OR REPLACE write path
--- resolves a uniqueness conflict by deleting the existing row, so a duplicate served_id slipping
--- past the assignment would replace a page rather than raise here. The index exists to make a
--- lookup a point read and to surface such a duplicate at the SQL layer if one ever does.
+-- against every id already taken -- so a genuine collision essentially never reaches this index.
+-- If one somehow did, the shared write path's upsert (`ON CONFLICT(doc_id) DO UPDATE`, in
+-- backlot.importer.byo) is scoped to the doc_id conflict target only, so a served_id collision
+-- (a DIFFERENT doc_id) falls through to this index and raises IntegrityError rather than being
+-- silently resolved -- the index is a real backstop, not just a point-read lookup.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_confluence_served ON confluence_pages(served_id);
 
 -- ── per-service comment tables (only services whose API exposes comments) ──

@@ -190,10 +190,16 @@ CREATE TABLE IF NOT EXISTS confluence_pages (
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, parent_id TEXT, labels TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     version_number INTEGER, version_message TEXT, minor_edit INTEGER,
-    reviewers TEXT, confidentiality TEXT, owner_team TEXT, owner_display TEXT
+    reviewers TEXT, confidentiality TEXT, owner_team TEXT, owner_display TEXT,
+    served_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_confluence_space ON confluence_pages(space);
 CREATE INDEX IF NOT EXISTS idx_confluence_parent ON confluence_pages(parent_id);
+-- The id the API reports, assigned at import (see backlot.importer.byo) rather than hashed at
+-- serve time: a hash into `synth.confluence_id`'s 9,000,000 values collides by the birthday
+-- bound, and the reverse map this replaces was last-writer-wins, so a collision made a page
+-- unreachable by its own id. UNIQUE is the guarantee, not just an index.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_confluence_served ON confluence_pages(served_id);
 
 -- ── per-service comment tables (only services whose API exposes comments) ──
 CREATE TABLE IF NOT EXISTS jira_comments (
@@ -1816,6 +1822,16 @@ def get_github_comment(conn, served_id: int) -> sqlite3.Row | None:
         "served_id "
         "FROM github_comments WHERE served_id = ?",
         (served_id,),
+    ).fetchone()
+
+
+def confluence_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+    """One page by the id the API reports. A unique-indexed column lookup, not a reverse map built
+    at startup: the id is assigned at import, so it costs neither the per-boot scan nor the memory,
+    and it cannot be ambiguous."""
+    clause, cp = _acl_clause("confluence", visible_ids=visible_ids)
+    return conn.execute(
+        f"SELECT * FROM confluence_pages WHERE served_id = ?{clause}", [served_id, *cp]
     ).fetchone()
 
 

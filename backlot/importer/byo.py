@@ -645,6 +645,35 @@ class _Loader:
         self._gh_ids_taken.add(served)
         return served
 
+    def _assign_confluence_id(self, doc_id: str) -> int:
+        """The `id` this page will be served as: unique, matching real Confluence's numeric
+        content ids, and stable.
+
+        Seeded from the doc_id so the same corpus always produces the same ids, then probed with
+        a salt until free — a plain hash collides by the birthday bound long before a corpus runs
+        out of pages, and a shared id used to mean the reverse map built at startup was
+        last-writer-wins, so one of the two colliding pages was unreachable at its own id. A page
+        already in the DB keeps the id it has, so a re-import does not renumber it.
+        """
+        if doc_id in self._confluence_ids:
+            return self._confluence_ids[doc_id]
+        served = synth.confluence_id(doc_id)
+        # Re-seed a few times, then walk. Re-seeding keeps ids spread out, but it only terminates
+        # if the hash actually varies with the salt — walking is what makes termination
+        # unconditional, and it cannot spin as long as the range has a free value.
+        for salt in range(1, 9):
+            if served not in self._confluence_ids_taken:
+                break
+            served = synth.confluence_id(f"{doc_id}\x00{salt}")
+        while served in self._confluence_ids_taken:
+            served = (
+                synth.CONFLUENCE_ID_MIN
+                + (served - synth.CONFLUENCE_ID_MIN + 1) % synth.CONFLUENCE_ID_RANGE
+            )
+        self._confluence_ids[doc_id] = served
+        self._confluence_ids_taken.add(served)
+        return served
+
     def __init__(
         self, conn, org: str, org_domain: str, *, closed: bool = False, validate: bool = True
     ):
@@ -670,6 +699,13 @@ class _Loader:
         # Populated by seed_tracker_ids, for the same reason the provided ids there are.
         self._gh_comment_ids = {}  # stored id -> served id, for comments already in the DB
         self._gh_ids_taken = set()
+        # confluence page ids are ASSIGNED rather than hashed at serve time, for the same reason:
+        # a hash into synth.confluence_id's 9,000,000 values collides by the birthday bound, and
+        # a shared id used to mean a reverse map built at startup was last-writer-wins over the
+        # collision, leaving one page unreachable at its own id (#51). Seeded from the doc_id so
+        # it stays stable, probed so it stays unique. Populated by seed_tracker_ids.
+        self._confluence_ids = {}  # doc_id -> served id, for pages already in the DB
+        self._confluence_ids_taken = set()
         self.fts_ids = {}
         # HubSpot associations are resolved after the whole corpus is read: a link may name a target
         # that appears on a later line, and an omitted `to_type` is filled in from the target's own
@@ -717,6 +753,13 @@ class _Loader:
         ):
             self._gh_comment_ids[row["id"]] = row["served_id"]
             self._gh_ids_taken.add(row["served_id"])
+        # Same claim, for confluence pages: an id already issued (this run or a previous one)
+        # must not be handed to a second page.
+        for row in self.conn.execute(
+            "SELECT doc_id, served_id FROM confluence_pages WHERE served_id IS NOT NULL"
+        ):
+            self._confluence_ids[row["doc_id"]] = row["served_id"]
+            self._confluence_ids_taken.add(row["served_id"])
         for src, col in (("github", "number"), ("jira", "key")):
             for row in self.conn.execute(
                 f"SELECT doc_id, {col} AS v, {store.grouping_col(src)} AS c "
@@ -1036,6 +1079,13 @@ class _Loader:
                 # the API had just handed the caller that exact string. Deterministic, so the
                 # served value is unchanged; it is just written down now.
                 cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
+            if src == "confluence":
+                # MATERIALIZE the served id the same way, and for the same reason: a hash into
+                # synth.confluence_id's 9,000,000 values collides by the birthday bound, and the
+                # reverse map this replaces resolved a collision last-writer-wins, so serving the
+                # hash directly could still leave one page unreachable at its own id (#51).
+                # Assigning here, probed against every id already taken, is what makes it unique.
+                cols["served_id"] = self._assign_confluence_id(did)
             # A jira key and a github number are deliberately NOT materialized the way Linear's
             # identifier is: the column holds what the CORPUS wrote and nothing else, so "provided"
             # means exactly "non-NULL" everywhere downstream. Two things depend on that.

@@ -165,8 +165,14 @@ def hubspot_assoc_type_id(from_type: str, to_type: str) -> int:
     return hnum(f"{from_type}>{to_type}", 0, 6) % 900 + 1
 
 
+CONFLUENCE_ID_MIN = 100_000
+CONFLUENCE_ID_RANGE = 9_000_000
+
+
 def confluence_id(doc_id: str) -> int:
-    return 100_000 + hnum(doc_id, 24, 8) % 9_000_000
+    """The SEED for a page's own id — see ``backlot.importer.byo._Loader._assign_confluence_id``
+    for the assignment that actually resolves it to a served, unique value."""
+    return CONFLUENCE_ID_MIN + hnum(doc_id, 24, 8) % CONFLUENCE_ID_RANGE
 
 
 def atlassian_account_id(email: str) -> str:

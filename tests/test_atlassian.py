@@ -139,9 +139,7 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
 
 def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
     doc = ro_conn.execute("SELECT * FROM confluence_pages LIMIT 1").fetchone()
-    from backlot import synth
-
-    cid = synth.confluence_id(doc["doc_id"])
+    cid = doc["served_id"]
     page = client.get(
         f"/atlassian/wiki/rest/api/content/{cid}",
         headers=admin_h,
@@ -324,7 +322,7 @@ def test_confluence_restrictions_has_update(tmp_path):
     # restrictions/byOperation must return BOTH read and update operations
     import asyncio
     import types
-    from backlot import synth
+
     from backlot.acl import Acl
     from backlot.routers.atlassian import confluence_restrictions
 
@@ -342,12 +340,12 @@ def test_confluence_restrictions_has_update(tmp_path):
             },
         ],
     )
-    cid = synth.confluence_id("c2")
+    conn = store.connect_ro(s.db_path)
+    cid = conn.execute("SELECT served_id FROM confluence_pages WHERE doc_id = 'c2'").fetchone()[0]
     app = types.SimpleNamespace(
         state=types.SimpleNamespace(
-            conn=store.connect_ro(s.db_path),
+            conn=conn,
             acl=Acl.load(s.tokens_path, s.admin_token, s.org_name),
-            index={"confluence": {cid: "c2"}},
         )
     )
     scope = {

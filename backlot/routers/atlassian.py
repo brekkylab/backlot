@@ -937,17 +937,15 @@ async def confluence_content_get(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = request.app.state.index["confluence"].get(content_id)
-    if doc_id is None:
-        raise HTTPException(status_code=404, detail="No content found with id")
-    row = store.get_document(conn, "confluence", doc_id, visible_ids=ids)
+    row = store.confluence_by_served_id(conn, content_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     return _confluence_page(conn, request, row, request.query_params.get("expand", "body.storage"))
 
 
 def _confluence_doc_id(request: Request, content_id: int) -> str | None:
-    return request.app.state.index["confluence"].get(content_id)
+    row = store.confluence_by_served_id(auth.conn(request), content_id)
+    return row["doc_id"] if row else None
 
 
 @router.get(
@@ -1031,7 +1029,7 @@ async def confluence_labels(content_id: int, request: Request):
 async def confluence_restrictions(content_id: int, request: Request):
     conn = auth.conn(request)
     _require(request)
-    doc_id = request.app.state.index["confluence"].get(content_id)
+    doc_id = _confluence_doc_id(request, content_id)
     if doc_id is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     emails = store.doc_member_emails(conn, "confluence", doc_id)
@@ -1071,7 +1069,7 @@ def _conf_user(email: str) -> dict:
 def _confluence_page(conn, request: Request, row, expand: str) -> dict:
     created = row["created_ts"] or synth.epoch(row["doc_id"])
     updated = row["updated_ts"] or created
-    cid = synth.confluence_id(row["doc_id"])
+    cid = row["served_id"]
     key = synth.confluence_space_key(row["space"])
     author = row["author_email"]
     ctype = row["subtype"] or "page"  # page | blogpost
@@ -1174,7 +1172,7 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             prow = store.get_document(conn, "confluence", pid)
             if prow is None:
                 break
-            pcid = synth.confluence_id(prow["doc_id"])
+            pcid = prow["served_id"]
             ancestors.insert(
                 0,
                 {

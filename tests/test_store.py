@@ -554,6 +554,37 @@ def test_github_comments_splits_review_from_conversation(tmp_path):
     assert (anchored[0]["path"], anchored[0]["line"]) == ("src/a.py", 12)
 
 
+def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, monkeypatch):
+    """`synth.confluence_id` draws from 9,000,000 values, so a large space collides by the birthday
+    bound — ~222 in a 60,000-page corpus. The old reverse map was last-writer-wins, so a collision
+    made a page unreachable by its own id. Forced here by collapsing the seed."""
+    from backlot.importer import byo
+    from tests._helpers import build_corpus
+
+    monkeypatch.setattr(byo.synth, "confluence_id", lambda doc_id: 7)
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "space": "wiki",
+                "doc_id": f"p{i}",
+                "title": f"Page {i}",
+                "content": "x",
+                "author_email": "a@acme.com",
+            }
+            for i in range(5)
+        ],
+    )
+    monkeypatch.undo()
+    conn = store.connect_ro(s.db_path)
+    served = [r["served_id"] for r in conn.execute("SELECT served_id FROM confluence_pages")]
+    assert len(served) == 5 and len(set(served)) == 5 and all(served)
+    for sid in served:
+        assert store.confluence_by_served_id(conn, sid)["served_id"] == sid
+    conn.close()
+
+
 def test_connect_ro_tuning(sample_settings):
     # tuned connection applies the pragmas; a plain one keeps sqlite defaults (tests unaffected)
     c = store.connect_ro(sample_settings.db_path, mmap_mb=64, cache_mb=16, temp_memory=True)

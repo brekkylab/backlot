@@ -80,7 +80,6 @@ def _build_index(conn) -> dict:
     idx = {
         "github": {},
         "jira": {},
-        "confluence": {},
         "notion": {},
         "s3": {},
         "hubspot": {},
@@ -189,8 +188,6 @@ def _build_index(conn) -> dict:
                 r["container"]
             )
             idx["jira"].setdefault(synth.jira_key(r["doc_id"], pkey), r["doc_id"])
-    for r in conn.execute(f"SELECT doc_id FROM {store.table('confluence')}"):
-        idx["confluence"][synth.confluence_id(r["doc_id"])] = r["doc_id"]
     # Notion ids are dashed UUIDs; key the index by the dashless form so a client sending either
     # dashed or dashless (both valid to real Notion) resolves — see routers.notion._norm.
     for r in conn.execute(f"SELECT doc_id FROM {store.table('notion')}"):

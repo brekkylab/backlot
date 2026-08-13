@@ -117,8 +117,11 @@ def test_hubspot_unauth_is_401(client):
     assert client.get("/hubspot/crm/v3/objects/companies").status_code == 401
 
 
-def test_hubspot_acl_hides_restricted_record(client, tokens_yaml):
-    """`hs-co-secret` is readable only by hana; another user's crawl must not contain it."""
+def test_hubspot_acl_hides_restricted_record(client, tokens_yaml, admin_h):
+    """`hs-co-secret` is readable only by hana; another user's crawl must not contain it, and a
+    direct-by-id read must enforce the same grant -- not just the listing -- since get_object now
+    resolves served_id and the ACL in one query (store.hubspot_by_served_id) rather than a
+    resolve-then-refetch, and a collapse that dropped the ACL half would only show up here."""
     users = {u["email"]: u["token"] for u in tokens_yaml["users"]}
     ava_h = {"Authorization": f"Bearer {users['ava@acme.com']}"}
     hana_h = {"Authorization": f"Bearer {users['hana@acme.com']}"}
@@ -128,6 +131,15 @@ def test_hubspot_acl_hides_restricted_record(client, tokens_yaml):
 
     assert "Stealth Health Co" not in names(ava_h)
     assert "Stealth Health Co" in names(hana_h)
+
+    secret = next(
+        r
+        for r in crawl_hubspot(client, admin_h, "companies")
+        if r["properties"].get("name") == "Stealth Health Co"
+    )
+    url = f"/hubspot/crm/v3/objects/companies/{secret['id']}"
+    assert client.get(url, headers=ava_h).status_code == 404
+    assert client.get(url, headers=hana_h).status_code == 200
 
 
 def test_hubspot_associations_v4(client, admin_h):

@@ -675,6 +675,40 @@ class _Loader:
         self._confluence_ids_taken.add(served)
         return served
 
+    def _assign_hubspot_id(self, doc_id: str) -> str:
+        """The `id` this record will be served as: unique, a numeric string matching real
+        HubSpot's, and stable.
+
+        Follows confluence's probe, NOT gmail's/notion's bare-seed shape (#51): synth.
+        hubspot_record_id's 9,000,000,000-value space looks wide enough to skip a probe, but
+        measured over synthetic corpora it still collides ~16 times at 500k documents -- close
+        enough to confluence's own birthday-bound exposure that storing the raw seed would abort
+        an import on a corpus this project actually generates. Seeded from the doc_id so the same
+        corpus always produces the same ids, then probed with a salt until free, then walked --
+        same shape as _assign_confluence_id, just over a wider range and through a numeric string
+        instead of a bare int. A record already in the DB keeps the id it has, so a re-import does
+        not renumber it.
+        """
+        if doc_id in self._hubspot_ids:
+            return self._hubspot_ids[doc_id]
+        seed = store.served_id_seed("hubspot")
+        served = int(seed(doc_id))
+        # Re-seed a few times, then walk. Re-seeding keeps ids spread out, but it only terminates
+        # if the hash actually varies with the salt — walking is what makes termination
+        # unconditional, and it cannot spin as long as the range has a free value.
+        for salt in range(1, 9):
+            if served not in self._hubspot_ids_taken:
+                break
+            served = int(seed(f"{doc_id}\x00{salt}"))
+        while served in self._hubspot_ids_taken:
+            served = (
+                synth.HUBSPOT_ID_MIN + (served - synth.HUBSPOT_ID_MIN + 1) % synth.HUBSPOT_ID_RANGE
+            )
+        result = str(served)
+        self._hubspot_ids[doc_id] = result
+        self._hubspot_ids_taken.add(served)
+        return result
+
     def __init__(
         self, conn, org: str, org_domain: str, *, closed: bool = False, validate: bool = True
     ):
@@ -707,6 +741,17 @@ class _Loader:
         # it stays stable, probed so it stays unique. Populated by seed_tracker_ids.
         self._confluence_ids = {}  # doc_id -> served id, for pages already in the DB
         self._confluence_ids_taken = set()
+        # hubspot record ids are ASSIGNED rather than hashed at serve time, for the same reason as
+        # confluence's, not gmail's/notion's (#51): synth.hubspot_record_id's 9,000,000,000-value
+        # space still collides by the birthday bound at the corpus sizes this project generates
+        # (measured: ~16 collisions at 500k documents), and a shared id used to mean the reverse
+        # map built at startup was last-writer-wins, leaving one record unreachable at its own id.
+        # Seeded from the doc_id so it stays stable, probed so it stays unique. Populated by
+        # seed_tracker_ids -- more load-bearing here than for confluence, since a probed id is
+        # NOT a pure function of doc_id, so without the preload an append could hand a record a
+        # different id than the one already served, and a client holding the old id gets a 404.
+        self._hubspot_ids = {}  # doc_id -> served id, for records already in the DB
+        self._hubspot_ids_taken = set()
         self.fts_ids = {}
         # HubSpot associations are resolved after the whole corpus is read: a link may name a target
         # that appears on a later line, and an omitted `to_type` is filled in from the target's own
@@ -762,6 +807,16 @@ class _Loader:
         ):
             self._confluence_ids[row["doc_id"]] = row["served_id"]
             self._confluence_ids_taken.add(row["served_id"])
+        # Same claim, for hubspot records -- more load-bearing than confluence's: a probed id is
+        # NOT a pure function of doc_id, so without this preload a re-import (or --append) could
+        # hand an existing record a DIFFERENT id than the one already served, and a client holding
+        # the old id would get a 404 at it.
+        hs_col = store.served_id_column("hubspot")
+        for row in self.conn.execute(
+            f"SELECT doc_id, {hs_col} AS served_id FROM hubspot_objects WHERE {hs_col} IS NOT NULL"
+        ):
+            self._hubspot_ids[row["doc_id"]] = row["served_id"]
+            self._hubspot_ids_taken.add(int(row["served_id"]))
         for src, col in (("github", "number"), ("jira", "key")):
             for row in self.conn.execute(
                 f"SELECT doc_id, {col} AS v, {store.grouping_col(src)} AS c "
@@ -1122,6 +1177,14 @@ class _Loader:
                 cols["served_data_source_id"] = (
                     synth.notion_data_source_id(did) if cols.get("subtype") == "database" else None
                 )
+            if src == "hubspot":
+                # MATERIALIZE the served id via a probe, unlike gmail/notion (#51): synth.
+                # hubspot_record_id's space still collides at the corpus sizes this project
+                # generates (see the schema comment on idx_hubspot_served), so the record's own
+                # `id` (and the v4 association payload's `toObjectId` for it) has to read a value
+                # actually resolved unique by _assign_hubspot_id, not a raw hash that a collision
+                # walk may have moved the record away from.
+                cols[store.served_id_column("hubspot")] = self._assign_hubspot_id(did)
             # A jira key and a github number are deliberately NOT materialized the way Linear's
             # identifier is: the column holds what the CORPUS wrote and nothing else, so "provided"
             # means exactly "non-NULL" everywhere downstream. Two things depend on that.

@@ -81,7 +81,6 @@ def _build_index(conn) -> dict:
         "github": {},
         "jira": {},
         "s3": {},
-        "hubspot": {},
         "linear": {},
         "linear_teams": {},
         "linear_users": {},
@@ -181,10 +180,6 @@ def _build_index(conn) -> dict:
             idx["jira"].setdefault(synth.jira_key(r["doc_id"], pkey), r["doc_id"])
     for r in conn.execute(f"SELECT doc_id, bucket, key FROM {store.table('s3')}"):
         idx["s3"][f"{r['bucket']}/{r['key']}"] = r["doc_id"]
-    # HubSpot record ids are numeric strings; the CRM routes and the v4 association payload both
-    # speak them, so one index resolves either back to a doc_id.
-    for r in conn.execute(f"SELECT doc_id FROM {store.table('hubspot')}"):
-        idx["hubspot"][synth.hubspot_record_id(r["doc_id"])] = r["doc_id"]
     # Linear's `issue(id:)` accepts the UUID *or* the human identifier (ENG-123), and `team(id:)`
     # the team UUID or its key — so one dict per entity resolves either spelling back to the row.
     # Identifiers are NOT required to be unique (5,055 keys repeat in one real corpus) and two

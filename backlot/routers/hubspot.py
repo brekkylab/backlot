@@ -133,7 +133,15 @@ def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSO
 
 
 def _doc_id_for(request: Request, record_id: str) -> str | None:
-    return request.app.state.index["hubspot"].get(record_id)
+    """The doc_id behind a served record id -- a unique-indexed column lookup (see
+    store.hubspot_by_served_id), not the removed startup reverse index. Unscoped by ACL on
+    purpose: used only by _resolve_cursor, which needs a bare doc_id to drive a further,
+    separately ACL-scoped query (list_hubspot_objects/hubspot_associations, keyset-paginated past
+    this doc_id) rather than to serve this row itself -- see get_object and friends, which call
+    store.hubspot_by_served_id directly instead of going through here, so as not to resolve the
+    row once here and refetch it a second time for the ACL check."""
+    row = store.hubspot_by_served_id(auth.conn(request), record_id)
+    return row["doc_id"] if row is not None else None
 
 
 def _clamp(raw, default: int, cap: int) -> int:
@@ -161,7 +169,10 @@ def _record(row, keep: list[str] | None = None) -> dict:
     if keep:
         props = {k: v for k, v in props.items() if k in keep}
     out = {
-        "id": synth.hubspot_record_id(row["doc_id"]),
+        # The stored column (assigned at import, see backlot.importer.byo), not a re-hash of
+        # doc_id: HubSpot's id space is probed on a collision (#51), so a re-hash can disagree
+        # with the value this very row was actually assigned and is looked up by.
+        "id": row["served_id"],
         "properties": props,
         "createdAt": synth.rfc3339_millis(row["created_ts"]),
         "updatedAt": synth.rfc3339_millis(row["updated_ts"] or row["created_ts"]),
@@ -179,7 +190,7 @@ def _page(rows, limit: int, keep: list[str] | None) -> dict:
     rows = rows[:limit]
     out: dict = {"results": [_record(r, keep) for r in rows]}
     if has_more:
-        after = synth.hubspot_record_id(rows[-1]["doc_id"])
+        after = rows[-1]["served_id"]
         out["paging"] = {"next": {"after": after, "link": f"?after={after}"}}
     return out
 
@@ -465,11 +476,11 @@ async def get_object(object_type: str, record_id: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
-    doc_id = _doc_id_for(request, record_id)
-    row = (
-        store.get_document(auth.conn(request), "hubspot", doc_id, auth.visible_ids(request, caller))
-        if doc_id
-        else None
+    # One ACL-scoped query, not _doc_id_for followed by a get_document refetch of the same row:
+    # served_id is UNIQUE, so the ACL clause can only narrow "found" to "not found", never
+    # redirect to a different row (see store.hubspot_by_served_id).
+    row = store.hubspot_by_served_id(
+        auth.conn(request), record_id, auth.visible_ids(request, caller)
     )
     if row is None or row["object_type"] != object_type:
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")
@@ -501,9 +512,12 @@ async def search_objects(object_type: str, request: Request):
     # Read only the columns the scan will actually use. `title`/`content` are needed solely to match
     # a free-text `query`, and `content` is the widest column there is (a note's whole body), so
     # pulling it for every row of a 69k-row object type dwarfs the filtering itself.
-    cols = "doc_id, object_type, properties, archived, created_ts, updated_ts, owner_display" + (
-        ", title, content" if (body.get("query") or "").strip() else ""
-    )
+    # served_id rides along too -- _record/_page read the row's own stored column for `id`/`after`
+    # rather than re-hashing doc_id, since a probed id (#51) can disagree with its raw hash.
+    cols = (
+        "doc_id, object_type, properties, archived, created_ts, updated_ts, owner_display, "
+        "served_id"
+    ) + (", title, content" if (body.get("query") or "").strip() else "")
     pre = _sql_prefilter(body)
     hits: list = []
     cursor = None
@@ -549,8 +563,9 @@ async def batch_read(object_type: str, request: Request):
     results, errors = [], []
     for item in body.get("inputs") or []:
         rid = str(item.get("id"))
-        doc_id = _doc_id_for(request, rid)
-        row = store.get_document(conn, "hubspot", doc_id, visible) if doc_id else None
+        # One ACL-scoped query, not _doc_id_for followed by a get_document refetch of the same
+        # row -- see get_object's comment for why the collapse is safe.
+        row = store.hubspot_by_served_id(conn, rid, visible)
         if row is None or row["object_type"] != object_type:
             errors.append(
                 {
@@ -585,11 +600,13 @@ async def list_associations(
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
-    doc_id = _doc_id_for(request, record_id)
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
-    row = store.get_document(conn, "hubspot", doc_id, visible) if doc_id else None
+    # One ACL-scoped query, not _doc_id_for followed by a get_document refetch of the same row --
+    # see get_object's comment for why the collapse is safe.
+    row = store.hubspot_by_served_id(conn, record_id, visible)
     if row is None or row["object_type"] != object_type:
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")
+    doc_id = row["doc_id"]
     limit = _clamp(request.query_params.get("limit"), _ASSOC_PAGE_MAX, _ASSOC_PAGE_MAX)
     after_to, err = _resolve_cursor(request, request.query_params.get("after"))
     if err is not None:
@@ -604,7 +621,9 @@ async def list_associations(
     out: dict = {
         "results": [
             {
-                "toObjectId": synth.hubspot_record_id(r["to_doc_id"]),
+                # The target's own stored served_id (joined in by store.hubspot_associations), not
+                # a re-hash of to_doc_id: a probed id (#51) can disagree with its raw hash.
+                "toObjectId": r["to_served_id"],
                 "associationTypes": [
                     {
                         "category": r["assoc_category"],

@@ -168,9 +168,20 @@ def jira_key(doc_id: str, project_key: str) -> str:
     return f"{project_key}-{jira_key_number(doc_id)}"
 
 
+HUBSPOT_ID_MIN = 1_000_000_000
+HUBSPOT_ID_RANGE = 9_000_000_000
+
+
 def hubspot_record_id(doc_id: str) -> str:
-    """HubSpot record ids are numeric strings (e.g. "5790939450")."""
-    return str(1_000_000_000 + hnum(doc_id, 0, 10) % 9_000_000_000)
+    """The SEED for a record's own id -- a numeric string (e.g. "5790939450"), as real HubSpot's
+    are -- see ``backlot.importer.byo._Loader._assign_hubspot_id`` for the assignment that actually
+    resolves it to a served, unique value.
+
+    Only a seed, unlike confluence_id's neighbours gmail/notion: this space is 9,000,000,000
+    values, wide enough to look safe, but measured at a corpus this project actually generates
+    (500k documents) it still collides ~16 times by the birthday bound -- so it gets confluence's
+    probe, not gmail's/notion's bare-seed shape (#51)."""
+    return str(HUBSPOT_ID_MIN + hnum(doc_id, 0, 10) % HUBSPOT_ID_RANGE)
 
 
 def hubspot_assoc_type_id(from_type: str, to_type: str) -> int:

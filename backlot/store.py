@@ -342,11 +342,23 @@ CREATE TABLE IF NOT EXISTS hubspot_objects (
     doc_id TEXT PRIMARY KEY, object_type TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     properties TEXT, archived INTEGER, created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    owner_display TEXT
+    owner_display TEXT, served_id TEXT
 );
 -- (object_type, doc_id), not object_type alone: every read is "one type, ordered by doc_id", so
 -- carrying the ordering column makes a page a range seek instead of a temp-b-tree re-sort.
 CREATE INDEX IF NOT EXISTS idx_hubspot_type_doc ON hubspot_objects(object_type, doc_id);
+-- The id the API reports, assigned at import (see backlot.importer.byo) rather than hashed at
+-- serve time: `synth.hubspot_record_id`'s space is 9,000,000,000 values -- wide enough to look
+-- safe, but a corpus this project actually generates (500k documents) still collides ~16 times by
+-- the birthday bound (#51), and the reverse map this replaces was last-writer-wins, so a collision
+-- made a record unreachable at its own id. Uniqueness is primarily enforced by the assignment
+-- itself -- _assign_hubspot_id's in-run memo plus seed_tracker_ids' cross-run preload, both probed
+-- against every id already taken, the same shape confluence's own served_id follows -- so a
+-- genuine collision essentially never reaches this index. If one somehow did, the shared write
+-- path's upsert (`ON CONFLICT(doc_id) DO UPDATE`, in backlot.importer.byo) is scoped to the doc_id
+-- conflict target only, so a served_id collision (a DIFFERENT doc_id) falls through to this index
+-- and raises IntegrityError rather than being silently resolved.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hubspot_served ON hubspot_objects(served_id);
 
 -- Associations are bidirectional in real HubSpot, with a distinct type id per direction, so a row
 -- is stored per direction and a lookup stays a plain (from_doc_id, to_type) index match.
@@ -794,6 +806,23 @@ def list_s3_objects(
     return conn.execute(sql, params).fetchall()
 
 
+def hubspot_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+    """One CRM record by the id the API reports. A unique-indexed column lookup, not a reverse map
+    built at startup: the id is assigned at import (see backlot.importer.byo), so it needs neither
+    the memory nor the per-boot scan, and it cannot be ambiguous.
+
+    Unlike confluence's/notion's/gmail's ``served_id``, HubSpot's is PROBED against a collision
+    (#51: ``synth.hubspot_record_id``'s 9,000,000,000-value space still collides at the corpus
+    sizes this project generates) -- which is exactly why a plain equality lookup against a UNIQUE
+    column is still correct here: the probe (``_assign_hubspot_id``) is what makes the column
+    unique, this reader just trusts that it did."""
+    col = served_id_column("hubspot")
+    clause, cp = _acl_clause("hubspot", visible_ids=visible_ids)
+    return conn.execute(
+        f"SELECT * FROM hubspot_objects WHERE {col} = ?{clause}", [served_id, *cp]
+    ).fetchone()
+
+
 def list_hubspot_objects(
     conn,
     object_type,
@@ -1229,8 +1258,21 @@ def hubspot_associations(
     """One page of associations from a CRM record to records of ``to_type``, ACL-scoped on the
     target. Keyset-paginated by ``to_doc_id`` for the same reason the listings are: the API's
     cursor is the last record id the caller saw, and a record past the first page must stay
-    reachable."""
-    sql = "SELECT * FROM hubspot_associations WHERE from_doc_id = ? AND to_type = ?"
+    reachable.
+
+    Joined to ``hubspot_objects`` for the target's own ``served_id`` (as ``to_served_id``), rather
+    than leaving the v4 payload's ``toObjectId`` to recompute ``synth.hubspot_record_id(to_doc_id)``
+    the way gmail's ``threadId`` re-hashes a root row (see ``routers.google._gmail_ids``): gmail's
+    seed is never probed, so the hash and the stored column always agree, but hubspot's IS probed
+    (#51) -- a collision walk can hand a record an id different from its raw hash, and the v4
+    payload has to report the one the target's own row actually resolves at. The join is safe
+    (INNER, not LEFT): ``resolve_cross_references`` refuses an association whose target object type
+    cannot be resolved, so every ``to_doc_id`` here already has a row in ``hubspot_objects``."""
+    sql = (
+        "SELECT hubspot_associations.*, o.served_id AS to_served_id FROM hubspot_associations "
+        "JOIN hubspot_objects o ON o.doc_id = hubspot_associations.to_doc_id "
+        "WHERE from_doc_id = ? AND to_type = ?"
+    )
     params: list = [from_doc_id, to_type]
     if after_to_doc_id:
         sql += " AND to_doc_id > ?"

@@ -798,6 +798,159 @@ def test_notion_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
         build_corpus(tmp_path / "collide-data-source-id", docs)
 
 
+def test_hubspot_served_ids_probe_on_a_collision_and_stay_stable_across_a_reimport(
+    tmp_path, monkeypatch
+):
+    """`synth.hubspot_record_id` draws from 9,000,000,000 values -- wide enough to look safe, but
+    unlike gmail's 2**63 and notion's UUID space it is STILL not wide enough to skip a probe:
+    measured over synthetic corpora it collides ~16 times at 500k documents (#51, see the task-5
+    brief). So hubspot follows CONFLUENCE's probe-and-walk, not gmail's/notion's bare-seed shape.
+
+    Forced here by collapsing the seed to a CONSTANT -- and the assertion is the OPPOSITE of
+    gmail's forced-collision test: gmail's must ABORT the import (no probe -- a duplicate is a
+    loud UNIQUE-index failure), while hubspot's must still produce N DISTINCT served_ids, each
+    resolving to its own record, because the probe is what absorbs the collision instead of
+    surfacing it.
+
+    Patches `store.SERVED_ID` directly, NOT `synth.hubspot_record_id`: `store.served_id_seed
+    ("hubspot")` -- what `_assign_hubspot_id` actually calls -- returns the tuple element
+    `SERVED_ID` captured when `backlot.store` was first imported, a bound reference to the
+    function object, not a live attribute lookup. `monkeypatch.setattr(synth, ...)` cannot reach
+    it (see the confluence/gmail/notion tests above for the same defect); `monkeypatch.setitem`
+    replaces the tuple the accessor actually reads.
+    """
+    from backlot.importer import byo
+    from tests._helpers import build_corpus
+
+    monkeypatch.setitem(
+        store.SERVED_ID, "hubspot", ("served_id", lambda doc_id: "1000000000", None)
+    )
+    docs = [
+        {
+            "source_type": "hubspot",
+            "doc_id": f"h{i}",
+            "object_type": "companies",
+            "title": f"Co {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+            "properties": {"name": f"Co {i}"},
+        }
+        for i in range(5)
+    ]
+    s = build_corpus(tmp_path, docs)
+    monkeypatch.undo()
+    conn = store.connect_ro(s.db_path)
+    served = [r["served_id"] for r in conn.execute("SELECT served_id FROM hubspot_objects")]
+    assert len(served) == 5 and len(set(served)) == 5 and all(served)
+    # The collapsed seed actually landed: h0 (the first record processed, before anything is
+    # taken) is served exactly the forced value -- not some real hash. If this drifts back to a
+    # real hash, the patch has gone inert again, silently, the same way it did before.
+    assert store.hubspot_by_served_id(conn, "1000000000")["doc_id"] == "h0"
+    for sid in served:
+        row = store.hubspot_by_served_id(conn, sid)
+        assert row is not None and row["served_id"] == sid
+    conn.close()
+
+    # A re-import (e.g. --append re-running over the same shard) must not renumber a record a
+    # client may already hold a url for -- more load-bearing here than for confluence: a PROBED id
+    # is not a pure function of doc_id, so without seed_tracker_ids' preload a replay could hand a
+    # record a DIFFERENT id than the one already served.
+    byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
+    conn = store.connect_ro(s.db_path)
+    assert sorted(
+        r["served_id"] for r in conn.execute("SELECT served_id FROM hubspot_objects")
+    ) == sorted(served)
+    conn.close()
+
+
+def test_hubspot_by_served_id_applies_the_acl(tmp_path):
+    """A regression `notion_by_served_id` shipped without (#51 review round): a non-empty
+    ``visible_ids`` that grants nothing must come back None, not the unscoped row -- otherwise the
+    ACL clause could be deleted from `hubspot_by_served_id` invisibly. A non-empty set, so
+    `_acl_clause` takes its EXISTS branch rather than the empty-set "AND 0" short-circuit."""
+    from tests._helpers import tiny_corpus
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "hubspot",
+                "doc_id": "h0",
+                "object_type": "companies",
+                "title": "Co 0",
+                "content": "x",
+                "author_email": "a@acme.com",
+                "properties": {"name": "Co 0"},
+            }
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    served = conn.execute("SELECT served_id FROM hubspot_objects").fetchone()["served_id"]
+    assert store.hubspot_by_served_id(conn, served)["doc_id"] == "h0"
+    assert store.hubspot_by_served_id(conn, served, visible_ids={"nobody"}) is None
+
+
+def test_hubspot_associations_carry_the_targets_own_served_id_through_a_collision(
+    tmp_path, monkeypatch
+):
+    """`hubspot_associations` joins to `hubspot_objects` for the target's OWN stored `served_id`
+    (as `to_served_id`) rather than leaving the v4 payload to recompute
+    `synth.hubspot_record_id(to_doc_id)` the way gmail's `threadId` re-hashes a root row (see
+    `routers.google._gmail_ids`). That shortcut is safe for gmail because its seed is never probed
+    -- hash and stored column always agree -- but hubspot's IS probed (#51): a collision walk can
+    move a record to an id different from its raw hash, and the association payload must report
+    the one the target's own row actually resolves at.
+
+    Forced the same way the served-id collision test above does: the seed collapsed to a
+    constant, so of the two companies below, whichever is assigned second gets walked away from
+    the forced value -- and `to_served_id` must track whichever one that turns out to be, not the
+    raw hash.
+    """
+    from tests._helpers import tiny_corpus
+
+    monkeypatch.setitem(
+        store.SERVED_ID, "hubspot", ("served_id", lambda doc_id: "1000000000", None)
+    )
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "hubspot",
+                "doc_id": "co0",
+                "object_type": "companies",
+                "title": "Co 0",
+                "content": "x",
+                "author_email": "a@acme.com",
+                "properties": {"name": "Co 0"},
+            },
+            {
+                "source_type": "hubspot",
+                "doc_id": "co1",
+                "object_type": "companies",
+                "title": "Co 1",
+                "content": "x",
+                "author_email": "a@acme.com",
+                "properties": {"name": "Co 1"},
+                "associations": [{"to": "co0", "label": "Sibling"}],
+            },
+        ],
+    )
+    monkeypatch.undo()
+    conn = store.connect_ro(s.db_path)
+    actual = {
+        r["doc_id"]: r["served_id"]
+        for r in conn.execute("SELECT doc_id, served_id FROM hubspot_objects")
+    }
+    # The collision was actually forced (both start from "1000000000") AND resolved to two
+    # distinct values -- otherwise the join below would trivially "match" against a value neither
+    # side actually had to walk away from.
+    assert len(set(actual.values())) == 2
+    rows = store.hubspot_associations(conn, "co1", "companies")
+    assert rows[0]["to_served_id"] == actual["co0"]
+    back = store.hubspot_associations(conn, "co0", "companies")
+    assert back[0]["to_served_id"] == actual["co1"]
+
+
 def test_connect_ro_tuning(sample_settings):
     # tuned connection applies the pragmas; a plain one keeps sqlite defaults (tests unaffected)
     c = store.connect_ro(sample_settings.db_path, mmap_mb=64, cache_mb=16, temp_memory=True)

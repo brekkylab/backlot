@@ -487,7 +487,7 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
         ("ghost@acme.com", "user", "Ghost Person", "ghost@acme.com"),
     )
     conn.execute(
-        "INSERT OR REPLACE INTO fireflies_users VALUES (?,?)",
+        "INSERT OR REPLACE INTO fireflies_users(email, served_id) VALUES (?,?)",
         ("ghost@acme.com", synth.fireflies_user_id("ghost@acme.com")),
     )
     conn.commit()

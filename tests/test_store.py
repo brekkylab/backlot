@@ -123,6 +123,97 @@ def test_served_id_registry_covers_every_hashed_source():
     assert store.SERVED_ID["confluence"] == ("served_id", synth.confluence_id, None)
 
 
+def test_no_blanket_replace_writes_a_table_with_a_non_pk_unique_index(tmp_path):
+    """`INSERT OR REPLACE` has no scoped conflict target: on ANY unique-index violation, not only
+    the PRIMARY KEY, it resolves the conflict by silently DELETING the other row rather than
+    raising. For a table whose PRIMARY KEY is a real business key (a doc_id, a team, an email)
+    that ALSO carries an unrelated unique-indexed served id, a served-id collision between two
+    DIFFERENT rows then destroys the other row silently instead of failing the import loudly --
+    exactly the failure mode #51 exists to remove (see write_containers' and fireflies_users' own
+    upsert comments in backlot/importer/byo.py). This bug was independently reintroduced twice
+    while converting `linear_teams` and `fireflies_users` alone.
+
+    A pure `grep 'INSERT OR REPLACE INTO <table>'` cannot catch a THIRD occurrence here: every
+    shared, multi-table write path in this codebase (the doc tables' `insert`, the comment
+    tables' shared insert, `write_containers`' own `else` branch) names its target through an
+    f-string variable (`{store.table(src)}`, `{ctable}`, `{gtable}`), never the literal table
+    name -- so a naive text search for a guarded table's literal name never matches those sites
+    regardless of whether the bug is present, which would make this guard a silent no-op for
+    every one of them. This version checks each shared path on its own terms instead:
+
+    - The doc tables (`SOURCE_TABLE`) and comment tables (`COMMENT_TABLE`) are structurally safe
+      already: `insert` upserts on `ON CONFLICT(doc_id) DO UPDATE` (never `OR REPLACE`), and the
+      comment insert deliberately excludes `served_id` from its column list (github_comments'
+      own is set by a separate, non-`OR REPLACE`, `id`-scoped `UPDATE` -- see that insert's own
+      comment). Neither is re-verified here; this guard is about tables NOT already covered by
+      one of those two uniform mechanisms.
+    - `write_containers`' `else` branch is where BOTH real occurrences of this bug lived: it runs
+      one blanket `INSERT OR REPLACE` for every `GROUPING` table except the ones it special-cases
+      (currently only `linear`, which gets its own scoped upsert). If any OTHER grouping table
+      gains a non-PK unique index without also being added to that special-case set, this
+      assertion catches it at the SCHEMA level -- no text search needed, since it reasons about
+      which branch a table falls into, not what literal string appears near it.
+    - A table with its OWN one-off write, outside both mechanisms above (currently just
+      `fireflies_users`), is exactly the case a literal-name grep IS reliable for, since a
+      one-off write has no reason to interpolate its own table name through a variable.
+
+    What this guard deliberately does NOT re-verify: that `linear`'s OWN special-cased branch and
+    `fireflies_users`' OWN write are themselves correct -- that is what
+    `test_linear_team_served_ids_are_stored_and_resolve` and
+    `test_fireflies_users_is_the_workspace_roster_not_every_named_person`'s trailing
+    `pytest.raises(sqlite3.IntegrityError)` blocks are for; a behavioural collision test is the
+    only way to verify a SPECIFIC write is right, while this guard's job is to catch a table that
+    fell through every mechanism this schema currently trusts."""
+    from pathlib import Path
+
+    conn = store.connect_rw(tmp_path / "schema-only.sqlite")
+    tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    guarded = set()
+    for t in tables:
+        for idx in conn.execute(f"PRAGMA index_list({t})"):
+            # (seq, name, unique, origin, partial) -- `origin='pk'` is the PRIMARY KEY's own
+            # implicit unique constraint, which INSERT OR REPLACE is fine to fold into an upsert;
+            # any OTHER unique index is the hazard this guard is for.
+            if idx[2] == 1 and idx[3] != "pk":
+                guarded.add(t)
+    conn.close()
+    # Sanity: the guard must find at least the tables this task's own bug lived in, or the
+    # PRAGMA-based detection above is broken and every assertion below is vacuous.
+    assert {"linear_teams", "fireflies_users"} <= guarded
+
+    # `write_containers`: every grouping table except its declared special cases must have NO
+    # non-PK unique index, or its generic `else` branch's blanket OR REPLACE reaches it.
+    write_containers_special_cases = {"linear"}
+    for src, (gtable, _gcol) in store.GROUPING.items():
+        if src in write_containers_special_cases:
+            continue
+        assert gtable not in guarded, (
+            f"{gtable} (source {src!r}) has a non-PK unique index but write_containers' generic "
+            "`else` branch still writes it with a blanket INSERT OR REPLACE -- give it its own "
+            "scoped upsert (the way linear_teams' has one) and add it to the special-case set "
+            "above before this lands"
+        )
+
+    # What's left, once the two uniform doc/comment write paths and the grouping-table path
+    # above are accounted for, is a table with its own bespoke write -- safe to name-match on,
+    # since a one-off write has no reason to hide its target behind a variable.
+    generic_tables = set(store.SOURCE_TABLE.values()) | set(store.COMMENT_TABLE.values())
+    grouping_tables = {g for g, _ in store.GROUPING.values()}
+    standalone_guarded = guarded - generic_tables - grouping_tables
+    assert "fireflies_users" in standalone_guarded  # sanity: the guard reaches this table at all
+
+    backlot_src = "\n".join(
+        p.read_text() for p in Path(store.__file__).resolve().parent.rglob("*.py")
+    )
+    for t in sorted(standalone_guarded):
+        assert f"INSERT OR REPLACE INTO {t}" not in backlot_src, (
+            f"{t} has a non-PK unique index and its own bespoke write, but that write is a "
+            "blanket INSERT OR REPLACE -- a served-id collision between two different rows "
+            "would silently delete one instead of raising; use "
+            "INSERT ... ON CONFLICT(<primary key>) DO UPDATE instead"
+        )
+
+
 def test_acl_clause_rejects_a_wrong_but_valid_table_pairing():
     """`_acl_clause`'s `tbl` defaults to the source's own table, but a caller may still pass one
     explicitly. When it does, a REAL table (one of SOURCE_TABLE's values) that isn't THIS
@@ -223,6 +314,13 @@ def test_users(db):
         "ava@acme.com"
     )
     assert store.fireflies_user_by_served_id(db, "not-a-real-served-id") is None
+    # The two sides can no longer disagree by construction the way they could before this table
+    # existed (the map was rebuilt from `principals` on every boot, so there was nothing to drift):
+    # every `type='user'` principal must have EXACTLY one `fireflies_users` row, or `user(id:)`
+    # either serves a fabricated user for an orphan row, or nulls out an id `users` just listed.
+    user_principals = {r["id"] for r in db.execute("SELECT id FROM principals WHERE type = 'user'")}
+    ff_users = {r[0] for r in db.execute("SELECT email FROM fireflies_users")}
+    assert user_principals == ff_users
 
 
 def test_jcol_parses_json_columns(db):
@@ -1507,7 +1605,12 @@ def test_linear_team_issue_counts(db):
     assert store.linear_team_issue_counts(db) == {"engineering": 3, "design": 1, "blackops": 1}
 
 
-def test_linear_team_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "order",
+    [("night-shift", "north-star"), ("north-star", "night-shift")],
+    ids=["insertion-agrees-with-name-order", "insertion-disagrees-with-name-order"],
+)
+def test_linear_team_served_ids_are_stored_and_resolve(tmp_path, monkeypatch, order):
     """`served_id` (the team UUID) and `served_key` (its short key, e.g. "ENG") are the OTHER two
     spellings `team(id:)` accepts, alongside the container's own raw name -- already a plain
     primary-key lookup (`get_container`). Both are written at import now (#51), not rebuilt into a
@@ -1516,7 +1619,12 @@ def test_linear_team_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     `synth.linear_team_key` is NOT injective: "night-shift" and "north-star" both reduce to "NS".
     `served_key` therefore carries no UNIQUE index, and the tie must break by team NAME order --
     the same order `store.list_containers` returns and `main._build_index`'s old `setdefault` loop
-    walked -- so a key that used to resolve to one team keeps resolving to that same team."""
+    walked -- so a key that used to resolve to one team keeps resolving to that same team.
+
+    Parametrized over BOTH insertion orders on purpose: with a fixed insertion order the two
+    happen to coincide (rowid order already matches name order), so a query with no `ORDER BY`
+    at all would still pass by accident. Reversing insertion order breaks that coincidence and
+    would have caught it."""
     from tests._helpers import build_corpus
 
     assert synth.linear_team_key("night-shift") == synth.linear_team_key("north-star") == "NS"
@@ -1529,9 +1637,9 @@ def test_linear_team_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
             "content": "x",
             "author_email": "a@acme.com",
         }
-        for t in ("night-shift", "north-star")
+        for t in order
     ]
-    s = build_corpus(tmp_path, docs)
+    s = build_corpus(tmp_path / "-".join(order), docs)
     conn = store.connect_ro(s.db_path)
     rows = {
         r["team"]: r for r in conn.execute("SELECT team, served_id, served_key FROM linear_teams")
@@ -1543,7 +1651,7 @@ def test_linear_team_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     assert store.linear_team_by_served_id(conn, rows["night-shift"]["served_id"]) == "night-shift"
     assert store.linear_team_by_served_id(conn, rows["north-star"]["served_id"]) == "north-star"
     # The collision: both reduce to "NS", and the FIRST by name ("night-shift" < "north-star")
-    # must keep winning.
+    # must keep winning, REGARDLESS of which one was inserted first.
     assert store.linear_team_by_served_key(conn, "NS") == "night-shift"
     assert store.linear_team_by_served_key(conn, "nope") is None
     conn.close()
@@ -1553,7 +1661,7 @@ def test_linear_team_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     # `idx_linear_teams_served`, not silently let one team's row overwrite the other's.
     monkeypatch.setattr(synth, "linear_team_id", lambda name: "dup-team-uuid")
     with pytest.raises(sqlite3.IntegrityError):
-        build_corpus(tmp_path / "collide", docs)
+        build_corpus(tmp_path / ("collide-" + "-".join(order)), docs)
 
 
 def test_linear_distinct_values_feed_the_reverse_index(db):

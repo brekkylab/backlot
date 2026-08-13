@@ -822,12 +822,24 @@ def resolve_issue(_root, info, id):
 
 
 def resolve_team(_root, info, id):
-    """``team(id:)`` takes a team UUID, its key (``ENG``), or the container's own raw name -- a
-    mock affordance on top of the two real spellings, kept and documented because it costs nothing
-    (see the schema comment on ``linear_teams``). Tried in that order, so the UUID always wins a
-    three-way tie: it is unique-indexed, so a match there can never be ambiguous, while a key
-    that two containers reduce to breaks the tie by team-name order (see
-    ``store.linear_team_by_served_key``) before the raw-name lookup even runs.
+    """``team(id:)`` takes a team UUID, its key (``ENG``), or -- a mock-only affordance, not a
+    real spelling, kept because it costs nothing (see the schema comment on ``linear_teams``) --
+    the container's own raw name. Tried in that FIXED order: served UUID, then served key, then
+    raw name.
+
+    The UUID leg reproduces the old reverse map exactly: unique-indexed, so a match there can
+    never be ambiguous, and checked first so nothing else can shadow it (pinned by
+    test_linear_team_uuid_wins_a_raw_name_collision). A key two containers reduce to breaks ITS
+    OWN tie by team-name order (see ``store.linear_team_by_served_key``), also reproducing the old
+    map exactly.
+
+    The KEY-before-RAW-NAME ordering, though, is a DELIBERATE CHANGE from the old map, not a
+    reproduction of it: the old map registered both spellings with `setdefault` into one shared
+    dict, so when some team's key spelled identically to a DIFFERENT team's raw name, the winner
+    depended on `list_containers`' team-NAME iteration order -- whichever registered first kept
+    the slot. This resolver instead gives the key a fixed priority over the raw name, because a
+    real Linear spelling should always beat a mock-only affordance
+    (test_linear_team_key_precedes_the_raw_name_affordance pins the new rule).
 
     Scoped the same way ``teams`` is: a team the caller can see no issue in is not a team they can
     see. Without this the two roots contradict each other — ``teams`` would omit the team while
@@ -844,7 +856,7 @@ def resolve_team(_root, info, id):
     if (
         container is not None
         and ctx["visible_ids"] is not None
-        and not store.linear_team_has_visible(ctx["conn"], container, ctx["visible_ids"])
+        and not store.linear_team_has_visible(conn, container, ctx["visible_ids"])
     ):
         container = None
     if container is None:

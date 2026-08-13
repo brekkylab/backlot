@@ -965,11 +965,20 @@ def test_linear_issue_resolves_first_by_doc_id_when_identifier_repeats(tmp_path)
         assert r.json()["data"]["issue"]["title"] == "First"
 
 
-def test_linear_team_key_collision_resolves_to_the_first_team_by_name(tmp_path):
+@pytest.mark.parametrize(
+    "order",
+    [("night-shift", "north-star"), ("north-star", "night-shift")],
+    ids=["insertion-agrees-with-name-order", "insertion-disagrees-with-name-order"],
+)
+def test_linear_team_key_collision_resolves_to_the_first_team_by_name(tmp_path, order):
     """`synth.linear_team_key` is NOT injective: "night-shift" and "north-star" both reduce to
     "NS" (see the schema comment on `linear_teams`). The resolution must keep picking the same
     team every time -- the first by container NAME -- or a key that used to resolve to one team
-    silently resolves to a different one after a reimport."""
+    silently resolves to a different one after a reimport.
+
+    Parametrized over BOTH insertion orders: with a single fixed order, insertion order and name
+    order happen to coincide, so a lookup with no tie-break at all would still pass by accident.
+    Reversing insertion order removes that coincidence."""
     assert synth.linear_team_key("night-shift") == synth.linear_team_key("north-star") == "NS"
     docs = [
         {
@@ -980,9 +989,64 @@ def test_linear_team_key_collision_resolves_to_the_first_team_by_name(tmp_path):
             "content": "x",
             "author_email": "a@acme.com",
         }
-        for t in ("night-shift", "north-star")
+        for t in order
     ]
     with corpus_client(tmp_path, docs) as (client, settings):
         h = {"Authorization": settings.admin_token}
         got = gql(client, '{ team(id: "NS") { name } }', h).json()["data"]["team"]
-        assert got["name"] == "night-shift"  # "night-shift" < "north-star" by name
+        assert got["name"] == "night-shift"  # "night-shift" < "north-star" by name, either way
+
+
+def test_linear_team_key_precedes_the_raw_name_affordance(tmp_path):
+    """`resolve_team` tries the served KEY before the raw-name affordance -- a DELIBERATE change
+    from the reverse map it replaced, not a reproduction of it (see `resolve_team`'s docstring).
+
+    The old map registered a team's key and another team's raw name with `setdefault` into ONE
+    shared dict, so a cross-format collision -- some team's key spelled identically to a
+    DIFFERENT team's literal name -- was won by whichever registered first in team-NAME order.
+    Here, a container literally named "ABCD" sorts before "alpha-beta-charlie-delta" (uppercase
+    sorts first), so the OLD map resolved `team(id: "ABCD")` to the container actually named
+    "ABCD". `synth.linear_team_key("alpha-beta-charlie-delta")` is also "ABCD" (word initials),
+    and the new resolver must resolve to THAT team instead -- the real spelling beats the mock-only
+    affordance, unconditionally, not by who happened to register first."""
+    assert synth.linear_team_key("ABCD") == "ABC"  # its own key -- not a collision with itself
+    assert synth.linear_team_key("alpha-beta-charlie-delta") == "ABCD"
+    docs = [
+        {
+            "source_type": "linear",
+            "team": t,
+            "doc_id": f"{i}",
+            "title": t,
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i, t in enumerate(("ABCD", "alpha-beta-charlie-delta"))
+    ]
+    with corpus_client(tmp_path, docs) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+        got = gql(client, '{ team(id: "ABCD") { name } }', h).json()["data"]["team"]
+        assert got["name"] == "alpha-beta-charlie-delta"
+
+
+def test_linear_team_uuid_wins_a_raw_name_collision(tmp_path):
+    """The served UUID is checked FIRST, so it can never be shadowed by another team's raw-name
+    affordance -- even in the constructed case where the two literally collide: a second
+    container named exactly the UUID string `synth.linear_team_id` derives for the first one."""
+    uuid_of_widgets = synth.linear_team_id("widgets")
+    docs = [
+        {
+            "source_type": "linear",
+            "team": t,
+            "doc_id": f"{i}",
+            "title": t,
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i, t in enumerate(("widgets", uuid_of_widgets))
+    ]
+    with corpus_client(tmp_path, docs) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+        got = gql(client, "{ team(id: %s) { name } }" % lit(uuid_of_widgets), h).json()["data"][
+            "team"
+        ]
+        assert got["name"] == "widgets"

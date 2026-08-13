@@ -435,6 +435,9 @@ async def conversations_replies(request: Request):
     ru = store.slack_reply_authors(conn, root["doc_id"], ids)
     ruids = [synth.slack_user_id(e) for e in ru[:5]]
     parent_uid = synth.slack_user_id(root["author_email"])
+    # Every message here shares one thread_ts and the root it comes from is already in
+    # hand, so resolve that second once rather than letting each reply read the root row.
+    base = _root_epoch(conn, root)
     messages = [
         _message(
             conn,
@@ -444,6 +447,7 @@ async def conversations_replies(request: Request):
             reply_users=(ruids if x["thread_seq"] == 0 else None),
             reply_users_count=(len(ru) if x["thread_seq"] == 0 else 0),
             parent_user_id=(parent_uid if x["thread_seq"] > 0 else None),
+            root_epoch=base,
         )
         for x in rows
     ]
@@ -611,7 +615,8 @@ def _messages_block(request: Request):
         order_by=order_by,
     )
     total = store.count_search(conn, terms, "slack", ids, container=container, phrase=phrase)
-    matches = [_search_match(conn, r) for r in rows]
+    roots: dict = {}  # one root read per thread on this page, not one per hit
+    matches = [_search_match(conn, r, roots) for r in rows]
     pages = (total + count - 1) // count if count else 1
     block = {
         "total": total,
@@ -707,8 +712,9 @@ async def search_all(request: Request):
 # --- helpers --------------------------------------------------------------------
 
 
-def _search_match(conn, row) -> dict:
-    """A search.messages `matches[]` entry for a slack row."""
+def _search_match(conn, row, roots: dict | None = None) -> dict:
+    """A search.messages `matches[]` entry for a slack row. ``roots`` memoizes the root
+    second per thread across a page of hits, which are commonly all in one thread."""
     ch = row["channel"]
     cid = synth.slack_channel_id(ch)
     text = f"*{row['title']}*\n{row['content']}" if row["title"] else row["content"]
@@ -730,17 +736,20 @@ def _search_match(conn, row) -> dict:
     if row[
         "thread_id"
     ]:  # a hit inside a thread carries its root ts so the client can fetch replies
-        m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(conn, row), row["thread_id"])
+        m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(conn, row, roots), row["thread_id"])
     return m
 
 
-def _root_epoch(conn, row) -> int:
+def _root_epoch(conn, row, memo: dict | None = None) -> int:
     """The thread root's base second. A root answers from its own row; a reply looks
     the root up (a primary-key read). The old shortcut — the reply's own second with
     its position backed out — assumed every reply sits exactly its position in
     seconds after the root, which stopped holding once a corpus could write a
     reply's own clock. Corpora without one resolve identically either way: the
     root's stored second is the same number the subtraction produced.
+
+    ``memo`` caches the lookup by thread for callers holding rows from more than one
+    thread, so a page of search hits inside one thread reads its root once.
 
     Every test here is against None rather than truthiness, because 1970-01-01T00:00:00Z
     is a second a corpus can write and the importer stores it as 0 — under `if base:` a
@@ -749,7 +758,12 @@ def _root_epoch(conn, row) -> int:
     if not row["thread_id"] or row["thread_seq"] == 0:
         base = row["created_ts"]
         return synth.epoch(row["thread_id"] or row["doc_id"]) if base is None else base
-    base = store.slack_root_created_ts(conn, row["thread_id"])
+    if memo is not None and row["thread_id"] in memo:
+        base = memo[row["thread_id"]]
+    else:
+        base = store.slack_root_created_ts(conn, row["thread_id"])
+        if memo is not None:
+            memo[row["thread_id"]] = base
     if base is not None:
         return base
     # No root second to ground on: either the root row is outside this corpus or it
@@ -832,7 +846,11 @@ def _message(
     reply_users: list[str] | None = None,
     reply_users_count: int = 0,
     parent_user_id: str | None = None,
+    root_epoch: int | None = None,
 ) -> dict:
+    """``root_epoch`` is the thread root's second, for a caller that already holds the
+    root row: resolving it here costs a primary-key read per reply, which turned one
+    ``conversations.replies`` response into a read of the same root once per reply."""
     # Slack messages have no title; only prepend one as a lead line when present
     # (a converted corpus's messages may carry a title, hand-written slack records typically don't).
     title = row["title"]
@@ -857,7 +875,8 @@ def _message(
     if row["subtype"]:
         m["subtype"] = row["subtype"]
     if row["thread_id"]:  # part of a thread
-        m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(conn, row), row["thread_id"])
+        base = _root_epoch(conn, row) if root_epoch is None else root_epoch
+        m["thread_ts"] = synth.slack_fmt_ts(base, row["thread_id"])
         if row["thread_seq"] == 0 and reply_count > 0:  # thread root
             m.update(
                 {

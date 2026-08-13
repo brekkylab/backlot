@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from backlot import store, synth
-from tests._helpers import crawl_slack, db_count, tiny_corpus
+from tests._helpers import corpus_client, crawl_slack, db_count, tiny_corpus
 
 
 def test_admin_slack_crawls_all(client, admin_h, ro_conn):
@@ -393,6 +393,61 @@ def test_thread_ts_and_latest_reply_follow_a_replys_own_clock(tmp_path):
     # the replies endpoint's fast path (resolve a public ts by its second) finds it
     hits = store.slack_messages_at_created_ts(conn, "inc", base + 3 * 3600)
     assert any(_msg_ts(r) == _msg_ts(late) for r in hits)
+
+
+def test_thread_ts_reads_the_root_once_per_response(tmp_path, monkeypatch):
+    """Resolving a reply's thread_ts through the root row is a primary-key read, and
+    doing it inside `_message` meant one read per reply — 30 reads of the same row for
+    one 30-reply thread, with the root already resolved and in the caller's hand. Both
+    endpoints that serve in-thread rows now resolve it per thread instead of per row."""
+    from backlot.routers import slack as sl
+
+    records = [
+        {
+            "source_type": "slack",
+            "doc_id": "s-big",
+            "channel": "inc",
+            "content": "root of a long thread",
+            "author_email": "bob@x.com",
+            "visibility": "public",
+            "created": "2026-02-10T18:00:00Z",
+            "replies": [{"content": f"reply {i}", "author_email": "ava@x.com"} for i in range(30)],
+        },
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        calls = []
+        real = sl.store.slack_root_created_ts
+        monkeypatch.setattr(
+            sl.store,
+            "slack_root_created_ts",
+            lambda conn, did: (calls.append(did), real(conn, did))[1],
+        )
+
+        cid = synth.slack_channel_id("inc")
+        hist = client.get(
+            "/slack/api/conversations.history", headers=h, params={"channel": cid, "limit": 100}
+        ).json()
+        root_ts = hist["messages"][0]["ts"]
+
+        calls.clear()
+        rep = client.get(
+            "/slack/api/conversations.replies",
+            headers=h,
+            params={"channel": cid, "ts": root_ts, "limit": 100},
+        ).json()
+        assert len(rep["messages"]) == 31
+        assert len(calls) == 0, f"one root read per reply is back ({len(calls)} reads)"
+        # the point of the read is still served: every message shares the root's ts
+        assert {m["thread_ts"] for m in rep["messages"]} == {root_ts}
+
+        calls.clear()
+        found = client.get(
+            "/slack/api/search.messages", headers=h, params={"query": "reply", "count": 100}
+        ).json()["messages"]["matches"]
+        assert len(found) >= 30
+        assert len(calls) == 1, f"a page of hits in one thread read its root {len(calls)} times"
+        assert {m["thread_ts"] for m in found} == {root_ts}
 
 
 def test_thread_rooted_at_epoch_zero_stays_coherent(tmp_path):

@@ -316,7 +316,7 @@ async def lifespan(app: FastAPI):
             try:
                 cacl: dict[str, set] = {}
                 for ch, pid in c.execute(
-                    f"SELECT DISTINCT d.channel, a.principal_id "
+                    "SELECT DISTINCT d.channel, a.principal_id "
                     f"FROM {store.acl_table('slack')} a JOIN slack_messages d ON d.doc_id = a.doc_id"
                 ):
                     cacl.setdefault(ch, set()).add(pid)

@@ -46,6 +46,14 @@ def test_unknown_source_type_raises():
         store.table("nope")
 
 
+def test_unknown_source_type_raises_from_acl_table():
+    # Matches store.table(): a bare KeyError here would be a worse error for a caller than the
+    # message ValueError gives, and _acl_clause relies on this to fail loudly for an unknown
+    # source even on an admin (visible_ids=None) call.
+    with pytest.raises(ValueError, match="nope"):
+        store.acl_table("nope")
+
+
 def test_grouping_cols_per_source():
     assert store.grouping_col("slack") == "channel"
     assert store.grouping_col("gmail") == "mailbox"
@@ -90,6 +98,22 @@ def test_acl_table_registry_covers_every_source(tmp_path):
     # within a source) — it must not come back now that every source has its own table.
     assert "doc_acl" not in names
     conn.close()
+
+
+def test_acl_clause_rejects_a_wrong_but_valid_table_pairing():
+    """`_acl_clause`'s `tbl` defaults to the source's own table, but a caller may still pass one
+    explicitly. When it does, a REAL table (one of SOURCE_TABLE's values) that isn't THIS
+    source's table must raise rather than silently scoping to the wrong source: passing
+    ("slack", "gmail_messages") is wrong in exactly the way that leaves a scoped Gmail listing
+    silently reading Slack's ACL grants instead of Gmail's, with no observable failure short of
+    the wrong rows coming back."""
+    with pytest.raises(AssertionError):
+        store._acl_clause("slack", "gmail_messages", {"p1"})
+    # An alias (not a real table name) must not trip the check — the Linear relation readers
+    # legitimately pass "i"/"a"/"b" as `tbl`.
+    store._acl_clause("slack", "i", {"p1"})
+    # tbl=None (the default) resolves to the source's own table and must not raise.
+    store._acl_clause("slack", visible_ids={"p1"})
 
 
 # --- generic reads over the SAMPLE corpus ---------------------------------------
@@ -480,6 +504,26 @@ def test_connect_rw_fresh_db_still_works(tmp_path):
         assert {"path", "line", "diff_hunk"} <= ccols
     finally:
         conn.close()
+
+
+def test_connect_rw_refuses_a_pre_per_source_acl_db(tmp_path):
+    """A DB built before this branch has one shared `doc_acl` table. Appending to it would write
+    the new source's grants into the empty per-source tables SCHEMA creates while every
+    pre-existing grant stays behind in `doc_acl`, which nothing reads any more — every
+    pre-existing document would silently become invisible to every scoped token. There is no
+    backfill: `doc_acl` cannot say which source a colliding `doc_id`'s grant belonged to, so
+    connect_rw must refuse outright rather than quietly leaving the old grants orphaned."""
+    p = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(p)
+    conn.execute(
+        "CREATE TABLE doc_acl (doc_id TEXT NOT NULL, principal_type TEXT NOT NULL, "
+        "principal_id TEXT NOT NULL, PRIMARY KEY (doc_id, principal_type, principal_id))"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(ValueError, match="re-import"):
+        store.connect_rw(p)
 
 
 def test_github_comments_splits_review_from_conversation(tmp_path):

@@ -1764,6 +1764,25 @@ def _src_tag(source_type: str) -> str:
     return "src" + source_type.replace("_", "")
 
 
+# Sources that have been given their OWN FTS index; everything else still shares `docs_fts`.
+# The split exists for one substantive reason: bm25's IDF is computed over whatever table the
+# term is in, so while the index is shared, how a term ranks INSIDE one source depends on how
+# often it appears in the others. A per-source index makes each vendor's ranking a function of
+# that vendor's corpus alone, which is what the real products do.
+#
+# It is deliberately NOT justified by scan cost: `docs_fts` already carries an INDEXED `src`
+# column, so a scoped search already intersects posting lists rather than ranking every source
+# and post-filtering (see `_fts_match`). That was solved when the tag was added.
+#
+# Populated one source at a time; `_fts_table` is what lets both paths coexist meanwhile.
+FTS_TABLE = {"jira": "jira_fts"}
+
+
+def _fts_table(source_type: str) -> str:
+    """The FTS table a source's terms live in — its own once converted, else the shared one."""
+    return FTS_TABLE.get(source_type, "docs_fts")
+
+
 def build_fts(conn) -> bool:
     """(Re)build the docs_fts index over all source tables. No-op (False) without FTS5 — search
     then uses the LIKE fallback.
@@ -1782,14 +1801,30 @@ def build_fts(conn) -> bool:
         "CREATE VIRTUAL TABLE docs_fts USING fts5("
         "doc_id UNINDEXED, src, title, content, tokenize='porter unicode61')"
     )
+    # A converted source's own index carries no `src` column — there is nothing else in it to
+    # tell apart, and the tag's own token would otherwise contribute to every doc's length and
+    # to bm25's score for no purpose.
+    for fts in FTS_TABLE.values():
+        conn.execute(f"DROP TABLE IF EXISTS {fts}")
+        conn.execute(
+            f"CREATE VIRTUAL TABLE {fts} USING fts5("
+            "doc_id UNINDEXED, title, content, tokenize='porter unicode61')"
+        )
     # Commit per source rather than once at the end: on an in-place rebuild of a large DB this
     # keeps each writer lock window to one source's index, so a concurrent reader (the live
     # server, with a busy_timeout) rides through instead of blocking on a single multi-GB commit.
     for src, tbl in SOURCE_TABLE.items():
-        conn.execute(
-            f"INSERT INTO docs_fts(doc_id, src, title, content) "
-            f"SELECT doc_id, '{_src_tag(src)}', title, content FROM {tbl}"
-        )
+        fts = _fts_table(src)
+        if fts == "docs_fts":
+            conn.execute(
+                f"INSERT INTO docs_fts(doc_id, src, title, content) "
+                f"SELECT doc_id, '{_src_tag(src)}', title, content FROM {tbl}"
+            )
+        else:
+            conn.execute(
+                f"INSERT INTO {fts}(doc_id, title, content) "
+                f"SELECT doc_id, title, content FROM {tbl}"
+            )
         conn.commit()
     return True
 
@@ -1800,15 +1835,16 @@ def fts_add_docs(conn, source_type: str, doc_ids: list[str]) -> int:
     the whole corpus. No-op (returns 0) if the FTS index isn't present or ``doc_ids`` is empty."""
     if not doc_ids or not _has_fts(conn):
         return 0
-    tbl, tag = table(source_type), _src_tag(source_type)
+    tbl, tag, fts = table(source_type), _src_tag(source_type), _fts_table(source_type)
+    cols = "doc_id, title, content" if fts != "docs_fts" else "doc_id, src, title, content"
+    sel = "doc_id, title, content" if fts != "docs_fts" else f"doc_id, '{tag}', title, content"
     n = 0
     for i in range(0, len(doc_ids), 900):
         chunk = doc_ids[i : i + 900]
         marks = ",".join("?" for _ in chunk)
-        conn.execute(f"DELETE FROM docs_fts WHERE doc_id IN ({marks})", chunk)
+        conn.execute(f"DELETE FROM {fts} WHERE doc_id IN ({marks})", chunk)
         conn.execute(
-            f"INSERT INTO docs_fts(doc_id, src, title, content) "
-            f"SELECT doc_id, '{tag}', title, content FROM {tbl} WHERE doc_id IN ({marks})",
+            f"INSERT INTO {fts}({cols}) SELECT {sel} FROM {tbl} WHERE doc_id IN ({marks})",
             chunk,
         )
         n += len(chunk)
@@ -1839,7 +1875,9 @@ def _fts_match(query: str, source_type: str | None, has_src: bool, phrase: bool 
         if (phrase and len(toks) > 1)
         else " AND ".join(f'"{t}"' for t in toks)
     )
-    if has_src and source_type:
+    # A converted source's index holds only its own rows, so there is nothing to intersect the
+    # src tag against — and its table has no `src` column to match on either.
+    if has_src and source_type and _fts_table(source_type) == "docs_fts":
         return f"src:{_src_tag(source_type)} AND ({body})"
     return body
 
@@ -1870,20 +1908,24 @@ def search_documents(
         if not m:
             return []
         clause, cparams = _acl_clause(source_type, "t", visible_ids)
-        src_sql = "" if has_src else " AND docs_fts.source_type = ?"
-        src_p = [] if has_src else [source_type]
+        fts = _fts_table(source_type)
+        # The legacy `source_type` post-filter only ever existed for the shared index; a
+        # per-source table holds nothing else, and has no such column to filter on.
+        legacy_src = fts == "docs_fts" and not has_src
+        src_sql = f" AND {fts}.source_type = ?" if legacy_src else ""
+        src_p = [source_type] if legacy_src else []
         # For a phrase search, tier the results: docs literally containing the query string first
         # (bm25 next as the tiebreak). FTS tokenization drops punctuation, so "upload.csv" and
         # "upload csv" tokenize identically and bm25 can't tell them apart — the one doc that
         # actually contains "upload.csv" would otherwise sink beneath hundreds of "upload csv"
         # mentions. instr runs only over the (already phrase-narrowed) matches, so it's cheap.
-        order_sql, order_p = "docs_fts.rank", []
+        order_sql, order_p = f"{fts}.rank", []
         lit = (query or "").strip()
         if order_by in ("recency", "recency_asc"):
             # Slack sort=timestamp: order matches by the message's own ts, not relevance. NULL
             # created_ts (a synthesized ts) sorts last on desc / first on asc — an acceptable edge.
             direction = "ASC" if order_by == "recency_asc" else "DESC"
-            order_sql = f"t.created_ts {direction}, docs_fts.rank"
+            order_sql = f"t.created_ts {direction}, {fts}.rank"
         # Boost docs containing the query as a literal substring, but ONLY when the query has
         # punctuation joining word chars (upload.csv, DOCS-210, a/b): that's exactly when the
         # tokenizer splits one literal into pieces and the exact match sinks under coincidental
@@ -1895,12 +1937,12 @@ def search_documents(
         elif lit and re.search(r"\w[^\w\s]\w", lit):
             order_sql = (
                 "(instr(lower(t.content), lower(?)) > 0 "
-                "OR instr(lower(t.title), lower(?)) > 0) DESC, docs_fts.rank"
+                f"OR instr(lower(t.title), lower(?)) > 0) DESC, {fts}.rank"
             )
             order_p = [lit, lit]
         sql = (
-            f"SELECT t.* FROM docs_fts JOIN {tbl} t ON t.doc_id = docs_fts.doc_id "
-            f"WHERE docs_fts MATCH ?{src_sql}{cont_sql.format(a='t')}{clause} "
+            f"SELECT t.* FROM {fts} JOIN {tbl} t ON t.doc_id = {fts}.doc_id "
+            f"WHERE {fts} MATCH ?{src_sql}{cont_sql.format(a='t')}{clause} "
             f"ORDER BY {order_sql} LIMIT ? OFFSET ?"
         )
         return conn.execute(sql, [m, *src_p, *cont_p, *cparams, *order_p, limit, offset]).fetchall()
@@ -1930,11 +1972,13 @@ def count_search(
         if not m:
             return 0
         clause, cparams = _acl_clause(source_type, "t", visible_ids)
-        src_sql = "" if has_src else " AND docs_fts.source_type = ?"
-        src_p = [] if has_src else [source_type]
+        fts = _fts_table(source_type)
+        legacy_src = fts == "docs_fts" and not has_src
+        src_sql = f" AND {fts}.source_type = ?" if legacy_src else ""
+        src_p = [source_type] if legacy_src else []
         sql = (
-            f"SELECT COUNT(*) FROM (SELECT t.doc_id FROM docs_fts JOIN {tbl} t "
-            f"ON t.doc_id = docs_fts.doc_id WHERE docs_fts MATCH ?{src_sql}"
+            f"SELECT COUNT(*) FROM (SELECT t.doc_id FROM {fts} JOIN {tbl} t "
+            f"ON t.doc_id = {fts}.doc_id WHERE {fts} MATCH ?{src_sql}"
             f"{cont_sql.format(a='t')}{clause} LIMIT ?)"
         )
         return conn.execute(sql, [m, *src_p, *cont_p, *cparams, cap]).fetchone()[0]

@@ -35,11 +35,14 @@ def test_fts_acl_scoped(db, acl, tokens):
 
 
 def test_fts_source_aware_index(db):
-    # the importer rebuilds docs_fts with the indexed `src` column → fast source-intersection
+    # the importer rebuilds docs_fts with the indexed `src` column → fast source-intersection.
+    # Asserted on a source that still SHARES that index: this test is about the shared index's
+    # source-intersection, and a converted source (jira, see test_fts_jira_has_its_own_index)
+    # correctly emits no `src:` term at all because its own table holds nothing else.
     assert store._fts_has_src(db)
     assert (
-        store._fts_match("latency spike", "jira", has_src=True)
-        == 'src:srcjira AND ("latency" AND "spike")'
+        store._fts_match("latency spike", "slack", has_src=True)
+        == 'src:srcslack AND ("latency" AND "spike")'
     )
     # 'gateway' is in slack + confluence (SAMPLE); each source-scoped search returns only its
     # own rows, and a source whose title/content lacks the term returns nothing
@@ -48,6 +51,26 @@ def test_fts_source_aware_index(db):
     assert sl and all("channel" in r.keys() for r in sl)
     assert cf and all("space" in r.keys() for r in cf)
     assert store.search_documents(db, "gateway", "github") == []
+
+
+def test_fts_jira_has_its_own_index(db):
+    """jira searches its OWN FTS table rather than the shared `docs_fts`.
+
+    The conversion is incremental — every other source is still on `docs_fts` — so both paths
+    have to work at once, which is what `_fts_table` decides. A converted source also drops the
+    `src:` term from its MATCH: there is nothing else in its index to exclude.
+    """
+    assert store._fts_table("jira") == "jira_fts"
+    assert store._fts_table("slack") == "docs_fts"  # not converted yet
+    names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"jira_fts", "docs_fts"} <= names
+    assert store._fts_match("latency spike", "jira", has_src=True) == '"latency" AND "spike"'
+
+    # the same documents the shared index returned, and still only jira's
+    rows = store.search_documents(db, "latency", "jira")
+    assert rows and all("project" in r.keys() for r in rows)
+    assert store.search_documents(db, "gateway", "jira") == []
+    assert store.count_search(db, "latency", "jira") >= 1
 
 
 def test_fts_drive_source(db):

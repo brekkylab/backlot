@@ -80,6 +80,12 @@ def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+# Distinguishes "no claim on this value" from "claimed by a row whose dataset id is unknown"
+# (one carried over from an earlier run, where there is no dataset id left to record). A plain
+# `.get()` default of None would conflate the two and let a re-import silently re-claim.
+_UNCLAIMED = object()
+
+
 def _doc_id(rec: dict) -> str:
     if rec.get("doc_id"):
         return str(rec["doc_id"])
@@ -139,7 +145,7 @@ def _service_columns(
     ex,
     subtype,
     parent_id,
-    doc_id,
+    seed,
     thread_id,
     seq,
     org_domain,
@@ -148,6 +154,11 @@ def _service_columns(
     owner_display=None,
 ) -> dict:
     """Map generic BYO fields (+ meta) to the target service table's own columns.
+
+    ``seed`` is the incoming record's own dataset identifier. It is an INPUT: several sources
+    derive a served id from it here, and it is never itself stored (#51). ``parent_id`` and
+    ``thread_id`` arrive already RESOLVED to the target's served id — the caller does that, because
+    resolving a jira parent needs keys that are only assigned once the whole corpus has been seen.
 
     ``created``/``updated`` are pre-parsed epoch seconds (or None); slack/gmail carry only
     ``created_ts``.
@@ -158,8 +169,9 @@ def _service_columns(
     name ("Tomás Rré", "Aisha K. Patel") does not survive the round trip through
     ``<slug>@<domain>``. slack/notion/s3 have no such column — those APIs expose no owner name."""
     if src == "slack":
+        # `thread_ts` is deliberately absent here: it is the thread ROOT's `ts`, and that value is
+        # only known once the root has been inserted and its ts probed, so the caller sets it.
         return {
-            "thread_id": thread_id,
             "thread_seq": seq,
             "subtype": subtype or ex.get("subtype"),
             "reactions": _j(ex.get("reactions")),
@@ -171,11 +183,12 @@ def _service_columns(
             "participants": _j(ex.get("participants")),
         }
     if src == "gmail":
-        # `thread` names the thread this message belongs to (default: the doc's own id), so every
-        # message of a multi-message thread shares one thread_id while carrying its own position
-        # in `thread_seq`.
+        # `thread` names the thread this message belongs to (default: the message's own id), so
+        # every message of a multi-message thread shares one thread_id while carrying its own
+        # position in `thread_seq`. It holds the ROOT'S SERVED id, resolved by the caller — a
+        # gmail id is a pure hash of the seed, so that resolution needs no lookup.
         return {
-            "thread_id": ex.get("thread") or doc_id,
+            "thread_id": thread_id or synth.gmail_message_id(seed),
             "thread_seq": seq,
             "label_ids": _j(ex.get("label_ids")),
             "to_addr": ex.get("to"),
@@ -332,13 +345,13 @@ def _service_columns(
         }
     if src == "fireflies":
         # Keys are the Fireflies API's own, so a corpus written against it needs no renaming.
-        # `transcript_id` and the three media/web URLs are derived from the doc_id when omitted,
-        # and MATERIALIZED here rather than synthesized per request for the same reason Linear's
-        # `identifier` is: `transcript(id:)` has to resolve the id the API just handed the caller,
-        # and the app's reverse index is built from stored columns.
-        tid = ex.get("transcript_id") or synth.fireflies_id(doc_id)
+        # `id` and the three media/web URLs are derived from the record's own dataset id when
+        # omitted. A corpus may still provide `transcript_id`, which wins — it is a claim on one
+        # spelling, the same way a github `number` is, and the PRIMARY KEY turns a clash between
+        # two records into a loud import failure.
+        tid = ex.get("transcript_id") or synth.fireflies_id(seed)
         return {
-            "transcript_id": tid,
+            "id": tid,
             "calendar_id": ex.get("calendar_id"),
             "calendar_type": ex.get("calendar_type") or "google_calendar",
             "organizer_email": ex.get("organizer_email"),
@@ -351,7 +364,7 @@ def _service_columns(
             "audio_url": ex.get("audio_url") or synth.fireflies_media_url(tid, "audio"),
             "video_url": ex.get("video_url") or synth.fireflies_media_url(tid, "video"),
             "transcript_url": (ex.get("transcript_url") or synth.fireflies_transcript_url(tid)),
-            "meeting_link": ex.get("meeting_link") or synth.fireflies_meeting_link(doc_id),
+            "meeting_link": ex.get("meeting_link") or synth.fireflies_meeting_link(seed),
             # `host_name` is where a Fireflies record names its owner; the caller resolves
             # which field that is per service, so this branch just takes the value.
             "owner_display": owner_display,
@@ -621,27 +634,28 @@ class _Loader:
     def _assign_github_number(self, doc_id: str, repo: str, taken: dict[str, set[int]]) -> int:
         """A served number for a github row with no corpus-provided one, unique within `repo`
         among the numbers `taken` already holds for it (github's own uniqueness rule — see
-        store.SERVED_ID's `scope` for github).
+        store.ID_SEED's `scope` for github).
 
         Called only from :meth:`resolve_github_numbers`'s second pass, never from `add`: which
         numbers are already taken in this repo depends on the WHOLE corpus, including rows that
         may not have been loaded yet, so this cannot run while records are still streaming in (see
         that method's docstring).
 
-        Same probe shape as `_assign_confluence_id`/`_assign_hubspot_id`: seeded from the doc_id so
-        the same corpus produces the same number, re-seeded a few times to spread out, THEN walked
+        Same probe shape as `_assign_confluence_id`/`_assign_hubspot_id`: seeded from the incoming
+        record's own id so the same corpus produces the same number, re-seeded a few times to
+        spread out, THEN walked
         unconditionally — re-seeding alone only terminates if the hash actually varies with the
         salt, and an unbounded re-seed loop hung the importer once already. Unlike the old
         `_free_number` this replaces, the walk is BOUNDED: past `synth.GITHUB_NUMBER_RANGE` steps
         every number `synth.github_number` can produce has been visited, so `repo` has more
         non-file rows than the space holds, and returning one anyway (as `_free_number` did,
-        silently) would duplicate it under the UNIQUE (repo, number) index instead of
-        failing where the problem actually is. Reads the range off `synth` rather than a private
+        silently) would break the PRIMARY KEY (repo, number) instead of failing where the
+        problem actually is. Reads the range off `synth` rather than a private
         copy of the literal, so raising `synth.github_number`'s own modulus can never silently
         leave this walk still wrapping at the old, smaller one.
         """
         bucket = taken.setdefault(repo, set())
-        seed = store.served_id_seed("github")
+        seed = store.id_seed("github")
         n = int(seed(doc_id))
         for salt in range(1, 9):
             if n not in bucket:
@@ -658,28 +672,26 @@ class _Loader:
 
     def _assign_jira_number(self, doc_id: str, project: str, taken: dict[str, set[int]]) -> int:
         """A served key SUFFIX for a jira issue with no corpus-provided key, unique within
-        `project` among the suffixes `taken` already holds for it (jira's own uniqueness rule —
-        see store.SERVED_ID's `scope` for jira).
+        `project` among the suffixes `taken` already holds for it.
 
         Called only from :meth:`resolve_jira_keys`'s second pass, never from `add`: which
         suffixes are already taken in this project depends on the WHOLE corpus, including rows
         that may not have been loaded yet, so this cannot run while records are still streaming in
         (see that method's docstring).
 
-        Same probe shape as `_assign_github_number`: seeded from the doc_id so the same corpus
-        produces the same suffix, re-seeded a few times to spread out, THEN walked
+        Same probe shape as `_assign_github_number`: seeded from the incoming record's own id so
+        the same corpus produces the same suffix, re-seeded a few times to spread out, THEN walked
         unconditionally — re-seeding alone only terminates if the hash actually varies with the
         salt, and an unbounded re-seed loop hung the importer once already. The walk is BOUNDED:
         past `synth.JIRA_KEY_NUMBER_RANGE` steps every suffix `synth.jira_key_number` can produce
         has been visited, so `project` has more issues than the space holds, and returning one
-        anyway would duplicate it under the UNIQUE (project, served_number) index instead of
-        failing where the problem actually is.
+        anyway would break the PRIMARY KEY instead of failing where the problem actually is.
         """
         bucket = taken.setdefault(project, set())
-        # Seeded from synth directly rather than through store.SERVED_ID: jira's served value is
-        # the whole KEY now, composed from its project's prefix, so it is not a 1-arity seed over
-        # doc_id and has no registry entry (see store.SERVED_ID's own comment). Only the SUFFIX is
-        # probed here; resolve_jira_keys joins the prefix on.
+        # Seeded from synth directly rather than through store.ID_SEED: jira's served value is
+        # the whole KEY, composed from its project's prefix, so it is not a 1-arity seed over the
+        # record's own id and has no registry entry (see store.ID_SEED's own comment). Only the
+        # SUFFIX is probed here; resolve_jira_keys joins the prefix on.
         seed = synth.jira_key_number
         n = int(seed(doc_id))
         for salt in range(1, 9):
@@ -708,6 +720,9 @@ class _Loader:
         `synth.GITHUB_COMMENT_ID_RANGE` steps every id `synth.github_comment_id` can produce has
         been visited, so this corpus has more comments than the space holds, and an unbounded walk
         would spin forever instead of failing where the problem actually is.
+
+        `stored_id` is the SEED — the corpus's own comment id, or one composed from the parent's —
+        and is used and discarded. The memo keyed on it lives only for this run (#51).
         """
         if stored_id in self._gh_comment_ids:
             return self._gh_comment_ids[stored_id]
@@ -751,7 +766,7 @@ class _Loader:
         """
         if doc_id in self._confluence_ids:
             return self._confluence_ids[doc_id]
-        seed = store.served_id_seed("confluence")
+        seed = store.id_seed("confluence")
         served = seed(doc_id)
         # Re-seed a few times, then walk. Re-seeding keeps ids spread out, but it only terminates
         # if the hash actually varies with the salt — walking is what makes termination
@@ -790,7 +805,7 @@ class _Loader:
         """
         if doc_id in self._hubspot_ids:
             return self._hubspot_ids[doc_id]
-        seed = store.served_id_seed("hubspot")
+        seed = store.id_seed("hubspot")
         served = int(seed(doc_id))
         # Re-seed a few times, then walk. Re-seeding keeps ids spread out, but it only terminates
         # if the hash actually varies with the salt — walking is what makes termination
@@ -817,6 +832,92 @@ class _Loader:
             f"no served id is free for {doc_id!r}"
         )
 
+    def _next_provisional(self, src: str):
+        """A placeholder key for a row whose real one is only knowable once the whole corpus has
+        been read. Unique by a per-run counter, and drawn from a space no real key can occupy:
+        NEGATIVE for a github number (real ones start at 1), `-unassigned-` for a jira key (a real
+        one starts with an uppercase project prefix).
+
+        That disjointness is what removed the two-sweep write this replaced. While the value lived
+        in a nullable column beside the row's identity, a provider's claim on N could be written
+        before the row sitting on N had moved off it, colliding transiently under the unique index
+        and aborting an `--append`. A final key can never collide with a provisional one, so the
+        intermediate state has nowhere to go wrong.
+        """
+        self._provisional += 1
+        return -self._provisional if src == "github" else f"-unassigned-{self._provisional}"
+
+    def _require_provided_id(self, src: str, where: str) -> None:
+        """Refuse a record with no id of its own when appending to a source that already holds
+        rows (#51, Step 5).
+
+        A probed key is assigned by walking to the first free value, so re-importing a row draws a
+        FRESH one and the row lands a second time. Nothing is left to recognise it by — the
+        dataset's identifier is exactly what this change removed — so a re-import would duplicate
+        in silence, which is the failure mode the whole change exists to end. Making the corpus
+        state the identity turns it back into something checkable: the claim check above then sees
+        the value is already taken and says so.
+
+        Only on an append, and only for the two sources whose key a corpus can actually write. A
+        fresh import has nothing to be confused with.
+        """
+        if src in self._appending:
+            label = "number" if src == "github" else "key"
+            raise SystemExit(
+                f"{where}: {src} records must carry `{label}` when appending to a corpus that "
+                f"already has {src} documents — without one this row cannot be told apart from a "
+                f"row already imported, and would be added a second time rather than updated. "
+                f"(a fresh import needs no {label}.)"
+            )
+
+    def _claim_jira_prefix(self, provided_key, container: str, where: str) -> None:
+        """A jira key's prefix is its PROJECT's key, held 1:1 in both directions as real Jira does.
+        Distinct from the full-key claim: PAY-1 and PAY-2 are different keys, but in different
+        projects they still fight over which project *is* PAY."""
+        prefix = str(provided_key).rsplit("-", 1)[0]
+        holder = self.jira_prefix_holders.get(prefix)
+        if holder is not None and holder != container:
+            raise SystemExit(
+                f"{where}: key {provided_key!r} carries project key {prefix!r}, "
+                f"which project {holder!r} already holds"
+            )
+        held = self.jira_prefixes.get(container)
+        if held is not None and held != prefix:
+            raise SystemExit(
+                f"{where}: key {provided_key!r} would name project {container!r} "
+                f"{prefix!r}, but its keys already name it {held!r}"
+            )
+        self.jira_prefix_holders[prefix] = container
+        self.jira_prefixes[container] = prefix
+
+    def _slack_ts(self, channel: str, seed: str, created_ts):
+        """The `ts` a Slack message is served and addressed by, assigned once at import.
+
+        It was computed per request from `(created_ts, thread-root key)`, which COLLIDED: every
+        message of a thread hashed the same root key into the same micro-fraction, so two replies
+        landing in the same second produced one ts between them and one of the two was reachable
+        only at the other's. Assigning it here, probed within the channel, is what makes it an
+        identifier rather than a formatting of one.
+
+        No deferred pass, unlike github's number: nothing in a corpus ever provides a ts, so there
+        is no provided-beats-synthesized race to settle -- only collisions, which an in-run probe
+        settles the moment they happen. The integer part stays the row's `created_ts`, which is
+        what `store.slack_messages_at_created_ts` resolves a ts by; only the fraction moves.
+        """
+        base = int(created_ts) if created_ts is not None else synth.epoch(seed)
+        taken = self._slack_ts_taken.setdefault(channel, set())
+        # Keyed on the message's OWN seed, where the serve-time version keyed a reply on its
+        # thread root — that shared key is precisely what made two replies in one second
+        # indistinguishable. A reply still sorts after its root because its `created_ts` is the
+        # root's plus its position, which is where thread order actually comes from.
+        candidate = synth.slack_fmt_ts(base, seed)
+        salt = 0
+        while candidate in taken:
+            salt += 1
+            candidate = synth.slack_fmt_ts(base, f"{seed}\x00{salt}")
+        taken.add(candidate)
+        return candidate
+
     def __init__(
         self, conn, org: str, org_domain: str, *, closed: bool = False, validate: bool = True
     ):
@@ -832,22 +933,55 @@ class _Loader:
         self.users = {}  # email -> display name
         self.groups = set()
         self.memberships = set()  # (group_id, email)
-        self.grants = []  # (source_type, doc_id, principal_type, principal_id)
+        # Accumulated against the record's DATASET id and resolved through `self.keys` when they
+        # are flushed, which happens after the deferred passes have settled every probed key (see
+        # load_records). So a grant is never written under a provisional key and never needs
+        # rewriting -- the deferred pass moves the document, and the grant simply reads the
+        # settled value later.
+        self.grants = []  # (source_type, dataset id, principal_type, principal_id)
         self.counts = {}
-        self.seen = set()  # (source_type, doc_id)
+        self.seen = set()  # (source_type, dataset id)
+        # dataset id -> the SERVED key the row was written under, for rows written THIS RUN.
+        # Values are tuples, positional against store.id_columns. For github and jira the value
+        # starts out PROVISIONAL and is rewritten in place by the deferred pass; for every other
+        # source it is final the moment the row lands.
+        #
+        # In memory, and gone when the load returns: the dataset's identifiers must not outlive
+        # the import, which is not the same as forbidding a map while it runs. `seen`,
+        # `tracker_ids`, `_confluence_ids` and `_hubspot_ids` are all already this shape.
+        self.keys = {}  # (source_type, dataset id) -> tuple(served key)
+        # Provisional keys are handed out from a per-run counter. They live in a space no real key
+        # can occupy -- negative for a github number (real ones start at 1), `-unassigned-` for a
+        # jira key (a real one starts with an uppercase prefix) -- so a row can land under the
+        # NOT NULL primary key before the corpus-wide claim order is known, and the final value can
+        # never collide with a provisional one still in place.
+        self._provisional = 0
+        # channel -> the ts values already issued in it. A ts is unique within its channel (see
+        # store.ID_COLUMNS), so the probe is scoped the same way. Preloaded by seed_tracker_ids so
+        # an append cannot hand a new message a ts an existing one already answers at.
+        self._slack_ts_taken = {}
+        # jira only, and only until the deferred passes have run: a subtask names its parent by the
+        # identifier the corpus gave it, and the KEY that resolves to is not assigned until every
+        # record has been seen. `_jira_projects` is the same story for the project a row belongs
+        # to, which the assignment probe needs and the provisional key cannot carry.
+        self._jira_parents = {}  # dataset id -> the parent's dataset id
+        self._jira_projects = {}  # dataset id -> project container
         # github comment ids are ASSIGNED rather than hashed at serve time, because a comment's own
         # `url` resolves through one and a hash into any fixed range collides by the birthday bound
         # (~4% at 27k comments) — two comments sharing an id means one comment's url returns the
         # other's body. Seeded from the stored id so it stays stable, probed so it stays unique.
         # Populated by seed_tracker_ids, for the same reason the provided ids there are.
-        self._gh_comment_ids = {}  # stored id -> served id, for comments already in the DB
+        # In-run only: the seed is the comment's own dataset id, and two mentions of it in one run
+        # must resolve to one comment. Across runs there is nothing left to memo -- the served id
+        # IS the stored id now, so `_gh_ids_taken` (preloaded) is the whole cross-run fact.
+        self._gh_comment_ids = {}  # seed -> served id, for comments assigned THIS run
         self._gh_ids_taken = set()
         # confluence page ids are ASSIGNED rather than hashed at serve time, for the same reason:
         # a hash into synth.confluence_id's 9,000,000 values collides by the birthday bound, and
         # a shared id used to mean a reverse map built at startup was last-writer-wins over the
         # collision, leaving one page unreachable at its own id (#51). Seeded from the doc_id so
         # it stays stable, probed so it stays unique. Populated by seed_tracker_ids.
-        self._confluence_ids = {}  # doc_id -> served id, for pages already in the DB
+        self._confluence_ids = {}  # seed -> served id, for pages assigned THIS run
         self._confluence_ids_taken = set()
         # hubspot record ids are ASSIGNED rather than hashed at serve time, for the same reason as
         # confluence's, not gmail's/notion's (#51): synth.hubspot_record_id's 9,000,000,000-value
@@ -858,41 +992,37 @@ class _Loader:
         # seed_tracker_ids -- more load-bearing here than for confluence, since a probed id is
         # NOT a pure function of doc_id, so without the preload an append could hand a record a
         # different id than the one already served, and a client holding the old id gets a 404.
-        self._hubspot_ids = {}  # doc_id -> served id, for records already in the DB
+        self._hubspot_ids = {}  # seed -> served id, for records assigned THIS run
         self._hubspot_ids_taken = set()
-        # github served numbers are ASSIGNED like confluence's/hubspot's, but unlike either the
-        # assignment cannot happen per-record while the corpus streams: a provided `number` must
-        # claim its spelling ahead of every synthesized one, corpus-wide, and a record arriving
-        # early cannot know what a LATER record will provide (see resolve_github_numbers, which
-        # runs once every record has been loaded). This memo exists only so a re-import/--append
-        # does not renumber a row a client already holds a number for: `resolve_github_numbers`
-        # reads it for a row whose number the streaming insert just left NULL (see
-        # `insert`'s github block), the only remaining record of what it used to serve. Populated
-        # by seed_tracker_ids, BEFORE this run's inserts can overwrite the column.
-        self._github_numbers = {}  # doc_id -> served number, for github rows already in the DB
-        # jira served-key SUFFIXES are assigned the same way (#51, task 8) -- deferred, not
-        # per-record while streaming, for the same provided-claims-first reason (see
-        # resolve_jira_keys). This memo exists only so a re-import/--append does not renumber a
-        # row a client already holds a key for: resolve_jira_keys reads it for a row whose
-        # served_number the streaming insert just reset to NULL (see `insert`'s jira block), the
-        # only remaining record of what it used to serve. Populated by seed_tracker_ids, BEFORE
-        # this run's inserts can overwrite the column.
-        self._jira_numbers = {}  # doc_id -> served suffix, for jira rows already in the DB
+        # github numbers and jira key suffixes are ASSIGNED like confluence's/hubspot's, but unlike
+        # either the assignment cannot happen per-record while the corpus streams: a provided
+        # `number`/`key` must claim its spelling ahead of every synthesized one, corpus-wide, and a
+        # record arriving early cannot know what a LATER record will provide (see
+        # resolve_github_numbers / resolve_jira_keys, which run once every record has been loaded).
+        #
+        # The `doc_id -> number` memos this used to keep are gone with `doc_id` itself. They
+        # existed to keep a re-imported row on the number it already served; that is now handled
+        # at the front instead -- an --append must PROVIDE the number/key (see `add`), so a
+        # re-imported row states its own identity rather than being recognised from a map.
         self.fts_ids = {}
+        # True once seed_tracker_ids has seen rows already in the DB — i.e. this is an --append
+        # onto a corpus that already has documents, which is where a probed source's identity has
+        # to be provided rather than synthesized.
+        self._appending = set()  # source_types that already have rows
         # HubSpot associations are resolved after the whole corpus is read: a link may name a target
         # that appears on a later line, and an omitted `to_type` is filled in from the target's own
-        # object type. doc_id -> object_type, plus the declared links.
+        # object type. dataset id -> object_type, plus the declared links.
         self.hs_types = {}
-        self.hs_links = []  # (from_doc_id, from_type, declaration)
-        # Linear relations name a target by doc_id and are resolved after the whole corpus is read,
-        # since a target may appear on a later line.
+        self.hs_links = []  # (from dataset id, from_type, declaration)
+        # Linear relations name a target by its dataset id and are resolved after the whole corpus
+        # is read, since a target may appear on a later line.
         self.lin_links = []
         # Tracker ids the corpus provided, so a second record claiming one is refused here.
         # Two records providing the same github number or jira key used to load without a
         # word: one of them then owned the id in the reverse index and the other was
         # unreachable at the only id it advertised. The loader is the one place that sees
         # every row, so it is the only place the claim can be checked at all.
-        self.tracker_ids = {}  # (source_type, container, id) -> doc_id
+        self.tracker_ids = {}  # (source_type, container, id) -> dataset id that claimed it
         # A jira key's prefix is its PROJECT's key, and real Jira holds that 1:1 in both
         # directions: a project has one key, a key names one project. The index can only
         # pick one side of a tie with setdefault — two projects providing `PAY-` keys left
@@ -911,67 +1041,46 @@ class _Loader:
         other row would advertise an id that fetches somebody else. That is the failure this
         check exists to remove, and ``--append`` is a route straight back into it.
 
-        Only provided ids are stored (a derived one stays NULL and is resolved by
-        `resolve_github_numbers`/`resolve_jira_keys`'s deferred pass, run later in this same
-        load — not at boot, and not `main._build_index`, which #51 removed for these two), so the
-        column is exactly the set of claims already made. The jira prefix maps
-        are seeded from the same rows: a later shard bringing `BILL-` keys into a project
-        that already answers at `PAY`, or claiming `PAY` for a second project, is the same
-        1:1 violation whether the earlier keys arrived this run or a previous one.
+        Every stored id is a claim, and reading them is now the WHOLE cross-run story: the id a row
+        serves IS its primary key (#51), so there is no separate column that may or may not be
+        populated and no `doc_id -> id` memo to rebuild. What this cannot do any more is recognise
+        a row: a claim says "this value is taken", never "taken by the document you are about to
+        re-import". That is why an append has to state a probed source's identity outright — see
+        `_require_provided_id`.
+
+        The jira prefix maps are seeded from the same rows: a later shard bringing `BILL-` keys
+        into a project that already answers at `PAY`, or claiming `PAY` for a second project, is
+        the same 1:1 violation whether the earlier keys arrived this run or a previous one.
         """
+        # Which sources already hold documents. An append into a NON-EMPTY probed source is where
+        # a synthesized identity becomes indistinguishable from a re-imported one.
+        for src, tbl in store.SOURCE_TABLE.items():
+            if self.conn.execute(f"SELECT 1 FROM {tbl} LIMIT 1").fetchone():
+                self._appending.add(src)
         # A comment's id is assigned rather than provided, but the claim is the same: an id already
-        # issued must not be issued again by a later shard, and a comment re-imported keeps the id
-        # a client may already hold a url for.
-        for row in self.conn.execute(
-            "SELECT id, served_id FROM github_comments WHERE served_id IS NOT NULL"
-        ):
-            self._gh_comment_ids[row["id"]] = row["served_id"]
-            self._gh_ids_taken.add(row["served_id"])
-        # Same claim, for confluence pages: an id already issued (this run or a previous one)
-        # must not be handed to a second page.
-        cf_col = store.served_id_column("confluence")
-        for row in self.conn.execute(
-            f"SELECT doc_id, {cf_col} AS served_id FROM confluence_pages WHERE {cf_col} IS NOT NULL"
-        ):
-            self._confluence_ids[row["doc_id"]] = row["served_id"]
-            self._confluence_ids_taken.add(row["served_id"])
-        # Same claim, for hubspot records -- more load-bearing than confluence's: a probed id is
-        # NOT a pure function of doc_id, so without this preload a re-import (or --append) could
-        # hand an existing record a DIFFERENT id than the one already served, and a client holding
-        # the old id would get a 404 at it.
-        hs_col = store.served_id_column("hubspot")
-        for row in self.conn.execute(
-            f"SELECT doc_id, {hs_col} AS served_id FROM hubspot_objects WHERE {hs_col} IS NOT NULL"
-        ):
-            self._hubspot_ids[row["doc_id"]] = row["served_id"]
-            self._hubspot_ids_taken.add(int(row["served_id"]))
-        # Same claim, for github served numbers -- more load-bearing than confluence's/hubspot's:
-        # `resolve_github_numbers` reads this memo for a row this run's insert is about to reset
-        # to NULL (see `insert`'s github block), which is the ONLY way a re-import/--append can
-        # still tell "this row used to serve number N" once the live column has been overwritten.
-        # `kind IS NULL OR kind != 'file'` is redundant with `number IS NOT NULL` (a
-        # kind='file' row's number is always NULL, see idx_github_doc_number) but it is
-        # not redundant to the PLANNER: without it verbatim, SQLite cannot see this query implies
-        # the partial index's own condition and falls back to `SCAN github_items` over every wide
-        # file row. With it, this plans as a covering-index scan of idx_github_doc_number, the
-        # same index `resolve_github_numbers` already uses below.
-        gh_col = store.served_id_column("github")
-        for row in self.conn.execute(
-            f"SELECT doc_id, {gh_col} AS served FROM github_items "
-            f"WHERE {gh_col} IS NOT NULL AND (kind IS NULL OR kind != 'file')"
-        ):
-            self._github_numbers[row["doc_id"]] = row["served"]
-        # Same claim, for jira. The memo holds the SUFFIX, not the whole key: that is what
-        # resolve_jira_keys' probe works in, and the prefix is recomposed there from the project.
-        for row in self.conn.execute("SELECT doc_id, key FROM jira_issues WHERE key IS NOT NULL"):
-            self._jira_numbers[row["doc_id"]] = int(str(row["key"]).rsplit("-", 1)[-1])
+        # issued must not be issued again by a later shard.
+        for (cid,) in self.conn.execute("SELECT id FROM github_comments"):
+            self._gh_ids_taken.add(cid)
+        # Same claim, for confluence pages and hubspot records: an id already issued (this run or a
+        # previous one) must not be handed to a second row.
+        for (cid,) in self.conn.execute("SELECT id FROM confluence_pages"):
+            self._confluence_ids_taken.add(cid)
+        for (rid,) in self.conn.execute("SELECT id FROM hubspot_objects"):
+            self._hubspot_ids_taken.add(int(rid))
+        # Same claim, per channel, for slack message timestamps.
+        for channel, ts in self.conn.execute("SELECT channel, ts FROM slack_messages"):
+            self._slack_ts_taken.setdefault(channel, set()).add(ts)
+        # github numbers and jira keys. Every row carries one now -- there is no "provided vs
+        # derived" split in the column any more, and for a claim there never was a difference:
+        # both mean the value is taken. The `dataset id` side of `tracker_ids` is unknowable for a
+        # row from an earlier run, so it is recorded as None; the check that reads it only needs to
+        # know the claim belongs to a DIFFERENT document than the one now claiming it.
         for src, col in (("github", "number"), ("jira", "key")):
             for row in self.conn.execute(
-                f"SELECT doc_id, {col} AS v, {store.grouping_col(src)} AS c "
-                f"FROM {store.table(src)} WHERE {col} IS NOT NULL"
+                f"SELECT {col} AS v, {store.grouping_col(src)} AS c FROM {store.table(src)}"
             ):
                 scope = str(row["c"]) if src == "github" else ""
-                self.tracker_ids[(src, scope, str(row["v"]))] = row["doc_id"]
+                self.tracker_ids[(src, scope, str(row["v"]))] = None
                 if src == "jira":
                     prefix = str(row["v"]).rsplit("-", 1)[0]
                     self.jira_prefixes[str(row["c"])] = prefix
@@ -1045,7 +1154,7 @@ class _Loader:
         doc_id = _doc_id(rec)
         # Recorded, not deduplicated: `seen` answers "is this document in the corpus" for the
         # cross-reference resolution further down. Two records sharing a (source, doc_id) are both
-        # written, and the row-level upsert (`ON CONFLICT(doc_id) DO UPDATE`, below) leaves the
+        # written, and the row-level upsert (`ON CONFLICT(<served key>) DO UPDATE`, below) leaves the
         # later one — which is what a direct import of the same documents produces. One real corpus
         # has four such pairs (three across sources, one within jira); skipping the repeat instead
         # would keep the earlier document and diverge.
@@ -1224,7 +1333,11 @@ class _Loader:
         updated = _epoch(rec.get("updated"))
 
         replies = rec.get("replies") if src == "slack" else None
-        thread_id = doc_id if replies else None
+        # The ROOT's `ts`, which is what a reply stores as its `thread_ts` — and it is not known
+        # until the root has been inserted and probed, so `insert` fills it from here rather than
+        # taking it as an argument. A root with replies carries its OWN ts (Slack does too, so
+        # `thread_ts == ts` is what marks a root); a standalone message carries NULL.
+        slack_thread_ts = None
         # gmail's own child-row array. `replies` stays Slack-only (a Slack reply is a *reply*,
         # with reactions and files); a Gmail thread is a sequence of full RFC822 messages, each
         # with its own sender, recipients and Message-ID, so it gets an array that reads like one
@@ -1234,7 +1347,11 @@ class _Loader:
         # names one, else its doc_id — the SAME expression `_service_columns` applies to the root,
         # so a record that opens a thread under an explicit id keeps its messages in it rather than
         # splitting them into a second thread named after the root's doc_id.
-        gmail_thread = (rec.get("thread") or doc_id) if src == "gmail" else None
+        # A gmail id is a pure hash of the seed, so the thread's SERVED id is computable here
+        # without waiting for the root row to land.
+        gmail_thread = (
+            synth.gmail_message_id(rec.get("thread") or doc_id) if src == "gmail" else None
+        )
         # The owner's display name as the corpus wrote it, under each service's own name for it:
         # gmail's owner is the MAILBOX's owner (often not the sender of any one message in the
         # thread) and fireflies' is the meeting HOST, where every other source's is the author's.
@@ -1267,12 +1384,24 @@ class _Loader:
             uts=None,
             odisp=None,
         ):
+            # A parent is named by the target's dataset id; what gets STORED is the target's
+            # served id (#51). confluence and notion can resolve it right here — confluence's
+            # assignment is memoized on the seed and notion's is a pure hash, so both give the
+            # same answer whether the parent has been loaded yet or not. jira cannot: its parent
+            # reference is a KEY, and keys are only assigned once the whole corpus has been seen,
+            # so it is recorded and filled in by `resolve_jira_parents`. linear's `parent_key` is
+            # an IDENTIFIER, not an id, and is left exactly as the corpus wrote it.
+            if par is not None and src == "confluence":
+                par = self._assign_confluence_id(par)
+            elif par is not None and src == "notion":
+                par = synth.notion_id(par)
+            elif par is not None and src == "jira":
+                self._jira_parents[did] = par
+                par = None
             cols = _service_columns(
-                src, ex or {}, sub, par, did, thread_id, seq, org_domain, cts, uts, odisp
+                src, ex or {}, sub, par, did, gmail_thread, seq, org_domain, cts, uts, odisp
             )
-            cols.update(
-                doc_id=did, author_email=email or f"unknown@{org_domain}", title=ttl, content=body
-            )
+            cols.update(author_email=email or f"unknown@{org_domain}", title=ttl, content=body)
             if src == "s3" and cols.get("size") is None:
                 cols["size"] = len((body or "").encode("utf-8"))
             cols[gcol] = container
@@ -1284,179 +1413,126 @@ class _Loader:
                 # the API had just handed the caller that exact string. Deterministic, so the
                 # served value is unchanged; it is just written down now.
                 cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
-            if src == "linear":
-                # The UUID half of `issue(id:)`, assigned at import like gmail's/notion's rather
-                # than hashed at serve time (#51). No probe: synth.linear_id (via _uuid_from)
-                # draws from the full digest space, not a bounded range, so a collision is
-                # vanishingly unlikely, and the UNIQUE index turns one into a loud import failure
-                # instead of a silent shadow. Written unconditionally (not folded into the
-                # `identifier` branch above, which only fires when the corpus omitted one) --
-                # `names = list(cols)` below feeds the upsert's `DO UPDATE SET col=excluded.col`
-                # list, so a conditionally-written column here would go stale on a re-imported
-                # row, the same bug notion's served_data_source_id shipped.
-                cols[store.served_id_column("linear")] = store.served_id_seed("linear")(did)
-            if src == "confluence":
-                # MATERIALIZE the served id the same way, and for the same reason: a hash into
-                # synth.confluence_id's 9,000,000 values collides by the birthday bound, and the
-                # reverse map this replaces resolved a collision last-writer-wins, so serving the
-                # hash directly could still leave one page unreachable at its own id (#51).
-                # Assigning here, probed against every id already taken, is what makes it unique.
-                cols[store.served_id_column("confluence")] = self._assign_confluence_id(did)
-            if src == "gmail":
-                # Unlike confluence, no probe: synth.gmail_message_id draws from 2**63, so a
-                # collision is vanishingly unlikely at any corpus size we generate (#51), and the
-                # UNIQUE index (backed by the upsert above, scoped to doc_id) turns one into a loud
-                # import failure instead of a silent probe. This also keeps the seed pure, which is
-                # what lets _gmail_ids derive a reply's threadId by re-hashing the root's key
-                # instead of reading the root's row.
-                cols[store.served_id_column("gmail")] = store.served_id_seed("gmail")(did)
-            if src == "google_drive":
-                # Drive's own file id (#51, task 12): unlike gmail's `doc_id`-served-straight-
-                # through predecessor bug this replaces, every Drive route now resolves and emits
-                # this column instead of the corpus's own doc_id. Unprobed, same reasoning as
-                # gmail/notion/linear -- see synth.gdrive_file_id's docstring. Written
-                # unconditionally (not behind an `if not cols.get(...)`): `names = list(cols)`
-                # below feeds the upsert's `DO UPDATE SET col=excluded.col` list, so a
-                # conditionally-written column would go stale on a re-imported row (the bug
-                # notion shipped with served_data_source_id).
-                cols[store.served_id_column("google_drive")] = store.served_id_seed("google_drive")(
-                    did
-                )
+            # ---- the row's own identity -------------------------------------------------
+            # Every source's key is assigned HERE, from the incoming record's dataset id as a
+            # seed, and the seed is then discarded (#51). What differs per source is only how the
+            # candidate is turned into a value that is unique:
+            #
+            #   pure       gmail, google_drive, notion, linear, fireflies -- the seed IS the id.
+            #              Their spaces are wide enough (a full digest, or 2**63) that a collision
+            #              is vanishingly unlikely, and the PRIMARY KEY turns one into a loud
+            #              import failure rather than a silent shadow.
+            #   probed     confluence, hubspot -- their spaces are narrow enough to collide by the
+            #              birthday bound at the sizes this project generates, so an in-run memo
+            #              plus the preloaded taken-set walks to the first free value.
+            #   deferred   github, jira -- a PROVIDED value must claim its spelling ahead of every
+            #              synthesized one, corpus-wide, and a record arriving early cannot know
+            #              what a later one will provide. They land under a provisional key and
+            #              resolve_github_numbers / resolve_jira_keys settle them at the end.
+            #   stated     s3 -- the corpus gives (bucket, key) outright; nothing is synthesized.
+            #   own pass   slack -- see `_slack_ts`. Not deferred: no corpus ever provides a ts, so
+            #              there is no claim to lose a race to, only collisions to probe.
+            if src == "linear" and not cols.get("identifier"):
+                # MATERIALIZE the identifier the server would otherwise synthesize per request.
+                # An id that is served has to be resolvable, and every lookup reads a stored
+                # column — so a serve-time-only identifier came back "Entity not found" from
+                # `issue(id: "ENG-749")` even though the API had just handed the caller that exact
+                # string. Deterministic, so the served value is unchanged; it is just written down.
+                cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
+            if src in ("gmail", "google_drive", "notion", "linear"):
+                cols["id"] = store.id_seed(src)(did)
+            elif src == "confluence":
+                cols["id"] = self._assign_confluence_id(did)
+            elif src == "hubspot":
+                cols["id"] = self._assign_hubspot_id(did)
+            elif src == "slack":
+                cols["ts"] = self._slack_ts(container, did, cols.get("created_ts"))
+                # A reply takes the root's ts (set by the caller once the root landed); a root
+                # with replies takes its own; a standalone message has no thread at all.
+                cols["thread_ts"] = slack_thread_ts if seq else (cols["ts"] if replies else None)
+            elif src == "fireflies":
+                pass  # `_service_columns` already set `id`, honouring a provided transcript_id
+            elif src == "s3":
+                pass  # `_service_columns` already set `key`; `bucket` is the container below
             if src == "notion":
-                # Two independent synthesized id spaces for the same row (#51). `served_id` is
-                # the page/database id (synth.notion_id), populated for every row like gmail's:
-                # no probe, since synth._uuid_from draws from the full digest space rather than a
-                # bounded range. `served_data_source_id` is a SEPARATE id -- the 2025-09-03 API's
-                # data source (query target) for a database -- and is set directly from
-                # synth.notion_data_source_id here rather than through store.SERVED_ID: that
-                # registry stays one column per source (see its own comment), so a second column
-                # for the same source gets its own assignment, index and reader instead of
-                # widening the tuple. Only for cols["subtype"] == "database": real Notion has no
-                # data source for a page, and leaving it NULL there is safe under the UNIQUE index
-                # (see the schema comment on idx_notion_served_ds) rather than a collision.
+                # A SECOND, unrelated synthesized id for the same row -- the 2025-09-03 API's data
+                # source (query target) for a database. Only for a database: real Notion has no
+                # data source for a page, and NULL is no claim under the unique index rather than
+                # a collision.
                 #
-                # Written unconditionally (the ternary, not a bare `if`), even though it's NULL
-                # off the else branch: `names = list(cols)` below feeds the upsert's `DO UPDATE
-                # SET col=excluded.col` list, which only clears a column that's IN it. Two records
-                # sharing one doc_id are explicitly supported (see the `seen.add` comment above) --
-                # if an earlier import made this row a database and a later one demotes it to a
-                # page, an `if`-only assignment would leave `cols` without the key on the second
-                # pass, DO UPDATE would never mention it, and the stale data-source id would keep
+                # Written unconditionally (the ternary, not a bare `if`): `names = list(cols)`
+                # below feeds the upsert's `DO UPDATE SET col=excluded.col` list, which only clears
+                # a column that is IN it. If an earlier import made this row a database and a later
+                # one demotes it to a page, an `if`-only assignment would leave `cols` without the
+                # key, DO UPDATE would never mention it, and the stale data-source id would keep
                 # resolving -- serving a page as a data source, since get_data_source relies on a
                 # match here implying subtype='database' (see store.notion_by_data_source_id).
-                cols[store.served_id_column("notion")] = store.served_id_seed("notion")(did)
-                cols["served_data_source_id"] = (
+                cols["data_source_id"] = (
                     synth.notion_data_source_id(did) if cols.get("subtype") == "database" else None
                 )
-            if src == "hubspot":
-                # MATERIALIZE the served id via a probe, unlike gmail/notion (#51): synth.
-                # hubspot_record_id's space still collides at the corpus sizes this project
-                # generates (see the schema comment on idx_hubspot_served), so the record's own
-                # `id` (and the v4 association payload's `toObjectId` for it) has to read a value
-                # actually resolved unique by _assign_hubspot_id, not a raw hash that a collision
-                # walk may have moved the record away from.
-                cols[store.served_id_column("hubspot")] = self._assign_hubspot_id(did)
-            # A jira key's PREFIX carries the PROJECT's key — a fact about the container, not about
-            # this row. Written here the prefix would be the synthesized one, since the record
-            # cannot know whether a sibling issue in the same project provides `PAY-7`, and a
-            # project mixing provided and absent keys would then serve two spellings at once.
-            # `idx["jira_project_keys"]`/`idx["jira_project_containers"]` (container-level, still
-            # built at boot — see backlot.main) are what let a provided prefix claim its spelling
-            # ahead of every synthesized one; #51's task 8 (this jira conversion) leaves that
-            # reasoning, and those maps, alone.
-            #
-            # The KEY itself is what #51's identifier consolidation merged: `key` holds the whole
-            # key served, whether the corpus wrote it or resolve_jira_keys composed it. It is
-            # written here only when the corpus provided one; a keyless row stays NULL for that
-            # deferred pass to fill, because the value cannot be known while streaming — a LATER
-            # record may claim the same suffix outright, and provided keys must win that race
-            # regardless of load order. Written via setdefault so the upsert's
-            # `DO UPDATE SET col=excluded.col` list always carries the column (a conditionally
-            # written one goes stale on a re-imported row -- notion shipped exactly that bug).
-            if src == "jira":
-                cols.setdefault("key", None)
             if src == "github" and cols.get("kind") == "file":
-                # The schema says a file row's number is ignored — make that true in the table
-                # too, not only in resolve_github_numbers' own exclusion (it skips kind='file'
-                # rows entirely, see its docstring): file rows stay NULL, provided or not, so a
-                # stored number can never shadow a real issue or PR.
+                # The schema says a file row's number is ignored, and that stays true: a file is
+                # addressed by (repo, path), never by a number. It still needs one to be
+                # addressable at all now that (repo, number) is the primary key, so it takes a
+                # PROVISIONAL like any keyless row and the deferred pass probes it a real one --
+                # after every provided issue/PR number has claimed its spelling, so a file can
+                # never take a number a real issue asked for.
                 cols["number"] = None
-            if src == "github":
-                # ONE column now (#51 identifier consolidation): `number` holds the corpus's value
-                # if it gave one, and otherwise stays NULL for resolve_github_numbers to fill once
-                # every record has been seen. It is written unconditionally either way --
-                # `names = list(cols)` below feeds the upsert's `DO UPDATE SET col=excluded.col`
-                # list, so a conditionally-written column would go stale on a re-imported row
-                # (notion shipped exactly that bug with served_data_source_id).
-                #
-                # A provided number is NOT resolved to its final value here even though it is
-                # already known: a LATER record in this same corpus may claim that exact number,
-                # and which row wins must not depend on load order. Setting it and letting the
-                # deferred pass treat "already non-NULL" as the claim is what keeps that
-                # deterministic.
-                cols.setdefault("number", None)
-            # A provided id is a claim on one spelling, and two records cannot hold the same
-            # one: whichever the index gave it to, the other would be unreachable at the only
-            # id it advertises. A github number is per repository, a jira key per instance.
-            provided_id = (
-                cols.get("number")
-                if src == "github"
-                else (cols.get("key") if src == "jira" else None)
-            )
-            if provided_id is not None:
-                scope = container if src == "github" else ""
-                claim = (src, scope, str(provided_id))
-                # Only a DIFFERENT document violates the claim. Two records may share a
-                # (source, doc_id) — both are written and the row-level upsert leaves the later
-                # one, which is what a direct import of the same documents produces — and such a
-                # repeat re-stating its own id was aborting the import by naming the very doc_id
-                # it was inserting.
-                claimed = self.tracker_ids.get(claim)
-                if claimed is not None and claimed != did:
-                    label = "number" if src == "github" else "key"
-                    raise SystemExit(
-                        f"{where}: {label} {provided_id!r} is already claimed by "
-                        f"{claimed!r}" + (f" in repo {scope!r}" if scope else "")
-                    )
-                self.tracker_ids[claim] = did
-                if src == "jira":
-                    # The prefix claims, both directions (see __init__). Distinct from the
-                    # full-key claim above: PAY-1 and PAY-2 are different keys, but if they
-                    # sit in different projects they still fight over who *is* PAY.
-                    prefix = str(provided_id).rsplit("-", 1)[0]
-                    holder = self.jira_prefix_holders.get(prefix)
-                    if holder is not None and holder != container:
+            if src == "jira":
+                self._jira_projects[did] = container
+            if src in ("github", "jira"):
+                col = store.id_column(src)
+                provided = cols.get(col)
+                # A provided id is a claim on one spelling, and two records cannot hold the same
+                # one: whichever the key gave it to, the other would be unreachable at the only id
+                # it advertises. A github number is per repository, a jira key per instance.
+                if provided is not None:
+                    scope = container if src == "github" else ""
+                    claim = (src, scope, str(provided))
+                    # Only a DIFFERENT document violates the claim. Two records may share a dataset
+                    # id — both are written and the row-level upsert leaves the later one, which is
+                    # what a direct import of the same documents produces. A claim carried over
+                    # from an earlier run has no dataset id recorded (None), and is a violation for
+                    # exactly the same reason: it belongs to a document this one is not.
+                    claimed = self.tracker_ids.get(claim, _UNCLAIMED)
+                    if claimed is not _UNCLAIMED and claimed != did:
+                        label = "number" if src == "github" else "key"
                         raise SystemExit(
-                            f"{where}: key {provided_id!r} carries project key {prefix!r}, "
-                            f"which project {holder!r} already holds"
+                            f"{where}: {label} {provided!r} is already claimed by "
+                            + (f"{claimed!r}" if claimed is not None else "a previous import")
+                            + (f" in repo {scope!r}" if scope else "")
                         )
-                    held = self.jira_prefixes.get(container)
-                    if held is not None and held != prefix:
-                        raise SystemExit(
-                            f"{where}: key {provided_id!r} would name project {container!r} "
-                            f"{prefix!r}, but its keys already name it {held!r}"
-                        )
-                    self.jira_prefix_holders[prefix] = container
-                    self.jira_prefixes[container] = prefix
+                    self.tracker_ids[claim] = did
+                    if src == "jira":
+                        self._claim_jira_prefix(provided, container, where)
+                else:
+                    self._require_provided_id(src, where)
+                    cols[col] = self._next_provisional(src)
+            # ---- end identity -------------------------------------------------------------
+            key = tuple(cols[c] for c in store.id_columns(src))
             names = list(cols)
-            # An upsert keyed explicitly on doc_id (the table's PRIMARY KEY in every source), not a
-            # blanket `INSERT OR REPLACE`: two records sharing a (source, doc_id) still resolve to
-            # the later one (DO UPDATE), which is what a direct import of the same documents
-            # produces (see the `seen.add` comment above) — but a conflict on any OTHER unique
-            # index (a source's SERVED_ID column) now raises IntegrityError instead of SQLite's
-            # REPLACE algorithm silently deleting the row already holding that value. `names`
-            # always includes every column `_service_columns` + the additions above set for this
-            # src, so DO UPDATE overwrites every one of them, same as OR REPLACE did — the only
-            # difference is what happens to a row OR REPLACE would have deleted out from under a
-            # different doc_id.
-            update_cols = [n for n in names if n != "doc_id"]
+            # An upsert keyed explicitly on the table's PRIMARY KEY — the id it serves — not a
+            # blanket `INSERT OR REPLACE`: two records that resolve to the same key still leave the
+            # later one (DO UPDATE), which is what a direct import of the same documents produces
+            # (see the `seen.add` comment above) — but a conflict on any OTHER unique index (notion's
+            # data_source_id) raises IntegrityError instead of SQLite's REPLACE algorithm silently
+            # deleting the row already holding that value. `names` always includes every column
+            # `_service_columns` + the additions above set for this src, so DO UPDATE overwrites
+            # every one of them, same as OR REPLACE did.
+            key_cols = store.id_columns(src)
+            update_cols = [n for n in names if n not in key_cols]
             conn.execute(
                 f"INSERT INTO {store.table(src)} ({', '.join(names)}) "
                 f"VALUES ({', '.join('?' for _ in names)}) "
-                f"ON CONFLICT(doc_id) DO UPDATE SET "
+                f"ON CONFLICT({', '.join(key_cols)}) DO UPDATE SET "
                 + ", ".join(f"{n}=excluded.{n}" for n in update_cols),
                 [cols[n] for n in names],
             )
+            # Recorded against the DATASET id, which is what `grants`, `fts_ids` and every
+            # cross-reference still name their target by at this point. For github and jira the
+            # value here is provisional; the deferred pass rewrites it in place, and everything
+            # that reads this map runs after that (see load_records).
+            self.keys[(src, did)] = key
             fts_ids.setdefault(src, []).append(did)
             counts[src] = counts.get(src, 0) + 1
             for pt, pid in grant_types:
@@ -1475,8 +1551,13 @@ class _Loader:
             updated,
             owner_display,
         )
+        if src == "slack":
+            # The root has landed, so its ts is settled — every reply below stores it as its
+            # `thread_ts`. `store.id_columns("slack")` is (channel, ts), so the ts is the second.
+            slack_thread_ts = self.keys[(src, doc_id)][1]
 
         if src == "linear":
+            issue_id = self.keys[(src, doc_id)][0]
             for j, att in enumerate(rec.get("attachments") or [], start=1):
                 url = att.get("url") if isinstance(att, dict) else str(att)
                 if not url:
@@ -1487,11 +1568,11 @@ class _Loader:
                     or url
                 )
                 conn.execute(
-                    "INSERT OR REPLACE INTO linear_attachments(id, doc_id, seq, title, url, "
+                    "INSERT OR REPLACE INTO linear_attachments(id, issue_id, seq, title, url, "
                     "subtitle, source_type, created_ts) VALUES (?,?,?,?,?,?,?,?)",
                     (
-                        f"{doc_id}::a{j}",
-                        doc_id,
+                        f"{issue_id}::a{j}",
+                        issue_id,
                         j,
                         title,
                         url,
@@ -1501,6 +1582,8 @@ class _Loader:
                     ),
                 )
             for a in rec.get("relations") or []:
+                # Both ends are still DATASET ids here; resolve_cross_references translates them
+                # once every record has been seen, since a target may arrive on a later line.
                 lin_links.append((doc_id, a, created))
 
         if src == "hubspot":
@@ -1508,17 +1591,18 @@ class _Loader:
             for a in rec.get("associations") or []:
                 hs_links.append((doc_id, container, a))
 
+        transcript_id = self.keys[(src, doc_id)][0] if src == "fireflies" else None
         for j, s in enumerate(sentences or [], start=1):
             register(s.get("author_email"), s.get("speaker_name"))
             conn.execute(
-                "INSERT OR REPLACE INTO fireflies_sentences(id, doc_id, seq, author_email, body, "
-                "created_ts, reactions, speaker_name, speaker_id, start_time, end_time) "
+                "INSERT OR REPLACE INTO fireflies_sentences(id, transcript_id, seq, author_email, "
+                "body, created_ts, reactions, speaker_name, speaker_id, start_time, end_time) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 # A sentence sits on the MEETING's clock plus its own offset, so ordering by time
                 # never shuffles a transcript (same reasoning as a comment's created + j above).
                 (
-                    f"{doc_id}::s{j}",
-                    doc_id,
+                    f"{transcript_id}::s{j}",
+                    transcript_id,
                     j,
                     s.get("author_email"),
                     s["text"],
@@ -1550,6 +1634,10 @@ class _Loader:
         ctable = store.comment_table(src)
         if rec_comments and ctable is None:
             raise SystemExit(f"{where}: comments are not supported for source_type {src!r}")
+        # The parent's SERVED key, positional against store.comment_parent_columns — for github
+        # that is (repo, number), and the number may still be PROVISIONAL here: the deferred pass
+        # rewrites the comment rows alongside the documents they hang off.
+        parent_key = self.keys[(src, doc_id)] if rec_comments else None
         prev_c_ts = created
         for j, c in enumerate(rec_comments, start=1):
             body = c.get("body") or c.get("content")
@@ -1565,24 +1653,33 @@ class _Loader:
             # comment's own id, which would scatter one thread across two years.
             c_ts = _epoch(c.get("created_ts")) or (prev_c_ts + 1)
             prev_c_ts = max(prev_c_ts, c_ts)
-            _cid = c.get("id") or f"{doc_id}::c{j}"
-            # `served_id` MUST stay out of this column list. This INSERT is still `OR REPLACE`
-            # (unlike the per-document insert above, its conflict target is just `id`, which has no
-            # second unique index, so a same-id re-import is harmless either way) — folding
-            # `served_id` in here would put a served_id collision back through OR REPLACE's
-            # silently-delete-the-row behavior (see the per-document insert's comment). Leaving it
-            # out means a fresh row always lands with `served_id` NULL, and the plain UPDATE right
-            # below (no OR REPLACE) is what actually enforces the UNIQUE index, raising on conflict.
+            # The corpus's own comment id is a SEED, never stored (#51). For github it seeds the
+            # id the API reports, assigned here and probed for uniqueness — a comment's `url`
+            # resolves through it, so two comments sharing one means one comment's url returns the
+            # other's body. For the other five it seeds a handle those APIs derive their comment id
+            # from at serve time; it is composed from the PARENT'S SERVED id, so no part of the
+            # dataset's identifier scheme survives in it either.
+            seed_cid = c.get("id") or f"{doc_id}::c{j}"
+            _cid = (
+                self._assign_github_comment_id(seed_cid)
+                if src == "github"
+                else f"{parent_key[0]}::c{j}"
+            )
+            pcols = store.comment_parent_columns(src)
             conn.execute(
                 f"INSERT OR REPLACE INTO {ctable}"
-                "(id, doc_id, seq, author_email, body, created_ts, reactions) VALUES (?,?,?,?,?,?,?)",
-                (_cid, doc_id, j, c.get("author_email"), body, c_ts, _j(c.get("reactions"))),
+                f"(id, {', '.join(pcols)}, seq, author_email, body, created_ts, reactions) "
+                f"VALUES ({', '.join('?' for _ in range(len(pcols) + 6))})",
+                (
+                    _cid,
+                    *parent_key,
+                    j,
+                    c.get("author_email"),
+                    body,
+                    c_ts,
+                    _j(c.get("reactions")),
+                ),
             )
-            if src == "github":
-                conn.execute(
-                    "UPDATE github_comments SET served_id = ? WHERE id = ?",
-                    (self._assign_github_comment_id(_cid), _cid),
-                )
             # github's line-anchored REVIEW comments live in the same table, discriminated by
             # `path` (see store.SCHEMA). A second statement rather than widening the shared INSERT
             # above, which serves six tables that have no such columns.
@@ -1704,52 +1801,62 @@ class _Loader:
                 )
 
     def resolve_cross_references(self) -> None:
-        """Resolve the links whose target may only have arrived on a later record."""
-        conn, counts, seen = self.conn, self.counts, self.seen
+        """Resolve the links whose target may only have arrived on a later record.
+
+        Every target is named by the DATASET id the corpus wrote, and what gets stored is the
+        target's SERVED id — so each of these is a lookup through `self.keys`, the run's own
+        record of what it wrote each document under.
+
+        A target loaded by an EARLIER run cannot be resolved and is refused (#51). It used to fall
+        back to reading the stored row by `doc_id`; there is no such column now, and there is no
+        way to reconstruct one — the dataset's identifiers do not outlive the import, which is the
+        whole point. Referencing across imports is a capability this removes deliberately, and the
+        error says so rather than writing a link that would silently resolve to nothing.
+        """
+        conn, counts = self.conn, self.counts
         hs_types, hs_links, lin_links = self.hs_types, self.hs_links, self.lin_links
+
+        def resolve(src: str, seed, what: str, whose: str):
+            key = self.keys.get((src, seed))
+            if key is None:
+                raise SystemExit(
+                    f"{src} {what} {whose} -> {seed!r}: target not found in this corpus. A link "
+                    "names its target by the identifier the corpus gave it, and that identifier "
+                    "does not outlive the import — so a target loaded by an EARLIER run can no "
+                    "longer be resolved. Load the target and the record that links to it together."
+                )
+            return key
+
         # HubSpot associations: one declaration becomes two rows, because real HubSpot exposes a link
         # from both records (with a distinct type id per direction) and a corpus author should not have
         # to write it twice.
         for from_doc, from_type, a in hs_links:
             to_doc = a["to"]
-            # The target's EXISTENCE is resolved from `hs_types` (this run) or the stored row (a
-            # prior one) regardless of whether `to_type` was stated explicitly -- an explicit
-            # `to_type` names what KIND the target is (the schema's own words: "default: the
-            # target record's own object_type"), not a license to link to a record that was never
-            # written. A corpus that declared `to_type` for a target absent from both used to load
-            # cleanly and write the association anyway, with `store.hubspot_associations` silently
-            # returning zero rows for it forever after -- the same "silently shadowed" failure mode
-            # #51 exists to remove elsewhere in this project.
-            resolved_type = hs_types.get(to_doc)
-            if resolved_type is None:
-                # `--append` loads one file at a time, so a target already in the DB is not in
-                # `hs_types`. Fall back to the stored row before giving up, or appending a contact to a
-                # previously-loaded company would fail for a link that is perfectly resolvable.
-                row = conn.execute(
-                    "SELECT object_type FROM hubspot_objects WHERE doc_id = ?", (to_doc,)
-                ).fetchone()
-                resolved_type = row["object_type"] if row else None
-            if resolved_type is None:
-                raise SystemExit(
-                    f"hubspot association {from_doc} -> {to_doc}: target not found in this corpus "
-                    f"or the existing DB"
-                )
-            to_type = a.get("to_type") or resolved_type
+            # The target's EXISTENCE is resolved from what this run wrote, regardless of whether
+            # `to_type` was stated explicitly -- an explicit `to_type` names what KIND the target
+            # is (the schema's own words: "default: the target record's own object_type"), not a
+            # license to link to a record that was never written. A corpus that declared `to_type`
+            # for an absent target used to load cleanly and write the association anyway, with
+            # `store.hubspot_associations` silently returning zero rows for it forever after --
+            # the same "silently shadowed" failure mode #51 exists to remove elsewhere.
+            to_key = resolve("hubspot", to_doc, "association", from_doc)
+            from_key = resolve("hubspot", from_doc, "association", from_doc)
+            to_type = a.get("to_type") or hs_types[to_doc]
             category = a.get("category") or "HUBSPOT_DEFINED"
             label = a.get("label")
             # An explicit type_id applies only to the direction the author declared; the reverse gets
             # its own synthesized id, since the two directions never share one in real HubSpot.
-            for f_doc, f_type, t_doc, t_type, tid in (
-                (from_doc, from_type, to_doc, to_type, a.get("type_id")),
-                (to_doc, to_type, from_doc, from_type, None),
+            for f_id, f_type, t_id, t_type, tid in (
+                (from_key[0], from_type, to_key[0], to_type, a.get("type_id")),
+                (to_key[0], to_type, from_key[0], from_type, None),
             ):
                 conn.execute(
-                    "INSERT OR REPLACE INTO hubspot_associations(from_doc_id, from_type, to_doc_id, "
+                    "INSERT OR REPLACE INTO hubspot_associations(from_id, from_type, to_id, "
                     "to_type, assoc_category, assoc_type_id, label) VALUES (?,?,?,?,?,?,?)",
                     (
-                        f_doc,
+                        f_id,
                         f_type,
-                        t_doc,
+                        t_id,
                         t_type,
                         category,
                         tid or synth.hubspot_assoc_type_id(f_type, t_type),
@@ -1758,32 +1865,32 @@ class _Loader:
                 )
 
         # Linear parents: `parent` names the target by IDENTIFIER, so it can only be resolved once
-        # every issue is loaded. `Issue.children` reads `parent_doc_id`, so without this a corpus would
+        # every issue is loaded. `Issue.children` reads `parent_id`, so without this a corpus would
         # serve `parent` but an empty `children`, and the two directions would disagree.
         if counts.get("linear"):
-            key_to_doc: dict[str, str] = {}
-            for did, ident in conn.execute(
-                "SELECT doc_id, identifier FROM linear_issues WHERE identifier IS NOT NULL "
-                "ORDER BY doc_id"
+            key_to_id: dict[str, str] = {}
+            for issue_id, ident in conn.execute(
+                "SELECT id, identifier FROM linear_issues WHERE identifier IS NOT NULL ORDER BY id"
             ):
-                key_to_doc.setdefault(ident, did)
+                key_to_id.setdefault(ident, issue_id)
             dangling = 0
-            for did, pkey in conn.execute(
-                "SELECT doc_id, parent_key FROM linear_issues WHERE parent_key IS NOT NULL"
+            for issue_id, pkey in conn.execute(
+                "SELECT id, parent_key FROM linear_issues WHERE parent_key IS NOT NULL"
             ).fetchall():
-                target = key_to_doc.get(pkey)
+                target = key_to_id.get(pkey)
                 if target is None:
-                    # A parent names an IDENTIFIER, not a doc_id, and an identifier that is not in this
-                    # corpus is a normal property of a real dataset rather than a corpus error: a slice
-                    # of an issue tracker references issues outside it (24.8% of one real corpus's parent
-                    # references do). So keep `parent_key` — it is what the corpus said — and leave
-                    # `parent_doc_id` NULL, which is exactly what `Issue.parent` serving null means.
-                    # `relations` stay strict by contrast: those name a doc_id, so a miss is a typo.
+                    # A parent names an IDENTIFIER, not a document id, and an identifier that is not
+                    # in this corpus is a normal property of a real dataset rather than a corpus
+                    # error: a slice of an issue tracker references issues outside it (24.8% of one
+                    # real corpus's parent references do). So keep `parent_key` — it is what the
+                    # corpus said — and leave `parent_id` NULL, which is exactly what
+                    # `Issue.parent` serving null means. `relations` stay strict by contrast: those
+                    # name a record outright, so a miss is a typo.
                     dangling += 1
                     continue
-                if target != did:
+                if target != issue_id:
                     conn.execute(
-                        "UPDATE linear_issues SET parent_doc_id = ? WHERE doc_id = ?", (target, did)
+                        "UPDATE linear_issues SET parent_id = ? WHERE id = ?", (target, issue_id)
                     )
             if dangling:
                 print(
@@ -1792,188 +1899,169 @@ class _Loader:
                     file=sys.stderr,
                 )
 
-        # Linear relations: resolve declared targets now that every doc_id is known. A target that
-        # does not exist is an error rather than a dangling relation, matching the hubspot rule.
+        # Linear relations: resolve declared targets now that every issue id is known. A target
+        # that does not exist is an error rather than a dangling relation, matching hubspot's rule.
         for from_doc, a, created_ts in lin_links:
             to_doc = a["to"]
-            if ("linear", to_doc) not in seen and not conn.execute(
-                "SELECT 1 FROM linear_issues WHERE doc_id = ?", (to_doc,)
-            ).fetchone():
-                raise SystemExit(
-                    f"linear relation {from_doc} -> {to_doc}: target not found in this corpus or the "
-                    f"existing DB; add the target issue or drop the relation"
-                )
+            from_key = resolve("linear", from_doc, "relation", from_doc)
+            to_key = resolve("linear", to_doc, "relation", from_doc)
             conn.execute(
-                "INSERT OR REPLACE INTO linear_relations(id, from_doc_id, to_doc_id, type, created_ts)"
+                "INSERT OR REPLACE INTO linear_relations(id, from_id, to_id, type, created_ts)"
                 " VALUES (?,?,?,?,?)",
                 (
-                    a.get("id") or f"{from_doc}::r{to_doc}",
-                    from_doc,
-                    to_doc,
+                    a.get("id") or f"{from_key[0]}::r{to_key[0]}",
+                    from_key[0],
+                    to_key[0],
                     a.get("type") or "related",
                     created_ts,
                 ),
             )
 
+    def _settle(self, src: str, final: dict) -> None:
+        """Move rows in a deferred source from their provisional key to the settled one.
+
+        ``final`` maps dataset id -> the new value for that source's own id column. Three things
+        move together, and they have to: the document row, every child row hanging off it, and
+        ``self.keys`` — which is what the ACL grants and the FTS ids are resolved through when they
+        are flushed later (see load_records).
+
+        No two-sweep dance: a provisional key and a final one can never collide (see
+        `_next_provisional`), so a row can be written onto its new value while another row is still
+        sitting on its old one.
+        """
+        col = store.id_column(src)
+        tbl = store.table(src)
+        ctable = store.comment_table(src)
+        # The comment table names the parent by its own spelling of that column, which for the two
+        # deferred sources happens to match, but is read from the registry rather than assumed.
+        ccol = store.comment_parent_columns(src)[-1] if ctable else None
+        for did, value in final.items():
+            key = self.keys[(src, did)]
+            old = key[-1]
+            if old == value:
+                continue
+            scope = key[:-1]
+            where = " AND ".join(f"{c} = ?" for c in store.id_columns(src))
+            self.conn.execute(f"UPDATE {tbl} SET {col} = ? WHERE {where}", (value, *scope, old))
+            if ctable:
+                cwhere = " AND ".join(f"{c} = ?" for c in store.comment_parent_columns(src))
+                self.conn.execute(
+                    f"UPDATE {ctable} SET {ccol} = ? WHERE {cwhere}", (value, *scope, old)
+                )
+            self.keys[(src, did)] = (*scope, value)
+
     def resolve_github_numbers(self) -> None:
-        """Assign `number` to every non-file github row that has none, in the same two-phase order
-        `main._build_index` used to resolve at boot (#51) — corpus-provided numbers claim their
-        spelling FIRST, corpus-wide, and only THEN does every remaining row probe.
+        """Assign a real `number` to every github row that landed under a provisional one, in two
+        phases (#51) — corpus-provided numbers claim their spelling FIRST, corpus-wide, and only
+        THEN does every remaining row probe.
 
         This cannot happen inside `add`'s per-record insert, which is why it is here rather than
         there: which numbers a repo's rows without one may take depends on which numbers the
         REST of the repo's rows — including ones not yet loaded — claim outright. A row processed
         early has no way to know that a later record in the same corpus will provide the exact
         number it is about to probe into; running the probe while streaming would let that early
-        row win a race a real GitHub numbering scheme never lets it enter. Two separate passes
-        over the same doc_id-ordered row set (not one combined pass) is what keeps the ordering
-        deterministic and independent of insertion order: every provided number is registered as
-        taken before any row without one is even considered.
+        row win a race a real GitHub numbering scheme never lets it enter.
 
-        `kind='file'` rows are excluded entirely — their number stays NULL (see the schema
-        comment on idx_github_doc_number): a file's synthesized number must never shadow a real
-        issue/PR's.
+        Assignment runs in DATASET-ID order, which is what keeps the result independent of the
+        order records happened to stream in — the property the old `ORDER BY doc_id` gave, kept
+        without storing the value it ordered by.
 
-        Pass 3 of the old boot-time index (a provided row ALSO answering at its own synthesized
-        spelling, as an alias) is dropped here on purpose, not by oversight: a single column holds
-        ONE number per row, and a provided issue answering at a second, unrequested number is not
-        something real GitHub does either — `/issues/<a-number-that-isn't-this-issue's>` 404s
-        there. Closing that gap is the point of the stored column, not a side effect of it.
+        `kind='file'` rows are assigned here too, and last is not a place they land by accident:
+        every provided issue/PR number has already claimed its spelling in phase 1, so a file can
+        only ever take a number no real issue asked for. Its number is never served — a file is
+        addressed by (repo, path) — it exists so the row is addressable under the primary key at
+        all (see the schema).
 
-        Stability across a re-import/--append (a probed number is NOT a pure function of doc_id,
-        unlike gmail's/notion's/linear's, so this needs it): a row this run's insert touched had
-        its number left NULL (see `insert`'s github block) even if it already had a
-        stable one before this run started, so `self._github_numbers` — populated by
-        `seed_tracker_ids` BEFORE any insert in this run could clobber the live column — is the
-        only remaining record of what such a row used to serve. A row this run never touched
-        still carries its old number in the live table, read straight off `rows` below, so
-        it needs no memo at all. Either way, the OLD number is kept unless a NEW provided claim
-        this run needs it — the same "provided beats synthesized" rule pass 1 already enforces —
-        in which case the row probes a fresh one, same as a genuinely new row would.
+        A provided row ALSO answering at its own synthesized spelling, as an alias, is not done on
+        purpose: one row holds ONE number, and a provided issue answering at a second, unrequested
+        number is not something real GitHub does either — `/issues/<not-this-issue's>` 404s there.
+        Closing that gap is the point of the stored key, not a side effect of it.
         """
         if not self.counts.get("github"):
             return
-        rows = self.conn.execute(
-            "SELECT doc_id, repo, number FROM github_items "
-            "WHERE kind IS NULL OR kind != 'file' ORDER BY doc_id"
-        ).fetchall()
+        # Phase 1: every REAL number in the table claims its spelling before anything probes —
+        # this run's provided ones, and any a previous run settled. Provisional numbers are
+        # negative, so they are exactly the rows still to be assigned.
         taken: dict[str, set[int]] = {}
-        updates: list[tuple[int, str]] = []
-        # Pass 1: every number already in the column claims its spelling, before anything else is
-        # even looked at — see the docstring above for why this has to be a separate pass over ALL
-        # rows. With one column that set is exactly "the corpus wrote it this run, or a previous
-        # run assigned it and this run did not touch the row": both are claims, and both must be
-        # registered before any probe runs.
-        for r in rows:
-            if r["number"] is None:
-                continue
-            taken.setdefault(r["repo"], set()).add(int(r["number"]))
-        # Pass 2: everything else, in doc_id order — a row this run cleared keeps the number it
-        # served before (from the pre-run memo) when nothing in pass 1 wanted it, and otherwise
-        # probes a fresh one.
-        for r in rows:
-            if r["number"] is not None:
-                continue
-            repo, doc_id = r["repo"], r["doc_id"]
+        for repo, number in self.conn.execute(
+            "SELECT repo, number FROM github_items WHERE number >= 0"
+        ):
+            taken.setdefault(repo, set()).add(int(number))
+        # Phase 2: everything else, in dataset-id order.
+        final: dict[str, int] = {}
+        for (src, did), key in sorted(
+            (k, v) for k, v in self.keys.items() if k[0] == "github" and v[-1] < 0
+        ):
+            repo = key[0]
             bucket = taken.setdefault(repo, set())
-            candidate = self._github_numbers.get(doc_id)
-            if candidate is None or candidate in bucket:
-                candidate = self._assign_github_number(doc_id, repo, taken)
+            candidate = self._assign_github_number(did, repo, taken)
             bucket.add(candidate)
-            updates.append((candidate, doc_id))
-        # ONE sweep. This needed two while the value lived in its own column: pass 1 queued a
-        # provider's claim on N before pass 2 queued the row it displaced moving OFF N, so a row
-        # could be written ONTO N before the row sitting on N had left it, transiently colliding
-        # under the UNIQUE index and aborting an `--append`. Merging the columns removed that
-        # hazard at the root rather than working around it: pass 1 no longer writes anything (a
-        # claim is already IN the column), so every row here currently holds NULL, and the value
-        # each is about to take is by construction absent from `taken`. There is no intermediate
-        # state left to collide.
-        for number, doc_id in updates:
-            self.conn.execute(
-                "UPDATE github_items SET number = ? WHERE doc_id = ?", (number, doc_id)
-            )
+            final[did] = candidate
+        self._settle("github", final)
 
     def resolve_jira_keys(self) -> None:
-        """Assign `served_number` (the numeric SUFFIX of the key served — see
-        `synth.jira_key_number`) to every jira row, in the same two-phase order
-        `resolve_github_numbers` uses (#51, task 8) — corpus-provided keys claim their suffix
-        FIRST, corpus-wide, and only THEN does every remaining row probe.
+        """Assign a real `key` to every jira row that landed under a provisional one, in the same
+        two phases `resolve_github_numbers` uses and for the same reason: a corpus-provided key
+        must claim its spelling ahead of every composed one, corpus-wide, and a record arriving
+        early cannot know what a later one will provide.
 
-        This cannot happen inside `add`'s per-record insert, which is why it is here rather than
-        there: which suffixes a project's rows without a key may take depends on which suffixes
-        the REST of the project's rows — including ones not yet loaded — claim outright. A row
-        processed early has no way to know that a later record in the same corpus will provide the
-        exact key it is about to probe into; running the probe while streaming would let that
-        early row win a race real Jira never lets it enter. Two separate passes over the same
-        doc_id-ordered row set (not one combined pass) is what keeps the ordering deterministic
-        and independent of insertion order: every provided key's suffix is registered as taken
-        before any row without one is even considered.
-
-        Only the SUFFIX is resolved here — the PREFIX is a container-level fact
-        (`idx["jira_project_keys"]`/`idx["jira_project_containers"]`, still built at boot; see
-        backlot.main) that this pass does not touch and does not need to: two different projects
-        sharing one prefix is refused outright at `add` time (the `jira_prefix_holders` 1:1 check),
-        so a suffix unique within `project` is unambiguous within its prefix too — except for the
-        residual documented on `idx_jira_served`'s schema comment (a synthesized prefix colliding
-        with an unrelated project's PROVIDED one -- or, symmetrically, with another KEYLESS
-        project's own synthesized prefix), which this pass cannot close either.
-
-        Pass 3 of the old boot-time index (a provided row ALSO answering at its own synthesized
-        spelling, as an alias) is dropped here on purpose, not by oversight — the same call #51
-        made for github: a single column holds ONE suffix per row, and a provided issue answering
-        at a second, unrequested key is not something real Jira does either —
-        `/issue/<not-this-issue's-key>` 404s there. Closing that gap is the point of the stored
-        column, not a side effect of it.
-
-        Stability across a re-import/--append (a probed suffix is NOT a pure function of doc_id,
-        unlike gmail's/notion's/linear's, so this needs it): a row this run's insert touched had
-        its served_number reset to NULL (see `insert`'s jira block) even if it already had a
-        stable one before this run started, so `self._jira_numbers` — populated by
-        `seed_tracker_ids` BEFORE any insert in this run could clobber the live column — is the
-        only remaining record of what such a row used to serve. A row this run never touched still
-        carries its old served_number in the live table, read straight off `rows` below, so it
-        needs no memo at all. Either way, the OLD suffix is kept unless a NEW provided claim this
-        run needs it — the same "provided beats synthesized" rule pass 1 already enforces — in
-        which case the row probes a fresh one, same as a genuinely new row would.
+        The whole key is composed here, prefix included, which is only possible at this point:
+        the prefix is the PROJECT's key, and which spelling a project answers at is not settled
+        until every provided key in the corpus has been seen. Composing it during the stream would
+        have written the synthesized prefix onto a project whose later records provide `PAY-7`,
+        leaving one project serving two spellings at once.
         """
         if not self.counts.get("jira"):
             return
-        rows = self.conn.execute(
-            "SELECT doc_id, project, key FROM jira_issues ORDER BY doc_id"
-        ).fetchall()
+        # Phase 1: every settled key claims its suffix. A provisional key has no `-N` suffix to
+        # read, so those are skipped by the same test that identifies them.
         taken: dict[str, set[int]] = {}
-        updates: list[tuple[str, str]] = []
-        # Pass 1: every key already in the column claims its suffix, before anything else is even
-        # looked at. With one column that set is exactly "the corpus wrote it this run, or a
-        # previous run composed it and this run did not touch the row" — both are claims.
-        for r in rows:
-            if r["key"] is None:
+        for project, key in self.conn.execute("SELECT project, key FROM jira_issues"):
+            if str(key).startswith("-unassigned-"):
                 continue
-            taken.setdefault(r["project"], set()).add(int(str(r["key"]).rsplit("-", 1)[-1]))
-        # Pass 2: everything else, in doc_id order. The PREFIX is settled by now — pass 1 has seen
-        # every provided key in the corpus, so `jira_prefixes` knows what each project is called —
-        # which is exactly why the whole key can be composed here and could not be in `insert`.
-        for r in rows:
-            if r["key"] is not None:
-                continue
-            project, doc_id = r["project"], r["doc_id"]
+            taken.setdefault(project, set()).add(int(str(key).rsplit("-", 1)[-1]))
+        final: dict[str, str] = {}
+        for (src, did), key in sorted(
+            (k, v)
+            for k, v in self.keys.items()
+            if k[0] == "jira" and str(v[-1]).startswith("-unassigned-")
+        ):
+            project = self._jira_projects[did]
             bucket = taken.setdefault(project, set())
-            candidate = self._jira_numbers.get(doc_id)
-            if candidate is None or candidate in bucket:
-                candidate = self._assign_jira_number(doc_id, project, taken)
+            candidate = self._assign_jira_number(did, project, taken)
             bucket.add(candidate)
             prefix = self.jira_prefixes.get(project) or synth.jira_project_key(project)
             # Record it: a composed key names its project exactly as a provided one does, and
             # `write_containers` stores this on the project's own row.
             self.jira_prefixes.setdefault(project, prefix)
-            updates.append((f"{prefix}-{candidate}", doc_id))
-        # ONE sweep, unlike the two this needed while the suffix lived in its own column: pass 1
-        # no longer writes anything (a claim is already IN the column), so every row here holds
-        # NULL and the value it takes is by construction absent from `taken`. See
-        # resolve_github_numbers' identical note for the transient-collision hazard that removed.
-        for key, doc_id in updates:
-            self.conn.execute("UPDATE jira_issues SET key = ? WHERE doc_id = ?", (key, doc_id))
+            final[did] = f"{prefix}-{candidate}"
+        self._settle("jira", final)
+
+    def resolve_jira_parents(self) -> None:
+        """Point every jira subtask at its parent's KEY, now that keys are settled.
+
+        Runs after `resolve_jira_keys` rather than inside `resolve_cross_references`, and that
+        ordering is the whole reason it is a separate pass: a parent is named by its dataset id
+        while the corpus streams, and the key it resolves to does not exist until the deferred
+        assignment above has run.
+        """
+        if not self.counts.get("jira"):
+            return
+        for did, parent_seed in list(self._jira_parents.items()):
+            key = self.keys.get(("jira", did))
+            target = self.keys.get(("jira", parent_seed))
+            if key is None:
+                continue
+            if target is None:
+                raise SystemExit(
+                    f"jira {key[0]}: parent {parent_seed!r} was not imported in this run. A "
+                    "parent is named by the identifier the corpus gave it, and that identifier "
+                    "does not outlive the import — so a parent loaded by an EARLIER run can no "
+                    "longer be resolved. Load the parent and the subtask together."
+                )
+            self.conn.execute(
+                "UPDATE jira_issues SET parent_id = ? WHERE key = ?", (target[0], key[0])
+            )
 
 
 def load(
@@ -2067,9 +2155,14 @@ def load_records(
     for lineno, rec in records_factory():
         source_docs += 1
         loader.add(rec, f"line {lineno}")
-    loader.resolve_cross_references()
+    # Order matters. The two deferred passes settle every provisional key FIRST, so that
+    # everything downstream — the jira parent links, the cross-reference targets, the ACL grants
+    # and the FTS ids, all of which name a document by the dataset id it came in under — resolves
+    # through `loader.keys` after it holds final values rather than provisional ones (#51).
     loader.resolve_github_numbers()
     loader.resolve_jira_keys()
+    loader.resolve_jira_parents()
+    loader.resolve_cross_references()
     users, groups = loader.users, loader.groups
     memberships, grants = loader.memberships, loader.grants
     counts, fts_ids = loader.counts, loader.fts_ids
@@ -2105,17 +2198,27 @@ def load_records(
     loader.write_containers()
     for g, email in memberships:
         conn.execute("INSERT OR REPLACE INTO group_members VALUES (?,?)", (g, email))
-    for source_type, doc_id, ptype, pid in grants:
+    # A grant names its document by the SERVED id, in the same columns the document table is
+    # keyed on (see store.ACL_TABLE) — resolved here, once every deferred key has settled, rather
+    # than written during the stream under a value that was still provisional.
+    for source_type, dataset_id, ptype, pid in grants:
+        key = loader.keys.get((source_type, dataset_id))
+        if key is None:
+            continue  # the row was never written (a validation failure raised before the insert)
         conn.execute(
-            f"INSERT OR IGNORE INTO {store.acl_table(source_type)} VALUES (?,?,?)",
-            (doc_id, ptype, pid),
+            f"INSERT OR IGNORE INTO {store.acl_table(source_type)} "
+            f"VALUES ({', '.join('?' for _ in range(len(key) + 2))})",
+            (*key, ptype, pid),
         )
     conn.commit()
     if reset:
         store.build_fts(conn)  # full-text index for search (search.messages / confluence CQL)
     else:
         for s, ids in fts_ids.items():
-            store.fts_add_docs(conn, s, ids)
+            # Same resolution as the grants above: these were accumulated as dataset ids and are
+            # translated to served keys now that the deferred passes have settled them.
+            keys = [loader.keys[(s, d)] for d in ids if (s, d) in loader.keys]
+            store.fts_add_docs(conn, s, keys)
 
     # Every principal is a document owner/reader; only some are ACCOUNTS. Without a roster the two
     # sets coincide (a corpus's authors are its users); with one, `contacts` are principals with no

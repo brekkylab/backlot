@@ -87,13 +87,6 @@ def slack_fmt_ts(epoch_sec: int, key: str) -> str:
     return f"{int(epoch_sec)}.{micro:06d}"
 
 
-# `slack_ts` and `slack_thread_ts` are gone (#51). They composed a message's ts at SERVE time,
-# which is what made two replies in one second share one: both keyed the micro-fraction on their
-# thread root. The ts is assigned once at import now and probed within its channel (see
-# backlot.importer.byo's `_slack_ts`, which builds it from `slack_fmt_ts` directly), so there is
-# nothing left to derive per request.
-
-
 def gmail_id(seed: str, salt: str = "msg") -> str:
     """An opaque 16-hex token. Used for attachment ids and Slack's ``client_msg_id``, where the
     value is never parsed — so it deliberately spans the full 64-bit range. A *message* id is

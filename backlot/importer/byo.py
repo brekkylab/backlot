@@ -141,8 +141,8 @@ def _principal(pid: str) -> tuple[str, str]:
 
     The shorthand is unchanged — an address is a user, anything else a group — but a `user:` /
     `group:` / `org:` prefix states the type outright. Needed because the shorthand cannot name the
-    ORG principal at all, so a document that is org-readable *and* names its owners had no
-    spelling: `readers` replaced the org grant instead of adding to it."""
+    ORG principal at all, so without a prefix a document that is org-readable *and* names its
+    owners has no spelling: `readers` would replace the org grant rather than add to it."""
     for t in ("user", "group", "org"):
         if pid.startswith(t + ":"):
             return t, pid[len(t) + 1 :]
@@ -609,9 +609,8 @@ def load_roster(path) -> dict:
     def _merge(email: str, name: str, groups: list[str], token: bool, *, stated: bool) -> None:
         # A person may appear more than once — two departments, or a department entry plus a
         # contact carrying extra register memberships. Membership is the UNION: replacing the
-        # entry silently dropped the earlier groups, and a `readers: [group:...]` clause then
-        # wrongly denied the person the feature was written for. A contact never upgrades an
-        # account, but it never demotes one either.
+        # entry drops the earlier groups, and a `readers: [group:...]` clause then wrongly denies
+        # the person it names. A contact never upgrades an account, but it never demotes one.
         #
         # Names do not union, so first-seen-wins is wrong for them: `name` always has a
         # fallback — one derived from the address — and so never looks absent. An entry that
@@ -678,12 +677,11 @@ class _Loader:
         record's own id so the same corpus produces the same number, re-seeded a few times to
         spread out, THEN walked
         unconditionally — re-seeding alone only terminates if the hash actually varies with the
-        salt, and an unbounded re-seed loop hung the importer once already. Unlike the old
-        `_free_number` this replaces, the walk is BOUNDED: past `synth.GITHUB_NUMBER_RANGE` steps
-        every number `synth.github_number` can produce has been visited, so `repo` has more
-        non-file rows than the space holds, and returning one anyway (as `_free_number` did,
-        silently) would break the PRIMARY KEY (repo, number) instead of failing where the
-        problem actually is. Reads the range off `synth` rather than a private
+        salt, and an unbounded re-seed loop hangs the importer. The walk is BOUNDED: past
+        `synth.GITHUB_NUMBER_RANGE` steps every number `synth.github_number` can produce has been
+        visited, so `repo` has more non-file rows than the space holds, and returning one anyway
+        would break the PRIMARY KEY (repo, number) instead of failing where the problem actually
+        is. Reads the range off `synth` rather than a private
         copy of the literal, so raising `synth.github_number`'s own modulus can never silently
         leave this walk still wrapping at the old, smaller one.
         """
@@ -787,8 +785,8 @@ class _Loader:
 
         Seeded from the incoming record's own id so the same corpus always produces the same ids,
         then probed against `taken` until free — a plain hash collides by the birthday bound long
-        before a corpus runs out of pages, and a shared id used to mean one of the two colliding
-        pages was unreachable at its own id.
+        before a corpus runs out of pages, and a shared id leaves one of the two colliding pages
+        unreachable at its own id.
 
         Called only from :meth:`resolve_probed_ids`, never from `add`: which ids are already taken
         depends on the WHOLE corpus, including the ids a later record may state outright, so this
@@ -1027,21 +1025,17 @@ class _Loader:
         self._gh_comment_ids = {}  # seed -> served id, for comments assigned THIS run
         self._gh_ids_taken = set()
         # confluence page ids are ASSIGNED rather than hashed at serve time, for the same reason:
-        # a hash into synth.confluence_id's 9,000,000 values collides by the birthday bound, and
-        # a shared id used to mean a reverse map built at startup was last-writer-wins over the
-        # collision, leaving one page unreachable at its own id (#51). Seeded from the doc_id so
-        # it stays stable, probed so it stays unique. Populated by seed_tracker_ids.
+        # a hash into synth.confluence_id's 9,000,000 values collides by the birthday bound, and a
+        # shared id leaves one page unreachable at its own id. Seeded from the record's own id so
+        # it stays stable, probed so it stays unique.
         self._confluence_ids = {}  # seed -> served id, for pages assigned THIS run
         self._confluence_ids_taken = set()
-        # hubspot record ids are ASSIGNED rather than hashed at serve time, for the same reason as
-        # confluence's, not gmail's/notion's (#51): synth.hubspot_record_id's 9,000,000,000-value
-        # space still collides by the birthday bound at the corpus sizes this project generates
-        # (measured: ~16 collisions at 500k documents), and a shared id used to mean the reverse
-        # map built at startup was last-writer-wins, leaving one record unreachable at its own id.
-        # Seeded from the doc_id so it stays stable, probed so it stays unique. Populated by
-        # seed_tracker_ids -- more load-bearing here than for confluence, since a probed id is
-        # NOT a pure function of doc_id, so without the preload an append could hand a record a
-        # different id than the one already served, and a client holding the old id gets a 404.
+        # hubspot record ids are ASSIGNED rather than hashed at serve time, following confluence's
+        # shape rather than gmail's/notion's: synth.hubspot_record_id's 9,000,000,000-value space
+        # still collides by the birthday bound at the corpus sizes this project generates
+        # (measured: ~16 collisions at 500k documents), and a shared id leaves one record
+        # unreachable at its own id. Seeded from the record's own id so it stays stable, probed so
+        # it stays unique.
         self._hubspot_ids = {}  # seed -> served id, for records assigned THIS run
         self._hubspot_ids_taken = set()
         # github numbers and jira key suffixes are ASSIGNED like confluence's/hubspot's, but unlike
@@ -1049,11 +1043,8 @@ class _Loader:
         # `number`/`key` must claim its spelling ahead of every synthesized one, corpus-wide, and a
         # record arriving early cannot know what a LATER record will provide (see
         # resolve_github_numbers / resolve_jira_keys, which run once every record has been loaded).
-        #
-        # The `doc_id -> number` memos this used to keep are gone with `doc_id` itself. They
-        # existed to keep a re-imported row on the number it already served; that is now handled
-        # at the front instead -- an --append must PROVIDE the number/key (see `add`), so a
-        # re-imported row states its own identity rather than being recognised from a map.
+        # Keeping a re-imported row on the number it already served is handled at the front instead:
+        # an --append must STATE the number/key (see `_require_provided_id`).
         self.fts_ids = {}
         # True once seed_tracker_ids has seen rows already in the DB — i.e. this is an --append
         # onto a corpus that already has documents, which is where a probed source's identity has
@@ -1067,11 +1058,10 @@ class _Loader:
         # Linear relations name a target by its dataset id and are resolved after the whole corpus
         # is read, since a target may appear on a later line.
         self.lin_links = []
-        # Tracker ids the corpus provided, so a second record claiming one is refused here.
-        # Two records providing the same github number or jira key used to load without a
-        # word: one of them then owned the id in the reverse index and the other was
-        # unreachable at the only id it advertised. The loader is the one place that sees
-        # every row, so it is the only place the claim can be checked at all.
+        # Tracker ids the corpus stated, so a second record claiming one is refused. Two records
+        # sharing a github number or jira key leaves one of them unreachable at the only id it
+        # advertises. The loader is the one place that sees every row, so it is the only place the
+        # claim can be checked at all.
         self.tracker_ids = {}  # (source_type, container, id) -> dataset id that claimed it
         # A jira key's prefix is its PROJECT's key, and real Jira holds that 1:1 in both
         # directions: a project has one key, a key names one project. The index can only
@@ -1086,16 +1076,14 @@ class _Loader:
         """Re-read the ids already in the DB, so a claim holds ACROSS runs too.
 
         A fresh ``_Loader`` per :func:`load_records` sees only the shard it is loading. Without
-        this, two shards appended in separate runs could each provide ``PAY-7`` and neither would
-        be told — the reverse index would hand the key to whichever doc_id sorts first, and the
-        other row would advertise an id that fetches somebody else. That is the failure this
-        check exists to remove, and ``--append`` is a route straight back into it.
+        this, two shards appended in separate runs could each state ``PAY-7`` and neither would be
+        told, leaving one row advertising an id that fetches somebody else. ``--append`` is the
+        route straight into that.
 
-        Every stored id is a claim, and reading them is now the WHOLE cross-run story: the id a row
-        serves IS its primary key (#51), so there is no separate column that may or may not be
-        populated and no `doc_id -> id` memo to rebuild. What this cannot do any more is recognise
-        a row: a claim says "this value is taken", never "taken by the document you are about to
-        re-import". That is why an append has to state a probed source's identity outright — see
+        Every stored id is a claim, and reading them is the whole cross-run story: the id a row
+        serves IS its primary key. What a claim cannot do is recognise a row — it says "this value
+        is taken", never "taken by the document you are about to re-import". That is why an append
+        has to state a probed source's identity outright — see
         `_require_provided_id`.
 
         The jira prefix maps are seeded from the same rows: a later shard bringing `BILL-` keys
@@ -1838,15 +1826,12 @@ class _Loader:
 
         Linear also gets ``served_id``/``served_key`` here, unconditionally for every row: the
         other two spellings ``team(id:)`` accepts alongside this table's own primary key (the raw
-        name), replacing the reverse map ``main._build_index`` used to rebuild on every boot
-        (#51). No probe -- like gmail/notion's own served ids, the raw seed is stored as-is; a
-        collision is not a realistic concern at this seed's digest width (see the schema comment
-        on ``idx_linear_teams_served``), but it must still be a LOUD import failure rather than a
-        silent one if it ever happened -- hence the upsert keyed explicitly on ``team`` (this
-        table's PRIMARY KEY) below, not a blanket ``INSERT OR REPLACE``: unlike the doc tables'
-        own upsert (see ``insert``'s comment on this exact hazard), ``OR REPLACE`` here would
-        resolve a ``served_id`` collision by silently deleting the OTHER team's row instead of
-        raising. ``served_key`` needs no such guard -- it isn't unique to begin with (see
+        name). No probe -- like gmail/notion's own served ids, the raw seed is stored as-is; a
+        collision is not a realistic concern at this seed's digest width (see the schema comment on
+        ``idx_linear_teams_served``), but it must still be a LOUD import failure -- hence the upsert
+        keyed explicitly on ``team`` (this table's PRIMARY KEY) below, not a blanket ``INSERT OR
+        REPLACE``, which would resolve a ``served_id`` collision by silently deleting the OTHER
+        team's row. ``served_key`` needs no such guard -- it isn't unique to begin with (see
         ``linear_team_by_served_key``)."""
         for (src, name), group_id in self.containers.items():
             gtable, gcol = store.GROUPING[src]
@@ -1884,11 +1869,10 @@ class _Loader:
         target's SERVED id — so each of these is a lookup through `self.keys`, the run's own
         record of what it wrote each document under.
 
-        A target loaded by an EARLIER run cannot be resolved and is refused (#51). It used to fall
-        back to reading the stored row by `doc_id`; there is no such column now, and there is no
-        way to reconstruct one — the dataset's identifiers do not outlive the import, which is the
-        whole point. Referencing across imports is a capability this removes deliberately, and the
-        error says so rather than writing a link that would silently resolve to nothing.
+        A target loaded by an EARLIER run cannot be resolved and is refused: the dataset's
+        identifiers do not outlive the import, so there is nothing left to match one against.
+        Referencing across imports is deliberately not supported, and the error says so rather than
+        writing a link that would silently resolve to nothing.
         """
         conn, counts = self.conn, self.counts
         hs_types, hs_links, lin_links = self.hs_types, self.hs_links, self.lin_links
@@ -1912,10 +1896,8 @@ class _Loader:
             # The target's EXISTENCE is resolved from what this run wrote, regardless of whether
             # `to_type` was stated explicitly -- an explicit `to_type` names what KIND the target
             # is (the schema's own words: "default: the target record's own object_type"), not a
-            # license to link to a record that was never written. A corpus that declared `to_type`
-            # for an absent target used to load cleanly and write the association anyway, with
-            # `store.hubspot_associations` silently returning zero rows for it forever after --
-            # the same "silently shadowed" failure mode #51 exists to remove elsewhere.
+            # license to link to a record that was never written. Accepting one would write an
+            # association `store.hubspot_associations` then returns zero rows for, forever.
             to_key = resolve("hubspot", to_doc, "association", from_doc)
             from_key = resolve("hubspot", from_doc, "association", from_doc)
             to_type = a.get("to_type") or hs_types[to_doc]
@@ -2371,8 +2353,7 @@ def load_records(
             "INSERT OR REPLACE INTO principals VALUES (?,?,?,?)", (email, "user", name, email)
         )
     # Every USER principal, unconditionally -- no org/group row ever reaches this loop, so there
-    # is no NULL case to get wrong (see the schema comment on fireflies_users, #51). Replaces the
-    # reverse map `main._build_index` used to rebuild from `list_users` on every boot. Keyed
+    # is no NULL case to get wrong (see the schema comment on fireflies_users). Keyed
     # explicitly on `email` (this table's PRIMARY KEY), not a blanket `INSERT OR REPLACE`: a
     # `served_id` collision between two DIFFERENT emails must raise through the unique index
     # rather than have `OR REPLACE` silently delete the other email's row out from under it (the

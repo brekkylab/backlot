@@ -721,7 +721,7 @@ def _resolve_one_issue_id(conn, value: str) -> str:
     returns the sentinel ``"\\x00none"``, which matches no row, so the filter narrows to nothing
     rather than being silently dropped (see ``_resolve_issue_ids``).
 
-    Unscoped by ACL on purpose, like the startup map this replaces: this is a translation step,
+    Unscoped by ACL on purpose: this is a translation step,
     not the visibility decision. ``_issue_page``'s own store calls (``list_linear_issues`` /
     ``count_linear_issues``) apply ``visible_ids`` to the real query, so a value that resolves to
     an issue the caller cannot see still gets filtered out there -- translating it here to

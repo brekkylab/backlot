@@ -204,8 +204,8 @@ def id_column_type(source_type: str, column: str) -> str:
 # source_type -> (seed function, uniqueness scope), for the sources whose served id is a pure
 # 1-arity function of the incoming record's dataset id. The value is ASSIGNED at import (see
 # backlot.importer.byo) rather than derived by hashing at serve time: a hash into any fixed range
-# collides by the birthday bound, and the reverse map this replaces resolved a collision
-# last-writer-wins, leaving one document unreachable at its own id (#51). A uniform
+# collides by the birthday bound, and resolving a collision last-writer-wins leaves one document
+# unreachable at its own id. A uniform
 # `(dataset_id) -> a candidate value` shape is what lets one assignment method probe every source.
 #
 # `scope` is the columns the assignment probe must hold fixed for the served value to be
@@ -252,15 +252,14 @@ def id_seed_scope(source_type: str) -> str | None:
 
 SCHEMA = """
 -- ── per-service document tables (core cols first, then service-specific) ──
--- `ts` IS Slack's message id, and it is now STORED rather than recomputed per request (#51).
--- `_msg_ts` used to derive it from `(created_ts, thread-root key)` at serve time, which collided
--- outright for two same-second replies in one thread: both hashed the same root key into the same
--- micro-fraction, so one message was reachable only at the other's ts. Assigned once at import and
--- probed within its channel, it cannot.
+-- `ts` IS Slack's message id, and it is STORED rather than derived per request. Deriving it from
+-- `(created_ts, thread-root key)` collides outright: every message of a thread hashes the same root
+-- key into the same micro-fraction, so two replies in one second share a ts and one is reachable
+-- only at the other's. Assigned once at import and probed within its channel, it cannot.
 --
--- Storing it also removes the round trip `thread_ts` needed: the column below IS the root's own
--- `ts` (Slack's own name for that field), so a reply reports its thread by reading the root's
--- stored value rather than re-hashing the root's key and hoping the two derivations agree.
+-- Storing it is also what lets `thread_ts` below hold the root's own `ts` (Slack's own name for
+-- that field), so a reply reports its thread by reading one stored value instead of two
+-- derivations having to agree.
 -- A root carries its own ts here (Slack does too, so `thread_ts == ts` marks the root); a
 -- standalone message carries NULL.
 CREATE TABLE IF NOT EXISTS slack_messages (
@@ -286,8 +285,8 @@ CREATE INDEX IF NOT EXISTS idx_slack_channel_author ON slack_messages(channel, a
 -- `id` is the id the API reports, assigned at import (see backlot.importer.byo) rather than hashed
 -- at serve time, so a get-by-id is a PRIMARY KEY lookup instead of a reverse map rebuilt on every
 -- boot. Unlike confluence it is the raw seed, never probed: `synth.gmail_message_id` draws from
--- 2**63, so a collision is vanishingly unlikely, and as the PRIMARY KEY one now fails the import
--- loudly instead of silently replacing the earlier message.
+-- 2**63, so a collision is vanishingly unlikely, and as the PRIMARY KEY one fails the import
+-- loudly rather than silently replacing the earlier message.
 --
 -- `thread_id` is another message's `id` (the thread root's), not a dataset identifier: it is
 -- resolved at import along with every other cross-row reference (#51).
@@ -333,12 +332,10 @@ DROP INDEX IF EXISTS idx_gdrive_served;
 -- changeset note. Comments stay OUTSIDE the parens: SQLite persists the statement verbatim, and a
 -- trailing in-body comment makes a later `ALTER TABLE ... DROP COLUMN` fail to re-parse it.
 -- The number the API reports, assigned at import (see backlot.importer.byo) rather than derived
--- at serve time from a startup reverse map: `synth.github_number`'s 90,000-value-per-repo space
--- collides by the birthday bound long before a real repo runs out of issues/PRs, and the map this
--- replaces resolved a collision by MOVING the loser to a fresh number on every boot -- stable
--- while the server ran, but "free to move when --append changes the set" (the old `_free_number`
--- docstring's own words), so a client that had already saved a link could have it renumbered out
--- from under it by a later append. A stored PRIMARY KEY no longer moves (#51).
+-- at serve time: `synth.github_number`'s 90,000-value-per-repo space collides by the birthday
+-- bound long before a real repo runs out of issues/PRs, and resolving a collision by MOVING the
+-- loser to a fresh number leaves a number free to change whenever `--append` changes the set --
+-- renumbering a link a client had already saved. A stored PRIMARY KEY cannot move.
 --
 -- Keyed on (repo, number) because a GitHub number is unique only within its repo (see
 -- store.ID_COLUMNS). Uniqueness is enforced by the assignment itself -- resolve_github_numbers'
@@ -408,8 +405,8 @@ DROP INDEX IF EXISTS idx_jira_served;
 
 -- `id` is what the API reports, assigned at import (see backlot.importer.byo) rather than hashed
 -- at serve time: a hash into `synth.confluence_id`'s 9,000,000 values collides by the birthday
--- bound, and the reverse map this replaces was last-writer-wins, so a collision made a page
--- unreachable by its own id. Uniqueness is enforced by the assignment itself --
+-- bound, and a collision resolved last-writer-wins makes a page unreachable by its own id.
+-- Uniqueness is enforced by the assignment itself --
 -- _assign_confluence_id's in-run memo plus seed_tracker_ids' cross-run preload, both probed
 -- against every id already taken -- so a genuine collision essentially never reaches the PRIMARY
 -- KEY; if one did, the insert raises there rather than resolving silently.
@@ -488,7 +485,7 @@ CREATE INDEX IF NOT EXISTS idx_notion_comments_doc ON notion_comments(page_id);
 -- stays NULL elsewhere, which a UNIQUE index treats as no claim rather than a collision (SQLite
 -- allows any number of NULLs under UNIQUE). Neither is probed the way confluence's is: both draw
 -- from synth._uuid_from's full digest space, not a bounded range, so a collision is vanishingly
--- unlikely -- and one now raises on the PRIMARY KEY (or on idx_notion_ds) instead of silently
+-- unlikely -- and one raises on the PRIMARY KEY (or on idx_notion_ds) rather than silently
 -- replacing the row that held the value.
 -- `parent_id` holds the parent page's or database's `id`, the same served value (#51).
 CREATE TABLE IF NOT EXISTS notion_pages (
@@ -531,8 +528,8 @@ DROP INDEX IF EXISTS idx_s3_key;
 -- `id` is what the API reports, assigned at import (see backlot.importer.byo) rather than hashed
 -- at serve time: `synth.hubspot_record_id`'s space is 9,000,000,000 values -- wide enough to look
 -- safe, but a corpus this project actually generates (500k documents) still collides ~16 times by
--- the birthday bound (#51), and the reverse map this replaces was last-writer-wins, so a collision
--- made a record unreachable at its own id. Uniqueness is enforced by the assignment itself --
+-- the birthday bound, and a collision resolved last-writer-wins makes a record unreachable at its
+-- own id. Uniqueness is enforced by the assignment itself --
 -- _assign_hubspot_id's in-run memo plus seed_tracker_ids' cross-run preload, both probed against
 -- every id already taken, the same shape confluence's follows -- so a genuine collision
 -- essentially never reaches the PRIMARY KEY; if one did, the insert raises there.
@@ -618,8 +615,8 @@ CREATE INDEX IF NOT EXISTS idx_linear_identifier ON linear_issues(identifier);
 -- scan it is negligible.
 CREATE INDEX IF NOT EXISTS idx_linear_doc_ident ON linear_issues(id, identifier);
 -- `id` is the UUID the API reports (`synth.linear_id`), assigned at import (see
--- backlot.importer.byo) rather than hashed at serve time -- a get-by-id is a PRIMARY KEY lookup
--- instead of a reverse map rebuilt on every boot. Kept distinct from `identifier` on purpose:
+-- backlot.importer.byo) rather than hashed at serve time, so a get-by-id is a PRIMARY KEY lookup.
+-- Kept distinct from `identifier` on purpose:
 -- identifiers are NOT unique (see idx_linear_identifier above), so they stay a lookup index, never
 -- a candidate for this column or this constraint (see ID_SEED's comment on why `identifier` is
 -- excluded). No probe, like gmail's: `synth.linear_id` draws from `_uuid_from`'s full digest
@@ -728,8 +725,8 @@ CREATE TABLE IF NOT EXISTS hubspot_object_types (object_type TEXT PRIMARY KEY, g
 -- `served_id` (`synth.linear_team_id`, a UUID) and `served_key` (`synth.linear_team_key`, "ENG")
 -- are the OTHER two spellings real `team(id:)` accepts, alongside this table's own primary key
 -- (the raw container name -- a mock affordance, see resolve_team's docstring). Both are written
--- unconditionally at import (backlot.importer.byo's write_containers), replacing the reverse map
--- `main._build_index` used to rebuild on every boot (#51). `served_key` carries NO unique index:
+-- unconditionally at import (backlot.importer.byo's write_containers). `served_key` carries NO
+-- unique index:
 -- `linear_team_key` is not injective -- two containers can reduce to one key -- so a lookup
 -- breaks the tie by team NAME order instead (see linear_team_by_served_key).
 CREATE TABLE IF NOT EXISTS linear_teams (
@@ -743,9 +740,8 @@ CREATE TABLE IF NOT EXISTS fireflies_channels (channel TEXT PRIMARY KEY, group_i
 -- `user(id:)`, `release(id:)`) resolve an entity that has no table of its own: it exists only as a
 -- column VALUE on some issue. `@linear/sdk` reaches them lazily (`await issue.state` fires a fresh
 -- `workflowState(id:)`) and the ids are one-way hashes of a name, so serving one means reversing
--- the hash. That reversal used to be six dicts rebuilt on every boot by `main._build_index`; this
--- table holds them instead, written once at import (backlot.importer.byo's
--- `write_linear_entities`) -- the last of #51's startup reverse maps to move.
+-- the hash. This table holds that reversal, written once at import (backlot.importer.byo's
+-- `write_linear_entities`) rather than rebuilt per boot.
 --
 -- ONE table, not six, because these are not six kinds of thing: each row is a distinct value of one
 -- issue column, and they share a shape and a single access pattern (`kind` + id -> the value). The
@@ -824,7 +820,7 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # A DB built before this branch has one shared `doc_acl` table, keyed corpus-wide by `doc_id`
     # rather than a table per source. An append onto it would write the new source's grants into
     # the per-source tables SCHEMA creates below while every pre-existing grant stays behind in
-    # `doc_acl`, which nothing reads any more -- every document from before the append silently
+    # `doc_acl`, which nothing reads -- every document from before the append silently
     # becomes invisible to every scoped token. There is deliberately no backfill here: `doc_acl`
     # has no source column, so it cannot say which source a colliding `doc_id`'s grant belonged
     # to, and copying its rows into the per-source tables blind would silently re-create exactly
@@ -838,23 +834,14 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
             "re-import this corpus from scratch instead of appending to it; the old grants "
             "cannot be safely migrated"
         )
-    # Same shape as the doc_acl check above, and it SUBSUMES every earlier version of it: a DB
-    # built before #51's identifier consolidation keys its documents on the dataset's own `doc_id`,
-    # and every table below is now keyed on the id the API serves instead. Nothing about that is
-    # migratable -- the served ids were never stored on those rows, and the assignment that would
-    # produce them depends on the whole corpus (a probed source's id is a function of every other
-    # row's, see the plan's "The consequence"), not on any one row that could be rewritten in
-    # place. So this is detected and refused rather than healed.
+    # Same shape as the doc_acl check above: a DB keyed on the dataset's own `doc_id` cannot be
+    # migrated, because the served ids were never stored on those rows and the assignment that
+    # would produce them depends on the whole corpus (a probed source's id is a function of every
+    # other row's), not on any one row that could be rewritten in place. Refused, not healed.
     #
     # `CREATE TABLE IF NOT EXISTS` would not alter the old table at all, and `CREATE INDEX IF NOT
-    # EXISTS` guards only the INDEX's NAME -- so without this check the failure would surface as a
-    # bare `no such column: id` naming whichever table happens to come first in SCHEMA's text,
-    # explaining nothing about what is actually wrong.
-    #
-    # This replaced a per-column `served_*` check plus an `ALTER TABLE ... ADD COLUMN` self-heal
-    # loop. Both are gone: every column either loop knew about has since been folded into a
-    # PRIMARY KEY or renamed, so each entry would have been healing a DB this check now refuses
-    # outright.
+    # EXISTS` guards only the INDEX's NAME -- so without this check the failure surfaces as a bare
+    # `no such column: id` naming whichever table comes first in SCHEMA's text, explaining nothing.
     stale = sorted(
         t
         for (t,) in conn.execute(
@@ -1011,8 +998,7 @@ def _acl_join(source_type: str, acl_alias: str, doc_alias: str) -> str:
 
 def _order_by(source_type: str, alias: str = "", *, desc: bool = False) -> str:
     """The source's identifier columns as an ORDER BY term — the stable total order every offset
-    page needs. A single ``doc_id`` used to serve this; a pair has to name both parts or the order
-    is not total within a container."""
+    page needs. A PAIR has to name both parts, or the order is not total within a container."""
     p = f"{alias}." if alias else ""
     d = " DESC" if desc else ""
     return ", ".join(f"{p}{c}{d}" for c in id_columns(source_type))
@@ -1111,16 +1097,12 @@ def list_s3_objects(
 
 def s3_by_bucket_key(conn, bucket, key, visible_ids=None) -> sqlite3.Row | None:
     """One object by the (bucket, key) address real S3 itself keys on — which is also this table's
-    PRIMARY KEY (#51), so this is a point lookup on the key itself. There is nothing to synthesize
-    and no entry in `ID_SEED` for s3: the corpus states the address outright.
+    PRIMARY KEY, so this is a point lookup on it. There is nothing to synthesize and no entry in
+    `ID_SEED` for s3: the corpus states the address outright.
 
-    That address is now unique by CONSTRAINT. It used to be unique only by convention — a plain
-    index, with the doc_id the importer assigned (a content hash by default) not depending on
-    (bucket, key) at all, so nothing stopped two rows from sharing an address. The consequence was
-    documented at length here rather than fixed: which of the duplicates a caller saw depended on
-    that caller's own ACL grants, so two callers hitting one address could get two different
-    objects. A duplicate address is an import error now, and that whole class of question is
-    closed."""
+    Unique by CONSTRAINT, which matters: two rows sharing an address would be resolved by the ACL
+    clause in the same query, so which object a caller got would depend on that caller's own
+    grants. A duplicate address is an import error instead."""
     clause, cp = _acl_clause("s3", visible_ids=visible_ids)
     return conn.execute(
         f"SELECT * FROM s3_objects WHERE bucket = ? AND key = ?{clause}", [bucket, key, *cp]
@@ -1162,8 +1144,8 @@ def list_hubspot_objects(
     """One page of a CRM object type, keyset-paginated by ``id``.
 
     HubSpot's ``after`` cursor IS the record id this table is keyed on, so the bound is a keyset
-    rather than an OFFSET — and the router no longer maps the cursor back to anything on the way
-    in (#51). ``archived`` splits the two views the API exposes.
+    rather than an OFFSET and needs no translation on the way in. ``archived`` splits the two views
+    the API exposes.
 
     ``prefilter`` is a ``(sql_fragment, params)`` the caller has established as a *necessary*
     condition, so pushing it down can only remove rows that would have been rejected anyway.
@@ -1634,11 +1616,9 @@ def hubspot_associations(
     target. Keyset-paginated by ``to_id`` for the same reason the listings are: the API's cursor is
     the last record id the caller saw, and a record past the first page must stay reachable.
 
-    No join to ``hubspot_objects`` any more (#51): ``to_id`` IS the served id the v4 payload's
-    ``toObjectId`` reports, so the value is read straight off this row. The join existed because
-    the association stored the dataset's identifier and the served id had to be fetched from the
-    target's row -- hubspot's id is PROBED, so recomputing the raw hash could have disagreed with
-    what the target actually resolves at."""
+    No join to ``hubspot_objects``: ``to_id`` IS the served id the v4 payload's ``toObjectId``
+    reports, so it is read straight off this row. Recomputing it from a hash would not do —
+    hubspot's id is PROBED, so the raw hash can disagree with what the target resolves at."""
     sql = "SELECT * FROM hubspot_associations WHERE from_id = ? AND to_type = ?"
     params: list = [from_id, to_type]
     if after_to_id:
@@ -2277,9 +2257,8 @@ def slack_channels_for_principals(conn, principals) -> set[str]:
     principal-indexed ``slack_acl`` (idx_slack_acl_pid) and nothing else, so it's cheap even at
     millions of rows — used to list a non-admin caller's visible channels.
 
-    No join to ``slack_messages`` any more (#51): a Slack message is identified by (channel, ts),
-    so the grant row carries the channel itself and the answer is a DISTINCT over the ACL table.
-    It used to join through the doc table purely to translate a `doc_id` back into a channel."""
+    No join to ``slack_messages``: a Slack message is identified by (channel, ts), so the grant
+    row carries the channel itself and the answer is a DISTINCT over the ACL table alone."""
     principals = list(principals)
     if not principals:
         return set()
@@ -2294,9 +2273,8 @@ def slack_channels_for_principals(conn, principals) -> set[str]:
 def slack_latest_reply_ts(conn, channel, thread_ts, visible_ids=None) -> str | None:
     """The ts of a thread's last reply — Slack's ``latest_reply``.
 
-    An exact MAX over the stored column (#51). It used to be SYNTHESIZED as "the root's base
-    second plus the reply count", which is a ts no message need actually have: with the ts stored,
-    the honest answer is available and costs an indexed lookup."""
+    An exact MAX over the stored column, which costs one indexed lookup. Synthesizing it as "the
+    root's base second plus the reply count" would report a ts no message need actually have."""
     sql = (
         "SELECT MAX(ts) FROM slack_messages WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
     )
@@ -2377,8 +2355,7 @@ def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
 
     Case-SENSITIVE, deliberately: real Jira keys are uppercase and the schema enforces it, and the
     one time this resolved case-insensitively it was an accident of reusing the JQL project
-    token's tolerance (#51 task 8, review round 1). There is no prefix resolution here for that
-    tolerance to leak through any more.
+    token's tolerance. There is no prefix resolution here for that tolerance to leak through.
     """
     clause, cp = _acl_clause("jira", visible_ids=visible_ids)
     return conn.execute(f"SELECT * FROM jira_issues WHERE key = ?{clause}", [key, *cp]).fetchone()
@@ -2529,7 +2506,7 @@ def get_container(conn, source_type, name) -> sqlite3.Row | None:
 
 def linear_team_by_served_id(conn, served_id) -> str | None:
     """Resolve a team UUID (`synth.linear_team_id`) to its container name. Unique-indexed, so a
-    plain column lookup rather than the reverse map `main._build_index` used to build (#51)."""
+    plain column lookup."""
     row = conn.execute("SELECT team FROM linear_teams WHERE served_id = ?", (served_id,)).fetchone()
     return row["team"] if row else None
 
@@ -2541,8 +2518,7 @@ def linear_team_by_served_key(conn, served_key) -> str | None:
     carries no UNIQUE index, and this breaks the tie exactly as the reverse map it replaced did:
     `main._build_index`'s old loop walked `list_containers`'s own team-NAME order and kept the
     FIRST team a key was seen on (`setdefault`). `ORDER BY team LIMIT 1` reproduces that -- change
-    either without the other and a key that used to resolve to one team silently resolves to a
-    different one."""
+    either without the other and a key silently resolves to a different team."""
     row = conn.execute(
         "SELECT team FROM linear_teams WHERE served_key = ? ORDER BY team LIMIT 1", (served_key,)
     ).fetchone()
@@ -2563,7 +2539,7 @@ def get_user(conn, email) -> sqlite3.Row | None:
 
 def fireflies_user_by_served_id(conn, served_id) -> str | None:
     """Reverse a served Fireflies `user_id` (`synth.fireflies_user_id`) to the address it hashes.
-    Unique-indexed column lookup, not the reverse map `main._build_index` used to build (#51)."""
+    Unique-indexed column lookup."""
     row = conn.execute(
         "SELECT email FROM fireflies_users WHERE served_id = ?", (served_id,)
     ).fetchone()
@@ -2591,9 +2567,9 @@ def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]
     """One page of a channel's members, in email order.
 
     Membership is the set of people who have spoken in the channel — the only per-channel signal
-    the corpus carries. It replaces answering every public channel with the whole roster, which is
-    a shape real Slack cannot produce (its membership differs per channel). Index-only on
-    idx_slack_channel_author, so a page costs a seek rather than a scan of the channel."""
+    the corpus carries. Answering with the whole roster instead would give every public channel the
+    same members, which real Slack cannot produce. Index-only on idx_slack_channel_author, so a
+    page costs a seek rather than a scan of the channel."""
     return [
         r[0]
         for r in conn.execute(

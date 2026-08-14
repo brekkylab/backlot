@@ -1102,6 +1102,44 @@ def test_fireflies_byo_org_is_inferred_from_host_email_and_sentence_authors(tmp_
     assert (res["org"], res["org_domain"]) == ("northwind", "northwind.example")
 
 
+def test_fireflies_transcript_id_collision_raises_on_import(tmp_path, monkeypatch):
+    """`idx_fireflies_transcript_id` is now UNIQUE (#51 audit): the index `transcript(id:)`
+    resolves against used to be a plain one, so two transcripts landing on the same
+    `transcript_id` left one silently unreachable at its own id -- last-writer-wins with no error,
+    the exact defect this whole plan exists to remove, in the one source excluded from it on the
+    assumption its id was "unique by construction" (backlot.main's old comment, before this fix).
+
+    `transcript_id` is `synth.fireflies_id(doc_id)` when the corpus is silent, assigned directly in
+    importer.byo's `_service_columns` -- NOT through `store.SERVED_ID` (fireflies isn't in that
+    registry: its only hash reverses an email, not a doc_id -- see
+    test_served_id_registry_covers_every_hashed_source). So forcing a collision between two
+    DIFFERENT doc_ids needs `monkeypatch.setattr(synth, "fireflies_id", ...)`, the same shape as
+    `test_notion_served_ids_are_stored_and_resolve`'s served_data_source_id collision test, not
+    `monkeypatch.setitem` on a registry entry that does not exist for this source."""
+    from backlot import synth
+
+    docs = [
+        {
+            "source_type": "fireflies",
+            "doc_id": f"ff-{i}",
+            "channel": "sales-calls",
+            "title": f"Call {i}",
+            "host_email": "ava@acme.com",
+            "content": "Ava: hello.",
+        }
+        for i in range(2)
+    ]
+    (tmp_path / "ok").mkdir(parents=True, exist_ok=True)
+    settings = Settings(data_dir=tmp_path / "ok")
+    assert load(_write(tmp_path / "ok", docs), settings)["counts"]["fireflies"] == 2  # sanity
+
+    monkeypatch.setattr(synth, "fireflies_id", lambda doc_id: "constant")
+    (tmp_path / "collide").mkdir(parents=True, exist_ok=True)
+    settings2 = Settings(data_dir=tmp_path / "collide")
+    with pytest.raises(sqlite3.IntegrityError):
+        load(_write(tmp_path / "collide", docs), settings2)
+
+
 def test_byo_emails_includes_every_author_alias():
     """The generator behind org inference. A new per-source author alias must be added here too."""
     from backlot.importer.byo import _emails

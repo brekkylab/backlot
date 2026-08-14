@@ -551,10 +551,12 @@ CREATE INDEX IF NOT EXISTS idx_linear_attach_doc ON linear_attachments(doc_id, s
 CREATE TABLE IF NOT EXISTS fireflies_transcripts (
     doc_id TEXT PRIMARY KEY, channel TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
-    -- The API-facing id, synthesized rather than reused from a corpus's own meeting id, which is NOT
-    -- required to be unique — `transcript(id:)` looks a meeting up by it, so a duplicate would make
-    -- that ambiguous.
-    -- The corpus's own value is kept as `calendar_id`, where a real transcript carries it.
+    -- The API-facing id: `synth.fireflies_id(doc_id)` when the corpus is silent, but a BYO record
+    -- may still provide its own value (backlot.importer.byo's `_byo_fireflies`) -- `transcript(id:)`
+    -- looks a meeting up by it, so a duplicate (whichever source it came from) would leave one
+    -- transcript unreachable at its own id, the same defect this whole plan was chartered on (#51).
+    -- idx_fireflies_transcript_id (below) is UNIQUE for exactly that reason.
+    -- The corpus's own meeting id is kept as `calendar_id`, where a real transcript carries it.
     transcript_id TEXT, calendar_id TEXT, calendar_type TEXT,
     organizer_email TEXT, duration REAL,
     created_ts INTEGER NOT NULL,
@@ -570,8 +572,12 @@ CREATE INDEX IF NOT EXISTS idx_fireflies_created_doc
     ON fireflies_transcripts(created_ts, doc_id);
 CREATE INDEX IF NOT EXISTS idx_fireflies_channel_created
     ON fireflies_transcripts(channel, created_ts, doc_id);
--- `transcript(id:)` resolves a synthesized transcript id straight to its row.
-CREATE INDEX IF NOT EXISTS idx_fireflies_transcript_id
+-- `transcript(id:)` resolves a transcript id straight to its row. UNIQUE (#51 audit): a plain
+-- index let two transcripts share an id and left one of them unreachable at it, last-writer-wins
+-- with no error -- exactly the defect this plan exists to remove, in the one source excluded from
+-- it on the assumption its id was "unique by construction". A collision now fails the import
+-- loudly instead (see test_fireflies_transcript_id_collision_raises_on_import).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fireflies_transcript_id
     ON fireflies_transcripts(transcript_id);
 -- `transcripts(host_email:)` / `organizers:` filter on these directly.
 CREATE INDEX IF NOT EXISTS idx_fireflies_host ON fireflies_transcripts(author_email);

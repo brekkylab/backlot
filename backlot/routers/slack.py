@@ -335,7 +335,7 @@ async def conversations_history(request: Request):
         inclusive = _param(request, "inclusive") in ("1", "true", "True")
 
         def _in_window(r) -> bool:
-            ts = float(_msg_ts(r))
+            ts = float(r["ts"])
             # Slack: latest is inclusive; oldest is exclusive unless inclusive=true
             if lo is not None and (ts < lo if inclusive else ts <= lo):
                 return False
@@ -361,9 +361,9 @@ async def conversations_history(request: Request):
         rows = store.list_slack_top_level(conn, name, ids, limit=limit, offset=offset)
     messages = []
     for r in rows:
-        rc = store.slack_reply_count(conn, r["doc_id"], ids) if r["thread_id"] else 0
-        latest = _latest_reply(r, rc) if rc else None
-        ru = store.slack_reply_authors(conn, r["doc_id"], ids) if rc else []
+        rc = store.slack_reply_count(conn, name, r["ts"], ids) if r["thread_ts"] else 0
+        latest = store.slack_latest_reply_ts(conn, name, r["ts"], ids) if rc else None
+        ru = store.slack_reply_authors(conn, name, r["ts"], ids) if rc else []
         ruids = [synth.slack_user_id(e) for e in ru[:5]]
         messages.append(
             _message(
@@ -399,9 +399,10 @@ async def conversations_replies(request: Request):
     # Resolve the ts against ALL messages in the channel, not just roots: Slack accepts any in-thread
     # ts here, and a client that got its ts from a search hit will often pass a REPLY's ts. Find the
     # matched message, then return the thread it belongs to (its root's).
-    # Fast path: a public ts's integer part IS the row's created_ts, so narrow to that second instead
-    # of loading the whole channel (eng-ml is ~340k rows → ~4s). Fall back to the full scan only for
-    # a ts synthesized from a doc id (created_ts NULL), which the second query can't target.
+    # Fast path: a ts's integer part IS the row's created_ts (see the importer's `_slack_ts`), so
+    # narrow to that second instead of loading the whole channel (eng-ml is ~340k rows → ~4s).
+    # The full scan stays as a fallback for a row with no created_ts, which that query cannot
+    # target.
     hit = None
     try:
         epoch = int(str(ts).split(".", 1)[0])
@@ -409,25 +410,23 @@ async def conversations_replies(request: Request):
         epoch = None
     if epoch is not None:
         candidates = store.slack_messages_at_created_ts(conn, name, epoch, ids)
-        hit = next((r for r in candidates if _msg_ts(r) == ts), None)
+        hit = next((r for r in candidates if r["ts"] == ts), None)
     if hit is None:
         msgs = store.list_slack_channel_messages(conn, name, ids)
-        hit = next((r for r in msgs if _msg_ts(r) == ts), None)
+        hit = next((r for r in msgs if r["ts"] == ts), None)
     if hit is None:
         return _err("thread_not_found")
-    if not hit["thread_id"]:  # standalone message (no thread)
+    if not hit["thread_ts"]:  # standalone message (no thread)
         return {"ok": True, "messages": [_message(hit)], "has_more": False}
-    # The root's own created_ts differs from a reply's ts, so don't re-scan the channel for it —
-    # derive its doc_id from the hit (a root's doc_id == its thread_id) and pull the root out of the
-    # ordered thread rows below.
-    root_doc_id = hit["doc_id"] if hit["thread_seq"] == 0 else hit["thread_id"]
-    rows = store.slack_thread(conn, root_doc_id, ids)  # root + replies, ordered
+    # `thread_ts` IS the root's ts, stored on every message of the thread (#51) — a root carries
+    # its own, so this needs no case analysis and no re-derivation.
+    rows = store.slack_thread(conn, name, hit["thread_ts"], ids)  # root + replies
     root = next((r for r in rows if r["thread_seq"] == 0), None)
     if root is None:
         return _err("thread_not_found")
     rc = sum(1 for x in rows if x["thread_seq"] > 0)
-    latest = _latest_reply(root, rc) if rc else None
-    ru = store.slack_reply_authors(conn, root["doc_id"], ids)
+    latest = store.slack_latest_reply_ts(conn, name, root["ts"], ids) if rc else None
+    ru = store.slack_reply_authors(conn, name, root["ts"], ids)
     ruids = [synth.slack_user_id(e) for e in ru[:5]]
     parent_uid = synth.slack_user_id(root["author_email"])
     messages = [
@@ -706,7 +705,7 @@ def _search_match(conn, row) -> dict:
     ch = row["channel"]
     cid = synth.slack_channel_id(ch)
     text = f"*{row['title']}*\n{row['content']}" if row["title"] else row["content"]
-    ts = _msg_ts(row)
+    ts = row["ts"]
     m = {
         "type": "message",
         "team": "T0000MOCK",
@@ -722,37 +721,29 @@ def _search_match(conn, row) -> dict:
         "permalink": f"https://{get_settings().org_name}.slack.com/archives/{cid}/p{ts.replace('.', '')}",
     }
     if row[
-        "thread_id"
+        "thread_ts"
     ]:  # a hit inside a thread carries its root ts so the client can fetch replies
-        m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(row), row["thread_id"])
+        m["thread_ts"] = row["thread_ts"]
     return m
-
-
-def _root_epoch(row) -> int:
-    """The thread root's base second — the caller-supplied `created` (with the reply's
-    position backed out) if present, else synthesized from the root doc_id."""
-    if row["created_ts"]:
-        return row["created_ts"] - row["thread_seq"]
-    return synth.epoch(row["thread_id"] or row["doc_id"])
 
 
 def _compute_channel_created(conn, name: str) -> int:
     """Channel creation second, pinned at/or before its earliest message so it never postdates
-    one. The synthesized per-channel ``epoch(name)`` and per-message ``epoch(doc_id)`` are
-    independent draws, so a message could otherwise predate its channel — which breaks clients
-    (e.g. mirage) that list a day per date between creation and the latest message.
+    one. The synthesized per-channel ``epoch(name)`` and a message's own clock are independent
+    draws, so a message could otherwise predate its channel — which breaks clients (e.g. mirage)
+    that list a day per date between creation and the latest message.
 
     Derived from a cheap aggregate rather than scanning every message: messages with an explicit
-    ``created_ts`` contribute ``MIN(created_ts)``; messages without one synthesize their ts as
-    ``epoch(doc_id)``, which is always ``>= BASE_EPOCH`` — so ``BASE_EPOCH`` is a safe lower
-    bound for that group. ``created`` is the min of whichever groups are present."""
+    ``created_ts`` contribute ``MIN(created_ts)``; any without one were synthesized at or after
+    ``BASE_EPOCH``, so that is a safe lower bound for the group. ``created`` is the min of
+    whichever groups are present."""
     b = store.slack_created_bounds(conn, name)
     if not b["total"]:
         return synth.epoch(name)
     candidates = []
     if b["have"]:  # rows with an explicit created_ts
         candidates.append(b["min_ts"])
-    if b["have"] < b["total"]:  # rows whose ts is synthesized as epoch(doc_id)
+    if b["have"] < b["total"]:  # rows whose clock was synthesized rather than given
         candidates.append(synth.BASE_EPOCH)
     return min(candidates)
 
@@ -778,17 +769,12 @@ def _member_count(request: Request, conn, name: str) -> int:
     return store.count_slack_channel_members(conn, name)
 
 
-def _msg_ts(row) -> str:
-    if row["created_ts"]:
-        return synth.slack_fmt_ts(row["created_ts"], row["thread_id"] or row["doc_id"])
-    if row["thread_id"]:
-        return synth.slack_thread_ts(row["thread_id"], row["thread_seq"])
-    return synth.slack_ts(row["doc_id"])
-
-
-def _latest_reply(root_row, reply_count: int) -> str:
-    """ts of the last reply in a thread (root base + reply_count)."""
-    return synth.slack_fmt_ts(_root_epoch(root_row) + reply_count, root_row["doc_id"])
+# `_msg_ts` and `_latest_reply` are gone (#51). A message's ts is a STORED column now, assigned
+# once at import, so there is nothing to re-derive per request — and the derivation they performed
+# was not merely redundant, it collided: every message of a thread hashed the same root key, so two
+# replies in one second produced a single ts between them. `latest_reply` likewise reads the
+# thread's actual last ts (store.slack_latest_reply_ts) rather than synthesizing "root + count",
+# which was a value no message need have held.
 
 
 def _message(
@@ -807,9 +793,9 @@ def _message(
         "type": "message",
         "user": synth.slack_user_id(row["author_email"]),
         "text": text,
-        "ts": _msg_ts(row),
+        "ts": row["ts"],
         "team": "T0000MOCK",
-        "client_msg_id": synth.gmail_id(row["doc_id"], salt="cmid"),
+        "client_msg_id": synth.gmail_id(row["ts"], salt="cmid"),
     }
     reactions = store.jcol(row, "reactions")
     if reactions:
@@ -822,8 +808,8 @@ def _message(
         m["edited"] = edited
     if row["subtype"]:
         m["subtype"] = row["subtype"]
-    if row["thread_id"]:  # part of a thread
-        m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(row), row["thread_id"])
+    if row["thread_ts"]:  # part of a thread
+        m["thread_ts"] = row["thread_ts"]
         if row["thread_seq"] == 0 and reply_count > 0:  # thread root
             m.update(
                 {

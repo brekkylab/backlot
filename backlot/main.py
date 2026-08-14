@@ -9,7 +9,7 @@ notion/hubspot/linear/github/jira/google_drive, #51) now resolves through a stor
 — see backlot.store's SERVED_ID -- and so, since task 9, do Linear's team id/key (`store.
 linear_team_by_served_id`/`linear_team_by_served_key`, on `linear_teams`) and Fireflies' user id
 (`store.fireflies_user_by_served_id`, on `fireflies_users`): both reverse a hash of a value
-belonging to a real row (a team, a principal), not a doc_id, so they got their own small readers
+belonging to a real row (a team, a principal), not a document, so they got their own small readers
 instead of an entry in SERVED_ID. Jira's own project<->prefix maps (`jira_project_keys`/
 `jira_project_containers`) also stay here: they are CONTAINER-level (one entry per project, not
 per document), and the deferred assignment pass in backlot.importer.byo (`resolve_jira_numbers`)
@@ -145,9 +145,11 @@ async def lifespan(app: FastAPI):
             )
             try:
                 cacl: dict[str, set] = {}
+                # No join to slack_messages (#51): a Slack message is identified by
+                # (channel, ts), so the grant row carries the channel itself. The join existed
+                # only to translate a doc_id back into one.
                 for ch, pid in c.execute(
-                    "SELECT DISTINCT d.channel, a.principal_id "
-                    f"FROM {store.acl_table('slack')} a JOIN slack_messages d ON d.doc_id = a.doc_id"
+                    f"SELECT DISTINCT a.channel, a.principal_id FROM {store.acl_table('slack')} a"
                 ):
                     cacl.setdefault(ch, set()).add(pid)
                 app.state.channel_acl = {k: frozenset(v) for k, v in cacl.items()}

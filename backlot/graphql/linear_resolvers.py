@@ -445,7 +445,7 @@ def _attachment(row, info) -> dict:
         "creator": None,
         "externalUserCreator": None,
         "originalIssue": None,
-        "_doc_id": row["doc_id"],
+        "_issue_id": row["issue_id"],
     }
 
 
@@ -457,8 +457,8 @@ def _relation(row, info) -> dict:
         "createdAt": ts,
         "updatedAt": ts,
         "archivedAt": None,
-        "_from": row["from_doc_id"],
-        "_to": row["to_doc_id"],
+        "_from": row["from_id"],
+        "_to": row["to_id"],
     }
 
 
@@ -585,7 +585,7 @@ def _issue(row, info) -> dict:
     sort orders, bot actors and shared access are declared because `@linear/sdk`'s fragment
     selects them, and resolve empty because a document corpus has nothing behind them."""
     identifier = row["identifier"] or synth.linear_identifier(
-        row["doc_id"], synth.linear_team_key(row["team"])
+        row["id"], synth.linear_team_key(row["team"])
     )
     title = row["title"] or ""
     created = row["created_ts"]
@@ -593,7 +593,7 @@ def _issue(row, info) -> dict:
     # which is what Linear itself shows for a never-edited issue.
     updated = row["updated_ts"] if row["updated_ts"] is not None else created
     return {
-        "id": synth.linear_id(row["doc_id"]),
+        "id": row["id"],
         "identifier": identifier,
         "number": float(synth.linear_issue_number(identifier)),
         "title": title,
@@ -684,7 +684,7 @@ def _comment(row, info) -> dict:
         "reactionData": {},
         "reactions": [],
         "user": _user(row["author_email"], None, info),
-        "issueId": synth.linear_id(row["doc_id"]),
+        "issueId": row["issue_id"],
         "quotedText": None,
         "archivedAt": None,
         "editedAt": None,
@@ -717,7 +717,7 @@ def _comment(row, info) -> dict:
 
 
 def _resolve_one_issue_id(conn, value: str) -> str:
-    """Translate one filter value -- a served UUID or a human identifier -- to a doc_id. A miss
+    """Translate one filter value -- a served UUID or a human identifier -- to an issue id. A miss
     returns the sentinel ``"\\x00none"``, which matches no row, so the filter narrows to nothing
     rather than being silently dropped (see ``_resolve_issue_ids``).
 
@@ -725,17 +725,17 @@ def _resolve_one_issue_id(conn, value: str) -> str:
     not the visibility decision. ``_issue_page``'s own store calls (``list_linear_issues`` /
     ``count_linear_issues``) apply ``visible_ids`` to the real query, so a value that resolves to
     an issue the caller cannot see still gets filtered out there -- translating it here to
-    anything other than its real doc_id would just make an invisible-issue filter behave
+    anything other than its real id would just make an invisible-issue filter behave
     differently from every other predicate instead of consistently answering empty."""
-    row = store.linear_by_served_id(conn, value)
+    row = store.linear_by_id(conn, value)
     if row is None:
         row = store.linear_issue_by_identifier(conn, value)
-    return row["doc_id"] if row else "\x00none"
+    return row["id"] if row else "\x00none"
 
 
 def _resolve_issue_ids(info, flt):
     """Rewrite an ``IssueFilter``'s ``id`` comparator from Linear UUIDs (or human identifiers)
-    to doc_ids -- a served id is a stored column now, not an in-memory reverse map, so each value
+    to issue ids -- an id is the row's own primary key now, not a reverse map, so each value
     costs a lookup rather than a dict access. See ``_resolve_one_issue_id`` for the per-value
     resolution and its sentinel."""
     if not isinstance(flt, dict):
@@ -813,7 +813,7 @@ def resolve_issue(_root, info, id):
     ("Entity not found")."""
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
-    row = store.linear_by_served_id(conn, str(id), visible_ids=visible)
+    row = store.linear_by_id(conn, str(id), visible_ids=visible)
     if row is None:
         row = store.linear_issue_by_identifier(conn, str(id), visible_ids=visible)
     if row is None:
@@ -1038,7 +1038,7 @@ def resolve_issue_comments(
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
-    doc_id = issue["_row"]["doc_id"]
+    issue_id = issue["_row"]["id"]
     prefilter = compile_comment_filter(conn, filter)
     if offset is None:
         offset = _from_end(
@@ -1046,12 +1046,12 @@ def resolve_issue_comments(
             limit,
             floor,
             store.count_linear_comments(
-                conn, doc_id=doc_id, visible_ids=visible, prefilter=prefilter
+                conn, issue_id=issue_id, visible_ids=visible, prefilter=prefilter
             ),
         )
     rows = store.list_linear_comments(
         conn,
-        doc_id=doc_id,
+        issue_id=issue_id,
         visible_ids=visible,
         limit=limit + 1,
         offset=offset,
@@ -1062,7 +1062,7 @@ def resolve_issue_comments(
 
 
 def resolve_issue_parent(issue, info):
-    """``Issue.parent`` — read off the ``parent_doc_id`` resolved at import, ACL-scoped, so a
+    """``Issue.parent`` — read off the ``parent_id`` resolved at import, ACL-scoped, so a
     parent the caller cannot read is null rather than a way to confirm it exists.
 
     Reads the SAME column ``Issue.children`` does, which is the entire point of resolving the key
@@ -1071,24 +1071,24 @@ def resolve_issue_parent(issue, info):
     `@linear/sdk`'s Issue fragment selects ``parent { id }`` on every node, so a page would
     otherwise do one indexed-identifier search per row. Bound rather than precomputed in
     :func:`_issue`, so a page pays nothing unless ``parent`` is selected."""
-    parent_doc_id = issue["_row"]["parent_doc_id"]
-    if not parent_doc_id:
+    parent_id = issue["_row"]["parent_id"]
+    if not parent_id:
         return None
     ctx = _ctx(info)
-    row = store.get_document(ctx["conn"], "linear", parent_doc_id, visible_ids=ctx["visible_ids"])
+    row = store.get_document(ctx["conn"], "linear", parent_id, visible_ids=ctx["visible_ids"])
     return _issue(row, info) if row is not None else None
 
 
 def resolve_issue_children(
     issue, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
 ) -> dict:
-    """``Issue.children`` — the exact inverse of ``Issue.parent``, read off the ``parent_doc_id``
+    """``Issue.children`` — the exact inverse of ``Issue.parent``, read off the ``parent_id``
     resolved at import. Not a join on ``identifier``: keys repeat, so that would attach one
     issue's children to every issue sharing its key."""
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
-    doc_id = issue["_row"]["doc_id"]
+    issue_id = issue["_row"]["id"]
     prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter))
     if offset is None:
         offset = _from_end(
@@ -1097,12 +1097,12 @@ def resolve_issue_children(
             floor,
             len(
                 store.linear_children(
-                    conn, doc_id, visible_ids=visible, limit=PAGE_MAX, prefilter=prefilter
+                    conn, issue_id, visible_ids=visible, limit=PAGE_MAX, prefilter=prefilter
                 )
             ),
         )
     rows = store.linear_children(
-        conn, doc_id, visible_ids=visible, limit=limit + 1, offset=offset, prefilter=prefilter
+        conn, issue_id, visible_ids=visible, limit=limit + 1, offset=offset, prefilter=prefilter
     )
     rows, has_next = _page(rows, limit)
     return _connection([_issue(r, info) for r in rows], offset, has_next)
@@ -1112,7 +1112,7 @@ def _relations_page(issue, info, *, inverse, first, after, last, before) -> dict
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
-    doc_id = issue["_row"]["doc_id"]
+    issue_id = issue["_row"]["id"]
     if offset is None:
         offset = _from_end(
             None,
@@ -1120,12 +1120,12 @@ def _relations_page(issue, info, *, inverse, first, after, last, before) -> dict
             floor,
             len(
                 store.linear_relations(
-                    conn, doc_id, inverse=inverse, visible_ids=visible, limit=PAGE_MAX
+                    conn, issue_id, inverse=inverse, visible_ids=visible, limit=PAGE_MAX
                 )
             ),
         )
     rows = store.linear_relations(
-        conn, doc_id, inverse=inverse, visible_ids=visible, limit=limit + 1, offset=offset
+        conn, issue_id, inverse=inverse, visible_ids=visible, limit=limit + 1, offset=offset
     )
     rows, has_next = _page(rows, limit)
     return _connection([_relation(r, info) for r in rows], offset, has_next)
@@ -1148,18 +1148,18 @@ def resolve_issue_inverse_relations(
 
 
 def resolve_relation_issue(relation, info) -> dict:
-    return _issue_by_doc_id(info, relation["_from"])
+    return _issue_by_id(info, relation["_from"])
 
 
 def resolve_relation_related_issue(relation, info) -> dict:
-    return _issue_by_doc_id(info, relation["_to"])
+    return _issue_by_id(info, relation["_to"])
 
 
-def _issue_by_doc_id(info, doc_id):
+def _issue_by_id(info, issue_id):
     """Both ends of a relation are declared non-null, and `linear_relations` already ACL-filtered
     on the far end — so this only re-reads the row, and a miss means the ACL changed under us."""
     ctx = _ctx(info)
-    row = store.get_document(ctx["conn"], "linear", doc_id, visible_ids=ctx["visible_ids"])
+    row = store.get_document(ctx["conn"], "linear", issue_id, visible_ids=ctx["visible_ids"])
     if row is None:
         raise GraphQLError("Entity not found: Issue - Could not find referenced Issue.")
     return _issue(row, info)
@@ -1171,11 +1171,11 @@ def resolve_issue_attachments(
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
-    doc_id = issue["_row"]["doc_id"]
+    issue_id = issue["_row"]["id"]
     nodes = [
         _attachment(r, info)
         for r in store.linear_attachments(
-            conn, doc_id, visible_ids=visible, limit=PAGE_MAX, url=url
+            conn, issue_id, visible_ids=visible, limit=PAGE_MAX, url=url
         )
     ]
     nodes = [n for n in nodes if _match_attachment(n, filter)]
@@ -1184,7 +1184,7 @@ def resolve_issue_attachments(
 
 
 def resolve_attachment_issue(attachment, info) -> dict:
-    return _issue_by_doc_id(info, attachment["_doc_id"])
+    return _issue_by_id(info, attachment["_issue_id"])
 
 
 def resolve_issue_releases(

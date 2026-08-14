@@ -172,11 +172,11 @@ def _analytics(row) -> dict:
 
 def _transcript(row, info) -> dict:
     """One transcript as a dict. `_row` is carried along so the field resolvers that need another
-    query (sentences) can reach the doc_id without a second lookup."""
+    query (sentences) can reach the transcript id without a second lookup."""
     host = row["author_email"]
     return {
         "_row": row,
-        "id": row["transcript_id"] or synth.fireflies_id(row["doc_id"]),
+        "id": row["id"],
         "title": row["title"] or None,
         "date": _millis(row["created_ts"]),
         "dateString": _iso(row["created_ts"]),
@@ -288,7 +288,7 @@ def resolve_transcript_sentences(transcript, info, **_ignored):
     """Sentences are a separate table, so this is the one Transcript field that queries. Bound
     explicitly for that reason — selecting only metadata never touches fireflies_sentences."""
     row = transcript["_row"]
-    rows = store.fireflies_sentences(_ctx(info)["conn"], row["doc_id"])
+    rows = store.fireflies_sentences(_ctx(info)["conn"], row["id"])
     return [_sentence(r, i) for i, r in enumerate(rows)]
 
 

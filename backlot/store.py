@@ -2228,6 +2228,20 @@ def slack_channels_for_principals(conn, principals) -> set[str]:
     return {r[0] for r in rows}
 
 
+def slack_latest_reply_ts(conn, channel, thread_ts, visible_ids=None) -> str | None:
+    """The ts of a thread's last reply — Slack's ``latest_reply``.
+
+    An exact MAX over the stored column (#51). It used to be SYNTHESIZED as "the root's base
+    second plus the reply count", which is a ts no message need actually have: with the ts stored,
+    the honest answer is available and costs an indexed lookup."""
+    sql = (
+        "SELECT MAX(ts) FROM slack_messages WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
+    )
+    params: list = [channel, thread_ts]
+    clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
+    return conn.execute(sql + clause, params + cparams).fetchone()[0]
+
+
 def slack_reply_authors(conn, channel, thread_ts, visible_ids=None) -> list[str]:
     """Distinct reply-author emails in a thread, in reply order (for reply_users)."""
     sql = (

@@ -435,20 +435,17 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
             (d for v in ops.get("before", []) if (d := _gmail_date(v)) is not None), default=None
         )
         # list_gmail_in_range for BOTH the date-pinned and the open-ended case (lo=hi=None): its
-        # created_ts DESC, doc_id order is the newest-first listing real Gmail returns — the plain
-        # list_documents path ordered by doc_id (hash), scattering the listing by date.
+        # created_ts DESC, id order is the newest-first listing real Gmail returns — the plain
+        # list_documents path ordered by id (a hash), scattering the listing by date.
         cand = store.list_gmail_in_range(conn, mailbox, lo, hi, ids, limit=100_000)
     return [r for r in cand if _gmail_op_match(r, ops)]
 
 
 # --- Gmail ids ------------------------------------------------------------------------------
-# Served ids are 16-hex integers (`synth.gmail_message_id`), not the corpus's dsids. Gmail's id is
-# a stored column (`gmail_messages.served_id`, assigned at import — see `backlot.importer.byo`),
-# so resolution is a unique-indexed column lookup rather than a map rebuilt on every boot — like
-# every other per-document served id now (#51: github / jira / confluence / notion / hubspot /
-# linear each got their own stored column too; s3's own address was never hashed and its map was
-# pure redundancy over an existing index, see task 5a). Threads still resolve through the same
-# column, because a thread key IS the root message's doc_id.
+# A gmail id is a 16-hex integer (`synth.gmail_message_id`) and it IS the row's primary key
+# (`gmail_messages.id`, assigned at import — see `backlot.importer.byo`), so resolution is a point
+# lookup rather than a map rebuilt on every boot (#51). `thread_id` holds the ROOT MESSAGE'S id,
+# already resolved at import, so a thread resolves through the same key with no re-derivation.
 
 _GMAIL_HEX = re.compile(r"[0-9a-fA-F]+\Z")
 
@@ -466,17 +463,15 @@ def _gmail_check_shape(served_id: str) -> None:
 
 
 def _gmail_resolve(conn, served_id: str) -> str | None:
-    """The ``doc_id`` behind a served Gmail id, or ``None`` if it names nothing. Needed only where a
-    doc_id, not a row, is the thing being resolved — `gmail_thread_get`'s `thread_key` — since
-    `store.gmail_thread` matches on `thread_id`, not `served_id`.
+    """Validate a served Gmail id's SHAPE and hand it back — a thread is keyed on the root
+    message's own id (#51), so there is nothing left to translate, only to reject.
 
-    No ``visible_ids`` here on purpose: this only resolves the *shape*-valid id to a doc_id. The
-    ACL read stays in the caller (`store.gmail_thread` for threads; `_gmail_doc` collapses
-    resolution and the ACL read into one query for a single message, see below), so an id that
-    resolves to a document the caller cannot see is not-found, never a different answer."""
+    Kept as a named step rather than inlined because the shape check must run BEFORE any lookup:
+    an unparsable id is 400 INVALID_ARGUMENT whether or not it would have resolved. No
+    ``visible_ids``: the ACL read stays in the caller (`store.gmail_thread`), so an id naming a
+    thread the caller cannot see is not-found, never a different answer."""
     _gmail_check_shape(served_id)
-    row = store.gmail_by_served_id(conn, served_id)
-    return row["doc_id"] if row is not None else None
+    return served_id
 
 
 def _gmail_doc(conn, ids, served_id: str):
@@ -487,23 +482,18 @@ def _gmail_doc(conn, ids, served_id: str):
     document the caller cannot see comes back as no row, i.e. not-found, never a different answer
     (that invariant no longer needs two round trips to hold, just the one WHERE clause)."""
     _gmail_check_shape(served_id)
-    return store.gmail_by_served_id(conn, served_id, visible_ids=ids)
+    return store.gmail_by_id(conn, served_id, visible_ids=ids)
 
 
 def _gmail_ids(row) -> tuple[str, str]:
     """``(id, threadId)`` for a row. A message that is its own thread root reports the same value
     twice, as real Gmail does.
 
-    The two halves come from different sources on purpose: `id` reads the row's own stored
-    `served_id` (assigned once, at import), while `threadId` re-hashes the root's key
-    (`thread_id or doc_id`) rather than reading the root row. Gmail never probes its seed off a
-    collision (see the schema comment on `idx_gmail_served`), so the hash and the stored column
-    always agree — which is what makes it safe to derive `threadId` this way instead of paying for
-    a lookup of the root row on every listed message."""
-    return (
-        row["served_id"],
-        synth.gmail_message_id(row["thread_id"] or row["doc_id"]),
-    )
+    Both halves are read straight off the row (#51). `thread_id` holds the ROOT'S OWN id,
+    resolved once at import, so `threadId` no longer re-hashes the root's key and cannot disagree
+    with what the root itself reports — a derivation that was only ever safe because gmail's seed
+    is never probed off a collision."""
+    return (row["id"], row["thread_id"] or row["id"])
 
 
 @router.get(
@@ -524,7 +514,7 @@ async def gmail_messages_list(user_id: str, request: Request):
         total = len(matched)
         rows = matched[offset : offset + limit]
     else:
-        # newest-first by internalDate (created_ts), like real Gmail — NOT doc_id (hash) order, so a
+        # newest-first by internalDate (created_ts), like real Gmail — NOT id (hash) order, so a
         # capped "newest N" crawl is deterministic by date, not random. Open-ended range = whole box.
         total = store.count_documents(conn, "gmail", container=mailbox, visible_ids=ids)
         rows = store.list_gmail_in_range(conn, mailbox, None, None, ids, limit=limit, offset=offset)
@@ -563,16 +553,16 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     row = _gmail_doc(conn, ids, msg_id)
     if row is None:
         raise gerr.not_found_entity()
-    doc_id = row["doc_id"]
+    message_id = row["id"]
     found = next(
         (
             (i, a)
             for i, a in enumerate(store.jcol(row, "attachments"))
-            if _att_id(doc_id, i) == att_id
+            if _att_id(message_id, i) == att_id
         ),
         None,
     )
-    body = _att_content(doc_id, found[0], found[1]) if found else f"attachment {att_id}"
+    body = _att_content(message_id, found[0], found[1]) if found else f"attachment {att_id}"
     return {"attachmentId": att_id, "size": len(body), "data": _b64url(body)}
 
 
@@ -636,16 +626,16 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     }
 
 
-def _att_id(doc_id: str, i: int) -> str:
-    return "ANGjdJ" + synth.gmail_id(doc_id, salt=f"att{i}")
+def _att_id(message_id: str, i: int) -> str:
+    return "ANGjdJ" + synth.gmail_id(message_id, salt=f"att{i}")
 
 
-def _att_content(doc_id: str, i: int, att: dict) -> str:
+def _att_content(message_id: str, i: int, att: dict) -> str:
     """The exact bytes ``attachments.get`` serves for attachment ``i``, and therefore what
     ``messages.get`` reports as that part's ``body.size`` — real Gmail keeps the two equal so a
     client can stat from metadata alone. The corpus-declared ``size`` cannot be honoured with
     placeholder bytes, so the served content's length is the single source of truth."""
-    return att.get("content", f"attachment {_att_id(doc_id, i)}")
+    return att.get("content", f"attachment {_att_id(message_id, i)}")
 
 
 def _leaf(mime: str, part_id: str, data: str) -> dict:
@@ -664,14 +654,14 @@ def _gmail_ts(row) -> int:
     this, so they agree."""
     if row["created_ts"]:
         return row["created_ts"]
-    return synth.epoch(row["thread_id"] or row["doc_id"]) + (row["thread_seq"] or 0) * 3600
+    return synth.epoch(row["thread_id"] or row["id"]) + (row["thread_seq"] or 0) * 3600
 
 
 def _gmail_message(row, fmt: str) -> dict:
     ts = _gmail_ts(row)
     author = row["author_email"]
     display = author.split("@")[0].replace(".", " ").title()
-    msg_id = row["message_id"] or f"<{row['doc_id']}@{get_settings().org_domain}>"
+    msg_id = row["message_id"] or f"<{row['id']}@{get_settings().org_domain}>"
     # a fetched (received) message carries transport/MIME headers but NOT Bcc (stripped in transit)
     headers = [
         {
@@ -695,7 +685,7 @@ def _gmail_message(row, fmt: str) -> dict:
             headers.append({"name": hname, "value": row[col]})
     attachments = store.jcol(row, "attachments")
     top_mime = "multipart/mixed" if attachments else "multipart/alternative"
-    boundary = f"b_{row['doc_id'][:12]}"
+    boundary = f"b_{row['id'][:12]}"
     headers.append({"name": "Content-Type", "value": f'{top_mime}; boundary="{boundary}"'})
 
     msg = {
@@ -724,9 +714,7 @@ def _gmail_message(row, fmt: str) -> dict:
             filename = att.get("filename", "attachment.bin")
             mime = att.get("mime", "application/octet-stream")
             # same bytes attachments.get serves, so raw MIME and the attachment endpoint agree
-            b64 = base64.b64encode(_att_content(row["doc_id"], i, att).encode("utf-8")).decode(
-                "ascii"
-            )
+            b64 = base64.b64encode(_att_content(row["id"], i, att).encode("utf-8")).decode("ascii")
             leaves.append(
                 f'Content-Type: {mime}; name="{filename}"\r\n'
                 f'Content-Disposition: attachment; filename="{filename}"\r\n'
@@ -765,8 +753,8 @@ def _gmail_message(row, fmt: str) -> dict:
                 # size = the exact byte length attachments.get serves (see _att_content), so a client can
                 # stat the attachment from this metadata without a second call — real Gmail's contract.
                 "body": {
-                    "attachmentId": _att_id(row["doc_id"], i),
-                    "size": len(_att_content(row["doc_id"], i, att)),
+                    "attachmentId": _att_id(row["id"], i),
+                    "size": len(_att_content(row["id"], i, att)),
                 },
             }
         )
@@ -810,7 +798,7 @@ def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) 
 
 def _drive_facts(row) -> dict:
     """The values `q` clauses are evaluated against, taken from a stored row."""
-    modified = row["updated_ts"] or (row["created_ts"] or synth.epoch(row["doc_id"])) + 3600
+    modified = row["updated_ts"] or (row["created_ts"] or synth.epoch(row["id"])) + 3600
     return {
         "trashed": bool(row["trashed"]),
         "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
@@ -1041,16 +1029,16 @@ def _drive_fill_shared(conn, files: list[dict], stored: dict[str, str]) -> None:
     the synthesized folders, left alone: their sharing comes from the files they hold, not from a
     grant on the folder id.
 
-    ``stored`` maps the served file id (``f["id"]``, #51 task 12) to its underlying ``doc_id`` --
-    ACL grants are keyed on ``doc_id``, not the served id a client sees, so a plain
-    ``f["id"] in stored`` set membership would silently stop marking anything shared the moment
-    the two id spaces diverged."""
+    ``stored`` is the SET of served file ids that came from a row. It used to be a map from the
+    served id to the underlying doc_id, because ACL grants were keyed on the doc_id rather than on
+    the id a client sees; the two are one value now (#51), so plain set membership is exact rather
+    than the silent mismatch that indirection existed to prevent."""
     have = store.docs_with_grants(
-        conn, "google_drive", [stored[f["id"]] for f in files if f["id"] in stored]
+        conn, "google_drive", [f["id"] for f in files if f["id"] in stored]
     )
     for f in files:
         if f["id"] in stored:
-            f["shared"] = stored[f["id"]] in have
+            f["shared"] = f["id"] in have
 
 
 # --- `orderBy` -----------------------------------------------------------------------------
@@ -1435,19 +1423,19 @@ async def drive_files_list(request: Request):
             conn, "google_drive", visible_ids=ids, limit=n, offset=o, exclude_trashed=True
         )
 
-    # served file id -> doc_id, for objects that came from the row stream (vs. a synthesized
-    # folder) -- see _drive_fill_shared on why this is keyed by the served id but valued by doc_id.
-    stored: dict[str, str] = {}
+    # The file ids that came from the row stream, as opposed to a synthesized folder -- see
+    # _drive_fill_shared, which marks only those.
+    stored: set[str] = set()
 
     def objects(o: int, n: int, *, with_shared: bool = True) -> list[dict]:
         rows = fetch(o, n) if n > 0 else []
-        stored.update({r["served_id"]: r["doc_id"] for r in rows})
+        stored.update(r["id"] for r in rows)
         shared = (
-            store.docs_with_grants(conn, "google_drive", [r["doc_id"] for r in rows])
+            store.docs_with_grants(conn, "google_drive", [r["id"] for r in rows])
             if with_shared
             else ()
         )
-        return [_drive_file(conn, r, shared=r["doc_id"] in shared, me=me) for r in rows]
+        return [_drive_file(conn, r, shared=r["id"] in shared, me=me) for r in rows]
 
     total = total_rows + len(folders)
     if order:
@@ -1483,7 +1471,7 @@ async def drive_files_get(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = store.gdrive_by_served_id(conn, file_id, visible_ids=ids)
+    row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
         name = _drive_folder_name_by_id(conn, file_id)  # folders aren't stored as rows
         if name is not None:
@@ -1508,7 +1496,7 @@ async def drive_files_export(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = store.gdrive_by_served_id(conn, file_id, visible_ids=ids)
+    row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
         raise gerr.not_found_file(file_id)
     native = _native(row)
@@ -1528,7 +1516,7 @@ async def drive_files_permissions(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = store.gdrive_by_served_id(conn, file_id, visible_ids=ids)
+    row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
         # A folder id is a first-class file id on real Drive — files.get answers for one, so
         # permissions.list has to as well. Folders aren't stored as rows, so their sharing comes
@@ -1540,7 +1528,7 @@ async def drive_files_permissions(file_id: str, request: Request):
             "kind": "drive#permissionList",
             "permissions": _drive_permissions(conn, file_id, folder=name),
         }
-    return {"kind": "drive#permissionList", "permissions": _drive_permissions(conn, row["doc_id"])}
+    return {"kind": "drive#permissionList", "permissions": _drive_permissions(conn, row["id"])}
 
 
 # --- Google Workspace editors read APIs (Docs / Sheets / Slides) ------------------
@@ -1548,7 +1536,7 @@ async def drive_files_permissions(file_id: str, request: Request):
 # Drive `files.export` renders a native doc to text, but editor-aware clients (e.g. mirage)
 # read the *structured* document straight from the Docs/Sheets/Slides APIs instead. These
 # endpoints serve the corpus content shaped into each API's read response, keyed on the same
-# Drive file id (the doc_id), and enforce the same ACL as Drive.
+# Drive file id, and enforce the same ACL as Drive.
 
 # How the real Docs / Sheets / Slides APIs answer an id that is not their own kind of document.
 # MEASURED against docs.googleapis.com, sheets.googleapis.com and slides.googleapis.com with real
@@ -1599,8 +1587,8 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     ids = auth.visible_ids(request, caller)
     # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id (#51, task 12) --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has
-    # to resolve the served column too, not the corpus's doc_id.
-    row = store.gdrive_by_served_id(conn, file_id, visible_ids=ids)
+    # to resolve the file's own id.
+    row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
         # Folders are synthesized rather than stored, so they miss the lookup above. Real Google
         # calls a folder an invalid argument, not a missing entity, so resolve it before giving up.
@@ -2041,7 +2029,7 @@ def _drive_mime(row) -> str:
 def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) -> dict:
     """The served ``files`` resource for a stored row. ``me`` is the caller's email, which decides
     the per-caller ``ownedByMe`` (None for the admin/service token, which owns nothing)."""
-    created = row["created_ts"] or synth.epoch(row["doc_id"])
+    created = row["created_ts"] or synth.epoch(row["id"])
     modified = row["updated_ts"] or created + 3600
     author = row["author_email"]
     native = _native(row)
@@ -2049,22 +2037,22 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     if native is not None:
         seg = native[1]
         view = (
-            f"https://docs.google.com/{seg}/d/{row['served_id']}/edit"
+            f"https://docs.google.com/{seg}/d/{row['id']}/edit"
             if seg
-            else f"https://drive.google.com/drive/folders/{row['served_id']}"
+            else f"https://drive.google.com/drive/folders/{row['id']}"
         )
     else:  # binary file (PDF, image, office doc)
-        view = f"https://drive.google.com/file/d/{row['served_id']}/view"
+        view = f"https://drive.google.com/file/d/{row['id']}/view"
     is_folder = row["subtype"] == "folder"
     # "shared" = visible to anyone besides the owner — true for org/group/multi-reader docs.
     # In a list the caller passes it in (batch-computed); for a single get, look it up here.
     if shared is None:
-        shared = bool(store.doc_grants(conn, "google_drive", row["doc_id"]))
+        shared = bool(store.doc_grants(conn, "google_drive", row["id"]))
     ext = row["title"].rsplit(".", 1)[-1] if (native is None and "." in row["title"]) else None
     nbytes = len((row["content"] or "").encode("utf-8"))
     f = {
         "kind": "drive#file",
-        "id": row["served_id"],
+        "id": row["id"],
         "name": row["title"],
         "mimeType": mime,
         "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
@@ -2107,14 +2095,14 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     if native is None:
         f["md5Checksum"] = hashlib.md5(row["content"].encode()).hexdigest()
         f["quotaBytesUsed"] = str(nbytes)
-        f["webContentLink"] = f"https://drive.google.com/uc?id={row['served_id']}&export=download"
+        f["webContentLink"] = f"https://drive.google.com/uc?id={row['id']}&export=download"
         if ext:
             f["fileExtension"] = ext
             f["fullFileExtension"] = ext
     return f
 
 
-def _drive_permissions(conn, doc_id: str, *, folder: str | None = None) -> list[dict]:
+def _drive_permissions(conn, file_id: str, *, folder: str | None = None) -> list[dict]:
     """Build from the doc's ACL grants (preserving user/group/org identity) + an owner. For a
     synthesized folder, ``folder`` names the container and the grants come from its files (which is
     what makes the folder visible in the first place); the mock models no folder owner, so there is
@@ -2122,7 +2110,7 @@ def _drive_permissions(conn, doc_id: str, *, folder: str | None = None) -> list[
     grants = (
         store.container_grants(conn, "google_drive", folder)
         if folder
-        else store.doc_grants(conn, "google_drive", doc_id)
+        else store.doc_grants(conn, "google_drive", file_id)
     )
     domain = get_settings().org_domain
     perms = []
@@ -2161,7 +2149,7 @@ def _drive_permissions(conn, doc_id: str, *, folder: str | None = None) -> list[
                 }
             )
     # every file has an owner
-    row = store.get_document(conn, "google_drive", doc_id)
+    row = store.get_document(conn, "google_drive", file_id)
     if row is not None:
         owner = row["author_email"]
         perms.insert(

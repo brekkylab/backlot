@@ -315,7 +315,7 @@ async def jira_issue_comments(key: str, request: Request):
     row = _resolve_jira_key(request, conn, key, ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Issue does not exist")
-    cs = store.doc_comments(conn, "jira", row["doc_id"])
+    cs = store.doc_comments(conn, "jira", row["key"])
     site = _site(request)
     return {
         "startAt": 0,
@@ -572,16 +572,16 @@ def _issue_key(request: Request, row) -> str:
     raises rather than leave one NULL), so a caller reaching this with a NULL one is a bug
     upstream. A silent re-derive would serve a PROBED row's synthesized suffix instead of failing
     where the problem is — the shape the hubspot bug shipped as (#51, task 11)."""
-    assert row["key"] is not None, f"jira: doc_id {row['doc_id']!r} has no key"
+    assert row["key"] is not None, "jira: a row reached the serializer with no key"
     return row["key"]
 
 
 def _jira_ref(request: Request, row, site: str = "") -> dict:
     status = row["status"] or "To Do"
     return {
-        "id": str(synth.jira_numeric_id(row["doc_id"])),
+        "id": str(synth.jira_numeric_id(row["key"])),
         "key": _issue_key(request, row),
-        "self": f"{site}/rest/api/3/issue/{synth.jira_numeric_id(row['doc_id'])}" if site else None,
+        "self": f"{site}/rest/api/3/issue/{synth.jira_numeric_id(row['key'])}" if site else None,
         "fields": {
             "summary": row["title"],
             "status": {"name": status, "statusCategory": _status_category(status)},
@@ -606,7 +606,7 @@ def _jira_comment(c, site: str = "") -> dict:
     }
 
 
-def _issuetype(name: str, doc_id: str) -> dict:
+def _issuetype(name: str, seed: str) -> dict:
     name = name or "Task"
     subtask = name.lower() in ("sub-task", "subtask")
     return {
@@ -620,7 +620,7 @@ def _issuetype(name: str, doc_id: str) -> dict:
 
 def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool = False) -> dict:
     site = _site(request)
-    created = row["created_ts"] or synth.epoch(row["doc_id"])
+    created = row["created_ts"] or synth.epoch(row["key"])
     updated = row["updated_ts"] or created + 3600
     pkey = _project_key(conn, row["project"])
     reporter = _jira_actor(row["reporter_email"] or row["author_email"], site)
@@ -639,7 +639,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
     fields = {
         "summary": row["title"],
         "description": _adf(row["content"]),
-        "issuetype": _issuetype(row["issuetype"], row["doc_id"]),
+        "issuetype": _issuetype(row["issuetype"], row["key"]),
         "project": {
             "id": str(synth.github_user_id(row["project"])),
             "key": pkey,
@@ -689,7 +689,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
         "timetracking": {},
     }
     if not fields_only:
-        cs = store.doc_comments(conn, "jira", row["doc_id"])
+        cs = store.doc_comments(conn, "jira", row["key"])
         fields["comment"] = {
             "comments": [_jira_comment(c, site) for c in cs],
             "maxResults": len(cs),
@@ -697,13 +697,13 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
             "startAt": 0,
         }
         fields["issuelinks"] = store.jcol(row, "issuelinks")
-        subs = store.children(conn, "jira", row["doc_id"])
+        subs = store.children(conn, "jira", row["key"])
         fields["subtasks"] = [_jira_ref(request, s, site) for s in subs]
         if row["parent_id"]:
             prow = store.get_document(conn, "jira", row["parent_id"])
             if prow:
                 fields["parent"] = _jira_ref(request, prow, site)
-    nid = synth.jira_numeric_id(row["doc_id"])
+    nid = synth.jira_numeric_id(row["key"])
     issue = {
         "id": str(nid),
         "key": _issue_key(request, row),
@@ -889,7 +889,7 @@ async def confluence_cql_search(request: Request):
                 "url": page["_links"]["webui"],
                 "entityType": "content",
                 "lastModified": synth.rfc3339_millis(
-                    r["updated_ts"] or r["created_ts"] or synth.epoch(r["doc_id"])
+                    r["updated_ts"] or r["created_ts"] or synth.epoch(r["key"])
                 ),
             }
         )
@@ -949,15 +949,15 @@ async def confluence_content_get(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = store.confluence_by_served_id(conn, content_id, visible_ids=ids)
+    row = store.confluence_by_id(conn, content_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     return _confluence_page(conn, request, row, request.query_params.get("expand", "body.storage"))
 
 
-def _confluence_doc_id(request: Request, content_id: int) -> str | None:
-    row = store.confluence_by_served_id(auth.conn(request), content_id)
-    return row["doc_id"] if row else None
+# `_confluence_doc_id` is gone (#51): a content id IS the page's own key now, so there was nothing
+# left for it to translate — every caller below reads the row it names directly, which also costs
+# one query rather than two.
 
 
 @router.get(
@@ -969,11 +969,10 @@ async def confluence_child_pages(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = _confluence_doc_id(request, content_id)
-    if doc_id is None or store.get_document(conn, "confluence", doc_id, visible_ids=ids) is None:
+    if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     expand = request.query_params.get("expand", "")
-    kids = store.children(conn, "confluence", doc_id, visible_ids=ids)
+    kids = store.children(conn, "confluence", content_id, visible_ids=ids)
     results = [_confluence_page(conn, request, k, expand) for k in kids]
     return {
         "results": results,
@@ -989,11 +988,10 @@ async def confluence_comments(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = _confluence_doc_id(request, content_id)
-    if doc_id is None or store.get_document(conn, "confluence", doc_id, visible_ids=ids) is None:
+    if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     results = []
-    for c in store.doc_comments(conn, "confluence", doc_id):
+    for c in store.doc_comments(conn, "confluence", content_id):
         ts = c["created_ts"] or synth.epoch(c["id"])
         author = c["author_email"] or "unknown"
         results.append(
@@ -1025,8 +1023,7 @@ async def confluence_labels(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = _confluence_doc_id(request, content_id)
-    row = store.get_document(conn, "confluence", doc_id, visible_ids=ids) if doc_id else None
+    row = store.get_document(conn, "confluence", content_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     labels = store.jcol(row, "labels")
@@ -1042,10 +1039,9 @@ async def confluence_restrictions(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = _confluence_doc_id(request, content_id)
-    if doc_id is None or store.get_document(conn, "confluence", doc_id, visible_ids=ids) is None:
+    if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
-    emails = store.doc_member_emails(conn, "confluence", doc_id)
+    emails = store.doc_member_emails(conn, "confluence", content_id)
     users = [] if emails is None else [_conf_user(e) for e in sorted(emails)]
 
     def _op(name):
@@ -1080,9 +1076,9 @@ def _conf_user(email: str) -> dict:
 
 
 def _confluence_page(conn, request: Request, row, expand: str) -> dict:
-    created = row["created_ts"] or synth.epoch(row["doc_id"])
+    created = row["created_ts"] or synth.epoch(str(row["id"]))
     updated = row["updated_ts"] or created
-    cid = row["served_id"]
+    cid = row["id"]
     key = synth.confluence_space_key(row["space"])
     author = row["author_email"]
     ctype = row["subtype"] or "page"  # page | blogpost
@@ -1185,7 +1181,7 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             prow = store.get_document(conn, "confluence", pid)
             if prow is None:
                 break
-            pcid = prow["served_id"]
+            pcid = prow["id"]
             ancestors.insert(
                 0,
                 {

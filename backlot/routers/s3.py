@@ -291,7 +291,7 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
             body.append(
                 f"<Contents><Key>{escape(val)}</Key>"
                 f"<LastModified>{synth.s3_iso(ts)}</LastModified>"
-                f"<ETag>{escape(synth.s3_etag(r['doc_id'], r['content']))}</ETag>"
+                f"<ETag>{escape(synth.s3_etag(r['key'], r['content']))}</ETag>"
                 f"<Size>{len(r['content'].encode())}</Size>"
                 f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Contents>"
             )
@@ -315,10 +315,12 @@ async def object_get(request: Request, bucket: str, key: str):
     total = len(data)
     ts = row["updated_ts"] or row["created_ts"]
     headers = {
-        "ETag": synth.s3_etag(row["doc_id"], row["content"]),
+        "ETag": synth.s3_etag(row["key"], row["content"]),
         "Last-Modified": synth.s3_http_date(ts),
         "Accept-Ranges": "bytes",
-        "x-amz-request-id": synth._digest("s3-req:" + row["doc_id"])[:16].upper(),
+        # Seeded from the object's own address (#51) — the dataset id it used to hash is gone,
+        # and (bucket, key) is what identifies the object being served anyway.
+        "x-amz-request-id": synth._digest(f"s3-req:{row['bucket']}/{row['key']}")[:16].upper(),
     }
     ctype = row["content_type"] or "text/plain"
     # Set Content-Type via the headers dict, not the `media_type=` kwarg: Starlette auto-appends

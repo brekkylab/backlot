@@ -1444,7 +1444,10 @@ def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
     try:
         jira = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
         assert jira["j-key"] == "PAY-7"
-        assert jira["j-plain"] is None
+        # `key` is now the one served column (#51), so the keyless sibling carries a COMPOSED key
+        # rather than NULL -- under the prefix its provided sibling established, and not the
+        # spelling that sibling claimed.
+        assert jira["j-plain"].startswith("PAY-") and jira["j-plain"] != "PAY-7"
         gh = {
             r["doc_id"]: r["number"]
             for r in conn.execute("SELECT doc_id, number FROM github_items")
@@ -1682,57 +1685,15 @@ def test_byo_a_provided_number_wins_whichever_doc_id_sorts_first(tmp_path):
         assert "v" in {i["title"] for i in listing}
 
 
-def test_byo_server_boots_read_only_on_a_pre_column_db(tmp_path):
-    """The serving path opens the DB read-only — no migration can run there. A DB built
-    before the `key` column existed must boot and serve the synthesized spelling exactly as that
-    version did, not crash in lifespan.
-
-    `key` IS self-healed by connect_rw (the ALTER list), which is why dropping it here still
-    characterizes a real upgrade path -- github's own equivalent DB-predates-the-column scenario
-    is gone with #51: `number` is a real corpus-provided value with no boot-time fallback to
-    defend (that never changed). The ACTUAL served value for BOTH sources now lives in a
-    `served_number` column (github's own, task 7; jira's, task 8) which -- unlike `key`/`number`
-    and the OLDER `github_comments.served_id` (predates this #51 series, and is self-healed) --
-    carries NO self-heal ALTER: no back-compat for the per-document served-id-style columns tasks
-    3-8 added (see idx_github_served's/idx_jira_served's schema comments). A DB missing either
-    `number` column is not a supported shape to boot against at all, so there is nothing
-    left to characterize for THAT column here -- this test's subject stays exactly `key`'s
-    self-heal (never touched below; only `key` is dropped)."""
-    import sqlite3 as _sq
-
-    from backlot import synth
-    from tests._helpers import build_corpus, client_for
-
-    settings = build_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "jira",
-                "doc_id": "j-old",
-                "project": "payments",
-                "title": "t",
-                "content": "c",
-                "author_email": "ava@acme.com",
-            },
-        ],
-    )
-    conn = _sq.connect(settings.db_path)
-    conn.executescript(
-        "DROP INDEX IF EXISTS idx_jira_doc_key;ALTER TABLE jira_issues DROP COLUMN key;"
-    )
-    conn.commit()
-    conn.close()
-    tokens = yaml.safe_load(settings.tokens_path.read_text())
-    hdr = {
-        "Authorization": "Bearer "
-        + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
-    }
-    with client_for(settings, reload=True) as c:
-        jkey = synth.jira_key("j-old", synth.jira_project_key("payments"))
-        assert c.get(f"/atlassian/rest/api/3/issue/{jkey}", headers=hdr).status_code == 200
-
-
-# --- roster sidecar ---------------------------------------------------------------
+# `test_byo_server_boots_read_only_on_a_pre_column_db` lived here. Its subject was `key`'s
+# self-heal in connect_rw's ALTER list: a DB built before that column existed had to boot and
+# serve the synthesized spelling anyway. #51's identifier consolidation ended that subject rather
+# than moving it -- `key` IS the served column now, carries the UNIQUE index, and has no self-heal
+# (the served columns deliberately have none: "no back-compat, re-import the corpus"). A DB
+# without it cannot be constructed here at all, because dropping the column fails on its own
+# index, and it is not a shape the importer will accept either. Deleted rather than reworded: the
+# behaviour it characterized no longer exists. `test_connect_rw_refuses_a_pre_served_db` in
+# tests/test_store.py is what covers the pre-#51 DB path now.
 
 
 def test_byo_roster_is_the_closed_principal_set(tmp_path):
@@ -2691,7 +2652,8 @@ def test_byo_jira_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
     from tests._helpers import build_corpus
 
     monkeypatch.setattr(synth, "JIRA_KEY_NUMBER_RANGE", 2)
-    monkeypatch.setitem(store.SERVED_ID, "jira", ("served_number", lambda doc_id: 1, "project"))
+    # Directly on synth -- jira is no longer in store.SERVED_ID, so a setitem patch would be inert.
+    monkeypatch.setattr(synth, "jira_key_number", lambda doc_id: 1)
     docs = [
         {
             "source_type": "jira",
@@ -3041,7 +3003,9 @@ def test_byo_meta_cannot_smuggle_a_tracker_id(tmp_path):
     # non-NULL for every issue -- the import assigns one. What must NOT happen is meta's value
     # being taken as a CLAIM on that spelling, so assert the served number is anything but 777.
     assert gh["number"] != 777, "meta must not claim a number the way a top-level `number` does"
-    assert jira["key"] is None, "meta must not populate the served key column"
+    # Same for jira: `key` is the one served column now, so it is non-NULL for every issue. What
+    # must not happen is meta's value being taken as a CLAIM on that spelling.
+    assert jira["key"] != "PAY-777", "meta must not claim a key the way a top-level `key` does"
 
 
 def test_byo_a_repeated_document_may_restate_its_own_tracker_id(tmp_path):
@@ -3528,7 +3492,7 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
     assert served == {"a-victim": stolen}
 
 
-def test_byo_a_jira_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_path):
+def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
     """jira's own equivalent of the github regression just above (#51, task 8):
     `resolve_jira_numbers` has the identical two-pass-then-single-write-order defect if its
     two-sweep NULL-first write were ever dropped -- see that method's docstring for why. Needs no
@@ -3557,10 +3521,10 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_does_not_abort_the_import
     settings = Settings(data_dir=tmp_path)
     load(shard1, settings, reset=True)
     conn = store.connect_ro(settings.db_path)
-    before = conn.execute(
-        "SELECT served_number FROM jira_issues WHERE doc_id = 'j-victim'"
-    ).fetchone()["served_number"]
-    assert before == stolen  # sanity: nothing to collide with yet, so it got its own hash
+    before = conn.execute("SELECT key FROM jira_issues WHERE doc_id = 'j-victim'").fetchone()["key"]
+    # sanity: nothing to collide with yet, so it composed its own hash under the project's
+    # synthesized prefix (no provided key in this shard to establish one)
+    assert before.endswith(f"-{stolen}")
     conn.close()
 
     shard2 = tmp_path / "s2.jsonl"
@@ -3577,17 +3541,25 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_does_not_abort_the_import
             }
         )
     )
-    load(shard2, settings, reset=False)  # must not raise IntegrityError
+    # #51 identifier consolidation, same trade as github's: with ONE `key` column there is no
+    # provided-vs-served distinction left to arbitrate, so an appended row claiming a key an
+    # existing row already serves is refused rather than displacing it.
+    #
+    # It is refused for a sharper reason than the suffix collision, and that reason is itself a
+    # consequence of the merge: a COMPOSED key is a real key now, so it registers its project's
+    # prefix exactly as a provided one does. `j-victim` already named this project `PAYDF384A`
+    # (synthesized, no provided sibling), and the appended `PAY-3227` would rename it. The
+    # prefix-holder guard catches that first. The effect is that a project's prefix is settled by
+    # whatever it first served -- which is the same "ids do not move" rule the rest of #51 enforces,
+    # now reaching the prefix too.
+    with pytest.raises(SystemExit, match="but its keys already name it 'PAYDF384A'"):
+        load(shard2, settings, reset=False)
 
+    # ...and the refusal leaves the DB untouched -- one commit for the whole import.
     conn = store.connect_ro(settings.db_path)
-    served = {
-        r["doc_id"]: r["served_number"]
-        for r in conn.execute("SELECT doc_id, served_number FROM jira_issues")
-    }
+    served = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
     conn.close()
-    assert served["z-provider"] == stolen  # the provider wins the spelling it stated
-    assert served["j-victim"] != stolen  # the untouched row moved off it, not left duplicated
-    assert served["j-victim"] is not None
+    assert served == {"j-victim": before}
 
 
 # --- github pull changesets and review comments (issue #49 group B) ---------------------

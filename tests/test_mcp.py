@@ -110,26 +110,11 @@ def _restricted_doc(settings, user_token: str, source: str, where: str = "1=1"):
 
 
 def _jira_key(settings, row) -> str:
-    """The key `row` actually answers to -- its own `number` column composed with the
-    project's own prefix (#51, task 8), not a freshly re-derived hash: jira is a PROBED source, so
-    the raw hash can disagree with what is actually served whenever a collision moved this row off
-    it, or whenever the project's prefix comes from a PROVIDED sibling key rather than
-    `synth.jira_project_key` -- the same class of bug github's own MCP ACL test (`_issue_number`
-    reading `row["number"]`, not `synth.github_number(row["doc_id"])`) was fixed for."""
-    conn = store.connect_ro(settings.db_path)
-    try:
-        prefix_row = conn.execute(
-            "SELECT key FROM jira_issues WHERE project = ? AND key IS NOT NULL LIMIT 1",
-            (row["project"],),
-        ).fetchone()
-    finally:
-        conn.close()
-    pkey = (
-        str(prefix_row["key"]).rsplit("-", 1)[0]
-        if prefix_row is not None
-        else synth.jira_project_key(row["project"])
-    )
-    return f"{pkey}-{row['served_number']}"
+    """The key `row` actually answers to -- its own stored `key` column (#51 identifier
+    consolidation), not a freshly re-derived one: jira is a PROBED source, so a raw hash can
+    disagree with what is served whenever a collision moved this row off it. Reading the column is
+    the same fix github's own MCP ACL test needed."""
+    return row["key"]
 
 
 async def _call(params, tool_pred, args, ok_pred) -> bool:

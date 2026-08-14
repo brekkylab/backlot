@@ -167,32 +167,17 @@ _JIRA_KEY_RE = re.compile(r"^(.+)-([1-9][0-9]*)$")
 
 def _resolve_jira_key(request: Request, conn, key: str, ids):
     """One issue by its served key, ACL-scoped — a unique-indexed column lookup (see
-    store.jira_by_served_number), not a startup reverse map (#51, task 8).
+    store.jira_by_key).
 
-    Splits `key` into its project prefix and numeric suffix, resolves the prefix to its backing
-    project through `_jira_container_for_key`, then looks the suffix up scoped to THAT project
-    (jira's own uniqueness rule — see store.SERVED_ID's `scope` for jira). A key with no
-    parseable numeric suffix, or an unresolvable prefix, is simply not found — never a fallback to
-    the unfiltered corpus.
-
-    `_jira_container_for_key`'s three-way tolerance (provided key prefix, synthesized project key,
-    OR the literal container name) is a deliberate affordance for the JQL project TOKEN, and real
-    Jira project pickers do accept any of the three there. Reusing that tolerance for ISSUE-KEY
-    resolution would silently reintroduce the alias `resolve_jira_numbers` was written to drop
-    (review round 1, I-1) — wider than before, since it would open TWO extra namespaces per
-    project (the container's own name, and the synthesized key when a provided one is what's
-    actually served) rather than pass 3's one alias per row. So the container's resolved prefix
-    must AGREE with what was actually typed: `_project_key(request, container)` is the one prefix
-    this project actually serves (the provided one, aliased at boot, if any — else the
-    synthesized one), and a key spelled under any other resolvable-but-unserved prefix 404s, same
-    as real Jira's `/issue/payments-7` (the container's bare name, not its key) does."""
-    m = _JIRA_KEY_RE.match(key)
-    if not m:
-        return None
-    container = _jira_container_for_key(conn, m.group(1), request)
-    if container is None or _project_key(request, container) != m.group(1):
-        return None
-    return store.jira_by_served_number(conn, container, int(m.group(2)), visible_ids=ids)
+    One line, because the whole key is stored (#51 identifier consolidation). It used to split the
+    key, resolve the prefix to a project through `_jira_container_for_key`, look the suffix up
+    scoped to that project, and then check the resolved prefix AGREED with what was typed. That
+    agreement check existed because `_jira_container_for_key`'s three-way tolerance — a deliberate
+    and correct affordance for the JQL project TOKEN, where real Jira pickers accept a key OR a
+    name — leaked into the ISSUE-KEY namespace when reused here, twice: `payments-7` resolving to
+    `PAY-7`'s issue, and issue-key lookup silently going case-insensitive. Matching the stored key
+    directly has no seam for either to enter."""
+    return store.jira_by_key(conn, key, visible_ids=ids)
 
 
 @router.get(
@@ -579,26 +564,19 @@ def _jira_actor(email: str, site: str = "") -> dict:
 
 
 def _issue_key(request: Request, row) -> str:
-    """The key this issue answers to: PREFIX-SUFFIX composed at serve time (`synth.jira_key`'s own
-    shape), where the suffix is the row's own `served_number` column (#51, task 8 — assigned at
-    import by `resolve_jira_numbers`, not derived here) and the prefix is the project's own key
-    (`_project_key`, container-level and still resolved through the boot-time index — see
-    `idx["jira_project_keys"]`/`idx["jira_project_containers"]` in backlot.main).
+    """The key this issue answers to — its own stored `key` column, whole (#51 identifier
+    consolidation).
 
-    A provided key is served EXACTLY that value: `resolve_jira_numbers` writes
-    `served_number = <the provided suffix>` for it, so there is no separate provided-vs-derived
-    branch to make here — same shape as github's own `_issue_number` (#51, task 7).
+    Nothing is composed here any more. The prefix and the suffix were joined at import by
+    `resolve_jira_keys`, at the one moment the project's prefix is settled for the whole corpus,
+    so a provided key and a derived one are the same kind of value by the time they reach here.
 
-    Asserted, not defensively re-derived: every jira row gets a served_number at import
-    (`resolve_jira_numbers` raises rather than leave one NULL — see its docstring), so a caller
-    reaching this with a NULL one is a bug upstream, not a state meant to be papered over here. A
-    silent re-hash fallback would serve a PROBED row's synthesized suffix instead of failing loudly
-    where the problem actually is — exactly the shape the hubspot bug shipped as (#51, task 11).
-    `_project_key` already tolerates a bare Request with no app scope (shape tests build one —
-    see its own `_index_maps` helper), so this needs no separate accommodation for that."""
-    pkey = _project_key(request, row["project"])
-    assert row["served_number"] is not None, f"jira: doc_id {row['doc_id']!r} has no served_number"
-    return f"{pkey}-{row['served_number']}"
+    Asserted, not defensively re-derived: every jira row gets a key at import (`resolve_jira_keys`
+    raises rather than leave one NULL), so a caller reaching this with a NULL one is a bug
+    upstream. A silent re-derive would serve a PROBED row's synthesized suffix instead of failing
+    where the problem is — the shape the hubspot bug shipped as (#51, task 11)."""
+    assert row["key"] is not None, f"jira: doc_id {row['doc_id']!r} has no key"
+    return row["key"]
 
 
 def _jira_ref(request: Request, row, site: str = "") -> dict:

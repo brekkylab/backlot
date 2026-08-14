@@ -103,11 +103,15 @@ def test_acl_table_registry_covers_every_source(tmp_path):
 def test_served_id_registry_covers_every_hashed_source():
     """This registry has to be total over every source that serves a HASHED id -- one resolved by
     reversing a hash back to a doc_id through a stored column assigned at import, each converted
-    in its own task (#51) -- confluence, gmail, notion, hubspot, linear, github, jira (task 8) and,
-    last, google_drive (task 12) -- so the registry has to be total from the start or a later
-    task's column goes unrecorded. `s3`'s id is `bucket/key`, stored already and never hashed;
-    `slack` has no hash->doc_id map to replace; and fireflies' only hash (`fireflies_user_id`)
-    reverses an EMAIL, not a doc_id -- none of the three belong here."""
+    in its own task (#51) -- confluence, gmail, notion, hubspot, linear, github and google_drive.
+
+    `s3`'s id is `bucket/key`, stored already and never hashed; `slack` has no hash->doc_id map to
+    replace; and fireflies' only hash (`fireflies_user_id`) reverses an EMAIL, not a doc_id.
+
+    `jira` is the interesting absence: its served value is the whole KEY, composed from its
+    project's prefix, so it is not a 1-arity seed over doc_id and cannot honour this registry's
+    contract. It gets its own reader instead -- the precedent fireflies_users and linear_teams set
+    when they were converted (#51 task 9) rather than widening the tuple to fit them."""
     assert set(store.SERVED_ID) == {
         "confluence",
         "gmail",
@@ -115,7 +119,6 @@ def test_served_id_registry_covers_every_hashed_source():
         "hubspot",
         "linear",
         "github",
-        "jira",
         "google_drive",
     }
     # Confluence's own entry -- column name, seed function, corpus-wide scope. Every entry in the
@@ -676,11 +679,12 @@ def _write_pre_acl_db(p):
 
 def _write_pre_served_columns_db(p):
     conn = sqlite3.connect(p)
-    # A hand-rolled jira_issues predating #51's `served_number` — every OTHER column real
-    # jira_issues has (see SCHEMA), so the failure this triggers is specifically the missing
-    # number column, not some unrelated column this fixture happened to omit. linear_teams
-    # (a task-9 column, added to an EXISTING table) is included too, so the assertion below
-    # checks more than one source's worth.
+    # A hand-rolled DB predating #51's served columns. Note what it CANNOT prove any more: this
+    # jira_issues (key, no served_number) is exactly the shape the identifier consolidation
+    # produces, because jira's served column IS `key` and a pre-#51 DB already had one. Same for
+    # github's `number`. Neither merged source can signal "this DB predates the served columns"
+    # -- the sources whose column is genuinely new are what the probe fires on, here
+    # linear_teams' served_id/served_key (task 9, added to an EXISTING table).
     conn.execute(
         "CREATE TABLE jira_issues (doc_id TEXT PRIMARY KEY, project TEXT NOT NULL, "
         "author_email TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, "
@@ -699,7 +703,7 @@ def _write_pre_served_columns_db(p):
     "setup, match",
     [
         (_write_pre_acl_db, "doc_acl"),
-        (_write_pre_served_columns_db, "number"),
+        (_write_pre_served_columns_db, "linear_teams.served_id"),
     ],
 )
 def test_connect_rw_refuses_a_pre_served_db(tmp_path, setup, match):
@@ -1451,7 +1455,12 @@ def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimp
     from backlot.importer import byo
     from tests._helpers import build_corpus
 
-    monkeypatch.setitem(store.SERVED_ID, "jira", ("served_number", lambda doc_id: 7, "project"))
+    # `synth.jira_key_number` directly, NOT `monkeypatch.setitem(store.SERVED_ID, "jira", ...)`:
+    # jira left that registry when its served value became the composed KEY (#51 identifier
+    # consolidation), so a setitem patch is silently INERT now -- `_assign_jira_number` reads the
+    # synth attribute at call time. Same dead-patch shape this plan found in the confluence test;
+    # the assertion below pins a specific value so it cannot go unnoticed again.
+    monkeypatch.setattr(synth, "jira_key_number", lambda doc_id: 7)
     docs = [
         {
             "source_type": "jira",
@@ -1466,18 +1475,15 @@ def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimp
     s = build_corpus(tmp_path, docs)
     monkeypatch.undo()
     conn = store.connect_ro(s.db_path)
-    issues = {
-        r["doc_id"]: r["served_number"]
-        for r in conn.execute("SELECT doc_id, served_number FROM jira_issues")
-    }
+    issues = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
     # The collapsed seed actually landed -- j0, the first row processed (before anything is
     # taken), is served exactly the forced value, not some real hash -- AND resolved to 5 DISTINCT
     # suffixes, otherwise the collision below never actually happened and the rest of this test
     # passed for the wrong reason.
-    assert issues["j0"] == 7
+    assert issues["j0"].endswith("-7")
     assert len(issues) == 5 and len(set(issues.values())) == 5
-    for doc_id, n in issues.items():
-        assert store.jira_by_served_number(conn, "payments", n)["doc_id"] == doc_id
+    for doc_id, key in issues.items():
+        assert store.jira_by_key(conn, key)["doc_id"] == doc_id
     conn.close()
 
     # A re-import (e.g. --append re-running over the same shard) must not renumber an issue a
@@ -1488,19 +1494,74 @@ def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimp
     # fully reshuffled project.
     byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
     conn = store.connect_ro(s.db_path)
-    replay = {
-        r["doc_id"]: r["served_number"]
-        for r in conn.execute("SELECT doc_id, served_number FROM jira_issues")
-    }
+    replay = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
     assert replay == issues
     conn.close()
 
 
-def test_jira_by_served_number_applies_the_acl(tmp_path):
+def test_jira_serves_one_key_column(tmp_path, monkeypatch):
+    """`key` holds the whole key the API serves, whether the corpus wrote it or the import composed
+    it. There is no separate suffix column.
+
+    Storing only the numeric suffix meant the key had to be taken apart to look one up and put back
+    together to serve it, and that round trip is what let `_jira_container_for_key`'s three-way
+    tolerance — correct for the JQL project TOKEN — leak into the ISSUE-KEY namespace twice, once as
+    `payments-7` resolving and once as case-insensitivity. Storing the key whole makes the lookup
+    `WHERE key = ?` and removes the round trip that caused both.
+
+    The UNIQUE is global, matching real Jira where a key is unique site-wide. That also closes the
+    residual where two projects synthesizing the same prefix could serve the same key while a
+    per-project uniqueness rule was perfectly satisfied.
+    """
+    from tests._helpers import build_corpus
+
+    cols = {
+        r[1]
+        for r in store.connect_rw(tmp_path / "s.sqlite").execute("PRAGMA table_info(jira_issues)")
+    }
+    assert "key" in cols and "served_number" not in cols
+    assert "jira" not in store.SERVED_ID, (
+        "jira's served value is composed from its project's prefix, so it cannot be a 1-arity "
+        "seed over doc_id — it gets its own reader instead (as fireflies_users/linear_teams do)"
+    )
+
+    s = build_corpus(
+        tmp_path / "c",
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-provided",
+                "project": "payments",
+                "key": "PAY-7",
+                "title": "provided",
+                "content": "x",
+                "author_email": "a@acme.com",
+            },
+            {
+                "source_type": "jira",
+                "doc_id": "j-derived",
+                "project": "payments",
+                "title": "derived",
+                "content": "x",
+                "author_email": "a@acme.com",
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    got = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
+    assert got["j-provided"] == "PAY-7", "the corpus's key is served verbatim"
+    # the keyless sibling composes from the SAME prefix its provided sibling established
+    assert got["j-derived"].startswith("PAY-") and got["j-derived"] != "PAY-7"
+    for doc_id, key in got.items():
+        assert store.jira_by_key(conn, key)["doc_id"] == doc_id
+    conn.close()
+
+
+def test_jira_by_key_applies_the_acl(tmp_path):
     """A regression `notion_by_served_id` shipped without (#51 review round), and every reader
     since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
     None, not the unscoped row -- otherwise the ACL clause could be deleted from
-    `jira_by_served_number` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
+    `jira_by_key` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
     rather than the empty-set "AND 0" short-circuit."""
     from tests._helpers import tiny_corpus
 
@@ -1518,59 +1579,53 @@ def test_jira_by_served_number_applies_the_acl(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    served = conn.execute("SELECT served_number FROM jira_issues").fetchone()["served_number"]
-    assert store.jira_by_served_number(conn, "payments", served)["doc_id"] == "j0"
-    assert store.jira_by_served_number(conn, "payments", served, visible_ids={"nobody"}) is None
+    key = conn.execute("SELECT key FROM jira_issues").fetchone()["key"]
+    assert store.jira_by_key(conn, key)["doc_id"] == "j0"
+    assert store.jira_by_key(conn, key, visible_ids={"nobody"}) is None
     conn.close()
 
 
-def test_jira_by_served_number_is_scoped_to_its_project(tmp_path, monkeypatch):
-    """(review round 1, I-2) The SAME suffix in two different projects is the NORMAL case here,
-    not an exotic one -- `(project, served_number)` is the whole UNIQUE index's scope, precisely
-    because a suffix is unique only WITHIN its project (see store.SERVED_ID's `scope` for jira).
-    `jira_by_served_number`'s `WHERE project = ? AND {col} = ?` is therefore the ONLY thing that
-    keeps two same-numbered issues in different projects from resolving to each other -- there is
-    no other predicate backing it up.
+def test_jira_keys_are_unique_across_projects(tmp_path, monkeypatch):
+    """Replaces `test_jira_by_served_number_is_scoped_to_its_project`, whose subject no longer
+    exists: the lookup was `WHERE project = ? AND served_number = ?`, and that predicate was the
+    only thing keeping two same-suffixed issues in different projects from resolving to each
+    other.
 
-    Forces the collision directly via a collapsed seed (`monkeypatch.setitem`, not
-    `monkeypatch.setattr` -- see the collision test above for why), rather than hoping two
-    independent hashes coincide."""
+    Storing the whole key makes the question different rather than smaller. A suffix is still
+    unique only within a project, but a KEY is unique site-wide -- which is what real Jira
+    guarantees -- so two projects that would serve the identical key is an IMPORT ERROR now, not a
+    state the reader has to be careful around. That also closes the residual the per-project index
+    could not: a keyless project's synthesized prefix colliding with another project's, leaving two
+    documents serving one key while a (project, suffix) index was perfectly satisfied.
+
+    Forced with a collapsed suffix seed AND a collapsed project prefix, so both projects compose
+    the very same key.
+    """
+    from backlot import synth
     from tests._helpers import build_corpus
 
-    monkeypatch.setitem(store.SERVED_ID, "jira", ("served_number", lambda doc_id: 7, "project"))
-    s = build_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "jira",
-                "doc_id": "pay0",
-                "project": "payments",
-                "title": "Payments issue",
-                "content": "x",
-                "author_email": "a@acme.com",
-            },
-            {
-                "source_type": "jira",
-                "doc_id": "dev0",
-                "project": "devtools",
-                "title": "Devtools issue",
-                "content": "x",
-                "author_email": "a@acme.com",
-            },
-        ],
-    )
-    monkeypatch.undo()
-    conn = store.connect_ro(s.db_path)
-    served = {
-        r["doc_id"]: r["served_number"]
-        for r in conn.execute("SELECT doc_id, served_number FROM jira_issues")
-    }
-    # Sanity: the collision was actually forced -- both rows share the same suffix, in DIFFERENT
-    # projects, otherwise the assertions below would pass even with the scope missing entirely.
-    assert served["pay0"] == served["dev0"] == 7
-    assert store.jira_by_served_number(conn, "payments", 7)["doc_id"] == "pay0"
-    assert store.jira_by_served_number(conn, "devtools", 7)["doc_id"] == "dev0"
-    conn.close()
+    monkeypatch.setattr(synth, "jira_key_number", lambda doc_id: 7)
+    monkeypatch.setattr(synth, "jira_project_key", lambda container: "SAME")
+    docs = [
+        {
+            "source_type": "jira",
+            "doc_id": "pay0",
+            "project": "payments",
+            "title": "Payments issue",
+            "content": "x",
+            "author_email": "a@acme.com",
+        },
+        {
+            "source_type": "jira",
+            "doc_id": "dev0",
+            "project": "devtools",
+            "title": "Devtools issue",
+            "content": "x",
+            "author_email": "a@acme.com",
+        },
+    ]
+    with pytest.raises(sqlite3.IntegrityError):
+        build_corpus(tmp_path, docs)
 
 
 def test_connect_ro_tuning(sample_settings):

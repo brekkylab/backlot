@@ -141,7 +141,6 @@ SERVED_ID = {
     # accepts.
     "linear": ("served_id", synth.linear_id, None),
     "github": ("number", synth.github_number, grouping_col("github")),
-    "jira": ("served_number", synth.jira_key_number, grouping_col("jira")),
     # Drive's own file id (#51, task 12) -- unprobed, like gmail/notion/linear; see
     # synth.gdrive_file_id's docstring for the digest-bytes reasoning and idx_gdrive_served's
     # schema comment for the collision argument and the folder-id disjointness.
@@ -276,52 +275,34 @@ CREATE TABLE IF NOT EXISTS jira_issues (
     status TEXT, issuetype TEXT, priority TEXT, labels TEXT, components TEXT,
     issuelinks TEXT, parent_id TEXT, changelog TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     assignee_email TEXT, reporter_email TEXT, resolution TEXT, resolution_ts INTEGER,
-    duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, owner_display TEXT, key TEXT,
-    served_number INTEGER
+    duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, owner_display TEXT, key TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_jira_project ON jira_issues(project);
 CREATE INDEX IF NOT EXISTS idx_jira_parent ON jira_issues(parent_id);
--- (doc_id, project, key, served_number) in that order: importer.byo's resolve_jira_numbers
+-- (doc_id, project, key) in that order: importer.byo's resolve_jira_keys
 -- deferred assignment pass (which replaced main._build_index's boot-time reverse map for the KEY,
 -- #51's task 8) scans exactly these four, so the pass stays an index-only scan and never touches
 -- the wide rows.
-CREATE INDEX IF NOT EXISTS idx_jira_doc_key ON jira_issues(doc_id, project, key, served_number);
--- The numeric SUFFIX the API reports (composed with the project's own prefix at serve time --
--- see synth.jira_key, routers.atlassian's `_issue_key`), assigned at import (see
--- backlot.importer.byo) rather than derived at serve time from a startup reverse map:
--- `synth.jira_key_number`'s 9,000-value-per-project space collides by the birthday bound long
--- before a real project runs out of issues, and the map this replaces resolved a collision by
--- MOVING the loser to a fresh suffix on every boot — stable while the server ran, but free to
--- move when `--append` changes the set, so a client that had already saved a link could have it
--- renumbered out from under it by a later append. A stored column no longer moves (#51, task 8).
+CREATE INDEX IF NOT EXISTS idx_jira_doc_key ON jira_issues(doc_id, project, key);
+-- The key the API reports, whole. Assigned at import (see backlot.importer.byo's
+-- resolve_jira_keys) rather than composed at serve time from a stored suffix plus the project's
+-- prefix: that round trip is what let routers.atlassian's `_jira_container_for_key` -- whose
+-- three-way tolerance is a deliberate affordance for the JQL project TOKEN -- leak into the
+-- ISSUE-KEY namespace twice (`payments-7` resolving, and case-insensitivity), each time needing
+-- its own guard. `WHERE key = ?` has no seam for either to enter (#51 identifier consolidation).
 --
--- `key` (the corpus-provided value, untouched by this column) and `served_number` (the suffix
--- actually served) are kept as TWO things on purpose, same reasoning as github's `number`/
--- `served_number` split: a synthesized value written into `key` would be indistinguishable from a
--- provided one, and "provided" has to mean exactly "key IS NOT NULL" everywhere downstream. UNIQUE
--- is scoped to (project, served_number), not served_number alone, because a jira key's suffix is
--- unique only within its project (see store.SERVED_ID's `scope` for jira) — the PREFIX is not part
--- of this index at all, since a corpus-provided key can still override it (synth.jira_key_number's
--- own docstring). Uniqueness is primarily enforced by the assignment itself —
--- resolve_jira_numbers' two-phase pass (provided suffixes claim first, corpus-wide, before
--- anything probes) — so a genuine collision essentially never reaches this index; if one somehow
--- did, it would raise there directly. NOT through the shared write path's `ON CONFLICT(doc_id) DO
--- UPDATE` (that reasoning is confluence's/gmail's/hubspot's, whose served id IS written by that
--- same insert) — served_number is written by resolve_jira_numbers' own plain
--- `UPDATE ... WHERE doc_id = ?`, a separate deferred pass with no ON CONFLICT clause at all, so a
--- collision there raises IntegrityError from that UPDATE itself.
+-- ONE column, not a provided `key` plus a served suffix. Those were kept apart so "provided"
+-- could mean exactly "key IS NOT NULL", a distinction the boot-time resolver needed on every
+-- start; assignment happens at import now, where provenance comes from the incoming record, so by
+-- the time resolve_jira_keys runs "provided" means precisely "already non-NULL".
 --
--- Residual NOT closed by this index (documented, not fixed — see backlot.importer.byo's `insert`
--- and resolve_jira_numbers, and synth.jira_project_key's own docstring, for the same note): a
--- project with no provided keys at all is never registered in `jira_prefix_holders`, so its
--- SYNTHESIZED prefix (`synth.jira_project_key`, initials + 6 hex of the digest) could in
--- principle equal another project's PROVIDED prefix -- and, symmetrically, two KEYLESS projects'
--- own synthesized prefixes could collide with EACH OTHER, at the identical order (both draw from
--- the same 6-hex digest space; only the provided-vs-synthesized case above involves a corpus
--- writing anything at all). Either way, two documents in different projects would then serve the
--- exact same key while this index (whose scope is `project`, not the prefix string) is perfectly
--- satisfied. ~1 in 16.7M per such pair; closing it is a different change.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_served ON jira_issues(project, served_number);
+-- UNIQUE is GLOBAL, not per project -- a real Jira key is unique across a site. That also closes
+-- a residual the per-project index could not: a project with no provided keys is never registered
+-- in `jira_prefix_holders`, so its SYNTHESIZED prefix could equal another project's provided one
+-- (or another keyless project's own), and two documents in different projects would then serve the
+-- identical key while a (project, suffix) index stayed perfectly satisfied. Now that is an import
+-- error, which is what it always should have been.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_served ON jira_issues(key);
 
 CREATE TABLE IF NOT EXISTS confluence_pages (
     doc_id TEXT PRIMARY KEY, space TEXT NOT NULL, author_email TEXT NOT NULL,
@@ -2142,27 +2123,18 @@ def github_by_number(conn, repo, served_number, visible_ids=None) -> sqlite3.Row
     ).fetchone()
 
 
-def jira_by_served_number(conn, project, served_number, visible_ids=None) -> sqlite3.Row | None:
-    """One issue by the numeric SUFFIX the API reports, scoped to its project — jira's own
-    uniqueness rule (see store.SERVED_ID's `scope` for jira, and idx_jira_served). A
-    unique-indexed column lookup, not a reverse map built at startup: the suffix is assigned at
-    import (see :mod:`backlot.importer.byo`'s ``resolve_jira_numbers``), so it needs neither the
-    memory nor the per-boot scan, and it cannot be ambiguous.
+def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
+    """One issue by the key the API reports, whole. A unique-indexed column lookup — the key is
+    composed at import (see importer.byo's ``resolve_jira_keys``) and stored, so serving it needs
+    neither the project's prefix nor a suffix to recombine.
 
-    Callers compose the served KEY themselves (``f"{project_key}-{served_number}"``, see
-    ``synth.jira_key`` and ``routers.atlassian``'s ``_issue_key``/``_resolve_jira_key``) — the
-    project's own prefix is a container-level fact (``main._build_index``'s
-    ``jira_project_keys``/``jira_project_containers``), not something this row-scoped lookup
-    resolves."""
-    col = served_id_column("jira")
+    Case-SENSITIVE, deliberately: real Jira keys are uppercase and the schema enforces it, and the
+    one time this resolved case-insensitively it was an accident of reusing the JQL project
+    token's tolerance (#51 task 8, review round 1). There is no prefix resolution here for that
+    tolerance to leak through any more.
+    """
     clause, cp = _acl_clause("jira", visible_ids=visible_ids)
-    return conn.execute(
-        f"SELECT * FROM jira_issues WHERE project = ? AND {col} = ?{clause}",
-        [project, served_number, *cp],
-    ).fetchone()
-
-
-# --- GitHub file items (kind='file') ----------------------------------------
+    return conn.execute(f"SELECT * FROM jira_issues WHERE key = ?{clause}", [key, *cp]).fetchone()
 
 
 def list_repo_files(conn, repo, visible_ids=None, limit=10_000, offset=0) -> list[sqlite3.Row]:

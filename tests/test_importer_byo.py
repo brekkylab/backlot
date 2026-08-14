@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from backlot import store
+from tests._helpers import served_id
 from backlot.acl import Acl
 from backlot.config import Settings, get_settings
 from backlot.routers.slack import _message
@@ -181,15 +182,14 @@ def test_byo_readers_and_defaults(tmp_path):
     }
 
     # explicit readers: ava can see the deck doc; a stranger cannot
-    deck = conn.execute("SELECT doc_id FROM gmail_messages").fetchone()["doc_id"]
+    deck = conn.execute("SELECT id FROM gmail_messages").fetchone()["id"]
     ava_ids = acl.visible_ids(conn, acl.resolve(tokens["ava@a.com"]))
     assert store.get_document(conn, "gmail", deck, visible_ids=ava_ids) is not None
     assert store.get_document(conn, "gmail", deck, visible_ids={"nobody@a.com"}) is None
     # no-author doc got a generated dsid_ id and is org-public (any real caller's
     # visible_ids includes the org sentinel = the derived org)
-    slack = conn.execute("SELECT doc_id FROM slack_messages").fetchone()["doc_id"]
-    assert slack.startswith("dsid_")
-    assert store.get_document(conn, "slack", slack, visible_ids={res["org"]}) is not None
+    slack = tuple(conn.execute("SELECT channel, ts FROM slack_messages").fetchone())
+    assert store.get_document(conn, "slack", *slack, visible_ids={res["org"]}) is not None
 
 
 def test_slack_title_optional(tmp_path):
@@ -209,7 +209,7 @@ def test_slack_title_optional(tmp_path):
 
 
 def _row(**kw):
-    kw.setdefault("thread_id", None)
+    kw.setdefault("thread_ts", None)
     kw.setdefault("thread_seq", 0)
     kw.setdefault("subtype", None)
     kw.setdefault("created_ts", None)
@@ -251,33 +251,31 @@ def test_byo_meta_comments_hierarchy(tmp_path):
     conn = store.connect_ro(tmp_path / "mock.sqlite")
 
     # meta blob on a doc
-    assert store.jcol(store.get_document(conn, "confluence", "pg-root"), "labels") == [
-        "engineering"
-    ]
+    assert store.jcol(
+        store.get_document(conn, "confluence", served_id("confluence", "pg-root")), "labels"
+    ) == ["engineering"]
     # parent/child hierarchy
-    kids = store.children(conn, "confluence", "pg-root")
-    assert [k["doc_id"] for k in kids] == ["pg-child"]
+    kids = store.children(conn, "confluence", served_id("confluence", "pg-root"))
+    assert [k["id"] for k in kids] == [served_id("confluence", "pg-child")]
     # comments attached to a doc
-    cs = store.doc_comments(conn, "confluence", "pg-child")
+    cs = store.doc_comments(conn, "confluence", served_id("confluence", "pg-child"))
     assert len(cs) == 1 and cs[0]["body"] == "looks good"
     # jira meta + comments
     bug = conn.execute("SELECT * FROM jira_issues").fetchone()
     assert store.jcol(bug, "issuelinks")[0]["key"] == "X-1"
-    assert len(store.doc_comments(conn, "jira", bug["doc_id"])) == 1
+    assert len(store.doc_comments(conn, "jira", bug["key"])) == 1
 
 
 def test_slack_message_text_without_title():
     # empty title -> the message text is just the content (no bold lead line)
+    assert _message(_row(ts="1.0", title="", content="hi", author_email="a@x.com"))["text"] == "hi"
     assert (
-        _message(_row(doc_id="d1", title="", content="hi", author_email="a@x.com"))["text"] == "hi"
-    )
-    assert (
-        _message(_row(doc_id="d2", title="T", content="hi", author_email="a@x.com"))["text"]
+        _message(_row(ts="2.0", title="T", content="hi", author_email="a@x.com"))["text"]
         == "*T*\nhi"
     )
     # a standalone message has no thread_ts / reply_count
     assert "thread_ts" not in _message(
-        _row(doc_id="d1", title="", content="hi", author_email="a@x.com")
+        _row(ts="1.0", title="", content="hi", author_email="a@x.com")
     )
 
 
@@ -307,14 +305,12 @@ def test_byo_slack_threads(tmp_path):
     tops = store.list_slack_top_level(conn, "incidents", limit=50)
     assert len(tops) == 1
     root = tops[0]
-    assert store.slack_reply_count(conn, root["doc_id"]) == 2
+    assert store.slack_reply_count(conn, root["channel"], root["ts"]) == 2
 
-    thread = store.slack_thread(conn, root["doc_id"])
+    thread = store.slack_thread(conn, root["channel"], root["ts"])
     assert [r["thread_seq"] for r in thread] == [0, 1, 2]
     # replies share the root's thread_ts and sort strictly after it
-    from backlot.routers.slack import _msg_ts
-
-    ts = [_msg_ts(r) for r in thread]
+    ts = [r["ts"] for r in thread]
     assert ts == sorted(ts) and ts[0] < ts[1] < ts[2]
 
 
@@ -351,7 +347,7 @@ def test_byo_created_updated_times(tmp_path):
     conn = store.connect_ro(tmp_path / "mock.sqlite")
 
     # created accepts ISO, updated accepts epoch int — both land as epoch seconds
-    j = conn.execute("SELECT created_ts, updated_ts FROM jira_issues WHERE doc_id='j1'").fetchone()
+    j = conn.execute("SELECT created_ts, updated_ts FROM jira_issues").fetchone()
     assert j["created_ts"] == _epoch("2026-03-01T09:00:00Z")
     assert j["updated_ts"] == 1740900000
 
@@ -369,12 +365,15 @@ def test_byo_created_updated_times(tmp_path):
             "path": "/",
         }
     )
-    fields = _jira_issue(conn, req, store.get_document(conn, "jira", "j1"))["fields"]
+    fields = _jira_issue(conn, req, conn.execute("SELECT * FROM jira_issues").fetchone())["fields"]
     assert fields["created"].startswith("2026-03-01T09:00:00")
     assert fields["updated"].startswith("2025-03-02")  # 1740900000 -> 2025-03-02
 
     # updated defaults to created + 1h when omitted (drive)
-    d = conn.execute("SELECT created_ts, updated_ts FROM gdrive_files WHERE doc_id='d1'").fetchone()
+    d = conn.execute(
+        "SELECT created_ts, updated_ts FROM gdrive_files WHERE id = ?",
+        (served_id("google_drive", "d1"),),
+    ).fetchone()
     assert d["created_ts"] == _epoch("2026-01-15T00:00:00Z") and d["updated_ts"] is None
 
 
@@ -399,7 +398,7 @@ def test_byo_gmail_created_and_to(tmp_path):
     conn = store.connect_ro(tmp_path / "mock.sqlite")
     from backlot.routers.google import _gmail_message
 
-    msg = _gmail_message(store.get_document(conn, "gmail", "m1"), "metadata")
+    msg = _gmail_message(store.get_document(conn, "gmail", served_id("gmail", "m1")), "metadata")
     assert msg["internalDate"] == str(_epoch("2026-04-01T12:00:00Z") * 1000)
     to = next(h["value"] for h in msg["payload"]["headers"] if h["name"] == "To")
     assert to == "board@acme.com"
@@ -431,18 +430,21 @@ def test_byo_slack_rich_replies(tmp_path):
         Settings(data_dir=tmp_path),
     )
     conn = store.connect_ro(tmp_path / "mock.sqlite")
-    from backlot.routers.slack import _message, _msg_ts
+    from backlot.routers.slack import _message
 
-    thread = store.slack_thread(conn, "s-root")
+    channel, root_ts = conn.execute(
+        "SELECT channel, ts FROM slack_messages WHERE thread_seq = 0"
+    ).fetchone()
+    thread = store.slack_thread(conn, channel, root_ts)
     root, reply = thread[0], thread[1]
     # root ts reflects the caller-supplied created; reply follows one second later
-    assert _msg_ts(root) == f"{_epoch('2026-05-01T00:00:00Z')}.{_msg_ts(root).split('.')[1]}"
-    assert _msg_ts(reply) > _msg_ts(root)
+    assert root["ts"] == f"{_epoch('2026-05-01T00:00:00Z')}.{root['ts'].split('.')[1]}"
+    assert reply["ts"] > root["ts"]
     # reply carries the full message fields (reactions + subtype), not just content
     rm = _message(reply)
     assert rm["reactions"][0]["name"] == "eyes" and rm["subtype"] == "thread_broadcast"
     # reply shares the root's thread_ts
-    assert rm["thread_ts"] == _message(root, reply_count=1)["thread_ts"] == _msg_ts(root)
+    assert rm["thread_ts"] == _message(root, reply_count=1)["thread_ts"] == root["ts"]
 
 
 def test_notion_byo_load(tmp_path):
@@ -489,14 +491,14 @@ def test_notion_byo_load(tmp_path):
     assert res["counts"]["notion"] == 3
 
     conn = store.connect_ro(settings.db_path)
-    row = store.get_document(conn, "notion", "n-row")
-    assert row["parent_id"] == "n-db" and row["teamspace"] == "eng"
+    row = store.get_document(conn, "notion", served_id("notion", "n-row"))
+    assert row["parent_id"] == served_id("notion", "n-db") and row["teamspace"] == "eng"
     assert '"Status"' in row["properties"]
-    db = store.get_document(conn, "notion", "n-db")
+    db = store.get_document(conn, "notion", served_id("notion", "n-db"))
     assert db["subtype"] == "database"
-    page = store.get_document(conn, "notion", "n-page")
+    page = store.get_document(conn, "notion", served_id("notion", "n-page"))
     assert page["icon"] == "🚀"
-    assert len(store.doc_comments(conn, "notion", "n-page")) == 1
+    assert len(store.doc_comments(conn, "notion", served_id("notion", "n-page"))) == 1
     assert store.get_container(conn, "notion", "eng") is not None
     conn.close()
 
@@ -674,9 +676,12 @@ def test_hubspot_byo_load(tmp_path):
     assert res["counts"]["hubspot"] == 3
     conn = store.connect_ro(settings.db_path)
     # the object type is the grouping unit, so it scopes the listing and is registered as a container
-    rows = {r["doc_id"]: r for r in store.list_documents(conn, "hubspot", container="contacts")}
-    assert list(rows) == ["hs-c1"]
-    assert store.jcol(rows["hs-c1"], "properties")["email"] == "ava@acme-health.com"
+    rows = {r["id"]: r for r in store.list_documents(conn, "hubspot", container="contacts")}
+    assert list(rows) == [served_id("hubspot", "hs-c1")]
+    assert (
+        store.jcol(rows[served_id("hubspot", "hs-c1")], "properties")["email"]
+        == "ava@acme-health.com"
+    )
     assert store.get_container(conn, "hubspot", "contacts") is not None
     conn.close()
 
@@ -688,13 +693,15 @@ def test_hubspot_byo_associations_are_bidirectional(tmp_path):
     load(_hubspot_corpus(tmp_path), settings)
     conn = store.connect_ro(settings.db_path)
     # declared direction: contact -> company
-    assert [r["to_doc_id"] for r in store.hubspot_associations(conn, "hs-c1", "companies")] == [
-        "hs-co1"
-    ]
+    assert [
+        r["to_id"]
+        for r in store.hubspot_associations(conn, served_id("hubspot", "hs-c1"), "companies")
+    ] == [served_id("hubspot", "hs-co1")]
     # reverse direction, never written by the corpus: company -> contacts
-    assert [r["to_doc_id"] for r in store.hubspot_associations(conn, "hs-co1", "contacts")] == [
-        "hs-c1"
-    ]
+    assert [
+        r["to_id"]
+        for r in store.hubspot_associations(conn, served_id("hubspot", "hs-co1"), "contacts")
+    ] == [served_id("hubspot", "hs-c1")]
     conn.close()
 
 
@@ -703,9 +710,10 @@ def test_hubspot_byo_association_infers_missing_target_type(tmp_path):
     load(_hubspot_corpus(tmp_path), settings)
     conn = store.connect_ro(settings.db_path)
     # hs-d1 declared {"to": "hs-co1"} with no to_type; the target's own object_type supplies it
-    assert [r["to_doc_id"] for r in store.hubspot_associations(conn, "hs-d1", "companies")] == [
-        "hs-co1"
-    ]
+    assert [
+        r["to_id"]
+        for r in store.hubspot_associations(conn, served_id("hubspot", "hs-d1"), "companies")
+    ] == [served_id("hubspot", "hs-co1")]
     conn.close()
 
 
@@ -936,7 +944,7 @@ def test_fireflies_byo_load_with_structured_sentences(tmp_path):
     assert [s["start_time"] for s in sents] == [0.0, 12.0, 25.0]
     assert all(s["end_time"] > s["start_time"] for s in sents)
     # derived where the record was silent
-    assert row["transcript_id"] and row["transcript_url"].endswith(row["transcript_id"])
+    assert row["id"] and row["transcript_url"].endswith(row["id"])
     assert row["audio_url"] and row["video_url"] and row["meeting_link"]
     assert row["calendar_type"] == "google_calendar"
     assert json.loads(row["analytics"])["sentiments"]["positive_pct"] is not None
@@ -1000,18 +1008,22 @@ def test_fireflies_byo_content_and_sentences_always_round_trip(tmp_path):
     settings = Settings(data_dir=tmp_path)
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
-    for row in conn.execute("SELECT doc_id, content FROM fireflies_transcripts"):
+    for row in conn.execute("SELECT id, content FROM fireflies_transcripts"):
         stored = [
             {"speaker_name": s["speaker_name"], "text": s["body"]}
             for s in conn.execute(
-                "SELECT speaker_name, body FROM fireflies_sentences WHERE doc_id=? ORDER BY seq",
-                (row["doc_id"],),
+                "SELECT speaker_name, body FROM fireflies_sentences WHERE transcript_id = ? "
+                "ORDER BY seq",
+                (row["id"],),
             )
         ]
-        assert synth.fireflies_transcript_text(stored) == row["content"], row["doc_id"]
+        assert synth.fireflies_transcript_text(stored) == row["content"], row["id"]
     # a null-speaker sentence renders bare, so an empty "Speaker: " prefix never enters the text
     assert (
-        conn.execute("SELECT content FROM fireflies_transcripts WHERE doc_id='ff-a'").fetchone()[0]
+        conn.execute(
+            "SELECT content FROM fireflies_transcripts WHERE id = ?",
+            (served_id("fireflies", "ff-a"),),
+        ).fetchone()[0]
         == "A: one\n(crosstalk)\nB: two"
     )
 
@@ -1133,10 +1145,11 @@ def test_fireflies_transcript_id_collision_raises_on_import(tmp_path, monkeypatc
     settings = Settings(data_dir=tmp_path / "ok")
     assert load(_write(tmp_path / "ok", docs), settings)["counts"]["fireflies"] == 2  # sanity
 
-    monkeypatch.setattr(synth, "fireflies_id", lambda doc_id: "constant")
+    monkeypatch.setattr(synth, "fireflies_id", lambda seed: "constant")
+    monkeypatch.setitem(store.ID_SEED, "fireflies", (lambda seed: "constant", None))
     (tmp_path / "collide").mkdir(parents=True, exist_ok=True)
     settings2 = Settings(data_dir=tmp_path / "collide")
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(SystemExit, match="already resolves to"):
         load(_write(tmp_path / "collide", docs), settings2)
 
 
@@ -1197,11 +1210,13 @@ def test_byo_gmail_thread_messages(tmp_path):
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
     try:
-        rows = store.gmail_thread(conn, "th-1")
+        rows = store.gmail_thread(conn, served_id("gmail", "th-1"))
         assert [r["thread_seq"] for r in rows] == [0, 1, 2]
-        assert [r["doc_id"] for r in rows] == ["th-1", "th-1::m1", "th-1::m2"]
+        assert [r["id"] for r in rows] == [
+            served_id("gmail", t) for t in ("th-1", "th-1::m1", "th-1::m2")
+        ]
         # every message shares the ROOT's thread id — a child must not open a thread of its own
-        assert {r["thread_id"] for r in rows} == {"th-1"}
+        assert {r["thread_id"] for r in rows} == {served_id("gmail", "th-1")}
         assert [r["author_email"] for r in rows] == ["ava@a.com", "bob@a.com", "bot@a.com"]
         assert [r["message_id"] for r in rows] == ["<a@a>", "<b@a>", None]
         assert rows[2]["content"] == "" and rows[2]["title"] == "Re: Retry storm"
@@ -1284,21 +1299,21 @@ def test_byo_per_service_people_and_scope_fields(tmp_path):
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
     try:
-        c = store.get_document(conn, "confluence", "c1")
+        c = store.get_document(conn, "confluence", served_id("confluence", "c1"))
         assert c["confidentiality"] == "restricted (customer-sensitive)"
         assert c["owner_team"] == "engineering"
         assert json.loads(c["reviewers"]) == ["bob@a.com", "cara@a.com"]
         # the display name is STORED: it cannot be recovered from the email (the accents are lost)
         assert c["owner_display"] == "Tomás Rré"
-        d = store.get_document(conn, "google_drive", "d1")
+        d = store.get_document(conn, "google_drive", served_id("google_drive", "d1"))
         assert json.loads(d["collaborators"]) == ["bob@a.com"] and d["owner_display"] == "Ava Chen"
-        j = store.get_document(conn, "jira", "j1")
+        j = conn.execute("SELECT * FROM jira_issues").fetchone()
         assert (j["severity"], j["squad"], j["owner_display"]) == (
             "Sev1",
             "payments-core",
             "Ava Chen",
         )
-        s = store.get_document(conn, "slack", "s1")
+        s = conn.execute("SELECT * FROM slack_messages").fetchone()
         assert json.loads(s["participants"]) == ["ava", "bob"]
     finally:
         conn.close()
@@ -1373,12 +1388,16 @@ def test_byo_typed_reader_principals(tmp_path):
         acl = store.acl_table("confluence")
         assert {
             (r["principal_type"], r["principal_id"])
-            for r in conn.execute(f"SELECT * FROM {acl} WHERE doc_id='c1'")
+            for r in conn.execute(
+                f"SELECT * FROM {acl} WHERE id = ?", (served_id("confluence", "c1"),)
+            )
         } == {("user", "ava@acme.com"), ("group", "eng"), ("org", "acme")}
         # the unprefixed shorthand is unchanged
         assert {
             (r["principal_type"], r["principal_id"])
-            for r in conn.execute(f"SELECT * FROM {acl} WHERE doc_id='c2'")
+            for r in conn.execute(
+                f"SELECT * FROM {acl} WHERE id = ?", (served_id("confluence", "c2"),)
+            )
         } == {("user", "ava@acme.com"), ("group", "eng")}
     finally:
         conn.close()
@@ -1389,10 +1408,10 @@ def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
     serve those exact strings, or every citation a document makes dangles on the served surface.
     A provided jira `key` / github `number` is stored at load and wins. A github record without a
     number keeps the synthesized one, materialized for the same reason as Linear's `identifier`; a
-    jira record without a key stores nothing, because a key's prefix belongs to the project rather
-    than to the row (see the loader's comment) — it is served and indexed from the container's
-    spelling instead. A github `file` row never takes a number, so it cannot shadow a real issue
-    or PR."""
+    jira record without a key has one COMPOSED for it at import, under the prefix its provided
+    sibling established. A github `file` row's provided number is still ignored, and the one it is
+    assigned comes last — after every issue and pull has claimed its spelling — so it cannot shadow
+    a real issue or PR."""
     from backlot import synth
     from tests._helpers import build_corpus, client_for
 
@@ -1433,8 +1452,8 @@ def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
             "title": "a.py",
             "content": "print()",
             "author_email": "ava@acme.com",
-            # provided or not, a file row's number stays NULL — the schema says
-            # "ignored", and a stored one could only shadow a real issue or PR
+            # a file row's provided number is ignored — the schema says so, and honouring it
+            # would let a file claim a number a real issue or PR asked for
             "number": 9,
         },
     ]
@@ -1442,18 +1461,20 @@ def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
 
     conn = store.connect_ro(settings.db_path)
     try:
-        jira = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
-        assert jira["j-key"] == "PAY-7"
+        jira = {r["title"]: r["key"] for r in conn.execute("SELECT title, key FROM jira_issues")}
+        assert jira["t"] == "PAY-7"
         # `key` is now the one served column (#51), so the keyless sibling carries a COMPOSED key
         # rather than NULL -- under the prefix its provided sibling established, and not the
         # spelling that sibling claimed.
-        assert jira["j-plain"].startswith("PAY-") and jira["j-plain"] != "PAY-7"
+        assert jira["t2"].startswith("PAY-") and jira["t2"] != "PAY-7"
         gh = {
-            r["doc_id"]: r["number"]
-            for r in conn.execute("SELECT doc_id, number FROM github_items")
+            r["title"]: (r["number"], r["kind"])
+            for r in conn.execute("SELECT title, number, kind FROM github_items")
         }
-        assert gh["g-num"] == 4242
-        assert gh["g-file"] is None
+        assert gh["t"] == (4242, "pull_request")
+        # The file was assigned a number of its own — it needs one to be addressable under the
+        # primary key — but NOT the 9 it asked for, and not the pull's.
+        assert gh["a.py"][0] not in (9, 4242)
     finally:
         conn.close()
 
@@ -1659,14 +1680,13 @@ def test_byo_a_provided_number_wins_whichever_doc_id_sorts_first(tmp_path):
     conn = store.connect_ro(settings.db_path)
     try:
         stored = {
-            r["doc_id"]: r["number"]
-            for r in conn.execute("SELECT doc_id, number FROM github_items")
+            r["title"]: r["number"] for r in conn.execute("SELECT title, number FROM github_items")
         }
         # `number` is now the one served column (#51), so the victim carries an assigned number
         # rather than NULL. The property under test is unchanged: the PROVIDER keeps the spelling
         # it asked for, and the row whose derived number wanted it is moved off.
-        assert stored["g-thief"] == stolen
-        assert stored["g-a-victim"] not in (None, stolen)
+        assert stored["t"] == stolen
+        assert stored["v"] not in (None, stolen)
     finally:
         conn.close()
 
@@ -1973,7 +1993,9 @@ def test_byo_jsonl_records_split_only_on_newline(tmp_path):
     assert load(corpus, settings)["counts"] == {"confluence": 2}
     conn = store.connect_ro(settings.db_path)
     try:
-        assert store.get_document(conn, "confluence", "c1")["content"] == body
+        assert (
+            store.get_document(conn, "confluence", served_id("confluence", "c1"))["content"] == body
+        )
     finally:
         conn.close()
 
@@ -2001,9 +2023,12 @@ def test_byo_gmail_messages_join_the_root_s_declared_thread(tmp_path):
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
     try:
-        rows = store.gmail_thread(conn, "gm-deck")
-        assert [(r["doc_id"], r["thread_seq"]) for r in rows] == [("gm-1", 0), ("gm-1::m1", 1)]
-        assert {r["thread_id"] for r in rows} == {"gm-deck"}
+        rows = store.gmail_thread(conn, served_id("gmail", "gm-deck"))
+        assert [(r["id"], r["thread_seq"]) for r in rows] == [
+            (served_id("gmail", "gm-1"), 0),
+            (served_id("gmail", "gm-1::m1"), 1),
+        ]
+        assert {r["thread_id"] for r in rows} == {served_id("gmail", "gm-deck")}
     finally:
         conn.close()
 
@@ -2037,7 +2062,7 @@ def test_byo_comment_times_are_monotonic_across_a_mixed_thread(tmp_path):
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
     try:
-        rows = store.doc_comments(conn, "linear", "ln-1")
+        rows = store.doc_comments(conn, "linear", served_id("linear", "ln-1"))
         times = [r["created_ts"] for r in rows]
         assert times == sorted(times), f"comments out of order: {times}"
         # the undated one follows its predecessor rather than jumping back to the doc's clock
@@ -2067,7 +2092,8 @@ def test_byo_all_undated_comments_keep_the_doc_clock_plus_position(tmp_path):
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
     try:
-        assert [r["created_ts"] for r in store.doc_comments(conn, "jira", "j-1")] == [
+        key = conn.execute("SELECT key FROM jira_issues").fetchone()[0]
+        assert [r["created_ts"] for r in store.doc_comments(conn, "jira", key)] == [
             1_700_000_001,
             1_700_000_002,
             1_700_000_003,
@@ -2104,11 +2130,15 @@ def test_byo_empty_readers_means_nobody(tmp_path):
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
     try:
-        assert store.doc_grants(conn, "gmail", "gm-dark") == []
-        assert store.doc_grants(conn, "gmail", "gm-open")  # absent readers -> the org default
+        assert store.doc_grants(conn, "gmail", served_id("gmail", "gm-dark")) == []
+        # absent readers -> the org default
+        assert store.doc_grants(conn, "gmail", served_id("gmail", "gm-open"))
         # ...so it is invisible to a user token and reachable only by admin (visible_ids=None)
-        assert store.get_document(conn, "gmail", "gm-dark", visible_ids={"acme"}) is None
-        assert store.get_document(conn, "gmail", "gm-dark") is not None
+        assert (
+            store.get_document(conn, "gmail", served_id("gmail", "gm-dark"), visible_ids={"acme"})
+            is None
+        )
+        assert store.get_document(conn, "gmail", served_id("gmail", "gm-dark")) is not None
     finally:
         conn.close()
 
@@ -2335,11 +2365,16 @@ def test_two_sources_may_share_a_doc_id(tmp_path):
     assert res["total"] == 2
     conn = store.connect_ro(settings.db_path)
     assert (
-        conn.execute("SELECT title FROM confluence_pages WHERE doc_id='shared-1'").fetchone()[0]
+        conn.execute(
+            "SELECT title FROM confluence_pages WHERE id = ?",
+            (served_id("confluence", "shared-1"),),
+        ).fetchone()[0]
         == "Sprint plan (page)"
     )
     assert (
-        conn.execute("SELECT title FROM gdrive_files WHERE doc_id='shared-1'").fetchone()[0]
+        conn.execute(
+            "SELECT title FROM gdrive_files WHERE id = ?", (served_id("google_drive", "shared-1"),)
+        ).fetchone()[0]
         == "Sprint plan (doc)"
     )
 
@@ -2604,7 +2639,7 @@ def test_byo_github_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
     from tests._helpers import build_corpus
 
     monkeypatch.setattr(synth, "GITHUB_NUMBER_RANGE", 2)
-    monkeypatch.setitem(store.SERVED_ID, "github", ("number", lambda doc_id: 999999, "repo"))
+    monkeypatch.setitem(store.ID_SEED, "github", (lambda seed: 999999, "repo"))
     docs = [
         {
             "source_type": "github",
@@ -2686,9 +2721,7 @@ def test_byo_confluence_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
     from tests._helpers import build_corpus
 
     monkeypatch.setattr(synth, "CONFLUENCE_ID_RANGE", 2)
-    monkeypatch.setitem(
-        store.SERVED_ID, "confluence", ("served_id", lambda doc_id: synth.CONFLUENCE_ID_MIN, None)
-    )
+    monkeypatch.setitem(store.ID_SEED, "confluence", (lambda seed: synth.CONFLUENCE_ID_MIN, None))
     docs = [
         {
             "source_type": "confluence",
@@ -2713,9 +2746,7 @@ def test_byo_hubspot_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
     from tests._helpers import build_corpus
 
     monkeypatch.setattr(synth, "HUBSPOT_ID_RANGE", 2)
-    monkeypatch.setitem(
-        store.SERVED_ID, "hubspot", ("served_id", lambda doc_id: synth.HUBSPOT_ID_MIN, None)
-    )
+    monkeypatch.setitem(store.ID_SEED, "hubspot", (lambda seed: synth.HUBSPOT_ID_MIN, None))
     docs = [
         {
             "source_type": "hubspot",
@@ -3027,8 +3058,8 @@ def test_byo_a_repeated_document_may_restate_its_own_tracker_id(tmp_path):
     }
     settings = build_corpus(tmp_path, [rec, dict(rec)])
     conn = store.connect_ro(settings.db_path)
-    rows = conn.execute(f"SELECT doc_id, key FROM {store.table('jira')}").fetchall()
-    assert [(r["doc_id"], r["key"]) for r in rows] == [("jira-x", "PAY-7")]
+    rows = conn.execute(f"SELECT title, key FROM {store.table('jira')}").fetchall()
+    assert [(r["title"], r["key"]) for r in rows] == [(rec["title"], "PAY-7")]
 
 
 def test_byo_a_tracker_id_claim_survives_append(tmp_path):
@@ -3067,11 +3098,15 @@ def test_byo_a_tracker_id_claim_survives_append(tmp_path):
 
     with pytest.raises(SystemExit) as e:
         load(shard("b.jsonl", "jira-b"), settings, reset=False)
-    assert "PAY-7" in str(e.value) and "jira-a" in str(e.value)
+    # The claim is refused, and it names the value rather than the earlier row: that row's own
+    # corpus identifier did not outlive its import, so there is nothing left to name it by (#51).
+    assert "PAY-7" in str(e.value) and "a previous import" in str(e.value)
 
-    # Re-appending a shard already loaded is not a collision with itself, so a re-run of the
-    # same import still works — the seeded claim names the same doc_id that is re-stating it.
-    load(first, settings, reset=False)
+    # Re-appending a shard already loaded is refused too, and for the same reason: the claim on
+    # PAY-7 is in the DB, and the row holding it can no longer be recognised as the one re-stating
+    # it (#51). A re-import is unsupported outright, not merely when it collides.
+    with pytest.raises(SystemExit, match="a previous import"):
+        load(first, settings, reset=False)
 
     # And a number is per repository, so the same one in another repo is not a claim on it.
     gh = tmp_path / "g.jsonl"
@@ -3188,8 +3223,10 @@ def test_byo_two_projects_cannot_share_a_provided_key_prefix(tmp_path):
     with pytest.raises(SystemExit) as e:
         load(second, settings, reset=False)
     assert "PAY" in str(e.value) and "payments" in str(e.value)
-    # Re-appending the holder itself is not a violation.
-    load(first, settings, reset=False)
+    # Re-appending the holder itself is refused too: its key is claimed in the DB and the row
+    # holding it can no longer be recognised as the one re-stating it (#51).
+    with pytest.raises(SystemExit, match="a previous import"):
+        load(first, settings, reset=False)
 
 
 def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):
@@ -3229,195 +3266,58 @@ def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):
 def test_byo_a_derived_number_no_longer_moves_across_append(tmp_path):
     """#51 FIXES something the old boot-time index accepted: its own docstring (`_free_number`,
     now gone) said a served number was "free to move when --append changes the set" — stable only
-    while the server kept running, but a later append's `_free_number` probe could still reshuffle
-    a number a client had already saved a link to. `gh-054074`'s own hash never collided with
-    anything, yet the OLD design moved it anyway when `gh-014031` (hashing to the same value as
-    `gh-000000`) was appended and displaced onto it in turn.
+    while the server kept running, but a later append's probe could still reshuffle a number a
+    client had already saved a link to.
 
-    With a stored column, appending `gh-014031` must NOT touch `gh-000000` or `gh-054074`'s
-    numbers at all. Review round 1 caught this docstring overclaiming WHY: `gh-000000` and
-    `gh-054074` are never re-inserted by the second batch (which only ADDS `gh-014031`), so their
-    number sits untouched in the live column throughout -- this property holds even with
-    `resolve_github_numbers`'s `_github_numbers` preload (or `seed_tracker_ids` itself) disabled,
-    since nothing here ever resets their column to NULL for the preload to have to restore. See
-    `test_byo_a_touched_rows_number_is_restored_from_the_preload_not_reprobed` below for the
-    test that actually forces reliance on the preload, by re-stating an ALREADY-served row in the
-    append batch."""
-    from backlot import synth
-    from tests._helpers import client_for
+    Appending must not touch a number an existing row already serves. The appended row states its
+    own `number`, which an append into a probed source now requires (see
+    `_require_provided_id`): a row's identity has to be stated once the dataset's own identifier
+    no longer outlives the import, so "append a keyless issue" is not a shape that exists any more.
 
-    A, B, C = "gh-000000", "gh-014031", "gh-054074"
-    assert synth.github_number(A) == synth.github_number(B) == synth.github_number(C) - 1
-
-    def rec(did):
-        return {
-            "source_type": "github",
-            "doc_id": did,
-            "repo": "core",
-            "subtype": "issue",
-            "title": did,
-            "content": "c",
-            "author_email": "ava@acme.com",
-        }
-
-    def served(settings):
-        tokens = yaml.safe_load(settings.tokens_path.read_text())
-        hdr = {
-            "Authorization": "Bearer "
-            + next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
-        }
-        with client_for(settings, reload=True) as c:
-            listing = c.get(
-                "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
-            ).json()
-            out = {i["title"]: i["number"] for i in listing}
-            for title, number in out.items():
-                got = c.get(f"/github/repos/acme/core/issues/{number}", headers=hdr)
-                assert got.status_code == 200 and got.json()["title"] == title
-            return out
-
-    settings = Settings(data_dir=tmp_path)
-    shard = tmp_path / "s1.jsonl"
-    shard.write_text("\n".join(json.dumps(rec(d)) for d in (A, C)))
-    load(shard, settings, reset=True)
-    n = synth.github_number(A)
-    first = served(settings)
-    assert first == {A: n, C: n + 1}
-
-    shard2 = tmp_path / "s2.jsonl"
-    shard2.write_text(json.dumps(rec(B)))
-    load(shard2, settings, reset=False)
-    # A and C keep the EXACT numbers they served before the append -- the old design's own
-    # instability (both moving, C onto a number it never collided with) is gone. B gets some
-    # probed number of its own, distinct from both -- which one is an implementation detail of
-    # the probe's re-seed salts, not a contract this test pins down.
-    second = served(settings)
-    assert second[A] == first[A] and second[C] == first[C]
-    assert second[B] not in (first[A], first[C])
-
-
-def test_byo_a_touched_rows_number_is_restored_from_the_preload_not_reprobed(tmp_path, monkeypatch):
-    """The test above shows appending a NEW row leaves an untouched one alone -- true, but it
-    passes even with `resolve_github_numbers`'s `_github_numbers` preload (or `seed_tracker_ids`
-    itself) disabled, since neither row's column is ever reset to NULL for a broken preload to
-    fail to restore (review round 1 caught this).
-
-    This one actually exercises the preload: `a0`/`a1` are RE-STATED in the append batch (same
-    doc_ids, same content -- `insert`'s github block writes `number = None`
-    UNCONDITIONALLY, so restating a doc_id resets its column exactly like any other write to it
-    would), and the append's seed is swapped to a DIFFERENT deterministic function before it
-    runs. A reprobe-from-scratch that bypassed the preload would therefore compute DIFFERENT
-    numbers for `a0`/`a1` under the new seed -- so their numbers coming back UNCHANGED can only
-    be the preload doing its job, not an accident of the corpus reproducing its own hashes."""
-    from backlot import store, synth
+    Two tests that used to sit here are gone with it, not merely reworded. One exercised a
+    `doc_id -> number` preload restoring the number of a row RE-STATED in the append batch; the
+    other demoted a re-stated document to a file. Both needed re-importing a row across an append,
+    which is refused outright now — `test_github_comment_ids_are_unique_even_when_the_seed_collides`
+    pins that refusal.
+    """
+    from backlot import store
     from backlot.importer.byo import load
 
-    def rec(did):
+    def rec(did, **extra):
         return {
             "source_type": "github",
             "doc_id": did,
             "repo": "core",
-            "subtype": "issue",
             "title": did,
             "content": "c",
             "author_email": "ava@acme.com",
+            **extra,
         }
 
     settings = Settings(data_dir=tmp_path)
     shard1 = tmp_path / "s1.jsonl"
-    shard1.write_text("\n".join(json.dumps(rec(d)) for d in ("a0", "a1")))
+    shard1.write_text("\n".join(json.dumps(rec(d)) for d in ("gh-000000", "gh-054074")))
     load(shard1, settings, reset=True)
 
     conn = store.connect_ro(settings.db_path)
     before = {
-        r["doc_id"]: r["number"] for r in conn.execute("SELECT doc_id, number FROM github_items")
+        r["title"]: r["number"] for r in conn.execute("SELECT title, number FROM github_items")
     }
     conn.close()
-    assert len(before) == 2 and len(set(before.values())) == 2
-
-    # A different seed for the append run -- salted the same way _assign_github_number's own
-    # re-seed salts a collision, so it stays within synth.github_number's real shape rather than
-    # drawing from an unrelated space.
-    monkeypatch.setitem(
-        store.SERVED_ID,
-        "github",
-        ("number", lambda doc_id: synth.github_number(f"{doc_id}\x00salted"), "repo"),
-    )
-    # Sanity: the new seed actually differs from the old one for both rows, or restoring the OLD
-    # value below would be indistinguishable from just reprobing with the "new" (== old) seed.
-    for did in ("a0", "a1"):
-        assert synth.github_number(f"{did}\x00salted") != synth.github_number(did)
+    assert set(before) == {"gh-000000", "gh-054074"}
 
     shard2 = tmp_path / "s2.jsonl"
-    shard2.write_text("\n".join(json.dumps(rec(d)) for d in ("a0", "a1", "a2")))
+    # A number no existing row holds, so the append is a pure addition.
+    fresh = max(before.values()) + 1
+    shard2.write_text(json.dumps(rec("gh-014031", number=fresh)))
     load(shard2, settings, reset=False)
-    monkeypatch.undo()
 
     conn = store.connect_ro(settings.db_path)
     after = {
-        r["doc_id"]: r["number"] for r in conn.execute("SELECT doc_id, number FROM github_items")
+        r["title"]: r["number"] for r in conn.execute("SELECT title, number FROM github_items")
     }
     conn.close()
-    assert after["a0"] == before["a0"]
-    assert after["a1"] == before["a1"]
-    assert after["a2"] is not None and after["a2"] not in before.values()
-
-
-def test_byo_a_document_demoted_to_a_file_loses_its_number(tmp_path):
-    """Regression the plan explicitly flags (see the `insert` comment on why `number` is
-    written UNCONDITIONALLY): `number` MUST be in the upsert's column list on every github
-    row, including a file's, or a doc_id re-imported as a file after having been an issue keeps
-    the issue's OLD number -- notion shipped exactly this bug with
-    `served_data_source_id` when a database was demoted to a page.
-
-    Two SEPARATE loads (not two records in one corpus): `flip` needs a REAL, resolved
-    number already sitting in the column before it is demoted, or there would be nothing
-    for a conditional write to leave stale -- `resolve_github_numbers` only runs once, at the end
-    of a `load_records` call, so two records for the same doc_id in ONE corpus never gives the
-    first version a number to begin with (the second upsert wins before the deferred pass
-    ever sees the row). `--append` (`reset=False`) is what makes the bug's precondition real."""
-    from backlot.importer.byo import load
-    from tests._helpers import build_corpus
-
-    settings = build_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "github",
-                "doc_id": "flip",
-                "repo": "core",
-                "title": "Was an issue",
-                "content": "x",
-                "author_email": "ava@acme.com",
-            }
-        ],
-    )
-    conn = store.connect_ro(settings.db_path)
-    before = conn.execute("SELECT kind, number FROM github_items WHERE doc_id = 'flip'").fetchone()
-    assert before["kind"] != "file" and before["number"] is not None
-    conn.close()
-
-    later = tmp_path / "later.jsonl"
-    later.write_text(
-        json.dumps(
-            {
-                "source_type": "github",
-                "doc_id": "flip",
-                "repo": "core",
-                "subtype": "file",
-                "path": "src/flip.py",
-                "title": "flip.py",
-                "content": "x",
-                "author_email": "ava@acme.com",
-            }
-        )
-    )
-    load(later, settings, reset=False)
-    conn = store.connect_ro(settings.db_path)
-    after = conn.execute("SELECT kind, number FROM github_items WHERE doc_id = 'flip'").fetchone()
-    assert after["kind"] == "file"
-    assert after["number"] is None
-    conn.close()
+    assert after == {**before, "gh-014031": fresh}, "an append renumbered an existing row"
 
 
 def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_path):
@@ -3454,9 +3354,7 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
     settings = Settings(data_dir=tmp_path)
     load(shard1, settings, reset=True)
     conn = store.connect_ro(settings.db_path)
-    before = conn.execute("SELECT number FROM github_items WHERE doc_id = 'a-victim'").fetchone()[
-        "number"
-    ]
+    before = conn.execute("SELECT number FROM github_items").fetchone()["number"]
     assert before == stolen  # sanity: nothing to collide with yet, so it got its own hash
     conn.close()
 
@@ -3479,17 +3377,19 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
     # already serves is refused outright rather than displacing it. That is the decided trade --
     # the product imports a dataset once and serves it read-only, so blocking a rare colliding
     # append is preferable to renumbering a row a client may already hold a link to.
-    with pytest.raises(SystemExit, match="already claimed by 'a-victim' in repo 'core'"):
+    # The message names the VALUE and says the claim came from an earlier import: the row
+    # holding it has no corpus identifier left to name it by (#51).
+    with pytest.raises(SystemExit, match="already claimed by a previous import in repo 'core'"):
         load(shard2, settings, reset=False)
 
     # ...and the refusal leaves the DB untouched: one commit for the whole import, so the
     # existing row keeps the number it served before the failed append.
     conn = store.connect_ro(settings.db_path)
     served = {
-        r["doc_id"]: r["number"] for r in conn.execute("SELECT doc_id, number FROM github_items")
+        r["title"]: r["number"] for r in conn.execute("SELECT title, number FROM github_items")
     }
     conn.close()
-    assert served == {"a-victim": stolen}
+    assert served == {"v": stolen}
 
 
 def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
@@ -3521,7 +3421,7 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
     settings = Settings(data_dir=tmp_path)
     load(shard1, settings, reset=True)
     conn = store.connect_ro(settings.db_path)
-    before = conn.execute("SELECT key FROM jira_issues WHERE doc_id = 'j-victim'").fetchone()["key"]
+    before = conn.execute("SELECT key FROM jira_issues").fetchone()["key"]
     # sanity: nothing to collide with yet, so it composed its own hash under the project's
     # synthesized prefix (no provided key in this shard to establish one)
     assert before.endswith(f"-{stolen}")
@@ -3557,9 +3457,9 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
 
     # ...and the refusal leaves the DB untouched -- one commit for the whole import.
     conn = store.connect_ro(settings.db_path)
-    served = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
+    served = {r["title"]: r["key"] for r in conn.execute("SELECT title, key FROM jira_issues")}
     conn.close()
-    assert served == {"j-victim": before}
+    assert served == {"v": before}
 
 
 # --- github pull changesets and review comments (issue #49 group B) ---------------------
@@ -3624,14 +3524,15 @@ def test_github_changeset_fields_round_trip(tmp_path):
         Settings(data_dir=tmp_path),
     )
     conn = store.connect_ro(tmp_path / "mock.sqlite")
-    row = store.get_document(conn, "github", "cs-pr")
+    row = conn.execute("SELECT * FROM github_items WHERE kind = 'pull_request'").fetchone()
     assert store.jcol(row, "changed_paths") == ["src/b.py", "src/a.py"]  # order preserved
-    assert store.get_document(conn, "github", "cs-file-0")["changed_paths"] is None
+    f0 = conn.execute("SELECT * FROM github_items WHERE kind = 'file' AND path = ?", ("src/a.py",))
+    assert f0.fetchone()["changed_paths"] is None
 
-    assert [c["body"] for c in store.github_comments(conn, "cs-pr", anchored=False)] == [
-        "overall looks fine"
-    ]
-    anchored = store.github_comments(conn, "cs-pr", anchored=True)
+    assert [
+        c["body"] for c in store.github_comments(conn, row["repo"], row["number"], anchored=False)
+    ] == ["overall looks fine"]
+    anchored = store.github_comments(conn, row["repo"], row["number"], anchored=True)
     assert [(c["path"], c["line"]) for c in anchored] == [("src/a.py", 2), ("src/a.py", None)]
     assert anchored[1]["diff_hunk"].startswith("@@ -1,2 +1,2 @@")
 

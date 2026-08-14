@@ -87,7 +87,6 @@ def test_gmail_messages_list_serves_hex_ids(client, admin_h):
 def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     """The hex id maps back to its dsid, so the body a client reads by hex is the stored body. A
     one-way id would make every message unreadable."""
-    from backlot import synth
 
     row = _a_gmail_row(ro_conn)
     hexid = row["id"]
@@ -108,7 +107,6 @@ def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
 def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin_h, ro_conn):
     """Threads share the message id space in real Gmail, so a message that is its own thread root
     reports the same value twice — and `threads.get` resolves it."""
-    from backlot import synth
 
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE COALESCE(thread_id, '') = '' LIMIT 1"
@@ -126,7 +124,6 @@ def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin
 
 
 def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
-    from backlot import synth
 
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE COALESCE(thread_id,'') != '' "
@@ -140,7 +137,6 @@ def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
 
 
 def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_conn):
-    from backlot import synth
 
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
@@ -201,7 +197,6 @@ def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_co
     part of the query that reads it (`store.gmail_by_id`'s ACL-scoped lookup), not a
     separate check applied only after an unscoped resolve. The CFO's comp review is granted to cfo
     alone."""
-    from backlot import synth
 
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
@@ -217,7 +212,6 @@ def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_co
 
 
 def test_gmail_body_roundtrip(client, admin_h, ro_conn):
-    from backlot import synth
 
     doc = ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
     m = client.get(
@@ -240,7 +234,6 @@ def test_gmail_messages_list_ordered_by_internaldate_desc(client, admin_h, ro_co
     got = [m["id"] for m in listed]
     # the stable total order the endpoint must produce: created_ts DESC, id ASC as tie-break
     # the served ids are hex (#39), so the expectation is the hex of that stable order
-    from backlot import synth
 
     expected = [
         r["id"]
@@ -293,7 +286,6 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
     ).fetchone()
     if row is None:
         pytest.skip("no gmail message with an attachment in this subset")
-    from backlot import synth
 
     hexid = row["id"]
     m = client.get(
@@ -457,7 +449,6 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
     ).fetchone()
     if doc is None:
         pytest.skip("no gmail doc for user B in this subset")
-    from backlot import synth
 
     hexid = doc["id"]  # served ids are hex, not dsids (#39)
     ah = {"Authorization": f"Bearer {user_a['token']}"}

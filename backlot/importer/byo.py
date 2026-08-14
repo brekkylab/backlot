@@ -956,6 +956,14 @@ class _Loader:
         # only name one target, is not enough to find every row still holding a provisional key.
         # These two carry the per-ROW facts instead.
         self._pending = {}  # source_type -> [(provisional key tuple, dataset id)]
+        # (source_type, key tuple) -> the dataset id that landed on it, for THIS run. The upsert
+        # below is keyed on the served id, so two records whose ids COLLIDE would otherwise be
+        # merged silently -- one document overwriting another, which is the exact failure #51
+        # exists to remove. Two records sharing a DATASET id resolving to one row is the supported
+        # case and still upserts; two DIFFERENT ones landing on one id is a collision and raises.
+        # Before the served id became the primary key, the doc_id conflict target made the unique
+        # index catch this; the target moved, so the check has to live here.
+        self._claimed = {}
         self._final = {}  # (source_type, provisional key tuple) -> settled key tuple
         # Provisional keys are handed out from a per-run counter. They live in a space no real key
         # can occupy -- negative for a github number (real ones start at 1), `-unassigned-` for a
@@ -1525,6 +1533,16 @@ class _Loader:
                     provisional = True
             # ---- end identity -------------------------------------------------------------
             key = tuple(cols[c] for c in store.id_columns(src))
+            claimed_by = self._claimed.get((src, key))
+            if claimed_by is not None and claimed_by != did:
+                raise SystemExit(
+                    f"{where}: this row resolves to {store.id_columns(src)} = {key}, which "
+                    f"{claimed_by!r} in this corpus already resolves to. Two documents cannot "
+                    "share the one id the API serves them at -- one would be unreachable at it. "
+                    "Give one of them a different id, or (if they are the same document) the "
+                    "same one."
+                )
+            self._claimed[(src, key)] = did
             names = list(cols)
             # An upsert keyed explicitly on the table's PRIMARY KEY — the id it serves — not a
             # blanket `INSERT OR REPLACE`: two records that resolve to the same key still leave the

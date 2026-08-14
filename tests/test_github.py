@@ -40,7 +40,6 @@ def _gh_row(conn, title: str):
 
 def test_github_body_roundtrip(client, admin_h, ro_conn, org):
     doc = ro_conn.execute("SELECT * FROM github_items LIMIT 1").fetchone()
-    from backlot import synth
 
     num = doc["number"]
     issue = client.get(f"/github/repos/{org}/{doc['repo']}/issues/{num}", headers=admin_h).json()

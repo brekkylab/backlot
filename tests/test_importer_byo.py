@@ -3315,11 +3315,102 @@ def test_byo_a_stated_id_is_served_verbatim_by_every_probed_source(tmp_path):
     conn.close()
 
     # A second record asking for a taken id is refused, and the refusal names the holder.
-    with pytest.raises(SystemExit, match="content_id 90001 is already claimed"):
+    with pytest.raises(SystemExit, match="content_id 90001 is already claimed by 'p1'"):
         build_corpus(
             tmp_path / "clash",
             [page("p1", "Stated", content_id=90001), page("pX", "Clash", content_id=90001)],
         )
+
+
+def test_byo_a_keyless_row_probes_off_a_stated_id_rather_than_onto_it(tmp_path, monkeypatch):
+    """The half `test_byo_a_stated_id_is_served_verbatim_by_every_probed_source` cannot force on
+    its own: there, the keyless page's own seed simply misses the stated value, so the assignment
+    would look right even with the probe replaced by a bare seed.
+
+    Collapsing the seed to the stated id makes the collision certain — every keyless page now WANTS
+    90001 — so the only thing that can keep it off is assigning stated ids first and probing the
+    rest against them. That is also why confluence and hubspot had to become deferred sources when
+    they gained a stateable id (see byo.DEFERRED_ID)."""
+    from backlot import store
+    from tests._helpers import build_corpus
+
+    monkeypatch.setitem(store.ID_SEED, "confluence", (lambda seed: 90001, None))
+
+    def page(doc_id, title, **extra):
+        return {
+            "source_type": "confluence",
+            "space": "eng",
+            "doc_id": doc_id,
+            "title": title,
+            "content": "c",
+            "author_email": "a@acme.com",
+            **extra,
+        }
+
+    # The keyless pages sort BEFORE the stated one by dataset id, so a streaming probe would have
+    # handed 90001 to `a-keyless` long before `z-stated` was ever read.
+    s = build_corpus(
+        tmp_path,
+        [
+            page("a-keyless", "Keyless one"),
+            page("b-keyless", "Keyless two"),
+            page("z-stated", "Stated", content_id=90001),
+        ],
+    )
+    monkeypatch.undo()
+    conn = store.connect_ro(s.db_path)
+    try:
+        got = {r["title"]: r["id"] for r in conn.execute("SELECT title, id FROM confluence_pages")}
+        assert got["Stated"] == 90001, "the stated id lost its spelling to a keyless sibling"
+        assert len(set(got.values())) == 3
+        assert 90001 not in (got["Keyless one"], got["Keyless two"])
+    finally:
+        conn.close()
+
+
+def test_byo_a_stated_id_already_held_by_an_earlier_import_is_refused(tmp_path):
+    """The cross-run half of the claim. `seed_tracker_ids` preloads every PROBED source's stored
+    keys, so an append stating an id a previous import already assigned is refused — the upsert's
+    conflict target IS that id, so without the preload it would `DO UPDATE` and replace the row,
+    losing a document at the id it was reachable by.
+
+    Dropping confluence and hubspot from that preload leaves every other test in this suite green,
+    because the append guard fires first for a record with NO id at all. Only a record that states
+    a taken one reaches the check."""
+    from backlot import store
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    settings = Settings(data_dir=tmp_path)
+
+    def corpus(name, **extra):
+        p = tmp_path / name
+        p.write_text(
+            json.dumps(
+                {
+                    "source_type": "confluence",
+                    "space": "eng",
+                    "title": name,
+                    "content": "c",
+                    "author_email": "a@acme.com",
+                    **extra,
+                }
+            )
+            + "\n"
+        )
+        return p
+
+    load(corpus("first.jsonl", doc_id="p1", content_id=90001), settings, reset=True)
+    with pytest.raises(SystemExit, match="already claimed by a previous import"):
+        load(corpus("second.jsonl", doc_id="pX", content_id=90001), settings, reset=False)
+    # ...and the refused append left the original page exactly where it was.
+    conn = store.connect_ro(settings.db_path)
+    try:
+        assert [tuple(r) for r in conn.execute("SELECT id, title FROM confluence_pages")] == [
+            (90001, "first.jsonl")
+        ]
+    finally:
+        conn.close()
 
 
 def test_byo_a_comment_id_follows_its_parents_settled_key(tmp_path):

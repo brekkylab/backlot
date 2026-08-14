@@ -4,12 +4,18 @@ One table per service, with that service's own columns and its own grouping-unit
 (``slack_channels``, ``github_repos``, …) — never one crammed ``documents`` table, so a column
 one service needs never lands on another's rows. The principal / group-membership relationship
 tables are shared, keyed by names that ARE globally unique. ACL grants are not: each source has
-its own ``<source>_acl`` table (see ``ACL_TABLE``), because ``doc_id`` is unique only *within* a
-source — a shared table keyed on it let two documents in different sources that happened to share
+its own ``<source>_acl`` table (see ``ACL_TABLE``), because a served id is unique only *within* a
+source — a shared table keyed on one let two documents in different sources that happened to share
 an id merge their grants.
 
-Every doc table carries the same four core columns (``doc_id, author_email, title, content``)
-plus its grouping column, which is what keeps listing / ACL / pagination uniform via the
+**A row is identified by the id the API serves it under, and by nothing else** (#51). The dataset's
+own identifier scheme does not survive the import: a corpus's ``doc_id`` seeds a synthesized value
+and is then discarded, so there is no ``doc_id`` column anywhere and no map from one. Each table's
+PRIMARY KEY is that served id — see :data:`ID_COLUMNS`, which also names it, since the column is
+spelled the way its vendor spells it (``number``, ``key``, ``ts``, otherwise ``id``).
+
+Every doc table carries the same three core columns (``author_email, title, content``) after its
+identifier and its grouping column, which is what keeps listing / ACL / pagination uniform via the
 ``GROUPING`` registry. Every listing takes ``visible_ids``: ``None`` = admin, otherwise results
 are filtered to docs whose ACL grants intersect it. JSON columns are TEXT — read with :func:`jcol`.
 """
@@ -51,8 +57,12 @@ def table(source_type: str) -> str:
 # Fireflies they are the transcript's sentences, which are not comments but are exactly "the
 # child rows of a doc in this source" — so they reuse this slot rather than adding a parallel
 # mechanism. Every table here therefore shares the child-row column contract
-# (id, doc_id, seq, author_email, body, created_ts, reactions) that :func:`doc_comments` reads,
-# and adds its own columns beside it (see fireflies_sentences).
+# (id, <parent's id column>, seq, author_email, body, created_ts, reactions) that
+# :func:`doc_comments` reads, and adds its own columns beside it (see fireflies_sentences).
+# The parent reference is named after the parent's OWN id column (`jira_comments.key`,
+# `github_comments.number`), not a uniform `doc_id`: a child row points at a served id, and
+# spelling it the way the parent's table spells it is what keeps the two from drifting into
+# separate namespaces.
 COMMENT_TABLE = {
     "jira": "jira_comments",
     "confluence": "confluence_comments",
@@ -67,9 +77,30 @@ def comment_table(source_type: str) -> str | None:
     return COMMENT_TABLE.get(source_type)
 
 
-# Each source's ACL. Per source, not one shared table, because `doc_id` is per-source too (see
-# test_two_sources_may_share_a_doc_id): keyed corpus-wide, two documents that merely share an id
-# shared their grants and the union was enforced.
+# source_type -> the columns in its child-rows table that point at the parent, positionally
+# matching :data:`ID_COLUMNS`. The parent's OWN column name is reused, so a child row and the row
+# it hangs off are named the same way — except where that bare name would collide with the child's
+# own `id`, in which case it is qualified by the parent's noun (`page_id`, `issue_id`). Explicit
+# rather than derived, because that qualification is a judgement about readability that a rule
+# cannot make on its own.
+COMMENT_PARENT = {
+    "jira": ("key",),
+    "confluence": ("page_id",),
+    "github": ("repo", "number"),
+    "notion": ("page_id",),
+    "linear": ("issue_id",),
+    "fireflies": ("transcript_id",),
+}
+
+
+def comment_parent_columns(source_type: str) -> tuple[str, ...]:
+    return COMMENT_PARENT[source_type]
+
+
+# Each source's ACL. Per source, not one shared table, because a served id is per-source too (see
+# test_two_sources_may_share_an_id): keyed corpus-wide, two documents that merely share an id
+# shared their grants and the union was enforced. Each table keys on its source's own
+# :data:`ID_COLUMNS`, so a grant and the row it governs are named the same way.
 ACL_TABLE = {src: f"{src}_acl" for src in SOURCE_TABLE}
 
 
@@ -113,63 +144,138 @@ def grouping_col(source_type: str) -> str:
     return GROUPING[source_type][1]
 
 
-# source_type -> (served-id column, seed function, uniqueness scope). The column holds an id
-# ASSIGNED at import (see backlot.importer.byo) rather than derived by hashing at serve time: a
-# hash into any fixed range collides by the birthday bound, and the reverse map this replaces
-# resolved a collision last-writer-wins, leaving one document unreachable at its own id (#51). The
-# seed function is always `(doc_id) -> a candidate value`, so an assignment method can probe it
-# uniformly regardless of source.
+# source_type -> the column(s) a row is ADDRESSED by after import: its PRIMARY KEY, the key its
+# `<source>_acl` table and its FTS index carry, and what every cross-row reference points at.
+# There is no `doc_id` beside them — the dataset's own identifier seeds the value and is then
+# discarded (#51), so this registry is the whole answer to "what identifies a row".
+#
+# Each column is spelled the way its VENDOR spells it rather than forced to a uniform `id`: a real
+# GitHub issue carries both an `id` and a `number` and its API addresses it by the number, a Jira
+# issue by its `key`, a Slack message by its `ts`. Serving `id` for any of those would be a field
+# the vendor's own client never asks for.
+#
+# A PAIR is the vendor's own uniqueness rule, not caution: a GitHub number is unique within its
+# repo, a Slack ts within its channel, an S3 key within its bucket — the same key in two buckets is
+# ordinary S3. A Jira key is unique across a whole site, so it stands alone. Every value is a tuple
+# regardless, so `_acl_clause`, the ACL tables, the FTS indexes and `get_document` are n-ary
+# uniformly and no source needs a special case.
+ID_COLUMNS = {
+    "slack": ("channel", "ts"),
+    "gmail": ("id",),
+    "google_drive": ("id",),
+    "github": ("repo", "number"),
+    "jira": ("key",),
+    "confluence": ("id",),
+    "notion": ("id",),
+    "s3": ("bucket", "key"),
+    "hubspot": ("id",),
+    "linear": ("id",),
+    "fireflies": ("id",),
+}
+
+
+def id_columns(source_type: str) -> tuple[str, ...]:
+    """The full key a row of this source is addressed by — its PRIMARY KEY, in key order."""
+    try:
+        return ID_COLUMNS[source_type]
+    except KeyError:
+        raise ValueError(f"unknown source_type {source_type!r}")
+
+
+def id_column(source_type: str) -> str:
+    """Just the row-distinguishing column, without the container that scopes it — ``number`` for
+    github, ``ts`` for slack, and the whole key for the sources whose id needs no container."""
+    return id_columns(source_type)[-1]
+
+
+# The SQL type each identifier column is declared with, for the tables that REFER to a document
+# rather than hold it (the ACL tables, generated below). Affinity is not cosmetic here: store an
+# integer github number under a TEXT-affinity column and SQLite writes '7', after which
+# `_acl.number = github_items.number` compares '7' against 7 and matches nothing — an ACL that
+# silently grants no one. Only the two non-text ids need an entry; everything else is TEXT.
+# `INT` rather than `INTEGER` for confluence, for the rowid-alias reason its own table explains.
+_ID_COLUMN_TYPES = {("github", "number"): "INTEGER", ("confluence", "id"): "INT"}
+
+
+def id_column_type(source_type: str, column: str) -> str:
+    return _ID_COLUMN_TYPES.get((source_type, column), "TEXT")
+
+
+# source_type -> (seed function, uniqueness scope), for the sources whose served id is a pure
+# 1-arity function of the incoming record's dataset id. The value is ASSIGNED at import (see
+# backlot.importer.byo) rather than derived by hashing at serve time: a hash into any fixed range
+# collides by the birthday bound, and the reverse map this replaces resolved a collision
+# last-writer-wins, leaving one document unreachable at its own id (#51). A uniform
+# `(dataset_id) -> a candidate value` shape is what lets one assignment method probe every source.
 #
 # `scope` is the columns the assignment probe must hold fixed for the served value to be
 # unambiguous in BACKLOT'S OWN lookup — not necessarily the vendor's own uniqueness rule. It is
 # `None` when Backlot resolves the id with no container (a flat column/index lookup), or the
 # source's own GROUPING column when Backlot's own lookup is already scoped to one container (a
-# GitHub number is looked up within its repo; a Jira key's numeric suffix within its project — see
-# `synth.jira_key_number`, since the key's PREFIX is a fact about the container that a corpus-
-# provided key can still override, so the probe must never include it). gmail and hubspot are
+# GitHub number is looked up within its repo). gmail and hubspot are
 # real-world per-container ids (per-mailbox; per-object-type, which is why every HubSpot route
 # carries `{objectType}`) that Backlot nonetheless resolves flat (`routers.google`/`routers.hubspot`
 # look an id up with no container, hubspot only checking `object_type` afterwards) — `None` there
 # is the safe over-constraint Backlot's own lookup needs, not a claim about the vendor.
-SERVED_ID = {
-    "confluence": ("served_id", synth.confluence_id, None),
-    "gmail": ("served_id", synth.gmail_message_id, None),
-    "notion": ("served_id", synth.notion_id, None),
-    "hubspot": ("served_id", synth.hubspot_record_id, None),
+#
+# Absent here, and deliberately: `jira`, whose key is COMPOSED from its project's prefix rather
+# than seeded 1-arity; `slack`, whose ts is a function of the row's `created_ts` and its thread
+# root as well as its dataset id; and `s3`, whose (bucket, key) the corpus states outright and
+# nothing synthesizes. Each gets its own assignment pass instead of widening this tuple to fit it.
+ID_SEED = {
+    "confluence": (synth.confluence_id, None),
+    "gmail": (synth.gmail_message_id, None),
+    "notion": (synth.notion_id, None),
+    "hubspot": (synth.hubspot_record_id, None),
     # Linear's hashed uuid, kept distinct from `identifier` (already stored, and which must keep
     # winning — see GROUPING's linear comment) — this column is the OTHER spelling `issue(id:)`
     # accepts.
-    "linear": ("served_id", synth.linear_id, None),
-    "github": ("number", synth.github_number, grouping_col("github")),
+    "linear": (synth.linear_id, None),
+    "github": (synth.github_number, grouping_col("github")),
     # Drive's own file id (#51, task 12) -- unprobed, like gmail/notion/linear; see
-    # synth.gdrive_file_id's docstring for the digest-bytes reasoning and idx_gdrive_served's
+    # synth.gdrive_file_id's docstring for the digest-bytes reasoning and idx_gdrive_id's
     # schema comment for the collision argument and the folder-id disjointness.
-    "google_drive": ("served_id", synth.gdrive_file_id, None),
+    "google_drive": (synth.gdrive_file_id, None),
+    # A transcript's own 24-hex id. A BYO record may still provide one (`_byo_fireflies`), which
+    # wins the way a provided github number does; the seed fills every row that gives none.
+    "fireflies": (synth.fireflies_id, None),
 }
 
 
-def served_id_column(source_type: str) -> str:
-    return SERVED_ID[source_type][0]
+def id_seed(source_type: str) -> Callable[[str], object]:
+    return ID_SEED[source_type][0]
 
 
-def served_id_seed(source_type: str) -> Callable[[str], object]:
-    return SERVED_ID[source_type][1]
-
-
-def served_id_scope(source_type: str) -> str | None:
-    return SERVED_ID[source_type][2]
+def id_seed_scope(source_type: str) -> str | None:
+    return ID_SEED[source_type][1]
 
 
 SCHEMA = """
 -- ── per-service document tables (core cols first, then service-specific) ──
+-- `ts` IS Slack's message id, and it is now STORED rather than recomputed per request (#51).
+-- `_msg_ts` used to derive it from `(created_ts, thread-root key)` at serve time, which collided
+-- outright for two same-second replies in one thread: both hashed the same root key into the same
+-- micro-fraction, so one message was reachable only at the other's ts. Assigned once at import and
+-- probed within its channel, it cannot.
+--
+-- Storing it also removes the round trip `thread_ts` needed: the column below IS the root's own
+-- `ts` (Slack's own name for that field), so a reply reports its thread by reading the root's
+-- stored value rather than re-hashing the root's key and hoping the two derivations agree.
+-- A root carries its own ts here (Slack does too, so `thread_ts == ts` marks the root); a
+-- standalone message carries NULL.
 CREATE TABLE IF NOT EXISTS slack_messages (
-    doc_id TEXT PRIMARY KEY, channel TEXT NOT NULL, author_email TEXT NOT NULL,
+    channel TEXT NOT NULL, ts TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
-    thread_id TEXT, thread_seq INTEGER NOT NULL DEFAULT 0, subtype TEXT,
-    reactions TEXT, files TEXT, edited TEXT, created_ts INTEGER NOT NULL, participants TEXT
+    thread_ts TEXT, thread_seq INTEGER NOT NULL DEFAULT 0, subtype TEXT,
+    reactions TEXT, files TEXT, edited TEXT, created_ts INTEGER NOT NULL, participants TEXT,
+    PRIMARY KEY (channel, ts)
 );
-CREATE INDEX IF NOT EXISTS idx_slack_channel ON slack_messages(channel);
-CREATE INDEX IF NOT EXISTS idx_slack_thread ON slack_messages(thread_id);
+-- No `idx_slack_channel`: the PRIMARY KEY's own implicit index leads with `channel`, so a
+-- per-channel scan already seeks. It was dropped rather than kept as a narrower duplicate.
+DROP INDEX IF EXISTS idx_slack_channel;
+-- A thread is read within its channel, so the thread index carries it — `thread_id` alone was
+-- enough only while a doc_id was corpus-wide unique.
+CREATE INDEX IF NOT EXISTS idx_slack_thread ON slack_messages(channel, thread_ts, thread_seq);
 -- conversations.replies resolves a ts by (channel, created_ts); the composite index turns that from
 -- a per-channel row scan (~340k rows in a big channel) into a direct lookup.
 CREATE INDEX IF NOT EXISTS idx_slack_channel_ts ON slack_messages(channel, created_ts);
@@ -177,273 +283,288 @@ CREATE INDEX IF NOT EXISTS idx_slack_channel_ts ON slack_messages(channel, creat
 -- is a per-channel row scan (768k rows in the biggest channel) on every request.
 CREATE INDEX IF NOT EXISTS idx_slack_channel_author ON slack_messages(channel, author_email);
 
+-- `id` is the id the API reports, assigned at import (see backlot.importer.byo) rather than hashed
+-- at serve time, so a get-by-id is a PRIMARY KEY lookup instead of a reverse map rebuilt on every
+-- boot. Unlike confluence it is the raw seed, never probed: `synth.gmail_message_id` draws from
+-- 2**63, so a collision is vanishingly unlikely, and as the PRIMARY KEY one now fails the import
+-- loudly instead of silently replacing the earlier message.
+--
+-- `thread_id` is another message's `id` (the thread root's), not a dataset identifier: it is
+-- resolved at import along with every other cross-row reference (#51).
 CREATE TABLE IF NOT EXISTS gmail_messages (
-    doc_id TEXT PRIMARY KEY, mailbox TEXT NOT NULL, author_email TEXT NOT NULL,
+    id TEXT PRIMARY KEY, mailbox TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     thread_id TEXT, thread_seq INTEGER NOT NULL DEFAULT 0,
     label_ids TEXT, to_addr TEXT, cc TEXT, bcc TEXT, reply_to TEXT,
     message_id TEXT, in_reply_to TEXT, refs TEXT, attachments TEXT, created_ts INTEGER NOT NULL,
-    body_html TEXT, owner_display TEXT, served_id TEXT NOT NULL
+    body_html TEXT, owner_display TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_gmail_mailbox ON gmail_messages(mailbox);
 CREATE INDEX IF NOT EXISTS idx_gmail_author ON gmail_messages(author_email);
 -- date-scoped listing (ls /gmail/<label>/<date>) filters by a created_ts range; the index turns
 -- that from a full-table scan into a range seek.
 CREATE INDEX IF NOT EXISTS idx_gmail_created_ts ON gmail_messages(created_ts);
--- The id the API reports, assigned at import (see backlot.importer.byo) rather than hashed at
--- serve time, so a get-by-id is a column lookup instead of a reverse map rebuilt on every boot.
--- Unlike confluence this is the raw seed, never probed: `synth.gmail_message_id` draws from 2**63,
--- and keeping it a pure hash is what lets a reply derive its `threadId` by re-hashing the root's
--- key instead of reading the root's row. UNIQUE turns the (vanishingly unlikely) collision into a
--- loud import failure -- the shared write path's upsert (`ON CONFLICT(doc_id) DO UPDATE`) is
--- scoped to doc_id only, so a served_id collision (a different doc_id) falls through to this
--- index and raises, rather than silently replacing the earlier message.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_gmail_served ON gmail_messages(served_id);
+CREATE INDEX IF NOT EXISTS idx_gmail_thread ON gmail_messages(thread_id, thread_seq);
+-- Superseded by the PRIMARY KEY, which IS this column now. Dropped EXPLICITLY: `CREATE INDEX IF
+-- NOT EXISTS` matches on NAME, so it would never be removed from an already-built DB otherwise.
+DROP INDEX IF EXISTS idx_gmail_served;
 
+-- `id` is what `files.get`/`.export`/`.permissions` resolve and every listing/`_drive_facts`
+-- emits (#51, task 12): assigned at import (see backlot.importer.byo), never the corpus's own
+-- identifier served straight through -- Drive was the one document source with no served-id column
+-- at all, so a client kept seeing the dataset's own identifier scheme instead of an opaque
+-- Drive-shaped id. No probe, like gmail/notion/linear: `synth.gdrive_file_id` draws from a 192-bit
+-- digest (see its own docstring), so a collision is vanishingly unlikely, and the PRIMARY KEY
+-- turns one into a loud import failure instead of a silent shadow. A SEPARATE id space from the
+-- folder id `synth.drive_folder_id` computes at serve time (every folder id starts "0A", every one
+-- of these starts "1"), so the two can never collide.
 CREATE TABLE IF NOT EXISTS gdrive_files (
-    doc_id TEXT PRIMARY KEY, folder TEXT NOT NULL, author_email TEXT NOT NULL,
+    id TEXT PRIMARY KEY, folder TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, mime_type TEXT, parents TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    trashed INTEGER, collaborators TEXT, owner_display TEXT, served_id TEXT NOT NULL
+    trashed INTEGER, collaborators TEXT, owner_display TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_gdrive_folder ON gdrive_files(folder);
--- The id `files.get`/`.export`/`.permissions` resolve and every listing/`_drive_facts` emits (#51,
--- task 12): assigned at import (see backlot.importer.byo), not the corpus's own `doc_id` served
--- straight through -- Drive was the one document source with no served-id column at all, so a
--- client kept seeing the dataset's own identifier scheme instead of an opaque Drive-shaped id.
--- No probe, like gmail/notion/linear: `synth.gdrive_file_id` draws from a 192-bit digest (see its
--- own docstring), so a collision is vanishingly unlikely, and UNIQUE turns one into a loud import
--- failure instead of a silent shadow (see idx_gmail_served's comment for the general argument).
--- A SEPARATE id space from the folder id `synth.drive_folder_id` computes at serve time (every
--- folder id starts "0A", every one of these starts "1"), so the two can never collide.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_gdrive_served ON gdrive_files(served_id);
+DROP INDEX IF EXISTS idx_gdrive_served;
 
 -- `path` names the file THIS row is (only kind='file' rows have one). `changed_paths` is the other
 -- direction: a JSON list of the paths a PULL touched, so a corpus can state which files a pull
 -- changed instead of leaving the router to pick deterministically. See backlot.routers.github's
 -- changeset note. Comments stay OUTSIDE the parens: SQLite persists the statement verbatim, and a
 -- trailing in-body comment makes a later `ALTER TABLE ... DROP COLUMN` fail to re-parse it.
-CREATE TABLE IF NOT EXISTS github_items (
-    doc_id TEXT PRIMARY KEY, repo TEXT NOT NULL, author_email TEXT NOT NULL,
-    title TEXT NOT NULL, content TEXT NOT NULL,
-    kind TEXT, state TEXT, labels TEXT, assignees TEXT,
-    merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, reactions TEXT,
-    created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    closed_ts INTEGER, closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT,
-    owner_display TEXT, path TEXT, changed_paths TEXT, number INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_github_repo ON github_items(repo);
-CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path);
--- (doc_id, kind, repo, number) in that order: importer.byo's resolve_github_numbers
--- deferred assignment pass (which replaced main._build_index's boot-time reverse map, #51) scans
--- exactly these five, so the pass stays an index-only scan and never touches the wide rows.
--- Partial, because that scan excludes kind='file' rows — in a code-heavy corpus they dominate the
--- table, and indexing them would only pay write and disk cost for rows the one consumer filters
--- out. `kind` must stay among the columns or the plan loses COVERING.
-CREATE INDEX IF NOT EXISTS idx_github_doc_number
-    ON github_items(doc_id, kind, repo, number)
-    WHERE kind IS NULL OR kind != 'file';
 -- The number the API reports, assigned at import (see backlot.importer.byo) rather than derived
 -- at serve time from a startup reverse map: `synth.github_number`'s 90,000-value-per-repo space
 -- collides by the birthday bound long before a real repo runs out of issues/PRs, and the map this
 -- replaces resolved a collision by MOVING the loser to a fresh number on every boot -- stable
 -- while the server ran, but "free to move when --append changes the set" (the old `_free_number`
 -- docstring's own words), so a client that had already saved a link could have it renumbered out
--- from under it by a later append. A stored column no longer moves (#51).
+-- from under it by a later append. A stored PRIMARY KEY no longer moves (#51).
 --
--- ONE column, not two. `number` and a separate `served_number` were kept apart so "provided" could
--- mean exactly "number IS NOT NULL" -- a distinction the boot-time resolver needed on every start.
--- Assignment moved to import time, where provenance comes from the incoming record rather than
--- from a column: by the time resolve_github_numbers runs, "provided" means precisely "already
--- non-NULL", and the second column has nothing left to say. UNIQUE is scoped to (repo, number),
--- not number alone, because a GitHub number is unique only within its
--- repo (see store.SERVED_ID's `scope` for github) -- and a `kind='file'` row's number
--- stays NULL (see idx_github_doc_number above), which SQLite's UNIQUE treats as no claim rather
--- than a collision, so any number of file rows coexist under it. Uniqueness is primarily enforced
--- by the assignment itself -- resolve_github_numbers' two-phase pass (provided numbers claim
--- first, corpus-wide, before anything probes) -- so a genuine collision essentially never reaches
--- this index; if one somehow did, it would raise there directly. NOT through the shared write
--- path's `ON CONFLICT(doc_id) DO UPDATE` (that reasoning is confluence's/gmail's/hubspot's, whose
--- served id IS written by that same insert) -- the number is written by resolve_github_numbers'
--- own plain `UPDATE ... WHERE doc_id = ?`, a separate deferred pass with no ON CONFLICT clause at
--- all, so a collision there raises IntegrityError from that UPDATE itself.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_github_served ON github_items(repo, number);
-
-CREATE TABLE IF NOT EXISTS jira_issues (
-    doc_id TEXT PRIMARY KEY, project TEXT NOT NULL, author_email TEXT NOT NULL,
+-- Keyed on (repo, number) because a GitHub number is unique only within its repo (see
+-- store.ID_COLUMNS). Uniqueness is enforced by the assignment itself -- resolve_github_numbers'
+-- two-phase pass, where corpus-provided numbers claim their spelling first, corpus-wide, before
+-- anything probes -- so a genuine collision essentially never reaches the key; if one did, the
+-- deferred pass's own UPDATE raises IntegrityError there.
+--
+-- EVERY row carries a number, including `kind='file'`. A file's identity in the GitHub API is
+-- (repo, path), not a number, and its number is never served: `github_by_number`'s caller, the
+-- issue search and every listing already exclude `kind='file'` (see routers.github). But this
+-- table holds two resources with different natural keys, and only one of them can be the PRIMARY
+-- KEY -- so files draw a number from the same per-repo space rather than keeping the NULL that
+-- left them unaddressable once `doc_id` was gone (#51). Provided numbers on file rows are still
+-- ignored, so a corpus's real issue numbers keep winning the claim.
+CREATE TABLE IF NOT EXISTS github_items (
+    repo TEXT NOT NULL, number INTEGER NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
-    status TEXT, issuetype TEXT, priority TEXT, labels TEXT, components TEXT,
-    issuelinks TEXT, parent_id TEXT, changelog TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    assignee_email TEXT, reporter_email TEXT, resolution TEXT, resolution_ts INTEGER,
-    duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, owner_display TEXT, key TEXT
+    kind TEXT, state TEXT, labels TEXT, assignees TEXT,
+    merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, reactions TEXT,
+    created_ts INTEGER NOT NULL, updated_ts INTEGER,
+    closed_ts INTEGER, closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT,
+    owner_display TEXT, path TEXT, changed_paths TEXT,
+    PRIMARY KEY (repo, number)
 );
-CREATE INDEX IF NOT EXISTS idx_jira_project ON jira_issues(project);
-CREATE INDEX IF NOT EXISTS idx_jira_parent ON jira_issues(parent_id);
--- (doc_id, project, key) in that order: importer.byo's resolve_jira_keys
--- deferred assignment pass (which replaced main._build_index's boot-time reverse map for the KEY,
--- #51's task 8) scans exactly these four, so the pass stays an index-only scan and never touches
--- the wide rows.
-CREATE INDEX IF NOT EXISTS idx_jira_doc_key ON jira_issues(doc_id, project, key);
--- The key the API reports, whole. Assigned at import (see backlot.importer.byo's
--- resolve_jira_keys) rather than composed at serve time from a stored suffix plus the project's
--- prefix: that round trip is what let routers.atlassian's `_jira_container_for_key` -- whose
--- three-way tolerance is a deliberate affordance for the JQL project TOKEN -- leak into the
--- ISSUE-KEY namespace twice (`payments-7` resolving, and case-insensitivity), each time needing
--- its own guard. `WHERE key = ?` has no seam for either to enter (#51 identifier consolidation).
+-- No `idx_github_repo`: the PRIMARY KEY leads with `repo`, so a per-repo scan already seeks.
+DROP INDEX IF EXISTS idx_github_repo;
+-- A file is addressed by (repo, path) even though it is keyed by (repo, number) — this is the
+-- index that lookup rides, and it is what makes the number a purely internal handle for a file.
+CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path);
+-- Superseded: the assignment pass reads (repo, number, kind), which the PRIMARY KEY's own index
+-- covers apart from `kind`. Dropped EXPLICITLY, since `IF NOT EXISTS` matches only on name.
+DROP INDEX IF EXISTS idx_github_doc_number;
+DROP INDEX IF EXISTS idx_github_served;
+
+-- The key the API reports, whole, and the row's PRIMARY KEY. Assigned at import (see
+-- backlot.importer.byo's resolve_jira_keys) rather than composed at serve time from a stored
+-- suffix plus the project's prefix: that round trip is what let routers.atlassian's
+-- `_jira_container_for_key` -- whose three-way tolerance is a deliberate affordance for the JQL
+-- project TOKEN -- leak into the ISSUE-KEY namespace twice (`payments-7` resolving, and
+-- case-insensitivity), each time needing its own guard. `WHERE key = ?` has no seam for either to
+-- enter (#51 identifier consolidation).
 --
--- ONE column, not a provided `key` plus a served suffix. Those were kept apart so "provided"
--- could mean exactly "key IS NOT NULL", a distinction the boot-time resolver needed on every
--- start; assignment happens at import now, where provenance comes from the incoming record, so by
--- the time resolve_jira_keys runs "provided" means precisely "already non-NULL".
---
--- UNIQUE is GLOBAL, not per project -- a real Jira key is unique across a site. That also closes
--- a residual the per-project index could not: a project with no provided keys is never registered
+-- The key is GLOBAL, not per project -- a real Jira key is unique across a site. That also closes
+-- a residual a per-project index could not: a project with no provided keys is never registered
 -- in `jira_prefix_holders`, so its SYNTHESIZED prefix could equal another project's provided one
 -- (or another keyless project's own), and two documents in different projects would then serve the
 -- identical key while a (project, suffix) index stayed perfectly satisfied. Now that is an import
 -- error, which is what it always should have been.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_served ON jira_issues(key);
-
-CREATE TABLE IF NOT EXISTS confluence_pages (
-    doc_id TEXT PRIMARY KEY, space TEXT NOT NULL, author_email TEXT NOT NULL,
+--
+-- `parent_id` holds the PARENT'S KEY, the same value this table is keyed on -- a subtask points at
+-- a served id, never at a dataset identifier (#51). It keeps the generic name because
+-- :func:`children` reads it uniformly across jira, confluence and notion.
+CREATE TABLE IF NOT EXISTS jira_issues (
+    key TEXT PRIMARY KEY, project TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
-    subtype TEXT, parent_id TEXT, labels TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
+    status TEXT, issuetype TEXT, priority TEXT, labels TEXT, components TEXT,
+    issuelinks TEXT, parent_id TEXT, changelog TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
+    assignee_email TEXT, reporter_email TEXT, resolution TEXT, resolution_ts INTEGER,
+    duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, owner_display TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jira_project ON jira_issues(project);
+CREATE INDEX IF NOT EXISTS idx_jira_parent ON jira_issues(parent_id);
+-- Both superseded by the PRIMARY KEY. Dropped EXPLICITLY: `IF NOT EXISTS` matches on NAME, so
+-- neither would ever be removed from an already-built DB.
+DROP INDEX IF EXISTS idx_jira_doc_key;
+DROP INDEX IF EXISTS idx_jira_served;
+
+-- `id` is what the API reports, assigned at import (see backlot.importer.byo) rather than hashed
+-- at serve time: a hash into `synth.confluence_id`'s 9,000,000 values collides by the birthday
+-- bound, and the reverse map this replaces was last-writer-wins, so a collision made a page
+-- unreachable by its own id. Uniqueness is enforced by the assignment itself --
+-- _assign_confluence_id's in-run memo plus seed_tracker_ids' cross-run preload, both probed
+-- against every id already taken -- so a genuine collision essentially never reaches the PRIMARY
+-- KEY; if one did, the insert raises there rather than resolving silently.
+-- `parent_id` holds the parent page's `id`, the same served value (#51).
+--
+-- `INT`, not `INTEGER`, and that spelling is load-bearing: a column declared exactly `INTEGER`
+-- and made the PRIMARY KEY becomes an alias for the rowid, and SQLite then AUTO-ASSIGNS a value
+-- when one is inserted as NULL -- silently inventing an id for a page whose assignment pass
+-- failed to give it one, which is precisely the quiet-shadow failure this whole change exists to
+-- remove. `INT` has identical integer affinity (`typeof()` still reports "integer") but is not a
+-- rowid alias, so a NULL raises NOT NULL instead.
+CREATE TABLE IF NOT EXISTS confluence_pages (
+    id INT NOT NULL, space TEXT NOT NULL, author_email TEXT NOT NULL,
+    title TEXT NOT NULL, content TEXT NOT NULL,
+    subtype TEXT, parent_id INT, labels TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     version_number INTEGER, version_message TEXT, minor_edit INTEGER,
     reviewers TEXT, confidentiality TEXT, owner_team TEXT, owner_display TEXT,
-    served_id INTEGER NOT NULL
+    PRIMARY KEY (id)
 );
 CREATE INDEX IF NOT EXISTS idx_confluence_space ON confluence_pages(space);
 CREATE INDEX IF NOT EXISTS idx_confluence_parent ON confluence_pages(parent_id);
--- The id the API reports, assigned at import (see backlot.importer.byo) rather than hashed at
--- serve time: a hash into `synth.confluence_id`'s 9,000,000 values collides by the birthday
--- bound, and the reverse map this replaces was last-writer-wins, so a collision made a page
--- unreachable by its own id. Uniqueness is primarily enforced by the assignment itself --
--- _assign_confluence_id's in-run memo plus seed_tracker_ids' cross-run preload, both probed
--- against every id already taken -- so a genuine collision essentially never reaches this index.
--- If one somehow did, the shared write path's upsert (`ON CONFLICT(doc_id) DO UPDATE`, in
--- backlot.importer.byo) is scoped to the doc_id conflict target only, so a served_id collision
--- (a DIFFERENT doc_id) falls through to this index and raises IntegrityError rather than being
--- silently resolved -- the index is a real backstop, not just a point-read lookup.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_confluence_served ON confluence_pages(served_id);
+DROP INDEX IF EXISTS idx_confluence_served;
 
 -- ── per-service comment tables (only services whose API exposes comments) ──
+-- The parent reference is the ISSUE'S KEY -- the served id its own table is keyed on -- and it is
+-- spelled the way that table spells it (#51). A child row points at a served id; naming the column
+-- after the parent's own is what keeps a comment and its issue in one namespace rather than two.
 CREATE TABLE IF NOT EXISTS jira_comments (
-    id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    id TEXT PRIMARY KEY, key TEXT NOT NULL, seq INTEGER NOT NULL,
     author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_jira_comments_doc ON jira_comments(doc_id);
+CREATE INDEX IF NOT EXISTS idx_jira_comments_doc ON jira_comments(key);
 
 CREATE TABLE IF NOT EXISTS confluence_comments (
-    id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    id TEXT PRIMARY KEY, page_id INT NOT NULL, seq INTEGER NOT NULL,
     author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_confluence_comments_doc ON confluence_comments(doc_id);
+CREATE INDEX IF NOT EXISTS idx_confluence_comments_doc ON confluence_comments(page_id);
 
 -- Two resources real GitHub keeps apart, discriminated by `path`: a row WITH one is a
 -- line-anchored review comment (/pulls/{n}/comments), one without is a conversation comment
 -- (/issues/{n}/comments). `line` may be NULL for a file-level review comment, as on real GitHub;
 -- `diff_hunk` is optional and derived from the file's snapshot when the corpus omits it.
--- `served_id` is the `id` the API reports, assigned at import (see backlot.importer.byo) rather
--- than hashed at serve time: a comment's own `url` resolves through it, and a hash into any fixed
--- range collides by the birthday bound long before a real corpus runs out of comments — two
--- comments sharing one served id means one comment's url returns the other's body.
+-- `id` is the id the API reports, assigned at import (see backlot.importer.byo) rather than hashed
+-- at serve time: a comment's own `url` resolves through it, and a hash into any fixed range
+-- collides by the birthday bound long before a real corpus runs out of comments — two comments
+-- sharing one id means one comment's url returns the other's body.
+--
+-- ONE column, not the corpus's own comment identifier plus a served one (#51). The pair existed so
+-- the assignment could key its memo on the value the corpus wrote; that value is an INPUT — it
+-- seeds `synth.github_comment_id` and is then discarded — so keeping a column for it stored the
+-- dataset's identifier scheme for no one to read. Uniqueness is enforced by the assignment itself
+-- (_assign_github_comment_id's in-run taken-set, probed against every id already taken), so a
+-- genuine collision essentially never reaches the PRIMARY KEY; if one did, the insert raises there
+-- rather than resolving silently.
 CREATE TABLE IF NOT EXISTS github_comments (
-    id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    id INT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, seq INTEGER NOT NULL,
     author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT,
-    path TEXT, line INTEGER, diff_hunk TEXT, served_id INTEGER
+    path TEXT, line INTEGER, diff_hunk TEXT,
+    PRIMARY KEY (id)
 );
-CREATE INDEX IF NOT EXISTS idx_github_comments_doc ON github_comments(doc_id);
--- Uniqueness is primarily enforced by the assignment itself -- _assign_github_comment_id's in-run
--- taken-set, probed against every id already taken (never this index) -- so a genuine collision
--- essentially never reaches it. If one somehow did, the write path that sets this column
--- (backlot.importer.byo, a plain `UPDATE ... WHERE id = ?`, no `ON CONFLICT`) has no fallback to
--- silently resolve it, so it just raises IntegrityError -- UNIQUE is the guarantee, not just an
--- index, but the guarantee comes from the in-memory probe, not from this index being consulted at
--- assignment time.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_github_comments_served ON github_comments(served_id);
+CREATE INDEX IF NOT EXISTS idx_github_comments_doc ON github_comments(repo, number, seq);
+DROP INDEX IF EXISTS idx_github_comments_served;
 
 CREATE TABLE IF NOT EXISTS notion_comments (
-    id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, seq INTEGER NOT NULL,
     author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_notion_comments_doc ON notion_comments(doc_id);
+CREATE INDEX IF NOT EXISTS idx_notion_comments_doc ON notion_comments(page_id);
 
 -- ── Notion: pages + databases share one table (subtype), rows are pages parented to a database ──
-CREATE TABLE IF NOT EXISTS notion_pages (
-    doc_id TEXT PRIMARY KEY, teamspace TEXT NOT NULL, author_email TEXT NOT NULL,
-    title TEXT NOT NULL, content TEXT NOT NULL,
-    subtype TEXT, parent_id TEXT, properties TEXT, icon TEXT, cover TEXT,
-    created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    served_id TEXT NOT NULL, served_data_source_id TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_notion_teamspace ON notion_pages(teamspace);
-CREATE INDEX IF NOT EXISTS idx_notion_parent ON notion_pages(parent_id);
--- Notion has TWO synthesized id spaces per row, both assigned at import (see
--- backlot.importer.byo) rather than derived by hashing at serve time. `served_id` is the
--- page/database id (synth.notion_id), populated for every row. `served_data_source_id` is the
+-- `id` is the page/database id (synth.notion_id) the API reports, assigned at import (see
+-- backlot.importer.byo) rather than derived by hashing at serve time. `data_source_id` is the
 -- 2025-09-03 API's data-source (query target) id for a DATABASE (synth.notion_data_source_id) --
 -- real Notion has no such id for a page, so it is populated only when subtype='database' and
 -- stays NULL elsewhere, which a UNIQUE index treats as no claim rather than a collision (SQLite
--- allows any number of NULLs under UNIQUE). Neither column is probed the way confluence's is:
--- both draw from synth._uuid_from's full digest space, not a bounded range, so a collision is
--- vanishingly unlikely -- and the shared write path's upsert (`ON CONFLICT(doc_id) DO UPDATE`) is
--- scoped to doc_id only, so a served-column conflict (a DIFFERENT doc_id) falls through to these
--- indexes and raises IntegrityError instead of silently replacing the row that held the value.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notion_served ON notion_pages(served_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notion_served_ds ON notion_pages(served_data_source_id);
+-- allows any number of NULLs under UNIQUE). Neither is probed the way confluence's is: both draw
+-- from synth._uuid_from's full digest space, not a bounded range, so a collision is vanishingly
+-- unlikely -- and one now raises on the PRIMARY KEY (or on idx_notion_ds) instead of silently
+-- replacing the row that held the value.
+-- `parent_id` holds the parent page's or database's `id`, the same served value (#51).
+CREATE TABLE IF NOT EXISTS notion_pages (
+    id TEXT PRIMARY KEY, teamspace TEXT NOT NULL, author_email TEXT NOT NULL,
+    title TEXT NOT NULL, content TEXT NOT NULL,
+    subtype TEXT, parent_id TEXT, properties TEXT, icon TEXT, cover TEXT,
+    created_ts INTEGER NOT NULL, updated_ts INTEGER,
+    data_source_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notion_teamspace ON notion_pages(teamspace);
+CREATE INDEX IF NOT EXISTS idx_notion_parent ON notion_pages(parent_id);
+DROP INDEX IF EXISTS idx_notion_served;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notion_ds ON notion_pages(data_source_id);
+DROP INDEX IF EXISTS idx_notion_served_ds;
 
 -- ── S3: objects live in buckets (flat key namespace); no comments ──
+-- (bucket, key) IS an object's address in S3, so it is the PRIMARY KEY (#51). It was already the
+-- only way in — `s3_by_bucket_key` is the one reader — but as a plain index nothing stopped two
+-- rows from sharing an address, and which of them a caller got then depended on that caller's own
+-- ACL grants (see s3_by_bucket_key's docstring for how far that went). A duplicate address is now
+-- an import error. The pair is required rather than cautious: the same key in two buckets is
+-- ordinary S3, so `key` alone could never have been unique.
 CREATE TABLE IF NOT EXISTS s3_objects (
-    doc_id TEXT PRIMARY KEY, bucket TEXT NOT NULL, author_email TEXT NOT NULL,
+    bucket TEXT NOT NULL, key TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
-    key TEXT NOT NULL, subtype TEXT, content_type TEXT, size INTEGER,
-    created_ts INTEGER NOT NULL, updated_ts INTEGER
+    subtype TEXT, content_type TEXT, size INTEGER,
+    created_ts INTEGER NOT NULL, updated_ts INTEGER,
+    PRIMARY KEY (bucket, key)
 );
-CREATE INDEX IF NOT EXISTS idx_s3_bucket ON s3_objects(bucket);
-CREATE INDEX IF NOT EXISTS idx_s3_key ON s3_objects(bucket, key);
+-- Both superseded by the PRIMARY KEY, whose implicit index IS (bucket, key) — the prefix range
+-- scan and the per-bucket seek both ride it. Dropped EXPLICITLY, since `IF NOT EXISTS` matches
+-- only on name.
+DROP INDEX IF EXISTS idx_s3_bucket;
+DROP INDEX IF EXISTS idx_s3_key;
 
 -- ── HubSpot: ONE polymorphic table, because the CRM API is polymorphic ──
 -- `{objectType}` is a path variable and custom object types exist, so a table per type would make
 -- each new type a migration and break table()'s one-table-per-source contract. Typed properties live
 -- in a JSON column because a search filter may name any property (-> json_extract).
-CREATE TABLE IF NOT EXISTS hubspot_objects (
-    doc_id TEXT PRIMARY KEY, object_type TEXT NOT NULL, author_email TEXT NOT NULL,
-    title TEXT NOT NULL, content TEXT NOT NULL,
-    properties TEXT, archived INTEGER, created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    owner_display TEXT, served_id TEXT NOT NULL
-);
--- (object_type, doc_id), not object_type alone: every read is "one type, ordered by doc_id", so
--- carrying the ordering column makes a page a range seek instead of a temp-b-tree re-sort.
-CREATE INDEX IF NOT EXISTS idx_hubspot_type_doc ON hubspot_objects(object_type, doc_id);
--- The id the API reports, assigned at import (see backlot.importer.byo) rather than hashed at
--- serve time: `synth.hubspot_record_id`'s space is 9,000,000,000 values -- wide enough to look
+-- `id` is what the API reports, assigned at import (see backlot.importer.byo) rather than hashed
+-- at serve time: `synth.hubspot_record_id`'s space is 9,000,000,000 values -- wide enough to look
 -- safe, but a corpus this project actually generates (500k documents) still collides ~16 times by
 -- the birthday bound (#51), and the reverse map this replaces was last-writer-wins, so a collision
--- made a record unreachable at its own id. Uniqueness is primarily enforced by the assignment
--- itself -- _assign_hubspot_id's in-run memo plus seed_tracker_ids' cross-run preload, both probed
--- against every id already taken, the same shape confluence's own served_id follows -- so a
--- genuine collision essentially never reaches this index. If one somehow did, the shared write
--- path's upsert (`ON CONFLICT(doc_id) DO UPDATE`, in backlot.importer.byo) is scoped to the doc_id
--- conflict target only, so a served_id collision (a DIFFERENT doc_id) falls through to this index
--- and raises IntegrityError rather than being silently resolved.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_hubspot_served ON hubspot_objects(served_id);
+-- made a record unreachable at its own id. Uniqueness is enforced by the assignment itself --
+-- _assign_hubspot_id's in-run memo plus seed_tracker_ids' cross-run preload, both probed against
+-- every id already taken, the same shape confluence's follows -- so a genuine collision
+-- essentially never reaches the PRIMARY KEY; if one did, the insert raises there.
+CREATE TABLE IF NOT EXISTS hubspot_objects (
+    id TEXT PRIMARY KEY, object_type TEXT NOT NULL, author_email TEXT NOT NULL,
+    title TEXT NOT NULL, content TEXT NOT NULL,
+    properties TEXT, archived INTEGER, created_ts INTEGER NOT NULL, updated_ts INTEGER,
+    owner_display TEXT
+);
+-- (object_type, id), not object_type alone: every read is "one type, ordered by id", so carrying
+-- the ordering column makes a page a range seek instead of a temp-b-tree re-sort.
+CREATE INDEX IF NOT EXISTS idx_hubspot_type_doc ON hubspot_objects(object_type, id);
+DROP INDEX IF EXISTS idx_hubspot_served;
 
 -- Associations are bidirectional in real HubSpot, with a distinct type id per direction, so a row
--- is stored per direction and a lookup stays a plain (from_doc_id, to_type) index match.
+-- is stored per direction and a lookup stays a plain (from_id, to_type) index match. Both ends
+-- name a record by its SERVED id (#51), which is also what the v4 payload's `toObjectId` reports —
+-- so that field is read straight off this row rather than re-derived from anything.
 CREATE TABLE IF NOT EXISTS hubspot_associations (
-    from_doc_id TEXT NOT NULL, from_type TEXT NOT NULL,
-    to_doc_id TEXT NOT NULL, to_type TEXT NOT NULL,
+    from_id TEXT NOT NULL, from_type TEXT NOT NULL,
+    to_id TEXT NOT NULL, to_type TEXT NOT NULL,
     assoc_category TEXT, assoc_type_id INTEGER NOT NULL, label TEXT,
-    PRIMARY KEY (from_doc_id, to_doc_id, assoc_type_id)
+    PRIMARY KEY (from_id, to_id, assoc_type_id)
 );
-CREATE INDEX IF NOT EXISTS idx_hubspot_assoc_from ON hubspot_associations(from_doc_id, to_type);
+CREATE INDEX IF NOT EXISTS idx_hubspot_assoc_from ON hubspot_associations(from_id, to_type);
 
 -- ── Linear: issues + their comments. Columns keep LINEAR's vocabulary, not Jira's (`state` not
 -- status, `estimate` not story points, `branch_name`), so the payload cannot drift toward the wrong
 -- vendor's model. `priority` is Linear's own 0-4 integer (0 none, 1 urgent … 4 low), not the corpus's
 -- "P1"; `priorityLabel` is derived from it at serve time.
 CREATE TABLE IF NOT EXISTS linear_issues (
-    doc_id TEXT PRIMARY KEY, team TEXT NOT NULL, author_email TEXT NOT NULL,
+    id TEXT PRIMARY KEY, team TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     identifier TEXT, state TEXT, priority INTEGER, estimate INTEGER, labels TEXT,
     project TEXT, cycle TEXT, branch_name TEXT, due_date TEXT,
@@ -451,28 +572,27 @@ CREATE TABLE IF NOT EXISTS linear_issues (
     archived_ts INTEGER, auto_archived_ts INTEGER, auto_closed_ts INTEGER,
     canceled_ts INTEGER, completed_ts INTEGER, started_ts INTEGER,
     assignee_email TEXT, assignee_display TEXT, owner_display TEXT,
-    -- The parent's identifier as the corpus wrote it, plus the doc_id it RESOLVED to at import. Both,
-    -- because identifiers are NOT required to be unique (measured: one key is the identifier of
-    -- 107 issues), so a
-    -- serve-time join on `identifier` would invent edges. Resolving once — first match by doc_id, the
-    -- rule linear_issue_by_identifier applies — makes Issue.parent and Issue.children exact inverses.
-    parent_key TEXT, parent_doc_id TEXT,
+    -- The parent's identifier as the corpus wrote it, plus the issue `id` it RESOLVED to at import.
+    -- Both, because identifiers are NOT required to be unique (measured: one key is the identifier
+    -- of 107 issues), so a serve-time join on `identifier` would invent edges. Resolving once —
+    -- first match by `id`, the rule linear_issue_by_identifier applies — makes Issue.parent and
+    -- Issue.children exact inverses.
+    parent_key TEXT, parent_id TEXT,
     -- Release name as the corpus writes it (`runtime-1.19`); served as `Issue.releases`.
-    release TEXT,
-    served_id TEXT NOT NULL
+    release TEXT
 );
--- (team, doc_id): the Relay connection pages one team ordered by doc_id, so carrying the ordering
+-- (team, id): the Relay connection pages one team ordered by id, so carrying the ordering
 -- column makes a page a range seek rather than a re-sort of the whole team.
-CREATE INDEX IF NOT EXISTS idx_linear_team_doc ON linear_issues(team, doc_id);
--- The ORDER BY is always TOTAL (sort key + doc_id), so an index on the sort key alone does not
+CREATE INDEX IF NOT EXISTS idx_linear_team_doc ON linear_issues(team, id);
+-- The ORDER BY is always TOTAL (sort key + id), so an index on the sort key alone does not
 -- satisfy it — SQLite falls back to a temp b-tree over the whole table for every page. These carry
 -- the tiebreak, so the ORDER BY is read straight off the index.
-CREATE INDEX IF NOT EXISTS idx_linear_created_doc ON linear_issues(created_ts, doc_id);
-CREATE INDEX IF NOT EXISTS idx_linear_team_created ON linear_issues(team, created_ts, doc_id);
+CREATE INDEX IF NOT EXISTS idx_linear_created_doc ON linear_issues(created_ts, id);
+CREATE INDEX IF NOT EXISTS idx_linear_team_created ON linear_issues(team, created_ts, id);
 -- `orderBy: updatedAt` sorts on the same COALESCE the field is served with, so the index has to
 -- be on the expression, not the bare column.
 CREATE INDEX IF NOT EXISTS idx_linear_updated_doc
-    ON linear_issues(COALESCE(updated_ts, created_ts), doc_id);
+    ON linear_issues(COALESCE(updated_ts, created_ts), id);
 -- Superseded by idx_linear_created_doc (which has it as a prefix). Dropped EXPLICITLY: `CREATE INDEX
 -- IF NOT EXISTS` matches on NAME, so it would never replace this on an already-built DB.
 DROP INDEX IF EXISTS idx_linear_created_ts;
@@ -485,74 +605,74 @@ CREATE INDEX IF NOT EXISTS idx_linear_project ON linear_issues(project);
 CREATE INDEX IF NOT EXISTS idx_linear_cycle ON linear_issues(cycle);
 CREATE INDEX IF NOT EXISTS idx_linear_assignee ON linear_issues(assignee_email);
 CREATE INDEX IF NOT EXISTS idx_linear_author ON linear_issues(author_email);
--- `Issue.children` is "every issue whose parent_doc_id is me" — an indexed equality, not a join
+-- `Issue.children` is "every issue whose parent_id is me" — an indexed equality, not a join
 -- on the non-unique identifier text.
-CREATE INDEX IF NOT EXISTS idx_linear_parent_doc ON linear_issues(parent_doc_id);
+CREATE INDEX IF NOT EXISTS idx_linear_parent_doc ON linear_issues(parent_id);
 CREATE INDEX IF NOT EXISTS idx_linear_release ON linear_issues(release);
 -- `issue(id: "ENG-123")` resolves an identifier straight to its row; identifiers are NOT unique
 -- (5,055 of them repeat in one real corpus), so this is a lookup index, never a unique constraint.
 CREATE INDEX IF NOT EXISTS idx_linear_identifier ON linear_issues(identifier);
 -- COVERING index for the importer's parent-resolution pass (backlot.importer.byo, `parent_key` ->
--- `parent_doc_id`), which reads (doc_id, identifier) for every issue that provides one. Without it
--- each wide row is fetched from a scattered page and the scan dominates that pass; as an
--- index-only scan it is negligible. (Formerly also covered main._build_index's startup reverse
--- map, since replaced by `served_id` below — see idx_linear_served.)
-CREATE INDEX IF NOT EXISTS idx_linear_doc_ident ON linear_issues(doc_id, identifier);
--- The UUID the API reports (`synth.linear_id`), assigned at import (see backlot.importer.byo)
--- rather than hashed at serve time -- a get-by-id is a column lookup instead of a reverse map
--- rebuilt on every boot. Kept distinct from `identifier` on purpose: identifiers are NOT unique
--- (see idx_linear_identifier above), so they stay a lookup index, never a candidate for this
--- column or this constraint (see the SERVED_ID comment on why `identifier` is excluded).
--- No probe, like gmail's: `synth.linear_id` draws from `_uuid_from`'s full digest space, not a
--- bounded range, so a collision is vanishingly unlikely -- and the shared write path's upsert
--- (`ON CONFLICT(doc_id) DO UPDATE`) is scoped to doc_id only, so a served_id collision (a
--- DIFFERENT doc_id) falls through to this index and raises IntegrityError, rather than silently
--- replacing the issue already holding that value.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_linear_served ON linear_issues(served_id);
+-- `parent_id`), which reads (id, identifier) for every issue that provides one. Without it each
+-- wide row is fetched from a scattered page and the scan dominates that pass; as an index-only
+-- scan it is negligible.
+CREATE INDEX IF NOT EXISTS idx_linear_doc_ident ON linear_issues(id, identifier);
+-- `id` is the UUID the API reports (`synth.linear_id`), assigned at import (see
+-- backlot.importer.byo) rather than hashed at serve time -- a get-by-id is a PRIMARY KEY lookup
+-- instead of a reverse map rebuilt on every boot. Kept distinct from `identifier` on purpose:
+-- identifiers are NOT unique (see idx_linear_identifier above), so they stay a lookup index, never
+-- a candidate for this column or this constraint (see ID_SEED's comment on why `identifier` is
+-- excluded). No probe, like gmail's: `synth.linear_id` draws from `_uuid_from`'s full digest
+-- space, not a bounded range, so a collision is vanishingly unlikely -- and one raises on the
+-- PRIMARY KEY rather than silently replacing the issue already holding that value.
+DROP INDEX IF EXISTS idx_linear_served;
 
 CREATE TABLE IF NOT EXISTS linear_comments (
-    id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, seq INTEGER NOT NULL,
     author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_linear_comments_doc ON linear_comments(doc_id, seq);
+CREATE INDEX IF NOT EXISTS idx_linear_comments_doc ON linear_comments(issue_id, seq);
 -- `Query.comments` pages the whole corpus ordered by time; without this the ORDER BY
 -- re-sorts every comment in a temp b-tree on every page (165k of them at the scale measured).
 CREATE INDEX IF NOT EXISTS idx_linear_comments_ts ON linear_comments(created_ts, id);
 
 -- Linear's IssueRelation, `type` in (blocks | duplicate | related). ONE row per relation, not per
 -- direction: Issue.relations and Issue.inverseRelations are the two ends of the same row.
--- `to_doc_id` is resolved at import, so a dangling key never becomes a relation.
+-- `to_id` is resolved at import, so a dangling key never becomes a relation. Both ends name an
+-- issue by its served `id` (#51).
 CREATE TABLE IF NOT EXISTS linear_relations (
-    id TEXT PRIMARY KEY, from_doc_id TEXT NOT NULL, to_doc_id TEXT NOT NULL,
+    id TEXT PRIMARY KEY, from_id TEXT NOT NULL, to_id TEXT NOT NULL,
     type TEXT NOT NULL, created_ts INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_linear_rel_from ON linear_relations(from_doc_id);
-CREATE INDEX IF NOT EXISTS idx_linear_rel_to ON linear_relations(to_doc_id);
+CREATE INDEX IF NOT EXISTS idx_linear_rel_from ON linear_relations(from_id);
+CREATE INDEX IF NOT EXISTS idx_linear_rel_to ON linear_relations(to_id);
 
 -- Linear's model for any external link on an issue (a corpus's `links` and `attachments` alike).
 -- `title` is non-null in Linear, so a bare URL gets one derived from its last path segment.
 CREATE TABLE IF NOT EXISTS linear_attachments (
-    id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, seq INTEGER NOT NULL,
     title TEXT NOT NULL, url TEXT NOT NULL, subtitle TEXT, source_type TEXT,
     created_ts INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_linear_attach_doc ON linear_attachments(doc_id, seq);
+CREATE INDEX IF NOT EXISTS idx_linear_attach_doc ON linear_attachments(issue_id, seq);
 
 -- One root document per meeting plus its ordered sentences below. `content` is the sentences
 -- concatenated (synth.fireflies_transcript_text) so search and any RAG consumer see one document; it
 -- is an EXACT inverse of fireflies_sentences, not a second copy that can drift. `author_email` is the
 -- HOST (the API's `host_email`); `organizer_email` is separate because the real API exposes both and
 -- they legitimately differ, and is NULL when they coincide.
+-- `id` is the API-facing transcript id: `synth.fireflies_id` seeded on the incoming record's own
+-- identifier when the corpus is silent, but a BYO record may still provide its own value
+-- (backlot.importer.byo's `_byo_fireflies`) -- `transcript(id:)` looks a meeting up by it, so a
+-- duplicate (whichever source it came from) would leave one transcript unreachable at its own id,
+-- the same defect this whole plan was chartered on (#51). As the PRIMARY KEY it fails the import
+-- loudly instead. It was `transcript_id`, a NULLABLE column beside a doc_id; nothing but the
+-- doc_id's presence made the nullability survivable, and there is no doc_id now.
+-- The corpus's own meeting id is kept as `calendar_id`, where a real transcript carries it.
 CREATE TABLE IF NOT EXISTS fireflies_transcripts (
-    doc_id TEXT PRIMARY KEY, channel TEXT NOT NULL, author_email TEXT NOT NULL,
+    id TEXT PRIMARY KEY, channel TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
-    -- The API-facing id: `synth.fireflies_id(doc_id)` when the corpus is silent, but a BYO record
-    -- may still provide its own value (backlot.importer.byo's `_byo_fireflies`) -- `transcript(id:)`
-    -- looks a meeting up by it, so a duplicate (whichever source it came from) would leave one
-    -- transcript unreachable at its own id, the same defect this whole plan was chartered on (#51).
-    -- idx_fireflies_transcript_id (below) is UNIQUE for exactly that reason.
-    -- The corpus's own meeting id is kept as `calendar_id`, where a real transcript carries it.
-    transcript_id TEXT, calendar_id TEXT, calendar_type TEXT,
+    calendar_id TEXT, calendar_type TEXT,
     organizer_email TEXT, duration REAL,
     created_ts INTEGER NOT NULL,
     -- JSON: the API's nested objects, stored whole because that is the shape served.
@@ -562,18 +682,13 @@ CREATE TABLE IF NOT EXISTS fireflies_transcripts (
 );
 CREATE INDEX IF NOT EXISTS idx_fireflies_channel ON fireflies_transcripts(channel);
 -- `transcripts(fromDate:/toDate:)` is a date range and the default order is newest-first, so the
--- ordering column carries its doc_id tiebreak (same lesson as idx_linear_created_doc).
+-- ordering column carries its `id` tiebreak (same lesson as idx_linear_created_doc).
 CREATE INDEX IF NOT EXISTS idx_fireflies_created_doc
-    ON fireflies_transcripts(created_ts, doc_id);
+    ON fireflies_transcripts(created_ts, id);
 CREATE INDEX IF NOT EXISTS idx_fireflies_channel_created
-    ON fireflies_transcripts(channel, created_ts, doc_id);
--- `transcript(id:)` resolves a transcript id straight to its row. UNIQUE (#51 audit): a plain
--- index let two transcripts share an id and left one of them unreachable at it, last-writer-wins
--- with no error -- exactly the defect this plan exists to remove, in the one source excluded from
--- it on the assumption its id was "unique by construction". A collision now fails the import
--- loudly instead (see test_fireflies_transcript_id_collision_raises_on_import).
-CREATE UNIQUE INDEX IF NOT EXISTS idx_fireflies_transcript_id
-    ON fireflies_transcripts(transcript_id);
+    ON fireflies_transcripts(channel, created_ts, id);
+-- Superseded by the PRIMARY KEY, which IS the transcript id now.
+DROP INDEX IF EXISTS idx_fireflies_transcript_id;
 -- `transcripts(host_email:)` / `organizers:` filter on these directly.
 CREATE INDEX IF NOT EXISTS idx_fireflies_host ON fireflies_transcripts(author_email);
 
@@ -582,14 +697,14 @@ CREATE INDEX IF NOT EXISTS idx_fireflies_host ON fireflies_transcripts(author_em
 -- text; `author_email` is the speaker resolved to an identity, NULL for an anonymous label
 -- ("Speaker 3") which both the corpus and the real API leave unattributed.
 CREATE TABLE IF NOT EXISTS fireflies_sentences (
-    id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    id TEXT PRIMARY KEY, transcript_id TEXT NOT NULL, seq INTEGER NOT NULL,
     author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT,
     speaker_name TEXT, speaker_id INTEGER, start_time REAL, end_time REAL
 );
-CREATE INDEX IF NOT EXISTS idx_fireflies_sentences_doc ON fireflies_sentences(doc_id, seq);
+CREATE INDEX IF NOT EXISTS idx_fireflies_sentences_doc ON fireflies_sentences(transcript_id, seq);
 
--- ── shared relationship tables (keyed by names, not doc_id — ACL grants live in the per-source
--- ── tables appended below instead, since doc_id is unique only within a source) ──
+-- ── shared relationship tables (keyed by names — ACL grants live in the per-source tables
+-- ── appended below instead, since a served id is unique only within a source) ──
 -- ── per-service grouping tables (name of the grouping unit + its owning ACL group) ──
 CREATE TABLE IF NOT EXISTS slack_channels    (channel TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS gmail_mailboxes   (mailbox TEXT PRIMARY KEY, group_id TEXT);
@@ -652,16 +767,24 @@ CREATE TABLE IF NOT EXISTS group_members (
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
-# One ACL table per source, appended rather than written out eleven times: they differ only in name,
-# and a hand-written block per source is eleven places for them to drift apart.
+# One ACL table per source, appended rather than written out eleven times: they differ only in the
+# name and in which columns identify the document, and a hand-written block per source is eleven
+# places for them to drift apart.
+#
+# A grant names its document by that source's OWN served id (:data:`ID_COLUMNS`) -- the same
+# columns, in the same order, that the document table is keyed on -- so an ACL row and the row it
+# governs can never be addressed two different ways. For the three sources whose id is a pair that
+# means a two-column grant, which is why the DDL is generated from the registry rather than
+# assuming one `doc_id` column.
 SCHEMA += "".join(
     f"\nCREATE TABLE IF NOT EXISTS {t} (\n"
-    "    doc_id TEXT NOT NULL, principal_type TEXT NOT NULL,\n"
+    + "".join(f"    {c} {id_column_type(src, c)} NOT NULL,\n" for c in ID_COLUMNS[src])
+    + "    principal_type TEXT NOT NULL,\n"
     "    principal_id TEXT NOT NULL REFERENCES principals(id),\n"
-    "    PRIMARY KEY (doc_id, principal_type, principal_id)\n"
+    f"    PRIMARY KEY ({', '.join(ID_COLUMNS[src])}, principal_type, principal_id)\n"
     ");\n"
     f"CREATE INDEX IF NOT EXISTS idx_{t}_pid ON {t}(principal_id);\n"
-    for t in ACL_TABLE.values()
+    for src, t in ACL_TABLE.items()
 )
 
 
@@ -691,61 +814,37 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
             "re-import this corpus from scratch instead of appending to it; the old grants "
             "cannot be safely migrated"
         )
-    # Same shape as the doc_acl check above, for #51's served_* columns. Each is the target of a
-    # `CREATE INDEX` in SCHEMA below (`idx_gmail_served`, `idx_linear_teams_served`, ...), and
-    # `CREATE INDEX IF NOT EXISTS` guards only the INDEX's name -- it still raises `no such
-    # column` if a table that already exists (built before #51) lacks the column. Which one that
-    # is depends on SCHEMA's own text order, not on anything the caller did, so the raw error
-    # would name whichever table happens to come first and explain nothing. These are explicitly
-    # NOT self-healed by the `ALTER TABLE` loop below: #51 assigns them at import, on purpose
-    # never migrates them (see the plan's Global Constraints), so the only correct move for a DB
-    # missing them is a fresh re-import, same as `doc_acl`'s.
-    missing_served_columns = [
-        f"{tbl}.{col}"
-        for tbl, col in (
-            [(table(src), served_id_column(src)) for src in SERVED_ID]
-            + [
-                ("notion_pages", "served_data_source_id"),
-                ("linear_teams", "served_id"),
-                ("linear_teams", "served_key"),
-                ("fireflies_users", "served_id"),
-            ]
+    # Same shape as the doc_acl check above, and it SUBSUMES every earlier version of it: a DB
+    # built before #51's identifier consolidation keys its documents on the dataset's own `doc_id`,
+    # and every table below is now keyed on the id the API serves instead. Nothing about that is
+    # migratable -- the served ids were never stored on those rows, and the assignment that would
+    # produce them depends on the whole corpus (a probed source's id is a function of every other
+    # row's, see the plan's "The consequence"), not on any one row that could be rewritten in
+    # place. So this is detected and refused rather than healed.
+    #
+    # `CREATE TABLE IF NOT EXISTS` would not alter the old table at all, and `CREATE INDEX IF NOT
+    # EXISTS` guards only the INDEX's NAME -- so without this check the failure would surface as a
+    # bare `no such column: id` naming whichever table happens to come first in SCHEMA's text,
+    # explaining nothing about what is actually wrong.
+    #
+    # This replaced a per-column `served_*` check plus an `ALTER TABLE ... ADD COLUMN` self-heal
+    # loop. Both are gone: every column either loop knew about has since been folded into a
+    # PRIMARY KEY or renamed, so each entry would have been healing a DB this check now refuses
+    # outright.
+    stale = sorted(
+        t
+        for (t,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
         )
-        if conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (tbl,)
-        ).fetchone()
-        and col not in {r["name"] for r in conn.execute(f"PRAGMA table_info({tbl})")}
-    ]
-    if missing_served_columns:
+        if any(c["name"] == "doc_id" for c in conn.execute(f"PRAGMA table_info({t})"))
+    )
+    if stale:
         raise ValueError(
-            f"{path} predates the served_* id columns ({', '.join(missing_served_columns)} "
-            "missing) -- re-import this corpus from scratch instead of appending to it; these "
-            "ids are assigned at import, not migrated"
+            f"{path} predates the served-id primary keys (it still has a `doc_id` column on "
+            f"{', '.join(stale)}) -- re-import this corpus from scratch instead of appending to "
+            "it; a row's served id is assigned at import from the whole corpus, so it cannot be "
+            "backfilled onto rows that were stored under the dataset's own identifiers"
         )
-    # Self-heal tables built before a column was added. `CREATE TABLE IF NOT EXISTS` in SCHEMA
-    # below does NOT alter an existing table, so a DB created by an earlier version keeps the old
-    # column set -- and then every INSERT naming the new column fails. (For github_items the
-    # symptom was different but the cause identical: `CREATE INDEX IF NOT EXISTS
-    # idx_github_repo_path ON github_items(repo, path)` guards only the index NAME and still
-    # raises if the referenced column is missing.) Each ALTER is idempotent: it no-ops on a fresh
-    # DB (table absent) and on a DB that already has the column.
-    for heal_table, column, decl in (
-        ("github_items", "path", "TEXT"),
-        ("github_items", "changed_paths", "TEXT"),
-        ("github_items", "number", "INTEGER"),
-        ("github_comments", "path", "TEXT"),
-        ("github_comments", "line", "INTEGER"),
-        ("github_comments", "diff_hunk", "TEXT"),
-        ("github_comments", "served_id", "INTEGER"),
-        ("linear_issues", "parent_key", "TEXT"),
-        ("linear_issues", "parent_doc_id", "TEXT"),
-        ("linear_issues", "release", "TEXT"),
-        ("jira_issues", "key", "TEXT"),
-    ):
-        try:
-            conn.execute(f"ALTER TABLE {heal_table} ADD COLUMN {column} {decl}")
-        except sqlite3.OperationalError:
-            pass  # table absent (fresh DB) or column already present
     conn.executescript(SCHEMA)
     return conn
 
@@ -823,13 +922,16 @@ def _acl_clause(
     source_type: str,
     tbl: str | None = None,
     visible_ids: set[str] | None = None,
-    col: str = "doc_id",
+    cols: tuple[str, ...] | None = None,
 ) -> tuple[str, list]:
-    """``col`` names the column holding the doc whose ACL decides visibility — normally the row's
-    own ``doc_id``, but for a HubSpot association it is the *target* (``to_doc_id``), since the
-    target is the record whose existence the response would reveal.
+    """``cols`` names the columns in the CALLER'S table that hold the document whose ACL decides
+    visibility. It defaults to the source's own :func:`id_columns` — the row is normally its own
+    subject — and is passed explicitly only when the subject is a different row, as for a HubSpot
+    association, where it is the *target* (``to_id``), since the target is the record whose
+    existence the response would reveal. It is positional against ``ID_COLUMNS``, so the n-th
+    column here is matched to the n-th column of the ACL table.
 
-    ``source_type`` selects the ACL table. Per source because `doc_id` is per source: one table
+    ``source_type`` selects the ACL table. Per source because a served id is per source: one table
     keyed corpus-wide let two documents that merely share an id share their grants.
 
     ``tbl`` is the SQL name the caller's query knows the doc table by. It defaults to
@@ -843,6 +945,14 @@ def _acl_clause(
     # Resolved before the `visible_ids is None` early return, so an unknown source_type fails loudly
     # on an admin call too, rather than lying dormant until a scoped caller happens to hit it.
     acl_tbl = acl_table(source_type)
+    key = id_columns(source_type)
+    if cols is None:
+        cols = key
+    elif len(cols) != len(key):
+        raise ValueError(
+            f"_acl_clause: {source_type!r} is identified by {len(key)} column(s) {key} but "
+            f"{len(cols)} were given ({cols}) — the two are matched positionally"
+        )
     if tbl is None:
         tbl = table(source_type)
     elif tbl in SOURCE_TABLE.values():
@@ -860,13 +970,28 @@ def _acl_clause(
     marks = ",".join("?" for _ in ids)
     # The subquery's own alias must not collide with a caller's outer alias — the Linear relation
     # readers pass "a"/"b" as `tbl` (see linear_relation_by_id), and a shared name there would
-    # shadow the outer table, turning `_acl.doc_id = {tbl}.{col}` into a tautological
+    # shadow the outer table, turning `_acl.id = {tbl}.{col}` into a tautological
     # self-comparison that admits any row with ANY grant in this table.
+    on = " AND ".join(f"_acl.{a} = {tbl}.{b}" for a, b in zip(key, cols))
     return (
-        f" AND EXISTS (SELECT 1 FROM {acl_tbl} _acl WHERE _acl.doc_id = {tbl}.{col} "
-        f"AND _acl.principal_id IN ({marks}))",
+        f" AND EXISTS (SELECT 1 FROM {acl_tbl} _acl WHERE {on} AND _acl.principal_id IN ({marks}))",
         ids,
     )
+
+
+def _acl_join(source_type: str, acl_alias: str, doc_alias: str) -> str:
+    """The ON clause tying a source's ACL table to its doc table — every identifier column, since
+    a grant names its document by exactly the key the document is stored under."""
+    return " AND ".join(f"{doc_alias}.{c} = {acl_alias}.{c}" for c in id_columns(source_type))
+
+
+def _order_by(source_type: str, alias: str = "", *, desc: bool = False) -> str:
+    """The source's identifier columns as an ORDER BY term — the stable total order every offset
+    page needs. A single ``doc_id`` used to serve this; a pair has to name both parts or the order
+    is not total within a container."""
+    p = f"{alias}." if alias else ""
+    d = " DESC" if desc else ""
+    return ", ".join(f"{p}{c}{d}" for c in id_columns(source_type))
 
 
 def _scope(
@@ -917,7 +1042,7 @@ def list_documents(
     if exclude_trashed:
         sql += " AND COALESCE(trashed, 0) = 0"
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
-    sql += clause + " ORDER BY doc_id LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {_order_by(source_type)} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
@@ -961,49 +1086,41 @@ def list_s3_objects(
 
 
 def s3_by_bucket_key(conn, bucket, key, visible_ids=None) -> sqlite3.Row | None:
-    """One object by the (bucket, key) address real S3 itself keys on. `idx_s3_key(bucket, key)`
-    already covers this exactly, so this is a plain indexed lookup — there is nothing to
-    synthesize and no entry in `SERVED_ID` for s3, unlike confluence/gmail/notion/hubspot.
+    """One object by the (bucket, key) address real S3 itself keys on — which is also this table's
+    PRIMARY KEY (#51), so this is a point lookup on the key itself. There is nothing to synthesize
+    and no entry in `ID_SEED` for s3: the corpus states the address outright.
 
-    Unlike those served-id columns, (bucket, key) is unique only by convention here, not by a DB
-    constraint: `idx_s3_key` is a plain index, and the doc_id the importer assigns (a content
-    hash by default) doesn't depend on (bucket, key) at all, so nothing stops two rows from
-    sharing an address. On that unsupported duplicate shape this behaves DIFFERENTLY from the
-    map it replaces, not identically: the old map picked one winning row at boot (whichever the
-    unordered scan saw last) and every caller got that same row-or-404 regardless of their ACL;
-    this reads per-CALL, with the ACL clause folded into the same query, so which of the
-    duplicate rows (if any) a given caller sees now depends on which one THEY are granted —
-    two callers hitting the same duplicate address can get two different rows, where the old map
-    gave everyone the same row and just 404'd whoever lacked a grant on it. Neither version
-    promises a stable winner across the whole corpus; the difference is that resolution is now
-    per-caller and ACL-shaped rather than address-stable. No leak either way — a caller only ever
-    sees a row it holds a grant on — but a duplicate address was never a supported shape, and
-    nothing here is designed to make it behave sensibly, only to not leak while it doesn't."""
+    That address is now unique by CONSTRAINT. It used to be unique only by convention — a plain
+    index, with the doc_id the importer assigned (a content hash by default) not depending on
+    (bucket, key) at all, so nothing stopped two rows from sharing an address. The consequence was
+    documented at length here rather than fixed: which of the duplicates a caller saw depended on
+    that caller's own ACL grants, so two callers hitting one address could get two different
+    objects. A duplicate address is an import error now, and that whole class of question is
+    closed."""
     clause, cp = _acl_clause("s3", visible_ids=visible_ids)
     return conn.execute(
         f"SELECT * FROM s3_objects WHERE bucket = ? AND key = ?{clause}", [bucket, key, *cp]
     ).fetchone()
 
 
-def hubspot_by_served_id(conn, served_id, visible_ids=None, *, columns="*") -> sqlite3.Row | None:
-    """One CRM record by the id the API reports. A unique-indexed column lookup, not a reverse map
-    built at startup: the id is assigned at import (see backlot.importer.byo), so it needs neither
-    the memory nor the per-boot scan, and it cannot be ambiguous.
+def hubspot_by_id(conn, record_id, visible_ids=None, *, columns="*") -> sqlite3.Row | None:
+    """One CRM record by the id the API reports — this table's PRIMARY KEY, not a reverse map built
+    at startup: the id is assigned at import (see backlot.importer.byo), so it needs neither the
+    memory nor the per-boot scan, and it cannot be ambiguous.
 
-    Unlike confluence's/notion's/gmail's ``served_id``, HubSpot's is PROBED against a collision
-    (#51: ``synth.hubspot_record_id``'s 9,000,000,000-value space still collides at the corpus
-    sizes this project generates) -- which is exactly why a plain equality lookup against a UNIQUE
-    column is still correct here: the probe (``_assign_hubspot_id``) is what makes the column
-    unique, this reader just trusts that it did.
+    Unlike confluence's/notion's/gmail's, HubSpot's id is PROBED against a collision (#51:
+    ``synth.hubspot_record_id``'s 9,000,000,000-value space still collides at the corpus sizes this
+    project generates) -- which is exactly why a plain equality lookup on the key is still correct
+    here: the probe (``_assign_hubspot_id``) is what makes it unique, this reader just trusts that
+    it did.
 
-    ``columns`` narrows the projection: ``routers.hubspot._doc_id_for`` only ever needs the
-    doc_id, and pulling ``content`` (a note's whole body, the widest column on this table) for
-    every ``after`` cursor on every paged listing/association request would dwarf the lookup it
-    is resolving on the way to a query that is separately ACL-scoped anyway."""
-    col = served_id_column("hubspot")
+    ``columns`` narrows the projection: a caller resolving an ``after`` cursor only needs to know
+    the record exists, and pulling ``content`` (a note's whole body, the widest column on this
+    table) for every paged listing/association request would dwarf the lookup it is resolving on
+    the way to a query that is separately ACL-scoped anyway."""
     clause, cp = _acl_clause("hubspot", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT {columns} FROM hubspot_objects WHERE {col} = ?{clause}", [served_id, *cp]
+        f"SELECT {columns} FROM hubspot_objects WHERE id = ?{clause}", [record_id, *cp]
     ).fetchone()
 
 
@@ -1011,17 +1128,18 @@ def list_hubspot_objects(
     conn,
     object_type,
     *,
-    after_doc_id=None,
+    after_id=None,
     visible_ids=None,
     limit=100,
     archived=False,
     columns="*",
     prefilter=None,
 ) -> list[sqlite3.Row]:
-    """One page of a CRM object type, keyset-paginated by ``doc_id``.
+    """One page of a CRM object type, keyset-paginated by ``id``.
 
-    HubSpot's ``after`` cursor is a record id, which the router maps back to a doc_id, so the bound
-    is a keyset rather than an OFFSET. ``archived`` splits the two views the API exposes.
+    HubSpot's ``after`` cursor IS the record id this table is keyed on, so the bound is a keyset
+    rather than an OFFSET — and the router no longer maps the cursor back to anything on the way
+    in (#51). ``archived`` splits the two views the API exposes.
 
     ``prefilter`` is a ``(sql_fragment, params)`` the caller has established as a *necessary*
     condition, so pushing it down can only remove rows that would have been rejected anyway.
@@ -1034,11 +1152,11 @@ def list_hubspot_objects(
         sql += f" AND {frag}"
         params += fparams
     sql += " AND archived IS NOT NULL" if archived else " AND archived IS NULL"
-    if after_doc_id:
-        sql += " AND doc_id > ?"
-        params.append(after_doc_id)
+    if after_id:
+        sql += " AND id > ?"
+        params.append(after_id)
     clause, cparams = _acl_clause("hubspot", visible_ids=visible_ids)
-    sql += clause + " ORDER BY doc_id LIMIT ?"
+    sql += clause + " ORDER BY id LIMIT ?"
     params += cparams + [limit]
     return conn.execute(sql, params).fetchall()
 
@@ -1046,7 +1164,7 @@ def list_hubspot_objects(
 # --- Linear: issues, their comments, and the identifier lookup ---------------------
 # Linear pages a Relay connection, and the mock's `after` is the same opaque offset cursor every
 # other source's page token is (see backlot/pagination.py), so these take an offset. The ORDER BY is
-# always total — the sort column plus `doc_id` as the tiebreak — because an offset page over a
+# always total — the sort column plus `id` as the tiebreak — because an offset page over a
 # non-total order can silently repeat or skip a row between pages.
 
 # GraphQL `orderBy` value -> the column it sorts on.
@@ -1056,7 +1174,7 @@ def list_hubspot_objects(
 # direction and a client that wants the other one uses the richer `sort:` input instead.
 # The direction is not documented; ASCENDING is the choice here because it is the only one that
 # makes an `after` cursor stable: with newest-first, creating an issue shifts every existing
-# offset by one and a mid-crawl cursor silently re-reads a row. `doc_id` breaks ties into a
+# offset by one and a mid-crawl cursor silently re-reads a row. `id` breaks ties into a
 # total order either way, which offset paging requires.
 LINEAR_DEFAULT_ORDER_BY = "createdAt"
 LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": "COALESCE(updated_ts, created_ts)"}
@@ -1076,7 +1194,7 @@ LINEAR_SORT_COLUMNS = {
 
 
 def _linear_order(order_by: str | None, descending: bool, sort=None) -> str:
-    """The ORDER BY, always TOTAL (sort keys + ``doc_id``) — an offset page over a non-total order
+    """The ORDER BY, always TOTAL (sort keys + ``id``) — an offset page over a non-total order
     can silently repeat or skip a row between pages. ``sort`` (Linear's ``IssueSortInput``) wins over
     ``orderBy`` when both are given, matching the real API, where it is the richer multi-key form."""
     terms = []
@@ -1090,14 +1208,14 @@ def _linear_order(order_by: str | None, descending: bool, sort=None) -> str:
             tail = f" NULLS {'FIRST' if nulls == 'first' else 'LAST'}" if nulls else ""
             terms.append(f"{col} {direction}{tail}")
     if terms:
-        return ", ".join(terms) + ", doc_id"
+        return ", ".join(terms) + ", id"
     # An ABSENT orderBy is not "unordered": Linear documents createdAt as the default, so falling
-    # through to raw insertion order (`doc_id`) was a real divergence — `issues(first: 10)`
+    # through to raw insertion order (`id`) was a real divergence — `issues(first: 10)`
     # returned an arbitrary ten rather than the first ten by creation.
     col = LINEAR_ORDER_COLUMNS[order_by or LINEAR_DEFAULT_ORDER_BY]
     direction = "DESC" if descending else "ASC"
     # NULL updated_ts sorts last on DESC, which is where an issue with no recorded edit belongs.
-    return f"{col} {direction}, doc_id"
+    return f"{col} {direction}, id"
 
 
 def _linear_archived(archived: bool) -> str:
@@ -1157,42 +1275,41 @@ def count_linear_issues(
     return conn.execute(sql + clause, params + cparams).fetchone()[0]
 
 
-def linear_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+def linear_by_id(conn, issue_id, visible_ids=None) -> sqlite3.Row | None:
     """One issue by the UUID the API reports (``synth.linear_id``), distinct from ``identifier``
-    (see ``linear_issue_by_identifier``) -- unique-indexed, so this is a plain column lookup, not
-    a reverse map built at startup."""
-    col = served_id_column("linear")
+    (see ``linear_issue_by_identifier``) -- this table's PRIMARY KEY, so a point lookup rather
+    than a reverse map built at startup."""
     clause, cp = _acl_clause("linear", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM linear_issues WHERE {col} = ?{clause}", [served_id, *cp]
+        f"SELECT * FROM linear_issues WHERE id = ?{clause}", [issue_id, *cp]
     ).fetchone()
 
 
 def linear_issue_by_identifier(conn, identifier, visible_ids=None) -> sqlite3.Row | None:
     """Resolve a human identifier (``ENG-123``) to its issue. Identifiers are not unique (5,055
-    repeat in one real corpus), so this deliberately returns the first by ``doc_id`` rather than pretending
+    repeat in one real corpus), so this deliberately returns the first by ``id`` rather than pretending
     the lookup is unambiguous — the UUID form of ``issue(id:)`` is the exact one."""
     sql = "SELECT * FROM linear_issues WHERE identifier = ?"
     params: list = [identifier]
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
-    return conn.execute(sql + clause + " ORDER BY doc_id LIMIT 1", params + cparams).fetchone()
+    return conn.execute(sql + clause + " ORDER BY id LIMIT 1", params + cparams).fetchone()
 
 
 def list_linear_comments(
-    conn, *, doc_id=None, visible_ids=None, limit=50, offset=0, prefilter=None
+    conn, *, issue_id=None, visible_ids=None, limit=50, offset=0, prefilter=None
 ) -> list[sqlite3.Row]:
-    """Comments on one issue, or across the corpus when ``doc_id`` is None (``Query.comments``).
+    """Comments on one issue, or across the corpus when ``issue_id`` is None (``Query.comments``).
 
     A comment row carries no ACL grant of its own; visibility is the parent issue's, so the ACL
     is applied to ``linear_issues`` through a join rather than to the comment table."""
     # The join exists ONLY to reach the parent issue's ACL, so an admin read (visible_ids None)
     # skips it: measured over 165k comments, the join cost ~40ms per page for nothing.
-    join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = c.doc_id"
+    join = "" if visible_ids is None else " JOIN linear_issues i ON i.id = c.issue_id"
     sql = f"SELECT c.* FROM linear_comments c{join} WHERE 1=1"
     params: list = []
-    if doc_id is not None:
-        sql += " AND c.doc_id = ?"
-        params.append(doc_id)
+    if issue_id is not None:
+        sql += " AND c.issue_id = ?"
+        params.append(issue_id)
     if prefilter:
         frag, fparams = prefilter
         sql += f" AND {frag}"
@@ -1202,13 +1319,13 @@ def list_linear_comments(
     return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
 
 
-def count_linear_comments(conn, *, doc_id=None, visible_ids=None, prefilter=None) -> int:
-    join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = c.doc_id"
+def count_linear_comments(conn, *, issue_id=None, visible_ids=None, prefilter=None) -> int:
+    join = "" if visible_ids is None else " JOIN linear_issues i ON i.id = c.issue_id"
     sql = f"SELECT COUNT(*) FROM linear_comments c{join} WHERE 1=1"
     params: list = []
-    if doc_id is not None:
-        sql += " AND c.doc_id = ?"
-        params.append(doc_id)
+    if issue_id is not None:
+        sql += " AND c.issue_id = ?"
+        params.append(issue_id)
     if prefilter:
         frag, fparams = prefilter
         sql += f" AND {frag}"
@@ -1218,50 +1335,50 @@ def count_linear_comments(conn, *, doc_id=None, visible_ids=None, prefilter=None
 
 
 def linear_children(
-    conn, parent_doc_id, *, visible_ids=None, limit=50, offset=0, prefilter=None
+    conn, parent_id, *, visible_ids=None, limit=50, offset=0, prefilter=None
 ) -> list[sqlite3.Row]:
-    """Sub-issues of an issue — every row whose resolved ``parent_doc_id`` is this one.
+    """Sub-issues of an issue — every row whose resolved ``parent_id`` is this one.
 
-    An indexed equality on a doc_id, NOT a join on ``identifier``: identifiers repeat, so a
+    An indexed equality on an issue id, NOT a join on ``identifier``: identifiers repeat, so a
     join would attach one issue's children to every issue sharing its key. Resolved once at import,
     which is what makes this the exact inverse of ``Issue.parent``."""
-    sql = "SELECT * FROM linear_issues WHERE parent_doc_id = ?"
-    params: list = [parent_doc_id]
+    sql = "SELECT * FROM linear_issues WHERE parent_id = ?"
+    params: list = [parent_id]
     if prefilter:
         frag, fparams = prefilter
         sql += f" AND {frag}"
         params += fparams
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
-    sql += clause + " ORDER BY created_ts, doc_id LIMIT ? OFFSET ?"
+    sql += clause + " ORDER BY created_ts, id LIMIT ? OFFSET ?"
     return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
 
 
 def linear_relations(
-    conn, doc_id, *, inverse=False, visible_ids=None, limit=50, offset=0
+    conn, issue_id, *, inverse=False, visible_ids=None, limit=50, offset=0
 ) -> list[sqlite3.Row]:
     """One page of an issue's relations: ``Issue.relations`` (rows it declared) or, with
     ``inverse``, ``Issue.inverseRelations`` (rows pointing at it) — two ends of one stored row.
 
     ACL-scoped on the OTHER end: a relation whose counterpart the caller cannot read is omitted
     entirely, since surfacing its id would disclose that issue."""
-    mine, other = ("to_doc_id", "from_doc_id") if inverse else ("from_doc_id", "to_doc_id")
+    mine, other = ("to_id", "from_id") if inverse else ("from_id", "to_id")
     clause, cparams = _acl_clause("linear", "i", visible_ids)
     sql = (
-        f"SELECT r.* FROM linear_relations r JOIN linear_issues i ON i.doc_id = r.{other} "
+        f"SELECT r.* FROM linear_relations r JOIN linear_issues i ON i.id = r.{other} "
         f"WHERE r.{mine} = ?{clause} ORDER BY r.created_ts, r.id LIMIT ? OFFSET ?"
     )
-    return conn.execute(sql, [doc_id, *cparams, limit, offset]).fetchall()
+    return conn.execute(sql, [issue_id, *cparams, limit, offset]).fetchall()
 
 
 def linear_attachments(
-    conn, doc_id, *, visible_ids=None, limit=50, offset=0, url=None, prefilter=None
+    conn, issue_id, *, visible_ids=None, limit=50, offset=0, url=None, prefilter=None
 ) -> list[sqlite3.Row]:
     """An issue's attachments. Visibility is the parent issue's — an attachment carries no grant
     of its own — so the ACL is applied through a join, as it is for comments. ``url`` is Linear's
     own exact-match argument on this connection."""
-    join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = a.doc_id"
-    sql = f"SELECT a.* FROM linear_attachments a{join} WHERE a.doc_id = ?"
-    params: list = [doc_id]
+    join = "" if visible_ids is None else " JOIN linear_issues i ON i.id = a.issue_id"
+    sql = f"SELECT a.* FROM linear_attachments a{join} WHERE a.issue_id = ?"
+    params: list = [issue_id]
     if url is not None:
         sql += " AND a.url = ?"
         params.append(url)
@@ -1281,7 +1398,7 @@ def linear_attachment_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | 
     re-deriving it over visible rows — an attachment on a hidden issue is simply not found."""
     from backlot import synth
 
-    join = "" if visible_ids is None else " JOIN linear_issues i ON i.doc_id = a.doc_id"
+    join = "" if visible_ids is None else " JOIN linear_issues i ON i.id = a.issue_id"
     clause, cparams = _acl_clause("linear", "i", visible_ids)
     rows = conn.execute(f"SELECT a.* FROM linear_attachments a{join} WHERE 1=1{clause}", cparams)
     for row in rows:
@@ -1302,8 +1419,8 @@ def linear_relation_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | No
         clause_b, pb = _acl_clause("linear", "b", visible_ids)
         rows = conn.execute(
             f"SELECT r.* FROM linear_relations r "
-            f"JOIN linear_issues a ON a.doc_id = r.from_doc_id "
-            f"JOIN linear_issues b ON b.doc_id = r.to_doc_id WHERE 1=1{clause_a}{clause_b}",
+            f"JOIN linear_issues a ON a.id = r.from_id "
+            f"JOIN linear_issues b ON b.id = r.to_id WHERE 1=1{clause_a}{clause_b}",
             [*pa, *pb],
         )
     for row in rows:
@@ -1448,32 +1565,24 @@ def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:
 
 
 def hubspot_associations(
-    conn, from_doc_id, to_type, *, after_to_doc_id=None, visible_ids=None, limit=500
+    conn, from_id, to_type, *, after_to_id=None, visible_ids=None, limit=500
 ) -> list[sqlite3.Row]:
     """One page of associations from a CRM record to records of ``to_type``, ACL-scoped on the
-    target. Keyset-paginated by ``to_doc_id`` for the same reason the listings are: the API's
-    cursor is the last record id the caller saw, and a record past the first page must stay
-    reachable.
+    target. Keyset-paginated by ``to_id`` for the same reason the listings are: the API's cursor is
+    the last record id the caller saw, and a record past the first page must stay reachable.
 
-    Joined to ``hubspot_objects`` for the target's own ``served_id`` (as ``to_served_id``), rather
-    than leaving the v4 payload's ``toObjectId`` to recompute ``synth.hubspot_record_id(to_doc_id)``
-    the way gmail's ``threadId`` re-hashes a root row (see ``routers.google._gmail_ids``): gmail's
-    seed is never probed, so the hash and the stored column always agree, but hubspot's IS probed
-    (#51) -- a collision walk can hand a record an id different from its raw hash, and the v4
-    payload has to report the one the target's own row actually resolves at. The join is safe
-    (INNER, not LEFT): ``resolve_cross_references`` refuses an association whose target object type
-    cannot be resolved, so every ``to_doc_id`` here already has a row in ``hubspot_objects``."""
-    sql = (
-        "SELECT hubspot_associations.*, o.served_id AS to_served_id FROM hubspot_associations "
-        "JOIN hubspot_objects o ON o.doc_id = hubspot_associations.to_doc_id "
-        "WHERE from_doc_id = ? AND to_type = ?"
-    )
-    params: list = [from_doc_id, to_type]
-    if after_to_doc_id:
-        sql += " AND to_doc_id > ?"
-        params.append(after_to_doc_id)
-    clause, cparams = _acl_clause("hubspot", "hubspot_associations", visible_ids, col="to_doc_id")
-    sql += clause + " ORDER BY to_doc_id LIMIT ?"
+    No join to ``hubspot_objects`` any more (#51): ``to_id`` IS the served id the v4 payload's
+    ``toObjectId`` reports, so the value is read straight off this row. The join existed because
+    the association stored the dataset's identifier and the served id had to be fetched from the
+    target's row -- hubspot's id is PROBED, so recomputing the raw hash could have disagreed with
+    what the target actually resolves at."""
+    sql = "SELECT * FROM hubspot_associations WHERE from_id = ? AND to_type = ?"
+    params: list = [from_id, to_type]
+    if after_to_id:
+        sql += " AND to_id > ?"
+        params.append(after_to_id)
+    clause, cparams = _acl_clause("hubspot", "hubspot_associations", visible_ids, cols=("to_id",))
+    sql += clause + " ORDER BY to_id LIMIT ?"
     params += cparams + [limit]
     return conn.execute(sql, params).fetchall()
 
@@ -1485,7 +1594,7 @@ def list_drive_folder(conn, folder, visible_ids=None, limit=100, offset=0) -> li
     params: list = [folder]
     clause, cparams = _acl_clause("google_drive", visible_ids=visible_ids)
     # No ORDER BY: the folder index already yields a stable order for pagination, and adding
-    # ORDER BY doc_id forces a per-page sort of the whole folder (≈30x slower on a big folder).
+    # ORDER BY id forces a per-page sort of the whole folder (≈30x slower on a big folder).
     sql += clause + " LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
@@ -1548,14 +1657,13 @@ def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
     return int(total), int(trashed)
 
 
-def gdrive_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+def gdrive_by_id(conn, file_id, visible_ids=None) -> sqlite3.Row | None:
     """One Drive file by the id `files.get` / `.export` / `.permissions` resolve (#51, task 12) --
-    the model is gmail_by_served_id/notion_by_served_id: a stored column, assigned at import, read
+    the model is gmail_by_id/notion_by_id: this table's PRIMARY KEY, assigned at import, read
     straight through the ACL clause rather than a reverse map rebuilt on every boot."""
-    col = served_id_column("google_drive")
     clause, cp = _acl_clause("google_drive", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM gdrive_files WHERE {col} = ?{clause}", [served_id, *cp]
+        f"SELECT * FROM gdrive_files WHERE id = ?{clause}", [file_id, *cp]
     ).fetchone()
 
 
@@ -1587,10 +1695,21 @@ def count_documents(
     return conn.execute(sql, params).fetchone()[0]
 
 
-def get_document(conn, source_type, doc_id, visible_ids=None) -> sqlite3.Row | None:
+def get_document(conn, source_type, *ident, visible_ids=None) -> sqlite3.Row | None:
+    """One document by the id it is served under. ``ident`` is positional against the source's
+    :func:`id_columns`, so it is one value for the nine sources keyed on a single column and two
+    for slack (channel, ts), s3 (bucket, key) and github (repo, number). A wrong arity raises
+    rather than silently matching on a prefix of the key, which would return an arbitrary row of
+    the right container."""
+    key = id_columns(source_type)
+    if len(ident) != len(key):
+        raise ValueError(
+            f"get_document: {source_type!r} is identified by {key}, so it takes "
+            f"{len(key)} value(s), not {len(ident)}"
+        )
     tbl = table(source_type)
-    sql = f"SELECT * FROM {tbl} WHERE doc_id = ?"
-    params: list = [doc_id]
+    sql = f"SELECT * FROM {tbl} WHERE " + " AND ".join(f"{c} = ?" for c in key)
+    params: list = list(ident)
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += clause
     params += cparams
@@ -1677,7 +1796,7 @@ def list_fireflies_transcripts(
 ) -> list[sqlite3.Row]:
     """One page of transcripts, newest first — the order the real API returns them in.
 
-    The ORDER BY carries its ``doc_id`` tiebreak so it is TOTAL, and the tiebreak runs DESC WITH the
+    The ORDER BY carries its ``id`` tiebreak so it is TOTAL, and the tiebreak runs DESC WITH the
     sort key rather than against it: either direction is valid for an arbitrary tiebreak, but a
     uniform one is a backwards index scan while a mixed one is a temp b-tree over the whole table.
     """
@@ -1693,7 +1812,7 @@ def list_fireflies_transcripts(
         visible_ids=visible_ids,
     )
     return conn.execute(
-        f"SELECT * FROM fireflies_transcripts{where} ORDER BY created_ts DESC, doc_id DESC "
+        f"SELECT * FROM fireflies_transcripts{where} ORDER BY created_ts DESC, id DESC "
         f"LIMIT ? OFFSET ?",
         params + [limit, offset],
     ).fetchall()
@@ -1706,17 +1825,17 @@ def count_fireflies_transcripts(conn, **kw) -> int:
 
 def fireflies_transcript_by_id(conn, transcript_id, visible_ids=None) -> sqlite3.Row | None:
     """Resolve the API-facing transcript id to its row. Unlike Linear's identifier this IS
-    unique — it is derived from the doc_id — so there is no first-match ambiguity."""
-    sql = "SELECT * FROM fireflies_transcripts WHERE transcript_id = ?"
+    unique — it is this table's PRIMARY KEY — so there is no first-match ambiguity."""
+    sql = "SELECT * FROM fireflies_transcripts WHERE id = ?"
     clause, cparams = _acl_clause("fireflies", visible_ids=visible_ids)
     return conn.execute(sql + clause, [transcript_id] + cparams).fetchone()
 
 
-def fireflies_sentences(conn, doc_id) -> list[sqlite3.Row]:
+def fireflies_sentences(conn, transcript_id) -> list[sqlite3.Row]:
     """A transcript's sentences in order. No ACL clause: the caller has already been cleared for
     the parent transcript, and a sentence is not independently addressable."""
     return conn.execute(
-        "SELECT * FROM fireflies_sentences WHERE doc_id = ? ORDER BY seq", (doc_id,)
+        "SELECT * FROM fireflies_sentences WHERE transcript_id = ? ORDER BY seq", (transcript_id,)
     ).fetchall()
 
 
@@ -1790,38 +1909,62 @@ def build_fts(conn) -> bool:
     # server, with a busy_timeout) rides through instead of blocking on a single multi-GB commit.
     for src, tbl in SOURCE_TABLE.items():
         fts = _fts_table(src)
+        # The index carries the source's OWN identifier columns (#51), so the join back to the doc
+        # table is on the same key that table is now stored under. They are UNINDEXED: FTS5 must
+        # not tokenize an id, but it DOES preserve the value's type, so an integer github number
+        # comes back an integer and matches its INTEGER column rather than the string '7'.
+        key = ", ".join(id_columns(src))
+        decl = ", ".join(f"{c} UNINDEXED" for c in id_columns(src))
         conn.execute(f"DROP TABLE IF EXISTS {fts}")
         conn.execute(
             f"CREATE VIRTUAL TABLE {fts} USING fts5("
-            "doc_id UNINDEXED, title, content, tokenize='porter unicode61')"
+            f"{decl}, title, content, tokenize='porter unicode61')"
         )
         conn.execute(
-            f"INSERT INTO {fts}(doc_id, title, content) SELECT doc_id, title, content FROM {tbl}"
+            f"INSERT INTO {fts}({key}, title, content) SELECT {key}, title, content FROM {tbl}"
         )
         conn.commit()
     return True
 
 
-def fts_add_docs(conn, source_type: str, doc_ids: list[str]) -> int:
+def fts_add_docs(conn, source_type: str, doc_keys: list) -> int:
     """Incrementally (re)index specific docs in this source's FTS index — delete-then-insert per
-    doc_id so it is idempotent (an upsert). Used by append imports so a small add doesn't trigger a
-    full rebuild. No-op (returns 0) if that index isn't present or ``doc_ids`` is empty."""
-    if not doc_ids or not _has_fts(conn, source_type):
+    document so it is idempotent (an upsert). Used by append imports so a small add doesn't trigger
+    a full rebuild. No-op (returns 0) if that index isn't present or ``doc_keys`` is empty.
+
+    Each entry is one document's key, positional against :func:`id_columns`: a bare value for the
+    nine single-column sources, a tuple for slack / s3 / github. The match is a row-value
+    ``IN (VALUES ...)``, which is one lookup per document at either arity."""
+    if not doc_keys or not _has_fts(conn, source_type):
         return 0
     tbl, fts = table(source_type), _fts_table(source_type)
+    cols = id_columns(source_type)
+    key = ", ".join(cols)
     n = 0
-    for i in range(0, len(doc_ids), 900):
-        chunk = doc_ids[i : i + 900]
-        marks = ",".join("?" for _ in chunk)
-        conn.execute(f"DELETE FROM {fts} WHERE doc_id IN ({marks})", chunk)
+    # Chunked to stay under SQLite's variable limit — which counts VALUES, not rows, so the chunk
+    # shrinks with the arity of the key rather than staying at a flat 900.
+    per_chunk = max(1, 900 // len(cols))
+    rows = [k if isinstance(k, tuple) else (k,) for k in doc_keys]
+    for i in range(0, len(rows), per_chunk):
+        chunk = rows[i : i + per_chunk]
+        values = ",".join("(" + ",".join("?" for _ in cols) + ")" for _ in chunk)
+        flat = [v for row in chunk for v in row]
+        conn.execute(f"DELETE FROM {fts} WHERE ({key}) IN (VALUES {values})", flat)
         conn.execute(
-            f"INSERT INTO {fts}(doc_id, title, content) "
-            f"SELECT doc_id, title, content FROM {tbl} WHERE doc_id IN ({marks})",
-            chunk,
+            f"INSERT INTO {fts}({key}, title, content) "
+            f"SELECT {key}, title, content FROM {tbl} WHERE ({key}) IN (VALUES {values})",
+            flat,
         )
         n += len(chunk)
     conn.commit()
     return n
+
+
+def _fts_join(source_type: str, alias: str) -> str:
+    """The ON clause tying a source's FTS index back to its doc table — every identifier column,
+    since the index carries the same key the table is stored under."""
+    fts = _fts_table(source_type)
+    return " AND ".join(f"{alias}.{c} = {fts}.{c}" for c in id_columns(source_type))
 
 
 def _fts_match(query: str, phrase: bool = False) -> str:
@@ -1867,6 +2010,7 @@ def search_documents(
             return []
         clause, cparams = _acl_clause(source_type, "t", visible_ids)
         fts = _fts_table(source_type)
+        on = _fts_join(source_type, "t")
         # For a phrase search, tier the results: docs literally containing the query string first
         # (bm25 next as the tiebreak). FTS tokenization drops punctuation, so "upload.csv" and
         # "upload csv" tokenize identically and bm25 can't tell them apart — the one doc that
@@ -1894,7 +2038,7 @@ def search_documents(
             )
             order_p = [lit, lit]
         sql = (
-            f"SELECT t.* FROM {fts} JOIN {tbl} t ON t.doc_id = {fts}.doc_id "
+            f"SELECT t.* FROM {fts} JOIN {tbl} t ON {on} "
             f"WHERE {fts} MATCH ?{cont_sql.format(a='t')}{clause} "
             f"ORDER BY {order_sql} LIMIT ? OFFSET ?"
         )
@@ -1903,7 +2047,10 @@ def search_documents(
     sql = f"SELECT * FROM {tbl} WHERE (title LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
     params: list = [like, like, *cont_p]
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
-    sql += clause + " ORDER BY (CASE WHEN title LIKE ? THEN 0 ELSE 1 END), doc_id LIMIT ? OFFSET ?"
+    sql += (
+        clause + " ORDER BY (CASE WHEN title LIKE ? THEN 0 ELSE 1 END), "
+        f"{_order_by(source_type)} LIMIT ? OFFSET ?"
+    )
     params += cparams + [like, limit, offset]
     return conn.execute(sql, params).fetchall()
 
@@ -1925,16 +2072,17 @@ def count_search(
             return 0
         clause, cparams = _acl_clause(source_type, "t", visible_ids)
         fts = _fts_table(source_type)
+        on = _fts_join(source_type, "t")
         sql = (
-            f"SELECT COUNT(*) FROM (SELECT t.doc_id FROM {fts} JOIN {tbl} t "
-            f"ON t.doc_id = {fts}.doc_id WHERE {fts} MATCH ?"
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM {fts} JOIN {tbl} t "
+            f"ON {on} WHERE {fts} MATCH ?"
             f"{cont_sql.format(a='t')}{clause} LIMIT ?)"
         )
         return conn.execute(sql, [m, *cont_p, *cparams, cap]).fetchone()[0]
     like = f"%{query}%"
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql = (
-        f"SELECT COUNT(*) FROM (SELECT doc_id FROM {tbl} WHERE (title LIKE ? OR content LIKE ?)"
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM {tbl} WHERE (title LIKE ? OR content LIKE ?)"
         f"{cont_sql.format(a=tbl)}{clause} LIMIT ?)"
     )
     return conn.execute(sql, [like, like, *cont_p, *cparams, cap]).fetchone()[0]
@@ -1948,7 +2096,7 @@ def children(
     sql = f"SELECT * FROM {tbl} WHERE parent_id = ?"
     params: list = [parent_id]
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
-    sql += clause + " ORDER BY doc_id LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {_order_by(source_type)} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
@@ -1982,7 +2130,7 @@ def list_slack_top_level(
         sql += " AND created_ts >= ? AND created_ts <= ?"
         params += [lo, hi]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
-    sql += clause + " ORDER BY doc_id LIMIT ? OFFSET ?"
+    sql += clause + " ORDER BY ts LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
@@ -2003,7 +2151,7 @@ def list_slack_channel_messages(conn, channel, visible_ids=None) -> list[sqlite3
     sql = "SELECT * FROM slack_messages WHERE channel = ?"
     params: list = [channel]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
-    sql += clause + " ORDER BY thread_id, thread_seq"
+    sql += clause + " ORDER BY thread_ts, thread_seq"
     params += cparams
     return conn.execute(sql, params).fetchall()
 
@@ -2027,9 +2175,9 @@ def list_gmail_in_range(
         sql += " AND mailbox = ?"
         params.append(mailbox)
     clause, cparams = _acl_clause("gmail", visible_ids=visible_ids)
-    # created_ts DESC = newest-first (real Gmail's messages.list order); doc_id breaks ties into a
+    # created_ts DESC = newest-first (real Gmail's messages.list order); `id` breaks ties into a
     # stable TOTAL order so keyset-free offset pagination can't dupe/skip rows across pages.
-    sql += clause + " ORDER BY created_ts DESC, doc_id LIMIT ? OFFSET ?"
+    sql += clause + " ORDER BY created_ts DESC, id LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
@@ -2042,14 +2190,19 @@ def slack_messages_at_created_ts(conn, channel, created_ts, visible_ids=None) ->
     sql = "SELECT * FROM slack_messages WHERE channel = ? AND created_ts = ?"
     params: list = [channel, created_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
-    sql += clause + " ORDER BY thread_id, thread_seq"
+    sql += clause + " ORDER BY thread_ts, thread_seq"
     params += cparams
     return conn.execute(sql, params).fetchall()
 
 
-def slack_reply_count(conn, root_doc_id, visible_ids=None) -> int:
-    sql = "SELECT COUNT(*) FROM slack_messages WHERE thread_id = ? AND thread_seq > 0"
-    params: list = [root_doc_id]
+def slack_reply_count(conn, channel, thread_ts, visible_ids=None) -> int:
+    """Replies below a thread root. Scoped to the channel as well as the root's ts, because a ts
+    is unique only within its channel (see store.ID_COLUMNS) — a bare `thread_ts = ?` would count
+    another channel's thread too."""
+    sql = (
+        "SELECT COUNT(*) FROM slack_messages WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
+    )
+    params: list = [channel, thread_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause
     params += cparams
@@ -2057,25 +2210,31 @@ def slack_reply_count(conn, root_doc_id, visible_ids=None) -> int:
 
 
 def slack_channels_for_principals(conn, principals) -> set[str]:
-    """Channels with at least one doc granted to any of ``principals``. Starts from the
-    principal-indexed ``slack_acl`` (idx_slack_acl_pid) instead of scanning the whole slack table,
-    so it's cheap even at millions of rows — used to list a non-admin caller's visible channels."""
+    """Channels with at least one doc granted to any of ``principals``. Reads the
+    principal-indexed ``slack_acl`` (idx_slack_acl_pid) and nothing else, so it's cheap even at
+    millions of rows — used to list a non-admin caller's visible channels.
+
+    No join to ``slack_messages`` any more (#51): a Slack message is identified by (channel, ts),
+    so the grant row carries the channel itself and the answer is a DISTINCT over the ACL table.
+    It used to join through the doc table purely to translate a `doc_id` back into a channel."""
     principals = list(principals)
     if not principals:
         return set()
     marks = ",".join("?" for _ in principals)
     rows = conn.execute(
-        f"SELECT DISTINCT d.channel FROM {acl_table('slack')} a "
-        f"JOIN slack_messages d ON d.doc_id = a.doc_id WHERE a.principal_id IN ({marks})",
+        f"SELECT DISTINCT a.channel FROM {acl_table('slack')} a WHERE a.principal_id IN ({marks})",
         principals,
     )
     return {r[0] for r in rows}
 
 
-def slack_reply_authors(conn, root_doc_id, visible_ids=None) -> list[str]:
+def slack_reply_authors(conn, channel, thread_ts, visible_ids=None) -> list[str]:
     """Distinct reply-author emails in a thread, in reply order (for reply_users)."""
-    sql = "SELECT author_email FROM slack_messages WHERE thread_id = ? AND thread_seq > 0"
-    params: list = [root_doc_id]
+    sql = (
+        "SELECT author_email FROM slack_messages "
+        "WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
+    )
+    params: list = [channel, thread_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause + " ORDER BY thread_seq"
     params += cparams
@@ -2086,9 +2245,11 @@ def slack_reply_authors(conn, root_doc_id, visible_ids=None) -> list[str]:
     return seen
 
 
-def slack_thread(conn, root_doc_id, visible_ids=None) -> list[sqlite3.Row]:
-    sql = "SELECT * FROM slack_messages WHERE thread_id = ?"
-    params: list = [root_doc_id]
+def slack_thread(conn, channel, thread_ts, visible_ids=None) -> list[sqlite3.Row]:
+    """A thread's root and replies in order. Scoped to the channel: a ts identifies a message only
+    within one (see store.ID_COLUMNS)."""
+    sql = "SELECT * FROM slack_messages WHERE channel = ? AND thread_ts = ?"
+    params: list = [channel, thread_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause + " ORDER BY thread_seq"
     params += cparams
@@ -2105,31 +2266,30 @@ def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
     return conn.execute(sql, params).fetchall()
 
 
-def gmail_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
-    """One message by the id the API reports. The stored column is lowercase hex; callers pass the
+def gmail_by_id(conn, message_id, visible_ids=None) -> sqlite3.Row | None:
+    """One message by the id the API reports. The stored key is lowercase hex; callers pass the
     id as the client spelled it, so fold case here rather than at each call site."""
-    col = served_id_column("gmail")
     clause, cp = _acl_clause("gmail", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM gmail_messages WHERE {col} = ?{clause}", [served_id.lower(), *cp]
+        f"SELECT * FROM gmail_messages WHERE id = ?{clause}", [message_id.lower(), *cp]
     ).fetchone()
 
 
-def github_by_number(conn, repo, served_number, visible_ids=None) -> sqlite3.Row | None:
+def github_by_number(conn, repo, number, visible_ids=None) -> sqlite3.Row | None:
     """One issue/PR by the number the API reports, scoped to its repo — github's own uniqueness
-    rule (see store.SERVED_ID's `scope` for github, and idx_github_served). A unique-indexed
-    column lookup, not a reverse map built at startup: the number is assigned at import (see
-    :mod:`backlot.importer.byo`'s ``resolve_github_numbers``), so it needs neither the memory nor
-    the per-boot scan, and it cannot be ambiguous.
+    rule (see store.ID_COLUMNS for github). This is a PRIMARY KEY lookup, not a reverse map built
+    at startup: the number is assigned at import (see :mod:`backlot.importer.byo`'s
+    ``resolve_github_numbers``), so it needs neither the memory nor the per-boot scan, and it
+    cannot be ambiguous.
 
-    A `kind='file'` row's number is always NULL (see idx_github_doc_number's comment on the
-    schema), so this can never resolve to a file even though the column it queries is shared with
-    issues/PRs."""
-    col = served_id_column("github")
+    A `kind='file'` row DOES carry a number now — the table holds two resources and only one key
+    can be primary (see the schema) — so this CAN return a file row, and the caller must reject
+    one. `routers.github._issue_row` is where that happens; a file is addressed by (repo, path)
+    and its number is never served."""
     clause, cp = _acl_clause("github", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM github_items WHERE repo = ? AND {col} = ?{clause}",
-        [repo, served_number, *cp],
+        f"SELECT * FROM github_items WHERE repo = ? AND number = ?{clause}",
+        [repo, number, *cp],
     ).fetchone()
 
 
@@ -2174,42 +2334,39 @@ def list_repo_file_paths(conn, repo, visible_ids=None, limit=10_000, offset=0) -
     return [r[0] for r in conn.execute(sql, [repo, *cp, limit, offset])]
 
 
-def get_github_comment(conn, served_id: int) -> sqlite3.Row | None:
-    """One comment by the id the API reports, carrying `doc_id` so the caller can ACL-check the
-    document it belongs to.
+def get_github_comment(conn, comment_id: int) -> sqlite3.Row | None:
+    """One comment by the id the API reports, carrying `(repo, number)` so the caller can ACL-check
+    the issue or pull it belongs to.
 
-    A unique-indexed column lookup, not a reverse map built at startup: the id is assigned at import
-    (see :mod:`backlot.importer.byo`), so it needs neither the memory nor the per-boot scan, and it
+    A PRIMARY KEY lookup, not a reverse map built at startup: the id is assigned at import (see
+    :mod:`backlot.importer.byo`), so it needs neither the memory nor the per-boot scan, and it
     cannot be ambiguous.
     """
     return conn.execute(
-        "SELECT id, doc_id, seq, author_email, body, created_ts, reactions, path, line, diff_hunk, "
-        "served_id "
-        "FROM github_comments WHERE served_id = ?",
-        (served_id,),
+        "SELECT id, repo, number, seq, author_email, body, created_ts, reactions, path, line, "
+        "diff_hunk FROM github_comments WHERE id = ?",
+        (comment_id,),
     ).fetchone()
 
 
-def confluence_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
-    """One page by the id the API reports. A unique-indexed column lookup, not a reverse map built
-    at startup: the id is assigned at import, so it costs neither the per-boot scan nor the memory,
+def confluence_by_id(conn, page_id, visible_ids=None) -> sqlite3.Row | None:
+    """One page by the id the API reports. A PRIMARY KEY lookup, not a reverse map built at
+    startup: the id is assigned at import, so it costs neither the per-boot scan nor the memory,
     and it cannot be ambiguous."""
-    col = served_id_column("confluence")
     clause, cp = _acl_clause("confluence", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM confluence_pages WHERE {col} = ?{clause}", [served_id, *cp]
+        f"SELECT * FROM confluence_pages WHERE id = ?{clause}", [page_id, *cp]
     ).fetchone()
 
 
-def notion_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+def notion_by_id(conn, page_id, visible_ids=None) -> sqlite3.Row | None:
     """One page or database by the id the API reports -- a dashed lowercase UUID. The caller
     canonicalizes a dashless or mixed-case spelling to that same form before calling (see
     routers.notion._norm); this is a plain equality lookup, not a case- or dash-insensitive one. A
-    unique-indexed column lookup, not a reverse map built at startup."""
-    col = served_id_column("notion")
+    PRIMARY KEY lookup, not a reverse map built at startup."""
     clause, cp = _acl_clause("notion", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM notion_pages WHERE {col} = ?{clause}", [served_id, *cp]
+        f"SELECT * FROM notion_pages WHERE id = ?{clause}", [page_id, *cp]
     ).fetchone()
 
 
@@ -2217,16 +2374,16 @@ def notion_by_data_source_id(conn, data_source_id, visible_ids=None) -> sqlite3.
     """One DATABASE by its data source id -- the 2025-09-03 API's query target, a second and
     unrelated served-id space for the same row (see the schema comment on idx_notion_served_ds).
     Populated only for subtype='database' rows, so a page's NULL column never matches -- unlike
-    notion_by_served_id (which spans both kinds), a match here already implies the right kind and
+    notion_by_id (which spans both kinds), a match here already implies the right kind and
     the caller needs no subtype check of its own."""
     clause, cp = _acl_clause("notion", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM notion_pages WHERE served_data_source_id = ?{clause}",
+        f"SELECT * FROM notion_pages WHERE data_source_id = ?{clause}",
         [data_source_id, *cp],
     ).fetchone()
 
 
-def github_comments(conn, doc_id, *, anchored: bool | None = None) -> list[sqlite3.Row]:
+def github_comments(conn, repo, number, *, anchored: bool | None = None) -> list[sqlite3.Row]:
     """``github_comments`` rows for one document, carrying the review-comment columns.
 
     A github-specific reader because :func:`doc_comments` selects one fixed column list for six
@@ -2238,10 +2395,9 @@ def github_comments(conn, doc_id, *, anchored: bool | None = None) -> list[sqlit
     """
     where = {None: "", True: " AND path IS NOT NULL", False: " AND path IS NULL"}[anchored]
     return conn.execute(
-        "SELECT id, doc_id, seq, author_email, body, created_ts, reactions, path, line, diff_hunk, "
-        "served_id "
-        "FROM github_comments WHERE doc_id = ?" + where + " ORDER BY seq",
-        (doc_id,),
+        "SELECT id, repo, number, seq, author_email, body, created_ts, reactions, path, line, "
+        "diff_hunk FROM github_comments WHERE repo = ? AND number = ?" + where + " ORDER BY seq",
+        (repo, number),
     ).fetchall()
 
 
@@ -2407,7 +2563,7 @@ def container_grants(conn, source_type, container) -> list[sqlite3.Row]:
     tbl, gcol = table(source_type), grouping_col(source_type)
     return conn.execute(
         f"SELECT DISTINCT a.principal_type, a.principal_id FROM {acl_table(source_type)} a "
-        f"JOIN {tbl} d ON d.doc_id = a.doc_id WHERE d.{gcol} = ?",
+        f"JOIN {tbl} d ON {_acl_join(source_type, 'a', 'd')} WHERE d.{gcol} = ?",
         (container,),
     ).fetchall()
 
@@ -2416,7 +2572,8 @@ def container_has_public(conn, source_type, container) -> bool:
     tbl, gcol = table(source_type), grouping_col(source_type)
     return (
         conn.execute(
-            f"SELECT 1 FROM {acl_table(source_type)} a JOIN {tbl} d ON d.doc_id = a.doc_id "
+            f"SELECT 1 FROM {acl_table(source_type)} a JOIN {tbl} d "
+            f"ON {_acl_join(source_type, 'a', 'd')} "
             f"WHERE d.{gcol} = ? AND a.principal_type = 'org' LIMIT 1",
             (container,),
         ).fetchone()
@@ -2424,28 +2581,46 @@ def container_has_public(conn, source_type, container) -> bool:
     )
 
 
-def doc_grants(conn, source_type, doc_id) -> list[sqlite3.Row]:
+def doc_grants(conn, source_type, *ident) -> list[sqlite3.Row]:
+    """Every grant on one document. ``ident`` is positional against :func:`id_columns`, the same
+    contract :func:`get_document` follows."""
+    key = id_columns(source_type)
+    if len(ident) != len(key):
+        raise ValueError(
+            f"doc_grants: {source_type!r} is identified by {key}, so it takes "
+            f"{len(key)} value(s), not {len(ident)}"
+        )
+    where = " AND ".join(f"{c} = ?" for c in key)
     return conn.execute(
-        f"SELECT principal_type, principal_id FROM {acl_table(source_type)} WHERE doc_id = ? "
+        f"SELECT principal_type, principal_id FROM {acl_table(source_type)} WHERE {where} "
         "ORDER BY principal_type, principal_id",
-        (doc_id,),
+        ident,
     ).fetchall()
 
 
-def docs_with_grants(conn, source_type, doc_ids: list[str]) -> set[str]:
-    """The subset of ``doc_ids`` that have at least one ACL grant — one query (chunked to stay
-    under SQLite's variable limit) instead of a per-doc ``doc_grants`` call when building a list."""
-    out: set[str] = set()
-    for i in range(0, len(doc_ids), 900):
-        chunk = doc_ids[i : i + 900]
-        marks = ",".join("?" for _ in chunk)
-        out.update(
-            r[0]
-            for r in conn.execute(
-                f"SELECT DISTINCT doc_id FROM {acl_table(source_type)} WHERE doc_id IN ({marks})",
-                chunk,
-            ).fetchall()
-        )
+def docs_with_grants(conn, source_type, doc_keys: list) -> set:
+    """The subset of ``doc_keys`` that have at least one ACL grant — one query (chunked to stay
+    under SQLite's variable limit) instead of a per-doc ``doc_grants`` call when building a list.
+
+    Each entry is one document's key, positional against :func:`id_columns`: a bare value for a
+    single-column source, a tuple for slack / s3 / github. The returned set is spelled the same
+    way the input was, so a caller can test membership with the value it passed in."""
+    cols = id_columns(source_type)
+    key = ", ".join(cols)
+    rows = [k if isinstance(k, tuple) else (k,) for k in doc_keys]
+    # The variable limit counts VALUES, not rows, so the chunk shrinks with the key's arity.
+    per_chunk = max(1, 900 // len(cols))
+    out: set = set()
+    for i in range(0, len(rows), per_chunk):
+        chunk = rows[i : i + per_chunk]
+        values = ",".join("(" + ",".join("?" for _ in cols) + ")" for _ in chunk)
+        flat = [v for row in chunk for v in row]
+        found = conn.execute(
+            f"SELECT DISTINCT {key} FROM {acl_table(source_type)} "
+            f"WHERE ({key}) IN (VALUES {values})",
+            flat,
+        ).fetchall()
+        out.update(tuple(r) if len(cols) > 1 else r[0] for r in found)
     return out
 
 
@@ -2466,19 +2641,29 @@ def container_member_emails(conn, source_type, container) -> set[str] | None:
     return _expand_grants(conn, container_grants(conn, source_type, container))
 
 
-def doc_member_emails(conn, source_type, doc_id) -> set[str] | None:
-    return _expand_grants(conn, doc_grants(conn, source_type, doc_id))
+def doc_member_emails(conn, source_type, *ident) -> set[str] | None:
+    return _expand_grants(conn, doc_grants(conn, source_type, *ident))
 
 
 # --- comments -------------------------------------------------------------------
 
 
-def doc_comments(conn, source_type, doc_id) -> list[sqlite3.Row]:
+def doc_comments(conn, source_type, *ident) -> list[sqlite3.Row]:
+    """A document's child rows in order. ``ident`` is positional against :func:`id_columns` — the
+    parent is named by its served id, and the comment table's own columns for it come from
+    :data:`COMMENT_PARENT`."""
     tbl = COMMENT_TABLE.get(source_type)
     if tbl is None:
         return []
+    cols = comment_parent_columns(source_type)
+    if len(ident) != len(cols):
+        raise ValueError(
+            f"doc_comments: {source_type!r} comments hang off {cols}, so this takes "
+            f"{len(cols)} value(s), not {len(ident)}"
+        )
+    where = " AND ".join(f"{c} = ?" for c in cols)
     return conn.execute(
         f"SELECT id, seq, author_email, body, created_ts, reactions FROM {tbl} "
-        "WHERE doc_id = ? ORDER BY seq",
-        (doc_id,),
+        f"WHERE {where} ORDER BY seq",
+        ident,
     ).fetchall()

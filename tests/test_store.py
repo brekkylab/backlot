@@ -39,6 +39,85 @@ def test_registry_covers_every_source():
         assert store.table(src)  # source -> table resolves
         assert store.grouping_table(src)  # source -> grouping table resolves
         assert store.grouping_col(src)  # source -> grouping column resolves
+        assert store.id_columns(src)  # source -> the columns it is ADDRESSED by resolves
+
+
+def test_id_columns_use_each_vendors_own_name():
+    """The column holding a row's identity is spelled the way its VENDOR spells it, not forced to a
+    uniform `id`: a real GitHub issue carries both an `id` and a `number` and the API addresses it
+    by the number, a Jira issue by its `key`, a Slack message by its `ts`. Renaming any of those to
+    `id` would serve a field the vendor's own client never asks for.
+
+    Three are PAIRS, and that is the vendor's own rule rather than an over-constraint: an S3 key is
+    unique only within its bucket (the same key in two buckets is ordinary), a Slack ts only within
+    its channel, a GitHub number only within its repo. A Jira key, by contrast, is unique across a
+    whole site, so it stands alone. Every entry is a tuple so the ACL tables, the FTS indexes and
+    `get_document` stay n-ary uniformly instead of carrying a special case for the pairs."""
+    assert store.id_columns("github") == ("repo", "number")
+    assert store.id_columns("jira") == ("key",)
+    assert store.id_columns("slack") == ("channel", "ts")
+    assert store.id_columns("s3") == ("bucket", "key")
+    # Everything else serves an opaque id and calls it `id`.
+    for src in ("gmail", "google_drive", "confluence", "notion", "hubspot", "linear", "fireflies"):
+        assert store.id_columns(src) == ("id",), src
+    # The row-distinguishing column on its own — the last of the pair, and the whole key for the
+    # nine sources whose id needs no container to be unambiguous.
+    assert store.id_column("github") == "number"
+    assert store.id_column("slack") == "ts"
+    assert store.id_column("gmail") == "id"
+
+
+def _pk_columns(conn, tbl: str) -> list[str]:
+    """A table's PRIMARY KEY, in key order (`PRAGMA table_info`'s `pk` is a 1-based position)."""
+    cols = list(conn.execute(f"PRAGMA table_info({tbl})"))
+    return [c["name"] for c in sorted((c for c in cols if c["pk"]), key=lambda c: c["pk"])]
+
+
+def test_no_table_stores_the_datasets_own_identifier(tmp_path):
+    """#51's principle, at the schema level: the dataset's identifier scheme must not outlive the
+    import. A `dsid_…` (or a corpus-authored `doc_id`) is an INPUT — it seeds a synthesized id and
+    is then discarded — so after import a row is addressed by the id the API serves, and by nothing
+    else.
+
+    This is why `doc_id` was removed rather than renamed to `id`: a rename would have kept the
+    dataset's scheme, only spelled differently. So the check is textual as well as structural — a
+    column named `doc_id` anywhere is the defect, wherever it sits."""
+    conn = store.connect_rw(tmp_path / "ids.sqlite")
+    try:
+        tables = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        ]
+        # Sanity: the schema really was created, or every assertion below is vacuous.
+        assert set(store.SOURCE_TABLE.values()) <= set(tables)
+
+        assert [
+            t
+            for t in tables
+            if any(c["name"] == "doc_id" for c in conn.execute(f"PRAGMA table_info({t})"))
+        ] == []
+
+        for src, tbl in store.SOURCE_TABLE.items():
+            # Keyed on exactly the id it serves...
+            assert _pk_columns(conn, tbl) == list(store.id_columns(src)), src
+            # ...and that id comes FIRST. Today's columns sit in the order they were appended in;
+            # a table rewritten from scratch leads with its identifier, then its container.
+            idc = list(store.id_columns(src))
+            declared = [c["name"] for c in conn.execute(f"PRAGMA table_info({tbl})")]
+            assert declared[: len(idc)] == idc, src
+            # ...then the container — unless the container IS part of the identifier, as it is for
+            # the three sources whose id is only unique within one (slack, s3, github).
+            assert store.grouping_col(src) in declared[: len(idc) + 1], src
+
+        for src, tbl in store.ACL_TABLE.items():
+            # A grant names the document by the same served id, so an ACL row and the row it
+            # governs cannot be keyed on two different identifier schemes.
+            idc = list(store.id_columns(src))
+            assert _pk_columns(conn, tbl)[: len(idc)] == idc, src
+    finally:
+        conn.close()
 
 
 def test_unknown_source_type_raises():
@@ -100,31 +179,27 @@ def test_acl_table_registry_covers_every_source(tmp_path):
     conn.close()
 
 
-def test_served_id_registry_covers_every_hashed_source():
-    """This registry has to be total over every source that serves a HASHED id -- one resolved by
-    reversing a hash back to a doc_id through a stored column assigned at import, each converted
-    in its own task (#51) -- confluence, gmail, notion, hubspot, linear, github and google_drive.
+def test_id_seed_registry_covers_every_source_whose_id_is_a_1_arity_hash():
+    """`ID_SEED` holds the sources whose served id is a pure function of ONE value — the incoming
+    record's own dataset identifier — so a single assignment method can seed and probe all of them.
+    It is deliberately NOT total over `SOURCE_TABLE`; three sources cannot honour that contract and
+    get their own assignment pass instead:
 
-    `s3`'s id is `bucket/key`, stored already and never hashed; `slack` has no hash->doc_id map to
-    replace; and fireflies' only hash (`fireflies_user_id`) reverses an EMAIL, not a doc_id.
+    - `jira`'s key is COMPOSED from its project's prefix, so its seed is (project, dataset id).
+    - `slack`'s ts is a function of the row's `created_ts` and its thread root as well.
+    - `s3`'s (bucket, key) is stated outright by the corpus; nothing synthesizes it at all.
 
-    `jira` is the interesting absence: its served value is the whole KEY, composed from its
-    project's prefix, so it is not a 1-arity seed over doc_id and cannot honour this registry's
-    contract. It gets its own reader instead -- the precedent fireflies_users and linear_teams set
-    when they were converted (#51 task 9) rather than widening the tuple to fit them."""
-    assert set(store.SERVED_ID) == {
-        "confluence",
-        "gmail",
-        "notion",
-        "hubspot",
-        "linear",
-        "github",
-        "google_drive",
-    }
-    # Confluence's own entry -- column name, seed function, corpus-wide scope. Every entry in the
-    # registry is read by its own stored-column reader now (github_by_number,
-    # jira_by_served_number, etc.) -- none is left to main._build_index's reverse map.
-    assert store.SERVED_ID["confluence"] == ("served_id", synth.confluence_id, None)
+    Widening the tuple to fit those would make every other source pay for their shape — the same
+    call `fireflies_users` and `linear_teams` made when they were converted (#51 task 9)."""
+    assert set(store.ID_SEED) == set(store.SOURCE_TABLE) - {"jira", "slack", "s3"}
+    # Confluence's own entry -- seed function, then the columns its probe holds fixed (none:
+    # confluence resolves an id corpus-wide). The column the seed FILLS is no longer part of this
+    # registry, because it is now the table's primary key and `id_columns` already names it.
+    assert store.ID_SEED["confluence"] == (synth.confluence_id, None)
+    assert store.id_seed("confluence") is synth.confluence_id
+    # github is the one entry with a scope: a number is unique only within its repo.
+    assert store.id_seed_scope("github") == "repo"
+    assert store.id_seed_scope("gmail") is None
 
 
 def test_no_blanket_replace_writes_a_table_with_a_non_pk_unique_index(tmp_path):

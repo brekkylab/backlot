@@ -520,8 +520,11 @@ def _hubspot_mini_db(tmp_path):
     for doc_id, object_type, title, properties in rows:
         conn.execute(
             "INSERT INTO hubspot_objects(doc_id, object_type, author_email, title, content, "
-            "properties, created_ts) VALUES (?,?,?,?,?,?,1)",
-            (doc_id, object_type, "owner@x.com", title, title, properties),
+            "properties, created_ts, served_id) VALUES (?,?,?,?,?,?,1,?)",
+            # served_id is NOT NULL + UNIQUE; nothing here reads it back, so any value distinct
+            # per row satisfies the constraint -- derived from doc_id rather than the real
+            # synth.hubspot_record_id, since this DB is hand-built to bypass the importer.
+            (doc_id, object_type, "owner@x.com", title, title, properties, f"served-{doc_id}"),
         )
     # Both contacts belong to the company; the deal is associated with the company too.
     # Real HubSpot associations are bidirectional with a distinct type id per direction, so a row
@@ -1490,9 +1493,12 @@ def test_connect_ro_tuning(sample_settings):
 
 def _mini_db(tmp_path):
     conn = store.connect_rw(tmp_path / "m.sqlite")
+    # served_id is NOT NULL + UNIQUE; no test here reads it back, so any value distinct per row
+    # satisfies the constraint -- a literal, not synth.notion_id, since this DB bypasses the
+    # importer on purpose.
     conn.execute(
-        "INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts) "
-        "VALUES('n1','eng','a@x.com','Alpha runbook','deploy alpha service',1)"
+        "INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts,served_id) "
+        "VALUES('n1','eng','a@x.com','Alpha runbook','deploy alpha service',1,'served-n1')"
     )
     conn.commit()
     store.build_fts(conn)
@@ -1503,8 +1509,8 @@ def test_fts_add_docs_indexes_new_without_dropping_old(tmp_path):
     conn = _mini_db(tmp_path)
     # a new page inserted AFTER the initial build is not searchable until indexed
     conn.execute(
-        "INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts) "
-        "VALUES('n2','eng','a@x.com','Beta guide','rotate beta credentials',2)"
+        "INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts,served_id) "
+        "VALUES('n2','eng','a@x.com','Beta guide','rotate beta credentials',2,'served-n2')"
     )
     conn.commit()
     assert store.search_documents(conn, "beta", "notion") == []  # not yet indexed
@@ -1811,9 +1817,12 @@ def test_linear_relation_by_id_scopes_the_from_end_too(tmp_path):
     conn = store.connect_rw(tmp_path / "rel.sqlite")
     for doc_id in ("i1", "i2"):
         conn.execute(
-            "INSERT INTO linear_issues(doc_id, team, author_email, title, content, created_ts) "
-            "VALUES (?,'eng','a@x.com','issue','body',1)",
-            (doc_id,),
+            # served_id is NOT NULL + UNIQUE; nothing here reads it back, so any value distinct
+            # per row satisfies the constraint -- a literal, not synth.linear_id, since this DB
+            # bypasses the importer on purpose.
+            "INSERT INTO linear_issues(doc_id, team, author_email, title, content, created_ts, "
+            "served_id) VALUES (?,'eng','a@x.com','issue','body',1,?)",
+            (doc_id, f"served-{doc_id}"),
         )
     conn.execute(
         "INSERT INTO linear_relations(id, from_doc_id, to_doc_id, type, created_ts) "
@@ -2012,10 +2021,12 @@ def test_write_meta_commits_the_entire_transaction(tmp_path):
     (Task 4), a write_meta call flushes any unrelated pending inserts."""
     path = tmp_path / "committed.sqlite"
     conn = store.connect_rw(path)
-    # Insert unrelated data without committing
+    # Insert unrelated data without committing. served_id is NOT NULL + UNIQUE; nothing here
+    # reads it back, so any value satisfies the constraint -- a literal, not synth.notion_id,
+    # since this DB bypasses the importer on purpose.
     conn.execute(
-        "INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts) "
-        "VALUES('n1','eng','a@x.com','Test','content',1)"
+        "INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts,served_id) "
+        "VALUES('n1','eng','a@x.com','Test','content',1,'served-n1')"
     )
     # write_meta commits the entire pending transaction
     store.write_meta(conn, "test_key", "test_value")

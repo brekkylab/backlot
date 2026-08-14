@@ -698,6 +698,12 @@ class _Loader:
         a salt until free — a plain hash collides by the birthday bound long before a corpus runs
         out of comments, and a shared id means one comment's `url` returns another's body. A comment
         already in the DB keeps the id it has, so a re-import does not renumber it.
+
+        Same probe shape as `_assign_github_number`/`_assign_jira_number` (#51, task 11): re-seed a
+        few times to spread out, THEN walk — but the walk is BOUNDED. Past
+        `synth.GITHUB_COMMENT_ID_RANGE` steps every id `synth.github_comment_id` can produce has
+        been visited, so this corpus has more comments than the space holds, and an unbounded walk
+        would spin forever instead of failing where the problem actually is.
         """
         if stored_id in self._gh_comment_ids:
             return self._gh_comment_ids[stored_id]
@@ -709,14 +715,19 @@ class _Loader:
             if served not in self._gh_ids_taken:
                 break
             served = synth.github_comment_id(f"{stored_id}\x00{salt}")
-        while served in self._gh_ids_taken:
+        for _ in range(synth.GITHUB_COMMENT_ID_RANGE):
+            if served not in self._gh_ids_taken:
+                self._gh_comment_ids[stored_id] = served
+                self._gh_ids_taken.add(served)
+                return served
             served = (
                 synth.GITHUB_COMMENT_ID_MIN
                 + (served - synth.GITHUB_COMMENT_ID_MIN + 1) % synth.GITHUB_COMMENT_ID_RANGE
             )
-        self._gh_comment_ids[stored_id] = served
-        self._gh_ids_taken.add(served)
-        return served
+        raise SystemExit(
+            f"github: comment ids have exhausted their {synth.GITHUB_COMMENT_ID_RANGE}-value "
+            f"range; no served id is free for {stored_id!r}"
+        )
 
     def _assign_confluence_id(self, doc_id: str) -> int:
         """The `id` this page will be served as: unique, matching real Confluence's numeric
@@ -727,6 +738,12 @@ class _Loader:
         out of pages, and a shared id used to mean the reverse map built at startup was
         last-writer-wins, so one of the two colliding pages was unreachable at its own id. A page
         already in the DB keeps the id it has, so a re-import does not renumber it.
+
+        Same probe shape as `_assign_github_number`/`_assign_jira_number` (#51, task 11): re-seed a
+        few times to spread out, THEN walk — but the walk is BOUNDED. Past
+        `synth.CONFLUENCE_ID_RANGE` steps every id `synth.confluence_id` can produce has been
+        visited, so this corpus has more pages than the space holds, and an unbounded walk would
+        spin forever instead of failing where the problem actually is.
         """
         if doc_id in self._confluence_ids:
             return self._confluence_ids[doc_id]
@@ -739,14 +756,19 @@ class _Loader:
             if served not in self._confluence_ids_taken:
                 break
             served = seed(f"{doc_id}\x00{salt}")
-        while served in self._confluence_ids_taken:
+        for _ in range(synth.CONFLUENCE_ID_RANGE):
+            if served not in self._confluence_ids_taken:
+                self._confluence_ids[doc_id] = served
+                self._confluence_ids_taken.add(served)
+                return served
             served = (
                 synth.CONFLUENCE_ID_MIN
                 + (served - synth.CONFLUENCE_ID_MIN + 1) % synth.CONFLUENCE_ID_RANGE
             )
-        self._confluence_ids[doc_id] = served
-        self._confluence_ids_taken.add(served)
-        return served
+        raise SystemExit(
+            f"confluence: page ids have exhausted their {synth.CONFLUENCE_ID_RANGE}-value range; "
+            f"no served id is free for {doc_id!r}"
+        )
 
     def _assign_hubspot_id(self, doc_id: str) -> str:
         """The `id` this record will be served as: unique, a numeric string matching real
@@ -773,14 +795,23 @@ class _Loader:
             if served not in self._hubspot_ids_taken:
                 break
             served = int(seed(f"{doc_id}\x00{salt}"))
-        while served in self._hubspot_ids_taken:
+        # Same probe shape as _assign_github_number/_assign_jira_number (#51, task 11): BOUNDED --
+        # past synth.HUBSPOT_ID_RANGE steps every id synth.hubspot_record_id can produce has been
+        # visited, so this corpus has more records than the space holds, and an unbounded walk
+        # would spin forever instead of failing where the problem actually is.
+        for _ in range(synth.HUBSPOT_ID_RANGE):
+            if served not in self._hubspot_ids_taken:
+                result = str(served)
+                self._hubspot_ids[doc_id] = result
+                self._hubspot_ids_taken.add(served)
+                return result
             served = (
                 synth.HUBSPOT_ID_MIN + (served - synth.HUBSPOT_ID_MIN + 1) % synth.HUBSPOT_ID_RANGE
             )
-        result = str(served)
-        self._hubspot_ids[doc_id] = result
-        self._hubspot_ids_taken.add(served)
-        return result
+        raise SystemExit(
+            f"hubspot: record ids have exhausted their {synth.HUBSPOT_ID_RANGE}-value range; "
+            f"no served id is free for {doc_id!r}"
+        )
 
     def __init__(
         self, conn, org: str, org_domain: str, *, closed: bool = False, validate: bool = True

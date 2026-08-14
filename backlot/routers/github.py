@@ -1112,10 +1112,15 @@ def _issue_number(row) -> int:
     EXACTLY that value: `resolve_github_numbers` writes `served_number = number` for it, so there
     is no separate provided-vs-derived branch left to make here.
 
-    The `or` fallback is defensive only: every non-file row gets a served_number at import
+    Asserted, not defensively re-derived: every non-file row gets a served_number at import
     (`resolve_github_numbers` raises rather than leave one NULL — see its docstring), so a caller
-    reaching this with a NULL one is a bug upstream, not a state meant to be papered over here."""
-    return row["served_number"] or synth.github_number(row["doc_id"])
+    reaching this with a NULL one is a bug upstream, not a state meant to be papered over here. A
+    silent re-hash fallback would serve a PROBED row's synthesized number instead of failing loudly
+    where the problem actually is — exactly the shape the hubspot bug shipped as (#51, task 11)."""
+    assert row["served_number"] is not None, (
+        f"github: doc_id {row['doc_id']!r} has no served_number"
+    )
+    return row["served_number"]
 
 
 def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "") -> dict:

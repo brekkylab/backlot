@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS gmail_messages (
     thread_id TEXT, thread_seq INTEGER NOT NULL DEFAULT 0,
     label_ids TEXT, to_addr TEXT, cc TEXT, bcc TEXT, reply_to TEXT,
     message_id TEXT, in_reply_to TEXT, refs TEXT, attachments TEXT, created_ts INTEGER NOT NULL,
-    body_html TEXT, owner_display TEXT, served_id TEXT
+    body_html TEXT, owner_display TEXT, served_id TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_gmail_mailbox ON gmail_messages(mailbox);
 CREATE INDEX IF NOT EXISTS idx_gmail_author ON gmail_messages(author_email);
@@ -315,7 +315,7 @@ CREATE TABLE IF NOT EXISTS confluence_pages (
     subtype TEXT, parent_id TEXT, labels TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     version_number INTEGER, version_message TEXT, minor_edit INTEGER,
     reviewers TEXT, confidentiality TEXT, owner_team TEXT, owner_display TEXT,
-    served_id INTEGER
+    served_id INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_confluence_space ON confluence_pages(space);
 CREATE INDEX IF NOT EXISTS idx_confluence_parent ON confluence_pages(parent_id);
@@ -358,8 +358,13 @@ CREATE TABLE IF NOT EXISTS github_comments (
     path TEXT, line INTEGER, diff_hunk TEXT, served_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_github_comments_doc ON github_comments(doc_id);
--- UNIQUE is the guarantee, not just an index: the assignment probes against it, so a duplicate is
--- an import error rather than a comment that silently shadows another at serve time.
+-- Uniqueness is primarily enforced by the assignment itself -- _assign_github_comment_id's in-run
+-- taken-set, probed against every id already taken (never this index) -- so a genuine collision
+-- essentially never reaches it. If one somehow did, the write path that sets this column
+-- (backlot.importer.byo, a plain `UPDATE ... WHERE id = ?`, no `ON CONFLICT`) has no fallback to
+-- silently resolve it, so it just raises IntegrityError -- UNIQUE is the guarantee, not just an
+-- index, but the guarantee comes from the in-memory probe, not from this index being consulted at
+-- assignment time.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_github_comments_served ON github_comments(served_id);
 
 CREATE TABLE IF NOT EXISTS notion_comments (
@@ -374,7 +379,7 @@ CREATE TABLE IF NOT EXISTS notion_pages (
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, parent_id TEXT, properties TEXT, icon TEXT, cover TEXT,
     created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    served_id TEXT, served_data_source_id TEXT
+    served_id TEXT NOT NULL, served_data_source_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notion_teamspace ON notion_pages(teamspace);
 CREATE INDEX IF NOT EXISTS idx_notion_parent ON notion_pages(parent_id);
@@ -410,7 +415,7 @@ CREATE TABLE IF NOT EXISTS hubspot_objects (
     doc_id TEXT PRIMARY KEY, object_type TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     properties TEXT, archived INTEGER, created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    owner_display TEXT, served_id TEXT
+    owner_display TEXT, served_id TEXT NOT NULL
 );
 -- (object_type, doc_id), not object_type alone: every read is "one type, ordered by doc_id", so
 -- carrying the ordering column makes a page a range seek instead of a temp-b-tree re-sort.
@@ -459,7 +464,7 @@ CREATE TABLE IF NOT EXISTS linear_issues (
     parent_key TEXT, parent_doc_id TEXT,
     -- Release name as the corpus writes it (`runtime-1.19`); served as `Issue.releases`.
     release TEXT,
-    served_id TEXT
+    served_id TEXT NOT NULL
 );
 -- (team, doc_id): the Relay connection pages one team ordered by doc_id, so carrying the ordering
 -- column makes a page a range seek rather than a re-sort of the whole team.
@@ -602,7 +607,7 @@ CREATE TABLE IF NOT EXISTS hubspot_object_types (object_type TEXT PRIMARY KEY, g
 -- `linear_team_key` is not injective -- two containers can reduce to one key -- so a lookup
 -- breaks the tie by team NAME order instead (see linear_team_by_served_key).
 CREATE TABLE IF NOT EXISTS linear_teams (
-    team TEXT PRIMARY KEY, group_id TEXT, served_id TEXT, served_key TEXT
+    team TEXT PRIMARY KEY, group_id TEXT, served_id TEXT, served_key TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_linear_teams_served ON linear_teams(served_id);
 CREATE INDEX IF NOT EXISTS idx_linear_teams_served_key ON linear_teams(served_key);
@@ -2079,9 +2084,10 @@ def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
 def gmail_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
     """One message by the id the API reports. The stored column is lowercase hex; callers pass the
     id as the client spelled it, so fold case here rather than at each call site."""
+    col = served_id_column("gmail")
     clause, cp = _acl_clause("gmail", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM gmail_messages WHERE served_id = ?{clause}", [served_id.lower(), *cp]
+        f"SELECT * FROM gmail_messages WHERE {col} = ?{clause}", [served_id.lower(), *cp]
     ).fetchone()
 
 

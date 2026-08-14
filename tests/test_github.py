@@ -1420,6 +1420,20 @@ def test_github_operation_ids_unique(client):
 # --- GitHub ---------------------------------------------------------------------
 
 
+def test_github_issue_number_asserts_rather_than_re_hash_a_null_served_number():
+    """`_issue_number`'s `or` fallback used to silently re-hash a NULL served_number back to a
+    plain `synth.github_number` -- exactly the shape the hubspot bug shipped as: a PROBED row
+    (one whose actual served number came from a walk, not a pure hash) would then advertise a
+    number nobody stored, unreachable at its own url (#51, task 11). An assertion is strictly
+    better: every non-file row gets a served_number at import (`resolve_github_numbers` raises
+    rather than leave one NULL), so reaching here with one is a bug upstream, and failing loudly
+    beats silently serving the wrong number."""
+    from backlot.routers.github import _issue_number
+
+    with pytest.raises(AssertionError, match="gh-orphan"):
+        _issue_number({"served_number": None, "doc_id": "gh-orphan"})
+
+
 def test_github_issue_shape(tmp_path):
     from backlot.routers.github import _issue_obj, _pr_obj
 

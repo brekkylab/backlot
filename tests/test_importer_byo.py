@@ -2665,6 +2665,98 @@ def test_byo_jira_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
         build_corpus(tmp_path, docs)
 
 
+def test_byo_confluence_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
+    """`_assign_confluence_id`'s walk used to be an unbounded `while` -- on an exhausted range
+    (confluence needs 9,000,000 pages in one corpus for that in reality) it would spin forever
+    with no error, exactly the hang `_assign_github_number`/`_assign_jira_number` were already
+    fixed against (#51, task 11). Same fix, same shape: bounded `for`, then `SystemExit`.
+
+    Shrinks `synth.CONFLUENCE_ID_RANGE` and collapses the seed to one constant, same technique as
+    the github/jira tests above. The constant is `synth.CONFLUENCE_ID_MIN` itself -- the first
+    value the shrunk range actually holds -- not an arbitrary one: a seed outside the range would
+    let the walk's first step spend its one useful check just moving the value INTO range, a
+    premature give-up dressed up as real exhaustion (see the jira test above for the full
+    argument). 4 rows, past the point (row 3) where exhaustion of a 2-value range is unavoidable.
+    """
+    from backlot import synth
+    from tests._helpers import build_corpus
+
+    monkeypatch.setattr(synth, "CONFLUENCE_ID_RANGE", 2)
+    monkeypatch.setitem(
+        store.SERVED_ID, "confluence", ("served_id", lambda doc_id: synth.CONFLUENCE_ID_MIN, None)
+    )
+    docs = [
+        {
+            "source_type": "confluence",
+            "doc_id": f"c{i}",
+            "space": "eng",
+            "title": f"Page {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i in range(4)  # more rows than the shrunk 2-id range holds
+    ]
+    with pytest.raises(SystemExit, match="exhausted"):
+        build_corpus(tmp_path, docs)
+
+
+def test_byo_hubspot_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
+    """`_assign_hubspot_id`'s equivalent of the confluence test above (#51, task 11): its walk was
+    also an unbounded `while`, on a range genuinely exhausted only at 9x10**9 records in reality.
+    Same shrunk-range technique, same in-range constant (`synth.HUBSPOT_ID_MIN`) for the same
+    reason -- see the confluence test's docstring."""
+    from backlot import synth
+    from tests._helpers import build_corpus
+
+    monkeypatch.setattr(synth, "HUBSPOT_ID_RANGE", 2)
+    monkeypatch.setitem(
+        store.SERVED_ID, "hubspot", ("served_id", lambda doc_id: synth.HUBSPOT_ID_MIN, None)
+    )
+    docs = [
+        {
+            "source_type": "hubspot",
+            "object_type": "contacts",
+            "doc_id": f"hs{i}",
+            "title": f"Contact {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i in range(4)  # more rows than the shrunk 2-id range holds
+    ]
+    with pytest.raises(SystemExit, match="exhausted"):
+        build_corpus(tmp_path, docs)
+
+
+def test_byo_github_comment_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
+    """`_assign_github_comment_id`'s equivalent (#51, task 11): its walk was also an unbounded
+    `while`, on a range genuinely exhausted only at 9x10**9 comments in reality. Unlike the
+    confluence/hubspot ids above, this one is not read off `store.SERVED_ID` -- it calls
+    `synth.github_comment_id` directly -- so the seed is collapsed by patching that function
+    itself, still to the in-range constant `synth.GITHUB_COMMENT_ID_MIN` for the same
+    premature-give-up reason (see the confluence test's docstring). One doc with 4 comments: the
+    taken-id set is corpus-wide, not per-doc, so this is the same exhaustion shape as 4 separate
+    docs would be."""
+    from backlot import synth
+    from tests._helpers import build_corpus
+
+    monkeypatch.setattr(synth, "GITHUB_COMMENT_ID_RANGE", 2)
+    monkeypatch.setattr(synth, "github_comment_id", lambda comment_id: synth.GITHUB_COMMENT_ID_MIN)
+    docs = [
+        {
+            "source_type": "github",
+            "doc_id": "g0",
+            "repo": "core",
+            "title": "Issue 0",
+            "content": "x",
+            "author_email": "a@acme.com",
+            # more comments than the shrunk 2-id range holds
+            "comments": [{"content": f"c{i}", "author_email": "a@acme.com"} for i in range(4)],
+        }
+    ]
+    with pytest.raises(SystemExit, match="exhausted"):
+        build_corpus(tmp_path, docs)
+
+
 def test_byo_two_records_cannot_claim_one_tracker_id(tmp_path):
     """Two records providing the same github number, or the same jira key, used to load
     without a word: the reverse index gave the id to one of them and the other was

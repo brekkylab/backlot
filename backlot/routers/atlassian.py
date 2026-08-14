@@ -589,14 +589,16 @@ def _issue_key(request: Request, row) -> str:
     `served_number = <the provided suffix>` for it, so there is no separate provided-vs-derived
     branch to make here — same shape as github's own `_issue_number` (#51, task 7).
 
-    The `or` fallback is defensive only: every jira row gets a served_number at import
+    Asserted, not defensively re-derived: every jira row gets a served_number at import
     (`resolve_jira_numbers` raises rather than leave one NULL — see its docstring), so a caller
-    reaching this with a NULL one is a bug upstream, not a state meant to be papered over here.
+    reaching this with a NULL one is a bug upstream, not a state meant to be papered over here. A
+    silent re-hash fallback would serve a PROBED row's synthesized suffix instead of failing loudly
+    where the problem actually is — exactly the shape the hubspot bug shipped as (#51, task 11).
     `_project_key` already tolerates a bare Request with no app scope (shape tests build one —
     see its own `_index_maps` helper), so this needs no separate accommodation for that."""
     pkey = _project_key(request, row["project"])
-    suffix = row["served_number"] or synth.jira_key_number(row["doc_id"])
-    return f"{pkey}-{suffix}"
+    assert row["served_number"] is not None, f"jira: doc_id {row['doc_id']!r} has no served_number"
+    return f"{pkey}-{row['served_number']}"
 
 
 def _jira_ref(request: Request, row, site: str = "") -> dict:

@@ -9,6 +9,7 @@ from __future__ import annotations
 from starlette.requests import Request
 import re
 
+import pytest
 
 from backlot import store
 from tests._helpers import bare_request, crawl_confluence, crawl_jira, db_count, tiny_corpus
@@ -239,6 +240,20 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
 
 
 # --- Jira ------------------------------------------------------------------------
+
+
+def test_jira_issue_key_asserts_rather_than_re_hash_a_null_served_number():
+    """`_issue_key`'s `or` fallback used to silently re-hash a NULL served_number back to a plain
+    `synth.jira_key_number` -- exactly the shape the hubspot bug shipped as: a PROBED row (one
+    whose actual served suffix came from a walk, not a pure hash) would then advertise a key
+    nobody stored, unreachable at its own url (#51, task 11). An assertion is strictly better:
+    every jira row gets a served_number at import (`resolve_jira_numbers` raises rather than leave
+    one NULL), so reaching here with one is a bug upstream, and failing loudly beats silently
+    serving the wrong key."""
+    from backlot.routers.atlassian import _issue_key
+
+    with pytest.raises(AssertionError, match="jira-orphan"):
+        _issue_key(bare_request(), {"served_number": None, "doc_id": "jira-orphan", "project": "x"})
 
 
 def test_jira_status_category_and_fields(tmp_path):

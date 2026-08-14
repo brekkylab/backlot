@@ -1,7 +1,6 @@
 """FastAPI app hosting every vendor mock under path prefixes.
 
-Startup opens the read-only DB, loads the ACL/token map, and starts a background cache warm-up. It
-builds no reverse index: every id the API resolves is a stored column or table, assigned at import.
+Startup opens the read-only DB, loads the ACL/token map, and starts a background cache warm-up.
 """
 
 from __future__ import annotations
@@ -62,7 +61,7 @@ async def lifespan(app: FastAPI):
     app.state.acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     app.state.oauth = Oauth.load(settings.credentials_path)  # None if credentials.yaml absent
 
-    # A single indexed read, so it needs no warm-up. None on a DB predating the meta table.
+    # None on a DB predating the meta table.
     _src = store.read_meta(conn, "source_documents")
     app.state.source_documents = int(_src) if _src is not None else None
 
@@ -125,7 +124,7 @@ app = FastAPI(
 
 
 # Per-vendor error envelopes live in ``backlot/errors/``. Both handlers ask that package and fall
-# back to FastAPI's ``{"detail": ...}``, so neither needs a branch per vendor.
+# back to FastAPI's ``{"detail": ...}``.
 
 
 @app.exception_handler(StarletteHTTPException)

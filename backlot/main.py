@@ -19,7 +19,6 @@ needs the corpus-provided prefix to compose a key at serve time (see routers.atl
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 from contextlib import asynccontextmanager
 
@@ -56,49 +55,8 @@ def _build_index(conn) -> dict:
         "linear_cycles": {},
         "linear_labels": {},
         "linear_releases": {},
-        # container -> the project-key prefix its corpus-provided issue keys carry, and
-        # the reverse — so `project = PAY` JQL, the project picker and every issue's
-        # `fields.project.key` speak the spelling the documents cite. CONTAINER-level (one
-        # entry per project, not per document) — unlike the per-document key resolution,
-        # which is now a stored `served_number` column instead (#51, task 8; see
-        # backlot.importer.byo's `resolve_jira_numbers` and store.jira_by_served_number).
-        "jira_project_keys": {},
-        "jira_project_containers": {},
     }
 
-    # A DB from before the `key` column existed is opened READ-ONLY here, so no migration can
-    # run; the column-less query below serves it exactly as that version did (no provided prefix
-    # to register — every project falls back to its synthesized key, see routers.atlassian's
-    # `_project_key`).
-    def _scan(with_cols: str, without_cols: str, tail: str):
-        try:
-            return list(conn.execute(with_cols + tail))
-        except sqlite3.OperationalError as e:
-            # Only a missing column means "a DB from before these columns existed". Any
-            # other OperationalError — a locked database, a corrupt page — must surface:
-            # swallowed, it boots a server that ignores every corpus-provided id and 404s
-            # at all of them, with nothing said. Same narrowing as `store.read_meta`.
-            if "no such column" not in str(e).lower():
-                raise
-            return list(conn.execute(without_cols + tail))
-
-    j_rows = _scan(
-        f"SELECT doc_id, {store.grouping_col('jira')} AS container, key ",
-        f"SELECT doc_id, {store.grouping_col('jira')} AS container, NULL AS key ",
-        f"FROM {store.table('jira')} ORDER BY doc_id",
-    )
-    # Only the corpus-PROVIDED prefix is registered — a keyless project's synthesized prefix
-    # (`synth.jira_project_key`) is derived at serve time instead, never written into this map.
-    # One pass, doc_id order with setdefault (first row wins, stable across restarts): unlike the
-    # old per-document resolution this replaced, nothing here depends on which row a collision
-    # displaces, so there is no second pass to run.
-    for r in j_rows:
-        if not r["key"]:
-            continue
-        prefix = str(r["key"]).rsplit("-", 1)[0]
-        if prefix:
-            idx["jira_project_keys"].setdefault(r["container"], prefix)
-            idx["jira_project_containers"].setdefault(prefix.upper(), r["container"])
     # `@linear/sdk` resolves an issue's relations LAZILY: `await issue.state` issues a fresh
     # `workflowState(id: <uuid>)`. Those uuids are one-way hashes of a name, so the only way to
     # answer is a reverse map built here. Each source list is a DISTINCT over one column (see

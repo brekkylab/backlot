@@ -1684,6 +1684,19 @@ class _Loader:
                     "served_key=excluded.served_key",
                     (name, group_id, synth.linear_team_id(name), synth.linear_team_key(name)),
                 )
+            elif src == "jira":
+                # The project's own key -- the prefix its issue keys carry. `resolve_jira_keys`
+                # ran before this (see load_records' ordering) and recorded the prefix it actually
+                # used in `jira_prefixes`, including for a project with no provided key at all, so
+                # what lands here is always what the corpus is really served under. Upserted on
+                # the PK, not `INSERT OR REPLACE`: this table now carries a non-PK UNIQUE index
+                # (idx_jira_projects_key) that OR REPLACE would resolve by deleting the other
+                # project's row.
+                self.conn.execute(
+                    f"INSERT INTO {gtable}({gcol}, key, group_id) VALUES (?,?,?) "
+                    f"ON CONFLICT({gcol}) DO UPDATE SET key=excluded.key, group_id=excluded.group_id",
+                    (name, self.jira_prefixes.get(name) or synth.jira_project_key(name), group_id),
+                )
             else:
                 self.conn.execute(
                     f"INSERT OR REPLACE INTO {gtable}({gcol}, group_id) VALUES (?,?)",
@@ -1951,6 +1964,9 @@ class _Loader:
                 candidate = self._assign_jira_number(doc_id, project, taken)
             bucket.add(candidate)
             prefix = self.jira_prefixes.get(project) or synth.jira_project_key(project)
+            # Record it: a composed key names its project exactly as a provided one does, and
+            # `write_containers` stores this on the project's own row.
+            self.jira_prefixes.setdefault(project, prefix)
             updates.append((f"{prefix}-{candidate}", doc_id))
         # ONE sweep, unlike the two this needed while the suffix lived in its own column: pass 1
         # no longer writes anything (a claim is already IN the column), so every row here holds

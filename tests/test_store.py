@@ -187,7 +187,10 @@ def test_no_blanket_replace_writes_a_table_with_a_non_pk_unique_index(tmp_path):
 
     # `write_containers`: every grouping table except its declared special cases must have NO
     # non-PK unique index, or its generic `else` branch's blanket OR REPLACE reaches it.
-    write_containers_special_cases = {"linear"}
+    # `jira` joined `linear` here when jira_projects gained its own `key` column and its UNIQUE
+    # index (#51 identifier consolidation) -- this guard is what flagged that the generic branch
+    # would have reached it, and it now has its own scoped upsert in write_containers.
+    write_containers_special_cases = {"linear", "jira"}
     for src, (gtable, _gcol) in store.GROUPING.items():
         if src in write_containers_special_cases:
             continue

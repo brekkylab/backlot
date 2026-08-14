@@ -123,15 +123,13 @@ def _adf(content: str) -> dict:
     }
 
 
-def _project_key(request: Request, container: str) -> str:
+def _project_key(conn, container: str) -> str:
     """The project key a container serves and navigates by: the prefix its corpus-provided
     issue keys carry (aliased at index build) when the corpus wrote any, else the
     synthesized key. One spelling for the issue prefix, the project payload, JQL and the
     picker — real Jira guarantees an issue key's prefix IS its project's key, and an agent
     that reads PAY-7 out of a document will navigate by PAY."""
-    return (_index_maps(request).get("jira_project_keys") or {}).get(
-        container
-    ) or synth.jira_project_key(container)
+    return store.jira_project_key(conn, container) or synth.jira_project_key(container)
 
 
 def _index_maps(request: Request) -> dict:
@@ -149,10 +147,9 @@ def _jira_container_for_key(conn, token: str, request: Request | None = None) ->
     the literal container name (e.g. ``payments``, case-insensitive) — real Jira project
     pickers accept both key and name. Anything else is unresolvable -> None (callers must
     treat this as "0 results", never silently fall back to the unfiltered corpus)."""
-    if request is not None:
-        aliased = (_index_maps(request).get("jira_project_containers") or {}).get(token.upper())
-        if aliased is not None:
-            return aliased
+    stored = store.jira_project_by_key(conn, token)
+    if stored is not None:
+        return stored
     for r in store.list_containers(conn, "jira"):
         if synth.jira_project_key(r["name"]) == token.upper() or r["name"].lower() == token.lower():
             return r["name"]
@@ -202,7 +199,7 @@ async def jira_project_search(request: Request):
     _require(request)
     values = []
     for r in store.list_containers(conn, "jira"):
-        key = _project_key(request, r["name"])
+        key = _project_key(conn, r["name"])
         values.append(
             {
                 "id": str(synth.github_user_id(r["name"])),
@@ -625,7 +622,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
     site = _site(request)
     created = row["created_ts"] or synth.epoch(row["doc_id"])
     updated = row["updated_ts"] or created + 3600
-    pkey = _project_key(request, row["project"])
+    pkey = _project_key(conn, row["project"])
     reporter = _jira_actor(row["reporter_email"] or row["author_email"], site)
     creator = _jira_actor(row["author_email"], site)
     assignee = _jira_actor(row["assignee_email"], site) if row["assignee_email"] else None

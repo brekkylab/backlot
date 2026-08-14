@@ -595,7 +595,17 @@ CREATE TABLE IF NOT EXISTS slack_channels    (channel TEXT PRIMARY KEY, group_id
 CREATE TABLE IF NOT EXISTS gmail_mailboxes   (mailbox TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS gdrive_folders    (folder  TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS github_repos      (repo    TEXT PRIMARY KEY, group_id TEXT);
-CREATE TABLE IF NOT EXISTS jira_projects     (project TEXT PRIMARY KEY, group_id TEXT);
+-- `key` is the project's own key (`PAY`) -- the prefix every one of its issue keys carries, which
+-- real Jira guarantees IS the project's key. Stored here rather than reversed at boot from the
+-- issues (`main._build_index`'s old `jira_project_keys`/`jira_project_containers` pair, #51): it is
+-- a container-level fact, one row per project, and belongs on the container's own row for the same
+-- reason `linear_teams.served_key` does.
+CREATE TABLE IF NOT EXISTS jira_projects (
+    project TEXT PRIMARY KEY, key TEXT, group_id TEXT
+);
+-- A project key is unique across a Jira site, the same rule idx_jira_served enforces for the full
+-- issue key. Two projects claiming one prefix is an import error, not a last-writer-wins race.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_projects_key ON jira_projects(key);
 CREATE TABLE IF NOT EXISTS confluence_spaces (space   TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS notion_teamspaces (teamspace TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS s3_buckets        (bucket  TEXT PRIMARY KEY, group_id TEXT);
@@ -2251,6 +2261,24 @@ def get_repo_file(conn, repo, path, visible_ids=None) -> sqlite3.Row | None:
 
 
 # --- grouping units (channels/mailboxes/folders/repos/projects/spaces) & principals ---
+
+
+def jira_project_key(conn, project: str) -> str | None:
+    """The key a jira project is served under (`PAY`) — its own stored column, not a prefix
+    reversed at boot out of the issues (#51). One row per project, so this is a PK lookup."""
+    row = conn.execute("SELECT key FROM jira_projects WHERE project = ?", (project,)).fetchone()
+    return row["key"] if row else None
+
+
+def jira_project_by_key(conn, key: str) -> str | None:
+    """The project a key names, the reverse of :func:`jira_project_key`. Case-insensitive, because
+    this answers the JQL project TOKEN (`project = pay`), which real Jira's pickers accept in any
+    case — deliberately unlike issue-key resolution, which is exact (see routers.atlassian's
+    `_resolve_jira_key` for what mixing the two cost)."""
+    row = conn.execute(
+        "SELECT project FROM jira_projects WHERE UPPER(key) = ?", (key.upper(),)
+    ).fetchone()
+    return row["project"] if row else None
 
 
 def list_containers(conn, source_type) -> list[sqlite3.Row]:

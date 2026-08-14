@@ -1,20 +1,7 @@
 """FastAPI app hosting every vendor mock under path prefixes.
 
-Startup opens the read-only SQLite DB and loads the ACL/token map. It builds no reverse indexes:
-every id the API resolves now comes out of a stored column or table, assigned once at import rather
-than rebuilt on every boot (#51).
-
-`_build_index` used to live here, and what it held is worth recording because the shape recurs. Each
-entry reversed a one-way hash back to the thing it was computed from, and each moved to wherever
-that thing already had a row: a per-document served id to the document's own PRIMARY KEY; Linear's
-team id/key to `linear_teams`; Fireflies' user id to `fireflies_users`; a Jira project's prefix to
-`jira_projects.key`. The last six had no row to move to at all -- a Linear project, workflow state,
-label, cycle, user and release exist only as DISTINCT values of a `linear_issues` column -- so they
-got a table of their own, `linear_entities`, written by backlot.importer.byo's
-`write_linear_entities` and read by `store.linear_entity_by_id`.
-
-What that leaves at startup is one connection and one ACL read, so boot time no longer scales with
-the corpus.
+Startup opens the read-only DB, loads the ACL/token map, and starts a background cache warm-up. It
+builds no reverse index: every id the API resolves is a stored column or table, assigned at import.
 """
 
 from __future__ import annotations
@@ -56,10 +43,8 @@ async def lifespan(app: FastAPI):
             f"DB not found at {settings.db_path}. Build it first: "
             "backlot import <corpus.jsonl>  (see `backlot import --help` for the other sources)"
         )
-    # A BYO import records the corpus-derived org in tokens.yaml; adopt it so the routers
-    # (which read get_settings().org_name/org_domain) stay consistent with the ACL. A tokens.yaml
-    # written from a stated roster instead of a corpus's own addresses has no org, so the settings
-    # defaults stand.
+    # Adopt the corpus-derived org a BYO import recorded, so the routers (which read these off
+    # settings) agree with the ACL. A roster-built tokens.yaml has no org; the defaults then stand.
     if settings.tokens_path.exists():
         data = yaml.safe_load(settings.tokens_path.read_text()) or {}
         if data.get("org"):
@@ -77,34 +62,24 @@ async def lifespan(app: FastAPI):
     app.state.acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     app.state.oauth = Oauth.load(settings.credentials_path)  # None if credentials.yaml absent
 
-    # One indexed lookup, not a background warm-up like doc_counts below — the value can't
-    # change while the server runs. None on a DB built before the meta table existed.
+    # A single indexed read, so it needs no warm-up. None on a DB predating the meta table.
     _src = store.read_meta(conn, "source_documents")
     app.state.source_documents = int(_src) if _src is not None else None
 
-    # Per-source COUNT(*) can be slow on a very large / cold DB, so compute it once in a
-    # background thread (its own RO connection) and cache it — /health then stays O(1) and never
-    # blocks the ALB health check, even right after a cold start.
+    # Three caches the warm-up below fills, each too slow to compute per request on a large corpus:
+    # per-source COUNT(*), channel -> principals granted on any of its docs, and channel -> member
+    # count. Every consumer treats None as "not warm yet" and falls back to its own query.
     app.state.doc_counts = None
-    # channel -> {principals granted on any of its docs}, so conversations.list can decide a
-    # non-admin caller's visible channels by set-intersection (O(channels)) instead of a
-    # per-request slack_acl⋈messages join that scales with the docs granted to the caller.
     app.state.channel_acl = None
-    # channel -> its member count (its distinct speakers). conversations.info/.list report it
-    # for every channel in a page, and a per-channel COUNT(DISTINCT) is far too slow for that.
     app.state.channel_members = None
 
     app.state.warm_error = None
 
     def _warm_caches():
-        """Fill the caches above, and RECORD a failure rather than dying quietly.
+        """Fill the caches above, RECORDING a failure rather than dying quietly.
 
-        A daemon thread that raises takes its traceback with it: every cache stays None, which each
-        consumer treats as "not warm yet" — the Slack routes fall back to their per-request queries
-        and keep answering correctly, so nothing 500s and nothing retries. That is the right
-        behaviour for a warm-up, and exactly why the failure has to be reported: without this, a
-        broken warm-up is indistinguishable from a slow one forever, and /health goes on saying
-        `status: "ok"` with `documents: null` while a load balancer stays green.
+        The fallbacks mean a dead thread breaks nothing — which is exactly why it must be reported,
+        or a broken warm-up looks like a slow one forever and /health stays `ok` with null counts.
         """
         try:
             c = store.connect_ro(
@@ -115,9 +90,6 @@ async def lifespan(app: FastAPI):
             )
             try:
                 cacl: dict[str, set] = {}
-                # No join to slack_messages (#51): a Slack message is identified by
-                # (channel, ts), so the grant row carries the channel itself. The join existed
-                # only to translate a doc_id back into one.
                 for ch, pid in c.execute(
                     f"SELECT DISTINCT a.channel, a.principal_id FROM {store.acl_table('slack')} a"
                 ):
@@ -134,8 +106,7 @@ async def lifespan(app: FastAPI):
             app.state.warm_error = f"{type(e).__name__}: {e}"
             logging.getLogger(__name__).exception("cache warm-up failed; /health will say degraded")
 
-    # Kept on app.state (rather than fire-and-forget) so a caller — namely tests — can wait for
-    # it deterministically instead of polling /health and hoping doc_counts landed in time.
+    # On app.state, not fire-and-forget, so tests can join it instead of polling /health.
     app.state.warm_thread = threading.Thread(target=_warm_caches, daemon=True)
     app.state.warm_thread.start()
     try:
@@ -145,21 +116,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    # The server's name, not a corpus's: it serves whatever was imported, so naming one dataset
-    # here would put it in /openapi.json, every generated client, and every MCP bridge's tool
-    # descriptions.
+    # The server's name, never a corpus's: it reaches /openapi.json and every generated client.
     title="Backlot Mock Server",
     lifespan=lifespan,
-    # NOT FastAPI's default, which derives the id's method suffix from a set and so
-    # changes between restarts — see openapi.unique_operation_id.
+    # FastAPI's default derives the method suffix from a set, so it changes between restarts.
     generate_unique_id_function=openapi.unique_operation_id,
 )
 
 
-# A vendor whose clients parse error bodies gets its own envelope, and each lives in
-# ``backlot/errors/`` with the reasoning for its shape. Both handlers below ask that package and fall
-# back to FastAPI's ``{"detail": ...}`` — so neither carries a branch per vendor, and neither has to
-# be edited to add one.
+# Per-vendor error envelopes live in ``backlot/errors/``. Both handlers ask that package and fall
+# back to FastAPI's ``{"detail": ...}``, so neither needs a branch per vendor.
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -191,21 +157,13 @@ async def parse_slack_form(request: Request, call_next):
 
 @app.get("/health")
 async def health():
-    # O(1): return the cached per-source counts (see lifespan). `by_source` is {} for the brief
-    # window after a cold start until the background count finishes.
-    #
-    # Two counts, deliberately. `documents` sums store.SOURCE_TABLE only — the 11 root-document
-    # tables. It does NOT include store.COMMENT_TABLE (jira/confluence/github/notion/linear
-    # comments, fireflies_sentences): those rows are served too, each with its own
-    # endpoint, but they're children of a root doc rather than documents themselves, so they
-    # aren't counted here. `source_documents` is what the corpus offered, which is smaller than
-    # `documents` because faithful parsing turns one Slack transcript into many message rows.
-    # Publishing only the larger of the two reads as inflation, which is why both are reported.
+    # Two counts, deliberately. `documents` sums the root-document tables only (SOURCE_TABLE, not
+    # COMMENT_TABLE); `source_documents` is what the corpus OFFERED, which is smaller because
+    # parsing turns one Slack transcript into many messages. Reporting only the larger inflates.
     counts = getattr(app.state, "doc_counts", None)
     warm_error = getattr(app.state, "warm_error", None)
-    # `degraded`, not a non-200: the corpus is still served correctly — every consumer of the warm
-    # caches falls back to a per-request query — so failing the healthcheck would take down a server
-    # that works. What must not happen is `ok` alongside counts that will never arrive.
+    # `degraded`, not a non-200: the corpus is still served correctly (see the fallbacks), so
+    # failing the check would take down a working server. Only `ok` with null counts is wrong.
     body = {
         "status": "degraded" if warm_error else "ok",
         "source_documents": getattr(app.state, "source_documents", None),
@@ -217,9 +175,8 @@ async def health():
         body["documents"] = None
         body["by_source"] = {}
     if warm_error:
-        # Set even when the counts DID land: the warm-up fills three caches in sequence, so a
-        # failure part-way leaves some of them populated. `degraded` without the reason is a worse
-        # answer than either "ok" or a plain failure.
+        # Reported even when the counts landed: the warm-up fills three caches in sequence, so it
+        # can fail part-way.
         body["warm_error"] = warm_error
     return body
 
@@ -242,9 +199,8 @@ async def mock_users():
     conn = app.state.conn
     acl = app.state.acl
     tok = acl.email_to_token()
-    # Only authenticating users (those with a bearer token) are listed — the org's real roster.
-    # Other people the corpus references are display-only: they appear as owners/authors on
-    # documents, but aren't identities you can pick a token for here.
+    # Only users with a token: everyone else the corpus names is display-only (an author or owner,
+    # not an identity you can authenticate as).
     users = [
         {
             "email": u["email"],

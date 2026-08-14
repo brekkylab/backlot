@@ -1452,14 +1452,6 @@ class _Loader:
             if src == "s3" and cols.get("size") is None:
                 cols["size"] = len((body or "").encode("utf-8"))
             cols[gcol] = container
-            if src == "linear" and not cols.get("identifier"):
-                # MATERIALIZE the identifier the server would otherwise synthesize per request.
-                # Same reasoning as created_ts above: an id that is served has to be resolvable,
-                # and the app's reverse index is built from stored columns — so a serve-time-only
-                # identifier came back "Entity not found" from `issue(id: "ENG-749")` even though
-                # the API had just handed the caller that exact string. Deterministic, so the
-                # served value is unchanged; it is just written down now.
-                cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
             # ---- the row's own identity -------------------------------------------------
             # Every source's key is assigned HERE, from the incoming record's dataset id as a
             # seed, and the seed is then discarded (#51). What differs per source is only how the

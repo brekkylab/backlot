@@ -129,6 +129,24 @@ def drive_folder_id(container: str) -> str:
     return "0A" + _digest("folder:" + container)[:26]
 
 
+def gdrive_file_id(doc_id: str) -> str:
+    """A Drive file's served id (#51, task 12): 33 characters, base64url alphabet
+    (``[A-Za-z0-9_-]``), starting with ``1`` — the shape of a modern real Drive file id.
+    Reversible via the stored ``gdrive_files.served_id`` column (see
+    ``store.gdrive_by_served_id``), not hashed at serve time.
+
+    Derived from the RAW DIGEST BYTES, unlike ``drive_folder_id``'s hex slice: hex spans only 16
+    of the 64 available symbols, so it reads noticeably unlike a real id. 24 digest bytes
+    base64url-encode to exactly 32 characters with no padding (24 * 8 / 6 = 32 evenly), so
+    ``"1"`` plus that is 33 characters — matching a real file id's length exactly.
+
+    A separate id space from ``drive_folder_id``: every folder id starts ``0A``, every file id
+    starts ``1``, so the two can never collide even though a folder id is also a valid
+    ``files.get`` argument on real Drive (see ``routers.google._drive_folder_name_by_id``)."""
+    digest = hashlib.sha256(("gdrive-file:" + doc_id).encode("utf-8")).digest()
+    return "1" + base64.urlsafe_b64encode(digest[:24]).decode("ascii")
+
+
 # The size of the per-repo space a github issue/PR number is drawn from (1..GITHUB_NUMBER_RANGE).
 # Exported (not a private literal inside github_number) so importer.byo's probe walk and
 # exhaustion check -- both bounded to "every number this function can produce" -- read this SAME

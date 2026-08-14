@@ -142,6 +142,10 @@ SERVED_ID = {
     "linear": ("served_id", synth.linear_id, None),
     "github": ("served_number", synth.github_number, grouping_col("github")),
     "jira": ("served_number", synth.jira_key_number, grouping_col("jira")),
+    # Drive's own file id (#51, task 12) -- unprobed, like gmail/notion/linear; see
+    # synth.gdrive_file_id's docstring for the digest-bytes reasoning and idx_gdrive_served's
+    # schema comment for the collision argument and the folder-id disjointness.
+    "google_drive": ("served_id", synth.gdrive_file_id, None),
 }
 
 
@@ -201,9 +205,19 @@ CREATE TABLE IF NOT EXISTS gdrive_files (
     doc_id TEXT PRIMARY KEY, folder TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, mime_type TEXT, parents TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    trashed INTEGER, collaborators TEXT, owner_display TEXT
+    trashed INTEGER, collaborators TEXT, owner_display TEXT, served_id TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_gdrive_folder ON gdrive_files(folder);
+-- The id `files.get`/`.export`/`.permissions` resolve and every listing/`_drive_facts` emits (#51,
+-- task 12): assigned at import (see backlot.importer.byo), not the corpus's own `doc_id` served
+-- straight through -- Drive was the one document source with no served-id column at all, so a
+-- client kept seeing the dataset's own identifier scheme instead of an opaque Drive-shaped id.
+-- No probe, like gmail/notion/linear: `synth.gdrive_file_id` draws from a 192-bit digest (see its
+-- own docstring), so a collision is vanishingly unlikely, and UNIQUE turns one into a loud import
+-- failure instead of a silent shadow (see idx_gmail_served's comment for the general argument).
+-- A SEPARATE id space from the folder id `synth.drive_folder_id` computes at serve time (every
+-- folder id starts "0A", every one of these starts "1"), so the two can never collide.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gdrive_served ON gdrive_files(served_id);
 
 -- `path` names the file THIS row is (only kind='file' rows have one). `changed_paths` is the other
 -- direction: a JSON list of the paths a PULL touched, so a corpus can state which files a pull
@@ -1541,6 +1555,17 @@ def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
     clause, params = _acl_clause("google_drive", visible_ids=visible_ids)
     total, trashed = conn.execute(sql + clause, params).fetchone()
     return int(total), int(trashed)
+
+
+def gdrive_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
+    """One Drive file by the id `files.get` / `.export` / `.permissions` resolve (#51, task 12) --
+    the model is gmail_by_served_id/notion_by_served_id: a stored column, assigned at import, read
+    straight through the ACL clause rather than a reverse map rebuilt on every boot."""
+    col = served_id_column("google_drive")
+    clause, cp = _acl_clause("google_drive", visible_ids=visible_ids)
+    return conn.execute(
+        f"SELECT * FROM gdrive_files WHERE {col} = ?{clause}", [served_id, *cp]
+    ).fetchone()
 
 
 def count_documents(

@@ -1036,16 +1036,21 @@ def _drive_project(files: list[dict], keys: set[str] | None) -> list[dict]:
     return files if not keys else [{k: v for k, v in f.items() if k in keys} for f in files]
 
 
-def _drive_fill_shared(conn, files: list[dict], stored: set[str]) -> None:
+def _drive_fill_shared(conn, files: list[dict], stored: dict[str, str]) -> None:
     """Resolve ``shared`` for one page of stored files, in one query. Objects not in ``stored`` are
     the synthesized folders, left alone: their sharing comes from the files they hold, not from a
-    grant on the folder id."""
+    grant on the folder id.
+
+    ``stored`` maps the served file id (``f["id"]``, #51 task 12) to its underlying ``doc_id`` --
+    ACL grants are keyed on ``doc_id``, not the served id a client sees, so a plain
+    ``f["id"] in stored`` set membership would silently stop marking anything shared the moment
+    the two id spaces diverged."""
     have = store.docs_with_grants(
-        conn, "google_drive", [f["id"] for f in files if f["id"] in stored]
+        conn, "google_drive", [stored[f["id"]] for f in files if f["id"] in stored]
     )
     for f in files:
         if f["id"] in stored:
-            f["shared"] = f["id"] in have
+            f["shared"] = stored[f["id"]] in have
 
 
 # --- `orderBy` -----------------------------------------------------------------------------
@@ -1430,11 +1435,13 @@ async def drive_files_list(request: Request):
             conn, "google_drive", visible_ids=ids, limit=n, offset=o, exclude_trashed=True
         )
 
-    stored: set[str] = set()  # ids that came from the row stream (vs. a synthesized folder)
+    # served file id -> doc_id, for objects that came from the row stream (vs. a synthesized
+    # folder) -- see _drive_fill_shared on why this is keyed by the served id but valued by doc_id.
+    stored: dict[str, str] = {}
 
     def objects(o: int, n: int, *, with_shared: bool = True) -> list[dict]:
         rows = fetch(o, n) if n > 0 else []
-        stored.update(r["doc_id"] for r in rows)
+        stored.update({r["served_id"]: r["doc_id"] for r in rows})
         shared = (
             store.docs_with_grants(conn, "google_drive", [r["doc_id"] for r in rows])
             if with_shared
@@ -1476,7 +1483,7 @@ async def drive_files_get(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = store.get_document(conn, "google_drive", file_id, visible_ids=ids)
+    row = store.gdrive_by_served_id(conn, file_id, visible_ids=ids)
     if row is None:
         name = _drive_folder_name_by_id(conn, file_id)  # folders aren't stored as rows
         if name is not None:
@@ -1501,7 +1508,7 @@ async def drive_files_export(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = store.get_document(conn, "google_drive", file_id, visible_ids=ids)
+    row = store.gdrive_by_served_id(conn, file_id, visible_ids=ids)
     if row is None:
         raise gerr.not_found_file(file_id)
     native = _native(row)
@@ -1521,7 +1528,7 @@ async def drive_files_permissions(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = store.get_document(conn, "google_drive", file_id, visible_ids=ids)
+    row = store.gdrive_by_served_id(conn, file_id, visible_ids=ids)
     if row is None:
         # A folder id is a first-class file id on real Drive — files.get answers for one, so
         # permissions.list has to as well. Folders aren't stored as rows, so their sharing comes
@@ -1533,7 +1540,7 @@ async def drive_files_permissions(file_id: str, request: Request):
             "kind": "drive#permissionList",
             "permissions": _drive_permissions(conn, file_id, folder=name),
         }
-    return {"kind": "drive#permissionList", "permissions": _drive_permissions(conn, file_id)}
+    return {"kind": "drive#permissionList", "permissions": _drive_permissions(conn, row["doc_id"])}
 
 
 # --- Google Workspace editors read APIs (Docs / Sheets / Slides) ------------------
@@ -1590,7 +1597,10 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = store.get_document(conn, "google_drive", file_id, visible_ids=ids)
+    # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id (#51, task 12) --
+    # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has
+    # to resolve the served column too, not the corpus's doc_id.
+    row = store.gdrive_by_served_id(conn, file_id, visible_ids=ids)
     if row is None:
         # Folders are synthesized rather than stored, so they miss the lookup above. Real Google
         # calls a folder an invalid argument, not a missing entity, so resolve it before giving up.
@@ -2039,12 +2049,12 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     if native is not None:
         seg = native[1]
         view = (
-            f"https://docs.google.com/{seg}/d/{row['doc_id']}/edit"
+            f"https://docs.google.com/{seg}/d/{row['served_id']}/edit"
             if seg
-            else f"https://drive.google.com/drive/folders/{row['doc_id']}"
+            else f"https://drive.google.com/drive/folders/{row['served_id']}"
         )
     else:  # binary file (PDF, image, office doc)
-        view = f"https://drive.google.com/file/d/{row['doc_id']}/view"
+        view = f"https://drive.google.com/file/d/{row['served_id']}/view"
     is_folder = row["subtype"] == "folder"
     # "shared" = visible to anyone besides the owner — true for org/group/multi-reader docs.
     # In a list the caller passes it in (batch-computed); for a single get, look it up here.
@@ -2054,7 +2064,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     nbytes = len((row["content"] or "").encode("utf-8"))
     f = {
         "kind": "drive#file",
-        "id": row["doc_id"],
+        "id": row["served_id"],
         "name": row["title"],
         "mimeType": mime,
         "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
@@ -2097,7 +2107,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     if native is None:
         f["md5Checksum"] = hashlib.md5(row["content"].encode()).hexdigest()
         f["quotaBytesUsed"] = str(nbytes)
-        f["webContentLink"] = f"https://drive.google.com/uc?id={row['doc_id']}&export=download"
+        f["webContentLink"] = f"https://drive.google.com/uc?id={row['served_id']}&export=download"
         if ext:
             f["fileExtension"] = ext
             f["fullFileExtension"] = ext

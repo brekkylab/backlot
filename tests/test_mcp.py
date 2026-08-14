@@ -440,7 +440,11 @@ def test_mcp_gdrive_bridge_acl_enforced(live_server):
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "google_drive")
     assert row is not None, f"no Drive file is ACL-restricted from {email} in the sample corpus"
-    file_id = row["doc_id"]
+    # The row's own `served_id` (#51, task 12), not a fresh `synth.gdrive_file_id(row["doc_id"])`:
+    # Drive never probes, so the two agree today, but a test that re-derives instead of reading
+    # the stored column would stop exercising the ACL path the day that stops being true and not
+    # notice (same reasoning as test_mcp_notion_bridge_acl_enforced's page_id, below).
+    file_id = row["served_id"]
 
     def reads(token):
         return _bridge_call(

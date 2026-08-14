@@ -5,8 +5,8 @@ still needed for O(1) get-by-id: six of Linear's one-way-hashed entity ids (`lin
 `linear_states`, `linear_projects`, `linear_cycles`, `linear_labels`, `linear_releases`), none of
 which have a column of their own to be stored in -- they are `SELECT DISTINCT` projections over
 `linear_issues` with no entity table to hold one. Every per-document served id (confluence/gmail/
-notion/hubspot/linear/github/jira, #51) now resolves through a stored column instead — see
-backlot.store's SERVED_ID -- and so, since task 9, do Linear's team id/key (`store.
+notion/hubspot/linear/github/jira/google_drive, #51) now resolves through a stored column instead
+— see backlot.store's SERVED_ID -- and so, since task 9, do Linear's team id/key (`store.
 linear_team_by_served_id`/`linear_team_by_served_key`, on `linear_teams`) and Fireflies' user id
 (`store.fireflies_user_by_served_id`, on `fireflies_users`): both reverse a hash of a value
 belonging to a real row (a team, a principal), not a doc_id, so they got their own small readers

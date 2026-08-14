@@ -141,6 +141,35 @@ def test_gmail_message_id_stays_in_range_across_many_docs():
     assert len(set(ids)) == len(ids)
 
 
+_B64URL_ALPHABET = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+
+
+def test_gdrive_file_id_matches_the_real_id_shape():
+    """Measured against real Drive: a modern file id is 33 characters, base64url alphabet
+    (``[A-Za-z0-9_-]``), and always starts with ``1``. `synth.gdrive_file_id` has to match that
+    shape, not `drive_folder_id`'s hex slice -- hex spans only 16 of the 64 available symbols and
+    reads noticeably unlike a real one (#51, task 12)."""
+    fid = synth.gdrive_file_id(DOC)
+    assert len(fid) == 33
+    assert fid[0] == "1"
+    assert all(c in _B64URL_ALPHABET for c in fid)
+
+
+def test_gdrive_file_id_is_stable_and_distinct():
+    assert synth.gdrive_file_id(DOC) == synth.gdrive_file_id(DOC)
+    assert synth.gdrive_file_id(DOC) != synth.gdrive_file_id(DOC2)
+
+
+def test_gdrive_file_id_never_collides_with_a_folder_id():
+    """A file id and a folder id must be disjoint spaces: `routers.google._drive_folder_name_by_id`
+    tries every container name's `drive_folder_id` against an incoming id, and a file id that also
+    matched would resolve to the wrong kind of object. Every folder id starts ``0A``, every file id
+    starts ``1``, so the two can never collide by construction, not merely by low probability."""
+    assert synth.gdrive_file_id(DOC)[:1] == "1"
+    assert synth.drive_folder_id("some-folder")[:2] == "0A"
+    assert synth.gdrive_file_id(DOC) != synth.drive_folder_id(DOC)
+
+
 def test_linear_url_is_the_real_vendor_domain():
     """Regression: a rename's blind substitution once turned this into `linear.backlot`. Asserted
     on the parsed host (no trailing slash) rather than a URL literal, because the vulnerable

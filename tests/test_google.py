@@ -315,8 +315,11 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
 
 def test_drive_export_roundtrip(client, admin_h, ro_conn):
     doc = ro_conn.execute("SELECT * FROM gdrive_files LIMIT 1").fetchone()
+    # The row's own `served_id` (#51, task 12), not the corpus `doc_id` -- that used to be exactly
+    # what Drive served as the file id, the defect this task fixes; a test that kept hitting the
+    # route by doc_id would stop exercising the served-id resolution path without ever noticing.
     text = client.get(
-        f"/drive/v3/files/{doc['doc_id']}/export",
+        f"/drive/v3/files/{doc['served_id']}/export",
         headers=admin_h,
         params={"mimeType": "text/plain"},
     ).text
@@ -713,6 +716,11 @@ def test_drive_responses_unchanged_by_enrichment(client, admin_h):
         "capabilities",
     ):
         assert k in full, f"drive file missing {k} (fidelity regression)"
+    # permissions.list has to resolve the same served id, for an actual FILE and not only for the
+    # folder id `test_drive_folder_permissions_resolve` covers (#51, task 12) -- both routes
+    # resolve through store.gdrive_by_served_id now, and only the folder path was exercised before.
+    perms = client.get(f"/drive/v3/files/{doc['id']}/permissions", headers=admin_h)
+    assert perms.status_code == 200
 
 
 def test_drive_export_and_media_stay_non_json(client, admin_h):
@@ -1552,11 +1560,18 @@ def test_sheets_values_serve_a_blank_line_as_an_empty_row(base, admin_h):
 
     ``gd-blankline`` stores "header\\n\\nrow after gap\\n\\n": a gap in the middle and two at the
     end. The trailing ones trim away entirely; the middle one survives as ``[]``."""
-    j = _values(base, admin_h, "gd-blankline", "Sheet1").json()
+    from backlot import synth
+
+    # `gd-blankline`'s served id (#51, task 12), built to reach a known fixture by its stable
+    # doc_id -- unlike an assertion, constructing a REQUEST url this way is the same precedent
+    # test_gmail_attachment_size_matches_part_metadata uses (`synth.gmail_message_id(row["doc_id"])`
+    # to build the message url), not the "assert synth.fn(doc_id) at a route" anti-pattern.
+    served_id = synth.gdrive_file_id("gd-blankline")
+    j = _values(base, admin_h, served_id, "Sheet1").json()
     assert j["values"] == [["header"], [], ["row after gap"]]
     # and the round trip still holds, blank lines and all — trailing gaps included
     export = httpx.get(
-        f"{base}/drive/v3/files/gd-blankline/export",
+        f"{base}/drive/v3/files/{served_id}/export",
         headers=admin_h,
         params={"mimeType": "text/csv"},
     ).text
@@ -1938,6 +1953,7 @@ def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
     HTTP rather than on the matcher, since the matcher was never reached on this path — and on the
     reported total too, because a count that includes rows the listing drops makes nextPageToken
     promise a page that does not exist."""
+    from backlot import synth
     from tests._helpers import corpus_client
 
     records = [
@@ -1961,19 +1977,23 @@ def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
             "trashed": True,
         },
     ]
+    # The served ids (#51, task 12), not the corpus doc_ids -- Drive no longer serves those
+    # straight through, so a bare "live"/"gone" would never appear in `ids` regardless of whether
+    # trashing is honored, and the assertions below would pass for the wrong reason.
+    live_id, gone_id = synth.gdrive_file_id("live"), synth.gdrive_file_id("gone")
     with corpus_client(tmp_path, records) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         body = client.get("/drive/v3/files", headers=h, params={"pageSize": 100}).json()
         ids = [f["id"] for f in body["files"]]
-        assert "live" in ids
-        assert "gone" not in ids, "a trashed file must not appear in an unfiltered files.list"
+        assert live_id in ids
+        assert gone_id not in ids, "a trashed file must not appear in an unfiltered files.list"
         assert "nextPageToken" not in body, "the total counted a row the listing dropped"
 
         # ...and it is still reachable when the caller asks for it, as in real Drive.
         asked = client.get(
             "/drive/v3/files", headers=h, params={"q": "trashed = true", "pageSize": 100}
         ).json()
-        assert [f["id"] for f in asked["files"]] == ["gone"]
+        assert [f["id"] for f in asked["files"]] == [gone_id]
 
 
 def test_drive_size_is_populated_for_docs_editors_files(tmp_path):

@@ -103,11 +103,11 @@ def test_acl_table_registry_covers_every_source(tmp_path):
 def test_served_id_registry_covers_every_hashed_source():
     """This registry has to be total over every source that serves a HASHED id -- one resolved by
     reversing a hash back to a doc_id through a stored column assigned at import, each converted
-    in its own task (#51) -- confluence, gmail, notion, hubspot, linear, github and, last, jira
-    (task 8) -- so the registry has to be total from the start or a later task's column goes
-    unrecorded. `s3`'s id is `bucket/key`, stored already and never hashed; `slack` has no
-    hash->doc_id map to replace; and fireflies' only hash (`fireflies_user_id`) reverses an EMAIL,
-    not a doc_id -- none of the three belong here."""
+    in its own task (#51) -- confluence, gmail, notion, hubspot, linear, github, jira (task 8) and,
+    last, google_drive (task 12) -- so the registry has to be total from the start or a later
+    task's column goes unrecorded. `s3`'s id is `bucket/key`, stored already and never hashed;
+    `slack` has no hash->doc_id map to replace; and fireflies' only hash (`fireflies_user_id`)
+    reverses an EMAIL, not a doc_id -- none of the three belong here."""
     assert set(store.SERVED_ID) == {
         "confluence",
         "gmail",
@@ -116,6 +116,7 @@ def test_served_id_registry_covers_every_hashed_source():
         "linear",
         "github",
         "jira",
+        "google_drive",
     }
     # Confluence's own entry -- column name, seed function, corpus-wide scope. Every entry in the
     # registry is read by its own stored-column reader now (github_by_served_number,
@@ -471,8 +472,11 @@ def _drive_usage_db(tmp_path):
     for doc_id, content, trashed in rows:
         conn.execute(
             "INSERT INTO gdrive_files(doc_id, folder, author_email, title, content, subtype, "
-            "created_ts, trashed) VALUES (?,?,?,?,?,?,1,?)",
-            (doc_id, "f", "a@x.com", doc_id, content, "document", trashed),
+            "created_ts, trashed, served_id) VALUES (?,?,?,?,?,?,1,?,?)",
+            # served_id is NOT NULL + UNIQUE (#51, task 12); nothing here reads it back, so any
+            # value distinct per row satisfies the constraint -- derived from doc_id rather than
+            # the real synth.gdrive_file_id, since this DB is hand-built to bypass the importer.
+            (doc_id, "f", "a@x.com", doc_id, content, "document", trashed, f"served-{doc_id}"),
         )
     # Every doc gets a grant, as the importers write one: a `visible_ids` filter passes only rows
     # that HAVE a matching google_drive_acl row, so a doc with no grant is invisible to any scoped
@@ -873,6 +877,48 @@ def test_gmail_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
 
     monkeypatch.setitem(
         store.SERVED_ID, "gmail", ("served_id", lambda key: "00000000deadbeef", None)
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        build_corpus(tmp_path / "collide", docs)
+
+
+def test_gdrive_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
+    """Drive was the one document source with no served-id column at all (#51, task 12) -- it
+    served the corpus's own `doc_id` straight through as the file id. Like gmail/notion/linear it
+    does not probe: `synth.gdrive_file_id` draws from a 192-bit digest, so the seed is stored as-is
+    and a collision is left to the UNIQUE index rather than walked around.
+
+    The second half forces that collision the same way `test_gmail_served_ids_are_stored_and_
+    resolve` does: `monkeypatch.setitem` on `store.SERVED_ID`, not `monkeypatch.setattr(synth,
+    "gdrive_file_id", ...)` -- the registry captures the seed function object at `backlot.store`
+    import time, so patching the module attribute afterward cannot reach it (see the confluence
+    test above for the same defect). Before this fix there was no served_id column and no index to
+    violate -- Drive just served whichever doc_id the URL named, so this collision could not even
+    be expressed."""
+    from tests._helpers import build_corpus
+
+    docs = [
+        {
+            "source_type": "google_drive",
+            "folder": "eng",
+            "doc_id": f"d{i}",
+            "title": f"Doc {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i in range(5)
+    ]
+    s = build_corpus(tmp_path / "ok", docs)
+    conn = store.connect_ro(s.db_path)
+    rows = conn.execute("SELECT doc_id, served_id FROM gdrive_files").fetchall()
+    assert len(rows) == 5
+    assert {r["served_id"] for r in rows} == {synth.gdrive_file_id(r["doc_id"]) for r in rows}
+    for r in rows:
+        assert store.gdrive_by_served_id(conn, r["served_id"])["doc_id"] == r["doc_id"]
+    conn.close()
+
+    monkeypatch.setitem(
+        store.SERVED_ID, "google_drive", ("served_id", lambda key: "1" + "a" * 32, None)
     )
     with pytest.raises(sqlite3.IntegrityError):
         build_corpus(tmp_path / "collide", docs)

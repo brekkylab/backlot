@@ -1312,6 +1312,18 @@ class _Loader:
                 # what lets _gmail_ids derive a reply's threadId by re-hashing the root's key
                 # instead of reading the root's row.
                 cols[store.served_id_column("gmail")] = store.served_id_seed("gmail")(did)
+            if src == "google_drive":
+                # Drive's own file id (#51, task 12): unlike gmail's `doc_id`-served-straight-
+                # through predecessor bug this replaces, every Drive route now resolves and emits
+                # this column instead of the corpus's own doc_id. Unprobed, same reasoning as
+                # gmail/notion/linear -- see synth.gdrive_file_id's docstring. Written
+                # unconditionally (not behind an `if not cols.get(...)`): `names = list(cols)`
+                # below feeds the upsert's `DO UPDATE SET col=excluded.col` list, so a
+                # conditionally-written column would go stale on a re-imported row (the bug
+                # notion shipped with served_data_source_id).
+                cols[store.served_id_column("google_drive")] = store.served_id_seed("google_drive")(
+                    did
+                )
             if src == "notion":
                 # Two independent synthesized id spaces for the same row (#51). `served_id` is
                 # the page/database id (synth.notion_id), populated for every row like gmail's:

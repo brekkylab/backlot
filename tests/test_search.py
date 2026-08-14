@@ -4,6 +4,8 @@ The `db` fixture is built via backlot.importer.byo.load, which now builds the do
 these exercise the real FTS path (search.messages / confluence CQL both sit on search_documents).
 """
 
+import pytest
+
 from backlot import store
 
 
@@ -34,16 +36,12 @@ def test_fts_acl_scoped(db, acl, tokens):
     assert store.count_search(db, "compensation", "confluence", visible_ids=bob_ids) == 0
 
 
-def test_fts_source_aware_index(db):
-    # the importer rebuilds docs_fts with the indexed `src` column → fast source-intersection.
-    # Asserted on a source that still SHARES that index: this test is about the shared index's
-    # source-intersection, and a converted source (jira, see test_fts_jira_has_its_own_index)
-    # correctly emits no `src:` term at all because its own table holds nothing else.
-    assert store._fts_has_src(db)
-    assert (
-        store._fts_match("latency spike", "slack", has_src=True)
-        == 'src:srcslack AND ("latency" AND "spike")'
-    )
+def test_fts_search_returns_only_its_own_source(db):
+    # Was `test_fts_source_aware_index`, which asserted the shared docs_fts's `src:` intersection.
+    # That mechanism is gone — each source has its own index — but the PROPERTY it protected is
+    # the same and still worth pinning: a source-scoped search must never return another
+    # source's rows, whatever enforces it.
+    #
     # 'gateway' is in slack + confluence (SAMPLE); each source-scoped search returns only its
     # own rows, and a source whose title/content lacks the term returns nothing
     sl = store.search_documents(db, "gateway", "slack")
@@ -53,20 +51,31 @@ def test_fts_source_aware_index(db):
     assert store.search_documents(db, "gateway", "github") == []
 
 
-def test_fts_jira_has_its_own_index(db):
-    """jira searches its OWN FTS table rather than the shared `docs_fts`.
+@pytest.mark.parametrize("src", sorted(store.SOURCE_TABLE))
+def test_fts_every_source_has_its_own_index(db, src):
+    """Each source searches its OWN FTS table rather than the shared `docs_fts`.
 
-    The conversion is incremental — every other source is still on `docs_fts` — so both paths
-    have to work at once, which is what `_fts_table` decides. A converted source also drops the
-    `src:` term from its MATCH: there is nothing else in its index to exclude.
+    Splitting the index is about bm25's IDF, not scan cost: IDF is computed over whatever table
+    the term is in, so while the index is shared, how a term ranks INSIDE one source depends on
+    how often it appears in the others. A converted source also drops the `src:` term from its
+    MATCH — there is nothing else in its own table to exclude.
     """
-    assert store._fts_table("jira") == "jira_fts"
-    assert store._fts_table("slack") == "docs_fts"  # not converted yet
+    fts = f"{src}_fts"
+    assert store._fts_table(src) == fts
     names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"jira_fts", "docs_fts"} <= names
-    assert store._fts_match("latency spike", "jira", has_src=True) == '"latency" AND "spike"'
+    assert fts in names
+    assert store._fts_match("latency spike", src, has_src=True) == '"latency" AND "spike"'
+    # every doc of this source is in its own index and nothing else is
+    n_src = db.execute(f"SELECT COUNT(*) FROM {store.table(src)}").fetchone()[0]
+    n_fts = db.execute(f"SELECT COUNT(*) FROM {fts}").fetchone()[0]
+    assert n_fts == n_src, f"{fts} should hold exactly {src}'s rows"
 
-    # the same documents the shared index returned, and still only jira's
+
+def test_fts_jira_search_survived_its_move(db):
+    """The documents jira search returns did not change when it moved off the shared index —
+    only their relative ORDER can, and only for a multi-term query (see the commit that added
+    `jira_fts`: a single term's IDF is one constant factor across every match, so it cannot
+    reorder)."""
     rows = store.search_documents(db, "latency", "jira")
     assert rows and all("project" in r.keys() for r in rows)
     assert store.search_documents(db, "gateway", "jira") == []
@@ -92,14 +101,9 @@ def test_fts_container_scoped(db):
 def test_fts_phrase_match_is_adjacent():
     # phrase=True requires the tokens ADJACENT (an FTS5 phrase); the default ANDs them anywhere.
     # This is what a grep push-down needs so a literal pattern isn't buried under scattered hits.
-    assert (
-        store._fts_match("upload csv", "slack", has_src=True)
-        == 'src:srcslack AND ("upload" AND "csv")'
-    )
-    assert (
-        store._fts_match("upload csv", "slack", has_src=True, phrase=True)
-        == 'src:srcslack AND ("upload csv")'
-    )
+    # No `src:` term: every source has its own index now, so there is nothing to intersect against.
+    assert store._fts_match("upload csv", "slack", has_src=True) == '"upload" AND "csv"'
+    assert store._fts_match("upload csv", "slack", has_src=True, phrase=True) == '"upload csv"'
 
 
 def test_fts_phrase_boosts_literal_substring():

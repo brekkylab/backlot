@@ -1774,8 +1774,9 @@ def _src_tag(source_type: str) -> str:
 # column, so a scoped search already intersects posting lists rather than ranking every source
 # and post-filtering (see `_fts_match`). That was solved when the tag was added.
 #
-# Populated one source at a time; `_fts_table` is what lets both paths coexist meanwhile.
-FTS_TABLE = {"jira": "jira_fts"}
+# Every source now has its own; the `docs_fts` fallback below is what let the two paths coexist
+# while the conversion ran one source at a time, and goes away with the shared table itself.
+FTS_TABLE = {src: f"{src}_fts" for src in SOURCE_TABLE}
 
 
 def _fts_table(source_type: str) -> str:

@@ -1,19 +1,20 @@
 """FastAPI app hosting every vendor mock under path prefixes.
 
-Startup opens the read-only SQLite DB, loads the ACL/token map, and builds the reverse indexes
-still needed for O(1) get-by-id: six of Linear's one-way-hashed entity ids (`linear_users`,
-`linear_states`, `linear_projects`, `linear_cycles`, `linear_labels`, `linear_releases`), none of
-which have a column of their own to be stored in -- they are `SELECT DISTINCT` projections over
-`linear_issues` with no entity table to hold one. Every per-document served id (confluence/gmail/
-notion/hubspot/linear/github/jira/google_drive, #51) now resolves through a stored column instead
-— see backlot.store's SERVED_ID -- and so, since task 9, do Linear's team id/key (`store.
-linear_team_by_served_id`/`linear_team_by_served_key`, on `linear_teams`) and Fireflies' user id
-(`store.fireflies_user_by_served_id`, on `fireflies_users`): both reverse a hash of a value
-belonging to a real row (a team, a principal), not a document, so they got their own small readers
-instead of an entry in SERVED_ID. Jira's own project<->prefix maps (`jira_project_keys`/
-`jira_project_containers`) also stay here: they are CONTAINER-level (one entry per project, not
-per document), and the deferred assignment pass in backlot.importer.byo (`resolve_jira_numbers`)
-needs the corpus-provided prefix to compose a key at serve time (see routers.atlassian).
+Startup opens the read-only SQLite DB and loads the ACL/token map. It builds no reverse indexes:
+every id the API resolves now comes out of a stored column or table, assigned once at import rather
+than rebuilt on every boot (#51).
+
+`_build_index` used to live here, and what it held is worth recording because the shape recurs. Each
+entry reversed a one-way hash back to the thing it was computed from, and each moved to wherever
+that thing already had a row: a per-document served id to the document's own PRIMARY KEY; Linear's
+team id/key to `linear_teams`; Fireflies' user id to `fireflies_users`; a Jira project's prefix to
+`jira_projects.key`. The last six had no row to move to at all -- a Linear project, workflow state,
+label, cycle, user and release exist only as DISTINCT values of a `linear_issues` column -- so they
+got a table of their own, `linear_entities`, written by backlot.importer.byo's
+`write_linear_entities` and read by `store.linear_entity_by_id`.
+
+What that leaves at startup is one connection and one ACL read, so boot time no longer scales with
+the corpus.
 """
 
 from __future__ import annotations
@@ -47,36 +48,6 @@ from backlot.routers import (
 )
 
 
-def _build_index(conn) -> dict:
-    idx = {
-        "linear_users": {},
-        "linear_states": {},
-        "linear_projects": {},
-        "linear_cycles": {},
-        "linear_labels": {},
-        "linear_releases": {},
-    }
-
-    # `@linear/sdk` resolves an issue's relations LAZILY: `await issue.state` issues a fresh
-    # `workflowState(id: <uuid>)`. Those uuids are one-way hashes of a name, so the only way to
-    # answer is a reverse map built here. Each source list is a DISTINCT over one column (see
-    # store.linear_distinct_values), so this is a handful of scans of one table, not per-row work.
-    distinct = store.linear_distinct_values(conn)
-    for email, display in distinct["users"]:
-        idx["linear_users"][synth.linear_user_id(email)] = (email, display)
-    for team, name in distinct["states"]:
-        idx["linear_states"][synth.linear_state_id(name, team)] = (team, name)
-    for name in distinct["projects"]:
-        idx["linear_projects"][synth.linear_project_id(name)] = name
-    for team, name in distinct["cycles"]:
-        idx["linear_cycles"][synth.linear_cycle_id(name, team)] = (team, name)
-    for name in distinct["labels"]:
-        idx["linear_labels"][synth.linear_label_id(name)] = name
-    for name in distinct["releases"]:
-        idx["linear_releases"][synth.linear_release_id(name)] = name
-    return idx
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -105,7 +76,6 @@ async def lifespan(app: FastAPI):
     app.state.conn = conn
     app.state.acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     app.state.oauth = Oauth.load(settings.credentials_path)  # None if credentials.yaml absent
-    app.state.index = _build_index(conn)
 
     # One indexed lookup, not a background warm-up like doc_counts below — the value can't
     # change while the server runs. None on a DB built before the meta table existed.

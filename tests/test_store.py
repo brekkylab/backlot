@@ -9,6 +9,7 @@ ACL-filtered reads live in test_acl.py (the ACL is the subject there) and FTS se
 test_search.py (search is its own sub-domain); this file covers the plain store surface.
 """
 
+import json
 import sqlite3
 
 import pytest
@@ -1983,13 +1984,114 @@ def test_linear_team_served_ids_are_stored_and_resolve(tmp_path, monkeypatch, or
         build_corpus(tmp_path / ("collide-" + "-".join(order)), docs)
 
 
-def test_linear_distinct_values_feed_the_reverse_index(db):
+def test_linear_distinct_values_feed_the_entity_table(db):
     d = store.linear_distinct_values(db)
     assert ("engineering", "In Progress") in d["states"]
     assert "runtime-stability" in d["projects"]
     assert ("engineering", "2025-W08") in d["cycles"]
     assert {"bug", "gateway", "latency", "tokens"} <= set(d["labels"])
     assert ("bob@acme.com", "Bob Stone") in d["users"]
+
+
+def test_linear_entity_by_id_resolves_every_kind_from_the_stored_table(db):
+    """The last of #51's startup reverse maps. `main._build_index` hashed each of these six DISTINCT
+    values into a dict on EVERY BOOT, because none of them has a document row to be stored on -- a
+    Linear project or label exists only as a column value on some issue. `linear_entities` gives
+    them one, written at import.
+
+    Every kind is asserted, and each in the SHAPE its resolver serves: a bare name for the three
+    corpus-wide entities, `(team, name)` for the two Linear scopes to a team, `(email, display)` for
+    a person. Getting a shape wrong is not a type error anywhere -- the resolver would just unpack a
+    tuple into the wrong fields -- so the shape is the assertion.
+    """
+    cases = {
+        "project": ("runtime-stability", synth.linear_project_id("runtime-stability")),
+        "label": ("gateway", synth.linear_label_id("gateway")),
+        "state": (
+            ("engineering", "In Progress"),
+            synth.linear_state_id("In Progress", "engineering"),
+        ),
+        "cycle": (("engineering", "2025-W08"), synth.linear_cycle_id("2025-W08", "engineering")),
+        "user": (("bob@acme.com", "Bob Stone"), synth.linear_user_id("bob@acme.com")),
+    }
+    assert set(cases) <= set(store.LINEAR_ENTITY_VALUE)
+    for kind, (want, served) in cases.items():
+        assert store.linear_entity_by_id(db, kind, served) == want, kind
+    # An id no row holds is absent, not an error -- the by-id root turns that into "not found".
+    assert store.linear_entity_by_id(db, "project", "00000000-0000-0000-0000-000000000000") is None
+    # An unknown KIND is a programming error and raises, the way store.table() does for a source.
+    with pytest.raises(ValueError, match="nope"):
+        store.linear_entity_by_id(db, "nope", "x")
+
+
+def test_linear_entities_are_rebuilt_whole_so_an_append_is_resolvable(tmp_path):
+    """The table's contents are a DISTINCT over the live issues, so after an `--append` the right
+    answer is a function of every issue now present -- not of the ones that run happened to add.
+    Rebuilding whole is what makes a project introduced by an appended issue resolvable, and what
+    keeps one that no issue carries any more from lingering.
+
+    Safe to rebuild because these ids are pure hashes of a NAME and never probed: a row deleted and
+    re-inserted comes back with the same id, so no id a client holds can move.
+    """
+    from backlot.importer.byo import load
+    from backlot.config import Settings
+
+    def issue(doc_id, project):
+        return {
+            "source_type": "linear",
+            "team": "engineering",
+            "doc_id": doc_id,
+            "title": doc_id,
+            "content": "c",
+            "author_email": "a@acme.com",
+            "project": project,
+        }
+
+    settings = Settings(data_dir=tmp_path)
+    first = tmp_path / "a.jsonl"
+    first.write_text(json.dumps(issue("l1", "alpha")) + "\n")
+    load(first, settings, reset=True)
+    second = tmp_path / "b.jsonl"
+    second.write_text(json.dumps(issue("l2", "beta")) + "\n")
+    load(second, settings, reset=False)
+
+    conn = store.connect_ro(settings.db_path)
+    try:
+        # Both the original project and the appended one resolve.
+        assert (
+            store.linear_entity_by_id(conn, "project", synth.linear_project_id("alpha")) == "alpha"
+        )
+        assert store.linear_entity_by_id(conn, "project", synth.linear_project_id("beta")) == "beta"
+        assert (
+            conn.execute("SELECT COUNT(*) FROM linear_entities WHERE kind = 'project'").fetchone()[
+                0
+            ]
+            == 2
+        )
+    finally:
+        conn.close()
+
+    # The other half, and the one only a REBUILD gives: an entity no issue carries any more has to
+    # STOP resolving. Re-stating `l1` under a different project is how that arises -- linear's id is
+    # a pure hash of the seed, so a re-import upserts the issue in place (unlike a probed source,
+    # which refuses one) and nothing is left carrying `alpha`. Appending to the table instead of
+    # rebuilding it would leave `alpha` answering for an entity that exists nowhere.
+    third = tmp_path / "c.jsonl"
+    third.write_text(json.dumps(issue("l1", "gamma")) + "\n")
+    load(third, settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    try:
+        assert (
+            store.linear_entity_by_id(conn, "project", synth.linear_project_id("gamma")) == "gamma"
+        )
+        assert (
+            store.linear_entity_by_id(conn, "project", synth.linear_project_id("alpha")) is None
+        ), (
+            "a project no issue carries any more still resolves -- the table was appended to, "
+            "not rebuilt"
+        )
+    finally:
+        conn.close()
 
 
 def test_linear_comment_table_is_registered(db):

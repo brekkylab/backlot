@@ -2140,6 +2140,51 @@ class _Loader:
             final.append((key, f"{prefix}-{candidate}"))
         self._settle("jira", final)
 
+    def write_linear_entities(self) -> None:
+        """Store the ids Linear's by-id roots reverse: project, workflow state, label, cycle, user
+        and release.
+
+        Each is a DISTINCT value of one `linear_issues` column, hashed to a uuid the SDK asks for
+        lazily (`await issue.state` fires a fresh `workflowState(id:)`). `main._build_index` rebuilt
+        all six as dicts on EVERY BOOT; the same scans run once here instead, and the app serves
+        them from `linear_entities` (#51 -- the last startup reverse map to move).
+
+        Rebuilt whole rather than appended to: the source is a DISTINCT over the live table, so
+        after an `--append` the correct contents are a function of every issue now present, not of
+        the ones this run happened to add. A row deleted here and re-inserted with the same id is
+        the same row -- these ids are pure hashes of a NAME (never probed), so nothing a client
+        holds can move.
+        """
+        if not self.counts.get("linear"):
+            return
+        distinct = store.linear_distinct_values(self.conn)
+        rows: list[tuple] = []
+        # (kind, the id function, the rows it applies to) -- `team` and `display` are set only for
+        # the kinds whose value has one, matching store.LINEAR_ENTITY_VALUE.
+        for email, display in distinct["users"]:
+            rows.append(("user", synth.linear_user_id(email), None, email, display))
+        for team, name in distinct["states"]:
+            rows.append(("state", synth.linear_state_id(name, team), team, name, None))
+        for team, name in distinct["cycles"]:
+            rows.append(("cycle", synth.linear_cycle_id(name, team), team, name, None))
+        for name in distinct["projects"]:
+            rows.append(("project", synth.linear_project_id(name), None, name, None))
+        for name in distinct["labels"]:
+            rows.append(("label", synth.linear_label_id(name), None, name, None))
+        for name in distinct["releases"]:
+            rows.append(("release", synth.linear_release_id(name), None, name, None))
+        self.conn.execute("DELETE FROM linear_entities")
+        # `OR REPLACE` on the (kind, served_id) primary key: two DIFFERENT names can hash to one id
+        # only by a digest collision, which is vanishingly unlikely -- but the entities are drawn
+        # from free-text corpus values, so the import must not abort on one. The loser is simply
+        # unreachable by id, exactly as it was when this lived in a dict and `[id] = value` kept the
+        # last writer.
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO linear_entities(kind, served_id, team, name, display) "
+            "VALUES (?,?,?,?,?)",
+            rows,
+        )
+
     def resolve_probed_ids(self, src: str) -> None:
         """Settle every confluence page / hubspot record that landed under a provisional id.
 
@@ -2304,6 +2349,8 @@ def load_records(
     loader.resolve_probed_ids("hubspot")
     loader.resolve_parents()
     loader.resolve_cross_references()
+    # After the linear rows are final: its contents are a DISTINCT over them.
+    loader.write_linear_entities()
     users, groups = loader.users, loader.groups
     memberships, grants = loader.memberships, loader.grants
     counts, fts_ids = loader.counts, loader.fts_ids

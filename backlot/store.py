@@ -739,6 +739,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_linear_teams_served ON linear_teams(served
 CREATE INDEX IF NOT EXISTS idx_linear_teams_served_key ON linear_teams(served_key);
 CREATE TABLE IF NOT EXISTS fireflies_channels (channel TEXT PRIMARY KEY, group_id TEXT);
 
+-- Linear's by-id roots (`project(id:)`, `workflowState(id:)`, `issueLabel(id:)`, `cycle(id:)`,
+-- `user(id:)`, `release(id:)`) resolve an entity that has no table of its own: it exists only as a
+-- column VALUE on some issue. `@linear/sdk` reaches them lazily (`await issue.state` fires a fresh
+-- `workflowState(id:)`) and the ids are one-way hashes of a name, so serving one means reversing
+-- the hash. That reversal used to be six dicts rebuilt on every boot by `main._build_index`; this
+-- table holds them instead, written once at import (backlot.importer.byo's
+-- `write_linear_entities`) -- the last of #51's startup reverse maps to move.
+--
+-- ONE table, not six, because these are not six kinds of thing: each row is a distinct value of one
+-- issue column, and they share a shape and a single access pattern (`kind` + id -> the value). The
+-- code already dispatched on `kind` before the table existed -- see `_LINEAR_ENTITY_PREDICATES` and
+-- `linear_entity_has_visible`, which decide VISIBILITY by the same key. Six near-identical DDL
+-- blocks would be six places to drift apart, the argument the `<source>_acl` tables' generated DDL
+-- already makes.
+--
+-- `team` is set only for the two entities Linear scopes to one (a workflow state and a cycle);
+-- `display` only for a user, whose value is the (email, display name) pair the resolver serves.
+-- Which columns make up a kind's value is declared in :data:`LINEAR_ENTITY_VALUE`, so the reader
+-- returns exactly the shape the resolver expects rather than a row for it to unpack.
+CREATE TABLE IF NOT EXISTS linear_entities (
+    kind TEXT NOT NULL, served_id TEXT NOT NULL, team TEXT, name TEXT, display TEXT,
+    PRIMARY KEY (kind, served_id)
+);
+
 CREATE TABLE IF NOT EXISTS principals (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, display_name TEXT, email TEXT
 );
@@ -1533,6 +1557,45 @@ _LINEAR_ENTITY_PREDICATES = {
     ),
     "release": lambda v: ("release = ?", [v]),
 }
+
+
+# kind -> the `linear_entities` columns that make up its value, in the order the resolver wants
+# them. A one-column kind resolves to a bare value, a two-column kind to a tuple -- which is
+# exactly what `_LINEAR_ENTITY_PREDICATES` below takes, so a value read out of the table can be
+# handed straight to the visibility check.
+LINEAR_ENTITY_VALUE = {
+    "project": ("name",),
+    "cycle": ("team", "name"),
+    "state": ("team", "name"),
+    "user": ("name", "display"),  # (email, display name)
+    "label": ("name",),
+    "release": ("name",),
+}
+
+
+def linear_entity_by_id(conn, kind: str, served_id):
+    """The project / state / label / cycle / user / release a served id names, or None.
+
+    A PRIMARY KEY lookup on `linear_entities`, written at import — not the six dicts
+    `main._build_index` rebuilt on every boot (#51). Returns the value in the shape the resolver
+    serves it in (see :data:`LINEAR_ENTITY_VALUE`): a bare name for the corpus-wide entities, a
+    ``(team, name)`` pair for the two Linear scopes to a team, ``(email, display)`` for a user.
+
+    No ``visible_ids``: whether the CALLER may see the entity is a different question, answered by
+    :func:`linear_entity_has_visible` against the issues carrying it — an entity has no ACL of its
+    own, so folding the two together would have to decide visibility from a row that holds no
+    grant.
+    """
+    cols = LINEAR_ENTITY_VALUE.get(kind)
+    if cols is None:
+        raise ValueError(f"unknown linear entity kind {kind!r}")
+    row = conn.execute(
+        f"SELECT {', '.join(cols)} FROM linear_entities WHERE kind = ? AND served_id = ?",
+        (kind, str(served_id)),
+    ).fetchone()
+    if row is None:
+        return None
+    return tuple(row) if len(cols) > 1 else row[0]
 
 
 def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:

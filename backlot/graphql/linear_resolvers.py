@@ -943,15 +943,23 @@ def resolve_users(
 # entities hanging off an issue it just successfully read, so the probe always finds that issue.
 
 
-def _by_id(info, index_key: str, id_value, entity: str, kind: str | None = None):
+def _by_id(info, kind: str, id_value, entity: str):
+    """The entity a by-id root names, or a GraphQL "not found" error.
+
+    Two questions, deliberately separate. `linear_entity_by_id` answers "does the corpus hold this
+    id" from `linear_entities` — a stored table since #51, not the six dicts `main._build_index`
+    rebuilt on every boot. `linear_entity_has_visible` then answers "may THIS caller see it", which
+    no lookup can fold in: an entity is a distinct column value with no ACL of its own, so
+    visibility is whether any issue carrying it is readable.
+
+    A hit the caller cannot see answers exactly as a miss does. Without that, the by-id roots are an
+    existence oracle: the id is a one-way hash of a name, so anyone can compute it offline, and a
+    distinguishable error would confirm the project/label/person exists.
+    """
     ctx = _ctx(info)
-    found = ctx.get(index_key, {}).get(str(id_value))
-    if (
-        found is not None
-        and kind is not None
-        and not store.linear_entity_has_visible(
-            ctx["conn"], kind, found, visible_ids=ctx["visible_ids"]
-        )
+    found = store.linear_entity_by_id(ctx["conn"], kind, id_value)
+    if found is not None and not store.linear_entity_has_visible(
+        ctx["conn"], kind, found, visible_ids=ctx["visible_ids"]
     ):
         found = None  # exists in the corpus, but not for this caller — answer as if absent
     if found is None:
@@ -962,31 +970,31 @@ def _by_id(info, index_key: str, id_value, entity: str, kind: str | None = None)
 
 
 def resolve_user(_root, info, id) -> dict:
-    email, display = _by_id(info, "user_index", id, "User", kind="user")
+    email, display = _by_id(info, "user", id, "User")
     return _user(email, display, info)
 
 
 def resolve_workflow_state(_root, info, id) -> dict:
-    team, name = _by_id(info, "state_index", id, "WorkflowState", kind="state")
+    team, name = _by_id(info, "state", id, "WorkflowState")
     return _state(name, team, info)
 
 
 def resolve_project(_root, info, id) -> dict:
-    return _project(_by_id(info, "project_index", id, "Project", kind="project"), info)
+    return _project(_by_id(info, "project", id, "Project"), info)
 
 
 def resolve_cycle(_root, info, id) -> dict:
-    team, name = _by_id(info, "cycle_index", id, "Cycle", kind="cycle")
+    team, name = _by_id(info, "cycle", id, "Cycle")
     return _cycle(name, team, info)
 
 
 def resolve_issue_label(_root, info, id) -> dict:
-    name = _by_id(info, "label_index", id, "IssueLabel", kind="label")
+    name = _by_id(info, "label", id, "IssueLabel")
     return _label(name, synth.rfc3339(synth.epoch("linear-label:" + name)))
 
 
 def resolve_release(_root, info, id) -> dict:
-    return _release(_by_id(info, "release_index", id, "Release", kind="release"), info)
+    return _release(_by_id(info, "release", id, "Release"), info)
 
 
 def resolve_attachment(_root, info, id) -> dict:

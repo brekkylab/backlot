@@ -64,16 +64,11 @@ async def graphql(request: Request):
         # service identity's address is built from (an org NAME is not a domain).
         "org": getattr(state.acl, "org_name", None),
         "org_domain": get_settings().org_domain,
-        # Team resolution (uuid, key, or raw name) reads stored columns instead of a startup
-        # reverse map now -- see store.linear_team_by_served_id / linear_team_by_served_key /
-        # get_container, called directly by resolve_team (#51, task 9).
-        # Reverse maps for the by-id roots the SDK's lazy relation accessors call.
-        "user_index": state.index.get("linear_users", {}),
-        "state_index": state.index.get("linear_states", {}),
-        "project_index": state.index.get("linear_projects", {}),
-        "cycle_index": state.index.get("linear_cycles", {}),
-        "label_index": state.index.get("linear_labels", {}),
-        "release_index": state.index.get("linear_releases", {}),
+        # No reverse maps here any more (#51). Every id the SDK's lazy relation accessors ask for
+        # resolves through a stored table: a team through store.linear_team_by_served_id /
+        # linear_team_by_served_key, and the six entities that have no table of their own through
+        # `linear_entities` (store.linear_entity_by_id, called by the resolvers' own `_by_id`).
+        # `app.state.index` is gone with them, and so is main._build_index.
     }
     result = ENGINE.execute_request(await request.body(), context=context)
     return JSONResponse(result.payload, status_code=400 if result.request_error else 200)

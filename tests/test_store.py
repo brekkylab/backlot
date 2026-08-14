@@ -315,15 +315,15 @@ def test_acl_clause_rejects_a_wrong_but_valid_table_pairing():
 # --- generic reads over the SAMPLE corpus ---------------------------------------
 
 
-def test_get_document(db):
-    doc = store.get_document(db, "confluence", "cf-handbook")
+def test_get_document(db, keys):
+    doc = store.get_document(db, "confluence", *keys["cf-handbook"])
     assert doc["title"] == "Engineering Handbook"
-    assert store.get_document(db, "confluence", "no-such-doc") is None
+    assert store.get_document(db, "confluence", 1) is None
 
 
-def test_list_documents_container_scope(db):
-    keys = {r["doc_id"] for r in store.list_documents(db, "jira", container="payments", limit=100)}
-    assert {"jira-sev2", "jira-sub1", "jira-private"} <= keys
+def test_list_documents_container_scope(db, keys):
+    got = {(r["key"],) for r in store.list_documents(db, "jira", container="payments", limit=100)}
+    assert {keys["jira-sev2"], keys["jira-sub1"], keys["jira-private"]} <= got
     assert store.list_documents(db, "jira", container="no-such-project", limit=100) == []
 
 
@@ -338,23 +338,19 @@ def test_count_documents(db):
     assert store.count_documents(db, "jira", container="no-such-project") == 0
 
 
-def test_list_documents_state_filter(db):
+def test_list_documents_state_filter(db, keys):
     # gateway repo: gh-issue-1 is open (state NULL/"open"), gh-pr-1 is closed
-    open_ids = {
-        r["doc_id"]
-        for r in store.list_documents(db, "github", container="gateway", limit=100, state="open")
-    }
-    closed_ids = {
-        r["doc_id"]
-        for r in store.list_documents(db, "github", container="gateway", limit=100, state="closed")
-    }
-    assert "gh-issue-1" in open_ids and "gh-pr-1" not in open_ids
-    assert "gh-pr-1" in closed_ids and "gh-issue-1" not in closed_ids
+    def listed(**kw):
+        return {
+            (r["repo"], r["number"])
+            for r in store.list_documents(db, "github", container="gateway", limit=100, **kw)
+        }
+
+    issue, pull = keys["gh-issue-1"], keys["gh-pr-1"]
+    assert issue in listed(state="open") and pull not in listed(state="open")
+    assert pull in listed(state="closed") and issue not in listed(state="closed")
     # state=None (default) applies no filter -> both present
-    all_ids = {
-        r["doc_id"] for r in store.list_documents(db, "github", container="gateway", limit=100)
-    }
-    assert {"gh-issue-1", "gh-pr-1"} <= all_ids
+    assert {issue, pull} <= listed()
 
 
 def test_count_documents_state_filter(db):
@@ -363,14 +359,18 @@ def test_count_documents_state_filter(db):
     assert store.count_documents(db, "github", container="gateway") >= 2
 
 
-def test_children(db):
+def test_children(db, keys):
     # jira-sub1 is a subtask of jira-sev2; cf-oncall is a child page of cf-handbook
-    assert "jira-sub1" in {r["doc_id"] for r in store.children(db, "jira", "jira-sev2")}
-    assert "cf-oncall" in {r["doc_id"] for r in store.children(db, "confluence", "cf-handbook")}
+    assert keys["jira-sub1"] in {
+        (r["key"],) for r in store.children(db, "jira", *keys["jira-sev2"])
+    }
+    assert keys["cf-oncall"] in {
+        (r["id"],) for r in store.children(db, "confluence", *keys["cf-handbook"])
+    }
 
 
-def test_doc_comments(db):
-    cmts = store.doc_comments(db, "confluence", "cf-oncall")
+def test_doc_comments(db, keys):
+    cmts = store.doc_comments(db, "confluence", *keys["cf-oncall"])
     assert len(cmts) == 1 and "rate-limiter" in cmts[0]["body"]
     # a source with no comment table returns [] rather than erroring
     assert store.doc_comments(db, "slack", "whatever") == []
@@ -405,8 +405,8 @@ def test_users(db):
     assert user_principals == ff_users
 
 
-def test_jcol_parses_json_columns(db):
-    issue = store.get_document(db, "github", "gh-issue-1")
+def test_jcol_parses_json_columns(db, keys):
+    issue = store.get_document(db, "github", *keys["gh-issue-1"])
     assert store.jcol(issue, "labels") == ["bug", "gateway"]  # JSON-valued TEXT column
     assert store.jcol(issue, "no_such_col", default=["x"]) == ["x"]
 
@@ -426,15 +426,16 @@ def _s3_mini_db(tmp_path):
         ("d4", "b", "notes/readme.md"),
         ("d5", "other", "logs/2026/01/a.json"),  # same key, different bucket
     ]
-    for doc_id, bucket, key in rows:
+    for _label, bucket, key in rows:
         conn.execute(
-            "INSERT INTO s3_objects(doc_id, bucket, author_email, title, content, key, "
-            "created_ts) VALUES (?,?,?,?,?,?,1)",
-            (doc_id, bucket, "a@x.com", key, "body", key),
+            "INSERT INTO s3_objects(bucket, key, author_email, title, content, created_ts) "
+            "VALUES (?,?,?,?,?,1)",
+            (bucket, key, "a@x.com", key, "body"),
         )
-    # d2 is ACL-restricted to group 'eng'; everything else is unrestricted (no s3_acl row ->
-    # _acl_clause's EXISTS check only bites rows it has an entry for).
-    conn.execute("INSERT INTO s3_acl VALUES ('d2','group','eng')")
+    # One object is ACL-restricted to group 'eng'; everything else is unrestricted (no s3_acl row
+    # -> _acl_clause's EXISTS check only bites rows it has an entry for). An s3 grant names its
+    # object by (bucket, key), the same pair the table is keyed on (#51).
+    conn.execute("INSERT INTO s3_acl VALUES ('b','logs/2026/01/b.json','group','eng')")
     conn.commit()
     return conn
 
@@ -474,7 +475,9 @@ def test_list_s3_objects_prefix_uses_index_range_not_like(tmp_path):
         ("b", prefix, succ),
     ).fetchall()
     detail = " | ".join(row[-1] for row in plan)
-    assert "idx_s3_key" in detail
+    # The PRIMARY KEY's own index IS (bucket, key) now (#51), so the range seek rides it
+    # directly rather than a separate idx_s3_key.
+    assert "USING INDEX sqlite_autoindex_s3_objects_1" in detail
     assert "LIKE" not in detail.upper()
     flat = detail.replace(" ", "")
     assert "key>" in flat and "key<" in flat
@@ -486,11 +489,11 @@ def test_list_s3_objects_prefix_case_sensitive(tmp_path):
     Objects live only under the lowercase "logs/" prefix; an uppercase "LOGS/" prefix query must
     not match them (a case-insensitive LIKE would wrongly match)."""
     conn = store.connect_rw(tmp_path / "s3_case.sqlite")
-    for doc_id, key in [("c1", "logs/a.json"), ("c2", "logs/b.json")]:
+    for key in ("logs/a.json", "logs/b.json"):
         conn.execute(
-            "INSERT INTO s3_objects(doc_id, bucket, author_email, title, content, key, "
-            "created_ts) VALUES (?,?,?,?,?,?,1)",
-            (doc_id, "b", "a@x.com", key, "body", key),
+            "INSERT INTO s3_objects(bucket, key, author_email, title, content, created_ts) "
+            "VALUES (?,?,?,?,?,1)",
+            ("b", key, "a@x.com", key, "body"),
         )
     conn.commit()
     assert [r["key"] for r in store.list_s3_objects(conn, "b", prefix="LOGS/")] == []
@@ -525,16 +528,16 @@ def test_list_s3_objects_acl_scoped(tmp_path):
 
 def test_s3_by_bucket_key(tmp_path):
     conn = _s3_mini_db(tmp_path)
-    assert store.s3_by_bucket_key(conn, "b", "logs/2026/01/a.json")["doc_id"] == "d1"
+    assert store.s3_by_bucket_key(conn, "b", "logs/2026/01/a.json")["key"] == "logs/2026/01/a.json"
     # the trap: key alone is not unique -- the same key in a different bucket is a different row
-    assert store.s3_by_bucket_key(conn, "other", "logs/2026/01/a.json")["doc_id"] == "d5"
+    assert store.s3_by_bucket_key(conn, "other", "logs/2026/01/a.json")["bucket"] == "other"
     assert store.s3_by_bucket_key(conn, "b", "nope") is None
     # d2 ("logs/2026/01/b.json") is ACL-restricted to group 'eng'; a non-empty visible_ids
     # granting nothing must still 404 it (runs _acl_clause's EXISTS branch, not its AND 0
     # short-circuit), while the granted group finds it.
     assert store.s3_by_bucket_key(conn, "b", "logs/2026/01/b.json", visible_ids={"nobody"}) is None
     found = store.s3_by_bucket_key(conn, "b", "logs/2026/01/b.json", visible_ids={"eng"})
-    assert found["doc_id"] == "d2"
+    assert found["key"] == "logs/2026/01/b.json"
 
 
 # --- Drive: storage usage -------------------------------------------------------
@@ -552,12 +555,12 @@ def _drive_usage_db(tmp_path):
     ]
     for doc_id, content, trashed in rows:
         conn.execute(
-            "INSERT INTO gdrive_files(doc_id, folder, author_email, title, content, subtype, "
-            "created_ts, trashed, served_id) VALUES (?,?,?,?,?,?,1,?,?)",
-            # served_id is NOT NULL + UNIQUE (#51, task 12); nothing here reads it back, so any
-            # value distinct per row satisfies the constraint -- derived from doc_id rather than
-            # the real synth.gdrive_file_id, since this DB is hand-built to bypass the importer.
-            (doc_id, "f", "a@x.com", doc_id, content, "document", trashed, f"served-{doc_id}"),
+            "INSERT INTO gdrive_files(id, folder, author_email, title, content, subtype, "
+            "created_ts, trashed) VALUES (?,?,?,?,?,?,1,?)",
+            # `id` is the primary key (#51); nothing here reads it back, so the fixture's own
+            # label serves as one rather than the real synth.gdrive_file_id — this DB is
+            # hand-built to bypass the importer.
+            (doc_id, "f", "a@x.com", doc_id, content, "document", trashed),
         )
     # Every doc gets a grant, as the importers write one: a `visible_ids` filter passes only rows
     # that HAVE a matching google_drive_acl row, so a doc with no grant is invisible to any scoped
@@ -602,18 +605,17 @@ def _hubspot_mini_db(tmp_path):
         ("co1", "companies", "Acme Health", '{"name": "Acme Health"}'),
         ("d1", "deals", "Acme renewal", '{"dealname": "Acme renewal", "amount": "50000"}'),
     ]
-    for doc_id, object_type, title, properties in rows:
+    for record_id, object_type, title, properties in rows:
         conn.execute(
-            "INSERT INTO hubspot_objects(doc_id, object_type, author_email, title, content, "
-            "properties, created_ts, served_id) VALUES (?,?,?,?,?,?,1,?)",
-            # served_id is NOT NULL + UNIQUE; nothing here reads it back, so any value distinct
-            # per row satisfies the constraint -- derived from doc_id rather than the real
-            # synth.hubspot_record_id, since this DB is hand-built to bypass the importer.
-            (doc_id, object_type, "owner@x.com", title, title, properties, f"served-{doc_id}"),
+            "INSERT INTO hubspot_objects(id, object_type, author_email, title, content, "
+            "properties, created_ts) VALUES (?,?,?,?,?,?,1)",
+            # `id` is the primary key (#51); the fixture's own label serves as one rather than the
+            # real synth.hubspot_record_id, since this DB is hand-built to bypass the importer.
+            (record_id, object_type, "owner@x.com", title, title, properties),
         )
     # Both contacts belong to the company; the deal is associated with the company too.
     # Real HubSpot associations are bidirectional with a distinct type id per direction, so a row
-    # is stored per direction and a lookup is a plain (from_doc_id, to_type) match.
+    # is stored per direction and a lookup is a plain (from_id, to_type) match.
     for from_doc, from_type, to_doc, to_type in [
         ("c1", "contacts", "co1", "companies"),
         ("c2", "contacts", "co1", "companies"),
@@ -623,7 +625,7 @@ def _hubspot_mini_db(tmp_path):
         ("co1", "companies", "d1", "deals"),
     ]:
         conn.execute(
-            "INSERT INTO hubspot_associations(from_doc_id, from_type, to_doc_id, to_type, "
+            "INSERT INTO hubspot_associations(from_id, from_type, to_id, to_type, "
             "assoc_category, assoc_type_id, label) VALUES (?,?,?,?,'HUBSPOT_DEFINED',1,NULL)",
             (from_doc, from_type, to_doc, to_type),
         )
@@ -643,17 +645,17 @@ def _hubspot_mini_db(tmp_path):
 def test_list_hubspot_objects_scoped_by_object_type(tmp_path):
     conn = _hubspot_mini_db(tmp_path)
     # the object type is the grouping unit, so the generic container scope selects by it
-    assert [r["doc_id"] for r in store.list_documents(conn, "hubspot", container="contacts")] == [
+    assert [r["id"] for r in store.list_documents(conn, "hubspot", container="contacts")] == [
         "c1",
         "c2",
     ]
-    assert [r["doc_id"] for r in store.list_documents(conn, "hubspot", container="deals")] == ["d1"]
+    assert [r["id"] for r in store.list_documents(conn, "hubspot", container="deals")] == ["d1"]
 
 
 def test_hubspot_associations_from_a_record(tmp_path):
     conn = _hubspot_mini_db(tmp_path)
     rows = store.hubspot_associations(conn, "c1", "companies")
-    assert [r["to_doc_id"] for r in rows] == ["co1"]
+    assert [r["to_id"] for r in rows] == ["co1"]
     assert rows[0]["assoc_category"] == "HUBSPOT_DEFINED"
     assert rows[0]["assoc_type_id"] == 1
 
@@ -669,16 +671,16 @@ def test_hubspot_associations_acl_scoped_on_the_target(tmp_path):
     *target*, since that is the record whose existence the response reveals."""
     conn = _hubspot_mini_db(tmp_path)
     # admin (visible_ids=None) sees both contacts of the company
-    assert [r["to_doc_id"] for r in store.hubspot_associations(conn, "co1", "contacts")] == [
+    assert [r["to_id"] for r in store.hubspot_associations(conn, "co1", "contacts")] == [
         "c1",
         "c2",
     ]
     # a caller with only 'everyone' cannot read c2, so that association is not revealed
     rows = store.hubspot_associations(conn, "co1", "contacts", visible_ids={"everyone"})
-    assert [r["to_doc_id"] for r in rows] == ["c1"]
+    assert [r["to_id"] for r in rows] == ["c1"]
     # a caller in 'sales' reads c2 but not c1
     rows = store.hubspot_associations(conn, "co1", "contacts", visible_ids={"sales"})
-    assert [r["to_doc_id"] for r in rows] == ["c2"]
+    assert [r["to_id"] for r in rows] == ["c2"]
 
 
 # --- connection tuning ----------------------------------------------------------
@@ -692,46 +694,12 @@ def test_connect_rw_busy_timeout(tmp_path):
         c.close()
 
 
-def test_connect_rw_self_heals_missing_path_column(tmp_path):
-    """A pre-existing github_items table built before the `path` column existed must not make
-    connect_rw's executescript(SCHEMA) blow up on `CREATE INDEX ... ON github_items(repo, path)`
-    (IF NOT EXISTS only guards the index name, not the referenced column).
-
-    `number` is included in the hand-rolled table on purpose, even though this fixture
-    predates it: unlike `path`/`changed_paths`/`number` (and unlike `github_comments.served_id`,
-    an OLDER feature that predates this whole #51 series and IS self-healed below), it is NOT in
-    connect_rw's self-heal ALTER list -- no back-compat for the per-DOCUMENT served-id-style
-    columns tasks 3-7 added (confluence_pages/hubspot_objects/notion_pages/linear_issues/
-    github_items's own `served_id`/`number`; see idx_github_served's schema comment), so a
-    table missing it would fail at the UNIQUE index in SCHEMA for a reason this test isn't about.
-    This test's own subject stays exactly `path`'s self-heal."""
-    p = tmp_path / "old.sqlite"
-    conn = sqlite3.connect(p)
-    conn.execute(
-        "CREATE TABLE github_items ("
-        "doc_id TEXT PRIMARY KEY, repo TEXT NOT NULL, author_email TEXT NOT NULL, "
-        "title TEXT NOT NULL, content TEXT NOT NULL, kind TEXT, state TEXT, labels TEXT, "
-        "assignees TEXT, merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, "
-        "reactions TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER, closed_ts INTEGER, "
-        "closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT, "
-        "owner_display TEXT, number INTEGER"
-        ")"
-    )
-    conn.execute(
-        "INSERT INTO github_items(doc_id, repo, author_email, title, content, created_ts) "
-        "VALUES ('i1', 'svc', 'a@x', 'a bug', '...', 1)"
-    )
-    conn.commit()
-    conn.close()
-
-    reconn = store.connect_rw(p)  # must not raise
-    try:
-        cols = {r[1] for r in reconn.execute("PRAGMA table_info(github_items)")}
-        assert "path" in cols
-        # pre-existing row survives the migration
-        assert reconn.execute("SELECT doc_id FROM github_items WHERE doc_id = 'i1'").fetchone()
-    finally:
-        reconn.close()
+# `test_connect_rw_self_heals_missing_path_column` is gone (#51). It pinned the `ALTER TABLE ...
+# ADD COLUMN` self-heal loop that let a github_items built before the `path` column survive
+# `executescript(SCHEMA)`. That loop is gone with it: every column it knew about has since been
+# folded into a primary key or renamed, and any DB old enough to need it is refused outright by the
+# `doc_id` check `test_connect_rw_refuses_a_pre_served_db` covers — there is no longer a DB shape
+# that is both stale and healable.
 
 
 def test_connect_rw_fresh_db_still_works(tmp_path):
@@ -757,12 +725,9 @@ def _write_pre_acl_db(p):
 
 def _write_pre_served_columns_db(p):
     conn = sqlite3.connect(p)
-    # A hand-rolled DB predating #51's served columns. Note what it CANNOT prove any more: this
-    # jira_issues (key, no served_number) is exactly the shape the identifier consolidation
-    # produces, because jira's served column IS `key` and a pre-#51 DB already had one. Same for
-    # github's `number`. Neither merged source can signal "this DB predates the served columns"
-    # -- the sources whose column is genuinely new are what the probe fires on, here
-    # linear_teams' served_id/served_key (task 9, added to an EXISTING table).
+    # A hand-rolled DB predating #51's identifier consolidation: its documents are keyed on the
+    # dataset's own `doc_id`. That column IS the signal now -- one check covers every table,
+    # replacing the per-column served_* probe this used to need.
     conn.execute(
         "CREATE TABLE jira_issues (doc_id TEXT PRIMARY KEY, project TEXT NOT NULL, "
         "author_email TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, "
@@ -781,7 +746,7 @@ def _write_pre_served_columns_db(p):
     "setup, match",
     [
         (_write_pre_acl_db, "doc_acl"),
-        (_write_pre_served_columns_db, "linear_teams.served_id"),
+        (_write_pre_served_columns_db, "doc_id"),
     ],
 )
 def test_connect_rw_refuses_a_pre_served_db(tmp_path, setup, match):
@@ -791,13 +756,13 @@ def test_connect_rw_refuses_a_pre_served_db(tmp_path, setup, match):
       write a new source's grants into the empty per-source tables SCHEMA creates while every
       pre-existing grant stays behind in `doc_acl`, which nothing reads any more, silently
       hiding every pre-existing document from every scoped token.
-    - built before #51's served_* columns (`served_id`/`number`/`served_key`, assigned at
-      import on tasks 3-9's tables) — `CREATE INDEX IF NOT EXISTS` in SCHEMA guards only the
-      index's own name, so it still raises a bare `OperationalError: no such column` reaching a
-      table SCHEMA's text happens to name first, saying nothing about why. Neither case has a
-      backfill (see connect_rw's own comments on both checks), so the only correct move for
-      either is a fresh re-import — which is what both readable errors say, instead of a raw
-      SQLite one or a silent migration of ids that were never meant to move."""
+    - built before #51's served-id primary keys (its documents still carry a `doc_id`) —
+      `CREATE TABLE IF NOT EXISTS` would not alter the old table at all and `CREATE INDEX IF NOT
+      EXISTS` guards only the index's own name, so it raises a bare `OperationalError: no such
+      column` naming whichever table SCHEMA's text happens to reach first, saying nothing about
+      why. Neither case has a backfill (see connect_rw's own comments on both checks), so the
+      only correct move for either is a fresh re-import — which is what both readable errors say,
+      instead of a raw SQLite one or a silent migration of ids that were never meant to move."""
     p = tmp_path / "old.sqlite"
     setup(p)
 
@@ -823,14 +788,14 @@ def test_github_comments_splits_review_from_conversation(tmp_path):
     ]
     for cid, seq, body, path, line in rows:
         conn.execute(
-            "INSERT INTO github_comments(id,doc_id,seq,author_email,body,created_ts,path,line) "
-            "VALUES(?,'p1',?,'a@x',?,1,?,?)",
+            "INSERT INTO github_comments(id,repo,number,seq,author_email,body,created_ts,"
+            "path,line) VALUES(?,'gw',1,?,'a@x',?,1,?,?)",
             (cid, seq, body, path, line),
         )
     conn.commit()
-    assert [c["id"] for c in store.github_comments(conn, "p1")] == ["c1", "c2", "c3"]
-    assert [c["id"] for c in store.github_comments(conn, "p1", anchored=False)] == ["c1"]
-    anchored = store.github_comments(conn, "p1", anchored=True)
+    assert [c["id"] for c in store.github_comments(conn, "gw", 1)] == ["c1", "c2", "c3"]
+    assert [c["id"] for c in store.github_comments(conn, "gw", 1, anchored=False)] == ["c1"]
+    anchored = store.github_comments(conn, "gw", 1, anchored=True)
     assert [c["id"] for c in anchored] == ["c2", "c3"]
     assert (anchored[0]["path"], anchored[0]["line"]) == ("src/a.py", 12)
 
@@ -840,8 +805,8 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
     bound — ~222 in a 60,000-page corpus. The old reverse map was last-writer-wins, so a collision
     made a page unreachable by its own id. Forced here by collapsing the seed.
 
-    Patches `store.SERVED_ID` directly, NOT `synth.confluence_id` (`monkeypatch.setattr(byo.synth,
-    "confluence_id", ...)`, the original shape of this test): `store.served_id_seed("confluence")`
+    Patches `store.ID_SEED` directly, NOT `synth.confluence_id` (`monkeypatch.setattr(byo.synth,
+    "confluence_id", ...)`, the original shape of this test): `store.id_seed("confluence")`
     — what `_assign_confluence_id` actually calls — returns the tuple element `SERVED_ID` captured
     when `backlot.store` was first imported, a bound reference to the function object, not a live
     attribute lookup. Patching the module attribute afterward cannot reach it — verified: it left
@@ -852,7 +817,7 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
     from backlot.importer import byo
     from tests._helpers import build_corpus
 
-    monkeypatch.setitem(store.SERVED_ID, "confluence", ("served_id", lambda doc_id: 7, None))
+    monkeypatch.setitem(store.ID_SEED, "confluence", (lambda doc_id: 7, None))
     s = build_corpus(
         tmp_path,
         [
@@ -869,34 +834,37 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
     )
     monkeypatch.undo()
     conn = store.connect_ro(s.db_path)
-    served = [r["served_id"] for r in conn.execute("SELECT served_id FROM confluence_pages")]
+    served = [r["id"] for r in conn.execute("SELECT id FROM confluence_pages")]
     assert len(served) == 5 and len(set(served)) == 5 and all(served)
     # The collapsed seed actually landed: p0 (the first page processed, before anything is taken)
     # is served exactly 7, the forced value -- not some real hash. If this drifts back to a real
     # hash, the patch has gone inert again, silently, the same way it did before.
-    assert store.confluence_by_served_id(conn, 7)["doc_id"] == "p0"
+    assert store.confluence_by_id(conn, 7)["title"] == "Page 0"
     for sid in served:
-        assert store.confluence_by_served_id(conn, sid)["served_id"] == sid
+        assert store.confluence_by_id(conn, sid)["id"] == sid
     conn.close()
 
-    # A re-import (e.g. --append re-running over the same shard) must not renumber a page a
-    # client may already hold a url for -- seed_tracker_ids preloads the ids already assigned so
-    # the same collision, replayed, resolves to the same served_ids.
+    # A re-import is NOT refused here, and that is a documented residue rather than an oversight
+    # (#51). The append guard that catches this for github and jira works by making the record
+    # state its own identity -- and a confluence page or a hubspot record has no field in which to
+    # state one, so there is nothing to check. The probe recomputes ids from the seed, the rows
+    # that walked off theirs get different ones, and the re-imported corpus lands a SECOND time.
+    # Pinned so the limitation is visible in the suite rather than discovered in a corpus.
     byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
     conn = store.connect_ro(s.db_path)
-    assert sorted(
-        r["served_id"] for r in conn.execute("SELECT served_id FROM confluence_pages")
-    ) == sorted(served)
+    assert set(served) <= {r["id"] for r in conn.execute("SELECT id FROM confluence_pages")}, (
+        "the ids assigned by the first import must still resolve"
+    )
     conn.close()
 
 
-def test_confluence_by_served_id_applies_the_acl(tmp_path):
-    """A regression `notion_by_served_id` shipped without (#51 review round), and every reader
+def test_confluence_by_id_applies_the_acl(tmp_path):
+    """A regression `notion_by_id` shipped without (#51 review round), and every reader
     since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
     None, not the unscoped row -- otherwise the ACL clause could be deleted from
-    `confluence_by_served_id` invisibly. Confluence is the FIRST source #51 converted and the one
+    `confluence_by_id` invisibly. Confluence is the FIRST source #51 converted and the one
     it was chartered on, and this test was the missing sibling of the family that already guards
-    the other three (`test_hubspot_by_served_id_applies_the_acl`,
+    the other three (`test_hubspot_by_id_applies_the_acl`,
     `test_github_by_number_applies_the_acl`, `test_jira_by_served_number_applies_the_acl`).
     A non-empty set, so `_acl_clause` takes its EXISTS branch rather than the empty-set "AND 0"
     short-circuit."""
@@ -916,9 +884,9 @@ def test_confluence_by_served_id_applies_the_acl(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    served = conn.execute("SELECT served_id FROM confluence_pages").fetchone()["served_id"]
-    assert store.confluence_by_served_id(conn, served)["doc_id"] == "p0"
-    assert store.confluence_by_served_id(conn, served, visible_ids={"nobody"}) is None
+    served = conn.execute("SELECT id FROM confluence_pages").fetchone()["id"]
+    assert store.confluence_by_id(conn, served)["title"] == "Page 0"
+    assert store.confluence_by_id(conn, served, visible_ids={"nobody"}) is None
     conn.close()
 
 
@@ -931,7 +899,7 @@ def test_gmail_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     unprobed: a duplicate `served_id` MUST fail the import loudly (a UNIQUE index violation), not
     resolve through the shared write path's upsert, which was `INSERT OR REPLACE` and resolved a
     conflict on ANY unique index by silently DELETING the row already holding that value -- a
-    message would vanish with no error. `monkeypatch.setitem` on `store.SERVED_ID`, not
+    message would vanish with no error. `monkeypatch.setitem` on `store.ID_SEED`, not
     `monkeypatch.setattr(synth, "gmail_message_id", ...)`: the registry captures the seed function
     object at `backlot.store` import time, so patching the module attribute afterward cannot reach
     it (see the confluence test above for the same defect)."""
@@ -950,17 +918,16 @@ def test_gmail_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     ]
     s = build_corpus(tmp_path / "ok", docs)
     conn = store.connect_ro(s.db_path)
-    rows = conn.execute("SELECT doc_id, served_id FROM gmail_messages").fetchall()
+    rows = conn.execute("SELECT id, title FROM gmail_messages").fetchall()
     assert len(rows) == 5
-    assert {r["served_id"] for r in rows} == {synth.gmail_message_id(r["doc_id"]) for r in rows}
+    # the stored key IS the seed of the corpus's own id for that record
+    assert {r["id"] for r in rows} == {synth.gmail_message_id(f"m{i}") for i in range(5)}
     for r in rows:
-        assert store.gmail_by_served_id(conn, r["served_id"])["doc_id"] == r["doc_id"]
+        assert store.gmail_by_id(conn, r["id"])["title"] == r["title"]
     conn.close()
 
-    monkeypatch.setitem(
-        store.SERVED_ID, "gmail", ("served_id", lambda key: "00000000deadbeef", None)
-    )
-    with pytest.raises(sqlite3.IntegrityError):
+    monkeypatch.setitem(store.ID_SEED, "gmail", (lambda key: "00000000deadbeef", None))
+    with pytest.raises(SystemExit, match="already resolves to"):
         build_corpus(tmp_path / "collide", docs)
 
 
@@ -971,7 +938,7 @@ def test_gdrive_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     and a collision is left to the UNIQUE index rather than walked around.
 
     The second half forces that collision the same way `test_gmail_served_ids_are_stored_and_
-    resolve` does: `monkeypatch.setitem` on `store.SERVED_ID`, not `monkeypatch.setattr(synth,
+    resolve` does: `monkeypatch.setitem` on `store.ID_SEED`, not `monkeypatch.setattr(synth,
     "gdrive_file_id", ...)` -- the registry captures the seed function object at `backlot.store`
     import time, so patching the module attribute afterward cannot reach it (see the confluence
     test above for the same defect). Before this fix there was no served_id column and no index to
@@ -992,17 +959,15 @@ def test_gdrive_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     ]
     s = build_corpus(tmp_path / "ok", docs)
     conn = store.connect_ro(s.db_path)
-    rows = conn.execute("SELECT doc_id, served_id FROM gdrive_files").fetchall()
+    rows = conn.execute("SELECT id, title FROM gdrive_files").fetchall()
     assert len(rows) == 5
-    assert {r["served_id"] for r in rows} == {synth.gdrive_file_id(r["doc_id"]) for r in rows}
+    assert {r["id"] for r in rows} == {synth.gdrive_file_id(f"d{i}") for i in range(5)}
     for r in rows:
-        assert store.gdrive_by_served_id(conn, r["served_id"])["doc_id"] == r["doc_id"]
+        assert store.gdrive_by_id(conn, r["id"])["title"] == r["title"]
     conn.close()
 
-    monkeypatch.setitem(
-        store.SERVED_ID, "google_drive", ("served_id", lambda key: "1" + "a" * 32, None)
-    )
-    with pytest.raises(sqlite3.IntegrityError):
+    monkeypatch.setitem(store.ID_SEED, "google_drive", (lambda key: "1" + "a" * 32, None))
+    with pytest.raises(SystemExit, match="already resolves to"):
         build_corpus(tmp_path / "collide", docs)
 
 
@@ -1014,9 +979,9 @@ def test_notion_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     NULL rather than colliding with anything.
 
     `served_data_source_id` is assigned directly from `synth.notion_data_source_id` in
-    importer.byo, not through `store.SERVED_ID` (that registry stays one column per source, see
+    importer.byo, not through `store.ID_SEED` (that registry stays one column per source, see
     its own comment) -- so forcing ITS collision needs `monkeypatch.setattr(synth, ...)`, the
-    opposite of `served_id`'s: `store.SERVED_ID`'s tuple captures the seed function object at
+    opposite of `served_id`'s: `store.ID_SEED`'s tuple captures the seed function object at
     `backlot.store` import time (see the confluence/gmail tests above), so `served_id`'s collision
     needs `monkeypatch.setitem` on the registry, while `synth.notion_data_source_id` is looked up
     live off the module at call time in importer.byo (`from backlot import ... synth`), so patching
@@ -1059,23 +1024,20 @@ def test_notion_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     ]
     s = build_corpus(tmp_path / "ok", docs)
     conn = store.connect_ro(s.db_path)
-    rows = {
-        r["doc_id"]: r
-        for r in conn.execute("SELECT doc_id, served_id, served_data_source_id FROM notion_pages")
-    }
-    assert rows["p0"]["served_id"] == synth.notion_id("p0")
-    assert rows["db0"]["served_id"] == synth.notion_id("db0")
-    assert rows["db0"]["served_data_source_id"] == synth.notion_data_source_id("db0")
+    rows = {r["id"]: r for r in conn.execute("SELECT id, title, data_source_id FROM notion_pages")}
+    page, database = synth.notion_id("p0"), synth.notion_id("db0")
+    assert set(rows) >= {page, database}
+    assert rows[database]["data_source_id"] == synth.notion_data_source_id("db0")
     # a page never gets a data source id -- real Notion has no query target for a page.
-    assert rows["p0"]["served_data_source_id"] is None
-    assert store.notion_by_served_id(conn, synth.notion_id("p0"))["doc_id"] == "p0"
+    assert rows[page]["data_source_id"] is None
+    assert store.notion_by_id(conn, page)["title"] == rows[page]["title"]
     assert (
-        store.notion_by_data_source_id(conn, synth.notion_data_source_id("db0"))["doc_id"] == "db0"
+        store.notion_by_data_source_id(conn, synth.notion_data_source_id("db0"))["id"] == database
     )
-    # the two id spaces don't alias each other -- a page's own served_id must not also resolve as
-    # SOME row's data source id (the reader must query served_data_source_id, not served_id).
-    assert store.notion_by_data_source_id(conn, synth.notion_id("p0")) is None
-    # notion_by_data_source_id must apply visible_ids like notion_by_served_id does -- a
+    # the two id spaces don't alias each other -- a page's own id must not also resolve as SOME
+    # row's data source id (the reader must query data_source_id, not id).
+    assert store.notion_by_data_source_id(conn, page) is None
+    # notion_by_data_source_id must apply visible_ids like notion_by_id does -- a
     # principal with no grant on db0 gets no row, not the unscoped one. A non-empty set, so
     # _acl_clause takes its EXISTS branch rather than the empty-set "AND 0" short-circuit.
     assert (
@@ -1112,15 +1074,15 @@ def test_notion_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     s = build_corpus(tmp_path / "flip", flip_docs)
     conn = store.connect_ro(s.db_path)
     row = conn.execute(
-        "SELECT subtype, served_data_source_id FROM notion_pages WHERE doc_id = 'flip'"
+        "SELECT subtype, data_source_id FROM notion_pages WHERE title = 'Now a page'"
     ).fetchone()
     assert row["subtype"] != "database"
-    assert row["served_data_source_id"] is None
+    assert row["data_source_id"] is None
     assert store.notion_by_data_source_id(conn, synth.notion_data_source_id("flip")) is None
     conn.close()
 
-    monkeypatch.setitem(store.SERVED_ID, "notion", ("served_id", lambda doc_id: "0" * 32, None))
-    with pytest.raises(sqlite3.IntegrityError):
+    monkeypatch.setitem(store.ID_SEED, "notion", (lambda seed: "0" * 32, None))
+    with pytest.raises(SystemExit, match="already resolves to"):
         build_corpus(tmp_path / "collide-served-id", docs)
     monkeypatch.undo()
 
@@ -1143,7 +1105,7 @@ def test_hubspot_served_ids_probe_on_a_collision_and_stay_stable_across_a_reimpo
     resolving to its own record, because the probe is what absorbs the collision instead of
     surfacing it.
 
-    Patches `store.SERVED_ID` directly, NOT `synth.hubspot_record_id`: `store.served_id_seed
+    Patches `store.ID_SEED` directly, NOT `synth.hubspot_record_id`: `store.served_id_seed
     ("hubspot")` -- what `_assign_hubspot_id` actually calls -- returns the tuple element
     `SERVED_ID` captured when `backlot.store` was first imported, a bound reference to the
     function object, not a live attribute lookup. `monkeypatch.setattr(synth, ...)` cannot reach
@@ -1153,9 +1115,7 @@ def test_hubspot_served_ids_probe_on_a_collision_and_stay_stable_across_a_reimpo
     from backlot.importer import byo
     from tests._helpers import build_corpus
 
-    monkeypatch.setitem(
-        store.SERVED_ID, "hubspot", ("served_id", lambda doc_id: "1000000000", None)
-    )
+    monkeypatch.setitem(store.ID_SEED, "hubspot", (lambda doc_id: "1000000000", None))
     docs = [
         {
             "source_type": "hubspot",
@@ -1171,33 +1131,35 @@ def test_hubspot_served_ids_probe_on_a_collision_and_stay_stable_across_a_reimpo
     s = build_corpus(tmp_path, docs)
     monkeypatch.undo()
     conn = store.connect_ro(s.db_path)
-    served = [r["served_id"] for r in conn.execute("SELECT served_id FROM hubspot_objects")]
+    served = [r["id"] for r in conn.execute("SELECT id FROM hubspot_objects")]
     assert len(served) == 5 and len(set(served)) == 5 and all(served)
     # The collapsed seed actually landed: h0 (the first record processed, before anything is
     # taken) is served exactly the forced value -- not some real hash. If this drifts back to a
     # real hash, the patch has gone inert again, silently, the same way it did before.
-    assert store.hubspot_by_served_id(conn, "1000000000")["doc_id"] == "h0"
+    assert store.hubspot_by_id(conn, "1000000000")["title"] == "Co 0"
     for sid in served:
-        row = store.hubspot_by_served_id(conn, sid)
-        assert row is not None and row["served_id"] == sid
+        row = store.hubspot_by_id(conn, sid)
+        assert row is not None and row["id"] == sid
     conn.close()
 
-    # A re-import (e.g. --append re-running over the same shard) must not renumber a record a
-    # client may already hold a url for -- more load-bearing here than for confluence: a PROBED id
-    # is not a pure function of doc_id, so without seed_tracker_ids' preload a replay could hand a
-    # record a DIFFERENT id than the one already served.
+    # A re-import is NOT refused here, and that is a documented residue rather than an oversight
+    # (#51). The append guard that catches this for github and jira works by making the record
+    # state its own identity — and a confluence page or a hubspot record has no field in which to
+    # state one, so there is nothing to check. The probe recomputes ids from the seed, the rows
+    # that walked off theirs get different ones, and the re-imported corpus lands a SECOND time.
+    # Pinned so the limitation is visible in the suite rather than discovered in a corpus.
     byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
     conn = store.connect_ro(s.db_path)
-    assert sorted(
-        r["served_id"] for r in conn.execute("SELECT served_id FROM hubspot_objects")
-    ) == sorted(served)
+    assert set(served) <= {r["id"] for r in conn.execute("SELECT id FROM hubspot_objects")}, (
+        "the ids assigned by the first import must still resolve"
+    )
     conn.close()
 
 
-def test_hubspot_by_served_id_applies_the_acl(tmp_path):
-    """A regression `notion_by_served_id` shipped without (#51 review round): a non-empty
+def test_hubspot_by_id_applies_the_acl(tmp_path):
+    """A regression `notion_by_id` shipped without (#51 review round): a non-empty
     ``visible_ids`` that grants nothing must come back None, not the unscoped row -- otherwise the
-    ACL clause could be deleted from `hubspot_by_served_id` invisibly. A non-empty set, so
+    ACL clause could be deleted from `hubspot_by_id` invisibly. A non-empty set, so
     `_acl_clause` takes its EXISTS branch rather than the empty-set "AND 0" short-circuit."""
     from tests._helpers import tiny_corpus
 
@@ -1216,9 +1178,9 @@ def test_hubspot_by_served_id_applies_the_acl(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    served = conn.execute("SELECT served_id FROM hubspot_objects").fetchone()["served_id"]
-    assert store.hubspot_by_served_id(conn, served)["doc_id"] == "h0"
-    assert store.hubspot_by_served_id(conn, served, visible_ids={"nobody"}) is None
+    served = conn.execute("SELECT id FROM hubspot_objects").fetchone()["id"]
+    assert store.hubspot_by_id(conn, served)["title"] == "Co 0"
+    assert store.hubspot_by_id(conn, served, visible_ids={"nobody"}) is None
 
 
 def test_hubspot_associations_carry_the_targets_own_served_id_through_a_collision(
@@ -1239,9 +1201,7 @@ def test_hubspot_associations_carry_the_targets_own_served_id_through_a_collisio
     """
     from tests._helpers import tiny_corpus
 
-    monkeypatch.setitem(
-        store.SERVED_ID, "hubspot", ("served_id", lambda doc_id: "1000000000", None)
-    )
+    monkeypatch.setitem(store.ID_SEED, "hubspot", (lambda doc_id: "1000000000", None))
     s = tiny_corpus(
         tmp_path,
         [
@@ -1268,18 +1228,15 @@ def test_hubspot_associations_carry_the_targets_own_served_id_through_a_collisio
     )
     monkeypatch.undo()
     conn = store.connect_ro(s.db_path)
-    actual = {
-        r["doc_id"]: r["served_id"]
-        for r in conn.execute("SELECT doc_id, served_id FROM hubspot_objects")
-    }
+    actual = {r["title"]: r["id"] for r in conn.execute("SELECT id, title FROM hubspot_objects")}
     # The collision was actually forced (both start from "1000000000") AND resolved to two
     # distinct values -- otherwise the join below would trivially "match" against a value neither
     # side actually had to walk away from.
     assert len(set(actual.values())) == 2
-    rows = store.hubspot_associations(conn, "co1", "companies")
-    assert rows[0]["to_served_id"] == actual["co0"]
-    back = store.hubspot_associations(conn, "co0", "companies")
-    assert back[0]["to_served_id"] == actual["co1"]
+    rows = store.hubspot_associations(conn, actual["Co 1"], "companies")
+    assert rows[0]["to_id"] == actual["Co 0"]
+    back = store.hubspot_associations(conn, actual["Co 0"], "companies")
+    assert back[0]["to_id"] == actual["Co 1"]
 
 
 def test_github_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
@@ -1287,7 +1244,7 @@ def test_github_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
 ):
     """github's served number, like hubspot's/confluence's, is PROBED against a collision, not
     stored as the bare hash: `synth.github_number`'s space is only 1..90,000 PER REPO (#51's
-    tightest of the probed sources -- see store.SERVED_ID's `scope`), so a real corpus collides
+    tightest of the probed sources -- see store.ID_SEED's `scope`), so a real corpus collides
     far short of the birthday bound. Forced here by collapsing the seed to a constant, the same
     shape as the hubspot test above.
 
@@ -1303,7 +1260,7 @@ def test_github_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
       the column to NULL -- that a replay actually depends on to reproduce the same numbers, not
       the corpus alone.
 
-    Patches `store.SERVED_ID` directly, NOT `synth.github_number`: `store.served_id_seed
+    Patches `store.ID_SEED` directly, NOT `synth.github_number`: `store.served_id_seed
     ("github")` -- what `_assign_github_number` actually calls -- returns the tuple element
     `SERVED_ID` captured when `backlot.store` was first imported, a bound reference to the
     function object, not a live attribute lookup (see the confluence/gmail/notion/hubspot tests
@@ -1312,7 +1269,7 @@ def test_github_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
     from backlot.importer import byo
     from tests._helpers import build_corpus
 
-    monkeypatch.setitem(store.SERVED_ID, "github", ("number", lambda doc_id: 7, "repo"))
+    monkeypatch.setitem(store.ID_SEED, "github", (lambda seed: 7, "repo"))
     docs = [
         {
             "source_type": "github",
@@ -1340,8 +1297,8 @@ def test_github_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
     monkeypatch.undo()
     conn = store.connect_ro(s.db_path)
     issues = {
-        r["doc_id"]: r["number"]
-        for r in conn.execute("SELECT doc_id, number FROM github_items WHERE kind != 'file'")
+        r["title"]: r["number"]
+        for r in conn.execute("SELECT title, number FROM github_items WHERE kind != 'file'")
     }
     files = [
         r["number"] for r in conn.execute("SELECT number FROM github_items WHERE kind = 'file'")
@@ -1350,28 +1307,28 @@ def test_github_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
     # taken), is served exactly the forced value, not some real hash -- AND resolved to 5
     # DISTINCT numbers, otherwise the collision below never actually happened and the rest of
     # this test passed for the wrong reason.
-    assert issues["g0"] == 7
+    assert issues["Issue 0"] == 7
     assert len(issues) == 5 and len(set(issues.values())) == 5
-    for doc_id, n in issues.items():
-        assert store.github_by_number(conn, "core", n)["doc_id"] == doc_id
-    # file rows stay NULL, several of them, coexisting under the UNIQUE index with the 5 real
-    # numbers above IN THE SAME REPO -- proven by this import having succeeded at all.
-    assert len(files) == 3 and all(n is None for n in files)
+    for title, n in issues.items():
+        assert store.github_by_number(conn, "core", n)["title"] == title
+    # Every file carries a number too (#51 -- (repo, number) is the primary key), assigned AFTER
+    # every issue, so none of them took a number an issue wanted.
+    assert len(files) == 3 and all(n is not None for n in files)
+    assert not set(files) & set(issues.values())
     conn.close()
 
-    # A re-import (e.g. --append re-running over the same shard) must not renumber an issue a
-    # client may already hold a url for -- more load-bearing here than for confluence's/
-    # hubspot's own version of this check: a probed number is not a pure function of doc_id, and
-    # unlike those two, github's assignment is not even memoized as it runs -- resolve_github_
-    # numbers rebuilds its whole taken-set fresh every call, so ONLY seed_tracker_ids' preload
-    # stands between a replay and a fully reshuffled repo.
-    byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
+    # A re-import is REFUSED (#51), and github is the source where that can be enforced: a
+    # record may state its own `number`, so an append that omits one is refused rather than
+    # adding the row a second time under a freshly probed number. Contrast the confluence and
+    # hubspot versions of this check, whose records have no such field and therefore duplicate.
+    with pytest.raises(SystemExit, match="must carry `number`"):
+        byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
     conn = store.connect_ro(s.db_path)
     replay = {
-        r["doc_id"]: r["number"]
-        for r in conn.execute("SELECT doc_id, number FROM github_items WHERE kind != 'file'")
+        r["title"]: r["number"]
+        for r in conn.execute("SELECT title, number FROM github_items WHERE kind != 'file'")
     }
-    assert replay == issues
+    assert replay == issues, "the refused append left every number as it was"
     conn.close()
 
 
@@ -1394,10 +1351,10 @@ def test_github_serves_one_number_column(tmp_path, monkeypatch):
         r[1]
         for r in store.connect_rw(tmp_path / "s.sqlite").execute("PRAGMA table_info(github_items)")
     }
-    assert "number" in cols and "served_number" not in cols
-    assert store.SERVED_ID["github"][0] == "number"
+    assert "number" in cols and "served_number" not in cols and "doc_id" not in cols
+    assert store.id_column("github") == "number"
 
-    monkeypatch.setitem(store.SERVED_ID, "github", ("number", lambda doc_id: 7, "repo"))
+    monkeypatch.setitem(store.ID_SEED, "github", (lambda seed: 7, "repo"))
     s = build_corpus(
         tmp_path / "c",
         [
@@ -1422,18 +1379,16 @@ def test_github_serves_one_number_column(tmp_path, monkeypatch):
     )
     monkeypatch.undo()
     conn = store.connect_ro(s.db_path)
-    got = {
-        r["doc_id"]: r["number"] for r in conn.execute("SELECT doc_id, number FROM github_items")
-    }
-    assert got["g-provided"] == 7, "the corpus's number is served verbatim"
-    assert got["g-derived"] != 7, "the keyless row must move off the taken spelling"
-    for doc_id, num in got.items():
-        assert store.github_by_number(conn, "core", num)["doc_id"] == doc_id
+    got = {r["title"]: r["number"] for r in conn.execute("SELECT title, number FROM github_items")}
+    assert got["provided"] == 7, "the corpus's number is served verbatim"
+    assert got["derived"] != 7, "the keyless row must move off the taken spelling"
+    for title, num in got.items():
+        assert store.github_by_number(conn, "core", num)["title"] == title
     conn.close()
 
 
 def test_github_by_number_applies_the_acl(tmp_path):
-    """A regression `notion_by_served_id` shipped without (#51 review round), and every reader
+    """A regression `notion_by_id` shipped without (#51 review round), and every reader
     since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
     None, not the unscoped row -- otherwise the ACL clause could be deleted from
     `github_by_number` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
@@ -1455,7 +1410,7 @@ def test_github_by_number_applies_the_acl(tmp_path):
     )
     conn = store.connect_ro(s.db_path)
     served = conn.execute("SELECT number FROM github_items").fetchone()["number"]
-    assert store.github_by_number(conn, "core", served)["doc_id"] == "g0"
+    assert store.github_by_number(conn, "core", served)["title"] == "Issue 0"
     assert store.github_by_number(conn, "core", served, visible_ids={"nobody"}) is None
     conn.close()
 
@@ -1463,7 +1418,7 @@ def test_github_by_number_applies_the_acl(tmp_path):
 def test_github_by_number_is_scoped_to_its_repo(tmp_path, monkeypatch):
     """(final review, I-2) The SAME number in two different repos is the NORMAL case here, not an
     exotic one -- GitHub numbers restart per repo, and `(repo, number)` is the whole UNIQUE
-    index's scope (see store.SERVED_ID's `scope` for github, and idx_github_served).
+    index's scope (see store.ID_SEED's `scope` for github, and idx_github_served).
     `github_by_number`'s `WHERE repo = ? AND {col} = ?` is therefore the ONLY thing that
     keeps two same-numbered issues in different repos from resolving to each other -- there is no
     other predicate backing it up. jira's byte-identical predicate already has this sibling
@@ -1474,7 +1429,7 @@ def test_github_by_number_is_scoped_to_its_repo(tmp_path, monkeypatch):
     independent hashes coincide."""
     from tests._helpers import build_corpus
 
-    monkeypatch.setitem(store.SERVED_ID, "github", ("number", lambda doc_id: 7, "repo"))
+    monkeypatch.setitem(store.ID_SEED, "github", (lambda seed: 7, "repo"))
     s = build_corpus(
         tmp_path,
         [
@@ -1499,13 +1454,14 @@ def test_github_by_number_is_scoped_to_its_repo(tmp_path, monkeypatch):
     monkeypatch.undo()
     conn = store.connect_ro(s.db_path)
     served = {
-        r["doc_id"]: r["number"] for r in conn.execute("SELECT doc_id, number FROM github_items")
+        (r["repo"], r["title"]): r["number"]
+        for r in conn.execute("SELECT repo, title, number FROM github_items")
     }
     # Sanity: the collision was actually forced -- both rows share the same number, in DIFFERENT
     # repos, otherwise the assertions below would pass even with the scope missing entirely.
-    assert served["a0"] == served["b0"] == 7
-    assert store.github_by_number(conn, "alpha", 7)["doc_id"] == "a0"
-    assert store.github_by_number(conn, "bravo", 7)["doc_id"] == "b0"
+    assert served[("alpha", "gh-a in alpha")] == served[("bravo", "gh-b in bravo")] == 7
+    assert store.github_by_number(conn, "alpha", 7)["title"] == "gh-a in alpha"
+    assert store.github_by_number(conn, "bravo", 7)["title"] == "gh-b in bravo"
     conn.close()
 
 
@@ -1514,7 +1470,7 @@ def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimp
 ):
     """jira's served suffix, like github's served number, is PROBED against a collision, not
     stored as the bare hash: `synth.jira_key_number`'s space is only 1..9,000 PER PROJECT (#51's
-    task 8 -- see store.SERVED_ID's `scope`), so a real project collides far short of the birthday
+    task 8 -- see store.ID_SEED's `scope`), so a real project collides far short of the birthday
     bound. Forced here by collapsing the seed to a constant, the same shape as the github test
     above (no `kind='file'` exclusion to also cover -- jira has no file-shaped row).
 
@@ -1524,7 +1480,7 @@ def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimp
     `seed_tracker_ids` before this run's insert can reset the column to NULL -- that a replay
     actually depends on to reproduce the same suffixes, not the corpus alone.
 
-    Patches `store.SERVED_ID` directly, NOT `synth.jira_key_number`: `store.served_id_seed
+    Patches `store.ID_SEED` directly, NOT `synth.jira_key_number`: `store.served_id_seed
     ("jira")` -- what `_assign_jira_number` actually calls -- returns the tuple element
     `SERVED_ID` captured when `backlot.store` was first imported, a bound reference to the
     function object, not a live attribute lookup (see the github/hubspot/confluence tests above
@@ -1533,7 +1489,7 @@ def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimp
     from backlot.importer import byo
     from tests._helpers import build_corpus
 
-    # `synth.jira_key_number` directly, NOT `monkeypatch.setitem(store.SERVED_ID, "jira", ...)`:
+    # `synth.jira_key_number` directly, NOT `monkeypatch.setitem(store.ID_SEED, "jira", ...)`:
     # jira left that registry when its served value became the composed KEY (#51 identifier
     # consolidation), so a setitem patch is silently INERT now -- `_assign_jira_number` reads the
     # synth attribute at call time. Same dead-patch shape this plan found in the confluence test;
@@ -1553,26 +1509,25 @@ def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimp
     s = build_corpus(tmp_path, docs)
     monkeypatch.undo()
     conn = store.connect_ro(s.db_path)
-    issues = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
+    issues = {r["title"]: r["key"] for r in conn.execute("SELECT title, key FROM jira_issues")}
     # The collapsed seed actually landed -- j0, the first row processed (before anything is
     # taken), is served exactly the forced value, not some real hash -- AND resolved to 5 DISTINCT
     # suffixes, otherwise the collision below never actually happened and the rest of this test
     # passed for the wrong reason.
-    assert issues["j0"].endswith("-7")
+    assert issues["Issue 0"].endswith("-7")
     assert len(issues) == 5 and len(set(issues.values())) == 5
-    for doc_id, key in issues.items():
-        assert store.jira_by_key(conn, key)["doc_id"] == doc_id
+    for title, key in issues.items():
+        assert store.jira_by_key(conn, key)["title"] == title
     conn.close()
 
-    # A re-import (e.g. --append re-running over the same shard) must not renumber an issue a
-    # client may already hold a url for -- more load-bearing here than for confluence's/hubspot's
-    # own version of this check: a probed suffix is not a pure function of doc_id, and jira's
-    # assignment is not even memoized as it runs -- resolve_jira_numbers rebuilds its whole
-    # taken-set fresh every call, so ONLY seed_tracker_ids' preload stands between a replay and a
-    # fully reshuffled project.
-    byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
+    # A re-import is REFUSED (#51). A probed id is a function of the whole corpus, and with the
+    # dataset's own identifier gone there is nothing left to recognise a re-stated row by, so it
+    # would be ADDED a second time at a second id rather than keeping the one a client may already
+    # hold a url for. The import fails instead of duplicating in silence.
+    with pytest.raises(SystemExit):
+        byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
     conn = store.connect_ro(s.db_path)
-    replay = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
+    replay = {r["title"]: r["key"] for r in conn.execute("SELECT title, key FROM jira_issues")}
     assert replay == issues
     conn.close()
 
@@ -1598,7 +1553,7 @@ def test_jira_serves_one_key_column(tmp_path, monkeypatch):
         for r in store.connect_rw(tmp_path / "s.sqlite").execute("PRAGMA table_info(jira_issues)")
     }
     assert "key" in cols and "served_number" not in cols
-    assert "jira" not in store.SERVED_ID, (
+    assert "jira" not in store.ID_SEED, (
         "jira's served value is composed from its project's prefix, so it cannot be a 1-arity "
         "seed over doc_id — it gets its own reader instead (as fireflies_users/linear_teams do)"
     )
@@ -1626,17 +1581,17 @@ def test_jira_serves_one_key_column(tmp_path, monkeypatch):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    got = {r["doc_id"]: r["key"] for r in conn.execute("SELECT doc_id, key FROM jira_issues")}
-    assert got["j-provided"] == "PAY-7", "the corpus's key is served verbatim"
+    got = {r["title"]: r["key"] for r in conn.execute("SELECT title, key FROM jira_issues")}
+    assert got["provided"] == "PAY-7", "the corpus's key is served verbatim"
     # the keyless sibling composes from the SAME prefix its provided sibling established
-    assert got["j-derived"].startswith("PAY-") and got["j-derived"] != "PAY-7"
-    for doc_id, key in got.items():
-        assert store.jira_by_key(conn, key)["doc_id"] == doc_id
+    assert got["derived"].startswith("PAY-") and got["derived"] != "PAY-7"
+    for title, key in got.items():
+        assert store.jira_by_key(conn, key)["title"] == title
     conn.close()
 
 
 def test_jira_by_key_applies_the_acl(tmp_path):
-    """A regression `notion_by_served_id` shipped without (#51 review round), and every reader
+    """A regression `notion_by_id` shipped without (#51 review round), and every reader
     since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
     None, not the unscoped row -- otherwise the ACL clause could be deleted from
     `jira_by_key` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
@@ -1658,7 +1613,7 @@ def test_jira_by_key_applies_the_acl(tmp_path):
     )
     conn = store.connect_ro(s.db_path)
     key = conn.execute("SELECT key FROM jira_issues").fetchone()["key"]
-    assert store.jira_by_key(conn, key)["doc_id"] == "j0"
+    assert store.jira_by_key(conn, key)["title"] == "Issue 0"
     assert store.jira_by_key(conn, key, visible_ids={"nobody"}) is None
     conn.close()
 
@@ -1727,12 +1682,11 @@ def test_connect_ro_tuning(sample_settings):
 
 def _mini_db(tmp_path):
     conn = store.connect_rw(tmp_path / "m.sqlite")
-    # served_id is NOT NULL + UNIQUE; no test here reads it back, so any value distinct per row
-    # satisfies the constraint -- a literal, not synth.notion_id, since this DB bypasses the
-    # importer on purpose.
+    # `id` is the primary key; no test here reads it back, so a literal serves rather than
+    # synth.notion_id, since this DB bypasses the importer on purpose.
     conn.execute(
-        "INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts,served_id) "
-        "VALUES('n1','eng','a@x.com','Alpha runbook','deploy alpha service',1,'served-n1')"
+        "INSERT INTO notion_pages(id,teamspace,author_email,title,content,created_ts) "
+        "VALUES('n1','eng','a@x.com','Alpha runbook','deploy alpha service',1)"
     )
     conn.commit()
     store.build_fts(conn)
@@ -1743,17 +1697,17 @@ def test_fts_add_docs_indexes_new_without_dropping_old(tmp_path):
     conn = _mini_db(tmp_path)
     # a new page inserted AFTER the initial build is not searchable until indexed
     conn.execute(
-        "INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts,served_id) "
-        "VALUES('n2','eng','a@x.com','Beta guide','rotate beta credentials',2,'served-n2')"
+        "INSERT INTO notion_pages(id,teamspace,author_email,title,content,created_ts) "
+        "VALUES('n2','eng','a@x.com','Beta guide','rotate beta credentials',2)"
     )
     conn.commit()
     assert store.search_documents(conn, "beta", "notion") == []  # not yet indexed
     n = store.fts_add_docs(conn, "notion", ["n2"])
     assert n == 1
-    got = {r["doc_id"] for r in store.search_documents(conn, "beta", "notion")}
+    got = {r["id"] for r in store.search_documents(conn, "beta", "notion")}
     assert "n2" in got
     # the original doc is still searchable (index not clobbered)
-    assert {r["doc_id"] for r in store.search_documents(conn, "alpha", "notion")} == {"n1"}
+    assert {r["id"] for r in store.search_documents(conn, "alpha", "notion")} == {"n1"}
 
 
 def test_fts_add_docs_is_idempotent(tmp_path):
@@ -1771,16 +1725,16 @@ def test_repo_files_listing_and_kind_isolation(tmp_path):
     conn = store.connect_rw(tmp_path / "g.sqlite")
     # two files + one issue in the same repo
     conn.execute(
-        "INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,path,created_ts) "
-        "VALUES('f1','svc','a@x','a.py','print(1)','file','src/a.py',1)"
+        "INSERT INTO github_items(number,repo,author_email,title,content,kind,path,created_ts) "
+        "VALUES(1,'svc','a@x','a.py','print(1)','file','src/a.py',1)"
     )
     conn.execute(
-        "INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,path,created_ts) "
-        "VALUES('f2','svc','a@x','b.py','print(2)','file','src/b.py',1)"
+        "INSERT INTO github_items(number,repo,author_email,title,content,kind,path,created_ts) "
+        "VALUES(2,'svc','a@x','b.py','print(2)','file','src/b.py',1)"
     )
     conn.execute(
-        "INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,created_ts) "
-        "VALUES('i1','svc','a@x','a bug','...', 'issue',1)"
+        "INSERT INTO github_items(number,repo,author_email,title,content,kind,created_ts) "
+        "VALUES(3,'svc','a@x','a bug','...', 'issue',1)"
     )
     conn.commit()
     files = store.list_repo_files(conn, "svc")
@@ -1798,23 +1752,25 @@ def test_list_repo_file_paths_agrees_with_the_full_listing(tmp_path):
     to do it, which on a 3000-file repo is a ~1.4 MB read per pull."""
     conn = store.connect_rw(tmp_path / "g.sqlite")
     rows = [
-        ("f1", "src/b.py", "everyone"),
-        ("f2", "src/a.py", "everyone"),
-        ("f3", "s.py", "people"),
+        (1, "src/b.py", "everyone"),
+        (2, "src/a.py", "everyone"),
+        (3, "s.py", "people"),
     ]
-    for doc_id, path, principal in rows:
+    for number, path, principal in rows:
         conn.execute(
-            "INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,path,created_ts)"
+            "INSERT INTO github_items(number,repo,author_email,title,content,kind,path,created_ts)"
             " VALUES(?,'svc','a@x',?,'body','file',?,1)",
-            (doc_id, path.rsplit("/", 1)[-1], path),
+            (number, path.rsplit("/", 1)[-1], path),
         )
+        # a github grant names its document by (repo, number) — see store.ID_COLUMNS
         conn.execute(
-            "INSERT INTO github_acl(doc_id, principal_id, principal_type) VALUES(?,?,'group')",
-            (doc_id, principal),
+            "INSERT INTO github_acl(repo, number, principal_id, principal_type) "
+            "VALUES('svc',?,?,'group')",
+            (number, principal),
         )
     conn.execute(
-        "INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,created_ts) "
-        "VALUES('i1','svc','a@x','a bug','...','issue',1)"
+        "INSERT INTO github_items(number,repo,author_email,title,content,kind,created_ts) "
+        "VALUES(4,'svc','a@x','a bug','...','issue',1)"
     )
     conn.commit()
     assert store.list_repo_file_paths(conn, "svc") == [
@@ -1837,8 +1793,8 @@ def test_hubspot_listing_is_an_index_range_seek(tmp_path):
     plan = " ".join(
         r[-1]
         for r in conn.execute(
-            "EXPLAIN QUERY PLAN SELECT * FROM hubspot_objects WHERE object_type = ? AND doc_id > ? "
-            "ORDER BY doc_id LIMIT 10",
+            "EXPLAIN QUERY PLAN SELECT * FROM hubspot_objects WHERE object_type = ? AND id > ? "
+            "ORDER BY id LIMIT 10",
             ("contacts", "c0"),
         )
     )
@@ -1851,30 +1807,30 @@ def test_hubspot_listing_is_an_index_range_seek(tmp_path):
 # as a page, and comments are ACL-scoped through their parent issue), so it gets its own block.
 
 
-def test_linear_list_and_count_agree(db):
+def test_linear_list_and_count_agree(db, keys):
     rows = store.list_linear_issues(db, limit=100)
     assert store.count_linear_issues(db) == len(rows) == 5
-    assert {r["doc_id"] for r in rows} == {
-        "lin-rl",
-        "lin-batch",
-        "lin-des",
-        "lin-secret",
-        "lin-blackops",
+    assert {r["id"] for r in rows} == {
+        keys["lin-rl"][0],
+        keys["lin-batch"][0],
+        keys["lin-des"][0],
+        keys["lin-secret"][0],
+        keys["lin-blackops"][0],
     }
 
 
-def test_linear_list_scopes_to_a_team(db):
+def test_linear_list_scopes_to_a_team(db, keys):
     rows = store.list_linear_issues(db, "design", limit=100)
-    assert [r["doc_id"] for r in rows] == ["lin-des"]
+    assert [r["id"] for r in rows] == [keys["lin-des"][0]]
     assert store.count_linear_issues(db, "design") == 1
 
 
 def test_linear_default_order_is_createdAt_ascending(db):
     """Linear documents createdAt as the default ordering, and its `PaginationOrderBy` carries no
     direction — so an absent `orderBy` must still order by creation, not by insertion order."""
-    default = [r["doc_id"] for r in store.list_linear_issues(db, "engineering", limit=100)]
+    default = [r["id"] for r in store.list_linear_issues(db, "engineering", limit=100)]
     explicit = [
-        r["doc_id"]
+        r["id"]
         for r in store.list_linear_issues(db, "engineering", limit=100, order_by="createdAt")
     ]
     assert default == explicit
@@ -1896,12 +1852,12 @@ def test_linear_default_order_is_stable_across_pages(db):
     seen = []
     for offset in range(store.count_linear_issues(db)):
         page = store.list_linear_issues(db, limit=1, offset=offset)
-        seen.append(page[0]["doc_id"])
+        seen.append(page[0]["id"])
     assert len(seen) == len(set(seen)) == 5
 
 
-def test_linear_identifier_lookup(db):
-    assert store.linear_issue_by_identifier(db, "ENG-101")["doc_id"] == "lin-rl"
+def test_linear_identifier_lookup(db, keys):
+    assert store.linear_issue_by_identifier(db, "ENG-101")["id"] == keys["lin-rl"][0]
     assert store.linear_issue_by_identifier(db, "NOPE-1") is None
 
 
@@ -1912,7 +1868,7 @@ def test_linear_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     from `_uuid_from`'s full digest space, so the seed is stored as-is, and a forced collision
     must fail the import loudly rather than resolve through the shared upsert.
 
-    `monkeypatch.setitem` on `store.SERVED_ID`, not `monkeypatch.setattr(synth, ...)` -- the
+    `monkeypatch.setitem` on `store.ID_SEED`, not `monkeypatch.setattr(synth, ...)` -- the
     registry captures the seed function object at `backlot.store` import time, so patching the
     module attribute afterward cannot reach it (see the confluence/gmail tests above)."""
     from tests._helpers import build_corpus
@@ -1930,34 +1886,34 @@ def test_linear_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     ]
     s = build_corpus(tmp_path / "ok", docs)
     conn = store.connect_ro(s.db_path)
-    rows = conn.execute("SELECT doc_id, served_id FROM linear_issues").fetchall()
+    rows = conn.execute("SELECT id, title FROM linear_issues").fetchall()
     assert len(rows) == 3
-    assert {r["served_id"] for r in rows} == {synth.linear_id(r["doc_id"]) for r in rows}
+    assert {r["id"] for r in rows} == {synth.linear_id(f"i{i}") for i in range(3)}
     for r in rows:
-        assert store.linear_by_served_id(conn, r["served_id"])["doc_id"] == r["doc_id"]
+        assert store.linear_by_id(conn, r["id"])["title"] == r["title"]
     # A non-empty, non-matching visible_ids must still exclude the row -- proving _acl_clause
     # takes its EXISTS branch here rather than the empty-set "AND 0" short-circuit (which every
     # one of these public rows would otherwise pass regardless of who's asking).
-    served = rows[0]["served_id"]
-    assert store.linear_by_served_id(conn, served, visible_ids={"nobody"}) is None
-    assert store.linear_by_served_id(conn, served, visible_ids=None) is not None  # admin bypass
+    served = rows[0]["id"]
+    assert store.linear_by_id(conn, served, visible_ids={"nobody"}) is None
+    assert store.linear_by_id(conn, served, visible_ids=None) is not None  # admin bypass
     conn.close()
 
-    monkeypatch.setitem(store.SERVED_ID, "linear", ("served_id", lambda doc_id: "dup-uuid", None))
-    with pytest.raises(sqlite3.IntegrityError):
+    monkeypatch.setitem(store.ID_SEED, "linear", (lambda doc_id: "dup-uuid", None))
+    with pytest.raises(SystemExit, match="already resolves to"):
         build_corpus(tmp_path / "collide", docs)
 
 
-def test_linear_prefilter_is_pushed_into_sql(db):
+def test_linear_prefilter_is_pushed_into_sql(db, keys):
     flt = ("state = ?", ["Done"])
     assert store.count_linear_issues(db, prefilter=flt) == 1
-    assert store.list_linear_issues(db, prefilter=flt)[0]["doc_id"] == "lin-batch"
+    assert store.list_linear_issues(db, prefilter=flt)[0]["id"] == keys["lin-batch"][0]
 
 
-def test_linear_comments_scoped_to_one_issue(db):
-    rows = store.list_linear_comments(db, doc_id="lin-rl")
+def test_linear_comments_scoped_to_one_issue(db, keys):
+    rows = store.list_linear_comments(db, issue_id=keys["lin-rl"][0])
     assert [r["body"] for r in rows] == ["Reproduced with a burst test.", "Fix is in review."]
-    assert store.count_linear_comments(db, doc_id="lin-rl") == 2
+    assert store.count_linear_comments(db, issue_id=keys["lin-rl"][0]) == 2
 
 
 def test_linear_comments_across_the_corpus(db):
@@ -2044,22 +2000,21 @@ def test_linear_relation_by_id_scopes_the_from_end_too(tmp_path):
     """The docstring claims a relation is "scoped on BOTH ends". A relation whose `to` issue is
     granted to the caller but whose `from` issue is NOT must still be hidden — this pins the alias
     collision where `_acl_clause`'s inner alias shadowed the caller's outer "a"/"b" alias and
-    turned the from-end predicate into a tautology (`a.doc_id = a.doc_id`), which admitted a
+    turned the from-end predicate into a tautology (`a.id = a.id`), which admitted a
     relation off an unreadable issue to any caller holding ANY grant at all in `linear_acl`."""
     from backlot import synth
 
     conn = store.connect_rw(tmp_path / "rel.sqlite")
-    for doc_id in ("i1", "i2"):
+    for issue_id in ("i1", "i2"):
         conn.execute(
-            # served_id is NOT NULL + UNIQUE; nothing here reads it back, so any value distinct
-            # per row satisfies the constraint -- a literal, not synth.linear_id, since this DB
+            # `id` is the primary key; a literal serves rather than synth.linear_id, since this DB
             # bypasses the importer on purpose.
-            "INSERT INTO linear_issues(doc_id, team, author_email, title, content, created_ts, "
-            "served_id) VALUES (?,'eng','a@x.com','issue','body',1,?)",
-            (doc_id, f"served-{doc_id}"),
+            "INSERT INTO linear_issues(id, team, author_email, title, content, created_ts) "
+            "VALUES (?,'eng','a@x.com','issue','body',1)",
+            (issue_id,),
         )
     conn.execute(
-        "INSERT INTO linear_relations(id, from_doc_id, to_doc_id, type, created_ts) "
+        "INSERT INTO linear_relations(id, from_id, to_id, type, created_ts) "
         "VALUES ('r1','i1','i2','blocks',1)"
     )
     # Only i2 (the `to` end) is granted; i1 (the `from` end) carries no grant at all.
@@ -2079,11 +2034,11 @@ def test_linear_relation_by_id_scopes_the_from_end_too(tmp_path):
 # covers the table wiring; these cover the reads the GraphQL resolvers are built on.
 
 
-def test_fireflies_child_rows_use_the_shared_comment_slot(db):
+def test_fireflies_child_rows_use_the_shared_comment_slot(db, keys):
     # Not comments, but the same "child rows of a doc" mapping — and therefore the same column
     # contract, which is what makes doc_comments work against it unchanged.
     assert store.comment_table("fireflies") == "fireflies_sentences"
-    rows = store.doc_comments(db, "fireflies", "ff-discovery")
+    rows = store.doc_comments(db, "fireflies", keys["ff-discovery"][0])
     assert [r["seq"] for r in rows] == [1, 2, 3, 4]
     assert rows[0]["body"].startswith("Thanks for joining")
 
@@ -2097,39 +2052,41 @@ def test_fireflies_scope_columns_are_the_api_vocabulary():
     assert store.fireflies_scope_columns("body") is None  # not an API value
 
 
-def test_fireflies_transcripts_are_newest_first(db):
+def test_fireflies_transcripts_are_newest_first(db, keys):
     rows = store.list_fireflies_transcripts(db, limit=50)
     tss = [r["created_ts"] for r in rows]
     assert tss == sorted(tss, reverse=True)
-    assert {r["doc_id"] for r in rows} == {"ff-discovery", "ff-allhands", "ff-secret"}
+    assert {r["id"] for r in rows} == {
+        keys["ff-discovery"][0],
+        keys["ff-allhands"][0],
+        keys["ff-secret"][0],
+    }
 
 
 def test_fireflies_limit_and_skip_walk_the_corpus_without_gaps(db):
-    everything = [r["doc_id"] for r in store.list_fireflies_transcripts(db, limit=50)]
+    everything = [r["id"] for r in store.list_fireflies_transcripts(db, limit=50)]
     walked = []
     for skip in range(0, len(everything)):
         page = store.list_fireflies_transcripts(db, limit=1, offset=skip)
-        walked += [r["doc_id"] for r in page]
+        walked += [r["id"] for r in page]
     assert walked == everything
     # past the end is an empty page, not an error
     assert store.list_fireflies_transcripts(db, limit=5, offset=999) == []
 
 
-def test_fireflies_keyword_honours_every_scope(db):
+def test_fireflies_keyword_honours_every_scope(db, keys):
     # "selects" appears only in a SENTENCE of ff-allhands, never in any title.
     assert [
-        r["doc_id"]
-        for r in store.list_fireflies_transcripts(db, keyword="selects", scope="sentences")
-    ] == ["ff-allhands"]
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="selects", scope="sentences")
+    ] == [keys["ff-allhands"][0]]
     assert store.list_fireflies_transcripts(db, keyword="selects", scope="title") == []
     assert [
-        r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="selects", scope="all")
-    ] == ["ff-allhands"]
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="selects", scope="all")
+    ] == [keys["ff-allhands"][0]]
     # "all-hands" appears only in a TITLE.
     assert [
-        r["doc_id"]
-        for r in store.list_fireflies_transcripts(db, keyword="all-hands", scope="title")
-    ] == ["ff-allhands"]
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="all-hands", scope="title")
+    ] == [keys["ff-allhands"][0]]
     assert store.list_fireflies_transcripts(db, keyword="all-hands", scope="sentences") == []
 
 
@@ -2137,58 +2094,62 @@ def test_fireflies_keyword_wildcards_stay_literal(db):
     # A LIKE metacharacter in the needle must not turn into a match-everything pattern.
     assert store.list_fireflies_transcripts(db, keyword="%") == []
     assert store.list_fireflies_transcripts(db, keyword="_atency") == []
-    assert [r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency")]
+    assert [r["id"] for r in store.list_fireflies_transcripts(db, keyword="latency")]
 
 
-def test_fireflies_filters_narrow_by_channel_host_and_date(db):
-    assert [r["doc_id"] for r in store.list_fireflies_transcripts(db, channel="all-hands")] == [
-        "ff-allhands"
+def test_fireflies_filters_narrow_by_channel_host_and_date(db, keys):
+    assert [r["id"] for r in store.list_fireflies_transcripts(db, channel="all-hands")] == [
+        keys["ff-allhands"][0]
     ]
-    assert [
-        r["doc_id"] for r in store.list_fireflies_transcripts(db, host_email="AVA@acme.com")
-    ] == ["ff-discovery"]  # case-insensitive
+    assert [r["id"] for r in store.list_fireflies_transcripts(db, host_email="AVA@acme.com")] == [
+        keys["ff-discovery"][0]
+    ]  # case-insensitive
     ts = store.list_fireflies_transcripts(db, channel="sales-calls")[0]["created_ts"]
-    assert [r["doc_id"] for r in store.list_fireflies_transcripts(db, to_ts=ts)] == ["ff-discovery"]
-    assert "ff-discovery" not in [
-        r["doc_id"] for r in store.list_fireflies_transcripts(db, from_ts=ts + 1)
+    assert [r["id"] for r in store.list_fireflies_transcripts(db, to_ts=ts)] == [
+        keys["ff-discovery"][0]
+    ]
+    assert keys["ff-discovery"][0] not in [
+        r["id"] for r in store.list_fireflies_transcripts(db, from_ts=ts + 1)
     ]
 
 
-def test_fireflies_organizer_filter_falls_back_to_the_host(db):
+def test_fireflies_organizer_filter_falls_back_to_the_host(db, keys):
     # organizer_email is NULL when the organizer IS the host, so filtering by the host's address
     # must still match — otherwise organizing your own meeting would not find it.
     assert (
         db.execute(
-            "SELECT organizer_email FROM fireflies_transcripts WHERE doc_id = 'ff-discovery'"
+            "SELECT organizer_email FROM fireflies_transcripts WHERE id = ?",
+            (keys["ff-discovery"][0],),
         ).fetchone()[0]
         is None
     )
-    assert [
-        r["doc_id"] for r in store.list_fireflies_transcripts(db, organizers=["ava@acme.com"])
-    ] == ["ff-discovery"]
+    assert [r["id"] for r in store.list_fireflies_transcripts(db, organizers=["ava@acme.com"])] == [
+        keys["ff-discovery"][0]
+    ]
 
 
-def test_fireflies_participant_filter_is_exact_membership(db):
+def test_fireflies_participant_filter_is_exact_membership(db, keys):
     assert [
-        r["doc_id"] for r in store.list_fireflies_transcripts(db, participants=["ava@acme.com"])
-    ] == ["ff-discovery"]
+        r["id"] for r in store.list_fireflies_transcripts(db, participants=["ava@acme.com"])
+    ] == [keys["ff-discovery"][0]]
     # a substring of a stored address must NOT match (json_each, not a LIKE on the JSON text)
     assert store.list_fireflies_transcripts(db, participants=["ava@acme.co"]) == []
 
 
 def test_fireflies_transcript_by_id_is_unambiguous(db):
     row = store.list_fireflies_transcripts(db, limit=1)[0]
-    assert store.fireflies_transcript_by_id(db, row["transcript_id"])["doc_id"] == row["doc_id"]
+    assert store.fireflies_transcript_by_id(db, row["id"])["id"] == row["id"]
     assert store.fireflies_transcript_by_id(db, "deadbeefdeadbeefdeadbeef") is None
-    # unique by construction (derived from the doc_id), unlike Linear's identifier
+    # unique by CONSTRAINT now -- it is the table's primary key (#51), not merely unique by
+    # construction the way a value derived from a corpus identifier was.
     n, distinct = db.execute(
-        "SELECT COUNT(*), COUNT(DISTINCT transcript_id) FROM fireflies_transcripts"
+        "SELECT COUNT(*), COUNT(DISTINCT id) FROM fireflies_transcripts"
     ).fetchone()
     assert n == distinct
 
 
-def test_fireflies_sentences_come_back_in_spoken_order(db):
-    rows = store.fireflies_sentences(db, "ff-discovery")
+def test_fireflies_sentences_come_back_in_spoken_order(db, keys):
+    rows = store.fireflies_sentences(db, keys["ff-discovery"][0])
     assert [r["seq"] for r in rows] == [1, 2, 3, 4]
     assert [r["start_time"] for r in rows] == sorted(r["start_time"] for r in rows)
     # every window is forward-going and contiguous with the next
@@ -2255,12 +2216,11 @@ def test_write_meta_commits_the_entire_transaction(tmp_path):
     (Task 4), a write_meta call flushes any unrelated pending inserts."""
     path = tmp_path / "committed.sqlite"
     conn = store.connect_rw(path)
-    # Insert unrelated data without committing. served_id is NOT NULL + UNIQUE; nothing here
-    # reads it back, so any value satisfies the constraint -- a literal, not synth.notion_id,
-    # since this DB bypasses the importer on purpose.
+    # Insert unrelated data without committing. `id` is the primary key; a literal serves rather
+    # than synth.notion_id, since this DB bypasses the importer on purpose.
     conn.execute(
-        "INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts,served_id) "
-        "VALUES('n1','eng','a@x.com','Test','content',1,'served-n1')"
+        "INSERT INTO notion_pages(id,teamspace,author_email,title,content,created_ts) "
+        "VALUES('n1','eng','a@x.com','Test','content',1)"
     )
     # write_meta commits the entire pending transaction
     store.write_meta(conn, "test_key", "test_value")
@@ -2268,8 +2228,7 @@ def test_write_meta_commits_the_entire_transaction(tmp_path):
     # From a separate connection, verify both the unrelated row and the meta row are visible
     check_conn = store.connect_ro(path)
     assert (
-        check_conn.execute("SELECT COUNT(*) FROM notion_pages WHERE doc_id = 'n1'").fetchone()[0]
-        == 1
+        check_conn.execute("SELECT COUNT(*) FROM notion_pages WHERE id = 'n1'").fetchone()[0] == 1
     )
     assert store.read_meta(check_conn, "test_key") == "test_value"
     check_conn.close()

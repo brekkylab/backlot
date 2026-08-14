@@ -2,7 +2,7 @@
 
 A corpus may carry no more than ``{doc_id, source_type, title, content}``. Every
 structural field a real API returns (ids, timestamps, users, keys, ...) is derived
-here from ``sha256(doc_id)`` so responses are stable and self-consistent across calls
+here from ``sha256(seed)`` so responses are stable and self-consistent across calls
 and across paginated fetches.
 
 All functions are pure and depend only on their arguments.
@@ -19,31 +19,31 @@ BASE_EPOCH = 1_672_531_200  # 2023-01-01T00:00:00Z
 TIME_RANGE = 63_072_000  # ~2 years
 
 
-def _digest(doc_id: str) -> str:
-    return hashlib.sha256(doc_id.encode("utf-8")).hexdigest()
+def _digest(seed: str) -> str:
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
-def hnum(doc_id: str, start: int = 0, length: int = 8, salt: str = "") -> int:
+def hnum(seed: str, start: int = 0, length: int = 8, salt: str = "") -> int:
     """A stable non-negative integer derived from a hex slice of the digest."""
-    h = _digest(salt + doc_id) if salt else _digest(doc_id)
+    h = _digest(salt + seed) if salt else _digest(seed)
     start %= 64
     return int(h[start : start + length] or h[:length], 16)
 
 
-def pick(doc_id: str, seq, salt: str = ""):
+def pick(seed: str, seq, salt: str = ""):
     """Deterministically choose one element of ``seq`` for this doc."""
     seq = list(seq)
     if not seq:
         return None
-    return seq[hnum(doc_id, salt=salt) % len(seq)]
+    return seq[hnum(seed, salt=salt) % len(seq)]
 
 
 # --- timestamps -----------------------------------------------------------------
 
 
-def epoch(doc_id: str, base: int = BASE_EPOCH, span: int = TIME_RANGE) -> int:
+def epoch(seed: str, base: int = BASE_EPOCH, span: int = TIME_RANGE) -> int:
     """Stable unix-second timestamp within [base, base+span)."""
-    return base + (hnum(doc_id, 0, 8) % span)
+    return base + (hnum(seed, 0, 8) % span)
 
 
 def rfc3339(ts: int) -> str:
@@ -87,23 +87,18 @@ def slack_fmt_ts(epoch_sec: int, key: str) -> str:
     return f"{int(epoch_sec)}.{micro:06d}"
 
 
-def slack_ts(doc_id: str) -> str:
-    """Slack message id == timestamp: ``<epoch>.<6 digits>`` (unique per doc)."""
-    return slack_fmt_ts(epoch(doc_id), doc_id)
+# `slack_ts` and `slack_thread_ts` are gone (#51). They composed a message's ts at SERVE time,
+# which is what made two replies in one second share one: both keyed the micro-fraction on their
+# thread root. The ts is assigned once at import now and probed within its channel (see
+# backlot.importer.byo's `_slack_ts`, which builds it from `slack_fmt_ts` directly), so there is
+# nothing left to derive per request.
 
 
-def slack_thread_ts(root_doc_id: str, seq: int) -> str:
-    """ts for a message in a thread: root (seq 0) equals ``slack_ts(root)``; each
-    reply is ``seq`` seconds later, so replies sort after the root and share the
-    root's ts as their thread_ts."""
-    return slack_fmt_ts(epoch(root_doc_id) + int(seq), root_doc_id)
-
-
-def gmail_id(doc_id: str, salt: str = "msg") -> str:
+def gmail_id(seed: str, salt: str = "msg") -> str:
     """An opaque 16-hex token. Used for attachment ids and Slack's ``client_msg_id``, where the
     value is never parsed — so it deliberately spans the full 64-bit range. A *message* id is
     parsed by Gmail and must not; use ``gmail_message_id``."""
-    return hnum(doc_id, salt=salt, length=16).__format__("016x")
+    return hnum(seed, salt=salt, length=16).__format__("016x")
 
 
 # Gmail parses a message id as a signed 64-bit integer, so 2**63 is the ceiling. Measured against
@@ -117,11 +112,11 @@ def gmail_message_id(key: str) -> str:
     """The served id for a Gmail message or thread: 16 lowercase hex digits below ``GMAIL_ID_MAX``.
 
     Threads share this space, as they do in real Gmail — a thread key is the root message's
-    ``doc_id``, so a single-message thread reports the same value for ``id`` and ``threadId``, which
+    ``seed``, so a single-message thread reports the same value for ``id`` and ``threadId``, which
     is exactly what the real API does. That is also why the stored ``served_id`` column and a
     re-hash of the thread key resolve both: a message's own id is a column read
     (``store.gmail_by_served_id``), while its ``threadId`` re-derives this same function over
-    ``thread_id or doc_id`` rather than reading the root row (see ``routers.google._gmail_ids``)."""
+    ``thread_id or seed`` rather than reading the root row (see ``routers.google._gmail_ids``)."""
     return f"{hnum(key, salt='msg', length=16) % GMAIL_ID_MAX:016x}"
 
 
@@ -129,7 +124,7 @@ def drive_folder_id(container: str) -> str:
     return "0A" + _digest("folder:" + container)[:26]
 
 
-def gdrive_file_id(doc_id: str) -> str:
+def gdrive_file_id(seed: str) -> str:
     """A Drive file's served id (#51, task 12): 33 characters, base64url alphabet
     (``[A-Za-z0-9_-]``), starting with ``1`` — the shape of a modern real Drive file id.
     Reversible via the stored ``gdrive_files.served_id`` column (see
@@ -143,7 +138,7 @@ def gdrive_file_id(doc_id: str) -> str:
     A separate id space from ``drive_folder_id``: every folder id starts ``0A``, every file id
     starts ``1``, so the two can never collide even though a folder id is also a valid
     ``files.get`` argument on real Drive (see ``routers.google._drive_folder_name_by_id``)."""
-    digest = hashlib.sha256(("gdrive-file:" + doc_id).encode("utf-8")).digest()
+    digest = hashlib.sha256(("gdrive-file:" + seed).encode("utf-8")).digest()
     return "1" + base64.urlsafe_b64encode(digest[:24]).decode("ascii")
 
 
@@ -155,8 +150,8 @@ def gdrive_file_id(doc_id: str) -> str:
 GITHUB_NUMBER_RANGE = 90_000
 
 
-def github_number(doc_id: str) -> int:
-    return hnum(doc_id, 0, 8) % GITHUB_NUMBER_RANGE + 1
+def github_number(seed: str) -> int:
+    return hnum(seed, 0, 8) % GITHUB_NUMBER_RANGE + 1
 
 
 GITHUB_COMMENT_ID_MIN = 1_000_000_000
@@ -174,8 +169,8 @@ def github_comment_id(comment_id: str) -> int:
     return GITHUB_COMMENT_ID_MIN + hnum(comment_id, 0, 12) % GITHUB_COMMENT_ID_RANGE
 
 
-def jira_numeric_id(doc_id: str) -> int:
-    return 10_000 + hnum(doc_id, 8, 8) % 900_000
+def jira_numeric_id(seed: str) -> int:
+    return 10_000 + hnum(seed, 8, 8) % 900_000
 
 
 # The size of the per-project space `jira_key_number` draws from (1..JIRA_KEY_NUMBER_RANGE). A
@@ -187,8 +182,8 @@ def jira_numeric_id(doc_id: str) -> int:
 JIRA_KEY_NUMBER_RANGE = 9_000
 
 
-def jira_key_number(doc_id: str) -> int:
-    """The numeric suffix of `jira_key(doc_id, project_key)`, split out so the two cannot drift.
+def jira_key_number(seed: str) -> int:
+    """The numeric suffix of `jira_key(seed, project_key)`, split out so the two cannot drift.
 
     A key's PREFIX is a fact about the container (its project), not this row — a corpus's own key
     always wins (see importer.byo) — but the SUFFIX is a fact about the row alone, and is what a
@@ -198,18 +193,18 @@ def jira_key_number(doc_id: str) -> int:
     with an unrelated project's provided one at ~1/16.7M odds; see its own docstring), so a probe
     scoped by project must never include it.
     """
-    return hnum(doc_id, 16, 6) % JIRA_KEY_NUMBER_RANGE + 1
+    return hnum(seed, 16, 6) % JIRA_KEY_NUMBER_RANGE + 1
 
 
-def jira_key(doc_id: str, project_key: str) -> str:
-    return f"{project_key}-{jira_key_number(doc_id)}"
+def jira_key(seed: str, project_key: str) -> str:
+    return f"{project_key}-{jira_key_number(seed)}"
 
 
 HUBSPOT_ID_MIN = 1_000_000_000
 HUBSPOT_ID_RANGE = 9_000_000_000
 
 
-def hubspot_record_id(doc_id: str) -> str:
+def hubspot_record_id(seed: str) -> str:
     """The SEED for a record's own id -- a numeric string (e.g. "5790939450"), as real HubSpot's
     are -- see ``backlot.importer.byo._Loader._assign_hubspot_id`` for the assignment that actually
     resolves it to a served, unique value.
@@ -218,7 +213,7 @@ def hubspot_record_id(doc_id: str) -> str:
     values, wide enough to look safe, but measured at a corpus this project actually generates
     (500k documents) it still collides ~16 times by the birthday bound -- so it gets confluence's
     probe, not gmail's/notion's bare-seed shape (#51)."""
-    return str(HUBSPOT_ID_MIN + hnum(doc_id, 0, 10) % HUBSPOT_ID_RANGE)
+    return str(HUBSPOT_ID_MIN + hnum(seed, 0, 10) % HUBSPOT_ID_RANGE)
 
 
 def hubspot_assoc_type_id(from_type: str, to_type: str) -> int:
@@ -232,10 +227,10 @@ CONFLUENCE_ID_MIN = 100_000
 CONFLUENCE_ID_RANGE = 9_000_000
 
 
-def confluence_id(doc_id: str) -> int:
+def confluence_id(seed: str) -> int:
     """The SEED for a page's own id — see ``backlot.importer.byo._Loader._assign_confluence_id``
     for the assignment that actually resolves it to a served, unique value."""
-    return CONFLUENCE_ID_MIN + hnum(doc_id, 24, 8) % CONFLUENCE_ID_RANGE
+    return CONFLUENCE_ID_MIN + hnum(seed, 24, 8) % CONFLUENCE_ID_RANGE
 
 
 def atlassian_account_id(email: str) -> str:
@@ -317,14 +312,14 @@ def _uuid_from(seed: str) -> str:
     return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
 
 
-def notion_id(doc_id: str) -> str:
-    """Stable dashed-UUID page/database id keyed on the doc_id (reversible via the stored
+def notion_id(seed: str) -> str:
+    """Stable dashed-UUID page/database id keyed on the seed (reversible via the stored
     notion_pages.served_id column -- see store.notion_by_served_id)."""
-    return _uuid_from("notion:" + doc_id)
+    return _uuid_from("notion:" + seed)
 
 
-def notion_block_id(doc_id: str, seq: int) -> str:
-    return _uuid_from(f"notion-block:{doc_id}:{seq}")
+def notion_block_id(seed: str, seq: int) -> str:
+    return _uuid_from(f"notion-block:{seed}:{seq}")
 
 
 def notion_user_id(email: str) -> str:
@@ -367,7 +362,7 @@ _NOTION_PREFIX = {
 }
 
 
-def notion_blocks(doc_id: str, content: str) -> list[dict]:
+def notion_blocks(seed: str, content: str) -> list[dict]:
     """Parse ``content`` into Notion block objects, one per line.
 
     Recognizes ``#``/``##``/``###`` headings, ``-``/``*`` bullets, ``N.`` numbered items;
@@ -390,7 +385,7 @@ def notion_blocks(doc_id: str, content: str) -> list[dict]:
         blocks.append(
             {
                 "object": "block",
-                "id": notion_block_id(doc_id, i),
+                "id": notion_block_id(seed, i),
                 "type": btype,
                 "has_children": False,
                 "archived": False,
@@ -418,9 +413,9 @@ def notion_blocks_to_text(blocks: list[dict]) -> str:
 # the suggested branch name) follow Linear's own derivation rules instead.
 
 
-def linear_id(doc_id: str) -> str:
+def linear_id(seed: str) -> str:
     """Stable dashed-UUID issue id (reversible via the app index)."""
-    return _uuid_from("linear:" + doc_id)
+    return _uuid_from("linear:" + seed)
 
 
 def linear_team_id(container: str) -> str:
@@ -477,9 +472,9 @@ def linear_team_key(container: str) -> str:
     return _key(container, "TEAM")
 
 
-def linear_identifier(doc_id: str, team_key: str) -> str:
+def linear_identifier(seed: str, team_key: str) -> str:
     """A synthesized ``TEAM-123`` identifier, for a corpus that carries no issue key of its own."""
-    return f"{team_key}-{hnum(doc_id, 16, 6) % 9000 + 1}"
+    return f"{team_key}-{hnum(seed, 16, 6) % 9000 + 1}"
 
 
 def linear_issue_number(identifier: str) -> int:
@@ -757,13 +752,13 @@ def fireflies_fill_times(sentences, duration_secs: float | None = None) -> None:
         i = j
 
 
-def fireflies_id(doc_id: str) -> str:
+def fireflies_id(seed: str) -> str:
     """A transcript's API-facing id: the 24-character lowercase hex Fireflies serves.
 
     Synthesized rather than reused from a corpus's own meeting id, which is not required to be
     unique — ``transcript(id:)`` looks a meeting up by this one (see the store schema).
     """
-    return _digest("fireflies:" + doc_id)[:24]
+    return _digest("fireflies:" + seed)[:24]
 
 
 def fireflies_user_id(email: str) -> str:
@@ -788,10 +783,10 @@ def fireflies_media_url(transcript_id: str, kind: str) -> str:
     return f"https://cdn.fireflies.ai/{kind}/{transcript_id}.{ext}"
 
 
-def fireflies_meeting_link(doc_id: str) -> str:
+def fireflies_meeting_link(seed: str) -> str:
     """The conferencing link the meeting was recorded from. Google Meet's code shape (xxx-xxxx-xxx)
     since `calendar_type` is google_calendar for a meeting the corpus does not say otherwise about."""
-    d = _digest("fireflies-meet:" + doc_id)
+    d = _digest("fireflies-meet:" + seed)
     letters = "abcdefghijklmnopqrstuvwxyz"
     code = "".join(letters[int(d[i : i + 2], 16) % 26] for i in range(0, 20, 2))
     return f"https://meet.google.com/{code[:3]}-{code[3:7]}-{code[7:10]}"
@@ -830,7 +825,7 @@ def fireflies_speaker_stats(sentences) -> list[dict]:
 # from the text), so a transcript with no stored analytics gets a deterministic, self-consistent
 # one: the three sentiment shares sum to 100 and the per-speaker durations sum to the meeting.
 def fireflies_analytics(
-    doc_id: str, speakers: list[dict] | None = None, duration_secs: float | None = None
+    seed: str, speakers: list[dict] | None = None, duration_secs: float | None = None
 ) -> dict:
     """The `analytics` object: sentiments, per-speaker talk time, and categories.
 
@@ -841,8 +836,8 @@ def fireflies_analytics(
     would emit a set of shares summing to 4%, which reads as a bug in every consumer that charts
     it. Sharing out the talk time keeps the field's meaning and its arithmetic.
     """
-    pos = 20 + hnum(doc_id, salt="ff-pos") % 51  # 20-70
-    neg = hnum(doc_id, salt="ff-neg") % max(1, 101 - pos - 10)
+    pos = 20 + hnum(seed, salt="ff-pos") % 51  # 20-70
+    neg = hnum(seed, salt="ff-neg") % max(1, 101 - pos - 10)
     neutral = 100 - pos - neg
     total = float(sum(s.get("duration_secs") or 0.0 for s in speakers or []))
     spk = []
@@ -900,7 +895,7 @@ def s3_secret_access_key(token: str) -> str:
     return _base_n(d, _SK_ALPHABET, 40)
 
 
-def s3_etag(doc_id: str, content: str) -> str:
+def s3_etag(seed: str, content: str) -> str:
     """The quoted MD5 hex ETag S3 returns for a single-part object (MD5 of the body)."""
     return '"' + hashlib.md5(content.encode("utf-8")).hexdigest() + '"'
 

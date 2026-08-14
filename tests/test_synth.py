@@ -15,13 +15,15 @@ def test_hnum_and_timestamps_are_deterministic():
 
 
 def test_distinct_docs_get_distinct_values():
-    assert synth.slack_ts(DOC) != synth.slack_ts(DOC2)
     assert synth.github_number(DOC) != synth.github_number(DOC2)
     assert synth.confluence_id(DOC) != synth.confluence_id(DOC2)
 
 
 def test_slack_ts_format():
-    ts = synth.slack_ts(DOC)
+    """`slack_fmt_ts` is the whole of Slack's ts shape now: the seconds come from the row's own
+    `created_ts` and the fraction from a seed the importer picks (#51), so there is no
+    single-argument `slack_ts` left to test."""
+    ts = synth.slack_fmt_ts(synth.epoch(DOC), DOC)
     secs, micro = ts.split(".")
     assert secs.isdigit() and len(micro) == 6
 

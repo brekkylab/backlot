@@ -748,6 +748,50 @@ def sample_settings(tmp_path_factory) -> Settings:
     return _build(tmp_path_factory.mktemp("sample"))
 
 
+def _resolve_keys(settings: Settings) -> dict[str, tuple]:
+    """``SAMPLE`` record's ``doc_id`` -> the served key its row actually landed under.
+
+    Built by matching each record's own text back to its row, NOT read out of the importer. That
+    is the point: a corpus's ``doc_id`` is an input that seeds a synthesized id and is then
+    discarded (#51), so nothing in the DB maps one to the other and a test cannot ask for one. To
+    address a document it wrote, a test has to do what any other client does — find the row by
+    something it can actually observe.
+
+    The value is a TUPLE, positional against ``store.id_columns``, so a caller splats it:
+    ``store.get_document(conn, "jira", *keys["jira-sev2"])``. That reads as one value for the nine
+    single-column sources and as two for slack, s3 and github, which is exactly the distinction
+    the store draws.
+    """
+    conn = store.connect_ro(settings.db_path)
+    try:
+        out: dict[str, tuple] = {}
+        for rec in SAMPLE:
+            if "doc_id" not in rec:
+                continue
+            src = rec["source_type"]
+            cols = ", ".join(store.id_columns(src))
+            # `content` first, `title` as the fallback: a fireflies record written as `sentences`
+            # has its content DERIVED from them, so the record's own text is not what landed.
+            for col, value in (("content", rec.get("content")), ("title", rec.get("title"))):
+                if not value:
+                    continue
+                row = conn.execute(
+                    f"SELECT {cols} FROM {store.table(src)} WHERE {col} = ?", (value,)
+                ).fetchone()
+                if row is not None:
+                    out[rec["doc_id"]] = tuple(row)
+                    break
+        return out
+    finally:
+        conn.close()
+
+
+@pytest.fixture(scope="session")
+def keys(sample_settings) -> dict[str, tuple]:
+    """See :func:`_resolve_keys` — the SAMPLE corpus's own ids mapped to what each row serves."""
+    return _resolve_keys(sample_settings)
+
+
 @pytest.fixture
 def db(sample_settings):
     conn = store.connect_ro(sample_settings.db_path)

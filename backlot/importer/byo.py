@@ -949,7 +949,14 @@ class _Loader:
         # In memory, and gone when the load returns: the dataset's identifiers must not outlive
         # the import, which is not the same as forbidding a map while it runs. `seen`,
         # `tracker_ids`, `_confluence_ids` and `_hubspot_ids` are all already this shape.
-        self.keys = {}  # (source_type, dataset id) -> tuple(served key)
+        self.keys = {}  # (source_type, dataset id) -> tuple(served key), LAST writer wins
+        # Two records may share a dataset id. For a pure-hash source they resolve to one key and
+        # the upsert leaves the later one, as before; for a PROBED one they take different keys and
+        # both rows survive -- so `keys`, which a cross-reference resolves through and which can
+        # only name one target, is not enough to find every row still holding a provisional key.
+        # These two carry the per-ROW facts instead.
+        self._pending = {}  # source_type -> [(provisional key tuple, dataset id)]
+        self._final = {}  # (source_type, provisional key tuple) -> settled key tuple
         # Provisional keys are handed out from a per-run counter. They live in a space no real key
         # can occupy -- negative for a github number (real ones start at 1), `-unassigned-` for a
         # jira key (a real one starts with an uppercase prefix) -- so a row can land under the
@@ -1480,6 +1487,7 @@ class _Loader:
                 cols["number"] = None
             if src == "jira":
                 self._jira_projects[did] = container
+            provisional = False
             if src in ("github", "jira"):
                 col = store.id_column(src)
                 provided = cols.get(col)
@@ -1508,6 +1516,7 @@ class _Loader:
                 else:
                     self._require_provided_id(src, where)
                     cols[col] = self._next_provisional(src)
+                    provisional = True
             # ---- end identity -------------------------------------------------------------
             key = tuple(cols[c] for c in store.id_columns(src))
             names = list(cols)
@@ -1528,15 +1537,19 @@ class _Loader:
                 + ", ".join(f"{n}=excluded.{n}" for n in update_cols),
                 [cols[n] for n in names],
             )
-            # Recorded against the DATASET id, which is what `grants`, `fts_ids` and every
-            # cross-reference still name their target by at this point. For github and jira the
-            # value here is provisional; the deferred pass rewrites it in place, and everything
-            # that reads this map runs after that (see load_records).
+            # `keys` answers "what did the record called `did` resolve to", which is what a
+            # cross-reference needs and which can only have one answer. `_pending` is per ROW, so
+            # the deferred pass reaches every row even when two records shared a dataset id.
             self.keys[(src, did)] = key
-            fts_ids.setdefault(src, []).append(did)
+            if provisional:
+                self._pending.setdefault(src, []).append((key, did))
+            # Grants and FTS entries name the ROW by the key it landed under -- provisional or
+            # not -- and `_settled` translates it when they are flushed, after the deferred passes.
+            # Recording the dataset id instead would give two rows that shared one the same grants.
+            fts_ids.setdefault(src, []).append(key)
             counts[src] = counts.get(src, 0) + 1
             for pt, pid in grant_types:
-                grants.append((src, did, pt, pid))
+                grants.append((src, key, pt, pid))
 
         insert(
             doc_id,
@@ -1917,38 +1930,49 @@ class _Loader:
                 ),
             )
 
-    def _settle(self, src: str, final: dict) -> None:
+    def _settle(self, src: str, final: list) -> None:
         """Move rows in a deferred source from their provisional key to the settled one.
 
-        ``final`` maps dataset id -> the new value for that source's own id column. Three things
-        move together, and they have to: the document row, every child row hanging off it, and
-        ``self.keys`` — which is what the ACL grants and the FTS ids are resolved through when they
-        are flushed later (see load_records).
+        ``final`` is a list of ``(provisional key tuple, new value)``, one entry per ROW — not per
+        dataset id, because two records may share one and, in a probed source, both survive as
+        separate rows. Three things move together, and they have to: the document row, every child
+        row hanging off it, and the record of what that row is called (``keys``, which a
+        cross-reference resolves through, and ``_final``, which the ACL grants and FTS ids are
+        translated by when they are flushed).
 
         No two-sweep dance: a provisional key and a final one can never collide (see
-        `_next_provisional`), so a row can be written onto its new value while another row is still
-        sitting on its old one.
+        `_next_provisional`), so a row can be written onto its new value while another row is
+        still sitting on its old one.
         """
         col = store.id_column(src)
         tbl = store.table(src)
         ctable = store.comment_table(src)
         # The comment table names the parent by its own spelling of that column, which for the two
         # deferred sources happens to match, but is read from the registry rather than assumed.
-        ccol = store.comment_parent_columns(src)[-1] if ctable else None
-        for did, value in final.items():
-            key = self.keys[(src, did)]
-            old = key[-1]
-            if old == value:
+        ccols = store.comment_parent_columns(src) if ctable else ()
+        where = " AND ".join(f"{c} = ?" for c in store.id_columns(src))
+        cwhere = " AND ".join(f"{c} = ?" for c in ccols)
+        for key, value in final:
+            if key[-1] == value:
                 continue
-            scope = key[:-1]
-            where = " AND ".join(f"{c} = ?" for c in store.id_columns(src))
-            self.conn.execute(f"UPDATE {tbl} SET {col} = ? WHERE {where}", (value, *scope, old))
+            scope, settled = key[:-1], (*key[:-1], value)
+            self.conn.execute(f"UPDATE {tbl} SET {col} = ? WHERE {where}", (value, *scope, key[-1]))
             if ctable:
-                cwhere = " AND ".join(f"{c} = ?" for c in store.comment_parent_columns(src))
                 self.conn.execute(
-                    f"UPDATE {ctable} SET {ccol} = ? WHERE {cwhere}", (value, *scope, old)
+                    f"UPDATE {ctable} SET {ccols[-1]} = ? WHERE {cwhere}",
+                    (value, *scope, key[-1]),
                 )
-            self.keys[(src, did)] = (*scope, value)
+            self._final[(src, key)] = settled
+        # `keys` is last-writer-wins per dataset id, so it is repointed by looking up what the
+        # value it currently holds became -- never by replaying the list, which would leave it on
+        # whichever row happened to come last in `final` rather than last in the corpus.
+        for (ksrc, did), key in list(self.keys.items()):
+            if ksrc == src and (src, key) in self._final:
+                self.keys[(ksrc, did)] = self._final[(src, key)]
+
+    def _settled(self, src: str, key: tuple) -> tuple:
+        """The key a row ended up under, given the one it was written with."""
+        return self._final.get((src, key), key)
 
     def resolve_github_numbers(self) -> None:
         """Assign a real `number` to every github row that landed under a provisional one, in two
@@ -1987,16 +2011,16 @@ class _Loader:
             "SELECT repo, number FROM github_items WHERE number >= 0"
         ):
             taken.setdefault(repo, set()).add(int(number))
-        # Phase 2: everything else, in dataset-id order.
-        final: dict[str, int] = {}
-        for (src, did), key in sorted(
-            (k, v) for k, v in self.keys.items() if k[0] == "github" and v[-1] < 0
-        ):
+        # Phase 2: everything else, in dataset-id order — which is what keeps the result
+        # independent of the order records happened to stream in. The provisional key breaks a tie
+        # between two records that shared a dataset id, so the order is still total.
+        final: list = []
+        for key, did in sorted(self._pending.get("github", []), key=lambda e: (e[1], e[0])):
             repo = key[0]
             bucket = taken.setdefault(repo, set())
             candidate = self._assign_github_number(did, repo, taken)
             bucket.add(candidate)
-            final[did] = candidate
+            final.append((key, candidate))
         self._settle("github", final)
 
     def resolve_jira_keys(self) -> None:
@@ -2020,12 +2044,8 @@ class _Loader:
             if str(key).startswith("-unassigned-"):
                 continue
             taken.setdefault(project, set()).add(int(str(key).rsplit("-", 1)[-1]))
-        final: dict[str, str] = {}
-        for (src, did), key in sorted(
-            (k, v)
-            for k, v in self.keys.items()
-            if k[0] == "jira" and str(v[-1]).startswith("-unassigned-")
-        ):
+        final: list = []
+        for key, did in sorted(self._pending.get("jira", []), key=lambda e: (e[1], e[0])):
             project = self._jira_projects[did]
             bucket = taken.setdefault(project, set())
             candidate = self._assign_jira_number(did, project, taken)
@@ -2034,7 +2054,7 @@ class _Loader:
             # Record it: a composed key names its project exactly as a provided one does, and
             # `write_containers` stores this on the project's own row.
             self.jira_prefixes.setdefault(project, prefix)
-            final[did] = f"{prefix}-{candidate}"
+            final.append((key, f"{prefix}-{candidate}"))
         self._settle("jira", final)
 
     def resolve_jira_parents(self) -> None:
@@ -2201,10 +2221,8 @@ def load_records(
     # A grant names its document by the SERVED id, in the same columns the document table is
     # keyed on (see store.ACL_TABLE) — resolved here, once every deferred key has settled, rather
     # than written during the stream under a value that was still provisional.
-    for source_type, dataset_id, ptype, pid in grants:
-        key = loader.keys.get((source_type, dataset_id))
-        if key is None:
-            continue  # the row was never written (a validation failure raised before the insert)
+    for source_type, written_key, ptype, pid in grants:
+        key = loader._settled(source_type, written_key)
         conn.execute(
             f"INSERT OR IGNORE INTO {store.acl_table(source_type)} "
             f"VALUES ({', '.join('?' for _ in range(len(key) + 2))})",
@@ -2217,8 +2235,7 @@ def load_records(
         for s, ids in fts_ids.items():
             # Same resolution as the grants above: these were accumulated as dataset ids and are
             # translated to served keys now that the deferred passes have settled them.
-            keys = [loader.keys[(s, d)] for d in ids if (s, d) in loader.keys]
-            store.fts_add_docs(conn, s, keys)
+            store.fts_add_docs(conn, s, [loader._settled(s, k) for k in ids])
 
     # Every principal is a document owner/reader; only some are ACCOUNTS. Without a roster the two
     # sets coincide (a corpus's authors are its users); with one, `contacts` are principals with no

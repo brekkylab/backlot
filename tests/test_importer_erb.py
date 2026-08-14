@@ -16,7 +16,7 @@ import yaml
 from backlot import store, synth
 from backlot.config import Settings, get_settings
 from backlot.importer import byo, erb
-from tests._helpers import client_for
+from tests._helpers import client_for, served_id
 from backlot.importer.erb import Principals, canonical, grants_for
 
 C = erb
@@ -550,7 +550,8 @@ def test_drive_owner_is_faithful():
     }
     _load_one(conn, "google_drive", "dsid_1", raw, P)
     row = conn.execute(
-        "SELECT author_email, owner_display, created_ts FROM gdrive_files WHERE doc_id='dsid_1'"
+        "SELECT author_email, owner_display, created_ts FROM gdrive_files WHERE id = ?",
+        (served_id("google_drive", "dsid_1"),),
     ).fetchone()
     assert row["author_email"] == "maya.chen@redwoodinference.com"
     assert row["owner_display"] == "Maya Chen"
@@ -584,7 +585,7 @@ def test_drive_doc_type_maps_onto_drive_mime_types():
         _load_one(
             conn, "google_drive", f"dt_{i}", {**base, "title": f"T{i}", "doc_type": doc_type}, P
         )
-        row = store.get_document(conn, "google_drive", f"dt_{i}")
+        row = store.get_document(conn, "google_drive", served_id("google_drive", f"dt_{i}"))
         assert _drive_file(conn, row)["mimeType"] == mime, doc_type
 
 
@@ -604,7 +605,7 @@ def test_drive_unknown_doc_type_falls_back_to_the_title_extension():
         "created_at": "2025-09-18",
     }
     _load_one(conn, "google_drive", "dt_ext", raw, P)
-    row = store.get_document(conn, "google_drive", "dt_ext")
+    row = store.get_document(conn, "google_drive", served_id("google_drive", "dt_ext"))
     assert _drive_file(conn, row)["mimeType"] == "application/pdf"
 
 
@@ -623,9 +624,7 @@ def test_jira_assignee_reporter_and_duedate():
         "created_at": "2025-11-01",
     }
     _load_one(conn, "jira", "dsid_2", raw, P)
-    row = conn.execute(
-        "SELECT reporter_email, assignee_email, status FROM jira_issues WHERE doc_id='dsid_2'"
-    ).fetchone()
+    row = conn.execute("SELECT reporter_email, assignee_email, status FROM jira_issues").fetchone()
     assert row["reporter_email"] == "jordan.kim@redwoodinference.com"
     assert row["assignee_email"] == "priya.desai@redwoodinference.com"
     assert row["status"] == "In Progress"
@@ -672,7 +671,9 @@ def test_hubspot_company_maps_to_crm_properties():
     conn = _conn()
     P = Principals([], "redwoodinference.com")
     _load_one(conn, "hubspot", "dsid_hs1", HS_RAW, P)
-    row = conn.execute("SELECT * FROM hubspot_objects WHERE doc_id='dsid_hs1'").fetchone()
+    row = conn.execute(
+        "SELECT * FROM hubspot_objects WHERE id = ?", (served_id("hubspot", "dsid_hs1"),)
+    ).fetchone()
     assert row["object_type"] == "companies"
     assert row["title"] == "Acacia Loop Services"
     assert row["author_email"] == "maya.chen@redwoodinference.com"  # owner (AE), resolved
@@ -695,7 +696,7 @@ def test_hubspot_notes_materialize_as_note_objects():
     P = Principals([], "redwoodinference.com")
     _load_one(conn, "hubspot", "dsid_hs1", HS_RAW, P)
     notes = conn.execute(
-        "SELECT * FROM hubspot_objects WHERE object_type='notes' ORDER BY doc_id"
+        "SELECT * FROM hubspot_objects WHERE object_type='notes' ORDER BY id"
     ).fetchall()
     assert len(notes) == 2
     assert notes[0]["content"].startswith("Inbound SMB")
@@ -703,11 +704,12 @@ def test_hubspot_notes_materialize_as_note_objects():
     assert store.jcol(notes[0], "properties", {})["hs_note_body"] == notes[0]["content"]
     # each note is associated with the company, in both directions
     assert [
-        r["to_doc_id"] for r in store.hubspot_associations(conn, "dsid_hs1", "notes")
-    ] == sorted(n["doc_id"] for n in notes)
-    assert [
-        r["to_doc_id"] for r in store.hubspot_associations(conn, notes[0]["doc_id"], "companies")
-    ] == ["dsid_hs1"]
+        r["to_id"]
+        for r in store.hubspot_associations(conn, served_id("hubspot", "dsid_hs1"), "notes")
+    ] == sorted(n["id"] for n in notes)
+    assert [r["to_id"] for r in store.hubspot_associations(conn, notes[0]["id"], "companies")] == [
+        served_id("hubspot", "dsid_hs1")
+    ]
 
 
 def test_hubspot_timeline_stays_in_the_company_body():
@@ -716,7 +718,9 @@ def test_hubspot_timeline_stays_in_the_company_body():
     conn = _conn()
     P = Principals([], "redwoodinference.com")
     _load_one(conn, "hubspot", "dsid_hs1", HS_RAW, P)
-    company = conn.execute("SELECT content FROM hubspot_objects WHERE doc_id='dsid_hs1'").fetchone()
+    company = conn.execute(
+        "SELECT content FROM hubspot_objects WHERE id = ?", (served_id("hubspot", "dsid_hs1"),)
+    ).fetchone()
     assert "inbound signup via marketplace" in company["content"]
     assert (
         conn.execute("SELECT COUNT(*) FROM hubspot_objects WHERE object_type='notes'").fetchone()[0]
@@ -732,7 +736,10 @@ def test_hubspot_linked_artifacts_stay_property_stubs():
     P = Principals([], "redwoodinference.com")
     _load_one(conn, "hubspot", "dsid_hs1", HS_RAW, P)
     props = store.jcol(
-        conn.execute("SELECT properties FROM hubspot_objects WHERE doc_id='dsid_hs1'").fetchone(),
+        conn.execute(
+            "SELECT properties FROM hubspot_objects WHERE id = ?",
+            (served_id("hubspot", "dsid_hs1"),),
+        ).fetchone(),
         "properties",
         {},
     )
@@ -820,7 +827,8 @@ def test_slack_text_variant_not_empty():
     }
     _load_one(conn, "slack", "dsid_s1", raw, P)
     rows = conn.execute(
-        "SELECT title, content, thread_seq FROM slack_messages WHERE thread_id='dsid_s1' ORDER BY thread_seq"
+        "SELECT title, content, thread_seq FROM slack_messages "
+        "WHERE thread_ts IS NOT NULL ORDER BY thread_seq"
     ).fetchall()
     assert len(rows) == 2
     assert rows[0]["title"] == "" and "Heads up" in rows[0]["content"]  # not '*file_name*'
@@ -839,7 +847,9 @@ def test_gmail_body_variant_not_empty():
         "body": "Here is the Q2 plan draft, please review.",
     }
     _load_one(conn, "gmail", "dsid_g1", raw, P)
-    r = conn.execute("SELECT title, content FROM gmail_messages WHERE doc_id='dsid_g1'").fetchone()
+    r = conn.execute(
+        "SELECT title, content FROM gmail_messages WHERE id = ?", (served_id("gmail", "dsid_g1"),)
+    ).fetchone()
     assert r["title"] == "Q2 plan"
     assert "Q2 plan draft" in r["content"]
 
@@ -862,7 +872,9 @@ def test_gmail_thread_attachments_ingested():
         ],
     }
     _load_one(conn, "gmail", "dsid_att", raw, P)
-    r = conn.execute("SELECT attachments FROM gmail_messages WHERE doc_id='dsid_att'").fetchone()
+    r = conn.execute(
+        "SELECT attachments FROM gmail_messages WHERE id = ?", (served_id("gmail", "dsid_att"),)
+    ).fetchone()
     atts = _json.loads(r["attachments"])
     assert [a["filename"] for a in atts] == [
         "Epoch_MSAAttachment_v3.pdf",
@@ -875,9 +887,10 @@ def test_gmail_thread_attachments_ingested():
     # a doc with no attachments leaves the column NULL (not "[]")
     _load_one(conn, "gmail", "dsid_noatt", {"content_field_names": ["body"], "body": "x"}, P)
     assert (
-        conn.execute("SELECT attachments FROM gmail_messages WHERE doc_id='dsid_noatt'").fetchone()[
-            0
-        ]
+        conn.execute(
+            "SELECT attachments FROM gmail_messages WHERE id = ?",
+            (served_id("gmail", "dsid_noatt"),),
+        ).fetchone()[0]
         is None
     )
 
@@ -898,7 +911,9 @@ def test_gmail_thread_title_is_doc_level_subject():
         ],
     }
     _load_one(conn, "gmail", "dsid_subj", raw, P)
-    title = conn.execute("SELECT title FROM gmail_messages WHERE doc_id='dsid_subj'").fetchone()[0]
+    title = conn.execute(
+        "SELECT title FROM gmail_messages WHERE id = ?", (served_id("gmail", "dsid_subj"),)
+    ).fetchone()[0]
     assert title == "[P0] Acme Health — retry storm"
     # fallback: no doc-level subject -> the message Subject header is used
     raw2 = {
@@ -910,7 +925,9 @@ def test_gmail_thread_title_is_doc_level_subject():
     }
     _load_one(conn, "gmail", "dsid_subj2", raw2, P)
     assert (
-        conn.execute("SELECT title FROM gmail_messages WHERE doc_id='dsid_subj2'").fetchone()[0]
+        conn.execute(
+            "SELECT title FROM gmail_messages WHERE id = ?", (served_id("gmail", "dsid_subj2"),)
+        ).fetchone()[0]
         == "Real subject"
     )
 
@@ -1034,7 +1051,7 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
     c = sqlite3.connect(settings.db_path)
     c.row_factory = sqlite3.Row
     company = c.execute("SELECT * FROM hubspot_objects WHERE object_type='companies'").fetchone()
-    assert company["doc_id"] == "dsid_hs_e2e"
+    assert company["id"] == served_id("hubspot", "dsid_hs_e2e")
     assert company["author_email"] == "maya.chen@redwoodinference.com"
     assert (
         c.execute("SELECT COUNT(*) FROM hubspot_objects WHERE object_type='notes'").fetchone()[0]
@@ -1049,7 +1066,8 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
     # the company is ACL-granted, so a non-admin can actually reach it
     assert (
         c.execute(
-            f"SELECT COUNT(*) FROM {store.acl_table('hubspot')} WHERE doc_id='dsid_hs_e2e'"
+            f"SELECT COUNT(*) FROM {store.acl_table('hubspot')} WHERE id = ?",
+            (served_id("hubspot", "dsid_hs_e2e"),),
         ).fetchone()[0]
         > 0
     )
@@ -1144,11 +1162,13 @@ def _import_gen(tmp_path, monkeypatch, source: str, filename: str, raw: dict, em
     return settings
 
 
-def _granted(conn, doc_id, source_type) -> set:
+def _granted(conn, ident, source_type) -> set:
     return {
         (r["principal_type"], r["principal_id"])
         for r in conn.execute(
-            f"SELECT * FROM {store.acl_table(source_type)} WHERE doc_id=?", (doc_id,)
+            f"SELECT * FROM {store.acl_table(source_type)} WHERE "
+            + " AND ".join(f"{c} = ?" for c in store.id_columns(source_type)),
+            ident if isinstance(ident, tuple) else (ident,),
         )
     }
 
@@ -1167,11 +1187,9 @@ def test_materialized_note_rows_inherit_the_company_grants(tmp_path, monkeypatch
     )
     conn = sqlite3.connect(settings.db_path)
     conn.row_factory = sqlite3.Row
-    company = _granted(conn, "dsid_hs_acl", "hubspot")
+    company = _granted(conn, served_id("hubspot", "dsid_hs_acl"), "hubspot")
     assert company  # sanity: the parent is granted
-    notes = [
-        r[0] for r in conn.execute("SELECT doc_id FROM hubspot_objects WHERE object_type='notes'")
-    ]
+    notes = [r[0] for r in conn.execute("SELECT id FROM hubspot_objects WHERE object_type='notes'")]
     assert notes
     for n in notes:
         assert _granted(conn, n, "hubspot") == company, (
@@ -1202,9 +1220,16 @@ def test_thread_reply_rows_inherit_the_root_grants(tmp_path, monkeypatch):
     )
     conn = sqlite3.connect(settings.db_path)
     conn.row_factory = sqlite3.Row
-    root = _granted(conn, "dsid_s_acl", "slack")
+    # A slack row is identified by (channel, ts), so a grant names both -- see store.ID_COLUMNS.
+    root_key = conn.execute(
+        "SELECT channel, ts FROM slack_messages WHERE thread_seq = 0"
+    ).fetchone()
+    root = _granted(conn, tuple(root_key), "slack")
     assert root
-    replies = [r[0] for r in conn.execute("SELECT doc_id FROM slack_messages WHERE thread_seq > 0")]
+    replies = [
+        tuple(r)
+        for r in conn.execute("SELECT channel, ts FROM slack_messages WHERE thread_seq > 0")
+    ]
     assert replies
     for rid in replies:
         assert _granted(conn, rid, "slack") == root, (
@@ -1285,9 +1310,10 @@ def _load_linear(raw, dsid="dsid_lin"):
     conn = _conn()
     P = Principals([], "redwoodinference.com")
     _load_one(conn, "linear", dsid, raw, P)
-    row = conn.execute("SELECT * FROM linear_issues WHERE doc_id = ?", (dsid,)).fetchone()
+    issue_id = served_id("linear", dsid)
+    row = conn.execute("SELECT * FROM linear_issues WHERE id = ?", (issue_id,)).fetchone()
     comments = conn.execute(
-        "SELECT * FROM linear_comments WHERE doc_id = ? ORDER BY seq", (dsid,)
+        "SELECT * FROM linear_comments WHERE issue_id = ? ORDER BY seq", (issue_id,)
     ).fetchall()
     return conn, row, comments
 
@@ -1429,7 +1455,8 @@ def test_linear_comment_author_prefix_is_kept_when_the_name_is_not_a_person():
     }
     _load_one(conn, "linear", "dsid_p", raw, P)
     rows = conn.execute(
-        "SELECT author_email, body FROM linear_comments WHERE doc_id='dsid_p' ORDER BY seq"
+        "SELECT author_email, body FROM linear_comments WHERE issue_id = ? ORDER BY seq",
+        (served_id("linear", "dsid_p"),),
     ).fetchall()
     # resolved -> attributed, and the name is not repeated in the body
     assert rows[0]["author_email"] == "maya.patel@redwoodinference.com"
@@ -1451,7 +1478,8 @@ def test_linear_undated_comment_never_sorts_before_its_dated_neighbours():
     }
     _load_one(conn, "linear", "dsid_m", raw, P)
     rows = conn.execute(
-        "SELECT seq, created_ts FROM linear_comments WHERE doc_id='dsid_m' ORDER BY created_ts, seq"
+        "SELECT seq, created_ts FROM linear_comments WHERE issue_id = ? ORDER BY created_ts, seq",
+        (served_id("linear", "dsid_m"),),
     ).fetchall()
     assert [r["seq"] for r in rows] == [1, 2, 3]
     assert rows[2]["created_ts"] == rows[1]["created_ts"] + 1  # one second after its predecessor
@@ -1507,7 +1535,8 @@ def test_linear_comment_author_is_matched_never_minted():
     }
     _load_one(conn, "linear", "dsid_c", raw, P)
     rows = conn.execute(
-        "SELECT author_email FROM linear_comments WHERE doc_id='dsid_c' ORDER BY seq"
+        "SELECT author_email FROM linear_comments WHERE issue_id = ? ORDER BY seq",
+        (served_id("linear", "dsid_c"),),
     ).fetchall()
     assert rows[0]["author_email"] == "amaya.chen@redwoodinference.com"
     assert rows[1]["author_email"] is None
@@ -1592,12 +1621,14 @@ def test_linear_second_pass_resolves_keys_and_drops_dangling():
     _load_one(conn, "linear", "d_parent", parent, P, loader=loader)
     loader.resolve_cross_references()
 
-    row = conn.execute("SELECT parent_doc_id FROM linear_issues WHERE doc_id='d_child'").fetchone()
-    assert row["parent_doc_id"] == "d_parent"
-    rels = conn.execute("SELECT from_doc_id, to_doc_id, type FROM linear_relations").fetchall()
+    row = conn.execute(
+        "SELECT parent_id FROM linear_issues WHERE id = ?", (served_id("linear", "d_child"),)
+    ).fetchone()
+    assert row["parent_id"] == served_id("linear", "d_parent")
+    rels = conn.execute("SELECT from_id, to_id, type FROM linear_relations").fetchall()
     # ENG-NOSUCH resolves to nothing and is dropped rather than stored dangling.
-    assert [(r["from_doc_id"], r["to_doc_id"], r["type"]) for r in rels] == [
-        ("d_child", "d_parent", "blocks")
+    assert [(r["from_id"], r["to_id"], r["type"]) for r in rels] == [
+        (served_id("linear", "d_child"), served_id("linear", "d_parent"), "blocks")
     ]
 
 
@@ -1610,7 +1641,9 @@ def test_linear_second_pass_never_makes_an_issue_its_own_parent():
     erb._precompute_globals([("linear", "d_self", raw)])
     _load_one(conn, "linear", "d_self", raw, P)
     assert (
-        conn.execute("SELECT parent_doc_id FROM linear_issues WHERE doc_id='d_self'").fetchone()[0]
+        conn.execute(
+            "SELECT parent_id FROM linear_issues WHERE id = ?", (served_id("linear", "d_self"),)
+        ).fetchone()[0]
         is None
     )
     # A self-relation is dropped for the same reason: an issue is not related to itself.
@@ -1628,7 +1661,8 @@ def test_linear_loader_stores_release_and_attachments():
     )
     assert row["release"] == "runtime-1.19"
     atts = conn.execute(
-        "SELECT title, url FROM linear_attachments WHERE doc_id='dsid_lin' ORDER BY seq"
+        "SELECT title, url FROM linear_attachments WHERE issue_id = ? ORDER BY seq",
+        (served_id("linear", "dsid_lin"),),
     ).fetchall()
     assert [(a["title"], a["url"]) for a in atts] == [
         ("Confluence", "https://conf.example/x"),
@@ -1788,8 +1822,8 @@ def test_fireflies_maps_the_bench_onto_the_api_columns():
     assert row["created_ts"] == 1775142000  # 2026-04-02T15:00:00Z
     # meeting_id is NOT unique in the corpus, so it becomes calendar_id and `id` is synthesized
     assert row["calendar_id"] == "ff-20260402-northwind-001"
-    assert row["transcript_id"] == synth.fireflies_id("dsid_ff1")
-    assert row["transcript_url"].endswith(row["transcript_id"])
+    assert row["id"] == synth.fireflies_id("dsid_ff1")
+    assert row["transcript_url"].endswith(row["id"])
     assert row["audio_url"] and row["video_url"] and row["meeting_link"]
 
 
@@ -2392,7 +2426,9 @@ def test_drive_folder_row_exists_even_without_a_team():
         },
         P,
     )
-    folder = conn.execute("SELECT folder FROM gdrive_files WHERE doc_id='dsid_nt'").fetchone()[0]
+    folder = conn.execute(
+        "SELECT folder FROM gdrive_files WHERE id = ?", (served_id("google_drive", "dsid_nt"),)
+    ).fetchone()[0]
     row = conn.execute("SELECT * FROM gdrive_folders WHERE folder=?", (folder,)).fetchone()
     assert row is not None and row["group_id"] is None
 
@@ -2428,16 +2464,12 @@ def test_unresolvable_principals_are_dropped_not_stored_as_nulls():
         "reviewers": ["Ava Chen", "Customer Success Team"],
     }
     _load_one(conn, "github", "dsid_rv", raw, P)
-    stored = json.loads(
-        conn.execute(
-            "SELECT requested_reviewers FROM github_items WHERE doc_id='dsid_rv'"
-        ).fetchone()[0]
-    )
+    stored = json.loads(conn.execute("SELECT requested_reviewers FROM github_items").fetchone()[0])
     assert stored == ["ava.chen@redwoodinference.com"]
     assert None not in stored
 
 
-def test_slack_thread_id_only_when_the_transcript_has_replies():
+def test_slack_thread_ts_only_when_the_transcript_has_replies():
     """Real Slack puts `thread_ts` on a message that is part of a thread and leaves it off a
     standalone post — and the router reads this column to decide."""
     conn = _conn()
@@ -2451,22 +2483,26 @@ def test_slack_thread_id_only_when_the_transcript_has_replies():
         "text": "andrea_p: EU regions land next week.",
     }
     _load_one(conn, "slack", "dsid_one", single, P)
-    assert (
-        conn.execute("SELECT thread_id FROM slack_messages WHERE doc_id='dsid_one'").fetchone()[0]
-        is None
-    )
+    assert conn.execute("SELECT thread_ts FROM slack_messages").fetchone()[0] is None
     threaded = {
         **single,
         "participants": ["andrea_p", "mike_p"],
         "text": "andrea_p: EU regions?\nmike_p: next week.",
     }
     _load_one(conn, "slack", "dsid_two", threaded, P)
+    # The root carries its OWN ts as `thread_ts` (Slack does too, so `thread_ts == ts` is what
+    # marks a root), and every message of the thread carries that same value.
+    root_ts = conn.execute(
+        "SELECT ts FROM slack_messages WHERE thread_seq = 0 AND thread_ts IS NOT NULL"
+    ).fetchone()[0]
     assert (
-        conn.execute("SELECT thread_id FROM slack_messages WHERE doc_id='dsid_two'").fetchone()[0]
-        == "dsid_two"
+        conn.execute("SELECT thread_ts FROM slack_messages WHERE ts = ?", (root_ts,)).fetchone()[0]
+        == root_ts
     )
     assert (
-        conn.execute("SELECT COUNT(*) FROM slack_messages WHERE thread_id='dsid_two'").fetchone()[0]
+        conn.execute(
+            "SELECT COUNT(*) FROM slack_messages WHERE thread_ts = ?", (root_ts,)
+        ).fetchone()[0]
         == 2
     )
 
@@ -2479,7 +2515,9 @@ def test_hubspot_properties_are_stored_as_canonical_json():
     _load_one(conn, "hubspot", "dsid_a", {**HS_RAW}, P)
     _load_one(conn, "hubspot", "dsid_b", {k: HS_RAW[k] for k in reversed(list(HS_RAW))}, P)
     a, b = (
-        conn.execute("SELECT properties FROM hubspot_objects WHERE doc_id=?", (d,)).fetchone()[0]
+        conn.execute(
+            "SELECT properties FROM hubspot_objects WHERE id = ?", (served_id("hubspot", d),)
+        ).fetchone()[0]
         for d in ("dsid_a", "dsid_b")
     )
     assert a == b
@@ -2805,9 +2843,21 @@ def test_the_snapshot_the_data_came_from_reaches_the_manifest(tmp_path, monkeypa
 def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
     """Four bench documents share a `dataset_doc_uuid` with another: three across sources (a drive
     file that is also a confluence page, plus a hubspot and a jira one) and two jira issues sharing
-    one. Within a source the row is overwritten, so both importers must keep the LAST record; across
-    sources each has its own table, so both survive and BOTH containers' ACL groups must be granted.
-    Resolving either of those differently is enough to make the full-corpus round-trip diverge."""
+    one. Across sources each has its own table, so both survive and BOTH containers' ACL groups
+    must be granted. Resolving that differently makes the full-corpus round-trip diverge.
+
+    WITHIN a source, what happens now depends on how that source's id is assigned (#51), and the
+    two jira issues are here to pin it:
+
+    - a PURE-hash source (confluence here) sends both records to the same id, so the upsert leaves
+      the later one — one row, exactly as before.
+    - a PROBED source (jira) sends the second record to a DIFFERENT key, because the first has
+      already claimed the value their shared seed produces. Both rows survive.
+
+    The second is a change, and a deliberate one: these are two documents with different titles and
+    different statuses that merely share an identifier the corpus assigned. Collapsing them lost
+    one silently. Now the dataset's id is not identity — nothing is keyed on it — so two records
+    are two documents, which is what they always were."""
     gen = _write_generated_data(tmp_path)
     jira_first = json.loads(sorted((gen / "sources" / "jira").glob("*.json"))[0].read_text())
     dsid = jira_first["dataset_doc_uuid"]
@@ -2838,11 +2888,15 @@ def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
 
     for label, settings in (("direct", direct), ("via byo", viabyo)):
         conn = sqlite3.connect(settings.db_path)
-        assert conn.execute("SELECT title FROM jira_issues WHERE doc_id=?", (dsid,)).fetchone() == (
-            "Repeated id, later record",
-        ), f"{label} kept the earlier of the two jira records"
+        titles = [r[0] for r in conn.execute("SELECT title FROM jira_issues ORDER BY key")]
+        assert "Repeated id, later record" in titles, (
+            f"{label} dropped the later of the two jira records"
+        )
+        assert len([t for t in titles if t == "Repeated id, later record"]) == 1
+        # Both survive, under keys the probe kept apart -- neither overwrote the other.
+        assert len(titles) == len(set(titles)), f"{label} collapsed two distinct jira documents"
         assert conn.execute(
-            "SELECT title FROM confluence_pages WHERE doc_id=?", (dsid,)
+            "SELECT title FROM confluence_pages WHERE id = ?", (served_id("confluence", dsid),)
         ).fetchone() == ("Same id, under confluence",), (
             f"{label} lost the confluence document to the jira one that shares its id"
         )

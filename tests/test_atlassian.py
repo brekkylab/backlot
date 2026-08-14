@@ -378,3 +378,23 @@ def test_confluence_restrictions_has_update(tmp_path):
     result = asyncio.run(confluence_restrictions(cid, Request(scope)))
     assert "read" in result and "update" in result
     assert result["read"]["restrictions"]["user"]["results"]  # the private doc's author
+
+
+def test_confluence_child_page_and_restriction_match_a_nonexistent_id_for_an_outsider(
+    client, tokens, ro_conn
+):
+    """`_confluence_doc_id` (`:981`) is deliberately unscoped -- of its four callers, `child/
+    comment` and `label` already re-check with `store.get_document(..., visible_ids=...)` and 404
+    on a miss; `child/page` and `restriction/byOperation` used not to. That let an outsider use
+    `child/page`'s 200 as an existence oracle for a page they cannot read, and
+    `restriction/byOperation` handed back the READER ROSTER -- emails, account ids, display names
+    -- for that same page: data, not just existence (pre-existing, #51 review). Fixed the same
+    way `child/comment`/`label` already were: a restricted page must be byte-identical, status AND
+    body, to a made-up id -- checked here on the actual response bytes, not merely "not 200"."""
+    cid = store.get_document(ro_conn, "confluence", "cf-comp")["served_id"]  # people-only
+    h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}  # engineering; cannot see cf-comp
+    for path in ("child/page", "restriction/byOperation"):
+        hidden = client.get(f"/atlassian/wiki/rest/api/content/{cid}/{path}", headers=h)
+        made_up = client.get(f"/atlassian/wiki/rest/api/content/999999999/{path}", headers=h)
+        assert hidden.status_code == made_up.status_code == 404
+        assert hidden.content == made_up.content

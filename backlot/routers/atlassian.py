@@ -993,7 +993,7 @@ async def confluence_child_pages(content_id: int, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     doc_id = _confluence_doc_id(request, content_id)
-    if doc_id is None:
+    if doc_id is None or store.get_document(conn, "confluence", doc_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     expand = request.query_params.get("expand", "")
     kids = store.children(conn, "confluence", doc_id, visible_ids=ids)
@@ -1063,9 +1063,10 @@ async def confluence_labels(content_id: int, request: Request):
 @router.get("/wiki/rest/api/content/{content_id}/restriction/byOperation")
 async def confluence_restrictions(content_id: int, request: Request):
     conn = auth.conn(request)
-    _require(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
     doc_id = _confluence_doc_id(request, content_id)
-    if doc_id is None:
+    if doc_id is None or store.get_document(conn, "confluence", doc_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     emails = store.doc_member_emails(conn, "confluence", doc_id)
     users = [] if emails is None else [_conf_user(e) for e in sorted(emails)]

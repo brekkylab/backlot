@@ -8,6 +8,7 @@ these exercise the real FTS path (search.messages / confluence CQL both sit on s
 import pytest
 
 from backlot import store
+from tests._helpers import served_id
 
 
 def test_fts_index_built(db):
@@ -123,18 +124,18 @@ def test_fts_phrase_boosts_literal_substring():
     ]
     for doc_id, content in rows:
         con.execute(
-            "INSERT INTO slack_messages(doc_id, channel, author_email, title, content, thread_seq, "
+            "INSERT INTO slack_messages(ts, channel, author_email, title, content, thread_seq, "
             "created_ts) VALUES (?, 'eng', 'a@x.com', '', ?, 0, 1000)",
             (doc_id, content),
         )
     store.build_fts(con)
     hits = store.search_documents(con, "upload.csv", "slack", phrase=True)
-    assert [h["doc_id"] for h in hits][:2] == ["d_literal", "d_space"], (
+    assert [h["ts"] for h in hits][:2] == ["d_literal", "d_space"], (
         "the doc literally containing 'upload.csv' must rank first"
     )
     # a plain (non-phrase) search does not reorder — it only ANDs the tokens
     plain = store.search_documents(con, "upload.csv", "slack")
-    assert {h["doc_id"] for h in plain} == {"d_literal", "d_space"}
+    assert {h["ts"] for h in plain} == {"d_literal", "d_space"}
 
 
 def test_search_order_by_recency():
@@ -146,15 +147,15 @@ def test_search_order_by_recency():
     con.executescript(store.SCHEMA)
     for doc_id, ts in [("old", 1000), ("new", 2000), ("mid", 1500)]:
         con.execute(
-            "INSERT INTO slack_messages(doc_id, channel, author_email, title, content, thread_seq, "
+            "INSERT INTO slack_messages(ts, channel, author_email, title, content, thread_seq, "
             "created_ts) VALUES (?, 'eng', 'a@x.com', '', 'quarterly planning notes', 0, ?)",
             (doc_id, ts),
         )
     store.build_fts(con)
     recency = store.search_documents(con, "planning", "slack", order_by="recency")
-    assert [r["doc_id"] for r in recency] == ["new", "mid", "old"], "recency = newest ts first"
+    assert [r["ts"] for r in recency] == ["new", "mid", "old"], "recency = newest ts first"
     asc = store.search_documents(con, "planning", "slack", order_by="recency_asc")
-    assert [r["doc_id"] for r in asc] == ["old", "mid", "new"], "recency_asc = oldest first"
+    assert [r["ts"] for r in asc] == ["old", "mid", "new"], "recency_asc = oldest first"
 
 
 def test_parse_slack_query():
@@ -241,7 +242,7 @@ def test_github_issue_q_parse():
 def test_fts_notion_search(db):
     # the SAMPLE 'Notion On-call Runbook' body mentions dashboards
     rows = store.search_documents(db, "dashboards", "notion")
-    assert rows and any(r["doc_id"] == "nt-runbook" for r in rows)
+    assert rows and any(r["id"] == served_id("notion", "nt-runbook") for r in rows)
     assert all("teamspace" in r.keys() for r in rows)  # source-scoped to notion's own table
 
 
@@ -271,7 +272,7 @@ def test_fts_s3_acl_scoped(db, acl, tokens):
 
 def test_fts_linear_search(db):
     rows = store.search_documents(db, "token-bucket", "linear")
-    assert rows and any(r["doc_id"] == "lin-rl" for r in rows)
+    assert rows and any(r["id"] == served_id("linear", "lin-rl") for r in rows)
     assert all("team" in r.keys() for r in rows)  # source-scoped to linear's own table
 
 
@@ -298,7 +299,7 @@ def test_fts_linear_scoped_to_one_team(db):
 
 def test_fireflies_transcripts_are_in_the_shared_fts_index(db):
     rows = store.search_documents(db, "batching", "fireflies")
-    assert {r["doc_id"] for r in rows} == {"ff-discovery"}
+    assert {r["id"] for r in rows} == {served_id("fireflies", "ff-discovery")}
     assert store.search_documents(db, "zqxjkbrqznope", "fireflies") == []
 
 
@@ -306,50 +307,48 @@ def test_fireflies_fts_indexes_the_sentence_text(db):
     """The transcript is indexed through `content`, i.e. through its sentences — so a word only
     ever spoken (never in a title or a summary) is still findable."""
     rows = store.search_documents(db, "crosstalk", "fireflies")
-    assert {r["doc_id"] for r in rows} == {"ff-discovery"}
+    assert {r["id"] for r in rows} == {served_id("fireflies", "ff-discovery")}
 
 
 def test_fireflies_scope_title_ignores_the_transcript_body(db):
     # "selects" is spoken in ff-allhands but appears in no title
     assert store.list_fireflies_transcripts(db, keyword="selects", scope="title") == []
     assert [
-        r["doc_id"]
-        for r in store.list_fireflies_transcripts(db, keyword="selects", scope="sentences")
-    ] == ["ff-allhands"]
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="selects", scope="sentences")
+    ] == [served_id("fireflies", "ff-allhands")]
 
 
 def test_fireflies_scope_sentences_ignores_the_title(db):
     # "all-hands" is the title of ff-allhands and is never spoken in it
     assert store.list_fireflies_transcripts(db, keyword="all-hands", scope="sentences") == []
     assert [
-        r["doc_id"]
-        for r in store.list_fireflies_transcripts(db, keyword="all-hands", scope="title")
-    ] == ["ff-allhands"]
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="all-hands", scope="title")
+    ] == [served_id("fireflies", "ff-allhands")]
 
 
 def test_fireflies_scope_all_is_the_union(db):
     title_hits = {
-        r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="title")
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="title")
     }
     sent_hits = {
-        r["doc_id"]
-        for r in store.list_fireflies_transcripts(db, keyword="latency", scope="sentences")
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="sentences")
     }
     all_hits = {
-        r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="all")
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="all")
     }
     assert all_hits == title_hits | sent_hits
     assert title_hits and sent_hits  # both sides actually contribute
 
 
 def test_fireflies_scope_defaults_to_all(db):
-    assert {r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency")} == {
-        r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="all")
+    assert {r["id"] for r in store.list_fireflies_transcripts(db, keyword="latency")} == {
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="all")
     }
 
 
 def test_fireflies_summary_prose_is_not_keyword_searchable_as_a_sentence(db):
     """The summary is auto-notes, not speech. `scope: sentences` must not match words that only
     appear there, or a RAG consumer would attribute them to a speaker."""
-    assert "sub-300ms" in (store.get_document(db, "fireflies", "ff-discovery")["summary"] or "")
+    row = store.get_document(db, "fireflies", served_id("fireflies", "ff-discovery"))
+    assert "sub-300ms" in (row["summary"] or "")
     assert store.list_fireflies_transcripts(db, keyword="sub-300ms", scope="sentences") == []

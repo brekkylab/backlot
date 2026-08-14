@@ -29,11 +29,20 @@ def test_admin_github_crawls_all(client, admin_h, ro_conn, org):
     assert len(seen) == db_count(ro_conn, "github")
 
 
+def _gh_row(conn, title: str):
+    """The github row a fixture record with this title became.
+
+    A github number is assigned against the whole corpus (#51), so it cannot be computed from the
+    record's own identifier — which does not survive the import anyway. The row is found by
+    something the fixture can still see, as any other client would have to."""
+    return conn.execute("SELECT * FROM github_items WHERE title = ?", (title,)).fetchone()
+
+
 def test_github_body_roundtrip(client, admin_h, ro_conn, org):
     doc = ro_conn.execute("SELECT * FROM github_items LIMIT 1").fetchone()
     from backlot import synth
 
-    num = synth.github_number(doc["doc_id"])
+    num = doc["number"]
     issue = client.get(f"/github/repos/{org}/{doc['repo']}/issues/{num}", headers=admin_h).json()
     assert issue["body"] == doc["content"] and issue["title"] == doc["title"]
 
@@ -467,28 +476,37 @@ def test_github_file_excluded_from_search_issues(gh_client, gh_admin_h):
     assert body["items"] == []
 
 
-def test_github_file_number_index_excludes_files(gh_client, gh_admin_h, gh_org):
-    """`kind='file'` rows must never take a `number`: a file's synthesized number can
-    collide with (and, before #51, shadow) a real issue/PR's (see gh-file-collide-88814, which
-    deliberately collides with gh-issue-1's hash). resolve_github_numbers excludes them from the
-    number space entirely rather than resolving the collision, so their number stays NULL
-    -- and this fixture's own import succeeding at all (SAMPLE + _GH_FILE_DOCS + _GH_DIFF_DOCS,
-    well over one file doc) is proof several NULLs coexist under the UNIQUE (repo, number)
-    index, which treats them as no claim rather than a collision."""
+def test_github_a_files_number_never_shadows_an_issue(gh_client, gh_admin_h, gh_org):
+    """A file's number must never resolve as an issue or a pull. The hazard is real and pinned by
+    the fixture: `gh-file-collide-88814` seeds to exactly `gh-issue-1`'s number.
+
+    A file row DOES carry a number now (#51). `github_items` holds two resources with different
+    natural keys — an issue at (repo, number), a file at (repo, path) — and only one pair can be
+    the PRIMARY KEY, so a file draws a number too rather than keeping a NULL that would leave it
+    unaddressable. What protects the issue is the ASSIGNMENT ORDER, not an exclusion: every
+    provided issue/PR number claims its spelling before anything probes, so a file can only ever
+    take a number no issue asked for. Its number is never served — every route filters
+    `kind='file'` — and (repo, path) is what a file is addressed by."""
     from backlot import store, synth
 
     c, settings = gh_client
     conn = store.connect_ro(settings.db_path)
-    file_doc_ids = {d["doc_id"] for d in _GH_FILE_DOCS}
     file_rows = conn.execute(
-        "SELECT doc_id, number FROM github_items WHERE kind = 'file'"
+        "SELECT repo, number, path FROM github_items WHERE kind = 'file'"
     ).fetchall()
-    assert file_doc_ids <= {r["doc_id"] for r in file_rows}
-    assert len(file_rows) > 1  # several file rows, all NULL, coexisting under the UNIQUE index
-    assert all(r["number"] is None for r in file_rows)
+    assert len(file_rows) > 1
+    # Every file has a number, and none of them is an issue's.
+    assert all(r["number"] is not None for r in file_rows)
+    issue_numbers = {
+        (r["repo"], r["number"])
+        for r in conn.execute(
+            "SELECT repo, number FROM github_items WHERE kind IS NULL OR kind != 'file'"
+        )
+    }
+    assert not issue_numbers & {(r["repo"], r["number"]) for r in file_rows}
     conn.close()
 
-    # the real issue is still resolvable by number even though a file doc collides with it
+    # the real issue is still resolvable by number even though a file doc seeds onto it
     issue_num = synth.github_number("gh-issue-1")
     assert synth.github_number("gh-file-collide-88814") == issue_num  # sanity: collision is real
     r = c.get(f"/github/repos/{gh_org}/gateway/issues/{issue_num}", headers=gh_admin_h)
@@ -868,7 +886,7 @@ def test_github_pull_files_empty_when_the_repo_has_no_file_docs(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    row = store.get_document(conn, "github", "pr-nofiles")
+    row = _gh_row(conn, "PR against a repo with no code")
     assert _pr_files(conn, "org", "bare", row, "http://m/github") == []
     pr = _pr_obj(conn, "org", "bare", row, "http://m/github")
     assert (pr["changed_files"], pr["additions"], pr["deletions"]) == (0, 0, 0)
@@ -1052,7 +1070,7 @@ def test_github_declared_paths_are_resolved_and_deduplicated(tmp_path):
             ],
         )
         conn = store.connect_ro(s.db_path)
-        row = store.get_document(conn, "github", "p1")
+        row = _gh_row(conn, "PR")
         return [f["filename"] for f in _pr_files(conn, "org", "r", row, "http://m/github")]
 
     assert files_for(["real.py", "typo.py"]) == ["real.py"]
@@ -1198,9 +1216,14 @@ def test_github_comment_ids_are_unique_even_when_the_seed_collides(tmp_path, mon
 
     A hash alone collides by the birthday bound — ~4% at 27k comments, certain by 500k — and two
     comments sharing an id means one comment's `url` returns the other's body. The seed is probed
-    until free, so the ids are unique however badly it collides, and a re-import keeps the ones it
-    already assigned so a url a client stored stays valid. Forced here by collapsing the seed to a
-    single value, since a real collision needs ~100k comments to be likely."""
+    until free, so the ids are unique however badly it collides. Forced here by collapsing the seed
+    to a single value, since a real collision needs ~100k comments to be likely.
+
+    Re-importing the same corpus USED to keep the ids it had already assigned, so a url a client
+    stored stayed valid. It cannot any more, and the second half of this test pins what replaced
+    it: an append into a source whose keys are probed is REFUSED unless the record states its own
+    identity (#51, Step 5). Nothing is left to recognise a row by, so the alternative was to add it
+    a second time in silence."""
     from backlot.importer import byo
 
     monkeypatch.setattr(byo.synth, "github_comment_id", lambda cid: 7)  # every seed collides
@@ -1222,17 +1245,18 @@ def test_github_comment_ids_are_unique_even_when_the_seed_collides(tmp_path, mon
     monkeypatch.undo()
 
     conn = store.connect_ro(settings.db_path)
-    served = [r["served_id"] for r in conn.execute("SELECT served_id FROM github_comments")]
+    served = [r["id"] for r in conn.execute("SELECT id FROM github_comments")]
     assert len(served) == 5 and len(set(served)) == 5 and all(served)
     for sid in served:  # each still resolves to its own comment
-        assert store.get_github_comment(conn, sid)["served_id"] == sid
+        assert store.get_github_comment(conn, sid)["id"] == sid
     conn.close()
 
-    byo.load(settings.data_dir / "corpus.jsonl", settings, reset=False)
+    with pytest.raises(SystemExit) as e:
+        byo.load(settings.data_dir / "corpus.jsonl", settings, reset=False)
+    assert "must carry `number`" in str(e.value)
+    # ...and nothing was written by the refused append.
     conn = store.connect_ro(settings.db_path)
-    assert sorted(
-        r["served_id"] for r in conn.execute("SELECT served_id FROM github_comments")
-    ) == (sorted(served))
+    assert sorted(r["id"] for r in conn.execute("SELECT id FROM github_comments")) == sorted(served)
     conn.close()
 
 
@@ -1430,8 +1454,8 @@ def test_github_issue_number_asserts_rather_than_re_hash_a_null_number():
     beats silently serving the wrong number."""
     from backlot.routers.github import _issue_number
 
-    with pytest.raises(AssertionError, match="gh-orphan"):
-        _issue_number({"number": None, "doc_id": "gh-orphan"})
+    with pytest.raises(AssertionError, match="no number"):
+        _issue_number({"number": None})
 
 
 def test_github_issue_shape(tmp_path):
@@ -1470,9 +1494,7 @@ def test_github_issue_shape(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    iss = _issue_obj(
-        conn, "org", "gw", store.get_document(conn, "github", "gh1"), "http://m/github"
-    )
+    iss = _issue_obj(conn, "org", "gw", _gh_row(conn, "Bug"), "http://m/github")
     # numeric id present and distinct from number (real connectors dedupe on id)
     assert iss["id"] != iss["number"] and isinstance(iss["id"], int)
     assert iss["node_id"]
@@ -1485,7 +1507,7 @@ def test_github_issue_shape(tmp_path):
     assert iss["reactions"]["total_count"] == 4 and iss["reactions"]["+1"] == 3
     assert iss["reactions"]["eyes"] == 0
 
-    pr = _pr_obj(conn, "org", "gw", store.get_document(conn, "github", "pr1"), "http://m/github")
+    pr = _pr_obj(conn, "org", "gw", _gh_row(conn, "PR"), "http://m/github")
     assert pr["merged"] is True and pr["merged_by"]["login"] == "b"
     assert pr["requested_reviewers"][0]["login"] == "c"
 
@@ -1510,9 +1532,10 @@ def test_github_comment_reactions(tmp_path):
     )
     conn = store.connect_ro(s.db_path)
     # store.github_comments, not the shared doc_comments: only the github reader carries the
-    # `served_id` the builder reports as the comment's `id`
-    c = store.github_comments(conn, "gh2")[0]
+    # `id` the builder reports as the comment's `id`
+    gh2 = _gh_row(conn, "T")
+    c = store.github_comments(conn, gh2["repo"], gh2["number"])[0]
     obj = _gh_comment("org", "gw", 1, c, "http://m/github")
     assert obj["reactions"]["heart"] == 2 and obj["node_id"] and obj["url"]
     assert obj["reactions"]["total_count"] == 2
-    assert obj["id"] == c["served_id"]
+    assert obj["id"] == c["id"]

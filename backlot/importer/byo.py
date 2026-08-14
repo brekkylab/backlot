@@ -967,6 +967,9 @@ class _Loader:
         # store.ID_COLUMNS), so the probe is scoped the same way. Preloaded by seed_tracker_ids so
         # an append cannot hand a new message a ts an existing one already answers at.
         self._slack_ts_taken = {}
+        # The provisional keys of `kind='file'` github rows, so resolve_github_numbers can assign
+        # them AFTER every issue and pull — see its phase 2.
+        self._github_file_keys = set()
         # jira only, and only until the deferred passes have run: a subtask names its parent by the
         # identifier the corpus gave it, and the KEY that resolves to is not assigned until every
         # record has been seen. `_jira_projects` is the same story for the project a row belongs
@@ -1485,6 +1488,9 @@ class _Loader:
                 # after every provided issue/PR number has claimed its spelling, so a file can
                 # never take a number a real issue asked for.
                 cols["number"] = None
+                file_row = True
+            else:
+                file_row = False
             if src == "jira":
                 self._jira_projects[did] = container
             provisional = False
@@ -1543,6 +1549,8 @@ class _Loader:
             self.keys[(src, did)] = key
             if provisional:
                 self._pending.setdefault(src, []).append((key, did))
+                if src == "github" and file_row:
+                    self._github_file_keys.add(key)
             # Grants and FTS entries name the ROW by the key it landed under -- provisional or
             # not -- and `_settled` translates it when they are flushed, after the deferred passes.
             # Recording the dataset id instead would give two rows that shared one the same grants.
@@ -2011,11 +2019,19 @@ class _Loader:
             "SELECT repo, number FROM github_items WHERE number >= 0"
         ):
             taken.setdefault(repo, set()).add(int(number))
-        # Phase 2: everything else, in dataset-id order — which is what keeps the result
-        # independent of the order records happened to stream in. The provisional key breaks a tie
-        # between two records that shared a dataset id, so the order is still total.
+        # Phase 2: everything else, ISSUES AND PULLS FIRST and only then files, each group in
+        # dataset-id order — which is what keeps the result independent of the order records
+        # happened to stream in. The provisional key breaks a tie between two records that shared a
+        # dataset id, so the order is still total.
+        #
+        # Files last is what keeps a file's number from displacing an issue's. Provided numbers
+        # claimed their spelling in phase 1, but a KEYLESS issue probes here — and sorting the two
+        # groups together let a file whose dataset id happened to sort earlier take the number that
+        # issue's own seed produces, silently renumbering a real issue to make room for a value no
+        # route ever serves.
         final: list = []
-        for key, did in sorted(self._pending.get("github", []), key=lambda e: (e[1], e[0])):
+        pending = self._pending.get("github", [])
+        for key, did in sorted(pending, key=lambda e: (e[0] in self._github_file_keys, e[1], e[0])):
             repo = key[0]
             bucket = taken.setdefault(repo, set())
             candidate = self._assign_github_number(did, repo, taken)

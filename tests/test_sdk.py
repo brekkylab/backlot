@@ -228,10 +228,15 @@ def sheets():
         client_options=ClientOptions(api_endpoint=f"{BASE}/drive/v3"),
         static_discovery=True,
     )
+    # By NAME, not "the first spreadsheet": the assertions below are about this sheet's contents,
+    # and the listing order is the order of an opaque synthesized id (#51), so taking whichever
+    # came first would silently hand them the corpus's other spreadsheet.
     fid = next(
         f["id"]
-        for f in drive.files().list(pageSize=100, fields="files(id,mimeType)").execute()["files"]
-        if f["mimeType"].endswith("spreadsheet")
+        for f in drive.files()
+        .list(pageSize=100, fields="files(id,name,mimeType)")
+        .execute()["files"]
+        if f["mimeType"].endswith("spreadsheet") and f["name"] == "Q1 Revenue Model"
     )
     # the service path lives under /sheets here, so the discovery-built URL is /sheets/v4/...
     svc = build(

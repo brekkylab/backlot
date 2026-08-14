@@ -12,7 +12,14 @@ import re
 import pytest
 
 from backlot import store
-from tests._helpers import bare_request, crawl_confluence, crawl_jira, db_count, tiny_corpus
+from tests._helpers import (
+    bare_request,
+    crawl_confluence,
+    crawl_jira,
+    db_count,
+    tiny_corpus,
+    served_id,
+)
 
 
 def test_admin_jira_crawls_all(client, admin_h, ro_conn):
@@ -158,7 +165,7 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
 
 def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
     doc = ro_conn.execute("SELECT * FROM confluence_pages LIMIT 1").fetchone()
-    cid = doc["served_id"]
+    cid = doc["id"]
     page = client.get(
         f"/atlassian/wiki/rest/api/content/{cid}",
         headers=admin_h,
@@ -251,8 +258,17 @@ def test_jira_issue_key_asserts_rather_than_re_derive_a_null_key():
     beats silently serving the wrong key."""
     from backlot.routers.atlassian import _issue_key
 
-    with pytest.raises(AssertionError, match="jira-orphan"):
-        _issue_key(bare_request(), {"key": None, "doc_id": "jira-orphan", "project": "x"})
+    with pytest.raises(AssertionError, match="no key"):
+        _issue_key(bare_request(), {"key": None, "project": "x"})
+
+
+def _jira_row(conn, title: str):
+    """The jira row a fixture record with this title became.
+
+    A jira key is assigned across the whole corpus (#51), so unlike a hashed id it cannot be
+    computed from the record's own identifier — which does not survive the import anyway. The row
+    is found by something the fixture can still see, as any other client would have to."""
+    return conn.execute("SELECT * FROM jira_issues WHERE title = ?", (title,)).fetchone()
 
 
 def test_jira_status_category_and_fields(tmp_path):
@@ -286,7 +302,7 @@ def test_jira_status_category_and_fields(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    f = _jira_issue(conn, bare_request(), store.get_document(conn, "jira", "j1"))["fields"]
+    f = _jira_issue(conn, bare_request(), _jira_row(conn, "T"))["fields"]
     # the real 3-category model: "In Progress" -> indeterminate (not the old hardcoded "new")
     assert f["status"]["statusCategory"]["key"] == "indeterminate"
     assert f["assignee"]["emailAddress"] == "a@x.com"
@@ -298,7 +314,7 @@ def test_jira_status_category_and_fields(tmp_path):
     # scaffolds present so probing clients get [] / null, not KeyError
     assert f["attachment"] == [] and f["votes"]["votes"] == 0
 
-    done = _jira_issue(conn, bare_request(), store.get_document(conn, "jira", "j2"))["fields"]
+    done = _jira_issue(conn, bare_request(), _jira_row(conn, "D"))["fields"]
     assert done["status"]["statusCategory"]["key"] == "done"
     assert done["assignee"] is None  # unassigned by default
 
@@ -328,7 +344,7 @@ def test_confluence_body_and_version(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    row = store.get_document(conn, "confluence", "c1")
+    row = store.get_document(conn, "confluence", served_id("confluence", "c1"))
     page = _confluence_page(
         conn,
         bare_request(),
@@ -373,7 +389,7 @@ def test_confluence_restrictions_has_update(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    cid = conn.execute("SELECT served_id FROM confluence_pages WHERE doc_id = 'c2'").fetchone()[0]
+    cid = served_id("confluence", "c2")
     app = types.SimpleNamespace(
         state=types.SimpleNamespace(
             conn=conn,
@@ -405,7 +421,7 @@ def test_confluence_child_page_and_restriction_match_a_nonexistent_id_for_an_out
     -- for that same page: data, not just existence (pre-existing, #51 review). Fixed the same
     way `child/comment`/`label` already were: a restricted page must be byte-identical, status AND
     body, to a made-up id -- checked here on the actual response bytes, not merely "not 200"."""
-    cid = store.get_document(ro_conn, "confluence", "cf-comp")["served_id"]  # people-only
+    cid = served_id("confluence", "cf-comp")  # people-only
     h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}  # engineering; cannot see cf-comp
     for path in ("child/page", "restriction/byOperation"):
         hidden = client.get(f"/atlassian/wiki/rest/api/content/{cid}/{path}", headers=h)

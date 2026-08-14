@@ -104,7 +104,8 @@ def _restricted_doc(settings, user_token: str, source: str, where: str = "1=1"):
     caller = acl.resolve(user_token)
     vids = acl.visible_ids(conn, caller)
     for row in conn.execute(f"SELECT * FROM {store.table(source)} WHERE {where}"):
-        if store.get_document(conn, source, row["doc_id"], visible_ids=vids) is None:
+        key = tuple(row[c] for c in store.id_columns(source))
+        if store.get_document(conn, source, *key, visible_ids=vids) is None:
             return row, caller.email
     return None, caller.email
 
@@ -167,10 +168,10 @@ def test_mcp_notion_acl_enforced(live_server):
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "notion", "subtype IS NOT 'database'")
     assert row is not None, f"no Notion page is ACL-restricted from {email} in the sample corpus"
-    # The row's own `served_id` (#51), not a fresh `synth.notion_id(row["doc_id"])`: notion never
+    # The row's own `id` (#51), not a fresh `synth.notion_id(row["doc_id"])`: notion never
     # probes, so the two agree today, but a test that re-derives instead of reading the stored
     # column would stop exercising the ACL path the day that stops being true and not notice.
-    page_id = row["served_id"]
+    page_id = row["id"]
 
     def reads(token):
         return asyncio.run(
@@ -323,9 +324,9 @@ def test_mcp_hubspot_bridge_acl_enforced(live_server):
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "hubspot")
     assert row is not None, f"no HubSpot record is ACL-restricted from {email} in the sample corpus"
-    # The row's own STORED served_id, not a re-hash of doc_id: hubspot's id space is probed on a
+    # The row's own STORED served_id, not a re-hash of a seed: hubspot's id space is probed on a
     # collision (#51), so a re-hash can disagree with the value this row was actually assigned.
-    record_id = row["served_id"]
+    record_id = row["id"]
 
     def reads(token):
         return _bridge_call(
@@ -395,11 +396,11 @@ def test_mcp_gmail_bridge_acl_enforced(live_server):
     assert row is not None, f"no Gmail message is ACL-restricted from {email} in the sample corpus"
     # Gmail serves hex ids, not dsids (#39) — the bridge forwards whatever the caller passes, so a
     # dsid here would be refused as an invalid id value before the ACL was ever consulted.
-    # The row's own `served_id` (#51), not a fresh `synth.gmail_message_id(row["doc_id"])`: gmail
+    # The row's own `id` (#51), not a fresh `synth.gmail_message_id(row["doc_id"])`: gmail
     # never probes, so the two agree today, but a test that re-derives instead of reading the
     # stored column would stop exercising the ACL path the day that stops being true and not
     # notice.
-    msg_id = row["served_id"]
+    msg_id = row["id"]
 
     def reads(token):
         return _bridge_call(
@@ -425,11 +426,11 @@ def test_mcp_gdrive_bridge_acl_enforced(live_server):
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "google_drive")
     assert row is not None, f"no Drive file is ACL-restricted from {email} in the sample corpus"
-    # The row's own `served_id` (#51, task 12), not a fresh `synth.gdrive_file_id(row["doc_id"])`:
+    # The row's own `id` (#51, task 12), not a fresh `synth.gdrive_file_id(row["doc_id"])`:
     # Drive never probes, so the two agree today, but a test that re-derives instead of reading
     # the stored column would stop exercising the ACL path the day that stops being true and not
     # notice (same reasoning as test_mcp_notion_bridge_acl_enforced's page_id, below).
-    file_id = row["served_id"]
+    file_id = row["id"]
 
     def reads(token):
         return _bridge_call(
@@ -456,10 +457,10 @@ def test_mcp_notion_bridge_acl_enforced(live_server):
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "notion", "subtype IS NOT 'database'")
     assert row is not None, f"no Notion page is ACL-restricted from {email} in the sample corpus"
-    # The row's own `served_id` (#51), not a fresh `synth.notion_id(row["doc_id"])`: notion never
+    # The row's own `id` (#51), not a fresh `synth.notion_id(row["doc_id"])`: notion never
     # probes, so the two agree today, but a test that re-derives instead of reading the stored
     # column would stop exercising the ACL path the day that stops being true and not notice.
-    page_id = row["served_id"]
+    page_id = row["id"]
 
     def reads(token):
         return _bridge_call(

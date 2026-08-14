@@ -7,7 +7,7 @@ or call the response builder directly.
 from __future__ import annotations
 
 from backlot import store, synth
-from tests._helpers import tiny_corpus, tok
+from tests._helpers import tiny_corpus, tok, served_id
 
 
 def test_notion_page_retrieve_and_blocks(client, admin_h):
@@ -201,7 +201,7 @@ def test_notion_page_shape(tmp_path):
     from backlot.routers.notion import _page_obj
 
     conn = _notion_conn(tmp_path)
-    obj = _page_obj(conn, store.get_document(conn, "notion", "nf-page"))
+    obj = _page_obj(conn, store.get_document(conn, "notion", served_id("notion", "nf-page")))
     assert obj["object"] == "page"
     assert obj["id"] == synth.notion_id("nf-page")
     assert obj["created_by"]["object"] == "user"
@@ -211,7 +211,7 @@ def test_notion_page_shape(tmp_path):
     assert obj["icon"] == {"type": "emoji", "emoji": "📟"}
     assert obj["url"].startswith("https://www.notion.so/")
     # a database row exposes its property values + a database_id parent
-    row = _page_obj(conn, store.get_document(conn, "notion", "nf-row"))
+    row = _page_obj(conn, store.get_document(conn, "notion", served_id("notion", "nf-row")))
     assert row["parent"]["type"] == "database_id"
     assert row["properties"]["Status"]["select"]["name"] == "In Progress"
 
@@ -220,7 +220,7 @@ def test_notion_database_and_data_source_shape(tmp_path):
     from backlot.routers.notion import _data_source_obj, _database_obj
 
     conn = _notion_conn(tmp_path)
-    dbrow = store.get_document(conn, "notion", "nf-db")
+    dbrow = store.get_document(conn, "notion", served_id("notion", "nf-db"))
     new = _database_obj(conn, dbrow, "2025-09-03")
     assert new["object"] == "database"
     assert new["data_sources"][0]["id"] == synth.notion_data_source_id("nf-db")

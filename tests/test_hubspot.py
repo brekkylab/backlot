@@ -7,7 +7,7 @@ or call the response builder directly.
 from __future__ import annotations
 
 from backlot import store
-from tests._helpers import crawl_hubspot, db_count, tiny_corpus
+from tests._helpers import crawl_hubspot, db_count, tiny_corpus, served_id
 
 
 HUBSPOT_OBJECT_TYPES = ("companies", "contacts", "notes")
@@ -120,7 +120,7 @@ def test_hubspot_unauth_is_401(client):
 def test_hubspot_acl_hides_restricted_record(client, tokens_yaml, admin_h):
     """`hs-co-secret` is readable only by hana; another user's crawl must not contain it, and a
     direct-by-id read must enforce the same grant -- not just the listing -- since get_object now
-    resolves served_id and the ACL in one query (store.hubspot_by_served_id) rather than a
+    resolves served_id and the ACL in one query (store.hubspot_by_id) rather than a
     resolve-then-refetch, and a collapse that dropped the ACL half would only show up here."""
     users = {u["email"]: u["token"] for u in tokens_yaml["users"]}
     ava_h = {"Authorization": f"Bearer {users['ava@acme.com']}"}
@@ -510,53 +510,58 @@ def test_hubspot_record_shape(tmp_path):
     from backlot.routers.hubspot import _record
 
     conn = _hubspot_conn(tmp_path)
-    row = store.get_document(conn, "hubspot", "hf-co")
+    row = store.get_document(conn, "hubspot", served_id("hubspot", "hf-co"))
     obj = _record(row)
     # a CRM record is {id, properties, createdAt, updatedAt, archived} — ids are numeric strings and
     # the timestamps are ISO 8601 with milliseconds, as the vendor emits them. `id` must be the
-    # row's own STORED served_id, not a re-hash of doc_id: hubspot's id space is probed on a
+    # row's own STORED served_id, not a re-hash of a seed: hubspot's id space is probed on a
     # collision (#51), so a re-hash can disagree with the value this row was actually assigned --
     # equality with `synth.hubspot_record_id(row["doc_id"])` only holds here because this fixture
     # has no collision, which is exactly why that comparison is the wrong one to assert.
-    assert obj["id"] == row["served_id"]
+    assert obj["id"] == row["id"]
     assert obj["id"].isdigit()
     assert obj["properties"]["domain"] == "acme-health.com"
     assert obj["createdAt"] == "2026-01-05T00:00:00.000Z"
     assert obj["updatedAt"] == "2026-03-10T00:00:00.000Z"
     assert obj["archived"] is False
-    assert _record(store.get_document(conn, "hubspot", "hf-arch"))["archived"] is True
+    assert (
+        _record(store.get_document(conn, "hubspot", served_id("hubspot", "hf-arch")))["archived"]
+        is True
+    )
 
 
 def test_hubspot_properties_projection(tmp_path):
     from backlot.routers.hubspot import _record
 
     conn = _hubspot_conn(tmp_path)
-    row = store.get_document(conn, "hubspot", "hf-co")
+    row = store.get_document(conn, "hubspot", served_id("hubspot", "hf-co"))
     assert set(_record(row, ["name"])["properties"]) == {"name"}
     assert set(_record(row)["properties"]) == {"name", "domain"}  # no projection -> all
 
 
 def test_hubspot_association_shape(tmp_path):
     conn = _hubspot_conn(tmp_path)
-    rows = store.hubspot_associations(conn, "hf-ct", "companies")
-    assert [r["to_doc_id"] for r in rows] == ["hf-co"]
+    rows = store.hubspot_associations(conn, served_id("hubspot", "hf-ct"), "companies")
+    assert [r["to_id"] for r in rows] == [served_id("hubspot", "hf-co")]
     # the v4 payload is {toObjectId, associationTypes:[{category, typeId, label}]} -- toObjectId
     # reads the target's own STORED served_id (joined in by store.hubspot_associations), not a
     # re-hash of its doc_id: hubspot's id space is probed on a collision (#51), so a re-hash can
     # disagree with the value the target row was actually assigned.
-    assert rows[0]["to_served_id"] == store.get_document(conn, "hubspot", "hf-co")["served_id"]
+    assert (
+        rows[0]["to_id"] == store.get_document(conn, "hubspot", served_id("hubspot", "hf-co"))["id"]
+    )
     assert rows[0]["assoc_category"] == "HUBSPOT_DEFINED"
     assert rows[0]["label"] == "Primary"
     # the reverse direction exists and carries its own type id, as real HubSpot does
-    back = store.hubspot_associations(conn, "hf-co", "contacts")
-    assert [r["to_doc_id"] for r in back] == ["hf-ct"]
+    back = store.hubspot_associations(conn, served_id("hubspot", "hf-co"), "contacts")
+    assert [r["to_id"] for r in back] == [served_id("hubspot", "hf-ct")]
     assert back[0]["assoc_type_id"] != rows[0]["assoc_type_id"]
 
 
 def test_hubspot_route_reads_the_stored_served_id_under_a_collision(tmp_path, monkeypatch):
     """Route-level companion to the store-layer collision tests: `_record`'s `id`, `_page`'s
     `after` cursor, and `list_associations`' `toObjectId` all have to read the row's own stored
-    `served_id`, not fall back to a live re-hash of doc_id. Reverting all three to
+    `id`, not fall back to a live re-hash of a seed. Reverting all three to
     `synth.hubspot_record_id(...)` left the FULL suite green (I-1 review round) -- every other
     route test's fixture happens to have no collision, so the re-hash and the stored column
     agreed by coincidence. Forced here the same way the store tests force one: the seed collapsed
@@ -565,9 +570,7 @@ def test_hubspot_route_reads_the_stored_served_id_under_a_collision(tmp_path, mo
     from backlot import store
     from tests._helpers import client_for
 
-    monkeypatch.setitem(
-        store.SERVED_ID, "hubspot", ("served_id", lambda doc_id: "1000000000", None)
-    )
+    monkeypatch.setitem(store.ID_SEED, "hubspot", (lambda seed: "1000000000", None))
     docs = [
         {
             "source_type": "hubspot",

@@ -329,9 +329,13 @@ def test_slack_reply_users_and_num_members(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    thread = store.slack_thread(conn, "s1")
+    # A thread is addressed by (channel, the root's ts) — a slack message's own key (#51).
+    channel, root_ts = conn.execute(
+        "SELECT channel, ts FROM slack_messages WHERE thread_seq = 0"
+    ).fetchone()
+    thread = store.slack_thread(conn, channel, root_ts)
     root, first_reply = thread[0], thread[1]
-    ru = store.slack_reply_authors(conn, "s1")
+    ru = store.slack_reply_authors(conn, channel, root_ts)
     ruids = [synth.slack_user_id(e) for e in ru]
     rootmsg = _message(root, reply_count=3, reply_users=ruids, reply_users_count=len(ru))
     # 3 replies but only 2 distinct repliers -> counts differ (real Slack distinguishes them)

@@ -1239,7 +1239,7 @@ def _pr_obj(
             },
             "commits": 1,
             # Summed over the synthesized changeset rather than guessed from the body length, so
-            # these agree with what /pulls/{n}/files reports. They used to contradict it.
+            # these agree with what /pulls/{n}/files reports.
             "additions": sum(f["additions"] for f in files),
             "deletions": sum(f["deletions"] for f in files),
             "changed_files": len(files),

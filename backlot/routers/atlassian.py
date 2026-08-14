@@ -166,14 +166,12 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
     """One issue by its served key, ACL-scoped — a unique-indexed column lookup (see
     store.jira_by_key).
 
-    One line, because the whole key is stored (#51 identifier consolidation). It used to split the
-    key, resolve the prefix to a project through `_jira_container_for_key`, look the suffix up
-    scoped to that project, and then check the resolved prefix AGREED with what was typed. That
-    agreement check existed because `_jira_container_for_key`'s three-way tolerance — a deliberate
-    and correct affordance for the JQL project TOKEN, where real Jira pickers accept a key OR a
-    name — leaked into the ISSUE-KEY namespace when reused here, twice: `payments-7` resolving to
-    `PAY-7`'s issue, and issue-key lookup silently going case-insensitive. Matching the stored key
-    directly has no seam for either to enter."""
+    One line, because the whole key is stored. Resolving it in parts instead — split the key, map
+    the prefix to a project through `_jira_container_for_key`, look the suffix up scoped to it —
+    lets that function's three-way tolerance into the ISSUE-KEY namespace. The tolerance is a
+    deliberate and correct affordance for the JQL project TOKEN, where real Jira pickers accept a
+    key OR a name, but here it makes `payments-7` resolve to `PAY-7`'s issue and issue-key lookup
+    case-insensitive. Matching the stored key directly has no seam for either to enter."""
     return store.jira_by_key(conn, key, visible_ids=ids)
 
 
@@ -564,9 +562,9 @@ def _issue_key(request: Request, row) -> str:
     """The key this issue answers to — its own stored `key` column, whole (#51 identifier
     consolidation).
 
-    Nothing is composed here any more. The prefix and the suffix were joined at import by
-    `resolve_jira_keys`, at the one moment the project's prefix is settled for the whole corpus,
-    so a provided key and a derived one are the same kind of value by the time they reach here.
+    Nothing is composed here. The prefix and the suffix are joined at import by
+    `resolve_jira_keys`, at the one moment the project's prefix is settled for the whole corpus, so
+    a stated key and a derived one are the same kind of value by the time they reach here.
 
     Asserted, not defensively re-derived: every jira row gets a key at import (`resolve_jira_keys`
     raises rather than leave one NULL), so a caller reaching this with a NULL one is a bug
@@ -953,11 +951,6 @@ async def confluence_content_get(content_id: int, request: Request):
     if row is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     return _confluence_page(conn, request, row, request.query_params.get("expand", "body.storage"))
-
-
-# `_confluence_doc_id` is gone (#51): a content id IS the page's own key now, so there was nothing
-# left for it to translate — every caller below reads the row it names directly, which also costs
-# one query rather than two.
 
 
 @router.get(

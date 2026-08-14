@@ -827,19 +827,15 @@ def resolve_team(_root, info, id):
     the container's own raw name. Tried in that FIXED order: served UUID, then served key, then
     raw name.
 
-    The UUID leg reproduces the old reverse map exactly: unique-indexed, so a match there can
-    never be ambiguous, and checked first so nothing else can shadow it (pinned by
-    test_linear_team_uuid_wins_a_raw_name_collision). A key two containers reduce to breaks ITS
-    OWN tie by team-name order (see ``store.linear_team_by_served_key``), also reproducing the old
-    map exactly.
+    The UUID leg is unique-indexed, so a match there can never be ambiguous, and it is checked
+    first so nothing else can shadow it (pinned by
+    test_linear_team_uuid_wins_a_raw_name_collision). A key two containers reduce to breaks ITS OWN
+    tie by team-name order (see ``store.linear_team_by_served_key``).
 
-    The KEY-before-RAW-NAME ordering, though, is a DELIBERATE CHANGE from the old map, not a
-    reproduction of it: the old map registered both spellings with `setdefault` into one shared
-    dict, so when some team's key spelled identically to a DIFFERENT team's raw name, the winner
-    depended on `list_containers`' team-NAME iteration order -- whichever registered first kept
-    the slot. This resolver instead gives the key a fixed priority over the raw name, because a
-    real Linear spelling should always beat a mock-only affordance
-    (test_linear_team_key_precedes_the_raw_name_affordance pins the new rule).
+    KEY BEFORE RAW NAME is a fixed priority, not an accident of iteration order: when one team's
+    key spells identically to a DIFFERENT team's raw name, the real Linear spelling has to win,
+    because the raw name is a mock-only affordance
+    (test_linear_team_key_precedes_the_raw_name_affordance pins it).
 
     Scoped the same way ``teams`` is: a team the caller can see no issue in is not a team they can
     see. Without this the two roots contradict each other — ``teams`` would omit the team while

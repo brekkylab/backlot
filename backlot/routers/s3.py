@@ -318,8 +318,7 @@ async def object_get(request: Request, bucket: str, key: str):
         "ETag": synth.s3_etag(row["key"], row["content"]),
         "Last-Modified": synth.s3_http_date(ts),
         "Accept-Ranges": "bytes",
-        # Seeded from the object's own address (#51) — the dataset id it used to hash is gone,
-        # and (bucket, key) is what identifies the object being served anyway.
+        # Seeded from the object's own address, which is what identifies the object being served.
         "x-amz-request-id": synth._digest(f"s3-req:{row['bucket']}/{row['key']}")[:16].upper(),
     }
     ctype = row["content_type"] or "text/plain"

@@ -119,9 +119,8 @@ def _norm(nid: str) -> str:
 
 def _existing_id(request: Request, page_id: str) -> str | None:
     """The canonical form of a served page/database/block id, or None if it names nothing -- a
-    PRIMARY KEY lookup (see store.notion_by_id). It used to translate that id into the corpus's
-    own doc_id; the two are one value now (#51), so all that is left is normalising the spelling
-    and confirming a row exists.
+    PRIMARY KEY lookup (see store.notion_by_id). All it does is normalise the spelling and
+    confirm a row holds that id.
 
     Unscoped by ACL on purpose: used only by query_database (via _query_rows), which needs the id
     to drive a further, separately ACL-scoped query (store.children, a DIFFERENT table) rather
@@ -135,7 +134,7 @@ def _existing_id(request: Request, page_id: str) -> str | None:
 def _db_doc_for_data_source(request: Request, dsid: str) -> str | None:
     """The database `id` behind a data source id -- a unique-indexed column lookup (see
     store.notion_by_data_source_id), not the O(pages) scan -- hashing every notion row's data
-    source id on every request -- it replaces. Unscoped by ACL for the same reason as
+    source id on every request. Unscoped by ACL for the same reason as
     _existing_id."""
     row = store.notion_by_data_source_id(auth.conn(request), _norm(dsid))
     return row["id"] if row is not None else None

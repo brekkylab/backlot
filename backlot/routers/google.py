@@ -480,7 +480,7 @@ def _gmail_doc(conn, ids, served_id: str):
     two full-row reads of the same wide table per call. Resolution and the ACL read still can't be
     pulled apart: the query is scoped to `visible_ids` from the start, so a served_id that names a
     document the caller cannot see comes back as no row, i.e. not-found, never a different answer
-    (that invariant no longer needs two round trips to hold, just the one WHERE clause)."""
+    (one WHERE clause holds that invariant; it needs no second round trip)."""
     _gmail_check_shape(served_id)
     return store.gmail_by_id(conn, served_id, visible_ids=ids)
 
@@ -490,9 +490,8 @@ def _gmail_ids(row) -> tuple[str, str]:
     twice, as real Gmail does.
 
     Both halves are read straight off the row (#51). `thread_id` holds the ROOT'S OWN id,
-    resolved once at import, so `threadId` no longer re-hashes the root's key and cannot disagree
-    with what the root itself reports — a derivation that was only ever safe because gmail's seed
-    is never probed off a collision."""
+    resolved once at import, so `threadId` reads one stored value rather than re-hashing the
+    root's key and hoping the two agree."""
     return (row["id"], row["thread_id"] or row["id"])
 
 
@@ -1029,10 +1028,8 @@ def _drive_fill_shared(conn, files: list[dict], stored: dict[str, str]) -> None:
     the synthesized folders, left alone: their sharing comes from the files they hold, not from a
     grant on the folder id.
 
-    ``stored`` is the SET of served file ids that came from a row. It used to be a map from the
-    served id to the underlying doc_id, because ACL grants were keyed on the doc_id rather than on
-    the id a client sees; the two are one value now (#51), so plain set membership is exact rather
-    than the silent mismatch that indirection existed to prevent."""
+    ``stored`` is the SET of served file ids that came from a row. An ACL grant names a file by
+    that same id, so plain set membership is exact."""
     have = store.docs_with_grants(
         conn, "google_drive", [f["id"] for f in files if f["id"] in stored]
     )
@@ -1650,10 +1647,10 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     """The spreadsheet's structure, and its cells only if asked for.
 
     ``data`` is withheld unless ``includeGridData=true`` — measured: a real workbook answers 4 KB by
-    default and 5.7 MB with the flag, and ``ranges`` alone does NOT unlock it. The mock used to
-    volunteer the whole grid on every call, so a reader received cells here that the real API would
-    never hand it, and the document it assembled had a different layout against the two backends.
-    With the flag, ``ranges`` scopes the returned rows (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
+    default and 5.7 MB with the flag, and ``ranges`` alone does NOT unlock it. Volunteering the
+    whole grid would hand a reader cells the real API never would, so the document it assembles
+    would differ between the two backends. With the flag, ``ranges`` scopes the returned rows
+    (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
     row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
     sheet = {
         "properties": {

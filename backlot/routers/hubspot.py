@@ -134,8 +134,7 @@ def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSO
 
 def _existing_id(request: Request, record_id: str) -> str | None:
     """``record_id`` if a record holds it, else None -- a PRIMARY KEY lookup (see
-    store.hubspot_by_id). It used to translate the served id into the corpus's own doc_id; the two
-    are one value now (#51), so all that is left is confirming the row exists.
+    store.hubspot_by_id). All it does is confirm a row holds that id.
 
     Unscoped by ACL on purpose: used only by _resolve_cursor, which needs the id to drive a
     further, separately ACL-scoped query (list_hubspot_objects/hubspot_associations,

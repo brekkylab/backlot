@@ -769,14 +769,6 @@ def _member_count(request: Request, conn, name: str) -> int:
     return store.count_slack_channel_members(conn, name)
 
 
-# `_msg_ts` and `_latest_reply` are gone (#51). A message's ts is a STORED column now, assigned
-# once at import, so there is nothing to re-derive per request — and the derivation they performed
-# was not merely redundant, it collided: every message of a thread hashed the same root key, so two
-# replies in one second produced a single ts between them. `latest_reply` likewise reads the
-# thread's actual last ts (store.slack_latest_reply_ts) rather than synthesizing "root + count",
-# which was a value no message need have held.
-
-
 def _message(
     row,
     reply_count: int = 0,

@@ -226,8 +226,8 @@ def test_gmail_body_roundtrip(client, admin_h, ro_conn):
 
 
 def test_gmail_messages_list_ordered_by_internaldate_desc(client, admin_h, ro_conn):
-    # Real Gmail returns messages.list newest-first by internalDate. Regression (#11): the mock
-    # listed by id (hash order), so a capped "newest N" was effectively random by date.
+    # Real Gmail returns messages.list newest-first by internalDate. Listing by id instead is hash
+    # order, which makes a capped "newest N" effectively random by date.
     listed = client.get(
         "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 50}
     ).json()["messages"]
@@ -278,8 +278,8 @@ def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_c
 
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
     # Real Gmail's contract: a part's body.size equals the byte length attachments.get serves, so a
-    # client can stat an attachment from message metadata alone. Regression: the part reported the
-    # corpus-declared `size` (e.g. 2048) while attachments.get returned len(content) — a mismatch.
+    # client can stat an attachment from message metadata alone. Reporting the corpus-declared
+    # `size` (e.g. 2048) while attachments.get returns len(content) breaks that.
     row = ro_conn.execute(
         "SELECT id FROM gmail_messages WHERE attachments IS NOT NULL "
         "AND attachments != '[]' LIMIT 1"
@@ -306,9 +306,8 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
 
 def test_drive_export_roundtrip(client, admin_h, ro_conn):
     doc = ro_conn.execute("SELECT * FROM gdrive_files LIMIT 1").fetchone()
-    # The row's own `id` (#51, task 12), not the corpus's own identifier -- that used to be exactly
-    # what Drive served as the file id, the defect this task fixes; a test that kept hitting the
-    # route by the corpus id would stop exercising the id resolution path without noticing.
+    # The row's own `id`, not the corpus's identifier: hitting the route by the corpus id would
+    # stop exercising the id resolution path without the test noticing.
     text = client.get(
         f"/drive/v3/files/{doc['id']}/export",
         headers=admin_h,
@@ -744,7 +743,7 @@ def _drive_ids(client, headers, **params):
 def test_drive_shared_with_me_partitions_by_owner(client, tokens_yaml):
     """`q=sharedWithMe=true` must return only items shared with the caller by someone else, and
     `false` must exclude them — real Drive's "Shared with me" is the only way to enumerate those.
-    The mock used to ignore the clause, so both returned the caller's whole visible corpus."""
+    Ignoring the clause makes both return the caller's whole visible corpus."""
     mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
     all_ids = set(_drive_ids(client, mia, q="trashed=false", pageSize=100))
     shared = set(_drive_ids(client, mia, q="sharedWithMe=true and trashed=false", pageSize=100))
@@ -927,9 +926,8 @@ def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
 
 
 def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
-    """An unknown field name used to be accepted and yield empty file objects (200 {}), so a typo
-    or a stale field name in a consumer's mask passed every mock-backed test and 400d in
-    production."""
+    """Accepting an unknown field name and yielding empty file objects (200 {}) lets a typo or a
+    stale field name in a consumer's mask pass every mock-backed test and 400 in production."""
     r = client.get(
         "/drive/v3/files",
         headers=admin_h,
@@ -1266,9 +1264,9 @@ def test_docs_get_returns_paragraph_text(base, admin_h):
 
 def test_sheets_get_withholds_grid_data_by_default(base, admin_h):
     """Measured: a plain `spreadsheets.get` returns `sheets[i].properties` and NO `data` — on a real
-    workbook that is 4 KB against 5.7 MB with `includeGridData=true`. The mock used to volunteer the
-    full grid on every call, so a reader got cells here that it would never get from Google, and the
-    document it built had a different layout in the two environments.
+    workbook that is 4 KB against 5.7 MB with `includeGridData=true`. Volunteering the full grid on
+    every call hands a reader cells it would never get from Google, so the document it builds has a
+    different layout in the two environments.
 
     `ranges` alone does not unlock it either — also measured."""
     fid, _ = _drive_by_mime(
@@ -1287,9 +1285,9 @@ def test_sheets_get_withholds_grid_data_by_default(base, admin_h):
 
 
 def test_sheets_get_returns_grid_when_asked(base, admin_h):
-    """One row per stored line, one cell per row holding the line verbatim. This used to split on
-    commas, which over the real corpus manufactured columns out of prose punctuation — see
-    `_sheets_grid`; the corpus has no delimiter-uniform CSV at all."""
+    """One row per stored line, one cell per row holding the line verbatim. Splitting on commas
+    manufactures columns out of prose punctuation over the real corpus — see `_sheets_grid`; the
+    corpus has no delimiter-uniform CSV at all."""
     fid, _ = _drive_by_mime(
         base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
     )
@@ -1361,8 +1359,8 @@ OFFICE_MSG = (
 
 def test_editor_apis_treat_another_native_type_as_not_found(base, admin_h):
     """Measured: 404 "Requested entity was not found." — the SAME answer a nonexistent id gets.
-    The mock used to serve these 200, reinterpreting the file: a Doc read through the Sheets API
-    came back as a "grid" of prose, plausible enough that a client would trust it."""
+    Serving these 200 reinterprets the file: a Doc read through the Sheets API comes back as a
+    "grid" of prose, plausible enough that a client would trust it."""
     doc, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
     sheet, _ = _drive_by_mime(
         base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
@@ -1537,10 +1535,10 @@ def test_sheets_values_get_range_forms(base, admin_h, sheet_id, rng, expected):
 
 
 def test_sheets_values_get_keeps_a_line_intact(base, admin_h, sheet_id):
-    """The cell holds the whole line, commas and all. Splitting on commas is what the mock used to
-    do, and over the real corpus it manufactured columns out of sentence punctuation — a prose line
-    like "customer dates, ARR exposure, highest-risk deals" became three cells of a table that
-    never existed. Which delimiter (if any) applies is the corpus owner's call, not the mock's."""
+    """The cell holds the whole line, commas and all. Splitting on commas manufactures columns out
+    of sentence punctuation over the real corpus — a prose line like "customer dates, ARR exposure,
+    highest-risk deals" becomes three cells of a table that never existed. Which delimiter (if any)
+    applies is the corpus owner's call, not the mock's."""
     j = _values(base, admin_h, sheet_id, "Sheet1!A1").json()
     assert j["values"] == [["month,revenue"]]
     # and there is exactly one column: B is past the end of every row
@@ -1987,9 +1985,8 @@ def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
             "trashed": True,
         },
     ]
-    # The served ids (#51, task 12), not the corpus doc_ids -- Drive no longer serves those
-    # straight through, so a bare "live"/"gone" would never appear in `ids` regardless of whether
-    # trashing is honored, and the assertions below would pass for the wrong reason.
+    # The served ids, not the corpus ids: a bare "live"/"gone" never appears in `ids` regardless
+    # of whether trashing is honored, so the assertions below would pass for the wrong reason.
     live_id, gone_id = synth.gdrive_file_id("live"), synth.gdrive_file_id("gone")
     with corpus_client(tmp_path, records) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}

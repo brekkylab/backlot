@@ -122,7 +122,7 @@ def test_linear_issue_by_uuid_and_by_identifier(client, admin_h, ro_conn):
 
 
 def test_linear_issue_url_is_the_real_vendor_domain(client, admin_h):
-    """Regression: a rename's blind substitution once turned every served `url` field into
+    """A rename's blind substitution can turn every served `url` field into
     `linear.backlot`. Asserted on the parsed host (no trailing slash) rather than a URL literal,
     because the vulnerable pattern is the literal characters `app` immediately followed by a
     slash — spelling that combination anywhere, even in a comment, makes a repeat of the bug
@@ -995,7 +995,7 @@ def test_linear_issue_resolves_first_by_id_when_identifier_repeats(tmp_path):
 def test_linear_team_key_collision_resolves_to_the_first_team_by_name(tmp_path, order):
     """`synth.linear_team_key` is NOT injective: "night-shift" and "north-star" both reduce to
     "NS" (see the schema comment on `linear_teams`). The resolution must keep picking the same
-    team every time -- the first by container NAME -- or a key that used to resolve to one team
+    team every time -- the first by container NAME -- or a key resolving to one team
     silently resolves to a different one after a reimport.
 
     Parametrized over BOTH insertion orders: with a single fixed order, insertion order and name

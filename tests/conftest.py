@@ -301,7 +301,7 @@ SAMPLE = [
     },
     # A sheet whose content carries a BLANK line, which the real corpus is full of (its spreadsheets
     # are prose). Real Sheets returns an interior blank row as `[]`, not `[""]`, and nothing else in
-    # SAMPLE has one — a values read of it used to raise IndexError only against real data.
+    # SAMPLE has one — without it a values read raises IndexError only against real data.
     {
         "source_type": "google_drive",
         "doc_id": "gd-blankline",

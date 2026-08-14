@@ -777,7 +777,7 @@ def declared_pr(gh_client, gh_admin_h, gh_org):
 
 
 def test_github_pull_files_lists_the_changed_files(diff_pr):
-    """The real API's shape, agreeing with the pull object's own counts — those used to contradict
+    """The real API's shape, agreeing with the pull object's own counts — a contradiction between
     it — and stable across calls, since the whole changeset is derived from a hash of the doc_id."""
     c, h, org, num = diff_pr
     r = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h)
@@ -1129,7 +1129,7 @@ def test_github_pull_review_comments_are_served(declared_pr):
 
 
 def test_github_pull_review_comments_are_a_separate_resource(gh_client, gh_admin_h, gh_org):
-    """A pull with none answers `[]` — the collection is a real resource, and the 404 it used to
+    """A pull with none answers `[]` — the collection is a real resource, and a 404
     return aborts any client that renders a pull from its four sub-resources. A non-pull has no such
     resource at all, and the anchored comments must never leak into the conversation endpoint."""
     c, _ = gh_client
@@ -1218,10 +1218,9 @@ def test_github_comment_ids_are_unique_even_when_the_seed_collides(tmp_path, mon
     until free, so the ids are unique however badly it collides. Forced here by collapsing the seed
     to a single value, since a real collision needs ~100k comments to be likely.
 
-    Re-importing the same corpus USED to keep the ids it had already assigned, so a url a client
-    stored stayed valid. It cannot any more, and the second half of this test pins what replaced
-    it: an append into a source whose keys are probed is REFUSED unless the record states its own
-    identity (#51, Step 5). Nothing is left to recognise a row by, so the alternative was to add it
+    Re-importing the same corpus does NOT keep the ids it assigned, and the second half pins what
+    happens instead: an append into a source whose keys are probed is REFUSED unless the record
+    states its own identity. Nothing is left to recognise a row by, so the alternative is adding it
     a second time in silence."""
     from backlot.importer import byo
 
@@ -1444,7 +1443,7 @@ def test_github_operation_ids_unique(client):
 
 
 def test_github_issue_number_asserts_rather_than_re_hash_a_null_number():
-    """`_issue_number`'s `or` fallback used to silently re-hash a NULL number back to a
+    """`_issue_number` must not silently re-hash a NULL number back to a
     plain `synth.github_number` -- exactly the shape the hubspot bug shipped as: a PROBED row
     (one whose actual served number came from a walk, not a pure hash) would then advertise a
     number nobody stored, unreachable at its own url (#51, task 11). An assertion is strictly

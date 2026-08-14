@@ -249,7 +249,7 @@ def test_slack_search_all(client, admin_h):
 def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
     # A search hit that lands on a REPLY yields that reply's ts; conversations.replies must return
     # the whole thread from it (Slack accepts any in-thread ts), not thread_not_found. The SAMPLE
-    # 'incidents' 502 thread's replies include "Rolled back; 502s clearing." Regression: previously
+    # 'incidents' 502 thread's replies include "Rolled back; 502s clearing." Without this,
     # replies resolved only thread ROOTS, so a search->replies chain broke whenever the hit was a
     # reply (the common case — real MCP clients pass the hit's own ts).
     sr = client.post(

@@ -173,7 +173,7 @@ def test_gdrive_file_id_never_collides_with_a_folder_id():
 
 
 def test_linear_url_is_the_real_vendor_domain():
-    """Regression: a rename's blind substitution once turned this into `linear.backlot`. Asserted
+    """A rename's blind substitution can turn this into `linear.backlot`. Asserted
     on the parsed host (no trailing slash) rather than a URL literal, because the vulnerable
     pattern is the literal characters `app` immediately followed by a slash — spelling that
     combination anywhere, even in a comment, makes a repeat of the bug rewrite it right alongside

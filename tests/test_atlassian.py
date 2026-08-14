@@ -250,7 +250,7 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
 
 
 def test_jira_issue_key_asserts_rather_than_re_derive_a_null_key():
-    """`_issue_key` used to fall back to re-deriving a key from a NULL served suffix -- exactly the
+    """`_issue_key` must not fall back to re-deriving a key from a NULL one -- that is exactly the
     shape the hubspot bug shipped as: a PROBED row (one whose served value came from a walk, not a
     pure hash) would advertise a key nobody stored, unreachable at its own url (#51, task 11). An
     assertion is strictly better: every jira row gets a key at import (`resolve_jira_keys` raises

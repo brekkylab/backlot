@@ -1115,11 +1115,10 @@ def test_fireflies_byo_org_is_inferred_from_host_email_and_sentence_authors(tmp_
 
 
 def test_fireflies_transcript_id_collision_raises_on_import(tmp_path, monkeypatch):
-    """`idx_fireflies_transcript_id` is now UNIQUE (#51 audit): the index `transcript(id:)`
-    resolves against used to be a plain one, so two transcripts landing on the same
-    `transcript_id` left one silently unreachable at its own id -- last-writer-wins with no error,
-    the exact defect this whole plan exists to remove, in the one source excluded from it on the
-    assumption its id was "unique by construction" (backlot.main's old comment, before this fix).
+    """A transcript id is the table's PRIMARY KEY, so two transcripts resolving to the same one is
+    a loud import failure. Left merely indexed, one of them is silently unreachable at its own id
+    -- last-writer-wins with no error, which is the defect the whole identifier scheme exists to
+    remove. Fireflies looks exempt because its id reads as "unique by construction"; it is not.
 
     `transcript_id` is `synth.fireflies_id(doc_id)` when the corpus is silent, assigned directly in
     importer.byo's `_service_columns` -- NOT through `store.SERVED_ID` (fireflies isn't in that
@@ -1581,13 +1580,10 @@ def test_byo_colliding_provided_id_claims_the_spelling_and_the_other_row_moves(t
     and was reachable at nothing: the index and the serving path disagreed about the same
     document. Both now read the number `resolve_github_numbers` assigned.
 
-    Also covers the OTHER half of #51's decided change: the provider does NOT additionally
-    answer at its own synthesized spelling. The old boot-time index's third pass registered
-    that alias (`main._build_index` used to run it "last, so it never takes the number a
-    displaced row wanted") — dropped on purpose when the number moved into a stored column,
-    because a single column holds ONE number per row and a provided issue answering at a
-    second, unrequested number is not something real GitHub does either
-    (`/issues/<not-this-issue's-number>` 404s there)."""
+    Also covers the other half: the provider does NOT additionally answer at its own synthesized
+    spelling. One column holds ONE number per row, and an issue answering at a second, unrequested
+    number is not something real GitHub does either (`/issues/<not-this-issue's-number>` 404s
+    there)."""
     from backlot import synth
     from tests._helpers import build_corpus, client_for
 
@@ -1623,9 +1619,8 @@ def test_byo_colliding_provided_id_claims_the_spelling_and_the_other_row_moves(t
     with client_for(settings, reload=True) as c:
         got = c.get(f"/github/repos/acme/core/pulls/{stolen}", headers=hdr).json()
         assert got["title"] == "t"  # the provided id wins the spelling
-        # The provider's own synthesized spelling is NOT a second way to reach it (pass 3 of
-        # the old boot-time index is gone) -- a real GitHub 404s an issue's own number
-        # spelled differently, and so does this now.
+        # The provider's own synthesized spelling is NOT a second way to reach it -- a real GitHub
+        # 404s an issue's own number spelled differently, and so does this.
         alias = synth.github_number("g-a-thief")
         got2 = c.get(f"/github/repos/acme/core/pulls/{alias}", headers=hdr)
         assert got2.status_code == 404
@@ -1703,17 +1698,6 @@ def test_byo_a_provided_number_wins_whichever_doc_id_sorts_first(tmp_path):
             "/github/repos/acme/core/issues", headers=hdr, params={"state": "open"}
         ).json()
         assert "v" in {i["title"] for i in listing}
-
-
-# `test_byo_server_boots_read_only_on_a_pre_column_db` lived here. Its subject was `key`'s
-# self-heal in connect_rw's ALTER list: a DB built before that column existed had to boot and
-# serve the synthesized spelling anyway. #51's identifier consolidation ended that subject rather
-# than moving it -- `key` IS the served column now, carries the UNIQUE index, and has no self-heal
-# (the served columns deliberately have none: "no back-compat, re-import the corpus"). A DB
-# without it cannot be constructed here at all, because dropping the column fails on its own
-# index, and it is not a shape the importer will accept either. Deleted rather than reworded: the
-# behaviour it characterized no longer exists. `test_connect_rw_refuses_a_pre_served_db` in
-# tests/test_store.py is what covers the pre-#51 DB path now.
 
 
 def test_byo_roster_is_the_closed_principal_set(tmp_path):
@@ -2263,8 +2247,9 @@ def test_verify_manifest_checks_the_roster_too(tmp_path):
 
 def test_import_refuses_a_shard_that_does_not_match_the_manifest(tmp_path, monkeypatch):
     """A shard that is short but validly terminated is what a resumed download looks like. Rewriting
-    one to fewer records leaves a well-formed gzip stream, so nothing downstream notices: the import
-    used to report success on a corpus missing documents the manifest counts."""
+    one to fewer records leaves a well-formed gzip stream that nothing downstream notices, so
+    without this check the import reports success on a corpus missing documents the manifest
+    counts."""
     out = _shard_artifact(tmp_path)
     shard = next(out.glob("data/*/part-00000.jsonl.gz"))
     with gzip.open(shard, "rt", encoding="utf-8") as fh:
@@ -2525,7 +2510,7 @@ def test_byo_roster_a_stated_name_beats_a_derived_one(tmp_path):
         )
         return load_roster(p)["users"][email]
 
-    # Derived first, stated second — the case that used to lose the accent.
+    # Derived first, stated second — the order in which the accent is easiest to lose.
     assert (
         roster(
             "a",
@@ -2618,13 +2603,11 @@ def test_byo_roster_group_and_groups_read_the_same_in_every_shape(tmp_path):
 
 
 def test_byo_github_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
-    """The old boot-time probe (`main._free_number`, gone with #51) fell back to `return start`
-    after `_PROBE_LIMIT` steps -- a value it ALREADY knew was taken -- producing a silent
-    duplicate under the reverse map with no error. `_assign_github_number`'s bounded walk raises
-    instead: past `synth.GITHUB_NUMBER_RANGE` steps every number the probe can produce has been
-    visited, so the repo genuinely has more non-file rows than the space holds, and writing one
-    anyway would duplicate it under the UNIQUE (repo, number) index rather than fail where
-    the problem actually is.
+    """`_assign_github_number`'s walk RAISES on an exhausted range rather than returning a value it
+    already knows is taken. Past `synth.GITHUB_NUMBER_RANGE` steps every number the probe can
+    produce has been visited, so the repo genuinely has more non-file rows than the space holds, and
+    writing one anyway would break the PRIMARY KEY (repo, number) instead of failing where the
+    problem actually is.
 
     "Genuinely exhausted" is 90,000 non-file rows in one repo in reality -- not a practical test
     fixture -- so this shrinks `synth.GITHUB_NUMBER_RANGE` itself (a plain module attribute read
@@ -2690,7 +2673,7 @@ def test_byo_jira_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
     from tests._helpers import build_corpus
 
     monkeypatch.setattr(synth, "JIRA_KEY_NUMBER_RANGE", 2)
-    # Directly on synth -- jira is no longer in store.SERVED_ID, so a setitem patch would be inert.
+    # Directly on synth -- jira has no store.ID_SEED entry, so a setitem patch would be inert.
     monkeypatch.setattr(synth, "jira_key_number", lambda doc_id: 1)
     docs = [
         {
@@ -2708,10 +2691,9 @@ def test_byo_jira_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
 
 
 def test_byo_confluence_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
-    """`_assign_confluence_id`'s walk used to be an unbounded `while` -- on an exhausted range
-    (confluence needs 9,000,000 pages in one corpus for that in reality) it would spin forever
-    with no error, exactly the hang `_assign_github_number`/`_assign_jira_number` were already
-    fixed against (#51, task 11). Same fix, same shape: bounded `for`, then `SystemExit`.
+    """`_assign_confluence_id`'s probe walk must be BOUNDED. An unbounded `while` spins forever
+    with no error on an exhausted range (which in reality needs 9,000,000 pages in one corpus) --
+    the same hang `_assign_github_number` and `_assign_jira_number` are bounded against.
 
     Shrinks `synth.CONFLUENCE_ID_RANGE` and collapses the seed to one constant, same technique as
     the github/jira tests above. The constant is `synth.CONFLUENCE_ID_MIN` itself -- the first
@@ -2796,11 +2778,10 @@ def test_byo_github_comment_exhausted_id_range_fails_loudly(tmp_path, monkeypatc
 
 
 def test_byo_two_records_cannot_claim_one_tracker_id(tmp_path):
-    """Two records providing the same github number, or the same jira key, used to load
-    without a word: the reverse index gave the id to one of them and the other was
-    unreachable at the only id it advertised. The loader is the one place that sees every
-    row, so it is the only place the claim can be checked — and a corpus stating a fact
-    twice is the corpus's mistake to hear about, not a silent loss."""
+    """Two records claiming the same github number, or the same jira key, must be refused. Accepted,
+    one of them is unreachable at the only id it advertises. The loader is the one place that sees
+    every row, so it is the only place the claim can be checked — and a corpus stating a fact twice
+    is the corpus's mistake to hear about, not a silent loss."""
     import pytest
 
     from tests._helpers import build_corpus
@@ -2896,31 +2877,21 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
     and answers there. Serving and the index read one authority, so the key an issue
     advertises is the key that fetches it.
 
-    Also covers two things #51's task 8 changed on purpose, with no prior test asserting either
-    (review round 1, I-3):
+    Also covers the aliases an issue key must NOT answer at:
 
-    - **Pass 3 of the old boot-time index is gone.** `j-provider` used to ALSO answer at its own
-      synthesized spelling (the old index's third pass registered that alias, "last, so it never
-      takes the number a displaced row wanted") -- dropped when the number moved into a stored
-      column, since a single column holds ONE suffix per row and a provided issue answering at a
-      second, unrequested key is not something real Jira does either.
-    - **The resolver's alias, reintroduced then closed in the SAME review round (I-1).**
-      `_jira_container_for_key`'s three-way tolerance (provided prefix / synthesized key /
-      literal container name) is right for a JQL project TOKEN, but reusing it for issue-KEY
-      resolution briefly let `PAYDF384A-<n>` and `payments-<n>` also resolve `j-provider` even
-      though its project's SERVED prefix is `PAY` -- wider than pass 3 ever was, since it opened
-      two alias NAMESPACES per project rather than one alias per row. Both now 404, same as real
-      Jira's `/issue/PAYDF384A-101` or `/issue/payments-101` would for a project that actually
+    - **Its own synthesized spelling.** One column holds ONE suffix per row, and a stated key
+      answering at a second, unrequested one is not something real Jira does either.
+    - **Its project's other spellings.** `_jira_container_for_key`'s three-way tolerance (stated
+      prefix / synthesized key / literal container name) is right for a JQL project TOKEN, but
+      reused for issue-KEY resolution it lets `PAYDF384A-<n>` and `payments-<n>` resolve
+      `j-provider` even though its project's SERVED prefix is `PAY` -- two alias NAMESPACES per
+      project. Both 404, same as real Jira's `/issue/PAYDF384A-101` would for a project that
       answers at `PAY`.
-    - **A second, unflagged side effect of the SAME reuse (review round 2).** `_jira_container_
-      for_key`'s prefix match is case-INSENSITIVE (`token.upper()`), which is right for the JQL
-      token -- but before I-1's fix, that case-insensitivity leaked into issue-key resolution too:
-      `pay-<n>`/`Pay-<n>` resolved `j-provider` right alongside `PAY-<n>`, even though every
-      provided key's prefix is schema-enforced uppercase (`jira.schema.json`'s `key` pattern) and
-      every other case-tolerance docstring in this file scopes itself explicitly to the project
-      token/picker, never to the key itself. I-1's fix closes this as a side effect (the AGREEMENT
-      check is a plain `!=`, not `.upper() != .upper()`), but nothing asserted it, so it is
-      asserted below.
+    - **Any case but the stored one.** That same tolerance matches case-INSENSITIVELY
+      (`token.upper()`), which is right for the JQL token; reused for an issue key it lets
+      `pay-<n>`/`Pay-<n>` resolve `j-provider` right alongside `PAY-<n>`, even though every stated
+      key's prefix is schema-enforced uppercase (`jira.schema.json`'s `key` pattern). Matching the
+      stored key directly is exact, and that is asserted below rather than assumed.
     """
     from backlot import synth
     from tests._helpers import build_corpus, client_for
@@ -3421,8 +3392,8 @@ def test_byo_a_comment_id_follows_its_parents_settled_key(tmp_path):
     Without that, a comment on a KEYLESS jira issue or confluence page was served under
     `-unassigned-3::c1`. It stayed hidden because every fixture that paired comments with a
     deferred parent happened to STATE that parent's key, in which case no provisional is ever used.
-    So both halves are asserted here: the keyless parent is the regression, the stated one is the
-    control that used to pass on its own.
+    Both halves are asserted here: the keyless parent is the one at risk, the stated one is the
+    control.
     """
     from tests._helpers import build_corpus
 
@@ -3455,21 +3426,14 @@ def test_byo_a_comment_id_follows_its_parents_settled_key(tmp_path):
 
 
 def test_byo_a_derived_number_no_longer_moves_across_append(tmp_path):
-    """#51 FIXES something the old boot-time index accepted: its own docstring (`_free_number`,
-    now gone) said a served number was "free to move when --append changes the set" — stable only
-    while the server kept running, but a later append's probe could still reshuffle a number a
-    client had already saved a link to.
+    """Appending must not touch a number an existing row already serves. A number free to move when
+    `--append` changes the set renumbers a link a client had already saved.
 
-    Appending must not touch a number an existing row already serves. The appended row states its
-    own `number`, which an append into a probed source now requires (see
+    The appended row states its own `number`, which an append into a probed source requires (see
     `_require_provided_id`): a row's identity has to be stated once the dataset's own identifier
-    no longer outlives the import, so "append a keyless issue" is not a shape that exists any more.
-
-    Two tests that used to sit here are gone with it, not merely reworded. One exercised a
-    `doc_id -> number` preload restoring the number of a row RE-STATED in the append batch; the
-    other demoted a re-stated document to a file. Both needed re-importing a row across an append,
-    which is refused outright now — `test_github_comment_ids_are_unique_even_when_the_seed_collides`
-    pins that refusal.
+    does not outlive the import, so "append a keyless issue" is not a shape that exists.
+    Re-importing a row across an append is refused outright —
+    `test_github_comment_ids_are_unique_even_when_the_seed_collides` pins that.
     """
     from backlot import store
     from backlot.importer.byo import load
@@ -3512,19 +3476,15 @@ def test_byo_a_derived_number_no_longer_moves_across_append(tmp_path):
 
 
 def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_path):
-    """Regression: `resolve_github_numbers`'s two passes compute a correct, collision-free final
-    assignment, but WRITING it in that order transiently duplicated a live value across an
-    `--append` boundary. Pass 1 queues the provider's claim on N; pass 2 queues the row already
-    sitting on N moving OFF it -- and pass 1's update always precedes pass 2's in `updates`, so
-    the provider's UPDATE ran while the displaced row -- untouched by THIS run, so still holding
-    its old value in the live table -- still held N too. The UNIQUE (repo, number) index
-    caught the transient duplicate and the whole import aborted.
+    """An appended row claiming a number an existing row already serves must be refused, not
+    written. Writing it duplicates a live value: the claim lands while the row holding that number
+    -- untouched by THIS run, so still carrying it in the live table -- still holds it too.
 
-    Needs no monkeypatching: `a-victim` is loaded alone first (gets `synth.github_number
-    ("a-victim")` outright, nothing else in the repo to collide with), then a SECOND batch
-    (`--append`, i.e. `reset=False`) provides that exact number for a different doc_id. `a-victim`
-    is never touched by the second batch's insert -- its row is exactly the "untouched, only
-    exposed via seed_tracker_ids' preload" shape the brief asked this conversion to handle."""
+    Needs no monkeypatching: `a-victim` is loaded alone first (it takes
+    `synth.github_number("a-victim")` outright, nothing else in the repo to collide with), then a
+    SECOND batch (`--append`) states that exact number for a different record. `a-victim` is never
+    touched by the second batch's insert, so it is only visible through seed_tracker_ids'
+    preload."""
     from backlot import synth
     from backlot.importer.byo import load
 
@@ -3563,13 +3523,10 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
             }
         )
     )
-    # #51 identifier consolidation: with ONE `number` column there is no longer a provided-vs-
-    # served distinction to arbitrate, so an appended row claiming a number an existing row
-    # already serves is refused outright rather than displacing it. That is the decided trade --
-    # the product imports a dataset once and serves it read-only, so blocking a rare colliding
-    # append is preferable to renumbering a row a client may already hold a link to.
-    # The message names the VALUE and says the claim came from an earlier import: the row
-    # holding it has no corpus identifier left to name it by (#51).
+    # An appended row claiming a number an existing row already serves is refused rather than
+    # displacing it: the product imports a dataset once and serves it read-only, so blocking a rare
+    # colliding append beats renumbering a row a client may hold a link to. The message names the
+    # VALUE, not the holder -- that row has no corpus identifier left to name it by.
     with pytest.raises(SystemExit, match="already claimed by a previous import in repo 'core'"):
         load(shard2, settings, reset=False)
 
@@ -3584,14 +3541,11 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
 
 
 def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
-    """jira's own equivalent of the github regression just above (#51, task 8):
-    `resolve_jira_numbers` has the identical two-pass-then-single-write-order defect if its
-    two-sweep NULL-first write were ever dropped -- see that method's docstring for why. Needs no
-    monkeypatching: `j-victim` is loaded alone first (gets `synth.jira_key_number("j-victim")`
-    outright, nothing else in the project to collide with), then a SECOND batch (`--append`, i.e.
-    `reset=False`) provides a key carrying that exact suffix for a different doc_id. `j-victim` is
-    never touched by the second batch's insert -- its row is exactly the "untouched, only exposed
-    via seed_tracker_ids' preload" shape the brief asked this conversion to handle."""
+    """jira's own version of the case just above. `j-victim` is loaded alone first (it takes
+    `synth.jira_key_number("j-victim")` outright, nothing else in the project to collide with), then
+    a SECOND batch (`--append`) states a key carrying that exact suffix for a different record.
+    `j-victim` is never touched by the second batch's insert, so it is only visible through
+    seed_tracker_ids' preload."""
     from backlot import synth
     from backlot.importer.byo import load
 

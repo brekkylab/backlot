@@ -574,7 +574,7 @@ def test_drive_owner_is_faithful():
 
 def test_drive_doc_type_maps_onto_drive_mime_types():
     """The bench's `doc_type` vocabulary (doc/sheet/slides/pdf) is not the mock's native subtype
-    vocabulary, so every imported row used to fall back to `application/octet-stream` — making
+    vocabulary, so without the mapping every imported row falls back to `application/octet-stream` — making
     anything that branches on mimeType untestable against the bench corpus (issue #23)."""
     from backlot.routers.google import _drive_file
 
@@ -972,7 +972,7 @@ def test_flat_path_removed():
 
 
 def test_synthesized_users_installed_after_load(tmp_path, monkeypatch):
-    """Regression: users synthesized DURING load (owner/collaborator not in the directory) must
+    """Users synthesized DURING load (owner/collaborator not in the directory) must
     land in principals AND their team group_members — i.e. P.install() runs after the load,
     not before (else they'd get tokens but no principal/group, breaking group-scoped ACL)."""
     data = tmp_path / "data"
@@ -2314,7 +2314,7 @@ def test_erb_to_byo_round_trip_builds_an_equivalent_database(tmp_path):
     """ERB -> BYO-JSONL -> DB must be indistinguishable from ERB -> DB, table by table, including
     every source's own ACL table, principals, group_members and every per-service column.
 
-    Both paths now share one mapping (`to_byo`), so this no longer guards two implementations
+    Both paths share one mapping (`to_byo`), so this does not guard two implementations
     against drift. What it still guards is the SERIALIZATION: that writing the converted records
     out as JSONL and reading them back is lossless — the encoding, the sharding, the manifest and
     the roster sidecar all round-trip."""
@@ -2423,7 +2423,7 @@ def test_byo_drive_subtypes_are_all_accepted_by_the_schema():
 
 
 def test_drive_folder_row_exists_even_without_a_team():
-    """A file's folder and its folder row are the same expression: a doc with no team used to be
+    """A file's folder and its folder row are the same expression. A doc with no team is
     filed in a folder `gdrive_folders` had no row for (group_id is nullable; the row is not)."""
     conn = _conn()
     P = Principals([], "redwoodinference.com")
@@ -2629,7 +2629,7 @@ def test_conversion_does_not_depend_on_document_order():
     forward = convert([commented_on, authored])
     assert forward == convert([authored, commented_on])
     # ...and the order-independent answer is the resolved one, not the unresolved one: the comment
-    # is attributed and its body no longer carries the name as a prefix.
+    # is attributed and its body does not carry the name as a prefix.
     comment = [c for rec in map(json.loads, forward) for c in rec.get("comments", [])][0]
     assert comment["author_email"] == "nadia.weber@redwoodinference.com"
     assert comment["content"] == "ran the baseline traces."

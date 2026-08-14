@@ -410,7 +410,7 @@ def test_fireflies_mine_returns_nothing_for_a_token_that_is_not_a_person(sample_
 
 def test_grants_are_written_to_their_own_source_table(tmp_path):
     """A grant belongs to one source's document. Two documents sharing a doc_id across sources
-    must not share a grant — the union used to be enforced, so a public page made a restricted
+    must not share a grant — a union of the two makes a public page make a restricted
     drive file readable by anyone in the org."""
     from tests._helpers import build_corpus
 
@@ -459,8 +459,8 @@ def test_grants_are_written_to_their_own_source_table(tmp_path):
 
 def test_a_shared_doc_id_does_not_share_visibility(tmp_path):
     """The defect the per-source ACL tables exist to remove: bob is in no granted group, and the
-    drive file is readable only by hana. A confluence page sharing its corpus id used to grant the
-    org. Since #51 the two never even resolve to the same id -- each source assigns its own -- so
+    drive file is readable only by hana. A confluence page sharing its corpus id must not grant
+    the org. Since #51 the two never even resolve to the same id -- each source assigns its own -- so
     this now pins the property from both directions: separate tables AND separate id spaces."""
     from tests._helpers import build_corpus
 

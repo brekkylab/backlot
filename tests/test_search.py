@@ -42,7 +42,7 @@ def test_fts_acl_scoped(db, acl, tokens):
 
 def test_fts_search_returns_only_its_own_source(db):
     # Was `test_fts_source_aware_index`, which asserted the shared index's `src:` intersection.
-    # That mechanism is gone — each source has its own index — but the PROPERTY it protected is
+    # Each source has its own index rather than one shared, tagged one, but the PROPERTY is
     # the same and still worth pinning: a source-scoped search must never return another
     # source's rows, whatever enforces it.
     #
@@ -218,7 +218,7 @@ def test_gmail_relative_date_parse():
 
 
 def test_gmail_relative_date_query_not_zeroed(db):
-    # Regression: newer_than:/older_than: used to fall through as free text, FTS-match nothing, and
+    # Unhandled, newer_than:/older_than: fall through as free text, FTS-match nothing, and
     # zero out ANY relative-date query. They must filter by age (anchored to now) like real Gmail.
     from backlot.routers.google import _gmail_query
 

@@ -80,9 +80,8 @@ def test_no_table_stores_the_datasets_own_identifier(tmp_path):
     is then discarded — so after import a row is addressed by the id the API serves, and by nothing
     else.
 
-    This is why `doc_id` was removed rather than renamed to `id`: a rename would have kept the
-    dataset's scheme, only spelled differently. So the check is textual as well as structural — a
-    column named `doc_id` anywhere is the defect, wherever it sits."""
+    Renaming `doc_id` to `id` would keep the dataset's scheme, only spelled differently, so the
+    check is textual as well as structural: a column named `doc_id` anywhere is the defect."""
     conn = store.connect_rw(tmp_path / "ids.sqlite")
     try:
         tables = [
@@ -194,8 +193,8 @@ def test_id_seed_registry_covers_every_source_whose_id_is_a_1_arity_hash():
     call `fireflies_users` and `linear_teams` made when they were converted (#51 task 9)."""
     assert set(store.ID_SEED) == set(store.SOURCE_TABLE) - {"jira", "slack", "s3"}
     # Confluence's own entry -- seed function, then the columns its probe holds fixed (none:
-    # confluence resolves an id corpus-wide). The column the seed FILLS is no longer part of this
-    # registry, because it is now the table's primary key and `id_columns` already names it.
+    # confluence resolves an id corpus-wide). The column the seed FILLS is not in this registry:
+    # it is the table's primary key, which `id_columns` already names.
     assert store.ID_SEED["confluence"] == (synth.confluence_id, None)
     assert store.id_seed("confluence") is synth.confluence_id
     # github is the one entry with a scope: a number is unique only within its repo.
@@ -391,16 +390,14 @@ def test_users(db):
     assert "ava@acme.com" in emails
     assert store.get_user(db, "ava@acme.com") is not None
     assert store.get_user(db, "nobody@acme.com") is None
-    # `fireflies_users` is written at import, one row per user principal (#51) -- a unique-indexed
-    # column lookup now, not the reverse map `main._build_index` used to build from `list_users`.
+    # `fireflies_users` is written at import, one row per user principal -- a unique-indexed lookup.
     assert store.fireflies_user_by_served_id(db, synth.fireflies_user_id("ava@acme.com")) == (
         "ava@acme.com"
     )
     assert store.fireflies_user_by_served_id(db, "not-a-real-served-id") is None
-    # The two sides can no longer disagree by construction the way they could before this table
-    # existed (the map was rebuilt from `principals` on every boot, so there was nothing to drift):
-    # every `type='user'` principal must have EXACTLY one `fireflies_users` row, or `user(id:)`
-    # either serves a fabricated user for an orphan row, or nulls out an id `users` just listed.
+    # The table can drift from `principals`, which a map rebuilt from it per boot could not: every
+    # `type='user'` principal must have EXACTLY one `fireflies_users` row, or `user(id:)` either
+    # serves a fabricated user for an orphan row, or nulls out an id `users` just listed.
     user_principals = {r["id"] for r in db.execute("SELECT id FROM principals WHERE type = 'user'")}
     ff_users = {r[0] for r in db.execute("SELECT email FROM fireflies_users")}
     assert user_principals == ff_users
@@ -695,14 +692,6 @@ def test_connect_rw_busy_timeout(tmp_path):
         c.close()
 
 
-# `test_connect_rw_self_heals_missing_path_column` is gone (#51). It pinned the `ALTER TABLE ...
-# ADD COLUMN` self-heal loop that let a github_items built before the `path` column survive
-# `executescript(SCHEMA)`. That loop is gone with it: every column it knew about has since been
-# folded into a primary key or renamed, and any DB old enough to need it is refused outright by the
-# `doc_id` check `test_connect_rw_refuses_a_pre_served_db` covers — there is no longer a DB shape
-# that is both stale and healable.
-
-
 def test_connect_rw_fresh_db_still_works(tmp_path):
     conn = store.connect_rw(tmp_path / "fresh.sqlite")
     try:
@@ -726,9 +715,8 @@ def _write_pre_acl_db(p):
 
 def _write_pre_served_columns_db(p):
     conn = sqlite3.connect(p)
-    # A hand-rolled DB predating #51's identifier consolidation: its documents are keyed on the
-    # dataset's own `doc_id`. That column IS the signal now -- one check covers every table,
-    # replacing the per-column served_* probe this used to need.
+    # A hand-rolled DB keyed on the dataset's own `doc_id`. That column IS the signal, so one
+    # check covers every table.
     conn.execute(
         "CREATE TABLE jira_issues (doc_id TEXT PRIMARY KEY, project TEXT NOT NULL, "
         "author_email TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, "
@@ -1620,10 +1608,9 @@ def test_jira_by_key_applies_the_acl(tmp_path):
 
 
 def test_jira_keys_are_unique_across_projects(tmp_path, monkeypatch):
-    """Replaces `test_jira_by_served_number_is_scoped_to_its_project`, whose subject no longer
-    exists: the lookup was `WHERE project = ? AND served_number = ?`, and that predicate was the
-    only thing keeping two same-suffixed issues in different projects from resolving to each
-    other.
+    """A key is unique across a whole Jira site, so nothing scopes this lookup to a project — and
+    that is the point: `WHERE key = ?` cannot resolve two issues to each other the way a
+    project-scoped suffix lookup could.
 
     Storing the whole key makes the question different rather than smaller. A suffix is still
     unique only within a project, but a KEY is unique site-wide -- which is what real Jira
@@ -1938,8 +1925,7 @@ def test_linear_team_served_ids_are_stored_and_resolve(tmp_path, monkeypatch, or
 
     `synth.linear_team_key` is NOT injective: "night-shift" and "north-star" both reduce to "NS".
     `served_key` therefore carries no UNIQUE index, and the tie must break by team NAME order --
-    the same order `store.list_containers` returns and `main._build_index`'s old `setdefault` loop
-    walked -- so a key that used to resolve to one team keeps resolving to that same team.
+    the same order `store.list_containers` returns -- so the key resolves to one fixed team.
 
     Parametrized over BOTH insertion orders on purpose: with a fixed insertion order the two
     happen to coincide (rowid order already matches name order), so a query with no `ORDER BY`

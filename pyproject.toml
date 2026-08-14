@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
+    { name = "nuri-yoo", email = "yoonuri1@gmail.com" },
     { name = "khj809", email = "onsealeatang@gmail.com" },
 ]
 keywords = ["mock", "rag", "slack", "gmail", "google-drive", "jira", "confluence", "github", "notion", "s3", "amazon-s3", "hubspot", "linear", "graphql", "benchmark"]

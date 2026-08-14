@@ -6,6 +6,7 @@ from datetime import datetime
 import pytest
 
 from backlot import store, validation
+from tests._helpers import served_id
 from backlot.config import Settings
 from backlot.validation import record_errors, validate_file
 from backlot.importer.byo import load
@@ -257,7 +258,7 @@ def test_linear_byo_round_trip_serves_what_it_loaded(tmp_path):
 
     conn = store.connect_ro(settings.db_path)
     try:
-        row = store.get_document(conn, "linear", "byo-1")
+        row = store.get_document(conn, "linear", served_id("linear", "byo-1"))
         assert row["team"] == "platform"
         assert row["identifier"] == "PLA-7"
         assert row["state"] == "Done"
@@ -272,7 +273,9 @@ def test_linear_byo_round_trip_serves_what_it_loaded(tmp_path):
         )
         assert json.loads(row["labels"]) == ["cache"]
         assert store.get_container(conn, "linear", "platform")["group_id"] == "platform"
-        assert [c["body"] for c in store.doc_comments(conn, "linear", "byo-1")] == ["Rolled out."]
+        assert [
+            c["body"] for c in store.doc_comments(conn, "linear", served_id("linear", "byo-1"))
+        ] == ["Rolled out."]
     finally:
         conn.close()
 
@@ -300,11 +303,13 @@ def test_linear_synthesized_identifier_is_resolvable(tmp_path):
     load(corpus, settings)
     conn = store.connect_ro(settings.db_path)
     try:
-        row = store.get_document(conn, "linear", "no-ident")
+        row = store.get_document(conn, "linear", served_id("linear", "no-ident"))
         assert row["identifier"], "identifier must be stored, not left to serve time"
         assert row["identifier"].startswith("ENG-")
         # ...and it resolves through the same lookup `issue(id:)` uses.
-        assert store.linear_issue_by_identifier(conn, row["identifier"])["doc_id"] == "no-ident"
+        assert store.linear_issue_by_identifier(conn, row["identifier"])["id"] == served_id(
+            "linear", "no-ident"
+        )
     finally:
         conn.close()
 

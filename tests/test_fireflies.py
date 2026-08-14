@@ -11,7 +11,7 @@ import sqlite3
 import pytest
 
 from backlot import store
-from tests._helpers import client_for, corpus_client, gql, tiny_corpus
+from tests._helpers import client_for, corpus_client, gql, served_id, tiny_corpus
 
 
 # --- fireflies: POST /fireflies/graphql -----------------------------------------
@@ -115,7 +115,8 @@ def test_fireflies_organizer_falls_back_to_the_host(client, admin_h, ro_conn):
     because Fireflies itself never returns a null organizer for a hosted meeting."""
     assert (
         ro_conn.execute(
-            "SELECT organizer_email FROM fireflies_transcripts WHERE doc_id='ff-discovery'"
+            "SELECT organizer_email FROM fireflies_transcripts WHERE id = ?",
+            (served_id("fireflies", "ff-discovery"),),
         ).fetchone()[0]
         is None
     )

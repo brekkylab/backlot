@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import pytest
 
 from backlot import synth
-from tests._helpers import build_corpus, client_for, corpus_client, db_count
+from tests._helpers import build_corpus, client_for, corpus_client, db_count, served_id
 
 
 # --- Linear (GraphQL) -------------------------------------------------------------
@@ -109,14 +109,14 @@ def test_linear_issue_by_uuid_and_by_identifier(client, admin_h, ro_conn):
     by_uuid = gql(client, "{ issue(id: %s) { identifier } }" % lit(issue["id"]), admin_h)
     assert by_uuid.json()["data"]["issue"]["identifier"] == "ENG-101"
     # PIN, not a correctness check: `_issue`'s `id` (linear_resolvers.py) recomputes
-    # `synth.linear_id(row["doc_id"])` rather than reading `linear_issues.served_id` off the row
+    # `synth.linear_id(...)` rather than reading `linear_issues.id` off the row
     # it already has (#51 -- linear's own document id is unprobed, so the two agree by
     # construction and this is the plan's established pattern for an unprobed source). Trivially
     # true today; it exists to fail the day linear gains a probe -- the exact shape hubspot's own
     # bug took once IT started probing, which is precisely when someone needs to be told the two
     # can now disagree.
     stored = ro_conn.execute(
-        "SELECT served_id FROM linear_issues WHERE identifier = 'ENG-101'"
+        "SELECT id FROM linear_issues WHERE identifier = 'ENG-101'"
     ).fetchone()[0]
     assert issue["id"] == stored
 
@@ -397,7 +397,7 @@ def test_linear_sort_input_overrides_the_default_ordering(client, admin_h):
 
 def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):
     """Linear DEFINES `children` as the inverse of `parent`, so the two must never disagree. They
-    are both read off the `parent_doc_id` resolved at import rather than joined on `identifier`,
+    are both read off the `parent_id` resolved at import rather than joined on `identifier`,
     because bench keys repeat — a join would attach one issue's children to every issue sharing
     its key."""
     kids = gql(
@@ -417,7 +417,7 @@ def test_linear_children_is_acl_scoped(client, admin_h, tokens_yaml):
     denied = gql(client, '{ issue(id: "ENG-103") { children { nodes { identifier } } } }', ava)
     assert "Entity not found" in denied.json()["errors"][0]["message"]
     # Same denial via the OTHER spelling `issue(id:)` accepts: the served UUID. This exercises
-    # `linear_by_served_id`'s own ACL clause rather than `linear_issue_by_identifier`'s (the
+    # `linear_by_id`'s own ACL clause rather than `linear_issue_by_identifier`'s (the
     # denial above never reaches the UUID lookup at all, since ava's query never named one).
     uuid = gql(client, '{ issue(id: "ENG-103") { id } }', admin_h).json()["data"]["issue"]["id"]
     denied_by_uuid = gql(client, "{ issue(id: %s) { identifier } }" % lit(uuid), ava)
@@ -527,7 +527,7 @@ def test_linear_issue_with_no_relations_returns_empty_connections(client, admin_
 
 
 def test_linear_parent_and_children_read_the_same_column(client, admin_h, ro_conn):
-    """Both directions must consult the resolved `parent_doc_id`, not two independent lookups
+    """Both directions must consult the resolved `parent_id`, not two independent lookups
     that happen to agree — that is the whole reason the key is resolved once at import.
 
     Also a performance contract: `@linear/sdk`'s Issue fragment selects `parent { id }` on every
@@ -535,11 +535,12 @@ def test_linear_parent_and_children_read_the_same_column(client, admin_h, ro_con
     # `ro_conn` is the SAMPLE db; a fresh get_settings() would follow whatever BACKLOT_DATA_DIR
     # another module last set, which is why this reads the fixture instead.
     row = ro_conn.execute(
-        "SELECT doc_id, parent_doc_id, parent_key FROM linear_issues WHERE doc_id = 'lin-batch'"
+        "SELECT id, parent_id, parent_key FROM linear_issues WHERE id = ?",
+        (served_id("linear", "lin-batch"),),
     ).fetchone()
-    # the import pass resolved the KEY into a doc_id
+    # the import pass resolved the KEY into the parent's own id
     assert row["parent_key"] == "ENG-103"
-    assert row["parent_doc_id"] == "lin-secret"
+    assert row["parent_id"] == served_id("linear", "lin-secret")
     served = gql(client, '{ issue(id: "ENG-102") { parent { identifier } } }', admin_h).json()[
         "data"
     ]["issue"]["parent"]
@@ -674,7 +675,7 @@ def test_empty_in_list_matches_nothing_and_empty_nin_matches_everything(fclient)
 
 def test_issue_filter_by_id_resolves_both_key_spaces_and_a_bogus_id_matches_nothing(fclient):
     """`IssueFilter.id` accepts the same two spellings `issue(id:)` does (#51): a served UUID, or
-    the human identifier. `_resolve_issue_ids` translates a filter's `id` values to doc_ids
+    the human identifier. `_resolve_issue_ids` translates a filter's `id` values to issue ids
     before the query runs, so both must resolve -- and a value that resolves to NEITHER must
     substitute the sentinel `"\\x00none"`, matching nothing, rather than being dropped (which
     would silently turn the filter into "match everything")."""
@@ -949,13 +950,13 @@ def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
         assert "data" in missing.json() and missing.json()["errors"]
 
 
-def test_linear_issue_resolves_first_by_doc_id_when_identifier_repeats(tmp_path):
+def test_linear_issue_resolves_first_by_id_when_identifier_repeats(tmp_path):
     """`identifier` is not unique -- 107 issues share one key in a real corpus (#51, see the
     schema comment on `linear_issues.parent_key`) -- so `issue(id: "DUP-1")` deliberately answers
     the first match BY DOC_ID rather than pretending the lookup is unambiguous. `store.
     linear_issue_by_identifier` already carries this rule (unchanged by this task); this pins
     that `resolve_issue`'s new served-id-first stage still falls through to it for an
-    identifier -- a served UUID lookup can never itself be ambiguous like this, since served_id
+    identifier -- a served UUID lookup can never itself be ambiguous like this, since `id`
     is UNIQUE. Placed after every `client`-fixture test in this module, not beside its sibling
     `issue(id:)` tests above: it opens a SECOND app over a different DB via `corpus_client`,
     which overwrites the module-scoped `client` fixture's shared `app.state` (see

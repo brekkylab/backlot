@@ -18,7 +18,7 @@ import pytest
 
 from backlot import oauth, store
 from backlot.config import Settings
-from tests._helpers import crawl_drive, crawl_gmail, db_count, tiny_corpus, tok
+from tests._helpers import crawl_drive, crawl_gmail, db_count, tiny_corpus, tok, served_id
 
 
 # --- admin full-crawl completeness ---------------------------------------------
@@ -90,7 +90,7 @@ def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     from backlot import synth
 
     row = _a_gmail_row(ro_conn)
-    hexid = synth.gmail_message_id(row["doc_id"])
+    hexid = row["id"]
     m = client.get(
         f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h, params={"format": "full"}
     ).json()
@@ -98,7 +98,7 @@ def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     assert base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode() == row["content"]
     # The stored column is lowercase hex, but a client may spell the id in either case (Gmail's ids
     # are case-insensitive hex) -- resolution must fold case rather than requiring the exact stored
-    # spelling. `store.gmail_by_served_id` is the one place that has to do this.
+    # spelling. `store.gmail_by_id` is the one place that has to do this.
     upper = client.get(
         f"/gmail/v1/users/me/messages/{hexid.upper()}", headers=admin_h, params={"format": "full"}
     ).json()
@@ -115,10 +115,10 @@ def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin
     ).fetchone()
     if row is None:
         row = ro_conn.execute(
-            "SELECT * FROM gmail_messages WHERE thread_id = doc_id LIMIT 1"
+            "SELECT * FROM gmail_messages WHERE thread_id = id LIMIT 1"
         ).fetchone()
     assert row is not None, "SAMPLE should hold a message that is its own thread"
-    hexid = synth.gmail_message_id(row["doc_id"])
+    hexid = row["id"]
     m = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h).json()
     assert m["id"] == m["threadId"] == hexid
     t = client.get(f"/gmail/v1/users/me/threads/{hexid}", headers=admin_h)
@@ -130,13 +130,12 @@ def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
 
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE COALESCE(thread_id,'') != '' "
-        "AND thread_id != doc_id LIMIT 1"
+        "AND thread_id != id LIMIT 1"
     ).fetchone()
     assert row is not None, "SAMPLE should hold a threaded reply"
-    m = client.get(
-        f"/gmail/v1/users/me/messages/{synth.gmail_message_id(row['doc_id'])}", headers=admin_h
-    ).json()
-    assert m["threadId"] == synth.gmail_message_id(row["thread_id"])
+    m = client.get(f"/gmail/v1/users/me/messages/{row['id']}", headers=admin_h).json()
+    # `thread_id` holds the ROOT'S OWN served id (#51) — no re-derivation on either side.
+    assert m["threadId"] == row["thread_id"]
     assert m["id"] != m["threadId"]
 
 
@@ -147,7 +146,7 @@ def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_co
         "SELECT * FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
     ).fetchone()
     assert row is not None, "SAMPLE should hold a message with an attachment"
-    hexid = synth.gmail_message_id(row["doc_id"])
+    hexid = row["id"]
     m = client.get(
         f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h, params={"format": "full"}
     ).json()
@@ -197,9 +196,9 @@ def test_gmail_an_unparsable_id_is_an_invalid_argument(client, admin_h, mid):
 
 
 def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_conn):
-    """Resolving a served id must not become a way around the ACL. `served_id` is a column, not a
+    """Resolving a served id must not become a way around the ACL. `id` is the primary key, not a
     per-caller view — it names the SAME row regardless of who asks — so `visible_ids` has to be
-    part of the query that reads it (`store.gmail_by_served_id`'s ACL-scoped lookup), not a
+    part of the query that reads it (`store.gmail_by_id`'s ACL-scoped lookup), not a
     separate check applied only after an unscoped resolve. The CFO's comp review is granted to cfo
     alone."""
     from backlot import synth
@@ -207,7 +206,7 @@ def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_co
     row = ro_conn.execute(
         "SELECT * FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
     ).fetchone()
-    hexid = synth.gmail_message_id(row["doc_id"])
+    hexid = row["id"]
     assert client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h).status_code == 200
     cfo = {"Authorization": f"Bearer {tok(tokens_yaml, 'cfo@acme.com')}"}
     assert client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=cfo).status_code == 200
@@ -222,7 +221,7 @@ def test_gmail_body_roundtrip(client, admin_h, ro_conn):
 
     doc = ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
     m = client.get(
-        f"/gmail/v1/users/me/messages/{synth.gmail_message_id(doc['doc_id'])}",
+        f"/gmail/v1/users/me/messages/{doc['id']}",
         headers=admin_h,
         params={"format": "full"},
     ).json()
@@ -234,19 +233,19 @@ def test_gmail_body_roundtrip(client, admin_h, ro_conn):
 
 def test_gmail_messages_list_ordered_by_internaldate_desc(client, admin_h, ro_conn):
     # Real Gmail returns messages.list newest-first by internalDate. Regression (#11): the mock
-    # listed by doc_id (hash order), so a capped "newest N" was effectively random by date.
+    # listed by id (hash order), so a capped "newest N" was effectively random by date.
     listed = client.get(
         "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 50}
     ).json()["messages"]
     got = [m["id"] for m in listed]
-    # the stable total order the endpoint must produce: created_ts DESC, doc_id ASC as tie-break
+    # the stable total order the endpoint must produce: created_ts DESC, id ASC as tie-break
     # the served ids are hex (#39), so the expectation is the hex of that stable order
     from backlot import synth
 
     expected = [
-        synth.gmail_message_id(r["doc_id"])
+        r["id"]
         for r in ro_conn.execute(
-            "SELECT doc_id FROM gmail_messages ORDER BY created_ts DESC, doc_id LIMIT 50"
+            "SELECT id FROM gmail_messages ORDER BY created_ts DESC, id LIMIT 50"
         ).fetchall()
     ]
     assert got == expected
@@ -289,14 +288,14 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
     # client can stat an attachment from message metadata alone. Regression: the part reported the
     # corpus-declared `size` (e.g. 2048) while attachments.get returned len(content) — a mismatch.
     row = ro_conn.execute(
-        "SELECT doc_id FROM gmail_messages WHERE attachments IS NOT NULL "
+        "SELECT id FROM gmail_messages WHERE attachments IS NOT NULL "
         "AND attachments != '[]' LIMIT 1"
     ).fetchone()
     if row is None:
         pytest.skip("no gmail message with an attachment in this subset")
     from backlot import synth
 
-    hexid = synth.gmail_message_id(row["doc_id"])
+    hexid = row["id"]
     m = client.get(
         f"/gmail/v1/users/me/messages/{hexid}", headers=admin_h, params={"format": "full"}
     ).json()
@@ -315,11 +314,11 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
 
 def test_drive_export_roundtrip(client, admin_h, ro_conn):
     doc = ro_conn.execute("SELECT * FROM gdrive_files LIMIT 1").fetchone()
-    # The row's own `served_id` (#51, task 12), not the corpus `doc_id` -- that used to be exactly
+    # The row's own `id` (#51, task 12), not the corpus's own identifier -- that used to be exactly
     # what Drive served as the file id, the defect this task fixes; a test that kept hitting the
-    # route by doc_id would stop exercising the served-id resolution path without ever noticing.
+    # route by the corpus id would stop exercising the id resolution path without noticing.
     text = client.get(
-        f"/drive/v3/files/{doc['served_id']}/export",
+        f"/drive/v3/files/{doc['id']}/export",
         headers=admin_h,
         params={"mimeType": "text/plain"},
     ).text
@@ -453,14 +452,14 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
     # a private gmail doc owned by user B, fetched with user A's token -> 404
     user_a, user_b = tokens_yaml["users"][0], tokens_yaml["users"][1]
     doc = ro_conn.execute(
-        "SELECT doc_id FROM gmail_messages WHERE author_email=? LIMIT 1",
+        "SELECT id FROM gmail_messages WHERE author_email=? LIMIT 1",
         (user_b["email"],),
     ).fetchone()
     if doc is None:
         pytest.skip("no gmail doc for user B in this subset")
     from backlot import synth
 
-    hexid = synth.gmail_message_id(doc["doc_id"])  # served ids are hex, not dsids (#39)
+    hexid = doc["id"]  # served ids are hex, not dsids (#39)
     ah = {"Authorization": f"Bearer {user_a['token']}"}
     r = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=ah)
     # A may coincidentally be a recipient; assert admin can always read it
@@ -718,7 +717,7 @@ def test_drive_responses_unchanged_by_enrichment(client, admin_h):
         assert k in full, f"drive file missing {k} (fidelity regression)"
     # permissions.list has to resolve the same served id, for an actual FILE and not only for the
     # folder id `test_drive_folder_permissions_resolve` covers (#51, task 12) -- both routes
-    # resolve through store.gdrive_by_served_id now, and only the folder path was exercised before.
+    # resolve through store.gdrive_by_id now, and only the folder path was exercised before.
     perms = client.get(f"/drive/v3/files/{doc['id']}/permissions", headers=admin_h)
     assert perms.status_code == 200
 
@@ -1207,15 +1206,21 @@ def admin_h(live_server):
     return {"Authorization": f"Bearer {live_server[1].admin_token}"}
 
 
-def _drive_by_mime(base, admin_h, mime):
-    """A visible Drive file id + name for the given native mimeType."""
+def _drive_by_mime(base, admin_h, mime, *, name: str | None = None):
+    """A visible Drive file id + name for the given native mimeType.
+
+    ``name`` picks a SPECIFIC file, and callers that go on to assert the file's contents pass it.
+    Taking "whichever comes first" made those assertions depend on the listing order, which is the
+    order of an opaque synthesized id (#51) — so a corpus holding two spreadsheets could hand a
+    content assertion the wrong one, and the test would read as a content bug rather than as the
+    arbitrary pick it was."""
     r = httpx.get(
         f"{base}/drive/v3/files", headers=admin_h, params={"q": "trashed=false", "pageSize": 1000}
     ).json()
     for f in r["files"]:
-        if f["mimeType"] == mime:
+        if f["mimeType"] == mime and (name is None or f["name"] == name):
             return f["id"], f["name"]
-    raise AssertionError(f"no {mime} in corpus")
+    raise AssertionError(f"no {mime} named {name!r} in corpus" if name else f"no {mime} in corpus")
 
 
 # --- Drive navigability ---------------------------------------------------------
@@ -1275,7 +1280,9 @@ def test_sheets_get_withholds_grid_data_by_default(base, admin_h):
     document it built had a different layout in the two environments.
 
     `ranges` alone does not unlock it either — also measured."""
-    fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
+    fid, _ = _drive_by_mime(
+        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
+    )
     for params in ({}, {"ranges": "Sheet1!A1:A2"}):
         sh = httpx.get(
             f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h, params=params
@@ -1292,7 +1299,9 @@ def test_sheets_get_returns_grid_when_asked(base, admin_h):
     """One row per stored line, one cell per row holding the line verbatim. This used to split on
     commas, which over the real corpus manufactured columns out of prose punctuation — see
     `_sheets_grid`; the corpus has no delimiter-uniform CSV at all."""
-    fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
+    fid, _ = _drive_by_mime(
+        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
+    )
     sh = httpx.get(
         f"{base}/sheets/v4/spreadsheets/{fid}", headers=admin_h, params={"includeGridData": "true"}
     ).json()
@@ -1312,7 +1321,9 @@ def test_sheets_get_returns_grid_when_asked(base, admin_h):
 def test_sheets_get_grid_data_honours_ranges(base, admin_h):
     """Measured: `ranges` + `includeGridData` scopes the returned rowData to the range (a real
     workbook went 5.7 MB -> 11 KB for `A1:B2`)."""
-    fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
+    fid, _ = _drive_by_mime(
+        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
+    )
     sh = httpx.get(
         f"{base}/sheets/v4/spreadsheets/{fid}",
         headers=admin_h,
@@ -1362,7 +1373,9 @@ def test_editor_apis_treat_another_native_type_as_not_found(base, admin_h):
     The mock used to serve these 200, reinterpreting the file: a Doc read through the Sheets API
     came back as a "grid" of prose, plausible enough that a client would trust it."""
     doc, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
-    sheet, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
+    sheet, _ = _drive_by_mime(
+        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
+    )
     deck, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.presentation")
     for path, label in [
         (f"/sheets/v4/spreadsheets/{doc}", "a Doc through Sheets"),
@@ -1444,7 +1457,9 @@ def test_wrong_type_is_refused_before_it_is_read(base, live_server):
         for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
     }
     admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
-    sheet, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
+    sheet, _ = _drive_by_mime(
+        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
+    )
     outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # cannot see the finance sheet
     assert httpx.get(f"{base}/docs/v1/documents/{sheet}", headers=outsider).status_code == 404
 
@@ -1458,7 +1473,9 @@ def test_editor_apis_enforce_acl(base, live_server):
         for u in yaml.safe_load(live_server[1].tokens_path.read_text())["users"]
     }
     admin_h = {"Authorization": f"Bearer {live_server[1].admin_token}"}
-    fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
+    fid, _ = _drive_by_mime(
+        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
+    )
     outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}  # marketing, not finance
     assert httpx.get(f"{base}/sheets/v4/spreadsheets/{fid}", headers=outsider).status_code == 404
 
@@ -1483,7 +1500,9 @@ GRID = [["month,revenue"], ["Jan,120000"], ["Feb,135000"]]
 
 @pytest.fixture(scope="module")
 def sheet_id(base, admin_h):
-    fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.spreadsheet")
+    fid, _ = _drive_by_mime(
+        base, admin_h, "application/vnd.google-apps.spreadsheet", name="Q1 Revenue Model"
+    )
     return fid
 
 
@@ -1564,7 +1583,7 @@ def test_sheets_values_serve_a_blank_line_as_an_empty_row(base, admin_h):
 
     # `gd-blankline`'s served id (#51, task 12), built to reach a known fixture by its stable
     # doc_id -- unlike an assertion, constructing a REQUEST url this way is the same precedent
-    # test_gmail_attachment_size_matches_part_metadata uses (`synth.gmail_message_id(row["doc_id"])`
+    # test_gmail_attachment_size_matches_part_metadata uses (`row["id"]`
     # to build the message url), not the "assert synth.fn(doc_id) at a route" anti-pattern.
     served_id = synth.gdrive_file_id("gd-blankline")
     j = _values(base, admin_h, served_id, "Sheet1").json()
@@ -1931,15 +1950,15 @@ def test_drive_permissions_and_trashed(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    perms = _drive_permissions(conn, "d1")
+    perms = _drive_permissions(conn, served_id("google_drive", "d1"))
     # public share is type "anyone" (not "domain"), and an owner permission exists
     assert any(p["type"] == "anyone" for p in perms)
     assert any(p["role"] == "owner" for p in perms)
     # group-restricted doc surfaces a group-type permission
-    gperms = _drive_permissions(conn, "d2")
+    gperms = _drive_permissions(conn, served_id("google_drive", "d2"))
     assert any(p["type"] == "group" for p in gperms)
     # trashed excluded from a default `q`, included when asked
-    d2 = store.get_document(conn, "google_drive", "d2")
+    d2 = store.get_document(conn, "google_drive", served_id("google_drive", "d2"))
     assert _drive_q_match(d2, "trashed = false") is False
     assert _drive_q_match(d2, "trashed = true") is True
 
@@ -2027,11 +2046,15 @@ def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    native = _drive_file(conn, store.get_document(conn, "google_drive", "n1"))
+    native = _drive_file(
+        conn, store.get_document(conn, "google_drive", served_id("google_drive", "n1"))
+    )
     assert native["size"] == str(len("hello there"))
     # checksums and a download link stay binary-only, as they are on real Drive
     assert "md5Checksum" not in native and "webContentLink" not in native
-    binary = _drive_file(conn, store.get_document(conn, "google_drive", "b1"))
+    binary = _drive_file(
+        conn, store.get_document(conn, "google_drive", served_id("google_drive", "b1"))
+    )
     assert binary["size"] == str(len("%PDF-1.7")) and binary["md5Checksum"]
 
 
@@ -2056,7 +2079,7 @@ def test_gmail_raw_and_headers(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    row = store.get_document(conn, "gmail", "m1")
+    row = store.get_document(conn, "gmail", served_id("gmail", "m1"))
     # raw format returns the base64url RFC822 message, no parsed payload
     raw = _gmail_message(row, "raw")
     assert "raw" in raw and "payload" not in raw
@@ -2103,7 +2126,7 @@ def test_gmail_raw_with_attachment_is_valid_mime(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    row = store.get_document(conn, "gmail", "m2")
+    row = store.get_document(conn, "gmail", served_id("gmail", "m2"))
     raw = _gmail_message(row, "raw")
     import base64
     import email

@@ -844,17 +844,17 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
         assert store.confluence_by_id(conn, sid)["id"] == sid
     conn.close()
 
-    # A re-import is NOT refused here, and that is a documented residue rather than an oversight
-    # (#51). The append guard that catches this for github and jira works by making the record
-    # state its own identity -- and a confluence page or a hubspot record has no field in which to
-    # state one, so there is nothing to check. The probe recomputes ids from the seed, the rows
-    # that walked off theirs get different ones, and the re-imported corpus lands a SECOND time.
-    # Pinned so the limitation is visible in the suite rather than discovered in a corpus.
-    byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
+    # A re-import is REFUSED. This was #51's one open residue -- confluence and hubspot are probed
+    # like github and jira, but had no field in which to state an identity, so a re-imported row
+    # was recomputed, landed on a different id and duplicated in silence. `content_id` /
+    # `record_id` closed it: an append that omits one is refused, the same rule the other two
+    # probed sources already followed.
+    with pytest.raises(SystemExit, match="must carry"):
+        byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
     conn = store.connect_ro(s.db_path)
-    assert set(served) <= {r["id"] for r in conn.execute("SELECT id FROM confluence_pages")}, (
-        "the ids assigned by the first import must still resolve"
-    )
+    assert sorted(r["id"] for r in conn.execute("SELECT id FROM confluence_pages")) == sorted(
+        served
+    ), "the refused append left every id exactly as the first import assigned it"
     conn.close()
 
 
@@ -1142,17 +1142,17 @@ def test_hubspot_served_ids_probe_on_a_collision_and_stay_stable_across_a_reimpo
         assert row is not None and row["id"] == sid
     conn.close()
 
-    # A re-import is NOT refused here, and that is a documented residue rather than an oversight
-    # (#51). The append guard that catches this for github and jira works by making the record
-    # state its own identity — and a confluence page or a hubspot record has no field in which to
-    # state one, so there is nothing to check. The probe recomputes ids from the seed, the rows
-    # that walked off theirs get different ones, and the re-imported corpus lands a SECOND time.
-    # Pinned so the limitation is visible in the suite rather than discovered in a corpus.
-    byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
+    # A re-import is REFUSED. This was #51's one open residue -- confluence and hubspot are probed
+    # like github and jira, but had no field in which to state an identity, so a re-imported row
+    # was recomputed, landed on a different id and duplicated in silence. `content_id` /
+    # `record_id` closed it: an append that omits one is refused, the same rule the other two
+    # probed sources already followed.
+    with pytest.raises(SystemExit, match="must carry"):
+        byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
     conn = store.connect_ro(s.db_path)
-    assert set(served) <= {r["id"] for r in conn.execute("SELECT id FROM hubspot_objects")}, (
-        "the ids assigned by the first import must still resolve"
-    )
+    assert sorted(r["id"] for r in conn.execute("SELECT id FROM hubspot_objects")) == sorted(
+        served
+    ), "the refused append left every id exactly as the first import assigned it"
     conn.close()
 
 

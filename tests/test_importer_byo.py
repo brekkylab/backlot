@@ -2461,6 +2461,9 @@ def test_append_accumulates_source_documents(tmp_path):
             {
                 "source_type": "confluence",
                 "space": "h",
+                # An append into a probed source states the id it wants (#51 follow-up): without
+                # one this row could not be told apart from a re-import of the first.
+                "content_id": 4242,
                 "title": "B",
                 "content": "b",
                 "author_email": "ava@acme.com",
@@ -3261,6 +3264,103 @@ def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):
     with pytest.raises(SystemExit) as e:
         load(second, settings, reset=False)
     assert "BILL" in str(e.value) and "PAY-1" in str(e.value)
+
+
+def test_byo_a_stated_id_is_served_verbatim_by_every_probed_source(tmp_path):
+    """confluence and hubspot state their served id the way github states `number` and jira states
+    `key` (`content_id` / `record_id`). Three properties, one corpus:
+
+    a stated id is served verbatim; a keyless sibling probes around it rather than onto it; and a
+    SECOND record asking for the same id is refused rather than replacing the first — the upsert's
+    conflict target is that very id, so without the claim check it would `DO UPDATE` and lose a
+    document at the id it was reachable by.
+
+    The keyless sibling is what makes the "rather than onto it" half real: its own seed is free to
+    collide with the stated value, and only assigning stated ids FIRST, corpus-wide, keeps it off.
+    """
+    from tests._helpers import build_corpus
+
+    def page(doc_id, title, **extra):
+        return {
+            "source_type": "confluence",
+            "space": "eng",
+            "doc_id": doc_id,
+            "title": title,
+            "content": "c",
+            "author_email": "a@acme.com",
+            **extra,
+        }
+
+    s = build_corpus(
+        tmp_path,
+        [
+            page("p1", "Stated", content_id=90001),
+            page("p2", "Keyless"),
+            {
+                "source_type": "hubspot",
+                "object_type": "companies",
+                "doc_id": "h1",
+                "title": "Stated Co",
+                "content": "c",
+                "author_email": "a@acme.com",
+                "record_id": "7011234567",
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    pages = {r["title"]: r["id"] for r in conn.execute("SELECT title, id FROM confluence_pages")}
+    assert pages["Stated"] == 90001
+    assert pages["Keyless"] != 90001
+    assert conn.execute("SELECT id FROM hubspot_objects").fetchone()["id"] == "7011234567"
+    conn.close()
+
+    # A second record asking for a taken id is refused, and the refusal names the holder.
+    with pytest.raises(SystemExit, match="content_id 90001 is already claimed"):
+        build_corpus(
+            tmp_path / "clash",
+            [page("p1", "Stated", content_id=90001), page("pX", "Clash", content_id=90001)],
+        )
+
+
+def test_byo_a_comment_id_follows_its_parents_settled_key(tmp_path):
+    """A child row's own id is composed from its parent's SERVED key, and a deferred source's key
+    is not settled until every record has been seen — so the comment written while its parent still
+    held a provisional key has to be recomposed when the parent moves.
+
+    Without that, a comment on a KEYLESS jira issue or confluence page was served under
+    `-unassigned-3::c1`. It stayed hidden because every fixture that paired comments with a
+    deferred parent happened to STATE that parent's key, in which case no provisional is ever used.
+    So both halves are asserted here: the keyless parent is the regression, the stated one is the
+    control that used to pass on its own.
+    """
+    from tests._helpers import build_corpus
+
+    def issue(doc_id, title, **extra):
+        return {
+            "source_type": "jira",
+            "project": "payments",
+            "doc_id": doc_id,
+            "title": title,
+            "content": "c",
+            "author_email": "a@acme.com",
+            "comments": [{"content": "first", "author_email": "b@acme.com"}],
+            **extra,
+        }
+
+    s = build_corpus(tmp_path, [issue("j1", "Keyless"), issue("j2", "Stated", key="PAY-7")])
+    conn = store.connect_ro(s.db_path)
+    try:
+        keyed = {r["title"]: r["key"] for r in conn.execute("SELECT title, key FROM jira_issues")}
+        comments = {r["key"]: r["id"] for r in conn.execute("SELECT key, id FROM jira_comments")}
+        for title in ("Keyless", "Stated"):
+            parent = keyed[title]
+            assert comments[parent] == f"{parent}::c1", (
+                f"{title} parent: the comment id did not follow its parent's settled key"
+            )
+        # ...and the provisional spelling reaches no row at all.
+        assert not any("unassigned" in cid for cid in comments.values())
+    finally:
+        conn.close()
 
 
 def test_byo_a_derived_number_no_longer_moves_across_append(tmp_path):

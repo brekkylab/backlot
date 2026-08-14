@@ -522,9 +522,23 @@ def _load_one(conn, src, dsid, raw, P, org="redwood", loader=None):
     for rec in records:
         ldr.add(rec, dsid)
     if loader is None:
-        ldr.resolve_cross_references()
-        ldr.write_containers()
+        _resolve(ldr)
     return bundle
+
+
+def _resolve(ldr):
+    """Every deferred pass a real load runs after the last record, in the same order.
+
+    A probed source lands under a PROVISIONAL key and is settled here (#51), so a test that calls
+    `add` directly and then reads the row back has to run these or it reads `-unassigned-1`. Kept
+    as one helper so the order stays in one place — `byo.load_records` is the other caller."""
+    ldr.resolve_github_numbers()
+    ldr.resolve_jira_keys()
+    ldr.resolve_probed_ids("confluence")
+    ldr.resolve_probed_ids("hubspot")
+    ldr.resolve_parents()
+    ldr.resolve_cross_references()
+    ldr.write_containers()
 
 
 def test_to_epoch_formats():
@@ -1619,7 +1633,7 @@ def test_linear_second_pass_resolves_keys_and_drops_dangling():
     # The child is loaded BEFORE its parent, which is the case a single pass cannot handle.
     _load_one(conn, "linear", "d_child", child, P, loader=loader)
     _load_one(conn, "linear", "d_parent", parent, P, loader=loader)
-    loader.resolve_cross_references()
+    _resolve(loader)
 
     row = conn.execute(
         "SELECT parent_id FROM linear_issues WHERE id = ?", (served_id("linear", "d_child"),)

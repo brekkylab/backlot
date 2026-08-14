@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/brekkylab/backlot/schemas/hubspot.schema.json",
-  "title": "BYO corpus record — hubspot",
-  "description": "A HubSpot CRM record (contact, company, deal, ticket, note, …). `object_type` is the grouping unit, because the CRM API is polymorphic over `{objectType}` and supports custom objects. HubSpot's typed fields live in `properties` and are searchable by name; `title`/`content` are the retrieval-facing text a record has no natural body for (a contact is properties, not prose). `associations` link records by doc_id — declare each link once and the loader materialises the reverse direction too.",
+  "title": "BYO corpus record \u2014 hubspot",
+  "description": "A HubSpot CRM record (contact, company, deal, ticket, note, \u2026). `object_type` is the grouping unit, because the CRM API is polymorphic over `{objectType}` and supports custom objects. HubSpot's typed fields live in `properties` and are searchable by name; `title`/`content` are the retrieval-facing text a record has no natural body for (a contact is properties, not prose). `associations` link records by doc_id \u2014 declare each link once and the loader materialises the reverse direction too.",
   "type": "object",
   "properties": {
     "source_type": {
@@ -11,7 +11,7 @@
     "content": {
       "type": "string",
       "minLength": 1,
-      "description": "The retrieval payload — for a note/email/meeting its body; for a contact/company/deal a readable summary of the record."
+      "description": "The retrieval payload \u2014 for a note/email/meeting its body; for a contact/company/deal a readable summary of the record."
     },
     "title": {
       "type": "string",
@@ -20,6 +20,11 @@
     "doc_id": {
       "type": "string",
       "description": "Stable id (default: dsid_<sha256(source_type+title+content)>). Association targets reference this."
+    },
+    "record_id": {
+      "type": "string",
+      "pattern": "^[0-9]+$",
+      "description": "The id `/crm/v3/objects/{objectType}/{id}` serves this record under, as the corpus writes it. Stored and served verbatim. An omitted id is synthesized from the doc_id and assigned at import, probed so it stays unique. Provide one when APPENDING to a corpus that already has hubspot records: without it a re-imported record cannot be told apart from a new one."
     },
     "object_type": {
       "type": "string",
@@ -61,7 +66,7 @@
       "items": {
         "type": "string"
       },
-      "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
+      "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility \u2014 and an EMPTY array means nobody may read the document (admin-only), not everybody."
     },
     "meta": {
       "type": "object",
@@ -69,7 +74,7 @@
     },
     "properties": {
       "type": "object",
-      "description": "HubSpot typed property values, keyed by internal property name (firstname, dealname, amount, …). Search filters can name any of these."
+      "description": "HubSpot typed property values, keyed by internal property name (firstname, dealname, amount, \u2026). Search filters can name any of these."
     },
     "associations": {
       "type": "array",

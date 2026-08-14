@@ -80,6 +80,35 @@ def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+# The sources whose served id is PROBED, mapped to the record field a corpus states one in.
+#
+# All four defer their assignment to the end of the load, and for one reason: a provided value must
+# claim its spelling ahead of every synthesized one, corpus-wide, and a record arriving early cannot
+# know what a later one will provide. Streaming the probe instead would let an early keyless row
+# take the value a later record asks for outright -- which then fails on the primary key, with a
+# message about a constraint rather than about the corpus.
+#
+# The field is named the way the VENDOR names that id, qualified when the vendor calls it plain
+# `id` so it cannot be read as the corpus's own `doc_id` -- the same rule fireflies' own
+# `transcript_id` follows.
+DEFERRED_ID = {
+    "github": "number",
+    "jira": "key",
+    "confluence": "content_id",
+    "hubspot": "record_id",
+}
+
+# The separator between a child row's parent key and its position. `_settle` recomposes the id in
+# SQL when the parent moves, so this literal is the one definition both sides read -- pinned by
+# test_byo_a_comment_id_follows_its_parents_settled_key.
+_CHILD_SEP = "::c"
+
+
+def _child_id(parent_key, seq: int) -> str:
+    """A child row's own id: its parent's SERVED key plus its position in the thread."""
+    return f"{parent_key}{_CHILD_SEP}{seq}"
+
+
 # Distinguishes "no claim on this value" from "claimed by a row whose dataset id is unknown"
 # (one carried over from an earlier run, where there is no dataset id left to record). A plain
 # `.get()` default of None would conflate the two and let a re-import silently re-claim.
@@ -264,6 +293,9 @@ def _service_columns(
         }
     if src == "confluence":
         return {
+            # The id the corpus asked for, or None for the deferred pass to fill -- the same
+            # provided-or-NULL shape github's `number` and jira's `key` use.
+            "id": ex.get("content_id"),
             "subtype": subtype or "page",
             "parent_id": parent_id,
             "labels": _j(ex.get("labels")),
@@ -306,6 +338,7 @@ def _service_columns(
         # container. HubSpot's typed fields stay in one JSON column because search filters may
         # name any property (see backlot/schemas/hubspot.schema.json).
         return {
+            "id": ex.get("record_id"),
             "properties": _j(ex.get("properties")),
             "archived": (1 if ex.get("archived") else None),
             "created_ts": created,
@@ -748,37 +781,33 @@ class _Loader:
             f"range; no served id is free for {stored_id!r}"
         )
 
-    def _assign_confluence_id(self, doc_id: str) -> int:
-        """The `id` this page will be served as: unique, matching real Confluence's numeric
-        content ids, and stable.
+    def _assign_confluence_id(self, seed: str, taken: set) -> int:
+        """The `id` this page will be served as: unique, matching real Confluence's numeric content
+        ids, and stable.
 
-        Seeded from the doc_id so the same corpus always produces the same ids, then probed with
-        a salt until free — a plain hash collides by the birthday bound long before a corpus runs
-        out of pages, and a shared id used to mean the reverse map built at startup was
-        last-writer-wins, so one of the two colliding pages was unreachable at its own id. A page
-        already in the DB keeps the id it has, so a re-import does not renumber it.
+        Seeded from the incoming record's own id so the same corpus always produces the same ids,
+        then probed against `taken` until free — a plain hash collides by the birthday bound long
+        before a corpus runs out of pages, and a shared id used to mean one of the two colliding
+        pages was unreachable at its own id.
 
-        Same probe shape as `_assign_github_number`/`_assign_jira_number` (#51, task 11): re-seed a
-        few times to spread out, THEN walk — but the walk is BOUNDED. Past
-        `synth.CONFLUENCE_ID_RANGE` steps every id `synth.confluence_id` can produce has been
-        visited, so this corpus has more pages than the space holds, and an unbounded walk would
-        spin forever instead of failing where the problem actually is.
+        Called only from :meth:`resolve_probed_ids`, never from `add`: which ids are already taken
+        depends on the WHOLE corpus, including the ids a later record may state outright, so this
+        cannot run while records are still streaming in.
+
+        Re-seed a few times to spread out, THEN walk — the walk is what makes termination
+        unconditional, and it is BOUNDED: past `synth.CONFLUENCE_ID_RANGE` steps every id
+        `synth.confluence_id` can produce has been visited, so this corpus has more pages than the
+        space holds, and an unbounded walk would spin forever instead of failing where the problem
+        actually is.
         """
-        if doc_id in self._confluence_ids:
-            return self._confluence_ids[doc_id]
-        seed = store.id_seed("confluence")
-        served = seed(doc_id)
-        # Re-seed a few times, then walk. Re-seeding keeps ids spread out, but it only terminates
-        # if the hash actually varies with the salt — walking is what makes termination
-        # unconditional, and it cannot spin as long as the range has a free value.
+        seed_fn = store.id_seed("confluence")
+        served = seed_fn(seed)
         for salt in range(1, 9):
-            if served not in self._confluence_ids_taken:
+            if served not in taken:
                 break
-            served = seed(f"{doc_id}\x00{salt}")
+            served = seed_fn(f"{seed}\x00{salt}")
         for _ in range(synth.CONFLUENCE_ID_RANGE):
-            if served not in self._confluence_ids_taken:
-                self._confluence_ids[doc_id] = served
-                self._confluence_ids_taken.add(served)
+            if served not in taken:
                 return served
             served = (
                 synth.CONFLUENCE_ID_MIN
@@ -786,50 +815,35 @@ class _Loader:
             )
         raise SystemExit(
             f"confluence: page ids have exhausted their {synth.CONFLUENCE_ID_RANGE}-value range; "
-            f"no served id is free for {doc_id!r}"
+            f"no served id is free for {seed!r}"
         )
 
-    def _assign_hubspot_id(self, doc_id: str) -> str:
-        """The `id` this record will be served as: unique, a numeric string matching real
-        HubSpot's, and stable.
+    def _assign_hubspot_id(self, seed: str, taken: set) -> str:
+        """The `id` this record will be served as: unique, a numeric string matching real HubSpot's,
+        and stable. Follows confluence's probe, not gmail's/notion's bare-seed shape:
+        `synth.hubspot_record_id`'s 9,000,000,000 values still collide ~16 times at the
+        500k-document scale this project generates, and a collision made a record unreachable at
+        its own id.
 
-        Follows confluence's probe, NOT gmail's/notion's bare-seed shape (#51): synth.
-        hubspot_record_id's 9,000,000,000-value space looks wide enough to skip a probe, but
-        measured over synthetic corpora it still collides ~16 times at 500k documents -- close
-        enough to confluence's own birthday-bound exposure that storing the raw seed would abort
-        an import on a corpus this project actually generates. Seeded from the doc_id so the same
-        corpus always produces the same ids, then probed with a salt until free, then walked --
-        same shape as _assign_confluence_id, just over a wider range and through a numeric string
-        instead of a bare int. A record already in the DB keeps the id it has, so a re-import does
-        not renumber it.
+        `taken` holds INTEGERS while the column stores a numeric STRING -- the probe's arithmetic is
+        integer, and comparing '1000000000' against 1000000000 would never match. The conversion
+        lives here so there is one place for it.
         """
-        if doc_id in self._hubspot_ids:
-            return self._hubspot_ids[doc_id]
-        seed = store.id_seed("hubspot")
-        served = int(seed(doc_id))
-        # Re-seed a few times, then walk. Re-seeding keeps ids spread out, but it only terminates
-        # if the hash actually varies with the salt — walking is what makes termination
-        # unconditional, and it cannot spin as long as the range has a free value.
+        seed_fn = store.id_seed("hubspot")
+        served = int(seed_fn(seed))
         for salt in range(1, 9):
-            if served not in self._hubspot_ids_taken:
+            if served not in taken:
                 break
-            served = int(seed(f"{doc_id}\x00{salt}"))
-        # Same probe shape as _assign_github_number/_assign_jira_number (#51, task 11): BOUNDED --
-        # past synth.HUBSPOT_ID_RANGE steps every id synth.hubspot_record_id can produce has been
-        # visited, so this corpus has more records than the space holds, and an unbounded walk
-        # would spin forever instead of failing where the problem actually is.
+            served = int(seed_fn(f"{seed}\x00{salt}"))
         for _ in range(synth.HUBSPOT_ID_RANGE):
-            if served not in self._hubspot_ids_taken:
-                result = str(served)
-                self._hubspot_ids[doc_id] = result
-                self._hubspot_ids_taken.add(served)
-                return result
+            if served not in taken:
+                return str(served)
             served = (
                 synth.HUBSPOT_ID_MIN + (served - synth.HUBSPOT_ID_MIN + 1) % synth.HUBSPOT_ID_RANGE
             )
         raise SystemExit(
             f"hubspot: record ids have exhausted their {synth.HUBSPOT_ID_RANGE}-value range; "
-            f"no served id is free for {doc_id!r}"
+            f"no served id is free for {seed!r}"
         )
 
     def _next_provisional(self, src: str):
@@ -845,7 +859,19 @@ class _Loader:
         intermediate state has nowhere to go wrong.
         """
         self._provisional += 1
-        return -self._provisional if src == "github" else f"-unassigned-{self._provisional}"
+        # Typed to the column: an integer key takes a negative number (every real one is
+        # positive), a text key a `-unassigned-` string (every real one starts with an uppercase
+        # prefix or a digit).
+        if store.id_column_type(src, store.id_column(src)) in ("INT", "INTEGER"):
+            return -self._provisional
+        return f"-unassigned-{self._provisional}"
+
+    @staticmethod
+    def _is_provisional(value) -> bool:
+        """Whether a stored key is still a placeholder awaiting its deferred assignment."""
+        if isinstance(value, int):
+            return value < 0
+        return str(value).startswith("-unassigned-")
 
     def _require_provided_id(self, src: str, where: str) -> None:
         """Refuse a record with no id of its own when appending to a source that already holds
@@ -858,11 +884,13 @@ class _Loader:
         state the identity turns it back into something checkable: the claim check above then sees
         the value is already taken and says so.
 
-        Only on an append, and only for the two sources whose key a corpus can actually write. A
-        fresh import has nothing to be confused with.
+        Only on an append: a fresh import has nothing to be confused with. Every PROBED source is
+        covered -- github, jira, confluence and hubspot -- since #51's follow-up gave confluence and
+        hubspot a field to state an identity in (`content_id` / `record_id`, see DEFERRED_ID). Until
+        then those two could only duplicate in silence, which was the one gap this guard left open.
         """
         if src in self._appending:
-            label = "number" if src == "github" else "key"
+            label = DEFERRED_ID[src]
             raise SystemExit(
                 f"{where}: {src} records must carry `{label}` when appending to a corpus that "
                 f"already has {src} documents — without one this row cannot be told apart from a "
@@ -982,7 +1010,11 @@ class _Loader:
         # identifier the corpus gave it, and the KEY that resolves to is not assigned until every
         # record has been seen. `_jira_projects` is the same story for the project a row belongs
         # to, which the assignment probe needs and the provisional key cannot carry.
-        self._jira_parents = {}  # dataset id -> the parent's dataset id
+        # source_type -> {dataset id -> the PARENT's dataset id}. A parent is named by the
+        # target's own identifier, and for a deferred source the key that resolves to is not
+        # assigned until every record has been seen -- so it is recorded here and written by
+        # resolve_parents.
+        self._parent_seeds = {}
         self._jira_projects = {}  # dataset id -> project container
         # github comment ids are ASSIGNED rather than hashed at serve time, because a comment's own
         # `url` resolves through one and a hash into any fixed range collides by the birthday bound
@@ -1093,11 +1125,21 @@ class _Loader:
         # both mean the value is taken. The `dataset id` side of `tracker_ids` is unknowable for a
         # row from an earlier run, so it is recorded as None; the check that reads it only needs to
         # know the claim belongs to a DIFFERENT document than the one now claiming it.
-        for src, col in (("github", "number"), ("jira", "key")):
+        # All four probed sources, not just github and jira: without confluence's and hubspot's
+        # here, a record stating an id an existing row already held went straight through the
+        # upsert's `DO UPDATE` and REPLACED that row -- silently losing a document at the id it
+        # was reachable by, which is the whole failure #51 exists to end.
+        for src in DEFERRED_ID:
+            col = store.id_column(src)
+            # `scope` is the container a claim is unique within -- a github number is per repo, and
+            # nothing else is (see store.ID_COLUMNS), so the rest claim corpus-wide.
+            scoped = len(store.id_columns(src)) > 1
             for row in self.conn.execute(
                 f"SELECT {col} AS v, {store.grouping_col(src)} AS c FROM {store.table(src)}"
             ):
-                scope = str(row["c"]) if src == "github" else ""
+                if self._is_provisional(row["v"]):
+                    continue  # unreachable mid-import, but never claim a placeholder
+                scope = str(row["c"]) if scoped else ""
                 self.tracker_ids[(src, scope, str(row["v"]))] = None
                 if src == "jira":
                     prefix = str(row["v"]).rsplit("-", 1)[0]
@@ -1239,8 +1281,9 @@ class _Loader:
         # `meta: {"number": 3}` claim issue 3 in a repository just as a top-level `number`
         # would — a spelling no schema describes, that shadows a real issue, and that the
         # uniqueness check below would then refuse an import over. Both ids are ordinary
-        # `meta` content again: carried through, never promoted to the served column.
-        for reserved in ("number", "key"):
+        # `meta` content again: carried through, never promoted to the served column. Read from
+        # DEFERRED_ID so a source that gains a stateable id is covered by declaring it there.
+        for reserved in DEFERRED_ID.values():
             extras.pop(reserved, None)
         for k in (
             "labels",
@@ -1279,6 +1322,8 @@ class _Loader:
             "requested_reviewers",
             "changed_paths",
             "number",
+            "content_id",
+            "record_id",
             "resolution",
             "resolutiondate",
             "duedate",
@@ -1403,19 +1448,16 @@ class _Loader:
             odisp=None,
         ):
             # A parent is named by the target's dataset id; what gets STORED is the target's
-            # served id (#51). confluence and notion can resolve it right here — confluence's
-            # assignment is memoized on the seed and notion's is a pure hash, so both give the
-            # same answer whether the parent has been loaded yet or not. jira cannot: its parent
-            # reference is a KEY, and keys are only assigned once the whole corpus has been seen,
-            # so it is recorded and filled in by `resolve_jira_parents`. linear's `parent_key` is
-            # an IDENTIFIER, not an id, and is left exactly as the corpus wrote it.
-            if par is not None and src == "confluence":
-                par = self._assign_confluence_id(par)
+            # served id (#51). notion resolves right here — its id is a pure hash of the seed,
+            # so it is the same answer whether the parent has been loaded yet or not. A DEFERRED
+            # source cannot: its key is only assigned once the whole corpus has been seen, so the
+            # reference is recorded and written by `resolve_parents`. linear's `parent_key` is an
+            # IDENTIFIER, not an id, and is left exactly as the corpus wrote it.
+            if par is not None and src in ("confluence", "jira"):
+                self._parent_seeds.setdefault(src, {})[did] = par
+                par = None
             elif par is not None and src == "notion":
                 par = synth.notion_id(par)
-            elif par is not None and src == "jira":
-                self._jira_parents[did] = par
-                par = None
             cols = _service_columns(
                 src, ex or {}, sub, par, did, gmail_thread, seq, org_domain, cts, uts, odisp
             )
@@ -1459,10 +1501,6 @@ class _Loader:
                 cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
             if src in ("gmail", "google_drive", "notion", "linear"):
                 cols["id"] = store.id_seed(src)(did)
-            elif src == "confluence":
-                cols["id"] = self._assign_confluence_id(did)
-            elif src == "hubspot":
-                cols["id"] = self._assign_hubspot_id(did)
             elif src == "slack":
                 cols["ts"] = self._slack_ts(container, did, cols.get("created_ts"))
                 # A reply takes the root's ts (set by the caller once the root landed); a root
@@ -1502,7 +1540,7 @@ class _Loader:
             if src == "jira":
                 self._jira_projects[did] = container
             provisional = False
-            if src in ("github", "jira"):
+            if src in DEFERRED_ID:
                 col = store.id_column(src)
                 provided = cols.get(col)
                 # A provided id is a claim on one spelling, and two records cannot hold the same
@@ -1518,7 +1556,7 @@ class _Loader:
                     # exactly the same reason: it belongs to a document this one is not.
                     claimed = self.tracker_ids.get(claim, _UNCLAIMED)
                     if claimed is not _UNCLAIMED and claimed != did:
-                        label = "number" if src == "github" else "key"
+                        label = DEFERRED_ID[src]
                         raise SystemExit(
                             f"{where}: {label} {provided!r} is already claimed by "
                             + (f"{claimed!r}" if claimed is not None else "a previous import")
@@ -1702,7 +1740,7 @@ class _Loader:
             _cid = (
                 self._assign_github_comment_id(seed_cid)
                 if src == "github"
-                else f"{parent_key[0]}::c{j}"
+                else _child_id(parent_key[-1], j)
             )
             pcols = store.comment_parent_columns(src)
             conn.execute(
@@ -1978,15 +2016,26 @@ class _Loader:
         ccols = store.comment_parent_columns(src) if ctable else ()
         where = " AND ".join(f"{c} = ?" for c in store.id_columns(src))
         cwhere = " AND ".join(f"{c} = ?" for c in ccols)
+        # A child row's OWN id is composed from its parent's key (see `_child_id`), so it has to
+        # move WITH the parent: a comment written while its parent still held a provisional key
+        # would otherwise keep `-unassigned-3::c1` as the id the API serves it under. Recomposed in
+        # SQL from the row's own `seq` so one statement covers every comment on the parent.
+        # github's is exempt: its comment id is an assigned integer that does not mention its
+        # parent at all (see `_assign_github_comment_id`).
+        recompose = ctable and src != "github"
         for key, value in final:
             if key[-1] == value:
                 continue
             scope, settled = key[:-1], (*key[:-1], value)
             self.conn.execute(f"UPDATE {tbl} SET {col} = ? WHERE {where}", (value, *scope, key[-1]))
             if ctable:
+                cset = f"{ccols[-1]} = ?" + (
+                    f", id = ? || '{_CHILD_SEP}' || seq" if recompose else ""
+                )
+                cparams = [value, value] if recompose else [value]
                 self.conn.execute(
-                    f"UPDATE {ctable} SET {ccols[-1]} = ? WHERE {cwhere}",
-                    (value, *scope, key[-1]),
+                    f"UPDATE {ctable} SET {cset} WHERE {cwhere}",
+                    (*cparams, *scope, key[-1]),
                 )
             self._final[(src, key)] = settled
         # `keys` is last-writer-wins per dataset id, so it is repointed by looking up what the
@@ -2091,31 +2140,67 @@ class _Loader:
             final.append((key, f"{prefix}-{candidate}"))
         self._settle("jira", final)
 
-    def resolve_jira_parents(self) -> None:
-        """Point every jira subtask at its parent's KEY, now that keys are settled.
+    def resolve_probed_ids(self, src: str) -> None:
+        """Settle every confluence page / hubspot record that landed under a provisional id.
 
-        Runs after `resolve_jira_keys` rather than inside `resolve_cross_references`, and that
-        ordering is the whole reason it is a separate pass: a parent is named by its dataset id
-        while the corpus streams, and the key it resolves to does not exist until the deferred
-        assignment above has run.
+        The same two phases `resolve_github_numbers` runs, without the two things that make github's
+        and jira's own passes special: there is no container to scope the probe to, and nothing to
+        compose the value out of. Phase 1 is implicit -- every REAL value in the column is already a
+        claim, whether this run's corpus stated it or a previous run assigned it -- and phase 2
+        probes the rest in DATASET-ID order, which is what keeps the result independent of the order
+        records happened to stream in.
         """
-        if not self.counts.get("jira"):
+        if not self.counts.get(src):
             return
-        for did, parent_seed in list(self._jira_parents.items()):
-            key = self.keys.get(("jira", did))
-            target = self.keys.get(("jira", parent_seed))
-            if key is None:
-                continue
-            if target is None:
-                raise SystemExit(
-                    f"jira {key[0]}: parent {parent_seed!r} was not imported in this run. A "
-                    "parent is named by the identifier the corpus gave it, and that identifier "
-                    "does not outlive the import — so a parent loaded by an EARLIER run can no "
-                    "longer be resolved. Load the parent and the subtask together."
+        col, tbl = store.id_column(src), store.table(src)
+        assign = {
+            "confluence": self._assign_confluence_id,
+            "hubspot": self._assign_hubspot_id,
+        }[src]
+        # hubspot's probe works in integers (see _assign_hubspot_id); confluence's column already
+        # is one.
+        cast = int if src == "hubspot" else (lambda v: v)
+        taken = {
+            cast(v)
+            for (v,) in self.conn.execute(f"SELECT {col} FROM {tbl}")
+            if not self._is_provisional(v)
+        }
+        final: list = []
+        for key, did in sorted(self._pending.get(src, []), key=lambda e: (e[1], e[0])):
+            value = assign(did, taken)
+            taken.add(cast(value))
+            final.append((key, value))
+        self._settle(src, final)
+
+    def resolve_parents(self) -> None:
+        """Point every subtask / child page at its parent's settled key.
+
+        Runs after the deferred assignment passes rather than inside
+        `resolve_cross_references`, and that ordering is the whole reason it is a separate pass: a
+        parent is named by the identifier the corpus gave it, and for a deferred source the key that
+        identifier resolves to does not exist until the assignment above has run.
+
+        A parent loaded by an EARLIER run cannot be resolved and is refused (#51) -- the identifier
+        naming it did not outlive that import, and writing the link anyway would leave `children`
+        silently empty for a page that serves a `parent`.
+        """
+        for src, parents in self._parent_seeds.items():
+            col, tbl = store.id_column(src), store.table(src)
+            for did, parent_seed in parents.items():
+                key = self.keys.get((src, did))
+                if key is None:
+                    continue  # the row was never written
+                target = self.keys.get((src, parent_seed))
+                if target is None:
+                    raise SystemExit(
+                        f"{src} {key[-1]}: parent {parent_seed!r} was not imported in this run. A "
+                        "parent is named by the identifier the corpus gave it, and that identifier "
+                        "does not outlive the import -- so a parent loaded by an EARLIER run can "
+                        "no longer be resolved. Load the parent and its child together."
+                    )
+                self.conn.execute(
+                    f"UPDATE {tbl} SET parent_id = ? WHERE {col} = ?", (target[-1], key[-1])
                 )
-            self.conn.execute(
-                "UPDATE jira_issues SET parent_id = ? WHERE key = ?", (target[0], key[0])
-            )
 
 
 def load(
@@ -2215,7 +2300,9 @@ def load_records(
     # through `loader.keys` after it holds final values rather than provisional ones (#51).
     loader.resolve_github_numbers()
     loader.resolve_jira_keys()
-    loader.resolve_jira_parents()
+    loader.resolve_probed_ids("confluence")
+    loader.resolve_probed_ids("hubspot")
+    loader.resolve_parents()
     loader.resolve_cross_references()
     users, groups = loader.users, loader.groups
     memberships, grants = loader.memberships, loader.grants

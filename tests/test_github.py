@@ -468,12 +468,12 @@ def test_github_file_excluded_from_search_issues(gh_client, gh_admin_h):
 
 
 def test_github_file_number_index_excludes_files(gh_client, gh_admin_h, gh_org):
-    """`kind='file'` rows must never take a `served_number`: a file's synthesized number can
+    """`kind='file'` rows must never take a `number`: a file's synthesized number can
     collide with (and, before #51, shadow) a real issue/PR's (see gh-file-collide-88814, which
     deliberately collides with gh-issue-1's hash). resolve_github_numbers excludes them from the
-    number space entirely rather than resolving the collision, so their served_number stays NULL
+    number space entirely rather than resolving the collision, so their number stays NULL
     -- and this fixture's own import succeeding at all (SAMPLE + _GH_FILE_DOCS + _GH_DIFF_DOCS,
-    well over one file doc) is proof several NULLs coexist under the UNIQUE (repo, served_number)
+    well over one file doc) is proof several NULLs coexist under the UNIQUE (repo, number)
     index, which treats them as no claim rather than a collision."""
     from backlot import store, synth
 
@@ -481,11 +481,11 @@ def test_github_file_number_index_excludes_files(gh_client, gh_admin_h, gh_org):
     conn = store.connect_ro(settings.db_path)
     file_doc_ids = {d["doc_id"] for d in _GH_FILE_DOCS}
     file_rows = conn.execute(
-        "SELECT doc_id, served_number FROM github_items WHERE kind = 'file'"
+        "SELECT doc_id, number FROM github_items WHERE kind = 'file'"
     ).fetchall()
     assert file_doc_ids <= {r["doc_id"] for r in file_rows}
     assert len(file_rows) > 1  # several file rows, all NULL, coexisting under the UNIQUE index
-    assert all(r["served_number"] is None for r in file_rows)
+    assert all(r["number"] is None for r in file_rows)
     conn.close()
 
     # the real issue is still resolvable by number even though a file doc collides with it
@@ -1420,18 +1420,18 @@ def test_github_operation_ids_unique(client):
 # --- GitHub ---------------------------------------------------------------------
 
 
-def test_github_issue_number_asserts_rather_than_re_hash_a_null_served_number():
-    """`_issue_number`'s `or` fallback used to silently re-hash a NULL served_number back to a
+def test_github_issue_number_asserts_rather_than_re_hash_a_null_number():
+    """`_issue_number`'s `or` fallback used to silently re-hash a NULL number back to a
     plain `synth.github_number` -- exactly the shape the hubspot bug shipped as: a PROBED row
     (one whose actual served number came from a walk, not a pure hash) would then advertise a
     number nobody stored, unreachable at its own url (#51, task 11). An assertion is strictly
-    better: every non-file row gets a served_number at import (`resolve_github_numbers` raises
+    better: every non-file row gets a number at import (`resolve_github_numbers` raises
     rather than leave one NULL), so reaching here with one is a bug upstream, and failing loudly
     beats silently serving the wrong number."""
     from backlot.routers.github import _issue_number
 
     with pytest.raises(AssertionError, match="gh-orphan"):
-        _issue_number({"served_number": None, "doc_id": "gh-orphan"})
+        _issue_number({"number": None, "doc_id": "gh-orphan"})
 
 
 def test_github_issue_shape(tmp_path):

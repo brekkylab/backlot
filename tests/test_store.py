@@ -119,7 +119,7 @@ def test_served_id_registry_covers_every_hashed_source():
         "google_drive",
     }
     # Confluence's own entry -- column name, seed function, corpus-wide scope. Every entry in the
-    # registry is read by its own stored-column reader now (github_by_served_number,
+    # registry is read by its own stored-column reader now (github_by_number,
     # jira_by_served_number, etc.) -- none is left to main._build_index's reverse map.
     assert store.SERVED_ID["confluence"] == ("served_id", synth.confluence_id, None)
 
@@ -616,12 +616,12 @@ def test_connect_rw_self_heals_missing_path_column(tmp_path):
     connect_rw's executescript(SCHEMA) blow up on `CREATE INDEX ... ON github_items(repo, path)`
     (IF NOT EXISTS only guards the index name, not the referenced column).
 
-    `served_number` is included in the hand-rolled table on purpose, even though this fixture
+    `number` is included in the hand-rolled table on purpose, even though this fixture
     predates it: unlike `path`/`changed_paths`/`number` (and unlike `github_comments.served_id`,
     an OLDER feature that predates this whole #51 series and IS self-healed below), it is NOT in
     connect_rw's self-heal ALTER list -- no back-compat for the per-DOCUMENT served-id-style
     columns tasks 3-7 added (confluence_pages/hubspot_objects/notion_pages/linear_issues/
-    github_items's own `served_id`/`served_number`; see idx_github_served's schema comment), so a
+    github_items's own `served_id`/`number`; see idx_github_served's schema comment), so a
     table missing it would fail at the UNIQUE index in SCHEMA for a reason this test isn't about.
     This test's own subject stays exactly `path`'s self-heal."""
     p = tmp_path / "old.sqlite"
@@ -633,7 +633,7 @@ def test_connect_rw_self_heals_missing_path_column(tmp_path):
         "assignees TEXT, merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, "
         "reactions TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER, closed_ts INTEGER, "
         "closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT, "
-        "owner_display TEXT, served_number INTEGER"
+        "owner_display TEXT, number INTEGER"
         ")"
     )
     conn.execute(
@@ -678,7 +678,7 @@ def _write_pre_served_columns_db(p):
     conn = sqlite3.connect(p)
     # A hand-rolled jira_issues predating #51's `served_number` — every OTHER column real
     # jira_issues has (see SCHEMA), so the failure this triggers is specifically the missing
-    # served_number column, not some unrelated column this fixture happened to omit. linear_teams
+    # number column, not some unrelated column this fixture happened to omit. linear_teams
     # (a task-9 column, added to an EXISTING table) is included too, so the assertion below
     # checks more than one source's worth.
     conn.execute(
@@ -699,7 +699,7 @@ def _write_pre_served_columns_db(p):
     "setup, match",
     [
         (_write_pre_acl_db, "doc_acl"),
-        (_write_pre_served_columns_db, "served_number"),
+        (_write_pre_served_columns_db, "number"),
     ],
 )
 def test_connect_rw_refuses_a_pre_served_db(tmp_path, setup, match):
@@ -709,7 +709,7 @@ def test_connect_rw_refuses_a_pre_served_db(tmp_path, setup, match):
       write a new source's grants into the empty per-source tables SCHEMA creates while every
       pre-existing grant stays behind in `doc_acl`, which nothing reads any more, silently
       hiding every pre-existing document from every scoped token.
-    - built before #51's served_* columns (`served_id`/`served_number`/`served_key`, assigned at
+    - built before #51's served_* columns (`served_id`/`number`/`served_key`, assigned at
       import on tasks 3-9's tables) — `CREATE INDEX IF NOT EXISTS` in SCHEMA guards only the
       index's own name, so it still raises a bare `OperationalError: no such column` reaching a
       table SCHEMA's text happens to name first, saying nothing about why. Neither case has a
@@ -815,7 +815,7 @@ def test_confluence_by_served_id_applies_the_acl(tmp_path):
     `confluence_by_served_id` invisibly. Confluence is the FIRST source #51 converted and the one
     it was chartered on, and this test was the missing sibling of the family that already guards
     the other three (`test_hubspot_by_served_id_applies_the_acl`,
-    `test_github_by_served_number_applies_the_acl`, `test_jira_by_served_number_applies_the_acl`).
+    `test_github_by_number_applies_the_acl`, `test_jira_by_served_number_applies_the_acl`).
     A non-empty set, so `_acl_clause` takes its EXISTS branch rather than the empty-set "AND 0"
     short-circuit."""
     from tests._helpers import tiny_corpus
@@ -1200,7 +1200,7 @@ def test_hubspot_associations_carry_the_targets_own_served_id_through_a_collisio
     assert back[0]["to_served_id"] == actual["co1"]
 
 
-def test_github_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
+def test_github_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
     tmp_path, monkeypatch
 ):
     """github's served number, like hubspot's/confluence's, is PROBED against a collision, not
@@ -1211,7 +1211,7 @@ def test_github_served_numbers_probe_on_a_collision_and_stay_stable_across_a_rei
 
     Also covers, in one corpus, the two things specific to github among the probed sources:
     - `kind='file'` rows are excluded from the number space entirely, not merely probed around --
-      their served_number stays NULL, and several coexist under the UNIQUE (repo, served_number)
+      their number stays NULL, and several coexist under the UNIQUE (repo, number)
       index alongside the 5 resolved issue numbers IN THE SAME REPO, which this import succeeding
       at all already proves (SQLite exempts NULL from a UNIQUE constraint).
     - Stability across a re-import: unlike confluence's/hubspot's assignment (computed inline per
@@ -1230,7 +1230,7 @@ def test_github_served_numbers_probe_on_a_collision_and_stay_stable_across_a_rei
     from backlot.importer import byo
     from tests._helpers import build_corpus
 
-    monkeypatch.setitem(store.SERVED_ID, "github", ("served_number", lambda doc_id: 7, "repo"))
+    monkeypatch.setitem(store.SERVED_ID, "github", ("number", lambda doc_id: 7, "repo"))
     docs = [
         {
             "source_type": "github",
@@ -1258,12 +1258,11 @@ def test_github_served_numbers_probe_on_a_collision_and_stay_stable_across_a_rei
     monkeypatch.undo()
     conn = store.connect_ro(s.db_path)
     issues = {
-        r["doc_id"]: r["served_number"]
-        for r in conn.execute("SELECT doc_id, served_number FROM github_items WHERE kind != 'file'")
+        r["doc_id"]: r["number"]
+        for r in conn.execute("SELECT doc_id, number FROM github_items WHERE kind != 'file'")
     }
     files = [
-        r["served_number"]
-        for r in conn.execute("SELECT served_number FROM github_items WHERE kind = 'file'")
+        r["number"] for r in conn.execute("SELECT number FROM github_items WHERE kind = 'file'")
     ]
     # The collapsed seed actually landed -- g0, the first row processed (before anything is
     # taken), is served exactly the forced value, not some real hash -- AND resolved to 5
@@ -1272,7 +1271,7 @@ def test_github_served_numbers_probe_on_a_collision_and_stay_stable_across_a_rei
     assert issues["g0"] == 7
     assert len(issues) == 5 and len(set(issues.values())) == 5
     for doc_id, n in issues.items():
-        assert store.github_by_served_number(conn, "core", n)["doc_id"] == doc_id
+        assert store.github_by_number(conn, "core", n)["doc_id"] == doc_id
     # file rows stay NULL, several of them, coexisting under the UNIQUE index with the 5 real
     # numbers above IN THE SAME REPO -- proven by this import having succeeded at all.
     assert len(files) == 3 and all(n is None for n in files)
@@ -1287,18 +1286,75 @@ def test_github_served_numbers_probe_on_a_collision_and_stay_stable_across_a_rei
     byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
     conn = store.connect_ro(s.db_path)
     replay = {
-        r["doc_id"]: r["served_number"]
-        for r in conn.execute("SELECT doc_id, served_number FROM github_items WHERE kind != 'file'")
+        r["doc_id"]: r["number"]
+        for r in conn.execute("SELECT doc_id, number FROM github_items WHERE kind != 'file'")
     }
     assert replay == issues
     conn.close()
 
 
-def test_github_by_served_number_applies_the_acl(tmp_path):
+def test_github_serves_one_number_column(tmp_path, monkeypatch):
+    """`number` holds the number the API serves, whether the corpus wrote it or the import assigned
+    it. There is no second column.
+
+    The two were separate so "provided" could mean exactly `number IS NOT NULL` — a distinction the
+    old boot-time resolver needed on every start. Assignment moved to import time, where provenance
+    comes from the incoming record rather than from a column, so at the moment the deferred pass
+    runs "provided" means precisely "already non-NULL" and the second column has nothing left to
+    say. See `docs/superpowers/plans/2026-08-14-identifier-consolidation.md`.
+
+    The seed is collapsed onto the number a sibling PROVIDED, so the probe has to move the keyless
+    row off it — proving the provided value wins its spelling and both kinds share one column.
+    """
+    from tests._helpers import build_corpus
+
+    cols = {
+        r[1]
+        for r in store.connect_rw(tmp_path / "s.sqlite").execute("PRAGMA table_info(github_items)")
+    }
+    assert "number" in cols and "served_number" not in cols
+    assert store.SERVED_ID["github"][0] == "number"
+
+    monkeypatch.setitem(store.SERVED_ID, "github", ("number", lambda doc_id: 7, "repo"))
+    s = build_corpus(
+        tmp_path / "c",
+        [
+            {
+                "source_type": "github",
+                "doc_id": "g-provided",
+                "repo": "core",
+                "number": 7,
+                "title": "provided",
+                "content": "x",
+                "author_email": "a@acme.com",
+            },
+            {
+                "source_type": "github",
+                "doc_id": "g-derived",
+                "repo": "core",
+                "title": "derived",
+                "content": "x",
+                "author_email": "a@acme.com",
+            },
+        ],
+    )
+    monkeypatch.undo()
+    conn = store.connect_ro(s.db_path)
+    got = {
+        r["doc_id"]: r["number"] for r in conn.execute("SELECT doc_id, number FROM github_items")
+    }
+    assert got["g-provided"] == 7, "the corpus's number is served verbatim"
+    assert got["g-derived"] != 7, "the keyless row must move off the taken spelling"
+    for doc_id, num in got.items():
+        assert store.github_by_number(conn, "core", num)["doc_id"] == doc_id
+    conn.close()
+
+
+def test_github_by_number_applies_the_acl(tmp_path):
     """A regression `notion_by_served_id` shipped without (#51 review round), and every reader
     since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
     None, not the unscoped row -- otherwise the ACL clause could be deleted from
-    `github_by_served_number` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
+    `github_by_number` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
     rather than the empty-set "AND 0" short-circuit."""
     from tests._helpers import tiny_corpus
 
@@ -1316,17 +1372,17 @@ def test_github_by_served_number_applies_the_acl(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    served = conn.execute("SELECT served_number FROM github_items").fetchone()["served_number"]
-    assert store.github_by_served_number(conn, "core", served)["doc_id"] == "g0"
-    assert store.github_by_served_number(conn, "core", served, visible_ids={"nobody"}) is None
+    served = conn.execute("SELECT number FROM github_items").fetchone()["number"]
+    assert store.github_by_number(conn, "core", served)["doc_id"] == "g0"
+    assert store.github_by_number(conn, "core", served, visible_ids={"nobody"}) is None
     conn.close()
 
 
-def test_github_by_served_number_is_scoped_to_its_repo(tmp_path, monkeypatch):
+def test_github_by_number_is_scoped_to_its_repo(tmp_path, monkeypatch):
     """(final review, I-2) The SAME number in two different repos is the NORMAL case here, not an
-    exotic one -- GitHub numbers restart per repo, and `(repo, served_number)` is the whole UNIQUE
+    exotic one -- GitHub numbers restart per repo, and `(repo, number)` is the whole UNIQUE
     index's scope (see store.SERVED_ID's `scope` for github, and idx_github_served).
-    `github_by_served_number`'s `WHERE repo = ? AND {col} = ?` is therefore the ONLY thing that
+    `github_by_number`'s `WHERE repo = ? AND {col} = ?` is therefore the ONLY thing that
     keeps two same-numbered issues in different repos from resolving to each other -- there is no
     other predicate backing it up. jira's byte-identical predicate already has this sibling
     (`test_jira_by_served_number_is_scoped_to_its_project`); github never got its own.
@@ -1336,7 +1392,7 @@ def test_github_by_served_number_is_scoped_to_its_repo(tmp_path, monkeypatch):
     independent hashes coincide."""
     from tests._helpers import build_corpus
 
-    monkeypatch.setitem(store.SERVED_ID, "github", ("served_number", lambda doc_id: 7, "repo"))
+    monkeypatch.setitem(store.SERVED_ID, "github", ("number", lambda doc_id: 7, "repo"))
     s = build_corpus(
         tmp_path,
         [
@@ -1361,14 +1417,13 @@ def test_github_by_served_number_is_scoped_to_its_repo(tmp_path, monkeypatch):
     monkeypatch.undo()
     conn = store.connect_ro(s.db_path)
     served = {
-        r["doc_id"]: r["served_number"]
-        for r in conn.execute("SELECT doc_id, served_number FROM github_items")
+        r["doc_id"]: r["number"] for r in conn.execute("SELECT doc_id, number FROM github_items")
     }
     # Sanity: the collision was actually forced -- both rows share the same number, in DIFFERENT
     # repos, otherwise the assertions below would pass even with the scope missing entirely.
     assert served["a0"] == served["b0"] == 7
-    assert store.github_by_served_number(conn, "alpha", 7)["doc_id"] == "a0"
-    assert store.github_by_served_number(conn, "bravo", 7)["doc_id"] == "b0"
+    assert store.github_by_number(conn, "alpha", 7)["doc_id"] == "a0"
+    assert store.github_by_number(conn, "bravo", 7)["doc_id"] == "b0"
     conn.close()
 
 

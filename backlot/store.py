@@ -140,7 +140,7 @@ SERVED_ID = {
     # winning — see GROUPING's linear comment) — this column is the OTHER spelling `issue(id:)`
     # accepts.
     "linear": ("served_id", synth.linear_id, None),
-    "github": ("served_number", synth.github_number, grouping_col("github")),
+    "github": ("number", synth.github_number, grouping_col("github")),
     "jira": ("served_number", synth.jira_key_number, grouping_col("jira")),
     # Drive's own file id (#51, task 12) -- unprobed, like gmail/notion/linear; see
     # synth.gdrive_file_id's docstring for the digest-bytes reasoning and idx_gdrive_served's
@@ -231,18 +231,18 @@ CREATE TABLE IF NOT EXISTS github_items (
     merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, reactions TEXT,
     created_ts INTEGER NOT NULL, updated_ts INTEGER,
     closed_ts INTEGER, closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT,
-    owner_display TEXT, path TEXT, changed_paths TEXT, number INTEGER, served_number INTEGER
+    owner_display TEXT, path TEXT, changed_paths TEXT, number INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_github_repo ON github_items(repo);
 CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path);
--- (doc_id, kind, repo, number, served_number) in that order: importer.byo's resolve_github_numbers
+-- (doc_id, kind, repo, number) in that order: importer.byo's resolve_github_numbers
 -- deferred assignment pass (which replaced main._build_index's boot-time reverse map, #51) scans
 -- exactly these five, so the pass stays an index-only scan and never touches the wide rows.
 -- Partial, because that scan excludes kind='file' rows — in a code-heavy corpus they dominate the
 -- table, and indexing them would only pay write and disk cost for rows the one consumer filters
 -- out. `kind` must stay among the columns or the plan loses COVERING.
 CREATE INDEX IF NOT EXISTS idx_github_doc_number
-    ON github_items(doc_id, kind, repo, number, served_number)
+    ON github_items(doc_id, kind, repo, number)
     WHERE kind IS NULL OR kind != 'file';
 -- The number the API reports, assigned at import (see backlot.importer.byo) rather than derived
 -- at serve time from a startup reverse map: `synth.github_number`'s 90,000-value-per-repo space
@@ -252,23 +252,23 @@ CREATE INDEX IF NOT EXISTS idx_github_doc_number
 -- docstring's own words), so a client that had already saved a link could have it renumbered out
 -- from under it by a later append. A stored column no longer moves (#51).
 --
--- `number` (the corpus-provided value, untouched by this column) and `served_number` (what the
--- API actually reports) are kept as TWO columns on purpose: a synthesized value written into
--- `number` would be indistinguishable from a provided one, and "provided" has to mean exactly
--- "number IS NOT NULL" everywhere downstream (main.py's old comment on this table said so; see
--- importer.byo's `insert` for where that reasoning lives now). UNIQUE is scoped to (repo,
--- served_number), not served_number alone, because a GitHub number is unique only within its
--- repo (see store.SERVED_ID's `scope` for github) -- and a `kind='file'` row's served_number
+-- ONE column, not two. `number` and a separate `served_number` were kept apart so "provided" could
+-- mean exactly "number IS NOT NULL" -- a distinction the boot-time resolver needed on every start.
+-- Assignment moved to import time, where provenance comes from the incoming record rather than
+-- from a column: by the time resolve_github_numbers runs, "provided" means precisely "already
+-- non-NULL", and the second column has nothing left to say. UNIQUE is scoped to (repo, number),
+-- not number alone, because a GitHub number is unique only within its
+-- repo (see store.SERVED_ID's `scope` for github) -- and a `kind='file'` row's number
 -- stays NULL (see idx_github_doc_number above), which SQLite's UNIQUE treats as no claim rather
 -- than a collision, so any number of file rows coexist under it. Uniqueness is primarily enforced
 -- by the assignment itself -- resolve_github_numbers' two-phase pass (provided numbers claim
 -- first, corpus-wide, before anything probes) -- so a genuine collision essentially never reaches
 -- this index; if one somehow did, it would raise there directly. NOT through the shared write
 -- path's `ON CONFLICT(doc_id) DO UPDATE` (that reasoning is confluence's/gmail's/hubspot's, whose
--- served id IS written by that same insert) -- served_number is written by resolve_github_numbers'
+-- served id IS written by that same insert) -- the number is written by resolve_github_numbers'
 -- own plain `UPDATE ... WHERE doc_id = ?`, a separate deferred pass with no ON CONFLICT clause at
 -- all, so a collision there raises IntegrityError from that UPDATE itself.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_github_served ON github_items(repo, served_number);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_github_served ON github_items(repo, number);
 
 CREATE TABLE IF NOT EXISTS jira_issues (
     doc_id TEXT PRIMARY KEY, project TEXT NOT NULL, author_email TEXT NOT NULL,
@@ -2124,14 +2124,14 @@ def gmail_by_served_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
     ).fetchone()
 
 
-def github_by_served_number(conn, repo, served_number, visible_ids=None) -> sqlite3.Row | None:
+def github_by_number(conn, repo, served_number, visible_ids=None) -> sqlite3.Row | None:
     """One issue/PR by the number the API reports, scoped to its repo — github's own uniqueness
     rule (see store.SERVED_ID's `scope` for github, and idx_github_served). A unique-indexed
     column lookup, not a reverse map built at startup: the number is assigned at import (see
     :mod:`backlot.importer.byo`'s ``resolve_github_numbers``), so it needs neither the memory nor
     the per-boot scan, and it cannot be ambiguous.
 
-    A `kind='file'` row's served_number is always NULL (see idx_github_doc_number's comment on the
+    A `kind='file'` row's number is always NULL (see idx_github_doc_number's comment on the
     schema), so this can never resolve to a file even though the column it queries is shared with
     issues/PRs."""
     col = served_id_column("github")

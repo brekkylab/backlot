@@ -1076,13 +1076,13 @@ def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
 
 def _resolve(conn, repo: str, number: int, ids):
     """One issue/PR by its served number, ACL-scoped -- a unique-indexed column lookup (see
-    store.github_by_served_number), not a startup reverse map (#51).
+    store.github_by_number), not a startup reverse map (#51).
 
-    A `kind='file'` row's served_number is always NULL (see the schema comment on
+    A `kind='file'` row's number is always NULL (see the schema comment on
     idx_github_doc_number), so it can never match a real `number` here -- this guard is
     defensive, not load-bearing, but a file has no title/body/state in the issue sense and
     must never surface as one regardless."""
-    row = store.github_by_served_number(conn, repo, number, visible_ids=ids)
+    row = store.github_by_number(conn, repo, number, visible_ids=ids)
     return row if row is not None and row["kind"] != "file" else None
 
 
@@ -1101,7 +1101,7 @@ def _milestone(row, owner, repo, api_base):
 
 
 def _issue_number(row) -> int:
-    """The number this document answers to -- its own stored `served_number` column, assigned at
+    """The number this document answers to -- its own stored `number` column, assigned at
     import (see backlot.importer.byo's ``resolve_github_numbers``) rather than derived here.
 
     Deriving it here instead would disagree with that assignment whenever a row's plain hash was
@@ -1109,18 +1109,16 @@ def _issue_number(row) -> int:
     that fetched somebody else, and be reachable at nothing (#51 — the startup reverse map this
     replaced resolved that once at boot, where the whole repository was visible; the stored column
     now IS that one resolution, made at import instead). A row that provided a number is served
-    EXACTLY that value: `resolve_github_numbers` writes `served_number = number` for it, so there
+    EXACTLY that value: a provided number IS the served one -- one column holds both (#51), so there
     is no separate provided-vs-derived branch left to make here.
 
-    Asserted, not defensively re-derived: every non-file row gets a served_number at import
+    Asserted, not defensively re-derived: every non-file row gets a number at import
     (`resolve_github_numbers` raises rather than leave one NULL — see its docstring), so a caller
     reaching this with a NULL one is a bug upstream, not a state meant to be papered over here. A
     silent re-hash fallback would serve a PROBED row's synthesized number instead of failing loudly
     where the problem actually is — exactly the shape the hubspot bug shipped as (#51, task 11)."""
-    assert row["served_number"] is not None, (
-        f"github: doc_id {row['doc_id']!r} has no served_number"
-    )
-    return row["served_number"]
+    assert row["number"] is not None, f"github: doc_id {row['doc_id']!r} has no number"
+    return row["number"]
 
 
 def _issue_obj(conn, owner: str, repo: str, row, api_base: str = "") -> dict:

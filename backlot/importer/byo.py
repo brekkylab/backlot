@@ -635,7 +635,7 @@ class _Loader:
         `_free_number` this replaces, the walk is BOUNDED: past `synth.GITHUB_NUMBER_RANGE` steps
         every number `synth.github_number` can produce has been visited, so `repo` has more
         non-file rows than the space holds, and returning one anyway (as `_free_number` did,
-        silently) would duplicate it under the UNIQUE (repo, served_number) index instead of
+        silently) would duplicate it under the UNIQUE (repo, number) index instead of
         failing where the problem actually is. Reads the range off `synth` rather than a private
         copy of the literal, so raising `synth.github_number`'s own modulus can never silently
         leave this walk still wrapping at the old, smaller one.
@@ -862,7 +862,7 @@ class _Loader:
         # early cannot know what a LATER record will provide (see resolve_github_numbers, which
         # runs once every record has been loaded). This memo exists only so a re-import/--append
         # does not renumber a row a client already holds a number for: `resolve_github_numbers`
-        # reads it for a row whose served_number the streaming insert just reset to NULL (see
+        # reads it for a row whose number the streaming insert just left NULL (see
         # `insert`'s github block), the only remaining record of what it used to serve. Populated
         # by seed_tracker_ids, BEFORE this run's inserts can overwrite the column.
         self._github_numbers = {}  # doc_id -> served number, for github rows already in the DB
@@ -945,8 +945,8 @@ class _Loader:
         # `resolve_github_numbers` reads this memo for a row this run's insert is about to reset
         # to NULL (see `insert`'s github block), which is the ONLY way a re-import/--append can
         # still tell "this row used to serve number N" once the live column has been overwritten.
-        # `kind IS NULL OR kind != 'file'` is redundant with `served_number IS NOT NULL` (a
-        # kind='file' row's served_number is always NULL, see idx_github_doc_number) but it is
+        # `kind IS NULL OR kind != 'file'` is redundant with `number IS NOT NULL` (a
+        # kind='file' row's number is always NULL, see idx_github_doc_number) but it is
         # not redundant to the PLANNER: without it verbatim, SQLite cannot see this query implies
         # the partial index's own condition and falls back to `SCAN github_items` over every wide
         # file row. With it, this plans as a covering-index scan of idx_github_doc_number, the
@@ -1401,20 +1401,24 @@ class _Loader:
                 cols[store.served_id_column("jira")] = None
             if src == "github" and cols.get("kind") == "file":
                 # The schema says a file row's number is ignored — make that true in the table
-                # too, not only in served_number's own exclusion (resolve_github_numbers skips
-                # kind='file' rows entirely, see its docstring): file rows stay NULL, provided or
-                # not, so a stored number can never shadow a real issue or PR.
+                # too, not only in resolve_github_numbers' own exclusion (it skips kind='file'
+                # rows entirely, see its docstring): file rows stay NULL, provided or not, so a
+                # stored number can never shadow a real issue or PR.
                 cols["number"] = None
             if src == "github":
-                # Written UNCONDITIONALLY, including for a file row (where it then stays None) --
+                # ONE column now (#51 identifier consolidation): `number` holds the corpus's value
+                # if it gave one, and otherwise stays NULL for resolve_github_numbers to fill once
+                # every record has been seen. It is written unconditionally either way --
                 # `names = list(cols)` below feeds the upsert's `DO UPDATE SET col=excluded.col`
                 # list, so a conditionally-written column would go stale on a re-imported row
-                # (notion shipped exactly that bug with served_data_source_id). The real value
-                # cannot be resolved HERE even for a row that provides `number`: a LATER record in
-                # this same corpus may still claim that exact number outright, and provided numbers
-                # must win that race regardless of load order — resolve_github_numbers assigns it
-                # once every record has been seen.
-                cols[store.served_id_column("github")] = None
+                # (notion shipped exactly that bug with served_data_source_id).
+                #
+                # A provided number is NOT resolved to its final value here even though it is
+                # already known: a LATER record in this same corpus may claim that exact number,
+                # and which row wins must not depend on load order. Setting it and letting the
+                # deferred pass treat "already non-NULL" as the claim is what keeps that
+                # deterministic.
+                cols.setdefault("number", None)
             # A provided id is a claim on one spelling, and two records cannot hold the same
             # one: whichever the index gave it to, the other would be unreachable at the only
             # id it advertises. A github number is per repository, a jira key per instance.
@@ -1823,7 +1827,7 @@ class _Loader:
             )
 
     def resolve_github_numbers(self) -> None:
-        """Assign `served_number` to every non-file github row, in the same two-phase order
+        """Assign `number` to every non-file github row that has none, in the same two-phase order
         `main._build_index` used to resolve at boot (#51) — corpus-provided numbers claim their
         spelling FIRST, corpus-wide, and only THEN does every remaining row probe.
 
@@ -1837,7 +1841,7 @@ class _Loader:
         deterministic and independent of insertion order: every provided number is registered as
         taken before any row without one is even considered.
 
-        `kind='file'` rows are excluded entirely — their served_number stays NULL (see the schema
+        `kind='file'` rows are excluded entirely — their number stays NULL (see the schema
         comment on idx_github_doc_number): a file's synthesized number must never shadow a real
         issue/PR's.
 
@@ -1849,11 +1853,11 @@ class _Loader:
 
         Stability across a re-import/--append (a probed number is NOT a pure function of doc_id,
         unlike gmail's/notion's/linear's, so this needs it): a row this run's insert touched had
-        its served_number reset to NULL (see `insert`'s github block) even if it already had a
+        its number left NULL (see `insert`'s github block) even if it already had a
         stable one before this run started, so `self._github_numbers` — populated by
         `seed_tracker_ids` BEFORE any insert in this run could clobber the live column — is the
         only remaining record of what such a row used to serve. A row this run never touched
-        still carries its old served_number in the live table, read straight off `rows` below, so
+        still carries its old number in the live table, read straight off `rows` below, so
         it needs no memo at all. Either way, the OLD number is kept unless a NEW provided claim
         this run needs it — the same "provided beats synthesized" rule pass 1 already enforces —
         in which case the row probes a fresh one, same as a genuinely new row would.
@@ -1861,55 +1865,44 @@ class _Loader:
         if not self.counts.get("github"):
             return
         rows = self.conn.execute(
-            "SELECT doc_id, repo, number, served_number FROM github_items "
+            "SELECT doc_id, repo, number FROM github_items "
             "WHERE kind IS NULL OR kind != 'file' ORDER BY doc_id"
         ).fetchall()
         taken: dict[str, set[int]] = {}
         updates: list[tuple[int, str]] = []
-        # Pass 1: every provided number claims its spelling, before anything else is even looked
-        # at — see the docstring above for why this has to be a separate pass over ALL rows.
+        # Pass 1: every number already in the column claims its spelling, before anything else is
+        # even looked at — see the docstring above for why this has to be a separate pass over ALL
+        # rows. With one column that set is exactly "the corpus wrote it this run, or a previous
+        # run assigned it and this run did not touch the row": both are claims, and both must be
+        # registered before any probe runs.
         for r in rows:
             if r["number"] is None:
                 continue
-            n = int(r["number"])
-            taken.setdefault(r["repo"], set()).add(n)
-            if r["served_number"] != n:
-                updates.append((n, r["doc_id"]))
-        # Pass 2: everything else, in doc_id order — a row keeps its previous served_number
-        # (live, or from the pre-run memo if this run's insert just cleared it) when nothing in
-        # pass 1 wanted it, and otherwise probes a fresh one.
+            taken.setdefault(r["repo"], set()).add(int(r["number"]))
+        # Pass 2: everything else, in doc_id order — a row this run cleared keeps the number it
+        # served before (from the pre-run memo) when nothing in pass 1 wanted it, and otherwise
+        # probes a fresh one.
         for r in rows:
             if r["number"] is not None:
                 continue
             repo, doc_id = r["repo"], r["doc_id"]
             bucket = taken.setdefault(repo, set())
-            candidate = r["served_number"]
-            if candidate is None:
-                candidate = self._github_numbers.get(doc_id)
+            candidate = self._github_numbers.get(doc_id)
             if candidate is None or candidate in bucket:
                 candidate = self._assign_github_number(doc_id, repo, taken)
             bucket.add(candidate)
-            if candidate != r["served_number"]:
-                updates.append((candidate, doc_id))
-        # Two sweeps, not one: `updates` is a CORRECT, collision-free final assignment, but
-        # writing it in this order can still hit the UNIQUE (repo, served_number) index on an
-        # INTERMEDIATE state. Pass 1 above queues a provider's claim before pass 2 queues the
-        # row it displaces moving OFF that same number — so a row moving ONTO N can be written
-        # before the row currently sitting on N has been moved away from it, and the two rows
-        # transiently share N. That is only reachable across `--append` (a fresh import touches
-        # every row in the same run and starts from an empty table), which is exactly the
-        # boundary a real corpus crosses constantly. Clearing every changing row to NULL first
-        # removes the collision entirely: NULL is exempt from the UNIQUE index, so no order of
-        # the second sweep can ever collide with another row still in `updates`, or with a row
-        # NOT in `updates` (those keep their current value throughout, untouched by either sweep).
-        for _, doc_id in updates:
+            updates.append((candidate, doc_id))
+        # ONE sweep. This needed two while the value lived in its own column: pass 1 queued a
+        # provider's claim on N before pass 2 queued the row it displaced moving OFF N, so a row
+        # could be written ONTO N before the row sitting on N had left it, transiently colliding
+        # under the UNIQUE index and aborting an `--append`. Merging the columns removed that
+        # hazard at the root rather than working around it: pass 1 no longer writes anything (a
+        # claim is already IN the column), so every row here currently holds NULL, and the value
+        # each is about to take is by construction absent from `taken`. There is no intermediate
+        # state left to collide.
+        for number, doc_id in updates:
             self.conn.execute(
-                "UPDATE github_items SET served_number = NULL WHERE doc_id = ?", (doc_id,)
-            )
-        for served_number, doc_id in updates:
-            self.conn.execute(
-                "UPDATE github_items SET served_number = ? WHERE doc_id = ?",
-                (served_number, doc_id),
+                "UPDATE github_items SET number = ? WHERE doc_id = ?", (number, doc_id)
             )
 
     def resolve_jira_numbers(self) -> None:

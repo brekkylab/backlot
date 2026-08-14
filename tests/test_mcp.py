@@ -110,12 +110,12 @@ def _restricted_doc(settings, user_token: str, source: str, where: str = "1=1"):
 
 
 def _jira_key(settings, row) -> str:
-    """The key `row` actually answers to -- its own `served_number` column composed with the
+    """The key `row` actually answers to -- its own `number` column composed with the
     project's own prefix (#51, task 8), not a freshly re-derived hash: jira is a PROBED source, so
     the raw hash can disagree with what is actually served whenever a collision moved this row off
     it, or whenever the project's prefix comes from a PROVIDED sibling key rather than
     `synth.jira_project_key` -- the same class of bug github's own MCP ACL test (`_issue_number`
-    reading `row["served_number"]`, not `synth.github_number(row["doc_id"])`) was fixed for."""
+    reading `row["number"]`, not `synth.github_number(row["doc_id"])`) was fixed for."""
     conn = store.connect_ro(settings.db_path)
     try:
         prefix_row = conn.execute(
@@ -291,16 +291,16 @@ def test_mcp_github_bridge_acl_enforced(live_server):
     base, settings = live_server
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     # Excludes kind='file' rows (see notion's own `where` above for the same reasoning): a file's
-    # served_number is always NULL (#51), and this test needs the number actually served, not a
+    # number is always NULL (#51), and this test needs the number actually served, not a
     # column guaranteed empty for the wrong subtype.
     row, email = _restricted_doc(
         settings, user["token"], "github", "kind IS NULL OR kind != 'file'"
     )
     assert row is not None, f"no GitHub issue is ACL-restricted from {email} in the sample corpus"
-    # The row's own stored `served_number` (#51), not a re-derived hash: github is a PROBED
+    # The row's own stored `number` (#51), not a re-derived hash: github is a PROBED
     # source, so the raw hash can disagree with what is actually served whenever a collision
     # moved this row off it.
-    number = row["served_number"]
+    number = row["number"]
     # the org the CORPUS produced, which tokens.yaml records — not `settings.org_name`, which is
     # still the unloaded default here (the importer writes the derived org to tokens.yaml and the
     # server reads it from there at startup; see backlot.main). The GitHub surface 404s any other

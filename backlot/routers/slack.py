@@ -367,7 +367,11 @@ async def conversations_history(request: Request):
         ruids = [synth.slack_user_id(e) for e in ru[:5]]
         messages.append(
             _message(
-                r, reply_count=rc, latest_reply=latest, reply_users=ruids, reply_users_count=len(ru)
+                r,
+                reply_count=rc,
+                latest_reply=latest,
+                reply_users=ruids,
+                reply_users_count=len(ru),
             )
         )
     cursor = next_cursor(offset, len(rows), total)
@@ -604,7 +608,8 @@ def _messages_block(request: Request):
         order_by=order_by,
     )
     total = store.count_search(conn, terms, "slack", ids, container=container, phrase=phrase)
-    matches = [_search_match(conn, r) for r in rows]
+    roots: dict = {}  # one root read per thread on this page, not one per hit
+    matches = [_search_match(conn, r, roots) for r in rows]
     pages = (total + count - 1) // count if count else 1
     block = {
         "total": total,
@@ -700,8 +705,9 @@ async def search_all(request: Request):
 # --- helpers --------------------------------------------------------------------
 
 
-def _search_match(conn, row) -> dict:
-    """A search.messages `matches[]` entry for a slack row."""
+def _search_match(conn, row, roots: dict | None = None) -> dict:
+    """A search.messages `matches[]` entry for a slack row. ``roots`` memoizes the root
+    second per thread across a page of hits, which are commonly all in one thread."""
     ch = row["channel"]
     cid = synth.slack_channel_id(ch)
     text = f"*{row['title']}*\n{row['content']}" if row["title"] else row["content"]

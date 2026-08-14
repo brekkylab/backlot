@@ -174,7 +174,7 @@
         "type": "string",
         "minLength": 1
       },
-      "description": "PR only: paths of the files this pull changed, as `path` values of this repo's subtype='file' docs. Omit it and the changeset is chosen deterministically instead, which is well-formed but unrelated to what the pull is about. The hunks themselves are always synthesized from the file's own snapshot."
+      "description": "PR only: paths of the files this pull changed, as `path` values of this repo's subtype='file' docs. Omit it and the changeset is chosen deterministically instead, which is well-formed but unrelated to what the pull is about. The hunks themselves are always synthesized from the file's own snapshot. A path matching no such doc is dropped from the changeset — the import reports it and `--dry-run` names it, but loads the record as written, since a corpus may legitimately be a slice of the repo."
     },
     "comments": {
       "type": "array",
@@ -251,7 +251,7 @@
     "number": {
       "type": "integer",
       "minimum": 1,
-      "description": "Issue/PR number as the corpus writes it. Stored and served verbatim. An omitted number is synthesized from the doc_id and assigned at import (not at serve time), and a provided one claims that number ahead of every synthesized one in the same repository — so a corpus need only write the numbers its documents actually cite. Ignored on subtype: file rows."
+      "description": "Issue/PR number as the corpus writes it. Stored and served verbatim. An omitted number is synthesized from the doc_id at serve time, and a provided one claims that number ahead of every synthesized one in the same repository — so a corpus need only write the numbers its documents actually cite. Ignored on subtype: file rows."
     }
   },
   "required": [

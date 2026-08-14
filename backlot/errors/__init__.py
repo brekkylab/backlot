@@ -20,9 +20,9 @@ Adding a vendor is a module plus one entry below — not an edit to the handler.
 
 from __future__ import annotations
 
-from backlot.errors import atlassian, google
+from backlot.errors import atlassian, github, google
 
-_ENVELOPES = (atlassian, google)
+_ENVELOPES = (atlassian, github, google)
 
 
 def http_body(path: str, exc) -> dict | None:
@@ -41,4 +41,4 @@ def validation_body(path: str, errors) -> dict | None:
     return None
 
 
-__all__ = ["atlassian", "google", "http_body", "validation_body"]
+__all__ = ["atlassian", "github", "google", "http_body", "validation_body"]

@@ -149,24 +149,148 @@ def _principal(pid: str) -> tuple[str, str]:
     return ("user", pid) if "@" in pid else ("group", pid)
 
 
+def _time_given(v) -> bool:
+    """Whether the corpus wrote a time in this field at all, as opposed to leaving it
+    out. Told apart from an unreadable one, which ``_epoch`` also answers None for: a
+    field the author filled in with something this importer cannot read is a typo to
+    report, not a default to take."""
+    return v is not None and v != ""
+
+
+def _seconds(n):
+    """A number as unix seconds, or None if it is not a second this mock can serve.
+
+    Two ways a number gets here without being a time. ``inf`` and ``nan`` have no
+    integer form at all — `json.loads` accepts both as bare literals, so a corpus can
+    hand them over and `int()` raises rather than returning anything. And a finite
+    second outside `datetime`'s year 1..9999 cannot be rendered: the servers date a row
+    through `datetime.fromtimestamp`, so milliseconds written where seconds belong
+    imports clean and then raises at SERVE time, well after the import said it worked.
+    Asked of the same function the servers use rather than against a hardcoded bound."""
+    from datetime import datetime, timezone
+
+    try:
+        sec = int(n)
+    except (ValueError, OverflowError):  # nan, inf
+        return None
+    try:
+        datetime.fromtimestamp(sec, tz=timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return sec
+
+
+def _epoch_field(v, where, field):
+    """A corpus-supplied time, refusing a value that is filled in but unreadable.
+
+    Used wherever an absent time gets a default in its place — a hash of the doc_id, the
+    previous message's second, the root's clock plus an hour. Taking that default for a
+    typo means the record loads with a time nobody wrote and no way to tell it apart from
+    one that was left blank on purpose, which is the whole reason a reply's clock refuses.
+    Fields whose absence stores NULL keep plain ``_epoch``: nothing is substituted there,
+    so nothing is disguised."""
+    sec = _epoch(v)
+    if sec is None and _time_given(v):
+        raise SystemExit(
+            f"{where}: {field} is not a time this importer can read "
+            f"(got {v!r}; write epoch seconds or ISO 8601)"
+        )
+    return sec
+
+
 def _epoch(v):
     """Parse a BYO time (epoch seconds int/float, or ISO 8601 string) -> unix seconds.
 
     Returns None for a missing/unparseable value, so the router falls back to the
     deterministic synthesized timestamp."""
-    if v is None or v == "":
+    if not _time_given(v):
         return None
     if isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
-        return int(v)
+        return _seconds(v)
     from datetime import datetime
 
     s = str(v).strip().replace("Z", "+00:00")
     try:
         return int(datetime.fromisoformat(s).timestamp())
     except ValueError:
+        pass
+    # Epoch seconds written as a string — `"1770746760"`, or the `<sec>.<frac>` a Slack
+    # ts takes, which is the form an `edited.ts` next door is already in. ISO is tried
+    # first, so an 8-digit basic-format date stays a date rather than becoming a second.
+    try:
+        return _seconds(float(s))
+    except ValueError:
         return None
+
+
+def _thread_seconds(where, root_sec, root_written, replies):
+    """Every second in a slack thread — the root's and each reply's — resolved together,
+    before any of the rows are written. Returns ``(root_second, [reply seconds])``.
+
+    Ordering is judged against clocks the corpus actually supplied. A root with no
+    `created` of its own holds a second hashed from its doc_id, which is not a fact
+    about the thread, and using it as the anchor made the import turn on that hash: for
+    a reply dated inside the synthesizer's own window the hash lands after the reply
+    date about half the time, so the same corpus loads or dies depending on the root's
+    doc_id, and the refusal quotes a second that appears nowhere in the corpus. When it
+    did load, the served thread had a root years before its own reply. Such a root is
+    re-grounded on the first reply that carries a clock instead.
+
+    A clockless reply still lands one second after the message before it, so a thread
+    that supplies no clocks at all resolves exactly where root+position always put it.
+    Re-grounding cannot change an existing corpus either: a reply could not carry
+    `created` at all until this branch added it, `replies.items` being closed.
+    """
+    reps = replies or []
+    written = []
+    for i, rep in enumerate(reps, start=1):
+        v = rep.get("created")
+        sec = _epoch(v)
+        if sec is None and _time_given(v):
+            # A filled-in field this importer cannot read is refused rather than
+            # defaulted: taking the default silently reinstates the metronome the field
+            # exists to replace, and the second that lands is indistinguishable from
+            # what a corpus that never wrote a clock gets.
+            raise SystemExit(
+                f"{where}: reply {i}: created is not a time this importer can read "
+                f"(got {v!r}; write epoch seconds or ISO 8601)"
+            )
+        written.append(sec)
+
+    if not root_written:
+        first = next((i for i, s in enumerate(written) if s is not None), None)
+        if first is not None:
+            # One second for each clockless reply ahead of it, and one more for the root.
+            root_sec = written[first] - (first + 1)
+
+    out = []
+    prev, defaulted = root_sec, False
+    for i, sec in enumerate(written, start=1):
+        if sec is None:
+            prev, defaulted = prev + 1, True
+            out.append(prev)
+            continue
+        if sec <= prev:
+            if defaulted:
+                # The second it collides with is one this importer chose, not one the
+                # author wrote, so say that rather than quoting it as a fact about the
+                # corpus. Two adjacent seconds cannot both hold a message: a Slack ts is
+                # identity as well as clock.
+                raise SystemExit(
+                    f"{where}: reply {i}: created must be after the message before it "
+                    f"(got {reps[i - 1].get('created')!r}), but reply {i - 1} carries no "
+                    f"created of its own and took the next free second, {prev}. Give "
+                    f"reply {i - 1} a created too, or move this one later."
+                )
+            raise SystemExit(
+                f"{where}: reply {i}: created must be after the message before it "
+                f"(got {reps[i - 1].get('created')!r}, the previous message is at {prev})"
+            )
+        prev, defaulted = sec, False
+        out.append(sec)
+    return root_sec, out
 
 
 def _service_columns(
@@ -652,6 +776,88 @@ def load_roster(path) -> dict:
     return {"org": data.get("org"), "org_domain": data.get("org_domain"), "users": users}
 
 
+# --- github: a pull's changeset and its review comments -------------------------------------
+#
+# Two halves, and they fail differently.
+#
+# The SHAPE — which subtype may carry the field at all — is a hard error, because an issue has no
+# changeset endpoint and no review-comment endpoint, so either field on one is data the mock would
+# store and never serve. Stated here rather than as a schema `if`/`then`: expressed that way, both
+# rules report as `'subtype' is a required property` at the record root, which names neither the
+# field that put the rule in force nor what is unservable about the pairing, and leaves the author
+# to find the `if` in the schema. Written in Python the message can say all three.
+#
+# The REFERENT — whether a declared path names a file the repo actually has — is reported and
+# loaded anyway (see `_unresolved_changed_paths`).
+
+
+def _github_pairing_errors(rec: dict) -> list[str]:
+    """Pull-only fields on a record that is not a pull, and a review comment with no anchor.
+
+    Returned rather than raised, so the one rule serves both the load (which refuses) and
+    ``--dry-run`` (which reports) — a corpus must never pass the check that exists to spare the
+    author a failed import and then fail the import. ``where`` is prefixed by the caller.
+    """
+    subtype = rec.get("subtype")
+    is_pull = subtype == "pull_request"
+    msgs = []
+    if rec.get("changed_paths") is not None:
+        if not is_pull:
+            msgs.append(
+                f"changed_paths is for subtype='pull_request' only (this is {subtype or 'issue'!r})"
+            )
+        if not isinstance(rec["changed_paths"], list) or not all(
+            isinstance(p, str) for p in rec["changed_paths"]
+        ):
+            msgs.append("changed_paths must be a list of path strings")
+    for c in rec.get("comments") or []:
+        # github's line-anchored REVIEW comments are discriminated by `path` (see store.SCHEMA).
+        if not isinstance(c, dict) or not any(k in c for k in ("path", "line", "diff_hunk")):
+            continue
+        if not c.get("path"):
+            msgs.append(
+                "a review comment needs 'path' — it is what marks the comment as line-anchored; "
+                "line/diff_hunk alone would be served by neither endpoint"
+            )
+        if not is_pull:
+            msgs.append(
+                f"a review comment is for subtype='pull_request' only (this is "
+                f"{subtype or 'issue'!r})"
+            )
+    return msgs
+
+
+def _unresolved_changed_paths(declared, resolves) -> list[tuple[str, str]]:
+    """``(where, path)`` for every declared path that names no ``file`` document, in corpus order.
+
+    ``declared`` is one ``(where, repo, paths)`` per pull; ``resolves(repo, path)`` answers whether
+    that repo has such a file. One rule for both callers, so what a load reports and what
+    ``--dry-run`` reports cannot drift — they differ only in what they can see (a load asks the DB,
+    and so finds files from an earlier ``--append``; ``--dry-run`` has the corpus and nothing else).
+
+    Matching is exact on ``(repo, path)`` and ignores ACL, which is what the router does per caller.
+    Deliberately so at serve time: a path the corpus named but this caller may not read must behave
+    exactly like a typo, or the response reveals which paths exist. Import is not per-caller, so a
+    path that resolves for NO caller is the one case it can call out.
+
+    Reported, never refused. A corpus is routinely a SLICE of a repo — the same property that leaves
+    a linear `parent` pointing outside it (see `_Loader.resolve_cross_references`) — so refusing
+    would make a pull that states the files it really touched unimportable whenever the slice
+    stopped short of one of them. And the referent may not have arrived yet: under ``--append`` the
+    file document can land in a later shard, or already sit in a DB no ``--dry-run`` can see. So the
+    record loads as written and the router drops the path from the changeset, as it drops one the
+    caller cannot read.
+    """
+    out = []
+    for where, repo, paths in declared:
+        out.extend((where, p) for p in dict.fromkeys(paths) if not resolves(repo, p))
+    return out
+
+
+def _changed_path_count(n: int) -> str:
+    return f"{n} changed_paths entr{'y' if n == 1 else 'ies'} with no matching `file` document"
+
+
 class _Loader:
     """Inserts BYO records into an open DB, accumulating the corpus-level state the principal, ACL
     and cross-reference passes need afterwards.
@@ -1071,6 +1277,9 @@ class _Loader:
         # their project's key. Both are corpus shapes only the loader can see and refuse.
         self.jira_prefixes = {}  # container -> prefix
         self.jira_prefix_holders = {}  # prefix -> container
+        # A pull's declared changeset, resolved after the whole corpus is read: the `file` document
+        # a path names may be on a later line, or in a shard already loaded.
+        self.gh_changesets = []  # (where, repo, paths)
 
     def seed_tracker_ids(self) -> None:
         """Re-read the ids already in the DB, so a claim holds ACROSS runs too.
@@ -1151,6 +1360,11 @@ class _Loader:
         if errors:
             raise SystemExit(f"{where}: " + "; ".join(errors))
         src = rec["source_type"]
+        # Not under `validate`: these are pairings no schema states well (see
+        # _github_pairing_errors), and a record an importer in this repo generated is no likelier to
+        # get a pull-only field onto an issue correctly than a hand-written one.
+        if src == "github" and (bad := _github_pairing_errors(rec)):
+            raise SystemExit(f"{where}: " + "; ".join(bad))
         # Slack messages have no title; the other five carry a natural one.
         title = rec.get("title") or ""
 
@@ -1377,10 +1591,9 @@ class _Loader:
         # created_ts must never be NULL (the server sorts/filters by it; a NULL would need a
         # runtime null-check). Fall back to the same deterministic synth.epoch the server would have
         # synthesized for a missing ts, so the served time is unchanged — just materialized now.
-        created = _epoch(rec.get("created"))
-        if created is None:
-            created = synth.epoch(doc_id)
-        updated = _epoch(rec.get("updated"))
+        created_written = _epoch_field(rec.get("created"), where, "created")
+        created = synth.epoch(doc_id) if created_written is None else created_written
+        updated = _epoch_field(rec.get("updated"), where, "updated")
 
         replies = rec.get("replies") if src == "slack" else None
         # The ROOT's `ts`, which is what a reply stores as its `thread_ts` — and it is not known
@@ -1388,6 +1601,11 @@ class _Loader:
         # taking it as an argument. A root with replies carries its OWN ts (Slack does too, so
         # `thread_ts == ts` is what marks a root); a standalone message carries NULL.
         slack_thread_ts = None
+        # Resolved before the root row is written, because a root whose own clock was
+        # synthesized may be re-grounded on the replies that do carry one.
+        created, reply_seconds = _thread_seconds(
+            where, created, created_written is not None, replies
+        )
         # gmail's own child-row array. `replies` stays Slack-only (a Slack reply is a *reply*,
         # with reactions and files); a Gmail thread is a sequence of full RFC822 messages, each
         # with its own sender, recipients and Message-ID, so it gets an array that reads like one
@@ -1671,19 +1889,11 @@ class _Loader:
                 ),
             )
 
-        # A pull's changeset (github). Only a pull has one, and it must be a list of paths — the
-        # router resolves each against this repo's subtype='file' docs. Refused here rather than
-        # stored and silently unservable.
-        if src == "github" and rec.get("changed_paths") is not None:
-            if subtype != "pull_request":
-                raise SystemExit(
-                    f"{where}: changed_paths is for subtype='pull_request' only (this is "
-                    f"{subtype or 'issue'!r})"
-                )
-            if not isinstance(rec["changed_paths"], list) or not all(
-                isinstance(p, str) for p in rec["changed_paths"]
-            ):
-                raise SystemExit(f"{where}: changed_paths must be a list of path strings")
+        # A pull's declared changeset: kept for the cross-reference pass, which is the first point
+        # that can tell whether each path names a `file` document. The pull-only shape rules were
+        # checked at the top of this method (see _github_pairing_errors).
+        if src == "github" and rec.get("changed_paths"):
+            self.gh_changesets.append((where, container, rec["changed_paths"]))
 
         # comments on the document — only jira/confluence/github expose them (slack uses replies)
         rec_comments = rec.get("comments") or []
@@ -1707,7 +1917,9 @@ class _Loader:
             # `Issue.comments` does) serves the thread inverted. Monotonic, so it cannot. For an
             # all-undated thread this is exactly `created + j`, as before. Never a hash of the
             # comment's own id, which would scatter one thread across two years.
-            c_ts = _epoch(c.get("created_ts")) or (prev_c_ts + 1)
+            c_ts = _epoch_field(c.get("created_ts"), f"{where}: comment {j}", "created_ts") or (
+                prev_c_ts + 1
+            )
             prev_c_ts = max(prev_c_ts, c_ts)
             # The corpus's own comment id is a SEED, never stored (#51). For github it seeds the
             # id the API reports, assigned here and probed for uniqueness — a comment's `url`
@@ -1738,18 +1950,9 @@ class _Loader:
             )
             # github's line-anchored REVIEW comments live in the same table, discriminated by
             # `path` (see store.SCHEMA). A second statement rather than widening the shared INSERT
-            # above, which serves six tables that have no such columns.
+            # above, which serves six tables that have no such columns. `path` is present and this
+            # is a pull: _github_pairing_errors settled both before any row was written.
             if src == "github" and any(k in c for k in ("path", "line", "diff_hunk")):
-                if not c.get("path"):
-                    raise SystemExit(
-                        f"{where}: a review comment needs 'path' — it is what marks the comment as "
-                        "line-anchored; line/diff_hunk alone would be served by neither endpoint"
-                    )
-                if subtype != "pull_request":
-                    raise SystemExit(
-                        f"{where}: a review comment is for subtype='pull_request' only (this is "
-                        f"{subtype or 'issue'!r})"
-                    )
                 conn.execute(
                     "UPDATE github_comments SET path = ?, line = ?, diff_hunk = ? WHERE id = ?",
                     (c["path"], c.get("line"), c.get("diff_hunk"), _cid),
@@ -1765,10 +1968,10 @@ class _Loader:
                 + hashlib.sha256((doc_id + str(i) + rep["content"]).encode()).hexdigest()[:32]
             )
             seen.add((src, rep_id))
-            # A reply is a full message (reactions/files/subtype/edited carry through);
-            # its time is the root's + its position so the thread stays ordered (created is now
-            # always set, so a reply ts is never NULL).
-            rep_cts = created + i
+            # A reply is a full message (reactions/files/subtype/edited carry through).
+            # Its second was resolved with the rest of the thread's in `_thread_seconds`,
+            # which is where the ordering rule and its refusals live.
+            rep_cts = reply_seconds[i - 1]
             insert(
                 rep_id,
                 rep_author,
@@ -1807,7 +2010,8 @@ class _Loader:
                 # `thread` is forced to the ROOT's thread: a child must never open a thread of
                 # its own, or `users.threads.get` would return a one-message thread.
                 ex={**msg, "thread": gmail_thread},
-                cts=_epoch(msg.get("created")) or (created + i * 3600),
+                cts=_epoch_field(msg.get("created"), f"{where}: message {i}", "created")
+                or (created + i * 3600),
             )
 
     def write_containers(self) -> None:
@@ -1966,6 +2170,30 @@ class _Loader:
                     created_ts,
                 ),
             )
+
+        # A pull's declared changeset, against the `file` documents that now exist. Asked of the DB
+        # rather than of this run's records, so a path whose file arrived in an earlier `--append`
+        # resolves; memoized because a path repeats across the pulls that touched it.
+        if self.gh_changesets:
+            known: dict[tuple[str, str], bool] = {}
+
+            def _resolves(repo: str, path: str) -> bool:
+                if (repo, path) not in known:
+                    known[(repo, path)] = (
+                        store.get_repo_file(conn, repo, path) is not None
+                    )  # ACL-free: see _unresolved_changed_paths
+                return known[(repo, path)]
+
+            unresolved = _unresolved_changed_paths(self.gh_changesets, _resolves)
+            if unresolved:
+                # A count, not the list: a load prints a summary and one line per path would bury
+                # it. `--dry-run` names each one, which is where an author goes to fix a corpus.
+                print(
+                    f"  github: {_changed_path_count(len(unresolved))} in this corpus or the "
+                    f"existing DB; each is dropped from its pull's changeset (`--dry-run` names "
+                    f"them)",
+                    file=sys.stderr,
+                )
 
     def _settle(self, src: str, final: list) -> None:
         """Move rows in a deferred source from their provisional key to the settled one.
@@ -2442,6 +2670,11 @@ def run(
         # different failure from a bad record, and saying so is cheaper than a schema error.
         _verify_or_die(corpus)
         problems, n = [], 0
+        # Enough to resolve a declared changeset afterwards: which paths each repo has, and which
+        # pull declared what. Paths only — a record's content is never held, so this stays flat in a
+        # pass whose whole point is to stream a corpus too large to load.
+        gh_files: dict[str, set[str]] = {}
+        gh_changesets: list[tuple[str, str, list[str]]] = []
         for lineno, line in corpus_records(corpus):
             line = line.strip()
             if not line:
@@ -2452,7 +2685,33 @@ def run(
             except json.JSONDecodeError as e:
                 problems.append((lineno, f"invalid JSON: {e}"))
                 continue
-            problems.extend((lineno, m) for m in record_errors(rec))
+            errs = record_errors(rec)
+            if isinstance(rec, dict) and rec.get("source_type") == "github":
+                errs += _github_pairing_errors(rec)
+                # Only from a record that is otherwise sound: its own `path` may be the thing that
+                # is wrong, and an unresolved reference to it would then blame the pull for a typo
+                # one line up.
+                if not errs:
+                    repo = str(rec.get("repo") or "github")  # as _Loader.add derives it
+                    if rec.get("subtype") == "file" and rec.get("path"):
+                        gh_files.setdefault(repo, set()).add(rec["path"])
+                    elif rec.get("changed_paths"):
+                        gh_changesets.append((f"line {lineno}", repo, rec["changed_paths"]))
+            problems.extend((lineno, m) for m in errs)
+        unresolved = _unresolved_changed_paths(
+            gh_changesets, lambda repo, path: path in gh_files.get(repo, ())
+        )
+        if unresolved:
+            # Reported, and the exit code left alone: a slice of a repo is a legitimate corpus, so
+            # this cannot gate one (see _unresolved_changed_paths). Named one per line, because
+            # finding the typo is the whole point of the report.
+            print(
+                f"NOTE: {_changed_path_count(len(unresolved))} in {corpus}; each is dropped from "
+                f"its pull's changeset",
+                file=sys.stderr,
+            )
+            for where, path in unresolved:
+                print(f"  {where}: {path}", file=sys.stderr)
         if not problems:
             print(f"OK: {n} records valid.")
             return 0

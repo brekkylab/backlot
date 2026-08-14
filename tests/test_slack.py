@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from backlot import store, synth
-from tests._helpers import crawl_slack, db_count, tiny_corpus
+from tests._helpers import corpus_client, crawl_slack, db_count, tiny_corpus
 
 
 def test_admin_slack_crawls_all(client, admin_h, ro_conn):
@@ -350,3 +350,126 @@ def test_slack_reply_users_and_num_members(tmp_path):
     req = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
     ch = _full_channel(req, conn, "inc")
     assert ch["num_members"] > 0 and ch["creator"] == "USERVICE0"
+
+
+def test_thread_ts_and_latest_reply_follow_a_replys_own_clock(tmp_path):
+    """A reply may carry its own `created`, the treatment a gmail message gets. Its ts is that
+    second, its thread_ts is the ROOT's ts, and the root's latest_reply names the last reply's
+    real second."""
+    from datetime import datetime
+
+    from backlot.routers.slack import _message
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "doc_id": "s1",
+                "channel": "inc",
+                "content": "root",
+                "author_email": "bob@x.com",
+                "visibility": "public",
+                "created": "2026-05-01T00:00:00Z",
+                "replies": [
+                    {"content": "ack", "author_email": "ava@x.com"},
+                    {
+                        "content": "the real answer, hours later",
+                        "author_email": "cid@x.com",
+                        "created": "2026-05-01T03:00:00Z",
+                    },
+                ],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    channel, root_ts = conn.execute(
+        "SELECT channel, ts FROM slack_messages WHERE thread_seq = 0"
+    ).fetchone()
+    thread = store.slack_thread(conn, channel, root_ts)
+    root, late = thread[0], thread[2]
+    base = int(datetime.fromisoformat("2026-05-01T00:00:00+00:00").timestamp())
+    # the late reply's ts is its own second, not root + position
+    assert late["ts"].split(".")[0] == str(base + 3 * 3600)
+    # its thread_ts is the root's ts — position arithmetic would land 2s early
+    assert _message(late)["thread_ts"] == root["ts"]
+    # latest_reply is the late reply's real ts, not root + reply count
+    assert store.slack_latest_reply_ts(conn, channel, root_ts) == late["ts"]
+    # the replies endpoint's fast path (resolve a public ts by its second) finds it
+    hits = store.slack_messages_at_created_ts(conn, "inc", base + 3 * 3600)
+    assert any(r["ts"] == late["ts"] for r in hits)
+
+
+def test_every_in_thread_message_serves_the_roots_ts(tmp_path):
+    """Both endpoints that serve in-thread rows — the thread itself and a page of search hits
+    inside one — report the root's ts as `thread_ts`, so the value a client is handed is the one
+    it fetches the thread with."""
+    records = [
+        {
+            "source_type": "slack",
+            "doc_id": "s-big",
+            "channel": "inc",
+            "content": "root of a long thread",
+            "author_email": "bob@x.com",
+            "visibility": "public",
+            "created": "2026-02-10T18:00:00Z",
+            "replies": [{"content": f"reply {i}", "author_email": "ava@x.com"} for i in range(30)],
+        },
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        cid = synth.slack_channel_id("inc")
+        hist = client.get(
+            "/slack/api/conversations.history", headers=h, params={"channel": cid, "limit": 100}
+        ).json()
+        root_ts = hist["messages"][0]["ts"]
+
+        rep = client.get(
+            "/slack/api/conversations.replies",
+            headers=h,
+            params={"channel": cid, "ts": root_ts, "limit": 100},
+        ).json()
+        assert len(rep["messages"]) == 31
+        assert {m["thread_ts"] for m in rep["messages"]} == {root_ts}
+
+        found = client.get(
+            "/slack/api/search.messages", headers=h, params={"query": "reply", "count": 100}
+        ).json()["messages"]["matches"]
+        assert len(found) >= 30
+        assert {m["thread_ts"] for m in found} == {root_ts}
+
+
+def test_thread_rooted_at_epoch_zero_stays_coherent(tmp_path):
+    """1970-01-01T00:00:00Z is a second a corpus can write, and it stores as 0. The root serves
+    that second and every message in the thread points at it, so a client can fetch the thread
+    with the thread_ts it was handed."""
+    from backlot.routers.slack import _message
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "doc_id": "s-zero",
+                "channel": "inc",
+                "content": "root",
+                "author_email": "bob@x.com",
+                "visibility": "public",
+                "created": 0,
+                "replies": [
+                    {"content": "r1", "author_email": "ava@x.com", "created": 1},
+                    {"content": "r2", "author_email": "ava@x.com", "created": 5000},
+                ],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    channel, root_ts = conn.execute(
+        "SELECT channel, ts FROM slack_messages WHERE thread_seq = 0"
+    ).fetchone()
+    thread = store.slack_thread(conn, channel, root_ts)
+    assert [r["created_ts"] for r in thread] == [0, 1, 5000]
+    # the root serves its own second, not a hash of the id the corpus gave it
+    assert thread[0]["ts"].split(".")[0] == "0"
+    # and every message in the thread points at that same root ts
+    assert {_message(r)["thread_ts"] for r in thread} == {thread[0]["ts"]}

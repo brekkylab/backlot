@@ -66,11 +66,13 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   emails all say `acme` — not a hardcoded default). Override with `BACKLOT_ORG_NAME` /
   `BACKLOT_ORG_DOMAIN`. The chosen values are persisted to `data/tokens.yaml`.
 - **Slack threads:** a slack record may carry a `replies` array. Each reply is a full message
-  (`content`, optional `author_email`/`author_name`/`subtype`/`reactions`/`files`/`edited`), not
-  just text. It becomes a thread — the record is the root, each reply a threaded reply. Only the
-  root appears in `conversations.history`; the full thread comes back from `conversations.replies`
-  (shared `thread_ts`, increasing `ts`, `reply_count` on the root). Reply times follow the root's
-  `created` + position, so the thread stays ordered.
+  (`content`, optional `author_email`/`author_name`/`subtype`/`reactions`/`files`/`edited`/
+  `created`), not just text. It becomes a thread — the record is the root, each reply a threaded
+  reply. Only the root appears in `conversations.history`; the full thread comes back from
+  `conversations.replies` (shared `thread_ts`, increasing `ts`, `reply_count` on the root). A
+  reply's time is its own `created` when given, else one second after the message before it —
+  and it must be after that message: a Slack `ts` is identity as well as clock, so a thread's
+  times are strictly increasing.
 - **Fireflies transcripts:** a fireflies record's child rows are `sentences`, not `replies`
   — a transcript should read like a transcript, so `replies` on a `fireflies` record is
   rejected rather than ignored. Each sentence carries `text`, an optional `speaker_name`
@@ -95,7 +97,11 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   *which* files: the hunks are always derived from each file's own content, so the diff applies with
   real `git` either way. Omit it and the mock picks a few files deterministically instead — a
   well-formed diff, but unrelated to what the pull is about. A path naming no file the caller can
-  read is skipped, so declaring one does not publish its name.
+  read is skipped, so declaring one does not publish its name — and a path naming no file *at all*
+  is skipped the same way, since telling the two apart per caller is what would publish it. That
+  second case is usually a typo, so the import reports it and `--dry-run` names the line and the
+  path; it is not refused, because a corpus is often a slice of a repo that legitimately stops short
+  of a file its pulls touched.
 - **GitHub review comments:** a comment on a `pull_request` becomes a line-anchored **review**
   comment (`GET /pulls/{n}/comments`) when it carries a `path`, with an optional `line` (omit it for
   a file-level comment) and an optional `diff_hunk` (derived from the file otherwise). Without a

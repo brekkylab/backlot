@@ -1,6 +1,7 @@
 """Full-text search: store.build_fts + search_documents (FTS5) over the SAMPLE corpus.
 
-The `db` fixture is built via backlot.importer.byo.load, which now builds the docs_fts index, so
+The `db` fixture is built via backlot.importer.byo.load, which builds every source's own FTS
+index, so
 these exercise the real FTS path (search.messages / confluence CQL both sit on search_documents).
 """
 
@@ -10,7 +11,9 @@ from backlot import store
 
 
 def test_fts_index_built(db):
-    assert store._has_fts(db), "importer should have built the docs_fts full-text index"
+    assert all(store._has_fts(db, src) for src in store.SOURCE_TABLE), (
+        "the importer should have built every source's full-text index"
+    )
 
 
 def test_fts_slack_search(db):
@@ -37,7 +40,7 @@ def test_fts_acl_scoped(db, acl, tokens):
 
 
 def test_fts_search_returns_only_its_own_source(db):
-    # Was `test_fts_source_aware_index`, which asserted the shared docs_fts's `src:` intersection.
+    # Was `test_fts_source_aware_index`, which asserted the shared index's `src:` intersection.
     # That mechanism is gone — each source has its own index — but the PROPERTY it protected is
     # the same and still worth pinning: a source-scoped search must never return another
     # source's rows, whatever enforces it.
@@ -53,18 +56,17 @@ def test_fts_search_returns_only_its_own_source(db):
 
 @pytest.mark.parametrize("src", sorted(store.SOURCE_TABLE))
 def test_fts_every_source_has_its_own_index(db, src):
-    """Each source searches its OWN FTS table rather than the shared `docs_fts`.
+    """Each source searches its OWN FTS table.
 
-    Splitting the index is about bm25's IDF, not scan cost: IDF is computed over whatever table
-    the term is in, so while the index is shared, how a term ranks INSIDE one source depends on
-    how often it appears in the others. A converted source also drops the `src:` term from its
-    MATCH — there is nothing else in its own table to exclude.
+    The split is about bm25's IDF, not scan cost: IDF is computed over whatever table the term is
+    in, so a shared index made how a term ranks INSIDE one source depend on how often it appeared
+    in the others.
     """
     fts = f"{src}_fts"
     assert store._fts_table(src) == fts
     names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert fts in names
-    assert store._fts_match("latency spike", src, has_src=True) == '"latency" AND "spike"'
+    assert store._fts_match("latency spike") == '"latency" AND "spike"'
     # every doc of this source is in its own index and nothing else is
     n_src = db.execute(f"SELECT COUNT(*) FROM {store.table(src)}").fetchone()[0]
     n_fts = db.execute(f"SELECT COUNT(*) FROM {fts}").fetchone()[0]
@@ -83,7 +85,7 @@ def test_fts_jira_search_survived_its_move(db):
 
 
 def test_fts_drive_source(db):
-    # Drive is in the source-aware index, so fullText search hits it via FTS (title + content)
+    # Drive has its own FTS index, so fullText search hits it via FTS (title + content)
     rows = store.search_documents(db, "palette", "google_drive")
     assert rows and any("palette" in (r["content"] or "").lower() for r in rows)
     # scoping is exact: a term absent from Drive title/content returns nothing for Drive
@@ -102,8 +104,8 @@ def test_fts_phrase_match_is_adjacent():
     # phrase=True requires the tokens ADJACENT (an FTS5 phrase); the default ANDs them anywhere.
     # This is what a grep push-down needs so a literal pattern isn't buried under scattered hits.
     # No `src:` term: every source has its own index now, so there is nothing to intersect against.
-    assert store._fts_match("upload csv", "slack", has_src=True) == '"upload" AND "csv"'
-    assert store._fts_match("upload csv", "slack", has_src=True, phrase=True) == '"upload csv"'
+    assert store._fts_match("upload csv") == '"upload" AND "csv"'
+    assert store._fts_match("upload csv", phrase=True) == '"upload csv"'
 
 
 def test_fts_phrase_boosts_literal_substring():

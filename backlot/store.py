@@ -1749,103 +1749,83 @@ def _fts5_ok(conn) -> bool:
         raise
 
 
-def _has_fts(conn) -> bool:
+def _has_fts(conn, source_type: str) -> bool:
+    """Whether THIS source's FTS index exists. Per-source rather than corpus-wide: one missing
+    index now falls only its own source back to the LIKE path, instead of every source."""
     return (
         conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='docs_fts'"
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (_fts_table(source_type),),
         ).fetchone()
         is not None
     )
 
 
-def _src_tag(source_type: str) -> str:
-    """A single collision-free token for the indexed ``src`` column. unicode61 splits on
-    non-alphanumerics, so strip underscores (``google_drive`` -> ``srcgoogledrive``)."""
-    return "src" + source_type.replace("_", "")
-
-
-# Sources that have been given their OWN FTS index; everything else still shares `docs_fts`.
-# The split exists for one substantive reason: bm25's IDF is computed over whatever table the
-# term is in, so while the index is shared, how a term ranks INSIDE one source depends on how
-# often it appears in the others. A per-source index makes each vendor's ranking a function of
-# that vendor's corpus alone, which is what the real products do.
+# Each source's terms live in their OWN FTS index. The split exists for one substantive reason:
+# bm25's IDF is computed over whatever table the term is in, so a shared index makes how a term
+# ranks INSIDE one source depend on how often it appears in the others. Per-source indexes make
+# each vendor's ranking a function of that vendor's corpus alone, which is what the real products
+# do — measured, a two-term query reorders (see the commit that added `jira_fts`).
 #
-# It is deliberately NOT justified by scan cost: `docs_fts` already carries an INDEXED `src`
-# column, so a scoped search already intersects posting lists rather than ranking every source
-# and post-filtering (see `_fts_match`). That was solved when the tag was added.
-#
-# Every source now has its own; the `docs_fts` fallback below is what let the two paths coexist
-# while the conversion ran one source at a time, and goes away with the shared table itself.
+# It was deliberately NOT justified by scan cost. The shared `docs_fts` this replaced carried an
+# INDEXED `src` tag, so a scoped search already intersected posting lists rather than ranking
+# every source and post-filtering; that had been solved when the tag was added.
 FTS_TABLE = {src: f"{src}_fts" for src in SOURCE_TABLE}
 
 
 def _fts_table(source_type: str) -> str:
-    """The FTS table a source's terms live in — its own once converted, else the shared one."""
-    return FTS_TABLE.get(source_type, "docs_fts")
+    """The FTS table a source's terms live in. Raises for an unknown source rather than defaulting,
+    the same way ``table()`` does — a silent default here would search the wrong corpus."""
+    try:
+        return FTS_TABLE[source_type]
+    except KeyError:
+        raise ValueError(f"unknown source_type {source_type!r}")
 
 
 def build_fts(conn) -> bool:
-    """(Re)build the docs_fts index over all source tables. No-op (False) without FTS5 — search
-    then uses the LIKE fallback.
+    """(Re)build every source's FTS index. No-op (False) without FTS5 — search then uses the LIKE
+    fallback.
 
-    ``src`` is an INDEXED column holding a per-source tag, so a search intersects that source's
-    posting list with the term's (``src:srcjira AND "latency"``) instead of ranking every source's
-    matches and post-filtering, which made a minority-source search scan past the others."""
+    One index per source, each holding only that source's rows: no `src` tag column, because there
+    is nothing else in the table to tell apart and the tag's own token would contribute to every
+    doc's length and bm25 score for no purpose."""
     if not _fts5_ok(conn):
         return False
-    conn.execute("DROP TABLE IF EXISTS docs_fts")
     # porter stemming (over unicode61) so a search matches morphological variants the way real
-    # Slack/Gmail search do — "deletion" finds "deletions", "embedding" finds "embeddings". The
-    # tokenizer applies to every column including the src tag, but that is safe: the stored tag and
-    # the src: query term stem identically, and the 6 tags don't collide under porter.
-    conn.execute(
-        "CREATE VIRTUAL TABLE docs_fts USING fts5("
-        "doc_id UNINDEXED, src, title, content, tokenize='porter unicode61')"
-    )
-    # A converted source's own index carries no `src` column — there is nothing else in it to
-    # tell apart, and the tag's own token would otherwise contribute to every doc's length and
-    # to bm25's score for no purpose.
-    for fts in FTS_TABLE.values():
-        conn.execute(f"DROP TABLE IF EXISTS {fts}")
-        conn.execute(
-            f"CREATE VIRTUAL TABLE {fts} USING fts5("
-            "doc_id UNINDEXED, title, content, tokenize='porter unicode61')"
-        )
+    # Slack/Gmail search do — "deletion" finds "deletions", "embedding" finds "embeddings".
+    #
     # Commit per source rather than once at the end: on an in-place rebuild of a large DB this
     # keeps each writer lock window to one source's index, so a concurrent reader (the live
     # server, with a busy_timeout) rides through instead of blocking on a single multi-GB commit.
     for src, tbl in SOURCE_TABLE.items():
         fts = _fts_table(src)
-        if fts == "docs_fts":
-            conn.execute(
-                f"INSERT INTO docs_fts(doc_id, src, title, content) "
-                f"SELECT doc_id, '{_src_tag(src)}', title, content FROM {tbl}"
-            )
-        else:
-            conn.execute(
-                f"INSERT INTO {fts}(doc_id, title, content) "
-                f"SELECT doc_id, title, content FROM {tbl}"
-            )
+        conn.execute(f"DROP TABLE IF EXISTS {fts}")
+        conn.execute(
+            f"CREATE VIRTUAL TABLE {fts} USING fts5("
+            "doc_id UNINDEXED, title, content, tokenize='porter unicode61')"
+        )
+        conn.execute(
+            f"INSERT INTO {fts}(doc_id, title, content) SELECT doc_id, title, content FROM {tbl}"
+        )
         conn.commit()
     return True
 
 
 def fts_add_docs(conn, source_type: str, doc_ids: list[str]) -> int:
-    """Incrementally (re)index specific docs in ``docs_fts`` — delete-then-insert per doc_id so it is
-    idempotent (an upsert). Used by append imports so a small add doesn't trigger a full rebuild over
-    the whole corpus. No-op (returns 0) if the FTS index isn't present or ``doc_ids`` is empty."""
-    if not doc_ids or not _has_fts(conn):
+    """Incrementally (re)index specific docs in this source's FTS index — delete-then-insert per
+    doc_id so it is idempotent (an upsert). Used by append imports so a small add doesn't trigger a
+    full rebuild. No-op (returns 0) if that index isn't present or ``doc_ids`` is empty."""
+    if not doc_ids or not _has_fts(conn, source_type):
         return 0
-    tbl, tag, fts = table(source_type), _src_tag(source_type), _fts_table(source_type)
-    cols = "doc_id, title, content" if fts != "docs_fts" else "doc_id, src, title, content"
-    sel = "doc_id, title, content" if fts != "docs_fts" else f"doc_id, '{tag}', title, content"
+    tbl, fts = table(source_type), _fts_table(source_type)
     n = 0
     for i in range(0, len(doc_ids), 900):
         chunk = doc_ids[i : i + 900]
         marks = ",".join("?" for _ in chunk)
         conn.execute(f"DELETE FROM {fts} WHERE doc_id IN ({marks})", chunk)
         conn.execute(
-            f"INSERT INTO {fts}({cols}) SELECT {sel} FROM {tbl} WHERE doc_id IN ({marks})",
+            f"INSERT INTO {fts}(doc_id, title, content) "
+            f"SELECT doc_id, title, content FROM {tbl} WHERE doc_id IN ({marks})",
             chunk,
         )
         n += len(chunk)
@@ -1853,40 +1833,27 @@ def fts_add_docs(conn, source_type: str, doc_ids: list[str]) -> int:
     return n
 
 
-def _fts_has_src(conn) -> bool:
-    """True if docs_fts carries the indexed ``src`` column (new schema). Lets the query layer
-    use the fast source-intersection path when the index has been rebuilt, and fall back to the
-    legacy ``source_type`` post-filter otherwise — so new code runs against an old index too."""
-    try:
-        return any(r[1] == "src" for r in conn.execute("PRAGMA table_info(docs_fts)"))
-    except sqlite3.OperationalError:
-        return False
+def _fts_match(query: str, phrase: bool = False) -> str:
+    """A safe FTS5 MATCH string: alnum tokens, each quoted and ANDed. ``phrase=True`` requires the
+    tokens ADJACENT, for grep-style callers whose pattern is a literal — an AND would bury the exact
+    match under docs that merely contain all the words scattered.
 
-
-def _fts_match(query: str, source_type: str | None, has_src: bool, phrase: bool = False) -> str:
-    """A safe FTS5 MATCH string: alnum tokens, each quoted and ANDed, with an indexed ``src:``
-    filter when the index is source-aware. ``phrase=True`` requires the tokens ADJACENT, for
-    grep-style callers whose pattern is a literal — an AND would bury the exact match under docs
-    that merely contain all the words scattered."""
+    Takes no source: each source has its own index, so the caller picks the table (`_fts_table`) and
+    there is nothing left for the match string to exclude."""
     toks = re.findall(r"\w+", (query or "").lower())
     if not toks:
         return ""
-    body = (
+    return (
         ('"' + " ".join(toks) + '"')
         if (phrase and len(toks) > 1)
         else " AND ".join(f'"{t}"' for t in toks)
     )
-    # A converted source's index holds only its own rows, so there is nothing to intersect the
-    # src tag against — and its table has no `src` column to match on either.
-    if has_src and source_type and _fts_table(source_type) == "docs_fts":
-        return f"src:{_src_tag(source_type)} AND ({body})"
-    return body
 
 
 def search_documents(
     conn,
     query,
-    source_type=None,
+    source_type,
     visible_ids=None,
     limit=25,
     offset=0,
@@ -1903,18 +1870,12 @@ def search_documents(
     cont_sql, cont_p = "", []
     if container is not None:
         cont_sql, cont_p = f" AND {{a}}.{grouping_col(source_type)} = ?", [container]
-    if _has_fts(conn):
-        has_src = _fts_has_src(conn)
-        m = _fts_match(query, source_type, has_src, phrase=phrase)
+    if _has_fts(conn, source_type):
+        m = _fts_match(query, phrase=phrase)
         if not m:
             return []
         clause, cparams = _acl_clause(source_type, "t", visible_ids)
         fts = _fts_table(source_type)
-        # The legacy `source_type` post-filter only ever existed for the shared index; a
-        # per-source table holds nothing else, and has no such column to filter on.
-        legacy_src = fts == "docs_fts" and not has_src
-        src_sql = f" AND {fts}.source_type = ?" if legacy_src else ""
-        src_p = [source_type] if legacy_src else []
         # For a phrase search, tier the results: docs literally containing the query string first
         # (bm25 next as the tiebreak). FTS tokenization drops punctuation, so "upload.csv" and
         # "upload csv" tokenize identically and bm25 can't tell them apart — the one doc that
@@ -1943,10 +1904,10 @@ def search_documents(
             order_p = [lit, lit]
         sql = (
             f"SELECT t.* FROM {fts} JOIN {tbl} t ON t.doc_id = {fts}.doc_id "
-            f"WHERE {fts} MATCH ?{src_sql}{cont_sql.format(a='t')}{clause} "
+            f"WHERE {fts} MATCH ?{cont_sql.format(a='t')}{clause} "
             f"ORDER BY {order_sql} LIMIT ? OFFSET ?"
         )
-        return conn.execute(sql, [m, *src_p, *cont_p, *cparams, *order_p, limit, offset]).fetchall()
+        return conn.execute(sql, [m, *cont_p, *cparams, *order_p, limit, offset]).fetchall()
     like = f"%{query}%"
     sql = f"SELECT * FROM {tbl} WHERE (title LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
     params: list = [like, like, *cont_p]
@@ -1967,22 +1928,18 @@ def count_search(
     cont_sql, cont_p = "", []
     if container is not None:
         cont_sql, cont_p = f" AND {{a}}.{grouping_col(source_type)} = ?", [container]
-    if _has_fts(conn):
-        has_src = _fts_has_src(conn)
-        m = _fts_match(query, source_type, has_src, phrase=phrase)
+    if _has_fts(conn, source_type):
+        m = _fts_match(query, phrase=phrase)
         if not m:
             return 0
         clause, cparams = _acl_clause(source_type, "t", visible_ids)
         fts = _fts_table(source_type)
-        legacy_src = fts == "docs_fts" and not has_src
-        src_sql = f" AND {fts}.source_type = ?" if legacy_src else ""
-        src_p = [source_type] if legacy_src else []
         sql = (
             f"SELECT COUNT(*) FROM (SELECT t.doc_id FROM {fts} JOIN {tbl} t "
-            f"ON t.doc_id = {fts}.doc_id WHERE {fts} MATCH ?{src_sql}"
+            f"ON t.doc_id = {fts}.doc_id WHERE {fts} MATCH ?"
             f"{cont_sql.format(a='t')}{clause} LIMIT ?)"
         )
-        return conn.execute(sql, [m, *src_p, *cont_p, *cparams, cap]).fetchone()[0]
+        return conn.execute(sql, [m, *cont_p, *cparams, cap]).fetchone()[0]
     like = f"%{query}%"
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql = (

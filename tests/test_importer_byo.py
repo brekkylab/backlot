@@ -32,7 +32,7 @@ def _dump_tables(path) -> dict[str, list]:
             r[0]
             for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name NOT LIKE 'docs_fts%' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                "AND name NOT LIKE '%_fts' AND name NOT LIKE '%_fts_%' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
         ]
         return {

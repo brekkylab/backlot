@@ -6,7 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "backlot"
 version = "0.0.1"
 description = "A read-only mock of enterprise SaaS knowledge APIs, served over your own corpus with per-document ACLs"
-readme = "README.md"
+# NOT README.md: that one carries relative image and link paths, which PyPI passes through
+# unchanged and therefore 404s on. PyPI gets a short absolute-URL-only page; tests/test_packaging.py
+# keeps the two from drifting apart.
+readme = "README.pypi.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -19,6 +22,9 @@ classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Framework :: FastAPI",
     "Topic :: Software Development :: Testing :: Mocking",
 ]

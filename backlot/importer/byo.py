@@ -1108,8 +1108,7 @@ class _Loader:
         # Same claim, per channel, for slack message timestamps.
         for channel, ts in self.conn.execute("SELECT channel, ts FROM slack_messages"):
             self._slack_ts_taken.setdefault(channel, set()).add(ts)
-        # github numbers and jira keys. Every row carries one now -- there is no "provided vs
-        # derived" split in the column any more, and for a claim there never was a difference:
+        # Every row carries a key, stated or derived, and for a claim the difference is immaterial:
         # both mean the value is taken. The `dataset id` side of `tracker_ids` is unknowable for a
         # row from an earlier run, so it is recorded as None; the check that reads it only needs to
         # know the claim belongs to a DIFFERENT document than the one now claiming it.

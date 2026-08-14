@@ -1020,17 +1020,14 @@ def test_linear_team_key_collision_resolves_to_the_first_team_by_name(tmp_path, 
 
 
 def test_linear_team_key_precedes_the_raw_name_affordance(tmp_path):
-    """`resolve_team` tries the served KEY before the raw-name affordance -- a DELIBERATE change
-    from the reverse map it replaced, not a reproduction of it (see `resolve_team`'s docstring).
+    """`resolve_team` tries the served KEY before the raw-name affordance, unconditionally (see
+    `resolve_team`'s docstring).
 
-    The old map registered a team's key and another team's raw name with `setdefault` into ONE
-    shared dict, so a cross-format collision -- some team's key spelled identically to a
-    DIFFERENT team's literal name -- was won by whichever registered first in team-NAME order.
-    Here, a container literally named "ABCD" sorts before "alpha-beta-charlie-delta" (uppercase
-    sorts first), so the OLD map resolved `team(id: "ABCD")` to the container actually named
-    "ABCD". `synth.linear_team_key("alpha-beta-charlie-delta")` is also "ABCD" (word initials),
-    and the new resolver must resolve to THAT team instead -- the real spelling beats the mock-only
-    affordance, unconditionally, not by who happened to register first."""
+    The collision that makes the order observable: a container literally named "ABCD", and a second
+    one whose KEY is also "ABCD" (`synth.linear_team_key("alpha-beta-charlie-delta")` takes word
+    initials). Resolving both spellings out of one shared lookup would settle it by team-NAME order
+    -- "ABCD" sorts before "alpha-beta-charlie-delta", so the literal name would win. It must
+    resolve to the KEY's team instead: a real Linear spelling beats the mock-only affordance."""
     assert synth.linear_team_key("ABCD") == "ABC"  # its own key -- not a collision with itself
     assert synth.linear_team_key("alpha-beta-charlie-delta") == "ABCD"
     docs = [

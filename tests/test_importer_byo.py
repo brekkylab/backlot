@@ -3016,166 +3016,123 @@ def test_byo_roster_group_and_groups_read_the_same_in_every_shape(tmp_path):
     assert users["e@x.com"]["groups"] == ["engineering", "squad-checkout"]
 
 
-def test_byo_github_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
-    """`_assign_github_number`'s walk RAISES on an exhausted range rather than returning a value it
-    already knows is taken. Past `synth.GITHUB_NUMBER_RANGE` steps every number the probe can produce
-    has been visited, so the repo holds more non-file rows than the space does. Writing one anyway
-    would break the PRIMARY KEY (repo, number) instead of failing where the problem is.
+# --- every probe's walk is BOUNDED, and gives up loudly -----------------------------------
+# Five probes assign an id by walking from a seed until one is free, each within its own range.
+# All five must RAISE on an exhausted range rather than return a value they already know is taken,
+# which would land two documents on one id.
+#
+# Real exhaustion needs ~9,000 to ~90,000 rows in one container, so each case shrinks its own range
+# constant to 2 and collapses its seed to a constant. Which patch reaches which differs: a RANGE is
+# a plain int read at call time, so `setattr` works; a seed the `store.ID_SEED` registry captured at
+# import needs `setitem`, and a seed the assigner reads off `synth` at call time needs `setattr`.
+#
+# The collapsed seed MUST land inside the shrunk range. A seed outside it spends the walk's first
+# step moving into range rather than checking a candidate, so with range 2 only one of the two slots
+# is ever checked and the raise leaves the other free — a premature give-up that `pytest.raises`
+# cannot tell from a real one.
+#
+# 4 rows, not 3: with a constant seed the first candidate is always the already-taken seed, so a
+# 2-value range gives one real chance per row. 3 rows leaves a candidate never probed, which a
+# mutation returning the walk's last unchecked value slips through.
 
-    Real exhaustion is 90,000 non-file rows in one repo, so the range is shrunk instead.
-    `monkeypatch.setattr` reaches `GITHUB_NUMBER_RANGE` because it is a plain int read at call time;
-    the seed needs `setitem` on `store.ID_SEED`, whose function the registry captured.
-
-    4 rows, not 3: with a constant seed each walk's first candidate is the already-taken raw seed, so
-    a 2-value range gives one real chance per row. 3 rows leaves a candidate never probed, which a
-    mutation returning the walk's last unchecked value slips through. 4 forces a real collision.
-    """
-    from backlot import synth
-    from tests._helpers import build_corpus
-
-    monkeypatch.setattr(synth, "GITHUB_NUMBER_RANGE", 2)
-    monkeypatch.setitem(store.ID_SEED, "github", (lambda seed: 999999, "repo"))
-    docs = [
-        {
+_EXHAUSTION_CASES = [
+    pytest.param(
+        "GITHUB_NUMBER_RANGE",
+        lambda mp, synth: mp.setitem(store.ID_SEED, "github", (lambda seed: 999999, "repo")),
+        lambda i: {
             "source_type": "github",
             "doc_id": f"g{i}",
             "repo": "core",
             "title": f"Issue {i}",
             "content": "x",
             "author_email": "a@acme.com",
-        }
-        for i in range(4)  # more rows than the shrunk 2-number range holds
-    ]
-    with pytest.raises(SystemExit, match="exhausted"):
-        build_corpus(tmp_path, docs)
-
-
-def test_byo_jira_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
-    """jira's equivalent of the github test above: `_assign_jira_number`'s bounded walk raises past
-    `synth.JIRA_KEY_NUMBER_RANGE` steps rather than return a suffix it knows is taken, which would
-    duplicate it under the UNIQUE (project, served_number) index.
-
-    Real exhaustion is 9,000 issues in one project, so the range is shrunk instead — same shape as
-    `GITHUB_NUMBER_RANGE`, see that test for which patch reaches which.
-
-    The constant MUST land inside the shrunk range. A seed outside it (e.g. `999999`) spends the
-    first walk step moving the starting value into range rather than checking a candidate, so with
-    range 2 the walk checks only one of the two suffixes and raises with the other still free. That
-    is a premature give-up dressed as a real one, and the exception fires either way, so
-    `pytest.raises` cannot tell the difference. `1` makes every step check a real candidate.
-
-    4 rows, past the point (row 3, once both slots are claimed) where exhaustion is first
-    unavoidable -- checked directly: rows 1-2 fill the 2-slot range without incident, and row 3
-    already raises, so a 3-row fixture would already discriminate the `return n` mutation below
-    just as well; the 4th is margin, not a requirement, and doesn't weaken anything by being
-    there.
-    """
-    from backlot import synth
-    from tests._helpers import build_corpus
-
-    monkeypatch.setattr(synth, "JIRA_KEY_NUMBER_RANGE", 2)
-    # Directly on synth -- jira has no store.ID_SEED entry, so a setitem patch would be inert.
-    monkeypatch.setattr(synth, "jira_key_number", lambda doc_id: 1)
-    docs = [
-        {
+        },
+        id="github-number",
+    ),
+    pytest.param(
+        "JIRA_KEY_NUMBER_RANGE",
+        lambda mp, synth: mp.setattr(synth, "jira_key_number", lambda doc_id: 1),
+        lambda i: {
             "source_type": "jira",
             "doc_id": f"j{i}",
             "project": "payments",
             "title": f"Issue {i}",
             "content": "x",
             "author_email": "a@acme.com",
-        }
-        for i in range(4)  # more rows than the shrunk 2-number range holds
-    ]
-    with pytest.raises(SystemExit, match="exhausted"):
-        build_corpus(tmp_path, docs)
-
-
-def test_byo_confluence_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
-    """`_assign_confluence_id`'s probe walk must be BOUNDED. An unbounded `while` spins forever
-    with no error on an exhausted range (which in reality needs 9,000,000 pages in one corpus) --
-    the same hang `_assign_github_number` and `_assign_jira_number` are bounded against.
-
-    Shrinks `synth.CONFLUENCE_ID_RANGE` and collapses the seed to one constant, same technique as
-    the github/jira tests above. The constant is `synth.CONFLUENCE_ID_MIN` itself -- the first
-    value the shrunk range actually holds -- not an arbitrary one: a seed outside the range would
-    let the walk's first step spend its one useful check just moving the value INTO range, a
-    premature give-up dressed up as real exhaustion (see the jira test above for the full
-    argument). 4 rows, past the point (row 3) where exhaustion of a 2-value range is unavoidable.
-    """
-    from backlot import synth
-    from tests._helpers import build_corpus
-
-    monkeypatch.setattr(synth, "CONFLUENCE_ID_RANGE", 2)
-    monkeypatch.setitem(store.ID_SEED, "confluence", (lambda seed: synth.CONFLUENCE_ID_MIN, None))
-    docs = [
-        {
+        },
+        id="jira-key-suffix",
+    ),
+    pytest.param(
+        "CONFLUENCE_ID_RANGE",
+        lambda mp, synth: mp.setitem(
+            store.ID_SEED, "confluence", (lambda seed: synth.CONFLUENCE_ID_MIN, None)
+        ),
+        lambda i: {
             "source_type": "confluence",
             "doc_id": f"c{i}",
             "space": "eng",
             "title": f"Page {i}",
             "content": "x",
             "author_email": "a@acme.com",
-        }
-        for i in range(4)  # more rows than the shrunk 2-id range holds
-    ]
-    with pytest.raises(SystemExit, match="exhausted"):
-        build_corpus(tmp_path, docs)
-
-
-def test_byo_hubspot_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
-    """`_assign_hubspot_id`'s equivalent of the confluence test above: its walk was
-    also an unbounded `while`, on a range genuinely exhausted only at 9x10**9 records in reality.
-    Same shrunk-range technique, same in-range constant (`synth.HUBSPOT_ID_MIN`) for the same
-    reason -- see the confluence test's docstring."""
-    from backlot import synth
-    from tests._helpers import build_corpus
-
-    monkeypatch.setattr(synth, "HUBSPOT_ID_RANGE", 2)
-    monkeypatch.setitem(store.ID_SEED, "hubspot", (lambda seed: synth.HUBSPOT_ID_MIN, None))
-    docs = [
-        {
+        },
+        id="confluence-content_id",
+    ),
+    pytest.param(
+        "HUBSPOT_ID_RANGE",
+        lambda mp, synth: mp.setitem(
+            store.ID_SEED, "hubspot", (lambda seed: synth.HUBSPOT_ID_MIN, None)
+        ),
+        lambda i: {
             "source_type": "hubspot",
-            "object_type": "contacts",
             "doc_id": f"hs{i}",
+            "object_type": "contacts",
             "title": f"Contact {i}",
             "content": "x",
             "author_email": "a@acme.com",
-        }
-        for i in range(4)  # more rows than the shrunk 2-id range holds
-    ]
+        },
+        id="hubspot-record_id",
+    ),
+]
+
+
+@pytest.mark.parametrize("range_name, patch_seed, record", _EXHAUSTION_CASES)
+def test_byo_an_exhausted_id_range_fails_loudly(
+    tmp_path, monkeypatch, range_name, patch_seed, record
+):
+    from backlot import synth
+    from tests._helpers import build_corpus
+
+    monkeypatch.setattr(synth, range_name, 2)
+    patch_seed(monkeypatch, synth)
     with pytest.raises(SystemExit, match="exhausted"):
-        build_corpus(tmp_path, docs)
+        build_corpus(tmp_path, [record(i) for i in range(4)])
 
 
-def test_byo_github_comment_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
-    """`_assign_github_comment_id`'s equivalent: its walk was also an unbounded
-    `while`, on a range genuinely exhausted only at 9x10**9 comments in reality. Unlike the
-    confluence/hubspot ids above, this one is not read off `store.ID_SEED` -- it calls
-    `synth.github_comment_id` directly -- so the seed is collapsed by patching that function
-    itself, still to the in-range constant `synth.GITHUB_COMMENT_ID_MIN` for the same
-    premature-give-up reason (see the confluence test's docstring). One doc with 4 comments: the
-    taken-id set is corpus-wide, not per-doc, so this is the same exhaustion shape as 4 separate
-    docs would be."""
+def test_byo_an_exhausted_comment_id_range_fails_loudly(tmp_path, monkeypatch):
+    """The same bound on a CHILD id, whose four candidates hang off one parent rather than being
+    four documents."""
     from backlot import synth
     from tests._helpers import build_corpus
 
     monkeypatch.setattr(synth, "GITHUB_COMMENT_ID_RANGE", 2)
-    monkeypatch.setattr(synth, "github_comment_id", lambda comment_id: synth.GITHUB_COMMENT_ID_MIN)
-    docs = [
-        {
-            "source_type": "github",
-            "doc_id": "g0",
-            "repo": "core",
-            "title": "Issue 0",
-            "content": "x",
-            "author_email": "a@acme.com",
-            # more comments than the shrunk 2-id range holds
-            "comments": [{"content": f"c{i}", "author_email": "a@acme.com"} for i in range(4)],
-        }
-    ]
+    monkeypatch.setattr(synth, "github_comment_id", lambda cid: synth.GITHUB_COMMENT_ID_MIN)
     with pytest.raises(SystemExit, match="exhausted"):
-        build_corpus(tmp_path, docs)
+        build_corpus(
+            tmp_path,
+            [
+                {
+                    "source_type": "github",
+                    "doc_id": "g0",
+                    "repo": "core",
+                    "title": "Issue 0",
+                    "content": "x",
+                    "author_email": "a@acme.com",
+                    "comments": [
+                        {"content": f"c{i}", "author_email": "a@acme.com"} for i in range(4)
+                    ],
+                }
+            ],
+        )
 
 
 def test_byo_two_records_cannot_claim_one_tracker_id(tmp_path):
@@ -4375,9 +4332,11 @@ def test_byo_a_shorter_version_of_a_document_drops_the_children_it_lost(tmp_path
 
 def test_byo_keyless_linear_identifiers_are_probed_not_hashed(tmp_path):
     """`synth.linear_identifier` numbers within 9,000 values per team, so a plain hash collides by
-    the birthday bound at ~110 keyless issues in one team — and two issues sharing `ENG-2686`
-    leaves one unreachable at the only human-facing id it advertises, since `issue(id:)` answers
-    the first. 400 issues in one team: a hash produced duplicates here every time."""
+    the birthday bound at ~110 keyless issues in one team — and two issues sharing `ENG-2686` leaves
+    one unreachable at the only human-facing id it advertises, since `issue(id:)` answers the first.
+
+    120 issues, the smallest count these seeds collide at. Asserted rather than assumed: without it
+    a future change to the seed could leave the corpus collision-free and the test vacuous."""
     settings = Settings(data_dir=tmp_path)
     load(
         _write(
@@ -4391,7 +4350,7 @@ def test_byo_keyless_linear_identifiers_are_probed_not_hashed(tmp_path):
                     "content": "c",
                     "author_email": "ava@acme.com",
                 }
-                for i in range(400)
+                for i in range(120)
             ],
         ),
         settings,
@@ -4399,7 +4358,11 @@ def test_byo_keyless_linear_identifiers_are_probed_not_hashed(tmp_path):
     conn = store.connect_ro(settings.db_path)
     ids = [r["identifier"] for r in conn.execute("SELECT identifier FROM linear_issues")]
     conn.close()
-    assert len(ids) == 400 and len(set(ids)) == 400
+    assert len(ids) == 120 and len(set(ids)) == 120
+    # the corpus really does collide under a plain hash, or the assertion above proves nothing
+    team = synth.linear_team_key("engineering")
+    hashed = [synth.linear_identifier(f"li-{i}", team) for i in range(120)]
+    assert len(set(hashed)) < 120
 
 
 # --- github pull changesets and review comments -----------------------------------------

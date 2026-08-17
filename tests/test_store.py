@@ -74,6 +74,123 @@ def _pk_columns(conn, tbl: str) -> list[str]:
     return [c["name"] for c in sorted((c for c in cols if c["pk"]), key=lambda c: c["pk"])]
 
 
+@pytest.mark.parametrize(
+    "record, read",
+    [
+        pytest.param(
+            {"source_type": "confluence", "space": "wiki", "title": "Page 0"},
+            lambda conn, key, ids: store.confluence_by_id(conn, *key, visible_ids=ids),
+            id="confluence_by_id",
+        ),
+        pytest.param(
+            {
+                "source_type": "hubspot",
+                "object_type": "companies",
+                "title": "Page 0",
+                "properties": {"name": "Page 0"},
+            },
+            lambda conn, key, ids: store.hubspot_by_id(conn, *key, visible_ids=ids),
+            id="hubspot_by_id",
+        ),
+        pytest.param(
+            {"source_type": "github", "repo": "core", "title": "Page 0"},
+            lambda conn, key, ids: store.github_by_number(conn, *key, visible_ids=ids),
+            id="github_by_number",
+        ),
+        pytest.param(
+            {"source_type": "jira", "project": "payments", "title": "Page 0"},
+            lambda conn, key, ids: store.jira_by_key(conn, *key, visible_ids=ids),
+            id="jira_by_key",
+        ),
+    ],
+)
+def test_a_by_id_accessor_applies_the_acl(tmp_path, record, read):
+    """A regression `notion_by_id` shipped without, and every accessor since has had to guard
+    against: a non-empty ``visible_ids`` that grants nothing must come back None, not the unscoped
+    row -- otherwise the ACL clause can be deleted from an accessor invisibly.
+
+    A non-empty set, so `_acl_clause` takes its EXISTS branch rather than the empty-set "AND 0"
+    short-circuit."""
+    from tests._helpers import tiny_corpus
+
+    src = record["source_type"]
+    s = tiny_corpus(
+        tmp_path, [{**record, "doc_id": "d0", "content": "x", "author_email": "a@acme.com"}]
+    )
+    conn = store.connect_ro(s.db_path)
+    cols = store.id_columns(src)
+    key = tuple(conn.execute(f"SELECT {', '.join(cols)} FROM {store.table(src)}").fetchone())
+    assert read(conn, key, None)["title"] == "Page 0"
+    assert read(conn, key, {"nobody"}) is None
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "source, container_field, seed_fn, table, read, collider",
+    [
+        pytest.param(
+            "gmail",
+            "mailbox",
+            "gmail_message_id",
+            "gmail_messages",
+            lambda conn, v: store.gmail_by_id(conn, v),
+            "00000000deadbeef",
+            id="gmail",
+        ),
+        pytest.param(
+            "google_drive",
+            "folder",
+            "gdrive_file_id",
+            "gdrive_files",
+            lambda conn, v: store.gdrive_by_id(conn, v),
+            "1" + "a" * 32,
+            id="google_drive",
+        ),
+    ],
+)
+def test_an_unprobed_served_id_is_stored_and_a_collision_is_loud(
+    tmp_path, monkeypatch, source, container_field, seed_fn, table, read, collider
+):
+    """gmail's space is 2**63 and Drive's a 192-bit digest, so neither probes: the seed is stored
+    as-is, which is what lets `_gmail_ids` derive `threadId` by re-hashing the root's key rather
+    than reading the root's row.
+
+    The second half forces the collision that design accepts as the tradeoff: a duplicate id MUST
+    fail the import loudly, not resolve through the shared write path's upsert -- which as
+    `INSERT OR REPLACE` resolved a conflict on ANY unique index by deleting the row already holding
+    the value, so a document vanished with no error.
+
+    `monkeypatch.setitem` on `store.ID_SEED`, not `setattr` on the synth function: the registry
+    captured the function object at `backlot.store` import time, so patching the module attribute
+    afterward cannot reach it (see the confluence test above for the same defect)."""
+    from tests._helpers import build_corpus
+
+    docs = [
+        {
+            "source_type": source,
+            container_field: "eng",
+            "doc_id": f"d{i}",
+            "title": f"Doc {i}",
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i in range(5)
+    ]
+    s = build_corpus(tmp_path / "ok", docs)
+    conn = store.connect_ro(s.db_path)
+    rows = conn.execute(f"SELECT id, title FROM {table}").fetchall()
+    assert len(rows) == 5
+    # the stored key IS the seed of the corpus's own id for that record
+    assert {r["id"] for r in rows} == {getattr(synth, seed_fn)(f"d{i}") for i in range(5)}
+    for r in rows:
+        assert read(conn, r["id"])["title"] == r["title"]
+    conn.close()
+
+    monkeypatch.setitem(store.ID_SEED, source, (lambda key: collider, None))
+    with pytest.raises(SystemExit, match="already resolves to"):
+        build_corpus(tmp_path / "collide", docs)
+
+
 def test_no_table_stores_the_datasets_own_identifier(tmp_path):
     """The rule, at the schema level: the dataset's identifier scheme must not outlive the import.
     A `dsid_…` (or a corpus-authored `doc_id`) is an INPUT — it seeds a synthesized id and
@@ -834,117 +951,6 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
     conn.close()
 
 
-def test_confluence_by_id_applies_the_acl(tmp_path):
-    """A regression `notion_by_id` shipped without, and every reader
-    since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
-    None, not the unscoped row -- otherwise the ACL clause could be deleted from
-    `confluence_by_id` invisibly. One of a family, with `test_hubspot_by_id_applies_the_acl`,
-    `test_github_by_number_applies_the_acl` and `test_jira_by_served_number_applies_the_acl`.
-    A non-empty set, so `_acl_clause` takes its EXISTS branch rather than the empty-set "AND 0"
-    short-circuit."""
-    from tests._helpers import tiny_corpus
-
-    s = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "confluence",
-                "space": "wiki",
-                "doc_id": "p0",
-                "title": "Page 0",
-                "content": "x",
-                "author_email": "a@acme.com",
-            }
-        ],
-    )
-    conn = store.connect_ro(s.db_path)
-    served = conn.execute("SELECT id FROM confluence_pages").fetchone()["id"]
-    assert store.confluence_by_id(conn, served)["title"] == "Page 0"
-    assert store.confluence_by_id(conn, served, visible_ids={"nobody"}) is None
-    conn.close()
-
-
-def test_gmail_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
-    """Gmail's id space is 2**63, so unlike confluence it does not probe: the seed is stored as-is.
-    Keeping it a pure hash is what lets `_gmail_ids` derive `threadId` by re-hashing the root's key
-    instead of reading the root's row.
-
-    The second half forces the collision gmail's design accepts as the tradeoff for staying
-    unprobed: a duplicate `served_id` MUST fail the import loudly (a UNIQUE index violation), not
-    resolve through the shared write path's upsert, which was `INSERT OR REPLACE` and resolved a
-    conflict on ANY unique index by silently DELETING the row already holding that value -- a
-    message would vanish with no error. `monkeypatch.setitem` on `store.ID_SEED`, not
-    `monkeypatch.setattr(synth, "gmail_message_id", ...)`: the registry captures the seed function
-    object at `backlot.store` import time, so patching the module attribute afterward cannot reach
-    it (see the confluence test above for the same defect)."""
-    from tests._helpers import build_corpus
-
-    docs = [
-        {
-            "source_type": "gmail",
-            "mailbox": "a@acme.com",
-            "doc_id": f"m{i}",
-            "title": f"Mail {i}",
-            "content": "x",
-            "author_email": "a@acme.com",
-        }
-        for i in range(5)
-    ]
-    s = build_corpus(tmp_path / "ok", docs)
-    conn = store.connect_ro(s.db_path)
-    rows = conn.execute("SELECT id, title FROM gmail_messages").fetchall()
-    assert len(rows) == 5
-    # the stored key IS the seed of the corpus's own id for that record
-    assert {r["id"] for r in rows} == {synth.gmail_message_id(f"m{i}") for i in range(5)}
-    for r in rows:
-        assert store.gmail_by_id(conn, r["id"])["title"] == r["title"]
-    conn.close()
-
-    monkeypatch.setitem(store.ID_SEED, "gmail", (lambda key: "00000000deadbeef", None))
-    with pytest.raises(SystemExit, match="already resolves to"):
-        build_corpus(tmp_path / "collide", docs)
-
-
-def test_gdrive_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
-    """Drive was the one document source with no served-id column at all -- it
-    served the corpus's own `doc_id` straight through as the file id. Like gmail/notion/linear it
-    does not probe: `synth.gdrive_file_id` draws from a 192-bit digest, so the seed is stored as-is
-    and a collision is left to the UNIQUE index rather than walked around.
-
-    The second half forces that collision the same way `test_gmail_served_ids_are_stored_and_
-    resolve` does: `monkeypatch.setitem` on `store.ID_SEED`, not `monkeypatch.setattr(synth,
-    "gdrive_file_id", ...)` -- the registry captures the seed function object at `backlot.store`
-    import time, so patching the module attribute afterward cannot reach it (see the confluence
-    test above for the same defect). Before this fix there was no served_id column and no index to
-    violate -- Drive just served whichever doc_id the URL named, so this collision could not even
-    be expressed."""
-    from tests._helpers import build_corpus
-
-    docs = [
-        {
-            "source_type": "google_drive",
-            "folder": "eng",
-            "doc_id": f"d{i}",
-            "title": f"Doc {i}",
-            "content": "x",
-            "author_email": "a@acme.com",
-        }
-        for i in range(5)
-    ]
-    s = build_corpus(tmp_path / "ok", docs)
-    conn = store.connect_ro(s.db_path)
-    rows = conn.execute("SELECT id, title FROM gdrive_files").fetchall()
-    assert len(rows) == 5
-    assert {r["id"] for r in rows} == {synth.gdrive_file_id(f"d{i}") for i in range(5)}
-    for r in rows:
-        assert store.gdrive_by_id(conn, r["id"])["title"] == r["title"]
-    conn.close()
-
-    monkeypatch.setitem(store.ID_SEED, "google_drive", (lambda key: "1" + "a" * 32, None))
-    with pytest.raises(SystemExit, match="already resolves to"):
-        build_corpus(tmp_path / "collide", docs)
-
-
 def test_notion_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     """Notion has TWO synthesized id spaces per row: `served_id` (synth.notion_id), every
     row, like gmail unprobed since synth._uuid_from draws from the full digest space; and
@@ -1126,33 +1132,6 @@ def test_hubspot_served_ids_probe_on_a_collision_and_stay_stable_across_a_reimpo
         served
     ), "the refused append left every id exactly as the first import assigned it"
     conn.close()
-
-
-def test_hubspot_by_id_applies_the_acl(tmp_path):
-    """A regression `notion_by_id` shipped without: a non-empty
-    ``visible_ids`` that grants nothing must come back None, not the unscoped row -- otherwise the
-    ACL clause could be deleted from `hubspot_by_id` invisibly. A non-empty set, so
-    `_acl_clause` takes its EXISTS branch rather than the empty-set "AND 0" short-circuit."""
-    from tests._helpers import tiny_corpus
-
-    s = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "hubspot",
-                "doc_id": "h0",
-                "object_type": "companies",
-                "title": "Co 0",
-                "content": "x",
-                "author_email": "a@acme.com",
-                "properties": {"name": "Co 0"},
-            }
-        ],
-    )
-    conn = store.connect_ro(s.db_path)
-    served = conn.execute("SELECT id FROM hubspot_objects").fetchone()["id"]
-    assert store.hubspot_by_id(conn, served)["title"] == "Co 0"
-    assert store.hubspot_by_id(conn, served, visible_ids={"nobody"}) is None
 
 
 def test_hubspot_associations_carry_the_targets_own_served_id_through_a_collision(
@@ -1359,34 +1338,6 @@ def test_github_serves_one_number_column(tmp_path, monkeypatch):
     conn.close()
 
 
-def test_github_by_number_applies_the_acl(tmp_path):
-    """A regression `notion_by_id` shipped without, and every reader
-    since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
-    None, not the unscoped row -- otherwise the ACL clause could be deleted from
-    `github_by_number` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
-    rather than the empty-set "AND 0" short-circuit."""
-    from tests._helpers import tiny_corpus
-
-    s = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "github",
-                "doc_id": "g0",
-                "repo": "core",
-                "title": "Issue 0",
-                "content": "x",
-                "author_email": "a@acme.com",
-            }
-        ],
-    )
-    conn = store.connect_ro(s.db_path)
-    served = conn.execute("SELECT number FROM github_items").fetchone()["number"]
-    assert store.github_by_number(conn, "core", served)["title"] == "Issue 0"
-    assert store.github_by_number(conn, "core", served, visible_ids={"nobody"}) is None
-    conn.close()
-
-
 def test_github_by_number_is_scoped_to_its_repo(tmp_path, monkeypatch):
     """(final review, I-2) The SAME number in two different repos is the NORMAL case here, not an
     exotic one -- GitHub numbers restart per repo, and `(repo, number)` is the whole UNIQUE
@@ -1557,34 +1508,6 @@ def test_jira_serves_one_key_column(tmp_path, monkeypatch):
     assert got["derived"].startswith("PAY-") and got["derived"] != "PAY-7"
     for title, key in got.items():
         assert store.jira_by_key(conn, key)["title"] == title
-    conn.close()
-
-
-def test_jira_by_key_applies_the_acl(tmp_path):
-    """A regression `notion_by_id` shipped without, and every reader
-    since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
-    None, not the unscoped row -- otherwise the ACL clause could be deleted from
-    `jira_by_key` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
-    rather than the empty-set "AND 0" short-circuit."""
-    from tests._helpers import tiny_corpus
-
-    s = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "jira",
-                "doc_id": "j0",
-                "project": "payments",
-                "title": "Issue 0",
-                "content": "x",
-                "author_email": "a@acme.com",
-            }
-        ],
-    )
-    conn = store.connect_ro(s.db_path)
-    key = conn.execute("SELECT key FROM jira_issues").fetchone()["key"]
-    assert store.jira_by_key(conn, key)["title"] == "Issue 0"
-    assert store.jira_by_key(conn, key, visible_ids={"nobody"}) is None
     conn.close()
 
 

@@ -32,12 +32,21 @@ def test_fts_matches_title(db):
     assert any("runbook" in (r["title"] or "").lower() for r in rows)
 
 
-def test_fts_acl_scoped(db, acl, tokens):
-    # 'compensation' appears only in the group-restricted People page; a non-member can't find it
-    admin_hits = store.count_search(db, "compensation", "confluence", visible_ids=None)
-    bob_ids = acl.visible_ids(db, acl.resolve(tokens["bob@acme.com"]))  # not in 'people'
-    assert admin_hits >= 1
-    assert store.count_search(db, "compensation", "confluence", visible_ids=bob_ids) == 0
+@pytest.mark.parametrize(
+    "term, source, caller",
+    [
+        # each term appears only in a group-restricted document, and the caller is outside the group
+        pytest.param("compensation", "confluence", "bob@acme.com", id="confluence"),
+        pytest.param("confidential", "notion", "ava@acme.com", id="notion"),
+        pytest.param("rotation", "linear", "ava@acme.com", id="linear"),
+    ],
+)
+def test_fts_is_acl_scoped(db, acl, tokens, term, source, caller):
+    """An index hit still has to pass the ACL: admin finds the restricted document, a caller outside
+    its group finds nothing."""
+    assert store.count_search(db, term, source, visible_ids=None) >= 1
+    ids = acl.visible_ids(db, acl.resolve(tokens[caller]))
+    assert store.count_search(db, term, source, visible_ids=ids) == 0
 
 
 def test_fts_search_returns_only_its_own_source(db):
@@ -246,14 +255,6 @@ def test_fts_notion_search(db):
     assert all("teamspace" in r.keys() for r in rows)  # source-scoped to notion's own table
 
 
-def test_fts_notion_acl_scoped(db, acl, tokens):
-    # 'confidential' appears only in the group-restricted people-ops page (nt-secret);
-    # an engineer (ava) can't find it, admin can
-    assert store.count_search(db, "confidential", "notion", visible_ids=None) >= 1
-    ava_ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))  # not in 'people'
-    assert store.count_search(db, "confidential", "notion", visible_ids=ava_ids) == 0
-
-
 def test_fts_s3_search(db):
     rows = store.search_documents(db, "dashboards", source_type="s3")
     assert any(r["key"] == "runbooks/oncall.md" for r in rows)
@@ -274,14 +275,6 @@ def test_fts_linear_search(db):
     rows = store.search_documents(db, "token-bucket", "linear")
     assert rows and any(r["id"] == served_id("linear", "lin-rl") for r in rows)
     assert all("team" in r.keys() for r in rows)  # source-scoped to linear's own table
-
-
-def test_fts_linear_acl_scoped(db, acl, tokens):
-    # 'rotation' appears only in the reader-restricted issue; assert it IS findable unfiltered
-    # first, so the ==0 below proves the ACL rather than a vacuous no-match.
-    assert store.count_search(db, "rotation", "linear", visible_ids=None) >= 1
-    ava_ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
-    assert store.count_search(db, "rotation", "linear", visible_ids=ava_ids) == 0
 
 
 def test_fts_linear_scoped_to_one_team(db):

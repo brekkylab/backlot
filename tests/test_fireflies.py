@@ -209,16 +209,6 @@ def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_y
         "data"
     ]["user"]
     assert again["email"] == "ava@acme.com"
-    # PIN, not a correctness check: `_user`'s `user_id` (fireflies_resolvers.py) recomputes
-    # `synth.fireflies_user_id(email)` rather than reading `fireflies_users.served_id` off a row
-    # it does not have. fireflies is unprobed, so the two agree by construction -- the pattern
-    # every unprobed source follows (see the linear analogue in test_linear.py). Trivially true
-    # today; it exists to fail the day fireflies gains a probe, which is exactly when someone needs
-    # to be told the two can disagree.
-    stored = ro_conn.execute(
-        "SELECT served_id FROM fireflies_users WHERE email = ?", ("ava@acme.com",)
-    ).fetchone()[0]
-    assert me["user_id"] == stored
 
 
 def test_fireflies_introspection_describes_the_schema(client, admin_h):

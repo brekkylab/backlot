@@ -124,14 +124,23 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   jira/confluence also accept `updated`. Both are optional — when omitted the router synthesizes
   a stable time from the `doc_id`. Slack `replies` are full messages (`reactions`/`files`/
   `subtype`/`edited`, not just `content`); gmail accepts an explicit `to`.
-- **Tracker ids the corpus owns** (both optional): github `number` and jira `key` — the
-  spelling a document cites, stored and served verbatim so that citation is a working
-  lookup. Read from these fields only; a `number` or `key` inside `meta` stays ordinary
-  `meta` content. Each is unique within its scope — a number within its repository, a key
-  within the instance — and a second record claiming one stops the import. Omit them and
-  the id is derived, under the prefix this project's provided keys carry, so a corpus need
-  only write the ids its documents actually cite. A jira key is shaped `^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$`,
-  enforced because the prefix is a fact about the whole project.
+- **Ids the corpus owns** (all optional): github `number`, jira `key`, confluence `content_id`,
+  hubspot `record_id`, fireflies `transcript_id` — the spelling a document cites, stored and
+  served verbatim so that citation is a working lookup. Read from these fields only; the same
+  name inside `meta` stays ordinary `meta` content. Each is unique within its scope — a number
+  within its repository, everything else within the instance — and a second record claiming one
+  stops the import, whether that record is in this corpus or was loaded by an earlier one. Omit
+  them and the id is derived, under the prefix this project's provided keys carry, so a corpus
+  need only write the ids its documents actually cite. A jira key is shaped
+  `^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$`, enforced because the prefix is a fact about the whole
+  project.
+- **`--append` into a source that already holds documents** requires the id above for github,
+  jira, confluence and hubspot: their ids are assigned against the whole corpus, so without one
+  a record cannot be told apart from a row already imported. There is no update path — an id an
+  earlier import already answers at is refused, and so is restating an s3 `(bucket, key)` or a
+  fireflies `transcript_id`. Re-import from scratch to change a document that is already in.
+  (slack is the one source with nothing to state: a re-imported message is recognised by its
+  channel, second, author and text.)
 - **Per-service fidelity fields** (all optional; see each schema):
   gmail `html`; drive `trashed`; github `closed_at`/`closed_by`/`merged_by`/`milestone`/
   `requested_reviewers`/`changed_paths` (+ comment `reactions`, and `path`/`line`/`diff_hunk` to make

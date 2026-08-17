@@ -112,9 +112,9 @@ def gmail_message_id(key: str) -> str:
 
     Threads share this space, as they do in real Gmail — a thread key is the root message's
     ``seed``, so a single-message thread reports the same value for ``id`` and ``threadId``, which
-    is exactly what the real API does. That is also why the stored ``served_id`` column and a
+    is exactly what the real API does. That is also why the stored ``id`` column and a
     re-hash of the thread key resolve both: a message's own id is a column read
-    (``store.gmail_by_served_id``), while its ``threadId`` re-derives this same function over
+    (``store.gmail_by_id``), while its ``threadId`` re-derives this same function over
     ``thread_id or seed`` rather than reading the root row (see ``routers.google._gmail_ids``).
 
     UNPADDED, unlike the opaque ``gmail_id`` above: real Gmail renders the integer, so an id whose
@@ -139,8 +139,7 @@ def drive_folder_id(container: str) -> str:
 def gdrive_file_id(seed: str) -> str:
     """A Drive file's served id (#51, task 12): 33 characters, base64url alphabet
     (``[A-Za-z0-9_-]``), starting with ``1`` — the shape of a modern real Drive file id.
-    Reversible via the stored ``gdrive_files.served_id`` column (see
-    ``store.gdrive_by_served_id``), not hashed at serve time.
+    Stored as ``gdrive_files.id`` (see ``store.gdrive_by_id``), not hashed at serve time.
 
     Derived from the RAW DIGEST BYTES, unlike ``drive_folder_id``'s hex slice: hex spans only 16
     of the 64 available symbols, so it reads noticeably unlike a real id. 24 digest bytes
@@ -199,7 +198,7 @@ def jira_key_number(seed: str) -> int:
 
     A key's PREFIX is a fact about the container (its project), not this row — a corpus's own key
     always wins (see importer.byo) — but the SUFFIX is a fact about the row alone, and is what a
-    served id can be assigned and probed on within one project (see store.SERVED_ID): the prefix
+    served id can be assigned and probed on within one project (see store.ID_SEED): the prefix
     is under-constrained (two containers may share one — a corpus-provided prefix is checked 1:1
     against its project in importer.byo, but `jira_project_key`'s OWN digest can still collide
     with an unrelated project's provided one at ~1/16.7M odds; see its own docstring), so a probe
@@ -332,8 +331,8 @@ def _uuid_from(seed: str) -> str:
 
 
 def notion_id(seed: str) -> str:
-    """Stable dashed-UUID page/database id keyed on the seed (reversible via the stored
-    notion_pages.served_id column -- see store.notion_by_served_id)."""
+    """Stable dashed-UUID page/database id keyed on the seed, stored as `notion_pages.id`
+    (see store.notion_by_id)."""
     return _uuid_from("notion:" + seed)
 
 

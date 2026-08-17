@@ -1426,12 +1426,20 @@ _LINEAR_KEY_TO_DOC: dict[str, str] = {}
 
 
 def build_linear_key_index(records) -> dict[str, str]:
-    """identifier -> doc_id, FIRST match by doc_id — the rule
-    ``byo._Loader.resolve_cross_references`` and ``store.linear_issue_by_identifier`` also apply.
-    Bench keys are not unique, which is why this is resolved once here and never by a serve-time
-    join."""
+    """identifier -> doc_id, FIRST match by the issue's SERVED id — the rule
+    ``store.linear_issue_by_identifier`` applies, mirrored here.
+
+    Bench keys are not unique (5,055 repeat in one corpus), which is why this is resolved once here
+    and never by a serve-time join. The tie-break has to agree with the one the server uses or the
+    same key means two different issues: `issue(id: "ENG-9")` answers the row that sorts first by
+    served id, while a relation resolved here pointed at the row that sorted first by DATASET id —
+    26,799 of 55,544 bench dependency references disagreed, with nothing dangling to show it.
+    Ordering by `synth.linear_id(dsid)` is a pure function of the dataset id, so this pass can
+    apply the server's rule without a database."""
     out: dict[str, str] = {}
-    for _src, dsid, raw in sorted((r for r in records if r[0] == "linear"), key=lambda r: r[1]):
+    for _src, dsid, raw in sorted(
+        (r for r in records if r[0] == "linear"), key=lambda r: synth.linear_id(r[1])
+    ):
         identifier = str(raw.get("key") or "").strip() or synth.linear_identifier(
             dsid, synth.linear_team_key(str(raw.get("team") or "engineering"))
         )

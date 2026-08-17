@@ -1276,10 +1276,12 @@ def test_qst_0001_owner_is_maya_chen(tmp_path):
         check=True,
         env=env,
     )
-    # dsid_fc36... is qst_0001's expected doc; owner must now be Maya Chen, not a hash pick
+    # dsid_fc36... is qst_0001's expected doc; owner must now be Maya Chen, not a hash pick.
+    # Fetched by the id the API serves it under: a corpus's own identifier does not outlive the
+    # import (#51), and for drive that served id is a pure function of it (see tests._helpers).
     with client_for(Settings(data_dir=data_dir)) as c:
         r = c.get(
-            "/drive/v3/files/dsid_fc36d1d60e7e4b4abc7db84629563b7a",
+            f"/drive/v3/files/{served_id('google_drive', 'dsid_fc36d1d60e7e4b4abc7db84629563b7a')}",
             params={"fields": "owners(displayName)"},
             headers={"Authorization": "Bearer admin-service-token"},
         ).json()
@@ -1349,6 +1351,23 @@ def test_linear_maps_the_bench_record_onto_the_api_schema():
     assert row["assignee_display"] == "Diego Martinez"
     assert row["title"] == "Variant-aware GPU allocation"
     assert "fragile regions" in row["content"]
+
+
+def test_linear_duplicate_key_resolves_to_the_same_issue_the_server_answers():
+    """Bench keys repeat (5,055 in one corpus), so the tie-break here has to be the one the server
+    applies — otherwise the same `ENG-9` means two different issues: a relation resolved at convert
+    time pointed at the row that sorted first by DATASET id, while `issue(id: "ENG-9")` answered the
+    row that sorts first by SERVED id. 26,799 of 55,544 bench dependency references disagreed, and
+    nothing dangled to show it. Mirrored with `synth.linear_id`, a pure function of the dataset id,
+    so this pass needs no database to apply the server's rule."""
+    from backlot.importer.erb import build_linear_key_index
+
+    raw = {"team": "engineering", "key": "ENG-9"}
+    dsids = [f"dsid_dup_{i}" for i in range(12)]
+    records = [("linear", d, raw) for d in dsids]
+    winner = build_linear_key_index(records)["ENG-9"]
+    # the server orders by the served uuid and takes the first (store.linear_issue_by_identifier)
+    assert winner == min(dsids, key=synth.linear_id)
 
 
 def test_linear_container_is_the_team_field_not_the_directory():

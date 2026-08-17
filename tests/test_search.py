@@ -297,7 +297,7 @@ def test_fts_linear_scoped_to_one_team(db):
 # makes "sentences" a column match and keeps FTS (title+content) meaningful for this source too.
 
 
-def test_fireflies_transcripts_are_in_the_shared_fts_index(db):
+def test_fireflies_transcripts_are_in_their_own_fts_index(db):
     rows = store.search_documents(db, "batching", "fireflies")
     assert {r["id"] for r in rows} == {served_id("fireflies", "ff-discovery")}
     assert store.search_documents(db, "zqxjkbrqznope", "fireflies") == []

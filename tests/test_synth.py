@@ -107,7 +107,7 @@ def test_jira_project_key_unique_for_colliding_names():
 
 def test_jira_key_number_matches_jira_keys_suffix():
     """`jira_key_number` is `jira_key`'s numeric suffix, split out so a served id can be assigned
-    and probed on the suffix ALONE (see store.SERVED_ID -- a key's prefix is under-constrained,
+    and probed on the suffix ALONE (see store.ID_SEED -- a key's prefix is under-constrained,
     since a corpus-provided key can claim any prefix for its project). `jira_key` calls
     `jira_key_number` rather than recomputing it, so the two cannot drift apart -- if they did, a
     served id assigned from the seed would stop matching the number the key itself carries."""

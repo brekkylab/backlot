@@ -277,7 +277,9 @@ def test_mcp_github_bridge_acl_enforced(live_server):
     base, settings = live_server
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     # Excludes kind='file' rows (see notion's own `where` above for the same reasoning): a file's
-    # number is always NULL (#51), and this test needs the number actually served, not a
+    # `kind='file'` rows are excluded because a file is addressed by (repo, path) and its number
+    # is never served (it exists only so the row is addressable under the primary key), and this
+    # test needs the number actually served, not a
     # column guaranteed empty for the wrong subtype.
     row, email = _restricted_doc(
         settings, user["token"], "github", "kind IS NULL OR kind != 'file'"

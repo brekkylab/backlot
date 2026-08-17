@@ -221,7 +221,8 @@ def test_no_blanket_replace_writes_a_table_with_a_non_pk_unique_index(tmp_path):
     every one of them. This version checks each shared path on its own terms instead:
 
     - The doc tables (`SOURCE_TABLE`) and comment tables (`COMMENT_TABLE`) are structurally safe
-      already: `insert` upserts on `ON CONFLICT(doc_id) DO UPDATE` (never `OR REPLACE`), and the
+      already: `insert` upserts on `ON CONFLICT(<the served key>) DO UPDATE` (never `OR
+      REPLACE`), and the
       comment insert deliberately excludes `served_id` from its column list (github_comments'
       own is set by a separate, non-`OR REPLACE`, `id`-scoped `UPDATE` -- see that insert's own
       comment). Neither is re-verified here; this guard is about tables NOT already covered by
@@ -302,8 +303,11 @@ def test_acl_clause_rejects_a_wrong_but_valid_table_pairing():
     source's table must raise rather than silently scoping to the wrong source: passing
     ("slack", "gmail_messages") is wrong in exactly the way that leaves a scoped Gmail listing
     silently reading Slack's ACL grants instead of Gmail's, with no observable failure short of
-    the wrong rows coming back."""
-    with pytest.raises(AssertionError):
+    the wrong rows coming back.
+
+    A raise, not an assert: `python -O` drops an assert, and this guard has no observable failure
+    to fall back on."""
+    with pytest.raises(ValueError):
         store._acl_clause("slack", "gmail_messages", {"p1"})
     # An alias (not a real table name) must not trip the check — the Linear relation readers
     # legitimately pass "i"/"a"/"b" as `tbl`.
@@ -796,7 +800,7 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
 
     Patches `store.ID_SEED` directly, NOT `synth.confluence_id` (`monkeypatch.setattr(byo.synth,
     "confluence_id", ...)`, the original shape of this test): `store.id_seed("confluence")`
-    — what `_assign_confluence_id` actually calls — returns the tuple element `SERVED_ID` captured
+    — what `_assign_confluence_id` actually calls — returns the tuple element `ID_SEED` captured
     when `backlot.store` was first imported, a bound reference to the function object, not a live
     attribute lookup. Patching the module attribute afterward cannot reach it — verified: it left
     every page with a distinct, real hash, so the collision below never actually happened and the
@@ -1096,7 +1100,7 @@ def test_hubspot_served_ids_probe_on_a_collision_and_stay_stable_across_a_reimpo
 
     Patches `store.ID_SEED` directly, NOT `synth.hubspot_record_id`: `store.served_id_seed
     ("hubspot")` -- what `_assign_hubspot_id` actually calls -- returns the tuple element
-    `SERVED_ID` captured when `backlot.store` was first imported, a bound reference to the
+    `ID_SEED` captured when `backlot.store` was first imported, a bound reference to the
     function object, not a live attribute lookup. `monkeypatch.setattr(synth, ...)` cannot reach
     it (see the confluence/gmail/notion tests above for the same defect); `monkeypatch.setitem`
     replaces the tuple the accessor actually reads.
@@ -1251,7 +1255,7 @@ def test_github_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
 
     Patches `store.ID_SEED` directly, NOT `synth.github_number`: `store.served_id_seed
     ("github")` -- what `_assign_github_number` actually calls -- returns the tuple element
-    `SERVED_ID` captured when `backlot.store` was first imported, a bound reference to the
+    `ID_SEED` captured when `backlot.store` was first imported, a bound reference to the
     function object, not a live attribute lookup (see the confluence/gmail/notion/hubspot tests
     above for the same defect with `monkeypatch.setattr`).
     """
@@ -1471,7 +1475,7 @@ def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimp
 
     Patches `store.ID_SEED` directly, NOT `synth.jira_key_number`: `store.served_id_seed
     ("jira")` -- what `_assign_jira_number` actually calls -- returns the tuple element
-    `SERVED_ID` captured when `backlot.store` was first imported, a bound reference to the
+    `ID_SEED` captured when `backlot.store` was first imported, a bound reference to the
     function object, not a live attribute lookup (see the github/hubspot/confluence tests above
     for the same defect with `monkeypatch.setattr`).
     """

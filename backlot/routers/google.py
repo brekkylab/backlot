@@ -462,7 +462,7 @@ def _gmail_check_shape(served_id: str) -> None:
         raise gerr.invalid_id_value()
 
 
-def _gmail_resolve(conn, served_id: str) -> str | None:
+def _gmail_resolve(served_id: str) -> str | None:
     """Validate a served Gmail id's SHAPE and hand it back — a thread is keyed on the root
     message's own id (#51), so there is nothing left to translate, only to reject.
 
@@ -613,7 +613,7 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    thread_key = _gmail_resolve(conn, thread_id)
+    thread_key = _gmail_resolve(thread_id)
     msgs = store.gmail_thread(conn, thread_key, visible_ids=ids) if thread_key else []
     if not msgs:
         row = _gmail_doc(conn, ids, thread_id)
@@ -1041,7 +1041,7 @@ def _drive_project(files: list[dict], keys: set[str] | None) -> list[dict]:
     return files if not keys else [{k: v for k, v in f.items() if k in keys} for f in files]
 
 
-def _drive_fill_shared(conn, files: list[dict], stored: dict[str, str]) -> None:
+def _drive_fill_shared(conn, files: list[dict], stored: set[str]) -> None:
     """Resolve ``shared`` for one page of stored files, in one query. Objects not in ``stored`` are
     the synthesized folders, left alone: their sharing comes from the files they hold, not from a
     grant on the folder id.

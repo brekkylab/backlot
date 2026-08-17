@@ -65,7 +65,11 @@ mcp = [
     "openai>=1.40",
     "openai-agents>=0.1",
     "pyyaml>=6.0",
-    "fastmcp>=2.0",
+    # >=3: fastmcp 2.x imports `mcp.shared.exceptions.McpError`, which mcp 2.0 renamed to
+    # `MCPError` — so an unbounded pair resolves to two packages that cannot import each other and
+    # every MCP test fails inside fastmcp's own module body. 3.x is the version that agrees with a
+    # current `mcp`.
+    "fastmcp>=3",
 ]
 # LlamaIndex reader examples (examples/using-llamaindex-readers/): point each official
 # llama-index reader at the mock and load Documents. The client libs below are the ones the

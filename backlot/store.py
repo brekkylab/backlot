@@ -249,7 +249,7 @@ ID_SEED = {
     # synth.gdrive_file_id's docstring for the digest-bytes reasoning and idx_gdrive_id's
     # schema comment for the collision argument and the folder-id disjointness.
     "google_drive": (synth.gdrive_file_id, None),
-    # A transcript's own 24-hex id. A BYO record may still provide one (`_byo_fireflies`), which
+    # A transcript's own 24-hex id. A BYO record may still provide one (its `transcript_id`), which
     # wins the way a provided github number does; the seed fills every row that gives none.
     "fireflies": (synth.fireflies_id, None),
 }
@@ -673,7 +673,7 @@ CREATE INDEX IF NOT EXISTS idx_linear_attach_doc ON linear_attachments(issue_id,
 -- they legitimately differ, and is NULL when they coincide.
 -- `id` is the API-facing transcript id: `synth.fireflies_id` seeded on the incoming record's own
 -- identifier when the corpus is silent, but a BYO record may still provide its own value
--- (backlot.importer.byo's `_byo_fireflies`) -- `transcript(id:)` looks a meeting up by it, so a
+-- (its schema-declared `transcript_id`) -- `transcript(id:)` looks a meeting up by it, so a
 -- duplicate (whichever source it came from) would leave one transcript unreachable at its own id,
 -- the same defect this whole plan was chartered on (#51). As the PRIMARY KEY it fails the import
 -- loudly instead. It was `transcript_id`, a NULLABLE column beside a doc_id; nothing but the
@@ -996,11 +996,14 @@ def _acl_clause(
         tbl = table(source_type)
     elif tbl in SOURCE_TABLE.values():
         real_table = table(source_type)
-        assert tbl == real_table, (
-            f"_acl_clause: tbl {tbl!r} is a real table but doesn't match source_type "
-            f"{source_type!r}'s own table {real_table!r} — this would scope the ACL check to "
-            f"the wrong source"
-        )
+        # Raised, not asserted: `python -O` drops an assert, and the two guards in this function
+        # protect the same thing — an ACL clause scoped to the wrong source or the wrong columns.
+        if tbl != real_table:
+            raise ValueError(
+                f"_acl_clause: tbl {tbl!r} is a real table but doesn't match source_type "
+                f"{source_type!r}'s own table {real_table!r} — this would scope the ACL check to "
+                f"the wrong source"
+            )
     if visible_ids is None:
         return "", []
     ids = list(visible_ids)

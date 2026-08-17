@@ -535,7 +535,10 @@ def _service_columns(
         # omitted. A corpus may still provide `transcript_id`, which wins — it is a claim on one
         # spelling, the same way a github `number` is, and the PRIMARY KEY turns a clash between
         # two records into a loud import failure.
-        tid = ex.get("transcript_id") or synth.fireflies_id(seed)
+        # Read through the registry rather than calling `synth.fireflies_id` here: ID_SEED is
+        # where "how is this source's id derived" is answered for every other source, and a second
+        # path to the same function is a place for the two to drift.
+        tid = ex.get("transcript_id") or store.id_seed("fireflies")(seed)
         return {
             "id": tid,
             "calendar_id": ex.get("calendar_id"),
@@ -1148,8 +1151,10 @@ class _Loader:
             raise SystemExit(
                 f"{where}: {src} records must carry `{label}` when appending to a corpus that "
                 f"already has {src} documents — without one this row cannot be told apart from a "
-                f"row already imported, and would be added a second time rather than updated. "
-                f"(a fresh import needs no {label}.)"
+                f"row already imported, and would be added a second time. Stating one is how an "
+                f"--append names a NEW document; there is no update path, so an id an earlier "
+                f"import already answers at is refused too, and changing a document that is "
+                f"already in means re-importing from scratch. (a fresh import needs no {label}.)"
             )
 
     def _claim_jira_prefix(self, provided_key, container: str, where: str) -> None:

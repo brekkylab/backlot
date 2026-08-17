@@ -1026,7 +1026,7 @@ def declared_pr(gh_client, gh_admin_h, gh_org):
 
 def test_github_pull_files_lists_the_changed_files(diff_pr):
     """The real API's shape, agreeing with the pull object's own counts — a contradiction between
-    it — and stable across calls, since the whole changeset is derived from a hash of the doc_id."""
+    it — and stable across calls, since the whole changeset is derived from the pull's served key."""
     c, h, org, num = diff_pr
     r = c.get(f"/github/repos/{org}/diffable/pulls/{num}/files", headers=h)
     assert r.status_code == 200

@@ -209,6 +209,7 @@ def test_slack_title_optional(tmp_path):
 
 
 def _row(**kw):
+    kw.setdefault("channel", "inc")
     kw.setdefault("thread_ts", None)
     kw.setdefault("thread_seq", 0)
     kw.setdefault("subtype", None)
@@ -1540,15 +1541,11 @@ def test_fireflies_transcript_id_collision_raises_on_import(tmp_path, monkeypatc
     -- last-writer-wins with no error, which is the defect the whole identifier scheme exists to
     remove. Fireflies looks exempt because its id reads as "unique by construction"; it is not.
 
-    `transcript_id` is `synth.fireflies_id(doc_id)` when the corpus is silent, assigned directly in
-    importer.byo's `_service_columns` -- NOT through `store.SERVED_ID` (fireflies isn't in that
-    registry: its only hash reverses an email, not a doc_id -- see
-    test_served_id_registry_covers_every_hashed_source). So forcing a collision between two
-    DIFFERENT doc_ids needs `monkeypatch.setattr(synth, "fireflies_id", ...)`, the same shape as
-    `test_notion_served_ids_are_stored_and_resolve`'s served_data_source_id collision test, not
-    `monkeypatch.setitem` on a registry entry that does not exist for this source."""
-    from backlot import synth
-
+    A transcript's id is `synth.fireflies_id(doc_id)` when the corpus is silent, reached through
+    `store.ID_SEED` like every other synthesized id — so forcing a collision between two DIFFERENT
+    doc_ids collapses that registry entry to one constant. `setitem`, not `setattr`: the registry
+    captured the function when `backlot.store` was imported, so rebinding the name on `synth` would
+    leave the captured reference untouched."""
     docs = [
         {
             "source_type": "fireflies",
@@ -1564,7 +1561,6 @@ def test_fireflies_transcript_id_collision_raises_on_import(tmp_path, monkeypatc
     settings = Settings(data_dir=tmp_path / "ok")
     assert load(_write(tmp_path / "ok", docs), settings)["counts"]["fireflies"] == 2  # sanity
 
-    monkeypatch.setattr(synth, "fireflies_id", lambda seed: "constant")
     monkeypatch.setitem(store.ID_SEED, "fireflies", (lambda seed: "constant", None))
     (tmp_path / "collide").mkdir(parents=True, exist_ok=True)
     settings2 = Settings(data_dir=tmp_path / "collide")
@@ -3032,8 +3028,8 @@ def test_byo_github_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
     "Genuinely exhausted" is 90,000 non-file rows in one repo in reality -- not a practical test
     fixture -- so this shrinks `synth.GITHUB_NUMBER_RANGE` itself (a plain module attribute read
     at call time, not a closure capture, so `monkeypatch.setattr` reaches it -- unlike
-    `store.SERVED_ID`'s captured seed FUNCTION, this is just an int looked up live off the
-    module) and collapses the seed to one constant (`monkeypatch.setitem` on `store.SERVED_ID`,
+    `store.ID_SEED`'s captured seed FUNCTION, this is just an int looked up live off the
+    module) and collapses the seed to one constant (`monkeypatch.setitem` on `store.ID_SEED`,
     for the same reason as the collision test above).
     4 rows, not 3: with a constant seed each walk's FIRST checked candidate is always the
     already-taken raw seed, so a range this small (2) only gets ONE real chance per row to land
@@ -3070,7 +3066,7 @@ def test_byo_jira_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
     "Genuinely exhausted" is 9,000 issues in one project in reality -- not a practical test
     fixture -- so this shrinks `synth.JIRA_KEY_NUMBER_RANGE` itself (a plain module attribute,
     same shape as `GITHUB_NUMBER_RANGE` -- see that test's own docstring for why `monkeypatch.
-    setattr` reaches it while `store.SERVED_ID`'s captured seed function needs `setitem`
+    setattr` reaches it while `store.ID_SEED`'s captured seed function needs `setitem`
     instead) and collapses the seed to one constant.
 
     The constant MUST land inside the shrunk range (review round 1, M-6): a seed outside it
@@ -3170,7 +3166,7 @@ def test_byo_hubspot_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
 def test_byo_github_comment_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
     """`_assign_github_comment_id`'s equivalent (#51, task 11): its walk was also an unbounded
     `while`, on a range genuinely exhausted only at 9x10**9 comments in reality. Unlike the
-    confluence/hubspot ids above, this one is not read off `store.SERVED_ID` -- it calls
+    confluence/hubspot ids above, this one is not read off `store.ID_SEED` -- it calls
     `synth.github_comment_id` directly -- so the seed is collapsed by patching that function
     itself, still to the in-range constant `synth.GITHUB_COMMENT_ID_MIN` for the same
     premature-give-up reason (see the confluence test's docstring). One doc with 4 comments: the

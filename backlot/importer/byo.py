@@ -884,7 +884,28 @@ def _unresolved_changed_paths(declared, resolves) -> list[tuple[str, str]]:
 
 
 def _changed_path_count(n: int) -> str:
-    return f"{n} changed_paths entr{'y' if n == 1 else 'ies'} with no matching `file` document"
+    return f"{n} path reference{'' if n == 1 else 's'} with no matching `file` document"
+
+
+def _github_path_refs(where: str, repo: str, rec: dict) -> list[tuple[str, str, list[str]]]:
+    """The file paths one github record names: a pull's `changed_paths`, and the anchor of every
+    review comment on it.
+
+    Both reach the same report, because both fail the same way. A review comment whose path names
+    no file document is served NOWHERE — dropped from `/pulls/{n}/comments` and 404 at
+    `/pulls/comments/{id}`, deliberately, so the response cannot reveal which paths exist — and
+    unlike a changeset entry it left no trace at import, so the comment simply vanished."""
+    refs = []
+    if rec.get("changed_paths"):
+        refs.append((where, repo, list(rec["changed_paths"])))
+    anchors = [
+        c["path"]
+        for c in rec.get("comments") or []
+        if isinstance(c, dict) and c.get("path") and any(k in c for k in ("line", "diff_hunk"))
+    ]
+    if anchors:
+        refs.append((f"{where} (review comment)", repo, anchors))
+    return refs
 
 
 class _Loader:
@@ -1791,6 +1812,13 @@ class _Loader:
                 self._parent_seeds.setdefault(src, {})[did] = par
                 par = None
             elif par is not None and src == "notion":
+                # Resolved inline, unlike confluence's and jira's: a notion id is a pure hash of
+                # the dataset id, so it is the same answer whether the parent is in this corpus or
+                # was loaded by an earlier run. The reference is still RECORDED, because a hash
+                # answers for a parent that does not exist just as readily as for one that does —
+                # and notion was the one hierarchy source that stored such a parent without a word,
+                # serving a `parent` UUID that 404s. `resolve_parents` checks it.
+                self._parent_seeds.setdefault(src, {})[did] = par
                 par = synth.notion_id(par)
             cols = _service_columns(
                 src, ex or {}, sub, par, did, gmail_thread, seq, org_domain, cts, uts, odisp
@@ -2073,11 +2101,12 @@ class _Loader:
                 ),
             )
 
-        # A pull's declared changeset: kept for the cross-reference pass, which is the first point
-        # that can tell whether each path names a `file` document. The pull-only shape rules were
-        # checked at the top of this method (see _github_pairing_errors).
-        if src == "github" and rec.get("changed_paths"):
-            self.gh_changesets.append((where, container, rec["changed_paths"]))
+        # Every file path this record names — its changeset and its review-comment anchors — kept
+        # for the cross-reference pass, which is the first point that can tell whether each names a
+        # `file` document. The pull-only shape rules were checked at the top of this method (see
+        # _github_pairing_errors).
+        if src == "github":
+            self.gh_changesets.extend(_github_path_refs(where, container, rec))
 
         # comments on the document — only jira/confluence/github expose them (slack uses replies)
         rec_comments = rec.get("comments") or []
@@ -2426,8 +2455,8 @@ class _Loader:
                 # it. `--dry-run` names each one, which is where an author goes to fix a corpus.
                 print(
                     f"  github: {_changed_path_count(len(unresolved))} in this corpus or the "
-                    f"existing DB; each is dropped from its pull's changeset (`--dry-run` names "
-                    f"them)",
+                    f"existing DB; each is dropped from the changeset or review comment that "
+                    f"names it (`--dry-run` names them)",
                     file=sys.stderr,
                 )
 
@@ -2672,6 +2701,16 @@ class _Loader:
                 key = self.keys.get((src, did))
                 if key is None:
                     continue  # the row was never written
+                if src == "notion":
+                    # Already linked (see `insert`); what is left is whether the page it points at
+                    # is really there — in this corpus or in the DB an --append is adding to.
+                    if store.notion_by_id(self.conn, synth.notion_id(parent_seed)) is None:
+                        raise SystemExit(
+                            f"notion {key[-1]}: parent {parent_seed!r} names no imported page. The "
+                            "page would serve a `parent` id that nothing resolves, and its "
+                            "`children` would never list it. Load the parent, or drop the field."
+                        )
+                    continue
                 target = self.keys.get((src, parent_seed))
                 if target is None:
                     raise SystemExit(
@@ -2710,7 +2749,40 @@ def load_records(
     roster: Path | None = None,
     validate: bool = True,
 ) -> dict:
-    """Load already-parsed BYO records into the DB. ``load`` is this over a JSONL file.
+    """Load already-parsed BYO records into the DB, leaving the previous one in place if it fails.
+
+    A fresh (non-append) load replaces a corpus, and it used to do so by deleting the old DB before
+    reading a single record — so a typo on line 40,000 left an operator with no corpus at all: an
+    empty schema-only DB, and a tokens.yaml still describing the corpus that was gone. The old file
+    is MOVED aside instead and moved back if anything raises, which costs a rename rather than a
+    copy of the whole DB. An --append is already all-or-nothing (one commit for the whole import).
+    """
+    settings = settings or get_settings()
+    salvage = None
+    if reset and settings.db_path.exists():
+        salvage = settings.db_path.with_name(settings.db_path.name + ".replaced")
+        salvage.unlink(missing_ok=True)
+        settings.db_path.rename(salvage)
+    try:
+        result = _load_records(records_factory, settings, reset, roster, validate)
+    except BaseException:
+        if salvage is not None:
+            settings.db_path.unlink(missing_ok=True)
+            salvage.rename(settings.db_path)
+        raise
+    if salvage is not None:
+        salvage.unlink(missing_ok=True)
+    return result
+
+
+def _load_records(
+    records_factory,
+    settings: Settings,
+    reset: bool,
+    roster: Path | None,
+    validate: bool,
+) -> dict:
+    """The load itself. See :func:`load_records`, which is this plus the replace-safely dance.
 
     ``records_factory`` returns a FRESH iterator of ``(where, record)`` pairs and may be called
     twice — the org has to be inferred from every author's address before the first grant is
@@ -2719,9 +2791,6 @@ def load_records(
     importer in this repo generated itself; a corpus from OUTSIDE always validates, which is why
     ``load`` does not expose the flag.
     """
-    settings = settings or get_settings()
-    if reset and settings.db_path.exists():
-        settings.db_path.unlink()
     conn = store.connect_rw(settings.db_path)
 
     # infer the org from the corpus (dominant email domain) before building any grants,
@@ -2943,8 +3012,8 @@ def run(
                     repo = str(rec.get("repo") or "github")  # as _Loader.add derives it
                     if rec.get("subtype") == "file" and rec.get("path"):
                         gh_files.setdefault(repo, set()).add(rec["path"])
-                    elif rec.get("changed_paths"):
-                        gh_changesets.append((f"line {lineno}", repo, rec["changed_paths"]))
+                    else:
+                        gh_changesets.extend(_github_path_refs(f"line {lineno}", repo, rec))
             problems.extend((lineno, m) for m in errs)
         unresolved = _unresolved_changed_paths(
             gh_changesets, lambda repo, path: path in gh_files.get(repo, ())
@@ -2954,8 +3023,8 @@ def run(
             # this cannot gate one (see _unresolved_changed_paths). Named one per line, because
             # finding the typo is the whole point of the report.
             print(
-                f"NOTE: {_changed_path_count(len(unresolved))} in {corpus}; each is dropped from "
-                f"its pull's changeset",
+                f"NOTE: {_changed_path_count(len(unresolved))} in {corpus}; each is dropped "
+                f"from the changeset or review comment that names it",
                 file=sys.stderr,
             )
             for where, path in unresolved:

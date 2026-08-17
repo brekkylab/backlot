@@ -4027,6 +4027,106 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
     assert served == {"v": before}
 
 
+def test_byo_a_notion_parent_must_name_an_imported_page(tmp_path):
+    """notion was the one hierarchy source that stored a parent without checking it: its id is a
+    pure hash, which answers for a page that does not exist as readily as for one that does, so the
+    page served a `parent` UUID that 404s and `children` never listed it. confluence and jira refuse
+    the identical shape."""
+    page = {
+        "source_type": "notion",
+        "subtype": "page",
+        "teamspace": "eng",
+        "content": "c",
+        "author_email": "ava@acme.com",
+    }
+    with pytest.raises(SystemExit, match="names no imported page"):
+        load(
+            _write(tmp_path, [{**page, "doc_id": "n-kid", "title": "Kid", "parent": "nobody"}]),
+            Settings(data_dir=tmp_path),
+        )
+    # ...and one whose parent IS imported loads, including a parent from an earlier run: a notion id
+    # survives the import that wrote it, so unlike confluence's key it still resolves across shards.
+    settings = Settings(data_dir=tmp_path)
+    load(
+        _write(tmp_path, [{**page, "doc_id": "n-db", "title": "DB", "subtype": "database"}]),
+        settings,
+    )
+    load(
+        _write(
+            tmp_path,
+            [{**page, "doc_id": "n-kid", "title": "Kid", "parent": "n-db"}],
+            name="s2.jsonl",
+        ),
+        settings,
+        reset=False,
+    )
+    conn = store.connect_ro(settings.db_path)
+    assert conn.execute("SELECT parent_id FROM notion_pages WHERE title = 'Kid'").fetchone()[0] == (
+        served_id("notion", "n-db")
+    )
+    conn.close()
+
+
+def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path):
+    """A fresh load replaces a corpus, and it did so by deleting the old DB before reading a single
+    record — so a typo left an operator with no corpus at all: an empty schema-only DB and a
+    tokens.yaml still describing the one that was gone. An --append is already all-or-nothing."""
+    settings = Settings(data_dir=tmp_path)
+    good = {
+        "source_type": "jira",
+        "doc_id": "j-1",
+        "project": "payments",
+        "title": "Keep me",
+        "content": "c",
+        "author_email": "ava@acme.com",
+    }
+    load(_write(tmp_path, [good]), settings)
+    before = _dump_tables(settings.db_path)
+    tokens_before = settings.tokens_path.read_text()
+
+    with pytest.raises(SystemExit):
+        load(
+            _write(
+                tmp_path,
+                [
+                    {**good, "doc_id": "j-2", "title": "T"},
+                    {**good, "doc_id": "j-3", "created": "nope"},
+                ],
+                name="bad.jsonl",
+            ),
+            settings,
+        )
+    assert _dump_tables(settings.db_path) == before
+    assert settings.tokens_path.read_text() == tokens_before
+    assert not list(tmp_path.glob("*.replaced"))  # and no debris beside it
+
+
+def test_byo_an_orphan_review_comment_anchor_is_reported(tmp_path, capsys):
+    """A review comment whose `path` names no file document is served nowhere — dropped from
+    `/pulls/{n}/comments` and 404 at `/pulls/comments/{id}`, so the response cannot reveal which
+    paths exist — and it left no trace at import, so the comment simply vanished. It reaches the
+    same report `changed_paths` does: a count on a load, one named line under `--dry-run`."""
+    corpus = _write(
+        tmp_path,
+        _gh_changeset_corpus(
+            changed_paths=["src/a.py"],
+            comments=[
+                {
+                    "content": "on a file that is not here",
+                    "author_email": "b@x.com",
+                    "path": "src/typo.py",
+                    "line": 1,
+                }
+            ],
+        ),
+    )
+    assert byo.run(corpus, dry_run=True) == 0  # a report, not a verdict on the corpus
+    dry = capsys.readouterr().err
+    assert "1 path reference" in dry and "src/typo.py" in dry and "review comment" in dry
+    load(corpus, Settings(data_dir=tmp_path))
+    assert "1 path reference" in capsys.readouterr().err
+
+
 # --- what an --append may and may not do to a document already imported (#58 review) -----
 
 
@@ -4471,14 +4571,14 @@ def test_a_changed_path_matching_no_file_is_reported_and_loaded(tmp_path, capsys
     assert byo.run(corpus, dry_run=True) == 0  # a report, not a verdict on the corpus
     dry = capsys.readouterr()
     assert "OK: 3 records valid." in dry.out
-    assert "changed_paths" in dry.err and "line 3: src/typo.py" in dry.err
+    assert "path reference" in dry.err and "line 3: src/typo.py" in dry.err
     assert "src/a.py" not in dry.err  # only the unresolved one is named
 
     # A load counts them and points at the report, rather than printing one line per path in among
     # its own ten lines of summary — the same split as a dangling linear `parent`.
     load(corpus, Settings(data_dir=tmp_path))
     err = capsys.readouterr().err
-    assert "1 changed_paths" in err and "--dry-run" in err
+    assert "1 path reference" in err and "--dry-run" in err
     conn = store.connect_ro(tmp_path / "mock.sqlite")
     # stored as the corpus stated it — the report does not edit the record
     row = conn.execute("SELECT * FROM github_items WHERE kind = 'pull_request'").fetchone()

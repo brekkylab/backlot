@@ -830,6 +830,22 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # live server is reading rides through the reader's lock instead of a spurious "locked".
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
+    refuse_pre_served_db(conn, path)
+    conn.executescript(SCHEMA)
+    return conn
+
+
+def refuse_pre_served_db(conn: sqlite3.Connection, path) -> None:
+    """Raise unless this DB is keyed the way :data:`ID_COLUMNS` says, naming what is wrong with it.
+
+    Two shapes, neither migratable, and the reason is the same for both: a served id is assigned at
+    import from the WHOLE corpus, so it cannot be backfilled onto rows stored under the dataset's
+    own identifiers. Run by every opener — a writer before it appends, a reader before it serves —
+    because the alternatives are worse than a refusal. Appending produced grants nothing reads;
+    SERVING produced a boot that looks healthy and then answers `no such column` on a listing and
+    a false 404 on a fetch, with the one sentence the operator needs ("re-import the corpus")
+    nowhere in it.
+    """
     # A DB built before this branch has one shared `doc_acl` table, keyed corpus-wide by `doc_id`
     # rather than a table per source. An append onto it would write the new source's grants into
     # the per-source tables SCHEMA creates below while every pre-existing grant stays behind in
@@ -869,8 +885,6 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
             "it; a row's served id is assigned at import from the whole corpus, so it cannot be "
             "backfilled onto rows that were stored under the dataset's own identifiers"
         )
-    conn.executescript(SCHEMA)
-    return conn
 
 
 def write_meta(conn: sqlite3.Connection, key: str, value) -> None:
@@ -911,6 +925,7 @@ def connect_ro(
     """
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    refuse_pre_served_db(conn, path)
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
     if cache_mb:

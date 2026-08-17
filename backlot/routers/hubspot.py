@@ -636,8 +636,10 @@ async def list_associations(
             {
                 # The target's own served id, stored on the association row itself (#51) —
                 # there is no join and no re-hash, because the link names the target by the id
-                # the API reports it under.
-                "toObjectId": r["to_id"],
+                # the API reports it under. `int`, because real v4 sends this one as a NUMBER
+                # while the v3 `id` beside it is a string, and the official python client models
+                # it as an int — a typed SDK rejects the string the TEXT column holds.
+                "toObjectId": int(r["to_id"]),
                 "associationTypes": [
                     {
                         "category": r["assoc_category"],

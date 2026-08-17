@@ -166,10 +166,59 @@ def test_gdrive_file_id_never_collides_with_a_folder_id():
     """A file id and a folder id must be disjoint spaces: `routers.google._drive_folder_name_by_id`
     tries every container name's `drive_folder_id` against an incoming id, and a file id that also
     matched would resolve to the wrong kind of object. Every folder id starts ``0A``, every file id
-    starts ``1``, so the two can never collide by construction, not merely by low probability."""
+    starts ``1``, so the two can never collide by construction, not merely by low probability.
+
+    Both are base64url over the alphabet a real Drive id draws on, at the length real uses for each
+    kind — a folder id was a hex slice, which reads noticeably unlike either."""
+    import re
+
     assert synth.gdrive_file_id(DOC)[:1] == "1"
-    assert synth.drive_folder_id("some-folder")[:2] == "0A"
+    folder = synth.drive_folder_id("some-folder")
+    assert folder[:2] == "0A" and len(folder) == 19
+    assert re.fullmatch(r"[A-Za-z0-9_-]+", folder)
     assert synth.gdrive_file_id(DOC) != synth.drive_folder_id(DOC)
+
+
+def test_served_uuids_are_rfc_4122_version_4():
+    """Real Notion and Linear ids are v4 UUIDs, and a strict validator says so — zod's `.uuid()`
+    and class-validator's `IsUUID(4)` reject anything else. A raw digest slice satisfied them about
+    1 time in 70, so ~93% of every served page, block, user, comment, issue and team id was
+    rejected by a client that checks. Over a spread of seeds, not one: the version nibble and the
+    variant bits are what the digest would otherwise vary."""
+    import re
+
+    v4 = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z")
+    ids = [synth.notion_id(f"seed-{i}") for i in range(200)]
+    ids += [synth.linear_id(f"seed-{i}") for i in range(200)]
+    ids += [synth.notion_block_id(f"seed-{i}", i) for i in range(200)]
+    assert all(v4.fullmatch(i) for i in ids), next(i for i in ids if not v4.fullmatch(i))
+    # ...and still a pure function of the seed, so a stored id keeps resolving
+    assert synth.notion_id(DOC) == synth.notion_id(DOC) != synth.notion_id(DOC2)
+
+
+def test_gmail_message_ids_are_never_zero_padded():
+    """Real Gmail renders the id as an integer, so an id whose top nibble is zero is 15 digits
+    there — and the real API resolves that spelling while refusing the padded one. `:016x` padded
+    roughly one id in 16, and the mock served the spelling real 404s."""
+    ids = [synth.gmail_message_id(f"seed-{i}") for i in range(3000)]
+    assert not [i for i in ids if i.startswith("0")]
+    assert all(int(i, 16) < synth.GMAIL_ID_MAX for i in ids)
+    # the padded spelling of a served id is still the same message (store.gmail_id_spelling)
+    from backlot import store
+
+    assert store.gmail_id_spelling(ids[0].rjust(16, "0")) == ids[0]
+    assert store.gmail_id_spelling(ids[0].upper()) == ids[0]
+
+
+def test_atlassian_comment_ids_do_not_leak_the_child_spelling():
+    """A stored comment id composes its PARENT's key with the comment's position (`PAY-7::c1`) —
+    the mock's own bookkeeping. Real Jira and Confluence report a numeric string, so a client that
+    parses or pattern-matches the id rejected what this served, and the internal scheme leaked to
+    the wire. notion and linear already wrapped theirs."""
+    cid = synth.atlassian_comment_id("PAY-7::c1")
+    assert cid.isdigit() and "::" not in cid
+    assert cid == synth.atlassian_comment_id("PAY-7::c1")  # stable, or a stored url stops resolving
+    assert cid != synth.atlassian_comment_id("PAY-7::c2")
 
 
 def test_linear_url_is_the_real_vendor_domain():

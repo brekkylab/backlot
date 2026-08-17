@@ -137,6 +137,49 @@ def test_confluence_content_filtered_by_space_key(client, admin_h):
     assert "Compensation Bands 2026" in {r["title"] for r in unfiltered["results"]}
 
 
+def test_atlassian_comment_ids_are_numeric_on_the_wire(tmp_path):
+    """The stored id composes the parent's key with the comment's position (`PAY-7::c1`) — this
+    mock's own bookkeeping. Real Jira and Confluence report numeric strings, and both the `self`
+    link and Confluence's `focusedCommentId` carry the value, so the internal scheme leaked into
+    three places a client reads."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-c",
+                "project": "payments",
+                "title": "T",
+                "content": "c",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "key": "PAY-7",
+                "comments": [{"content": "hi", "author_email": "b@x.com"}],
+            },
+            {
+                "source_type": "confluence",
+                "doc_id": "cf-c",
+                "space": "handbook",
+                "title": "P",
+                "content": "c",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "comments": [{"content": "hi", "author_email": "b@x.com"}],
+            },
+        ],
+    )
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+        (jc,) = c.get("/atlassian/rest/api/3/issue/PAY-7/comment", headers=h).json()["comments"]
+        assert jc["id"].isdigit() and jc["self"].endswith(f"/comment/{jc['id']}")
+        page = served_id("confluence", "cf-c")
+        (cc,) = c.get(f"/atlassian/wiki/rest/api/content/{page}/child/comment", headers=h).json()[
+            "results"
+        ]
+        assert cc["id"].isdigit()
+        assert cc["_links"]["webui"].endswith(f"focusedCommentId={cc['id']}")
+
+
 def test_confluence_dates_an_epoch_zero_page_on_both_routes(tmp_path):
     """1970-01-01T00:00:00Z stores as 0, and both routes that date a page must serve it.
 

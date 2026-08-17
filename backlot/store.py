@@ -2354,12 +2354,23 @@ def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
 
 
 def gmail_by_id(conn, message_id, visible_ids=None) -> sqlite3.Row | None:
-    """One message by the id the API reports. The stored key is lowercase hex; callers pass the
-    id as the client spelled it, so fold case here rather than at each call site."""
+    """One message by the id the API reports. The stored key is unpadded lowercase hex; callers
+    pass the id as the client spelled it, so both the case and any leading zeros are normalized
+    here rather than at each call site — real Gmail parses the id as an integer, so `0abc` and
+    `abc` are the same message there and must be here."""
     clause, cp = _acl_clause("gmail", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM gmail_messages WHERE id = ?{clause}", [message_id.lower(), *cp]
+        f"SELECT * FROM gmail_messages WHERE id = ?{clause}", [gmail_id_spelling(message_id), *cp]
     ).fetchone()
+
+
+def gmail_id_spelling(message_id) -> str:
+    """A gmail id as it is STORED, from any spelling a client may send it in. Non-hex is handed
+    back untouched: rejecting it is the router's job (a 400, ahead of any lookup)."""
+    try:
+        return f"{int(str(message_id), 16):x}"
+    except ValueError:
+        return str(message_id).lower()
 
 
 def github_by_number(conn, repo, number, visible_ids=None) -> sqlite3.Row | None:

@@ -152,7 +152,9 @@ def test_hubspot_associations_v4(client, admin_h):
     ).json()
     assert len(j["results"]) == 1
     assoc = j["results"][0]
-    assert assoc["toObjectId"].isdigit()
+    # a NUMBER, as real v4 sends it — the v3 `id` beside it is a string, and the official python
+    # client models this one as an int
+    assert isinstance(assoc["toObjectId"], int)
     assert assoc["associationTypes"][0]["category"] == "HUBSPOT_DEFINED"
     assert assoc["associationTypes"][0]["label"] == "Primary"
 
@@ -630,7 +632,7 @@ def test_hubspot_route_reads_the_stored_served_id_under_a_collision(tmp_path, mo
         assoc = client.get(
             f"/hubspot/crm/v4/objects/notes/{note_id}/associations/companies", headers=h
         ).json()
-        assert assoc["results"][0]["toObjectId"] == ids[0]
+        assert str(assoc["results"][0]["toObjectId"]) == ids[0]
 
 
 def test_hubspot_page_omits_paging_next_on_last_page(tmp_path):

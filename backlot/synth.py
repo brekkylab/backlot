@@ -115,12 +115,25 @@ def gmail_message_id(key: str) -> str:
     is exactly what the real API does. That is also why the stored ``served_id`` column and a
     re-hash of the thread key resolve both: a message's own id is a column read
     (``store.gmail_by_served_id``), while its ``threadId`` re-derives this same function over
-    ``thread_id or seed`` rather than reading the root row (see ``routers.google._gmail_ids``)."""
-    return f"{hnum(key, salt='msg', length=16) % GMAIL_ID_MAX:016x}"
+    ``thread_id or seed`` rather than reading the root row (see ``routers.google._gmail_ids``).
+
+    UNPADDED, unlike the opaque ``gmail_id`` above: real Gmail renders the integer, so an id whose
+    top nibble is zero is 15 digits there and 16 here — and the real API resolves its own
+    unpadded spelling, which the mock answered 404 for. Roughly one id in 16 was affected."""
+    return f"{hnum(key, salt='msg', length=16) % GMAIL_ID_MAX:x}"
 
 
 def drive_folder_id(container: str) -> str:
-    return "0A" + _digest("folder:" + container)[:26]
+    """A folder's served id: ``0A`` plus 17 base64url characters — the shape and length of a real
+    Drive top-level (shared-drive) id, which is what this mock's folders are: containers hanging
+    directly under the root with nothing above them.
+
+    Base64url rather than the hex slice this used to be, for the reason ``gdrive_file_id`` gives:
+    hex spans 16 of the 64 symbols a real id draws on, so it reads noticeably unlike one. The
+    ``0A`` prefix stays, and stays load-bearing — see ``gdrive_file_id`` on why the two id spaces
+    must not meet."""
+    digest = hashlib.sha256(("folder:" + container).encode("utf-8")).digest()
+    return "0A" + base64.urlsafe_b64encode(digest)[:17].decode("ascii")
 
 
 def gdrive_file_id(seed: str) -> str:
@@ -307,8 +320,15 @@ def confluence_space_key(container: str) -> str:
 
 
 def _uuid_from(seed: str) -> str:
+    """A stable UUID for a seed, in RFC-4122 VERSION 4 form.
+
+    The version nibble and the variant bits are forced rather than taken from the digest, because
+    real Notion and Linear ids are v4 and a strict validator says so: `zod`'s `.uuid()` and
+    `class-validator`'s `IsUUID(4)` reject anything else, and a raw digest slice satisfies them
+    about 1 time in 70. Everything else is digest, so an id stays a pure function of its seed."""
     h = _digest(seed)
-    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+    variant = f"{(int(h[16:18], 16) & 0x3F) | 0x80:02x}"
+    return f"{h[0:8]}-{h[8:12]}-4{h[13:16]}-{variant}{h[18:20]}-{h[20:32]}"
 
 
 def notion_id(seed: str) -> str:
@@ -442,6 +462,16 @@ def linear_project_id(name: str) -> str:
 def linear_cycle_id(name: str, team: str = "") -> str:
     """Cycles belong to a team, like workflow states."""
     return _uuid_from(f"linear-cycle:{team}:{name or ''}")
+
+
+def atlassian_comment_id(comment_row_id: str) -> str:
+    """The numeric id Jira and Confluence report a comment under.
+
+    Wrapped at serve time, exactly as ``notion_id`` and ``linear_comment_id`` wrap their stored
+    child ids: the stored id composes the PARENT's key with the comment's position (`PAY-7::c1`),
+    which is the mock's own bookkeeping and not a shape either API emits — real ids there are
+    numeric strings, so a client that parses or pattern-matches one rejected it."""
+    return str(hnum("atlassian-comment:" + str(comment_row_id), 0, 8) % 9_000_000_000 + 10_000)
 
 
 def linear_comment_id(comment_row_id: str) -> str:

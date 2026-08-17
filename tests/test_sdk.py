@@ -136,7 +136,11 @@ def gmail():
         lambda: (
             f"{len(msgs)} hex ids"
             if all(
-                len(m["id"]) == 16 and int(m["id"], 16) < 2**63 and m["id"] == m["id"].lower()
+                # up to 16 digits and never zero-padded: real Gmail renders the integer
+                1 <= len(m["id"]) <= 16
+                and not m["id"].startswith("0")
+                and int(m["id"], 16) < 2**63
+                and m["id"] == m["id"].lower()
                 for m in msgs
             )
             else 1 / 0

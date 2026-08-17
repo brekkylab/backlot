@@ -126,14 +126,17 @@ def _a_gmail_row(ro_conn):
 
 def test_gmail_messages_list_serves_hex_ids(client, admin_h):
     """The ids a client receives must look like Gmail's, not like the corpus's dsids — that is the
-    whole point of #39. `dsid_…` is not hex, so real Gmail would call it an invalid id value."""
+    whole point of #39. `dsid_…` is not hex, so real Gmail would call it an invalid id value.
+
+    Up to 16 digits, not exactly 16: real Gmail renders the integer, so an id whose top nibble is
+    zero is shorter there — and the real API resolves that spelling while 404ing the padded one."""
     msgs = client.get(
         "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 10}
     ).json()["messages"]
     assert msgs
     for m in msgs:
         for key in ("id", "threadId"):
-            assert len(m[key]) == 16, m
+            assert 1 <= len(m[key]) <= 16 and not m[key].startswith("0"), m
             assert all(c in "0123456789abcdef" for c in m[key]), m
             assert int(m[key], 16) < 2**63, m
         assert not m["id"].startswith("dsid_")

@@ -590,11 +590,12 @@ def _jira_ref(request: Request, row, site: str = "") -> dict:
 
 
 def _jira_comment(c, site: str = "") -> dict:
-    ts = c["created_ts"] or synth.epoch(c["id"])
+    ts = c["created_ts"] if c["created_ts"] is not None else synth.epoch(str(c["id"]))
     actor = _jira_actor(c["author_email"], site)
+    cid = synth.atlassian_comment_id(c["id"])
     return {
-        "id": c["id"],
-        "self": f"{site}/rest/api/3/issue/comment/{c['id']}" if site else None,
+        "id": cid,
+        "self": f"{site}/rest/api/3/issue/comment/{cid}" if site else None,
         "author": actor,
         "body": _adf(c["body"]),
         "updateAuthor": actor,
@@ -986,11 +987,12 @@ async def confluence_comments(content_id: int, request: Request):
         raise HTTPException(status_code=404, detail="No content found with id")
     results = []
     for c in store.doc_comments(conn, "confluence", content_id):
-        ts = c["created_ts"] or synth.epoch(c["id"])
+        ts = c["created_ts"] if c["created_ts"] is not None else synth.epoch(str(c["id"]))
         author = c["author_email"] or "unknown"
+        cid = synth.atlassian_comment_id(c["id"])
         results.append(
             {
-                "id": c["id"],
+                "id": cid,
                 "type": "comment",
                 "status": "current",
                 "title": f"Re: {content_id}",
@@ -1006,7 +1008,7 @@ async def confluence_comments(content_id: int, request: Request):
                     "message": "",
                 },
                 "extensions": {"location": "footer"},
-                "_links": {"webui": f"/spaces/x/pages/{content_id}?focusedCommentId={c['id']}"},
+                "_links": {"webui": f"/spaces/x/pages/{content_id}?focusedCommentId={cid}"},
             }
         )
     return {"results": results, "start": 0, "limit": len(results), "size": len(results)}

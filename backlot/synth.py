@@ -80,10 +80,16 @@ def slack_user_id(email: str) -> str:
     return "U" + h[:10].upper()
 
 
+# How many distinct messages one channel-second can hold — the six-digit fraction of a Slack ts.
+# Named because the importer's probe walks exactly this many steps before giving up (see
+# byo._Loader._slack_ts) rather than looping forever on a second it can never place a message in.
+SLACK_TS_FRACTIONS = 1_000_000
+
+
 def slack_fmt_ts(epoch_sec: int, key: str) -> str:
     """Format a Slack ts ``<epoch>.<6 digits>`` for a given second, with the
     micro-fraction keyed on ``key`` so every message in a thread shares it."""
-    micro = hnum(key, 12, 6) % 1_000_000
+    micro = hnum(key, 12, 6) % SLACK_TS_FRACTIONS
     return f"{int(epoch_sec)}.{micro:06d}"
 
 
@@ -465,9 +471,15 @@ def linear_team_key(container: str) -> str:
     return _key(container, "TEAM")
 
 
+# How many issue numbers a Linear team's synthesized identifiers draw from. Named rather than
+# inlined, because the importer's probe walks exactly this many steps before giving up (see
+# byo._Loader._assign_linear_identifier) — raising the range here must raise the walk with it.
+LINEAR_ISSUE_NUMBER_RANGE = 9000
+
+
 def linear_identifier(seed: str, team_key: str) -> str:
     """A synthesized ``TEAM-123`` identifier, for a corpus that carries no issue key of its own."""
-    return f"{team_key}-{hnum(seed, 16, 6) % 9000 + 1}"
+    return f"{team_key}-{hnum(seed, 16, 6) % LINEAR_ISSUE_NUMBER_RANGE + 1}"
 
 
 def linear_issue_number(identifier: str) -> int:

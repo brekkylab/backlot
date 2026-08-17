@@ -91,6 +91,26 @@ def slugify(text: str) -> str:
 # The field is named the way the VENDOR names that id, qualified when the vendor calls it plain
 # `id` so it cannot be read as the corpus's own `doc_id` -- the same rule fireflies' own
 # `transcript_id` follows.
+# source_type -> whether a record of it STATES the identity it is served at, outside the four
+# DEFERRED_ID sources (whose stated ids are claimed corpus-wide by their own pass). fireflies
+# states one only when the record carries `transcript_id`; an s3 object always does, since
+# (bucket, key) IS the object's address and both fields are required.
+#
+# The distinction is what an --append can be refused on. A synthesized id is a pure function of
+# the dataset id, so a re-imported record lands on the value it had and updates its own row; a
+# STATED one landing on a value an earlier import already holds is ambiguous between that and a
+# second document claiming an id it does not own -- and writing it would replace a document and
+# hand its readers to this one.
+def _states_own_id(src: str, rec: dict) -> bool:
+    if src == "s3":
+        return True
+    if src == "fireflies":
+        # The schema's own spelling only: `meta.transcript_id` is ordinary meta content, stripped
+        # before extras are seeded, exactly as `meta.number` is for github.
+        return bool(rec.get("transcript_id"))
+    return False
+
+
 DEFERRED_ID = {
     "github": "number",
     "jira": "key",
@@ -1131,7 +1151,43 @@ class _Loader:
         self.jira_prefix_holders[prefix] = container
         self.jira_prefixes[container] = prefix
 
-    def _slack_ts(self, channel: str, seed: str, created_ts):
+    def _existing_file_number(self, repo: str, path):
+        """The number a github `file` row already holds in this repo, or None for a new file.
+
+        A file is addressed by (repo, path) -- its number exists only so the row is addressable
+        under the primary key -- so this is the lookup that recognises a re-imported file, in
+        place of the stated id the other github rows are recognised by."""
+        if not path:
+            return None
+        row = self.conn.execute(
+            "SELECT number FROM github_items WHERE repo = ? AND path = ? AND kind = 'file'",
+            (repo, path),
+        ).fetchone()
+        return row["number"] if row else None
+
+    def _assign_linear_identifier(self, seed: str, team_key: str) -> str:
+        """The `identifier` (`ENG-42`) this issue is served and looked up by, unique within its
+        team. Same probe shape as `_assign_confluence_id`: seeded from the record's own id so the
+        same corpus produces the same identifier, then walked until free.
+
+        BOUNDED by the size of the space it walks (`synth.LINEAR_ISSUE_NUMBER_RANGE`): past that
+        many steps the team holds more keyless issues than numbers, and returning one anyway would
+        put two issues on one identifier -- exactly what the walk exists to prevent."""
+        taken = self._linear_identifiers.setdefault(team_key, set())
+        number = synth.linear_issue_number(synth.linear_identifier(seed, team_key))
+        for _ in range(synth.LINEAR_ISSUE_NUMBER_RANGE):
+            candidate = f"{team_key}-{number}"
+            if candidate not in taken:
+                taken.add(candidate)
+                return candidate
+            number = 1 + number % synth.LINEAR_ISSUE_NUMBER_RANGE
+        raise SystemExit(
+            f"linear: team {team_key} has exhausted its "
+            f"{synth.LINEAR_ISSUE_NUMBER_RANGE}-value identifier range; no identifier is free "
+            f"for {seed!r}"
+        )
+
+    def _slack_ts(self, channel: str, seed: str, created_ts, author_email=None, body=None):
         """The `ts` a Slack message is served and addressed by, assigned once at import.
 
         It was computed per request from `(created_ts, thread-root key)`, which COLLIDED: every
@@ -1147,17 +1203,43 @@ class _Loader:
         """
         base = int(created_ts) if created_ts is not None else synth.epoch(seed)
         taken = self._slack_ts_taken.setdefault(channel, set())
+        preloaded = self._slack_ts_preloaded.get(channel, frozenset())
         # Keyed on the message's OWN seed, where the serve-time version keyed a reply on its
         # thread root — that shared key is precisely what made two replies in one second
         # indistinguishable. A reply still sorts after its root because its `created_ts` is the
         # root's plus its position, which is where thread order actually comes from.
         candidate = synth.slack_fmt_ts(base, seed)
-        salt = 0
-        while candidate in taken:
-            salt += 1
+        for salt in range(1, synth.SLACK_TS_FRACTIONS + 1):
+            if candidate not in taken:
+                taken.add(candidate)
+                return candidate
+            # Taken by a row that PREDATES this run, in the same channel and second, by the same
+            # author, saying the same thing: that is this message coming back, not a collision.
+            # Reusing its ts is what makes an --append of an already-imported corpus leave one
+            # row -- the probe otherwise walked to a free fraction and imported a duplicate no
+            # corpus could opt out of, since nothing in a slack record states a ts. Only against
+            # PRELOADED values: two such records in ONE run are two documents, and stay two.
+            if candidate in preloaded and self._is_same_slack_message(
+                channel, candidate, author_email, body
+            ):
+                return candidate
             candidate = synth.slack_fmt_ts(base, f"{seed}\x00{salt}")
-        taken.add(candidate)
-        return candidate
+        raise SystemExit(
+            f"slack: channel {channel!r} has more messages in second {base} than the "
+            f"{synth.SLACK_TS_FRACTIONS} fractions a ts can hold; no ts is free for {seed!r}"
+        )
+
+    def _is_same_slack_message(self, channel: str, ts: str, author_email, body) -> bool:
+        """Whether the message already stored at this ts is the one now being imported.
+
+        Author and text, because a slack record states no id: the channel and the second are
+        already fixed by the ts itself, so those two are what is left to compare, and two messages
+        agreeing on all four are indistinguishable to any client of this mock."""
+        row = self.conn.execute(
+            "SELECT author_email, content FROM slack_messages WHERE channel = ? AND ts = ?",
+            (channel, ts),
+        ).fetchone()
+        return row is not None and row["author_email"] == author_email and row["content"] == body
 
     def __init__(
         self, conn, org: str, org_domain: str, *, closed: bool = False, validate: bool = True
@@ -1216,6 +1298,20 @@ class _Loader:
         # store.ID_COLUMNS), so the probe is scoped the same way. Preloaded by seed_tracker_ids so
         # an append cannot hand a new message a ts an existing one already answers at.
         self._slack_ts_taken = {}
+        # The subset of the above that a PREVIOUS run wrote, which is the only place a re-imported
+        # message can be recognised: a repeat within this run is a second document (see the
+        # `repeat` comment in `insert`), but a candidate already held before the run started may
+        # be this very message coming back. See `_slack_ts`.
+        self._slack_ts_preloaded = {}
+        # source_type -> the keys rows written by an EARLIER import already answer at, for the
+        # sources a record can state its identity to (see `_states_own_id`). Preloaded by
+        # seed_tracker_ids; `_written` is this run's own, so a record repeated within one corpus
+        # still upserts rather than colliding with itself.
+        self._preexisting = {}
+        self._written = set()
+        # team key -> the identifiers already issued in it, so a synthesized one is probed rather
+        # than hashed into a 9,000-value space and left to collide. Preloaded by seed_tracker_ids.
+        self._linear_identifiers = {}
         # The provisional keys of `kind='file'` github rows, so resolve_github_numbers can assign
         # them AFTER every issue and pull — see its phase 2.
         self._github_file_keys = set()
@@ -1323,9 +1419,26 @@ class _Loader:
             self._confluence_ids_taken.add(cid)
         for (rid,) in self.conn.execute("SELECT id FROM hubspot_objects"):
             self._hubspot_ids_taken.add(int(rid))
-        # Same claim, per channel, for slack message timestamps.
+        # Same claim, per channel, for slack message timestamps -- and remembered separately as
+        # PRE-EXISTING, which is what lets `_slack_ts` tell a re-imported message from a new one.
         for channel, ts in self.conn.execute("SELECT channel, ts FROM slack_messages"):
             self._slack_ts_taken.setdefault(channel, set()).add(ts)
+            self._slack_ts_preloaded.setdefault(channel, set()).add(ts)
+        # The keys an earlier import already answers at, for the sources a record states its own
+        # identity to -- the claim the four DEFERRED_ID sources get from `tracker_ids` above, for
+        # the two that assign no id of their own.
+        for src in ("s3", "fireflies"):
+            cols = ", ".join(store.id_columns(src))
+            self._preexisting[src] = {
+                tuple(r) for r in self.conn.execute(f"SELECT {cols} FROM {store.table(src)}")
+            }
+        # Same claim, per team, for synthesized linear identifiers.
+        for team, identifier in self.conn.execute(
+            "SELECT team, identifier FROM linear_issues WHERE identifier IS NOT NULL"
+        ):
+            self._linear_identifiers.setdefault(synth.linear_team_key(str(team)), set()).add(
+                identifier
+            )
         # Every row carries a key, stated or derived, and for a claim the difference is immaterial:
         # both mean the value is taken. The `dataset id` side of `tracker_ids` is unknowable for a
         # row from an earlier run, so it is recorded as None; the check that reads it only needs to
@@ -1493,7 +1606,7 @@ class _Loader:
         # uniqueness check below would then refuse an import over. Both ids are ordinary
         # `meta` content again: carried through, never promoted to the served column. Read from
         # DEFERRED_ID so a source that gains a stateable id is covered by declaring it there.
-        for reserved in DEFERRED_ID.values():
+        for reserved in (*DEFERRED_ID.values(), "transcript_id"):
             extras.pop(reserved, None)
         for k in (
             "labels",
@@ -1534,6 +1647,13 @@ class _Loader:
             "number",
             "content_id",
             "record_id",
+            # A transcript's own id and a jira issue's history: both declared by their schema, both
+            # read off `extras` — so without them here the schema's spelling was dropped on the
+            # floor and only the `meta` one worked. For `transcript_id` that also meant the served
+            # id came from a spelling no schema describes, which is what the loop above exists to
+            # prevent.
+            "transcript_id",
+            "changelog",
             "resolution",
             "resolutiondate",
             "duedate",
@@ -1698,17 +1818,36 @@ class _Loader:
             #   stated     s3 -- the corpus gives (bucket, key) outright; nothing is synthesized.
             #   own pass   slack -- see `_slack_ts`. Not deferred: no corpus ever provides a ts, so
             #              there is no claim to lose a race to, only collisions to probe.
+            # The key this dataset id already resolved to in this run, for the sources whose
+            # identity is SYNTHESIZED: two records sharing a `doc_id` are one document, and were
+            # one row until a probed source started handing the second a fresh id (#51). The
+            # sources whose id is a pure hash of the dataset id never needed this -- they land on
+            # the same value twice by construction -- and the ones the corpus STATES must not have
+            # it, since there the record, not the dataset id, says which document this is.
+            repeat = self.keys.get((src, did))
             if src == "linear" and not cols.get("identifier"):
                 # MATERIALIZE the identifier the server would otherwise synthesize per request.
                 # An id that is served has to be resolvable, and every lookup reads a stored
                 # column — so a serve-time-only identifier came back "Entity not found" from
                 # `issue(id: "ENG-749")` even though the API had just handed the caller that exact
-                # string. Deterministic, so the served value is unchanged; it is just written down.
-                cols["identifier"] = synth.linear_identifier(did, synth.linear_team_key(container))
+                # string.
+                #
+                # Probed, not hashed: `synth.linear_identifier` numbers within 9,000 values per
+                # team, which collides by the birthday bound at ~110 keyless issues in one team —
+                # and two issues sharing `ENG-2686` leaves one of them unreachable at the only
+                # human-facing id it advertises, since `issue(id:)` answers the first. The same
+                # probe shape as confluence's and hubspot's, and for the same reason.
+                cols["identifier"] = self._assign_linear_identifier(
+                    did, synth.linear_team_key(container)
+                )
             if src in ("gmail", "google_drive", "notion", "linear"):
                 cols["id"] = store.id_seed(src)(did)
             elif src == "slack":
-                cols["ts"] = self._slack_ts(container, did, cols.get("created_ts"))
+                cols["ts"] = (
+                    repeat[-1]
+                    if repeat is not None
+                    else self._slack_ts(container, did, cols.get("created_ts"), email, body)
+                )
                 # A reply takes the root's ts (set by the caller once the root landed); a root
                 # with replies takes its own; a standalone message has no thread at all.
                 cols["thread_ts"] = slack_thread_ts if seq else (cols["ts"] if replies else None)
@@ -1739,14 +1878,34 @@ class _Loader:
                 # PROVISIONAL like any keyless row and the deferred pass probes it a real one --
                 # after every provided issue/PR number has claimed its spelling, so a file can
                 # never take a number a real issue asked for.
-                cols["number"] = None
+                #
+                # A file already in the DB keeps the number it holds. That is what makes a file
+                # row appendable at all: its identity is (repo, path), which the record states in
+                # full, so an --append needs no `number` from the corpus -- and a corpus sharded
+                # so a pull's files arrive after the pull (which this importer's own changeset
+                # report tells authors to do) was otherwise unloadable past the first shard.
+                cols["number"] = self._existing_file_number(container, cols.get("path"))
                 file_row = True
             else:
                 file_row = False
             if src == "jira":
                 self._jira_projects[did] = container
             provisional = False
-            if src in DEFERRED_ID:
+            # The key this dataset id already resolved to in this run, for the sources whose
+            # identity is SYNTHESIZED: two records sharing a `doc_id` are one document, and were
+            # one row until a probed source started handing the second a fresh id (#51). The
+            # sources whose id is a pure hash of the dataset id never needed this -- they land on
+            # the same value twice by construction -- and the ones the corpus STATES must not have
+            # it, since there the record, not the dataset id, says which document this is.
+            if file_row:
+                # No claim and no `_require_provided_id`: a file states its identity in full as
+                # (repo, path), and its number was read off the row that path already occupies
+                # (or is about to be probed). Running the stated-id claim over it would refuse a
+                # re-imported file for holding its own number.
+                if cols["number"] is None:
+                    cols["number"] = self._next_provisional("github")
+                    provisional = True
+            elif src in DEFERRED_ID:
                 col = store.id_column(src)
                 provided = cols.get(col)
                 # A provided id is a claim on one spelling, and two records cannot hold the same
@@ -1771,6 +1930,8 @@ class _Loader:
                     self.tracker_ids[claim] = did
                     if src == "jira":
                         self._claim_jira_prefix(provided, container, where)
+                elif repeat is not None:
+                    cols[col] = repeat[-1]  # the same document, named twice
                 else:
                     self._require_provided_id(src, where)
                     cols[col] = self._next_provisional(src)
@@ -1786,7 +1947,21 @@ class _Loader:
                     "Give one of them a different id, or (if they are the same document) the "
                     "same one."
                 )
+            if (
+                _states_own_id(src, rec)
+                and key in self._preexisting.get(src, ())
+                and (src, key) not in self._written
+            ):
+                raise SystemExit(
+                    f"{where}: this row states {store.id_columns(src)} = {key}, which a document "
+                    "from an EARLIER import already answers at. Whether this record is that "
+                    "document coming back or a different one claiming its id cannot be told "
+                    "apart from here, and writing it would replace that document and hand its "
+                    "readers this one. Re-import the corpus from scratch, or give this record an "
+                    "id no imported document holds."
+                )
             self._claimed[(src, key)] = did
+            self._written.add((src, key))
             names = list(cols)
             # An upsert keyed explicitly on the table's PRIMARY KEY — the id it serves — not a
             # blanket `INSERT OR REPLACE`: two records that resolve to the same key still leave the
@@ -2026,6 +2201,54 @@ class _Loader:
                     created + i * 3600,
                 ),
             )
+
+        # Children are written under sequence ids (`::c{j}`, `::s{j}`, `thread_seq`), so a version
+        # of a document with FEWER of them overwrote 1..n and left the old tail in place: a
+        # transcript re-imported with one sentence served one sentence of content beside three
+        # stored ones, breaking this importer's own rule that a transcript's content IS its
+        # sentences. Trimmed rather than deleted-and-rewritten, so a child still in place under a
+        # provisional parent key is left for `_settle` to move.
+        self._trim_children(
+            src,
+            doc_id,
+            # fireflies' child table IS `fireflies_sentences` (see store.COMMENT_TABLE) — a
+            # transcript has sentences where the other five have comments.
+            len(sentences or []) if src == "fireflies" else len(rec_comments),
+            len(replies or []) + len(messages or []),
+        )
+
+    def _trim_children(self, src: str, doc_id: str, children: int, thread: int):
+        """Drop the children of this document that a PREVIOUS version of it left behind.
+
+        Everything past the count this version wrote, in both shapes a child takes: a row in the
+        source's child table, and — for gmail and slack, whose thread members are full documents —
+        a row in the source table itself, which takes its ACL grants and its FTS entry with it."""
+        key = self.keys.get((src, doc_id))
+        if key is None:
+            return
+        conn = self.conn
+        ctable = store.comment_table(src)
+        if ctable is not None:
+            pcols = " AND ".join(f"{c} = ?" for c in store.comment_parent_columns(src))
+            conn.execute(f"DELETE FROM {ctable} WHERE {pcols} AND seq > ?", (*key, children))
+        if src in ("gmail", "slack") and thread:
+            tcol, tval = ("thread_id", key[0]) if src == "gmail" else ("thread_ts", key[-1])
+            scope = "" if src == "gmail" else " AND channel = ?"
+            args = (tval,) if src == "gmail" else (tval, key[0])
+            stale = [
+                tuple(r)
+                for r in conn.execute(
+                    f"SELECT {', '.join(store.id_columns(src))} FROM {store.table(src)} "
+                    f"WHERE {tcol} = ?{scope} AND thread_seq > ?",
+                    (*args, thread),
+                )
+            ]
+            if stale:
+                where_key = " AND ".join(f"{c} = ?" for c in store.id_columns(src))
+                for k in stale:
+                    conn.execute(f"DELETE FROM {store.table(src)} WHERE {where_key}", k)
+                    conn.execute(f"DELETE FROM {store.acl_table(src)} WHERE {where_key}", k)
+                store.fts_add_docs(conn, src, stale)  # delete-then-reinsert: the row is gone
 
     def write_containers(self) -> None:
         """The per-service grouping rows (``slack_channels``, ``linear_teams``, ``gdrive_folders``,
@@ -2602,8 +2825,20 @@ def load_records(
     # A grant names its document by the SERVED id, in the same columns the document table is
     # keyed on (see store.ACL_TABLE) — resolved here, once every deferred key has settled, rather
     # than written during the stream under a value that was still provisional.
+    #
+    # A row's grants REPLACE whatever it had, rather than adding to them: a document rewritten by
+    # a later record (two records sharing a dataset id, or a re-import landing on the same
+    # synthesized id) serves the later record's content, so serving the earlier record's readers
+    # beside it would let a reader the corpus dropped keep reading a document it no longer names.
+    # Append-only grants could widen a reader set and never narrow it, and nothing in a corpus
+    # could take a reader back.
+    regranted = set()
     for source_type, written_key, ptype, pid in grants:
         key = loader._settled(source_type, written_key)
+        if (source_type, key) not in regranted:
+            regranted.add((source_type, key))
+            where = " AND ".join(f"{c} = ?" for c in store.id_columns(source_type))
+            conn.execute(f"DELETE FROM {store.acl_table(source_type)} WHERE {where}", key)
         conn.execute(
             f"INSERT OR IGNORE INTO {store.acl_table(source_type)} "
             f"VALUES ({', '.join('?' for _ in range(len(key) + 2))})",

@@ -19,8 +19,8 @@ from backlot.importer import byo
 from backlot.importer.byo import load
 
 
-def _write(tmp_path, records):
-    p = tmp_path / "corpus.jsonl"
+def _write(tmp_path, records, name="corpus.jsonl"):
+    p = tmp_path / name
     p.write_text("\n".join(json.dumps(r) for r in records))
     return p
 
@@ -4025,6 +4025,302 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
     served = {r["title"]: r["key"] for r in conn.execute("SELECT title, key FROM jira_issues")}
     conn.close()
     assert served == {"v": before}
+
+
+# --- what an --append may and may not do to a document already imported (#58 review) -----
+
+
+def _gh_file(doc_id, path, **extra):
+    return {
+        "source_type": "github",
+        "doc_id": doc_id,
+        "repo": "gw",
+        "subtype": "file",
+        "path": path,
+        "title": path.rsplit("/", 1)[-1],
+        "content": "a\nb\n",
+        "author_email": "ava@acme.com",
+        **extra,
+    }
+
+
+def test_byo_a_github_file_is_appendable_and_keeps_its_number(tmp_path):
+    """A file states its identity in full as (repo, path), so an --append needs no `number` from
+    it — and cannot use one, since the schema says a file's number is ignored. Requiring one made
+    every sharded github corpus containing files unloadable past the first shard, which is exactly
+    the layout this importer's own changeset report tells authors to use.
+
+    Its number still cannot move: a re-imported file lands back on the row that path occupies."""
+    settings = Settings(data_dir=tmp_path)
+    first = tmp_path / "s1.jsonl"
+    first.write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                {
+                    "source_type": "github",
+                    "doc_id": "gh-issue",
+                    "repo": "gw",
+                    "title": "Bug",
+                    "content": "x",
+                    "author_email": "ava@acme.com",
+                    "number": 7,
+                },
+                _gh_file("gh-a", "src/a.py"),
+            ]
+        )
+    )
+    load(first, settings)
+    conn = store.connect_ro(settings.db_path)
+    a_number = conn.execute("SELECT number FROM github_items WHERE path = 'src/a.py'").fetchone()[0]
+    conn.close()
+
+    second = tmp_path / "s2.jsonl"
+    second.write_text(
+        "\n".join(
+            json.dumps(r) for r in [_gh_file("gh-b", "src/b.py"), _gh_file("gh-a", "src/a.py")]
+        )
+    )
+    load(second, settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    files = {
+        r["path"]: r["number"]
+        for r in conn.execute("SELECT path, number FROM github_items WHERE kind = 'file'")
+    }
+    conn.close()
+    assert set(files) == {"src/a.py", "src/b.py"}
+    assert files["src/a.py"] == a_number  # the re-imported file did not renumber
+    assert files["src/b.py"] not in (a_number, 7)  # nor did it take a number in use
+
+
+def test_byo_a_re_imported_slack_message_is_recognised_not_duplicated(tmp_path):
+    """Nothing in a slack record states a ts, so a re-imported message can only be recognised by
+    what it says: same channel, same second, same author, same text. Without that the probe found
+    its own previous row holding the deterministic ts, walked to a free fraction, and imported the
+    message a second time — silently, with no field a corpus could set to opt out.
+
+    Two such records in ONE corpus stay two documents: they are two things the author wrote, and
+    only a value already in the DB before the run can be a re-import."""
+    rec = {
+        "source_type": "slack",
+        "doc_id": "s-1",
+        "channel": "incidents",
+        "content": "deploy is green",
+        "author_email": "ava@acme.com",
+        "created": 1000,
+    }
+    settings = Settings(data_dir=tmp_path)
+    corpus = _write(tmp_path, [rec])
+    load(corpus, settings)
+    load(corpus, settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    assert conn.execute("SELECT COUNT(*) FROM slack_messages").fetchone()[0] == 1
+    conn.close()
+
+    twins = _write(tmp_path, [rec, {**rec, "doc_id": "s-2"}], name="twins.jsonl")
+    load(twins, settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    assert conn.execute("SELECT COUNT(*) FROM slack_messages").fetchone()[0] == 2
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [
+        pytest.param(
+            {
+                "source_type": "fireflies",
+                "doc_id": "ff-1",
+                "channel": "meetings",
+                "title": "Standup",
+                "content": "A: one",
+                "author_email": "ava@acme.com",
+                "readers": ["ava@acme.com"],
+                "transcript_id": "01JAAAAAAAAAAAAAAAAAAAAAAA",
+                "sentences": [{"content": "one", "speaker_name": "A"}],
+            },
+            {
+                "doc_id": "ff-2",
+                "title": "Retro",
+                "author_email": "bob@acme.com",
+                "readers": ["bob@acme.com"],
+            },
+            id="fireflies-transcript_id",
+        ),
+        pytest.param(
+            {
+                "source_type": "s3",
+                "doc_id": "s3-1",
+                "bucket": "acme-data",
+                "key": "reports/q1.csv",
+                "title": "q1",
+                "content": "v1",
+                "author_email": "ava@acme.com",
+                "readers": ["ava@acme.com"],
+            },
+            {
+                "doc_id": "s3-2",
+                "content": "v2",
+                "author_email": "bob@acme.com",
+                "readers": ["bob@acme.com"],
+            },
+            id="s3-bucket-key",
+        ),
+    ],
+)
+def test_byo_a_stated_id_an_earlier_import_holds_is_refused(tmp_path, first, second):
+    """The claim the four DEFERRED_ID sources get corpus-wide, for the two that assign no id of
+    their own. A stated id landing on a document a previous import wrote cannot be told apart from
+    that document coming back, so replacing it silently traded one document for another — and the
+    old document's readers stayed granted on the new one, because grants were append-only."""
+    settings = Settings(data_dir=tmp_path)
+    load(_write(tmp_path, [first]), settings)
+    src = first["source_type"]
+    with pytest.raises(SystemExit, match="an EARLIER import already answers at"):
+        load(_write(tmp_path, [{**first, **second}], name="s2.jsonl"), settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    assert [r["title"] for r in conn.execute(f"SELECT title FROM {store.table(src)}")] == [
+        first["title"]
+    ]
+    assert [
+        r["principal_id"] for r in conn.execute(f"SELECT principal_id FROM {store.acl_table(src)}")
+    ] == first["readers"]
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"project": "payments"}, {"repo": "gw"}, {"space": "handbook"}, {"channel": "inc"}],
+    ids=["jira", "github", "confluence", "slack"],
+)
+def test_byo_two_records_sharing_a_dataset_id_are_one_document(tmp_path, extra):
+    """A `doc_id` the corpus repeats names ONE document, and a real corpus does repeat one (a jira
+    pair in the ERB bench). That held while the dataset id WAS the key; once a probed source
+    started handing the second record a fresh id, the same corpus imported two documents — and the
+    parent, the comments and the grants split between them.
+
+    The last record wins the row, which is what a direct import of the same documents produces."""
+    source_type = {"project": "jira", "repo": "github", "space": "confluence", "channel": "slack"}[
+        next(iter(extra))
+    ]
+    base = {
+        "source_type": source_type,
+        "doc_id": "dup",
+        "title": "first",
+        "content": "one",
+        "author_email": "ava@acme.com",
+        **extra,
+    }
+    settings = Settings(data_dir=tmp_path)
+    load(_write(tmp_path, [base, {**base, "title": "second", "content": "two"}]), settings)
+    conn = store.connect_ro(settings.db_path)
+    rows = conn.execute(f"SELECT title FROM {store.table(source_type)}").fetchall()
+    conn.close()
+    assert [r["title"] for r in rows] == ["second"]
+
+
+def test_byo_a_parent_declared_on_a_repeated_dataset_id_reaches_the_row(tmp_path):
+    """The consequence of the rule above that a bare row count cannot see: with two rows, `parent`
+    resolved through a last-writer-wins map and attached to whichever row the map ended on — so
+    the record that DECLARED a parent served none, and the one that declared none served it."""
+    page = {
+        "source_type": "confluence",
+        "space": "handbook",
+        "author_email": "ava@acme.com",
+        "content": "c",
+    }
+    settings = Settings(data_dir=tmp_path)
+    load(
+        _write(
+            tmp_path,
+            [
+                {**page, "doc_id": "parent", "title": "Parent"},
+                {**page, "doc_id": "kid", "title": "declares", "parent": "parent"},
+                {**page, "doc_id": "kid", "title": "silent"},
+            ],
+        ),
+        settings,
+    )
+    conn = store.connect_ro(settings.db_path)
+    rows = {
+        r["title"]: r["parent_id"]
+        for r in conn.execute("SELECT title, parent_id FROM confluence_pages")
+    }
+    parent_id = conn.execute("SELECT id FROM confluence_pages WHERE title = 'Parent'").fetchone()[0]
+    conn.close()
+    assert set(rows) == {"Parent", "silent"}  # one child row, the later record's
+    assert rows["silent"] == parent_id
+
+
+def test_byo_a_shorter_version_of_a_document_drops_the_children_it_lost(tmp_path):
+    """Children are written under sequence ids, so a version with fewer of them overwrote 1..n and
+    left the old tail: a transcript served one sentence of content beside three stored ones,
+    breaking this importer's own rule that a transcript's content IS its sentences. A gmail thread
+    kept removed messages the same way, and those are full documents — their ACL grants and their
+    FTS rows went with them."""
+    settings = Settings(data_dir=tmp_path)
+    long_ff = {
+        "source_type": "fireflies",
+        "doc_id": "ff-x",
+        "channel": "meetings",
+        "title": "Standup",
+        "content": "A: one\nA: two\nA: three",
+        "author_email": "ava@acme.com",
+        "sentences": [{"content": c, "speaker_name": "A"} for c in ("one", "two", "three")],
+    }
+    long_gm = {
+        "source_type": "gmail",
+        "doc_id": "gm-x",
+        "title": "Re: deploy",
+        "content": "root",
+        "author_email": "ava@acme.com",
+        "messages": [{"content": m, "author_email": "bob@acme.com"} for m in ("m1", "m2")],
+    }
+    load(_write(tmp_path, [long_ff, long_gm]), settings)
+    short = [
+        {**long_ff, "content": "A: one", "sentences": [{"content": "one", "speaker_name": "A"}]},
+        {**long_gm, "messages": [{"content": "m1", "author_email": "bob@acme.com"}]},
+    ]
+    load(_write(tmp_path, short, name="s2.jsonl"), settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    assert [
+        r["body"] for r in conn.execute("SELECT body FROM fireflies_sentences ORDER BY seq")
+    ] == ["one"]
+    assert [
+        r["content"] for r in conn.execute("SELECT content FROM gmail_messages ORDER BY thread_seq")
+    ] == ["root", "m1"]
+    # the dropped message took its grants with it, or it stays readable at an id nothing serves
+    assert conn.execute(f"SELECT COUNT(*) FROM {store.acl_table('gmail')}").fetchone()[0] == 2
+    conn.close()
+
+
+def test_byo_keyless_linear_identifiers_are_probed_not_hashed(tmp_path):
+    """`synth.linear_identifier` numbers within 9,000 values per team, so a plain hash collides by
+    the birthday bound at ~110 keyless issues in one team — and two issues sharing `ENG-2686`
+    leaves one unreachable at the only human-facing id it advertises, since `issue(id:)` answers
+    the first. 400 issues in one team: a hash produced duplicates here every time."""
+    settings = Settings(data_dir=tmp_path)
+    load(
+        _write(
+            tmp_path,
+            [
+                {
+                    "source_type": "linear",
+                    "doc_id": f"li-{i}",
+                    "team": "engineering",
+                    "title": f"T{i}",
+                    "content": "c",
+                    "author_email": "ava@acme.com",
+                }
+                for i in range(400)
+            ],
+        ),
+        settings,
+    )
+    conn = store.connect_ro(settings.db_path)
+    ids = [r["identifier"] for r in conn.execute("SELECT identifier FROM linear_issues")]
+    conn.close()
+    assert len(ids) == 400 and len(set(ids)) == 400
 
 
 # --- github pull changesets and review comments (issue #49 group B) ---------------------

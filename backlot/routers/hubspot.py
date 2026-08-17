@@ -39,7 +39,7 @@ _PAGE_MAX = 100
 _ASSOC_PAGE_MAX = 500
 
 
-# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# --- OpenAPI enrichment --------------------------------------------------
 # Query params are documented with openapi_extra (merges with path params, no signature change);
 # POST bodies are read via _json_body, so they are declared as a requestBody the same way.
 
@@ -172,7 +172,7 @@ def _record(row, keep: list[str] | None = None) -> dict:
         props = {k: v for k, v in props.items() if k in keep}
     out = {
         # The stored column (assigned at import, see backlot.importer.byo), not a re-hash of
-        # HubSpot's id space is probed on a collision (#51), so the row's own stored value
+        # HubSpot's id space is probed on a collision, so the row's own stored value
         # with the value this very row was actually assigned and is looked up by.
         "id": row["id"],
         "properties": props,
@@ -243,16 +243,12 @@ def _resolve_cursor(request: Request, after: str | None):
     than a silent restart — a client resuming with a stale cursor would otherwise re-read the whole
     object type as though it were the first page.
 
-    Pre-existing existence oracle, deliberately unchanged here (#51 review round): `_existing_id`
-    is unscoped by ACL, so an `after` naming a record the caller cannot see resolves (400 only for
-    an id that names NOTHING, ever), while the exact same id used as a `GET .../objects/{type}/{id}`
-    path segment is 404 either way. A caller who has already learned an id is restricted (404 on
-    the direct read) can still tell it EXISTS by passing it as `after` and getting a 200 (with
-    results, or an empty page) instead of the 400 an unknown id gets. The reverse map this replaced
-    had no ACL clause either, so this predates the stored id; it is called out here rather
-    than fixed because closing it is a separate, deliberate change to make (likely: give
-    `_resolve_cursor` a `visible_ids` narrowing, same as every other reader in this file), not a
-    side effect of storing the id."""
+    An existence oracle, called out rather than closed: `_existing_id` is unscoped by ACL, so an
+    `after` naming a record the caller cannot see resolves (400 only for an id that names NOTHING),
+    while the same id as a `GET .../objects/{type}/{id}` path segment is 404 either way. So a caller
+    who knows an id is restricted can still learn it EXISTS by passing it as `after` and getting a
+    200 instead of a 400. Closing it is a deliberate change of its own — give `_resolve_cursor` a
+    `visible_ids` narrowing, like every other reader here."""
     if not after:
         return None, None
     rid = _existing_id(request, after)
@@ -634,7 +630,7 @@ async def list_associations(
     out: dict = {
         "results": [
             {
-                # The target's own served id, stored on the association row itself (#51) —
+                # The target's own served id, stored on the association row itself —
                 # there is no join and no re-hash, because the link names the target by the id
                 # the API reports it under. `int`, because real v4 sends this one as a NUMBER
                 # while the v3 `id` beside it is a string, and the official python client models

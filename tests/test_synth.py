@@ -21,7 +21,7 @@ def test_distinct_docs_get_distinct_values():
 
 def test_slack_ts_format():
     """`slack_fmt_ts` is the whole of Slack's ts shape now: the seconds come from the row's own
-    `created_ts` and the fraction from a seed the importer picks (#51), so there is no
+    `created_ts` and the fraction from a seed the importer picks, so there is no
     single-argument `slack_ts` left to test."""
     ts = synth.slack_fmt_ts(synth.epoch(DOC), DOC)
     secs, micro = ts.split(".")
@@ -150,7 +150,7 @@ def test_gdrive_file_id_matches_the_real_id_shape():
     """Measured against real Drive: a modern file id is 33 characters, base64url alphabet
     (``[A-Za-z0-9_-]``), and always starts with ``1``. `synth.gdrive_file_id` has to match that
     shape, not `drive_folder_id`'s hex slice -- hex spans only 16 of the 64 available symbols and
-    reads noticeably unlike a real one (#51, task 12)."""
+    reads noticeably unlike a real one."""
     fid = synth.gdrive_file_id(DOC)
     assert len(fid) == 33
     assert fid[0] == "1"

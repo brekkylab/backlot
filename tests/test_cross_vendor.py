@@ -124,7 +124,7 @@ def test_router_advertises_the_params_it_honours(client, path, expected):
     assert expected <= {p["name"] for p in op.get("parameters", [])}
 
 
-# --- /_mock/openapi/{source}: the MCP-ready spec endpoint (issue #4 bridge) ---------------
+# --- /_mock/openapi/{source}: the MCP-ready spec endpoint ---------------
 
 
 def test_mock_openapi_spec_endpoint(client):

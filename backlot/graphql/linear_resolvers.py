@@ -738,9 +738,8 @@ def _resolve_one_issue_id(conn, value: str) -> str:
 
 def _resolve_issue_ids(info, flt):
     """Rewrite an ``IssueFilter``'s ``id`` comparator from Linear UUIDs (or human identifiers)
-    to issue ids -- an id is the row's own primary key now, not a reverse map, so each value
-    costs a lookup rather than a dict access. See ``_resolve_one_issue_id`` for the per-value
-    resolution and its sentinel."""
+    to issue ids. An id is the row's own primary key, so each value costs a lookup. See
+    ``_resolve_one_issue_id`` for the per-value resolution and its sentinel."""
     if not isinstance(flt, dict):
         return flt
     conn = _ctx(info)["conn"]
@@ -923,11 +922,11 @@ def resolve_users(
 
 # --- by-id roots for the SDK's lazy relation accessors ------------------------------------
 # `await issue.state` does NOT read the state off the issue the SDK already has — it fires
-# `workflowState(id:)`. Each id is a one-way hash of a name, so each root reads the reverse map
-# the app built at startup (see backlot.main._build_index). All five are declared non-null in Linear,
-# so a miss is an "Entity not found" error, matching the real API.
+# `workflowState(id:)`. Each id is a one-way hash of a name, so each root reads `linear_entities`.
+# All five are declared non-null in Linear, so a miss is an "Entity not found" error, matching the
+# real API.
 #
-# THE INDEX IS NOT ACL-SCOPED, so the lookup alone is not enough. It is an unfiltered DISTINCT
+# THE TABLE IS NOT ACL-SCOPED, so the lookup alone is not enough. It is an unfiltered DISTINCT
 # over every issue, and these entities have no table of their own — a project, cycle, workflow
 # state, label or assignee exists only as a COLUMN VALUE on some issue. Resolving one without a
 # visibility check would hand a caller field values off a row they are denied: the name of a
@@ -946,9 +945,8 @@ def _by_id(info, kind: str, id_value, entity: str):
     """The entity a by-id root names, or a GraphQL "not found" error.
 
     Two questions, deliberately separate. `linear_entity_by_id` answers "does the corpus hold this
-    id" from `linear_entities` — a stored table since #51, not the six dicts `main._build_index`
-    rebuilt on every boot. `linear_entity_has_visible` then answers "may THIS caller see it", which
-    no lookup can fold in: an entity is a distinct column value with no ACL of its own, so
+    id" from `linear_entities`. `linear_entity_has_visible` then answers "may THIS caller see it",
+    which no lookup can fold in: an entity is a distinct column value with no ACL of its own, so
     visibility is whether any issue carrying it is readable.
 
     A hit the caller cannot see answers exactly as a miss does. Without that, the by-id roots are an
@@ -998,7 +996,7 @@ def resolve_release(_root, info, id) -> dict:
 
 def resolve_attachment(_root, info, id) -> dict:
     """Attachments live in their own table, so this resolves by row id and scopes on the parent
-    issue rather than going through the name-keyed reverse index the other roots use."""
+    issue rather than through the name-keyed entities the other roots use."""
     ctx = _ctx(info)
     row = store.linear_attachment_by_id(ctx["conn"], str(id), visible_ids=ctx["visible_ids"])
     if row is None:

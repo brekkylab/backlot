@@ -26,7 +26,7 @@ from backlot.config import Settings, get_settings
 def served_id(source_type: str, seed: str):
     """The id a row with corpus ``doc_id == seed`` lands under, computed rather than looked up.
 
-    A corpus's own identifier does not outlive the import (#51), so a test cannot ask the DB
+    A corpus's own identifier does not outlive the import, so a test cannot ask the DB
     "which row was `dsid_1`?". For the sources whose served id is a pure function of that
     identifier it does not need to: the same seed gives the same answer here as it did at import,
     which is what makes the value stable in the first place.

@@ -8,7 +8,7 @@ its own ``<source>_acl`` table (see ``ACL_TABLE``), because a served id is uniqu
 source — a shared table keyed on one let two documents in different sources that happened to share
 an id merge their grants.
 
-**A row is identified by the id the API serves it under, and by nothing else** (#51). The dataset's
+**A row is identified by the id the API serves it under, and by nothing else**. The dataset's
 own identifier scheme does not survive the import: a corpus's ``doc_id`` seeds a synthesized value
 and is then discarded, so there is no ``doc_id`` column anywhere and no map from one. Each table's
 PRIMARY KEY is that served id — see :data:`ID_COLUMNS`, which also names it, since the column is
@@ -147,7 +147,7 @@ def grouping_col(source_type: str) -> str:
 # source_type -> the column(s) a row is ADDRESSED by after import: its PRIMARY KEY, the key its
 # `<source>_acl` table and its FTS index carry, and what every cross-row reference points at.
 # There is no `doc_id` beside them — the dataset's own identifier seeds the value and is then
-# discarded (#51), so this registry is the whole answer to "what identifies a row".
+# discarded, so this registry is the whole answer to "what identifies a row".
 #
 # Each column is spelled the way its VENDOR spells it rather than forced to a uniform `id`: a real
 # GitHub issue carries both an `id` and a `number` and its API addresses it by the number, a Jira
@@ -216,10 +216,9 @@ def id_column_type(source_type: str, column: str) -> str:
 
 # source_type -> (seed function, uniqueness scope), for the sources whose served id is a pure
 # 1-arity function of the incoming record's dataset id. The value is ASSIGNED at import (see
-# backlot.importer.byo) rather than derived by hashing at serve time: a hash into any fixed range
-# collides by the birthday bound, and resolving a collision last-writer-wins leaves one document
-# unreachable at its own id. A uniform
-# `(dataset_id) -> a candidate value` shape is what lets one assignment method probe every source.
+# backlot.importer.byo) rather than hashed at serve time: a hash into any fixed range collides by
+# the birthday bound, and last-writer-wins leaves one document unreachable at its own id. The
+# uniform `(dataset_id) -> candidate` shape is what lets one assignment method probe every source.
 #
 # `scope` is the columns the assignment probe must hold fixed for the served value to be
 # unambiguous in BACKLOT'S OWN lookup — not necessarily the vendor's own uniqueness rule. It is
@@ -245,7 +244,7 @@ ID_SEED = {
     # accepts.
     "linear": (synth.linear_id, None),
     "github": (synth.github_number, grouping_col("github")),
-    # Drive's own file id (#51, task 12) -- unprobed, like gmail/notion/linear; see
+    # Drive's own file id -- unprobed, like gmail/notion/linear; see
     # synth.gdrive_file_id's docstring for the digest-bytes reasoning and idx_gdrive_id's
     # schema comment for the collision argument and the folder-id disjointness.
     "google_drive": (synth.gdrive_file_id, None),
@@ -296,13 +295,13 @@ CREATE INDEX IF NOT EXISTS idx_slack_channel_ts ON slack_messages(channel, creat
 CREATE INDEX IF NOT EXISTS idx_slack_channel_author ON slack_messages(channel, author_email);
 
 -- `id` is the id the API reports, assigned at import (see backlot.importer.byo) rather than hashed
--- at serve time, so a get-by-id is a PRIMARY KEY lookup instead of a reverse map rebuilt on every
--- boot. Unlike confluence it is the raw seed, never probed: `synth.gmail_message_id` draws from
+-- at serve time, so a get-by-id is a PRIMARY KEY lookup. Unlike confluence it is the raw seed,
+-- never probed: `synth.gmail_message_id` draws from
 -- 2**63, so a collision is vanishingly unlikely, and as the PRIMARY KEY one fails the import
 -- loudly rather than silently replacing the earlier message.
 --
 -- `thread_id` is another message's `id` (the thread root's), not a dataset identifier: it is
--- resolved at import along with every other cross-row reference (#51).
+-- resolved at import along with every other cross-row reference.
 CREATE TABLE IF NOT EXISTS gmail_messages (
     id TEXT PRIMARY KEY, mailbox TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
@@ -322,7 +321,7 @@ CREATE INDEX IF NOT EXISTS idx_gmail_thread ON gmail_messages(thread_id, thread_
 DROP INDEX IF EXISTS idx_gmail_served;
 
 -- `id` is what `files.get`/`.export`/`.permissions` resolve and every listing/`_drive_facts`
--- emits (#51, task 12): assigned at import (see backlot.importer.byo), never the corpus's own
+-- emits: assigned at import (see backlot.importer.byo), never the corpus's own
 -- identifier served straight through -- Drive was the one document source with no served-id column
 -- at all, so a client kept seeing the dataset's own identifier scheme instead of an opaque
 -- Drive-shaped id. No probe, like gmail/notion/linear: `synth.gdrive_file_id` draws from a 192-bit
@@ -361,7 +360,7 @@ DROP INDEX IF EXISTS idx_gdrive_served;
 -- issue search and every listing already exclude `kind='file'` (see routers.github). But this
 -- table holds two resources with different natural keys, and only one of them can be the PRIMARY
 -- KEY -- so files draw a number from the same per-repo space rather than keeping the NULL that
--- left them unaddressable once `doc_id` was gone (#51). Provided numbers on file rows are still
+-- left them unaddressable once `doc_id` was gone. Provided numbers on file rows are still
 -- ignored, so a corpus's real issue numbers keep winning the claim.
 CREATE TABLE IF NOT EXISTS github_items (
     repo TEXT NOT NULL, number INTEGER NOT NULL, author_email TEXT NOT NULL,
@@ -389,7 +388,7 @@ DROP INDEX IF EXISTS idx_github_served;
 -- `_jira_container_for_key` -- whose three-way tolerance is a deliberate affordance for the JQL
 -- project TOKEN -- leak into the ISSUE-KEY namespace twice (`payments-7` resolving, and
 -- case-insensitivity), each time needing its own guard. `WHERE key = ?` has no seam for either to
--- enter (#51 identifier consolidation).
+-- enter.
 --
 -- The key is GLOBAL, not per project -- a real Jira key is unique across a site. That also closes
 -- a residual a per-project index could not: a project with no provided keys is never registered
@@ -399,7 +398,7 @@ DROP INDEX IF EXISTS idx_github_served;
 -- error, which is what it always should have been.
 --
 -- `parent_id` holds the PARENT'S KEY, the same value this table is keyed on -- a subtask points at
--- a served id, never at a dataset identifier (#51). It keeps the generic name because
+-- a served id, never at a dataset identifier. It keeps the generic name because
 -- :func:`children` reads it uniformly across jira, confluence and notion.
 CREATE TABLE IF NOT EXISTS jira_issues (
     key TEXT PRIMARY KEY, project TEXT NOT NULL, author_email TEXT NOT NULL,
@@ -423,7 +422,7 @@ DROP INDEX IF EXISTS idx_jira_served;
 -- _assign_confluence_id's in-run memo plus seed_tracker_ids' cross-run preload, both probed
 -- against every id already taken -- so a genuine collision essentially never reaches the PRIMARY
 -- KEY; if one did, the insert raises there rather than resolving silently.
--- `parent_id` holds the parent page's `id`, the same served value (#51).
+-- `parent_id` holds the parent page's `id`, the same served value.
 --
 -- `INT`, not `INTEGER`, and that spelling is load-bearing: a column declared exactly `INTEGER`
 -- and made the PRIMARY KEY becomes an alias for the rowid, and SQLite then AUTO-ASSIGNS a value
@@ -445,7 +444,7 @@ DROP INDEX IF EXISTS idx_confluence_served;
 
 -- ── per-service comment tables (only services whose API exposes comments) ──
 -- The parent reference is the ISSUE'S KEY -- the served id its own table is keyed on -- and it is
--- spelled the way that table spells it (#51). A child row points at a served id; naming the column
+-- spelled the way that table spells it. A child row points at a served id; naming the column
 -- after the parent's own is what keeps a comment and its issue in one namespace rather than two.
 CREATE TABLE IF NOT EXISTS jira_comments (
     id TEXT PRIMARY KEY, key TEXT NOT NULL, seq INTEGER NOT NULL,
@@ -468,7 +467,7 @@ CREATE INDEX IF NOT EXISTS idx_confluence_comments_doc ON confluence_comments(pa
 -- collides by the birthday bound long before a real corpus runs out of comments — two comments
 -- sharing one id means one comment's url returns the other's body.
 --
--- ONE column, not the corpus's own comment identifier plus a served one (#51). The pair existed so
+-- ONE column, not the corpus's own comment identifier plus a served one. The pair existed so
 -- the assignment could key its memo on the value the corpus wrote; that value is an INPUT — it
 -- seeds `synth.github_comment_id` and is then discarded — so keeping a column for it stored the
 -- dataset's identifier scheme for no one to read. Uniqueness is enforced by the assignment itself
@@ -500,7 +499,7 @@ CREATE INDEX IF NOT EXISTS idx_notion_comments_doc ON notion_comments(page_id);
 -- from synth._uuid_from's full digest space, not a bounded range, so a collision is vanishingly
 -- unlikely -- and one raises on the PRIMARY KEY (or on idx_notion_ds) rather than silently
 -- replacing the row that held the value.
--- `parent_id` holds the parent page's or database's `id`, the same served value (#51).
+-- `parent_id` holds the parent page's or database's `id`, the same served value.
 CREATE TABLE IF NOT EXISTS notion_pages (
     id TEXT PRIMARY KEY, teamspace TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
@@ -515,7 +514,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_notion_ds ON notion_pages(data_source_id);
 DROP INDEX IF EXISTS idx_notion_served_ds;
 
 -- ── S3: objects live in buckets (flat key namespace); no comments ──
--- (bucket, key) IS an object's address in S3, so it is the PRIMARY KEY (#51). It was already the
+-- (bucket, key) IS an object's address in S3, so it is the PRIMARY KEY. It was already the
 -- only way in — `s3_by_bucket_key` is the one reader — but as a plain index nothing stopped two
 -- rows from sharing an address, and which of them a caller got then depended on that caller's own
 -- ACL grants (see s3_by_bucket_key's docstring for how far that went). A duplicate address is now
@@ -559,7 +558,7 @@ DROP INDEX IF EXISTS idx_hubspot_served;
 
 -- Associations are bidirectional in real HubSpot, with a distinct type id per direction, so a row
 -- is stored per direction and a lookup stays a plain (from_id, to_type) index match. Both ends
--- name a record by its SERVED id (#51), which is also what the v4 payload's `toObjectId` reports —
+-- name a record by its SERVED id, which is also what the v4 payload's `toObjectId` reports —
 -- so that field is read straight off this row rather than re-derived from anything.
 CREATE TABLE IF NOT EXISTS hubspot_associations (
     from_id TEXT NOT NULL, from_type TEXT NOT NULL,
@@ -649,7 +648,7 @@ CREATE INDEX IF NOT EXISTS idx_linear_comments_ts ON linear_comments(created_ts,
 -- Linear's IssueRelation, `type` in (blocks | duplicate | related). ONE row per relation, not per
 -- direction: Issue.relations and Issue.inverseRelations are the two ends of the same row.
 -- `to_id` is resolved at import, so a dangling key never becomes a relation. Both ends name an
--- issue by its served `id` (#51).
+-- issue by its served `id`.
 CREATE TABLE IF NOT EXISTS linear_relations (
     id TEXT PRIMARY KEY, from_id TEXT NOT NULL, to_id TEXT NOT NULL,
     type TEXT NOT NULL, created_ts INTEGER NOT NULL
@@ -674,10 +673,9 @@ CREATE INDEX IF NOT EXISTS idx_linear_attach_doc ON linear_attachments(issue_id,
 -- `id` is the API-facing transcript id: `synth.fireflies_id` seeded on the incoming record's own
 -- identifier when the corpus is silent, but a BYO record may still provide its own value
 -- (its schema-declared `transcript_id`) -- `transcript(id:)` looks a meeting up by it, so a
--- duplicate (whichever source it came from) would leave one transcript unreachable at its own id,
--- the same defect this whole plan was chartered on (#51). As the PRIMARY KEY it fails the import
--- loudly instead. It was `transcript_id`, a NULLABLE column beside a doc_id; nothing but the
--- doc_id's presence made the nullability survivable, and there is no doc_id now.
+-- duplicate (whichever source it came from) would leave one transcript unreachable at its own id.
+-- As the PRIMARY KEY it fails the import loudly instead, and it cannot be NULL: nothing else on
+-- the row identifies a transcript.
 -- The corpus's own meeting id is kept as `calendar_id`, where a real transcript carries it.
 CREATE TABLE IF NOT EXISTS fireflies_transcripts (
     id TEXT PRIMARY KEY, channel TEXT NOT NULL, author_email TEXT NOT NULL,
@@ -721,10 +719,8 @@ CREATE TABLE IF NOT EXISTS gmail_mailboxes   (mailbox TEXT PRIMARY KEY, group_id
 CREATE TABLE IF NOT EXISTS gdrive_folders    (folder  TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS github_repos      (repo    TEXT PRIMARY KEY, group_id TEXT);
 -- `key` is the project's own key (`PAY`) -- the prefix every one of its issue keys carries, which
--- real Jira guarantees IS the project's key. Stored here rather than reversed at boot from the
--- issues (`main._build_index`'s old `jira_project_keys`/`jira_project_containers` pair, #51): it is
--- a container-level fact, one row per project, and belongs on the container's own row for the same
--- reason `linear_teams.served_key` does.
+-- real Jira guarantees IS the project's key. A container-level fact, one row per project, so it
+-- belongs on the container's own row for the same reason `linear_teams.served_key` does.
 CREATE TABLE IF NOT EXISTS jira_projects (
     project TEXT PRIMARY KEY, key TEXT, group_id TEXT
 );
@@ -778,8 +774,8 @@ CREATE TABLE IF NOT EXISTS principals (
 
 -- Fireflies' own per-user id (`synth.fireflies_user_id`, a one-way hash of the address) needs a
 -- row to live on, but `principals` also holds org/group rows the id is meaningless for (only
--- `type = 'user'` rows have a Fireflies account -- see list_users), and #51's whole point is
--- keeping vendor concerns off the deliberately central roster. A dedicated table sidesteps both:
+-- `type = 'user'` rows have a Fireflies account -- see list_users), and vendor concerns stay off
+-- the deliberately central roster. A dedicated table sidesteps both:
 -- every row here IS a user, written unconditionally (backlot.importer.byo), so there is no NULL
 -- branch and no column that stays empty for every non-user principal.
 CREATE TABLE IF NOT EXISTS fireflies_users (
@@ -1141,15 +1137,13 @@ def s3_by_bucket_key(conn, bucket, key, visible_ids=None) -> sqlite3.Row | None:
 
 
 def hubspot_by_id(conn, record_id, visible_ids=None, *, columns="*") -> sqlite3.Row | None:
-    """One CRM record by the id the API reports — this table's PRIMARY KEY, not a reverse map built
-    at startup: the id is assigned at import (see backlot.importer.byo), so it needs neither the
-    memory nor the per-boot scan, and it cannot be ambiguous.
+    """One CRM record by the id the API reports — this table's PRIMARY KEY, so the lookup cannot be
+    ambiguous.
 
-    Unlike confluence's/notion's/gmail's, HubSpot's id is PROBED against a collision (#51:
-    ``synth.hubspot_record_id``'s 9,000,000,000-value space still collides at the corpus sizes this
-    project generates) -- which is exactly why a plain equality lookup on the key is still correct
-    here: the probe (``_assign_hubspot_id``) is what makes it unique, this reader just trusts that
-    it did.
+    Unlike confluence's/notion's/gmail's, HubSpot's id is PROBED against a collision
+    (``synth.hubspot_record_id``'s 9,000,000,000-value space still collides at the corpus sizes this
+    project generates) -- which is why a plain equality lookup is correct here: the probe
+    (``_assign_hubspot_id``) is what makes the id unique, and this reader trusts it.
 
     ``columns`` narrows the projection: a caller resolving an ``after`` cursor only needs to know
     the record exists, and pulling ``content`` (a note's whole body, the widest column on this
@@ -1314,8 +1308,7 @@ def count_linear_issues(
 
 def linear_by_id(conn, issue_id, visible_ids=None) -> sqlite3.Row | None:
     """One issue by the UUID the API reports (``synth.linear_id``), distinct from ``identifier``
-    (see ``linear_issue_by_identifier``) -- this table's PRIMARY KEY, so a point lookup rather
-    than a reverse map built at startup."""
+    (see ``linear_issue_by_identifier``) -- this table's PRIMARY KEY, so a point lookup."""
     clause, cp = _acl_clause("linear", visible_ids=visible_ids)
     return conn.execute(
         f"SELECT * FROM linear_issues WHERE id = ?{clause}", [issue_id, *cp]
@@ -1431,8 +1424,8 @@ def linear_attachments(
 def linear_attachment_by_id(conn, served_id, visible_ids=None) -> sqlite3.Row | None:
     """Resolve a SERVED attachment uuid back to its row, scoped on the parent issue's ACL.
 
-    No reverse index (attachments are only reached through their issue), so the id is matched by
-    re-deriving it over visible rows — an attachment on a hidden issue is simply not found."""
+    An attachment is only ever reached through its issue, so the id is matched by re-deriving it
+    over visible rows — one on a hidden issue is simply not found."""
     from backlot import synth
 
     join = "" if visible_ids is None else " JOIN linear_issues i ON i.id = a.issue_id"
@@ -1470,10 +1463,10 @@ def linear_distinct_values(conn) -> dict[str, list]:
     """The distinct entity names Linear's by-id roots have to resolve back to.
 
     ``@linear/sdk`` resolves relations lazily (``await issue.state`` fires a fresh
-    ``workflowState(id:)``) and those uuids are one-way hashes of a name, so the app builds a reverse
-    index at startup — see ``backlot.main._build_index``. Each entry is a DISTINCT over one column.
-    Users come back as ``(email, display_name)`` so a user reached by id is named like one reached
-    inline on an issue.
+    ``workflowState(id:)``) and those uuids are one-way hashes of a name, so each entity needs a row
+    to resolve through. Each entry is a DISTINCT over one column. Users come back as
+    ``(email, display_name)`` so a user reached by id is named like one reached inline on an
+    issue.
     """
 
     def col(name):
@@ -1485,8 +1478,8 @@ def linear_distinct_values(conn) -> dict[str, list]:
         ]
 
     def per_team(name, default=None):
-        # Workflow states and cycles are per-team entities in Linear, so their reverse map is
-        # keyed on the (team, name) pair the id was derived from.
+        # Workflow states and cycles are per-team entities in Linear, so they are keyed on the
+        # (team, name) pair the id was derived from.
         #
         # `default` matters: the resolver SYNTHESIZES a state name for a row that has none
         # (`_state` falls back to "Todo", since Linear declares the relation non-null). That id
@@ -1544,7 +1537,7 @@ def linear_team_has_visible(conn, team, visible_ids=None) -> bool:
 
 
 # `Issue.state` is non-null in Linear, so a row with no recorded state is served this name (see
-# linear_resolvers._state). It lives here because the reverse index and the visibility probe must
+# linear_resolvers._state). It lives here because the entity table and the visibility probe must
 # agree with the resolver on it, or an id the API served becomes unresolvable.
 LINEAR_DEFAULT_STATE = "Todo"
 
@@ -1552,7 +1545,7 @@ LINEAR_DEFAULT_STATE = "Todo"
 # The by-id roots (`project(id:)`, `workflowState(id:)`, …) resolve an entity that has no table
 # of its own: it exists only as a column value on some issue. So "can the caller see it" means
 # "can the caller see any issue carrying it", and each kind names the predicate that asks.
-# Keyed exactly as backlot.main._build_index keys its reverse maps.
+# Keyed exactly as `linear_entities` keys its rows.
 _LINEAR_ENTITY_PREDICATES = {
     "project": lambda v: ("project = ?", [v]),
     "cycle": lambda v: ("cycle = ? AND team = ?", [v[1], v[0]]),  # v = (team, name)
@@ -1589,9 +1582,8 @@ LINEAR_ENTITY_VALUE = {
 def linear_entity_by_id(conn, kind: str, served_id):
     """The project / state / label / cycle / user / release a served id names, or None.
 
-    A PRIMARY KEY lookup on `linear_entities`, written at import — not the six dicts
-    `main._build_index` rebuilt on every boot (#51). Returns the value in the shape the resolver
-    serves it in (see :data:`LINEAR_ENTITY_VALUE`): a bare name for the corpus-wide entities, a
+    A PRIMARY KEY lookup on `linear_entities`, written at import. Returns the value in the shape
+    the resolver serves it in (see :data:`LINEAR_ENTITY_VALUE`): a bare name for the corpus-wide entities, a
     ``(team, name)`` pair for the two Linear scopes to a team, ``(email, display)`` for a user.
 
     No ``visible_ids``: whether the CALLER may see the entity is a different question, answered by
@@ -1614,8 +1606,8 @@ def linear_entity_by_id(conn, kind: str, served_id):
 def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
     """Whether the caller can see ANY issue carrying this project / cycle / state / person / label.
 
-    Without it the by-id roots are an existence oracle: the reverse index is an unfiltered DISTINCT
-    built at startup, so a caller denied an issue could still resolve that issue's project, label,
+    Without it the by-id roots are an existence oracle: `linear_entities` is an unfiltered DISTINCT
+    over every issue, so a caller denied an issue could still resolve that issue's project, label,
     cycle, state and assignee. A ``LIMIT 1`` probe, so it stops at the first visible carrier."""
     build = _LINEAR_ENTITY_PREDICATES.get(kind)
     if build is None:
@@ -1732,9 +1724,9 @@ def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
 
 
 def gdrive_by_id(conn, file_id, visible_ids=None) -> sqlite3.Row | None:
-    """One Drive file by the id `files.get` / `.export` / `.permissions` resolve (#51, task 12) --
-    the model is gmail_by_id/notion_by_id: this table's PRIMARY KEY, assigned at import, read
-    straight through the ACL clause rather than a reverse map rebuilt on every boot."""
+    """One Drive file by the id `files.get` / `.export` / `.permissions` resolve --
+    the model is gmail_by_id/notion_by_id: this table's PRIMARY KEY, assigned at import and read
+    straight through the ACL clause."""
     clause, cp = _acl_clause("google_drive", visible_ids=visible_ids)
     return conn.execute(
         f"SELECT * FROM gdrive_files WHERE id = ?{clause}", [file_id, *cp]
@@ -1983,7 +1975,7 @@ def build_fts(conn) -> bool:
     # server, with a busy_timeout) rides through instead of blocking on a single multi-GB commit.
     for src, tbl in SOURCE_TABLE.items():
         fts = _fts_table(src)
-        # The index carries the source's OWN identifier columns (#51), so the join back to the doc
+        # The index carries the source's OWN identifier columns, so the join back to the doc
         # table is on the same key that table is now stored under. They are UNINDEXED: FTS5 must
         # not tokenize an id, but it DOES preserve the value's type, so an integer github number
         # comes back an integer and matches its INTEGER column rather than the string '7'.
@@ -2378,9 +2370,8 @@ def gmail_id_spelling(message_id) -> str:
 
 def github_by_number(conn, repo, number, visible_ids=None) -> sqlite3.Row | None:
     """One issue/PR by the number the API reports, scoped to its repo — github's own uniqueness
-    rule (see store.ID_COLUMNS for github). This is a PRIMARY KEY lookup, not a reverse map built
-    at startup: the number is assigned at import (see :mod:`backlot.importer.byo`'s
-    ``resolve_github_numbers``), so it needs neither the memory nor the per-boot scan, and it
+    rule (see store.ID_COLUMNS for github). A PRIMARY KEY lookup: the number is assigned at import
+    (see :mod:`backlot.importer.byo`'s ``resolve_github_numbers``), so it
     cannot be ambiguous.
 
     A `kind='file'` row DOES carry a number now — the table holds two resources and only one key
@@ -2438,8 +2429,7 @@ def get_github_comment(conn, comment_id: int) -> sqlite3.Row | None:
     """One comment by the id the API reports, carrying `(repo, number)` so the caller can ACL-check
     the issue or pull it belongs to.
 
-    A PRIMARY KEY lookup, not a reverse map built at startup: the id is assigned at import (see
-    :mod:`backlot.importer.byo`), so it needs neither the memory nor the per-boot scan, and it
+    A PRIMARY KEY lookup: the id is assigned at import (see :mod:`backlot.importer.byo`), so it
     cannot be ambiguous.
     """
     return conn.execute(
@@ -2450,9 +2440,7 @@ def get_github_comment(conn, comment_id: int) -> sqlite3.Row | None:
 
 
 def confluence_by_id(conn, page_id, visible_ids=None) -> sqlite3.Row | None:
-    """One page by the id the API reports. A PRIMARY KEY lookup, not a reverse map built at
-    startup: the id is assigned at import, so it costs neither the per-boot scan nor the memory,
-    and it cannot be ambiguous."""
+    """One page by the id the API reports — a PRIMARY KEY lookup, so it cannot be ambiguous."""
     clause, cp = _acl_clause("confluence", visible_ids=visible_ids)
     return conn.execute(
         f"SELECT * FROM confluence_pages WHERE id = ?{clause}", [page_id, *cp]
@@ -2462,8 +2450,7 @@ def confluence_by_id(conn, page_id, visible_ids=None) -> sqlite3.Row | None:
 def notion_by_id(conn, page_id, visible_ids=None) -> sqlite3.Row | None:
     """One page or database by the id the API reports -- a dashed lowercase UUID. The caller
     canonicalizes a dashless or mixed-case spelling to that same form before calling (see
-    routers.notion._norm); this is a plain equality lookup, not a case- or dash-insensitive one. A
-    PRIMARY KEY lookup, not a reverse map built at startup."""
+    routers.notion._norm); this is a plain equality lookup, not a case- or dash-insensitive one."""
     clause, cp = _acl_clause("notion", visible_ids=visible_ids)
     return conn.execute(
         f"SELECT * FROM notion_pages WHERE id = ?{clause}", [page_id, *cp]
@@ -2521,7 +2508,7 @@ def get_repo_file(conn, repo, path, visible_ids=None) -> sqlite3.Row | None:
 
 def jira_project_key(conn, project: str) -> str | None:
     """The key a jira project is served under (`PAY`) — its own stored column, not a prefix
-    reversed at boot out of the issues (#51). One row per project, so this is a PK lookup."""
+    reversed at boot out of the issues. One row per project, so this is a PK lookup."""
     row = conn.execute("SELECT key FROM jira_projects WHERE project = ?", (project,)).fetchone()
     return row["key"] if row else None
 
@@ -2561,9 +2548,8 @@ def linear_team_by_served_key(conn, served_key) -> str | None:
     """Resolve a team KEY (`synth.linear_team_key`, e.g. "ENG") to its container name.
 
     The key is NOT injective -- two containers can reduce to the same one -- so `served_key`
-    carries no UNIQUE index, and this breaks the tie exactly as the reverse map it replaced did:
-    `main._build_index`'s old loop walked `list_containers`'s own team-NAME order and kept the
-    FIRST team a key was seen on (`setdefault`). `ORDER BY team LIMIT 1` reproduces that -- change
+    carries no UNIQUE index. The tie is broken by team NAME, keeping the first team a key is seen
+    on: `ORDER BY team LIMIT 1` -- change
     either without the other and a key silently resolves to a different team."""
     row = conn.execute(
         "SELECT team FROM linear_teams WHERE served_key = ? ORDER BY team LIMIT 1", (served_key,)

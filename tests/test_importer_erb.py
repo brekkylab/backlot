@@ -529,7 +529,7 @@ def _load_one(conn, src, dsid, raw, P, org="redwood", loader=None):
 def _resolve(ldr):
     """Every deferred pass a real load runs after the last record, in the same order.
 
-    A probed source lands under a PROVISIONAL key and is settled here (#51), so a test that calls
+    A probed source lands under a PROVISIONAL key and is settled here, so a test that calls
     `add` directly and then reads the row back has to run these or it reads `-unassigned-1`. Kept
     as one helper so the order stays in one place — `byo.load_records` is the other caller."""
     ldr.resolve_github_numbers()
@@ -575,7 +575,7 @@ def test_drive_owner_is_faithful():
 def test_drive_doc_type_maps_onto_drive_mime_types():
     """The bench's `doc_type` vocabulary (doc/sheet/slides/pdf) is not the mock's native subtype
     vocabulary, so without the mapping every imported row falls back to `application/octet-stream` — making
-    anything that branches on mimeType untestable against the bench corpus (issue #23)."""
+    anything that branches on mimeType untestable against the bench corpus."""
     from backlot.routers.google import _drive_file
 
     conn = _conn()
@@ -1090,11 +1090,10 @@ def test_import_structured_loads_hubspot_source_dir(tmp_path, monkeypatch):
 
 
 def test_import_structured_persists_source_documents_including_excluded(tmp_path, monkeypatch):
-    """`source_documents == documents + excluded + failed` (see export_byo's layer). The `+
-    excluded` term is the one this task's erb-side fix introduced (`len(records) + len(excluded)`),
-    and it was otherwise only exercised in `export_byo`'s manifest.json, never against the database
-    `import_structured` actually builds — so a real document plus a deliberately empty-content one
-    (which `select_records` drops into `excluded`) has to add up to 2 offered, not 1."""
+    """`source_documents == documents + excluded + failed` (see export_byo's layer). The `+ excluded`
+    term is otherwise only exercised in `export_byo`'s manifest.json, never against the database
+    `import_structured` builds — so a real document plus a deliberately empty-content one (which
+    `select_records` drops into `excluded`) has to add up to 2 offered, not 1."""
     data = tmp_path / "data"
     data.mkdir()
     gen = tmp_path / "gen"
@@ -1278,7 +1277,7 @@ def test_qst_0001_owner_is_maya_chen(tmp_path):
     )
     # dsid_fc36... is qst_0001's expected doc; owner must now be Maya Chen, not a hash pick.
     # Fetched by the id the API serves it under: a corpus's own identifier does not outlive the
-    # import (#51), and for drive that served id is a pure function of it (see tests._helpers).
+    # import, and for drive that served id is a pure function of it (see tests._helpers).
     with client_for(Settings(data_dir=data_dir)) as c:
         r = c.get(
             f"/drive/v3/files/{served_id('google_drive', 'dsid_fc36d1d60e7e4b4abc7db84629563b7a')}",
@@ -1592,7 +1591,7 @@ def test_linear_grants_flow_through_the_shared_container_path():
     }
 
 
-# --- Linear relations / attachments / release (#25) ---------------------------------
+# --- Linear relations / attachments / release ---------------------------------
 
 
 def test_linear_relation_parsing_defaults_to_related():
@@ -1994,7 +1993,7 @@ def test_fireflies_erb_path_is_not_hubspot_property_data():
 
 
 # ---------------------------------------------------------------------------
-# ERB -> BYO-JSONL -> DB equivalence (#17)
+# ERB -> BYO-JSONL -> DB equivalence
 #
 # The unified dataset redistributes ERB pre-converted into BYO-JSONL, which only works if
 # BYO-JSONL can hold everything the loaders above write. So the acceptance criterion is a DIFF of
@@ -2404,7 +2403,7 @@ def test_erb_to_byo_output_validates_against_the_byo_schemas(tmp_path):
 
 
 def test_byo_drive_subtypes_are_all_accepted_by_the_schema():
-    """`_drive_type` is the mock's Drive subtype vocabulary (#23), and a converted record has to
+    """`_drive_type` is the mock's Drive subtype vocabulary, and a converted record has to
     carry its output — so the BYO drive schema must accept every value it can produce, or an
     artifact fails validation on a file type the importer itself created."""
     from backlot.validation import record_errors
@@ -2879,7 +2878,7 @@ def test_round_trip_survives_two_documents_sharing_a_doc_id(tmp_path):
     one. Across sources each has its own table, so both survive and BOTH containers' ACL groups
     must be granted. Resolving that differently makes the full-corpus round-trip diverge.
 
-    WITHIN a source, what happens now depends on how that source's id is assigned (#51), and the
+    WITHIN a source, what happens now depends on how that source's id is assigned, and the
     two jira issues are here to pin it:
 
     - a PURE-hash source (confluence here) sends both records to the same id, so the upsert leaves

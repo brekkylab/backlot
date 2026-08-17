@@ -121,9 +121,9 @@ def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
 
 # --- Linear: the by-id relation roots ---------------------------------------------
 # `@linear/sdk` resolves relations lazily, so `await issue.project` fires `project(id:)`. Those
-# roots read a reverse index built at startup from an UNFILTERED `DISTINCT` over every issue, and
-# the entities have no table of their own — a project/cycle/state/label/assignee exists only as a
-# column value on some issue. Left unscoped they hand a caller field values off rows they are
+# roots read `linear_entities`, an UNFILTERED `DISTINCT` over every issue, because the entities have
+# no table of their own — a project/cycle/state/label/assignee exists only as a column value on
+# some issue. Left unscoped they hand a caller field values off rows they are
 # denied, and because the ids are pure functions of the name (backlot/synth.py), they are computable
 # offline: an enumerable oracle, not merely a confirmable one.
 
@@ -441,7 +441,7 @@ def test_grants_are_written_to_their_own_source_table(tmp_path):
     )
     conn = store.connect_ro(s.db_path)
     # Each source's grants are read through its OWN table, keyed on its own served id -- the two
-    # documents shared a corpus id and share nothing after import (#51).
+    # documents shared a corpus id and share nothing after import.
     page = conn.execute("SELECT id FROM confluence_pages").fetchone()["id"]
     file_id = conn.execute("SELECT id FROM gdrive_files").fetchone()["id"]
     conf = {
@@ -460,8 +460,8 @@ def test_grants_are_written_to_their_own_source_table(tmp_path):
 def test_a_shared_doc_id_does_not_share_visibility(tmp_path):
     """The defect the per-source ACL tables exist to remove: bob is in no granted group, and the
     drive file is readable only by hana. A confluence page sharing its corpus id must not grant
-    the org. Since #51 the two never even resolve to the same id -- each source assigns its own -- so
-    this now pins the property from both directions: separate tables AND separate id spaces."""
+    the org. The two never even resolve to the same id -- each source assigns its own -- so this
+    pins the property from both directions: separate tables AND separate id spaces."""
     from tests._helpers import build_corpus
 
     s = build_corpus(

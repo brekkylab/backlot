@@ -211,11 +211,10 @@ def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_y
     assert again["email"] == "ava@acme.com"
     # PIN, not a correctness check: `_user`'s `user_id` (fireflies_resolvers.py) recomputes
     # `synth.fireflies_user_id(email)` rather than reading `fireflies_users.served_id` off a row
-    # it does not have (#51 -- fireflies is unprobed, so the two agree by construction and this
-    # is the plan's established pattern for an unprobed source; see the linear analogue in
-    # test_linear.py). This assertion is trivially true TODAY and exists to fail the day
-    # fireflies gains a probe (the exact shape hubspot's own bug took once IT started probing),
-    # which is precisely when someone needs to be told the two can now disagree.
+    # it does not have. fireflies is unprobed, so the two agree by construction -- the pattern
+    # every unprobed source follows (see the linear analogue in test_linear.py). Trivially true
+    # today; it exists to fail the day fireflies gains a probe, which is exactly when someone needs
+    # to be told the two can disagree.
     stored = ro_conn.execute(
         "SELECT served_id FROM fireflies_users WHERE email = ?", ("ava@acme.com",)
     ).fetchone()[0]
@@ -489,7 +488,7 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
 
     settings = tiny_corpus(tmp_path, FIREFLIES_CORPUS)
     # A principal the corpus names but who has no token — what an ERB append creates. `served_id`
-    # -> email is written AT IMPORT now (#51), not rebuilt from `principals` on every boot, so a
+    # -> email is written AT IMPORT now, not rebuilt from `principals` on every boot, so a
     # principal inserted straight into the table — bypassing byo's own principal-writing loop —
     # needs its own `fireflies_users` row too, exactly as a real out-of-band write would have to
     # supply one.
@@ -520,7 +519,7 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
         )["data"]["user"]
         assert got["email"] == "ghost@acme.com" and got["name"] == "Ghost Person"
 
-    # No probe (#51): `synth.fireflies_user_id` draws from a 96-bit digest, so the raw seed is
+    # No probe: `synth.fireflies_user_id` draws from a 96-bit digest, so the raw seed is
     # stored as-is -- a forced collision between two DIFFERENT users must fail the import loudly
     # through `idx_fireflies_user_served`, not silently let one user's row overwrite the other's.
     # A fresh two-host corpus, not FIREFLIES_CORPUS: that fixture's only ACCOUNT is ava (organizer

@@ -753,7 +753,7 @@ def _resolve_keys(settings: Settings) -> dict[str, tuple]:
 
     Built by matching each record's own text back to its row, NOT read out of the importer. That
     is the point: a corpus's ``doc_id`` is an input that seeds a synthesized id and is then
-    discarded (#51), so nothing in the DB maps one to the other and a test cannot ask for one. To
+    discarded, so nothing in the DB maps one to the other and a test cannot ask for one. To
     address a document it wrote, a test has to do what any other client does — find the row by
     something it can actually observe.
 

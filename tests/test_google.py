@@ -103,7 +103,7 @@ def _gmail_plain(payload):
     raise AssertionError("no text/plain part")
 
 
-# --- Gmail hex message ids (#39) --------------------------------------------------------------
+# --- Gmail hex message ids --------------------------------------------------------------
 #
 # Gmail ids are 16 lowercase hex digits parsed as a signed 64-bit integer. The 400/404 boundary,
 # MEASURED against the live API:
@@ -125,8 +125,8 @@ def _a_gmail_row(ro_conn):
 
 
 def test_gmail_messages_list_serves_hex_ids(client, admin_h):
-    """The ids a client receives must look like Gmail's, not like the corpus's dsids — that is the
-    whole point of #39. `dsid_…` is not hex, so real Gmail would call it an invalid id value.
+    """The ids a client receives must look like Gmail's, not like the corpus's dsids: `dsid_…` is
+    not hex, so real Gmail would call it an invalid id value.
 
     Up to 16 digits, not exactly 16: real Gmail renders the integer, so an id whose top nibble is
     zero is shorter there — and the real API resolves that spelling while 404ing the padded one."""
@@ -194,7 +194,7 @@ def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
     ).fetchone()
     assert row is not None, "SAMPLE should hold a threaded reply"
     m = client.get(f"/gmail/v1/users/me/messages/{row['id']}", headers=admin_h).json()
-    # `thread_id` holds the ROOT'S OWN served id (#51) — no re-derivation on either side.
+    # `thread_id` holds the ROOT'S OWN served id — no re-derivation on either side.
     assert m["threadId"] == row["thread_id"]
     assert m["id"] != m["threadId"]
 
@@ -242,9 +242,8 @@ def test_gmail_a_valid_but_unknown_id_is_not_found(client, admin_h, mid):
     ],
 )
 def test_gmail_an_unparsable_id_is_an_invalid_argument(client, admin_h, mid):
-    """The gap #39 names: an id that is not a parsable in-range hex integer is 400
-    INVALID_ARGUMENT "Invalid id value", not 404. The last row is the mock's OWN former id format,
-    which is exactly why the served ids had to change first."""
+    """An id that is not a parsable in-range hex integer is 400 INVALID_ARGUMENT "Invalid id
+    value", not 404. The last row is a `dsid_…`, which real would refuse the same way."""
     for kind in ("messages", "threads"):
         r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
         assert r.status_code == 400, f"{kind}/{mid}: {r.status_code}"
@@ -296,7 +295,7 @@ def test_gmail_messages_list_ordered_by_internaldate_desc(client, admin_h, ro_co
     ).json()["messages"]
     got = [m["id"] for m in listed]
     # the stable total order the endpoint must produce: created_ts DESC, id ASC as tie-break
-    # the served ids are hex (#39), so the expectation is the hex of that stable order
+    # the served ids are hex, so the expectation is the hex of that stable order
 
     expected = [
         r["id"]
@@ -512,7 +511,7 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
     if doc is None:
         pytest.skip("no gmail doc for user B in this subset")
 
-    hexid = doc["id"]  # served ids are hex, not dsids (#39)
+    hexid = doc["id"]  # served ids are hex, not dsids
     ah = {"Authorization": f"Bearer {user_a['token']}"}
     r = client.get(f"/gmail/v1/users/me/messages/{hexid}", headers=ah)
     # A may coincidentally be a recipient; assert admin can always read it
@@ -520,7 +519,7 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
     assert r.status_code in (200, 404)
 
 
-# --- Google error envelope (#37) ------------------------------------------------------------
+# --- Google error envelope ------------------------------------------------------------
 #
 # Every case below was MEASURED against the live APIs with real OAuth credentials. The envelope is
 # per-family, not uniform:
@@ -581,7 +580,7 @@ def test_editor_api_errors_carry_status_and_no_errors_array(client, admin_h):
 
 def test_gmail_errors_carry_both(client, admin_h):
     """Gmail sends `errors[]` AND `status` — measured, and the only family that does both."""
-    # a well-formed but unknown id; a non-hex one is 400 "Invalid id value" (see #39)
+    # a well-formed but unknown id; a non-hex one is 400 "Invalid id value"
     e = _gerr(client.get("/gmail/v1/users/me/messages/00000000deadbeef", headers=admin_h))
     assert e["code"] == 404 and e["status"] == "NOT_FOUND"
     assert e["message"] == "Requested entity was not found."
@@ -769,7 +768,7 @@ def test_drive_responses_unchanged_by_enrichment(client, admin_h):
     ):
         assert k in full, f"drive file missing {k} (fidelity regression)"
     # permissions.list has to resolve the same served id, for an actual FILE and not only for the
-    # folder id `test_drive_folder_permissions_resolve` covers (#51, task 12) -- both routes
+    # folder id `test_drive_folder_permissions_resolve` covers -- both routes
     # resolve through store.gdrive_by_id now, and only the folder path was exercised before.
     perms = client.get(f"/drive/v3/files/{doc['id']}/permissions", headers=admin_h)
     assert perms.status_code == 200
@@ -788,7 +787,7 @@ def test_drive_export_and_media_stay_non_json(client, admin_h):
     assert med.status_code == 200 and "application/json" not in med.headers["content-type"]
 
 
-# --- Drive fidelity: measured divergences from real Google Drive (issue #23) ---------------
+# --- Drive fidelity: measured divergences from real Google Drive ---------------
 #
 # Each case below was diffed against https://www.googleapis.com/drive/v3 with equivalent
 # credentials; the mock's old behaviour returned 200 with wrong/unfiltered data, so a consumer
@@ -1263,7 +1262,7 @@ def _drive_by_mime(base, admin_h, mime, *, name: str | None = None):
 
     ``name`` picks a SPECIFIC file, and callers that go on to assert the file's contents pass it.
     Taking "whichever comes first" made those assertions depend on the listing order, which is the
-    order of an opaque synthesized id (#51) — so a corpus holding two spreadsheets could hand a
+    order of an opaque synthesized id — so a corpus holding two spreadsheets could hand a
     content assertion the wrong one, and the test would read as a content bug rather than as the
     arbitrary pick it was."""
     r = httpx.get(
@@ -1633,7 +1632,7 @@ def test_sheets_values_serve_a_blank_line_as_an_empty_row(base, admin_h):
     end. The trailing ones trim away entirely; the middle one survives as ``[]``."""
     from backlot import synth
 
-    # `gd-blankline`'s served id (#51, task 12), built to reach a known fixture by its stable
+    # `gd-blankline`'s served id, built to reach a known fixture by its stable
     # doc_id -- unlike an assertion, constructing a REQUEST url this way is the same precedent
     # test_gmail_attachment_size_matches_part_metadata uses (`row["id"]`
     # to build the message url), not the "assert synth.fn(doc_id) at a route" anti-pattern.
@@ -2069,7 +2068,7 @@ def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
 def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
     """Google: `size` "is populated for files with binary content stored in Google Drive AND for
     Docs Editors files; it is not populated for shortcuts or folders." The mock set it only in the
-    binary branch, so it taught implementors that native Docs have no byte size (issue #23)."""
+    binary branch, so it taught implementors that native Docs have no byte size."""
     from backlot.routers.google import _drive_file
 
     s = tiny_corpus(

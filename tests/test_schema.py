@@ -282,9 +282,9 @@ def test_linear_byo_round_trip_serves_what_it_loaded(tmp_path):
 
 def test_linear_synthesized_identifier_is_resolvable(tmp_path):
     """An omitted `identifier` is synthesized — and the synthesized value must be MATERIALIZED,
-    not produced per request. The app's reverse index is built from stored columns, so a
-    serve-time-only identifier came back "Entity not found" from `issue(id:)` even though the API
-    had just served that exact string to the caller."""
+    not produced per request: every lookup reads a stored column, so a serve-time-only identifier
+    came back "Entity not found" from `issue(id:)` even though the API had just served that exact
+    string to the caller."""
     corpus = tmp_path / "c.jsonl"
     corpus.write_text(
         json.dumps(
@@ -437,7 +437,7 @@ def test_fireflies_schema_duration_is_minutes_not_seconds():
     assert "MINUTES" in desc
 
 
-# --- fields that make an ERB import expressible (#17) ------------------------------
+# --- fields that make an ERB import expressible ------------------------------
 
 
 def test_confluence_accepts_confidentiality_ownership_and_reviewers():

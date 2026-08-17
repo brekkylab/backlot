@@ -129,7 +129,7 @@ def gmail():
             f"{len(svc.users().threads().get(userId='me', id=msgs[0]['id']).execute()['messages'])} msgs"
         )
     )
-    # Served ids must look like Gmail's own (#39): 16 lowercase hex under 2**63. A dsid would be
+    # Served ids must look like Gmail's own: 16 lowercase hex under 2**63. A dsid would be
     # refused by the real API as an invalid id value, so a client written against the mock would
     # only discover that in production.
     check("Gmail", "ids are Gmail-shaped")(
@@ -233,7 +233,7 @@ def sheets():
         static_discovery=True,
     )
     # By NAME, not "the first spreadsheet": the assertions below are about this sheet's contents,
-    # and the listing order is the order of an opaque synthesized id (#51), so taking whichever
+    # and the listing order is the order of an opaque synthesized id, so taking whichever
     # came first would silently hand them the corpus's other spreadsheet.
     fid = next(
         f["id"]

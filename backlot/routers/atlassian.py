@@ -22,7 +22,7 @@ from backlot.pagination import confluence_next_link, decode_cursor, next_page_to
 router = APIRouter(prefix="/atlassian", tags=["atlassian"])
 
 
-# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# --- OpenAPI enrichment --------------------------------------------------
 # jira_search reads params query-or-body (GET+POST) so they're documented with openapi_extra (no
 # signature change); confluence params are query-only. Response models use extra="allow" to
 # preserve every field. Error paths raise HTTPException (Atlassian-shaped), not filtered here.
@@ -559,17 +559,16 @@ def _jira_actor(email: str, site: str = "") -> dict:
 
 
 def _issue_key(request: Request, row) -> str:
-    """The key this issue answers to — its own stored `key` column, whole (#51 identifier
-    consolidation).
+    """The key this issue answers to — its own stored `key` column, whole.
 
     Nothing is composed here. The prefix and the suffix are joined at import by
     `resolve_jira_keys`, at the one moment the project's prefix is settled for the whole corpus, so
     a stated key and a derived one are the same kind of value by the time they reach here.
 
     Asserted, not defensively re-derived: every jira row gets a key at import (`resolve_jira_keys`
-    raises rather than leave one NULL), so a caller reaching this with a NULL one is a bug
-    upstream. A silent re-derive would serve a PROBED row's synthesized suffix instead of failing
-    where the problem is — the shape the hubspot bug shipped as (#51, task 11)."""
+    raises rather than leave one NULL), so reaching this with a NULL one is a bug upstream. A silent
+    re-derive would serve a PROBED row's synthesized suffix instead of failing where the problem
+    is."""
     assert row["key"] is not None, "jira: a row reached the serializer with no key"
     return row["key"]
 

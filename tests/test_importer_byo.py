@@ -1141,10 +1141,8 @@ def test_hubspot_byo_association_infers_missing_target_type(tmp_path):
 def test_hubspot_byo_association_to_a_ghost_target_is_an_import_error(tmp_path):
     """An explicit `to_type` names what KIND the target is (the schema's own words: "default: the
     target record's own object_type") -- it must not also be a license to link to a doc_id that
-    was never written. Before this test, stating `to_type` for an absent target loaded cleanly
-    and wrote the association anyway, and `store.hubspot_associations` silently returned zero rows
-    for it forever after -- the same "silently shadowed" failure mode #51 exists to remove
-    elsewhere in this project."""
+    was never written: writing the association anyway leaves `store.hubspot_associations` returning
+    zero rows for it forever, with nothing said at import."""
     settings = Settings(data_dir=tmp_path)
     corpus = _write(
         tmp_path,
@@ -1878,7 +1876,7 @@ def test_byo_provided_tracker_ids_are_stored_and_served(tmp_path):
     try:
         jira = {r["title"]: r["key"] for r in conn.execute("SELECT title, key FROM jira_issues")}
         assert jira["t"] == "PAY-7"
-        # `key` is now the one served column (#51), so the keyless sibling carries a COMPOSED key
+        # `key` is now the one served column, so the keyless sibling carries a COMPOSED key
         # rather than NULL -- under the prefix its provided sibling established, and not the
         # spelling that sibling claimed.
         assert jira["t2"].startswith("PAY-") and jira["t2"] != "PAY-7"
@@ -2059,8 +2057,8 @@ def test_byo_a_provided_number_wins_whichever_doc_id_sorts_first(tmp_path):
     — a 404 at the number the corpus had asked for. The victim doc_id sorts FIRST here; only a
     corpus that stores nothing for an absent number can keep the provider's claim.
 
-    A keyless row therefore holds NULL, and the number it serves comes from the reverse index's
-    second pass — same value, decided after every provided one is already registered."""
+    A keyless row therefore holds a provisional number until the second assignment pass — same
+    value, decided after every provided one is already registered."""
     from backlot import synth
     from tests._helpers import build_corpus, client_for
 
@@ -2093,7 +2091,7 @@ def test_byo_a_provided_number_wins_whichever_doc_id_sorts_first(tmp_path):
         stored = {
             r["title"]: r["number"] for r in conn.execute("SELECT title, number FROM github_items")
         }
-        # `number` is now the one served column (#51), so the victim carries an assigned number
+        # `number` is now the one served column, so the victim carries an assigned number
         # rather than NULL. The property under test is unchanged: the PROVIDER keeps the spelling
         # it asked for, and the row whose derived number wanted it is moved off.
         assert stored["t"] == stolen
@@ -2862,7 +2860,7 @@ def test_append_accumulates_source_documents(tmp_path):
             {
                 "source_type": "confluence",
                 "space": "h",
-                # An append into a probed source states the id it wants (#51 follow-up): without
+                # An append into a probed source states the id it wants: without
                 # one this row could not be told apart from a re-import of the first.
                 "content_id": 4242,
                 "title": "B",
@@ -3020,22 +3018,17 @@ def test_byo_roster_group_and_groups_read_the_same_in_every_shape(tmp_path):
 
 def test_byo_github_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
     """`_assign_github_number`'s walk RAISES on an exhausted range rather than returning a value it
-    already knows is taken. Past `synth.GITHUB_NUMBER_RANGE` steps every number the probe can
-    produce has been visited, so the repo genuinely has more non-file rows than the space holds, and
-    writing one anyway would break the PRIMARY KEY (repo, number) instead of failing where the
-    problem actually is.
+    already knows is taken. Past `synth.GITHUB_NUMBER_RANGE` steps every number the probe can produce
+    has been visited, so the repo holds more non-file rows than the space does. Writing one anyway
+    would break the PRIMARY KEY (repo, number) instead of failing where the problem is.
 
-    "Genuinely exhausted" is 90,000 non-file rows in one repo in reality -- not a practical test
-    fixture -- so this shrinks `synth.GITHUB_NUMBER_RANGE` itself (a plain module attribute read
-    at call time, not a closure capture, so `monkeypatch.setattr` reaches it -- unlike
-    `store.ID_SEED`'s captured seed FUNCTION, this is just an int looked up live off the
-    module) and collapses the seed to one constant (`monkeypatch.setitem` on `store.ID_SEED`,
-    for the same reason as the collision test above).
-    4 rows, not 3: with a constant seed each walk's FIRST checked candidate is always the
-    already-taken raw seed, so a range this small (2) only gets ONE real chance per row to land
-    on a free small number -- 3 rows leaves one candidate value never even probed, which a
-    mutation that silently returns the walk's last (unchecked) value can still slip through by
-    accident. 4 rows is the smallest count that forces a real collision on the fourth.
+    Real exhaustion is 90,000 non-file rows in one repo, so the range is shrunk instead.
+    `monkeypatch.setattr` reaches `GITHUB_NUMBER_RANGE` because it is a plain int read at call time;
+    the seed needs `setitem` on `store.ID_SEED`, whose function the registry captured.
+
+    4 rows, not 3: with a constant seed each walk's first candidate is the already-taken raw seed, so
+    a 2-value range gives one real chance per row. 3 rows leaves a candidate never probed, which a
+    mutation returning the walk's last unchecked value slips through. 4 forces a real collision.
     """
     from backlot import synth
     from tests._helpers import build_corpus
@@ -3058,26 +3051,18 @@ def test_byo_github_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
 
 
 def test_byo_jira_exhausted_number_range_fails_loudly(tmp_path, monkeypatch):
-    """jira's own equivalent of the github test above (#51, task 8): `_assign_jira_number`'s
-    bounded walk raises past `synth.JIRA_KEY_NUMBER_RANGE` steps rather than return a suffix it
-    already knows is taken, which would duplicate it under the UNIQUE (project, served_number)
-    index instead of failing where the problem actually is.
+    """jira's equivalent of the github test above: `_assign_jira_number`'s bounded walk raises past
+    `synth.JIRA_KEY_NUMBER_RANGE` steps rather than return a suffix it knows is taken, which would
+    duplicate it under the UNIQUE (project, served_number) index.
 
-    "Genuinely exhausted" is 9,000 issues in one project in reality -- not a practical test
-    fixture -- so this shrinks `synth.JIRA_KEY_NUMBER_RANGE` itself (a plain module attribute,
-    same shape as `GITHUB_NUMBER_RANGE` -- see that test's own docstring for why `monkeypatch.
-    setattr` reaches it while `store.ID_SEED`'s captured seed function needs `setitem`
-    instead) and collapses the seed to one constant.
+    Real exhaustion is 9,000 issues in one project, so the range is shrunk instead — same shape as
+    `GITHUB_NUMBER_RANGE`, see that test for which patch reaches which.
 
-    The constant MUST land inside the shrunk range (review round 1, M-6): a seed outside it
-    (e.g. the naive `999999`) makes the very first walk step spend its one useful check moving
-    the out-of-range starting value INTO range, rather than checking a real candidate -- so with
-    range 2, the walk only ever genuinely checks one of the two in-range suffixes before its
-    budget runs out, and raises having left the other one actually free. That is a PREMATURE
-    give-up dressed up as a real one: the exception fires, so `pytest.raises` doesn't catch the
-    difference, but the space it claims is exhausted (1) isn't. `1` (inside `1..2`) makes every
-    step of the walk check a real candidate, so the raise reflects both slots being genuinely
-    taken.
+    The constant MUST land inside the shrunk range. A seed outside it (e.g. `999999`) spends the
+    first walk step moving the starting value into range rather than checking a candidate, so with
+    range 2 the walk checks only one of the two suffixes and raises with the other still free. That
+    is a premature give-up dressed as a real one, and the exception fires either way, so
+    `pytest.raises` cannot tell the difference. `1` makes every step check a real candidate.
 
     4 rows, past the point (row 3, once both slots are claimed) where exhaustion is first
     unavoidable -- checked directly: rows 1-2 fill the 2-slot range without incident, and row 3
@@ -3139,7 +3124,7 @@ def test_byo_confluence_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
 
 
 def test_byo_hubspot_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
-    """`_assign_hubspot_id`'s equivalent of the confluence test above (#51, task 11): its walk was
+    """`_assign_hubspot_id`'s equivalent of the confluence test above: its walk was
     also an unbounded `while`, on a range genuinely exhausted only at 9x10**9 records in reality.
     Same shrunk-range technique, same in-range constant (`synth.HUBSPOT_ID_MIN`) for the same
     reason -- see the confluence test's docstring."""
@@ -3164,7 +3149,7 @@ def test_byo_hubspot_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
 
 
 def test_byo_github_comment_exhausted_id_range_fails_loudly(tmp_path, monkeypatch):
-    """`_assign_github_comment_id`'s equivalent (#51, task 11): its walk was also an unbounded
+    """`_assign_github_comment_id`'s equivalent: its walk was also an unbounded
     `while`, on a range genuinely exhausted only at 9x10**9 comments in reality. Unlike the
     confluence/hubspot ids above, this one is not read off `store.ID_SEED` -- it calls
     `synth.github_comment_id` directly -- so the seed is collapsed by patching that function
@@ -3361,7 +3346,7 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
         alias404 = c.get(f"/atlassian/rest/api/3/issue/{own_synth_spelling}", headers=hdr)
         assert alias404.status_code == 404
 
-        # I-1: the resolver's OWN alias, over a project that DOES have a provided prefix ("PAY").
+        # The resolver's OWN alias, over a project that DOES have a provided prefix ("PAY").
         # Neither the synthesized project key nor the literal container name is what this
         # project actually serves, so both must 404 despite `_jira_container_for_key` resolving
         # either one just fine as a JQL project token.
@@ -3420,7 +3405,7 @@ def test_byo_meta_cannot_smuggle_a_tracker_id(tmp_path):
     conn.row_factory = sqlite3.Row
     gh = conn.execute(f"SELECT number FROM {store.table('github')}").fetchone()
     jira = conn.execute(f"SELECT key FROM {store.table('jira')}").fetchone()
-    # github's `number` is now the one served column (#51 identifier consolidation), so it is
+    # github's `number` is now the one served column, so it is
     # non-NULL for every issue -- the import assigns one. What must NOT happen is meta's value
     # being taken as a CLAIM on that spelling, so assert the served number is anything but 777.
     assert gh["number"] != 777, "meta must not claim a number the way a top-level `number` does"
@@ -3489,12 +3474,12 @@ def test_byo_a_tracker_id_claim_survives_append(tmp_path):
     with pytest.raises(SystemExit) as e:
         load(shard("b.jsonl", "jira-b"), settings, reset=False)
     # The claim is refused, and it names the value rather than the earlier row: that row's own
-    # corpus identifier did not outlive its import, so there is nothing left to name it by (#51).
+    # corpus identifier did not outlive its import, so there is nothing left to name it by.
     assert "PAY-7" in str(e.value) and "a previous import" in str(e.value)
 
     # Re-appending a shard already loaded is refused too, and for the same reason: the claim on
     # PAY-7 is in the DB, and the row holding it can no longer be recognised as the one re-stating
-    # it (#51). A re-import is unsupported outright, not merely when it collides.
+    # it. A re-import is unsupported outright, not merely when it collides.
     with pytest.raises(SystemExit, match="a previous import"):
         load(first, settings, reset=False)
 
@@ -3614,7 +3599,7 @@ def test_byo_two_projects_cannot_share_a_provided_key_prefix(tmp_path):
         load(second, settings, reset=False)
     assert "PAY" in str(e.value) and "payments" in str(e.value)
     # Re-appending the holder itself is refused too: its key is claimed in the DB and the row
-    # holding it can no longer be recognised as the one re-stating it (#51).
+    # holding it can no longer be recognised as the one re-stating it.
     with pytest.raises(SystemExit, match="a previous import"):
         load(first, settings, reset=False)
 
@@ -4002,17 +3987,15 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
             }
         )
     )
-    # #51 identifier consolidation, same trade as github's: with ONE `key` column there is no
-    # provided-vs-served distinction left to arbitrate, so an appended row claiming a key an
-    # existing row already serves is refused rather than displacing it.
+    # Same trade as github's: with ONE `key` column there is no provided-vs-served distinction to
+    # arbitrate, so an appended row claiming a key an existing row already serves is refused rather
+    # than displacing it.
     #
-    # It is refused for a sharper reason than the suffix collision, and that reason is itself a
-    # consequence of the merge: a COMPOSED key is a real key now, so it registers its project's
-    # prefix exactly as a provided one does. `j-victim` already named this project `PAYDF384A`
-    # (synthesized, no provided sibling), and the appended `PAY-3227` would rename it. The
-    # prefix-holder guard catches that first. The effect is that a project's prefix is settled by
-    # whatever it first served -- which is the same "ids do not move" rule the rest of #51 enforces,
-    # now reaching the prefix too.
+    # It is refused for a sharper reason than the suffix collision: a COMPOSED key is a real key, so
+    # it registers its project's prefix exactly as a provided one does. `j-victim` already named
+    # this project `PAYDF384A`, and the appended `PAY-3227` would rename it -- the prefix-holder
+    # guard catches that first. So a project's prefix is settled by whatever it first served, the
+    # same "ids do not move" rule as everywhere else.
     with pytest.raises(SystemExit, match="but its keys already name it 'PAYDF384A'"):
         load(shard2, settings, reset=False)
 
@@ -4123,7 +4106,7 @@ def test_byo_an_orphan_review_comment_anchor_is_reported(tmp_path, capsys):
     assert "1 path reference" in capsys.readouterr().err
 
 
-# --- what an --append may and may not do to a document already imported (#58 review) -----
+# --- what an --append may and may not do to a document already imported -------------------
 
 
 def _gh_file(doc_id, path, **extra):
@@ -4419,7 +4402,7 @@ def test_byo_keyless_linear_identifiers_are_probed_not_hashed(tmp_path):
     assert len(ids) == 400 and len(set(ids)) == 400
 
 
-# --- github pull changesets and review comments (issue #49 group B) ---------------------
+# --- github pull changesets and review comments -----------------------------------------
 
 
 def _gh_changeset_corpus(**pr_extra):

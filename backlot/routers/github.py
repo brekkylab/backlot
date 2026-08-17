@@ -1609,8 +1609,8 @@ def _pr_files(
 
 def _seed(row) -> str:
     """A stable seed for the values GitHub derives rather than stores — a commit sha, a review id,
-    a milestone number. It was the corpus's own document id; it is the row's OWN identity now
-    (#51), which is equally stable and is what the row is actually addressed by."""
+     a milestone number. It was the corpus's own document id; it is the row's OWN identity now
+    , which is equally stable and is what the row is actually addressed by."""
     return f"{row['repo']}#{row['number']}"
 
 
@@ -1660,8 +1660,8 @@ def _patch_modified(seed: str, lines: list[str], selectable: int) -> tuple[int, 
     ``(additions, deletions, patch)``.
 
     Both express the change against the snapshot as the HEAD, and neither writes a line the file
-    does not already contain — a replacement would need "before" text that is nowhere in the corpus,
-    and inventing a line the file never held is the fabrication this module exists to avoid:
+    does not already contain. A replacement would need "before" text that is nowhere in the corpus,
+    and inventing a line is the fabrication this module exists to avoid:
 
     - ``insertion`` — the pull added a real block of the file; the base is the snapshot with that
       block taken out. Pure additions.
@@ -1768,9 +1768,9 @@ def _gh_review_comment(
     """One line-anchored review comment, in the real API's shape.
 
     ``diff_hunk`` prefers what the corpus supplied, then the hunk this pull's own diff carries for
-    that file — so the comment and the diff agree — and falls back to a context window from the
-    snapshot when the comment is anchored to a file the changeset does not touch (real GitHub cannot
-    produce that, but there is no reason to drop the comment over it).
+    that file, so the comment and the diff agree. It falls back to a context window from the
+    snapshot when the comment anchors to a file the changeset does not touch — real GitHub cannot
+    produce that, but there is no reason to drop the comment over it.
     """
     ts = c["created_ts"] or synth.epoch(c["id"])
     email = c["author_email"] or "unknown@x"
@@ -1877,9 +1877,9 @@ def _hunk_around(file_row, line: int | None) -> str:
 
 
 def _gh_comment(owner: str, repo: str, number: int, c, api_base: str = "") -> dict:
-    # `is not None`, and str(): a comment's id is an INTEGER since #51, and 0 is a second a corpus
-    # can write — under truthiness a comment dated 1970-01-01T00:00:00Z reached `synth.epoch`,
-    # which hashes a STRING, and the endpoint 500ed.
+    # `is not None`, and str(): a comment's id is an INTEGER, and 0 is a second a corpus can write,
+    # so under truthiness a comment dated 1970-01-01T00:00:00Z reaches `synth.epoch` — which hashes
+    # a STRING.
     ts = c["created_ts"] if c["created_ts"] is not None else synth.epoch(str(c["id"]))
     email = c["author_email"] or "unknown@x"
     cid = c["id"]

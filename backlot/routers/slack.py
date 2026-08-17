@@ -22,7 +22,7 @@ from backlot.pagination import decode_cursor_or_none, next_cursor
 router = APIRouter(prefix="/slack/api", tags=["slack"])
 
 
-# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# --- OpenAPI enrichment --------------------------------------------------
 # Params are read query-or-form via _param/_int, so we document them with openapi_extra instead
 # of changing the handler signatures (which would break the form-body read path). Response models
 # use extra="allow" so the builders' full field set passes through unfiltered.
@@ -422,7 +422,7 @@ async def conversations_replies(request: Request):
         return _err("thread_not_found")
     if not hit["thread_ts"]:  # standalone message (no thread)
         return {"ok": True, "messages": [_message(hit)], "has_more": False}
-    # `thread_ts` IS the root's ts, stored on every message of the thread (#51) — a root carries
+    # `thread_ts` IS the root's ts, stored on every message of the thread — a root carries
     # its own, so this needs no case analysis and no re-derivation.
     rows = store.slack_thread(conn, name, hit["thread_ts"], ids)  # root + replies
     root = next((r for r in rows if r["thread_seq"] == 0), None)
@@ -488,7 +488,7 @@ async def users_list(request: Request):
         return _err("not_authed")
     # The roster is the registered user principals — the employee directory plus internal mail/doc
     # authors. Slack transcript speakers are NOT added, and that is a limitation of the upstream
-    # dataset rather than a modelling choice, so it is stated plainly here and in the README (#33).
+    # dataset rather than a modelling choice, so it is stated plainly here and in the README.
     #
     # The speakers are NOT "mostly external": measured on a real corpus, of 74,138 distinct
     # speakers only 3,971 (5.4%) are principals and ALL 70,167 of the rest are on the org's own

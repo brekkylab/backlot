@@ -110,10 +110,9 @@ def test_linear_issue_by_uuid_and_by_identifier(client, admin_h, ro_conn):
     assert by_uuid.json()["data"]["issue"]["identifier"] == "ENG-101"
     # PIN, not a correctness check: `_issue`'s `id` (linear_resolvers.py) recomputes
     # `synth.linear_id(...)` rather than reading `linear_issues.id` off the row
-    # it already has (#51 -- linear's own document id is unprobed, so the two agree by
-    # construction and this is the plan's established pattern for an unprobed source). Trivially
-    # true today; it exists to fail the day linear gains a probe -- the exact shape hubspot's own
-    # bug took once IT started probing, which is precisely when someone needs to be told the two
+    # it already has. linear's own document id is unprobed, so the two agree by construction --
+    # the pattern every unprobed source follows. Trivially true today; it exists to fail the day
+    # linear gains a probe, which is exactly when someone needs to be told the two
     # can now disagree.
     stored = ro_conn.execute(
         "SELECT id FROM linear_issues WHERE identifier = 'ENG-101'"
@@ -163,8 +162,8 @@ def test_linear_team_resolves_by_key_and_uuid(client, admin_h, ro_conn):
     )
     # PIN, not a correctness check: `_team`'s `id` (linear_resolvers.py) recomputes
     # `synth.linear_team_id(container)` rather than reading `linear_teams.served_id` off a row it
-    # does not have (#51 -- same established pattern as `_issue`'s own `id`, see
-    # test_linear_issue_by_uuid_and_by_identifier). Trivially true today; it exists to fail the
+    # does not have -- the same pattern as `_issue`'s own `id`, see
+    # test_linear_issue_by_uuid_and_by_identifier. Trivially true today; it exists to fail the
     # day team resolution gains a probe, which is precisely when someone needs to be told the two
     # can now disagree.
     stored = ro_conn.execute(
@@ -392,7 +391,7 @@ def test_linear_sort_input_overrides_the_default_ordering(client, admin_h):
     assert got == sorted(got, reverse=True)
 
 
-# --- Linear relations / children / attachments / releases (#25) -----------------------
+# --- Linear relations / children / attachments / releases -----------------------
 
 
 def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):
@@ -674,7 +673,7 @@ def test_empty_in_list_matches_nothing_and_empty_nin_matches_everything(fclient)
 
 
 def test_issue_filter_by_id_resolves_both_key_spaces_and_a_bogus_id_matches_nothing(fclient):
-    """`IssueFilter.id` accepts the same two spellings `issue(id:)` does (#51): a served UUID, or
+    """`IssueFilter.id` accepts the same two spellings `issue(id:)` does: a served UUID, or
     the human identifier. `_resolve_issue_ids` translates a filter's `id` values to issue ids
     before the query runs, so both must resolve -- and a value that resolves to NEITHER must
     substitute the sentinel `"\\x00none"`, matching nothing, rather than being dropped (which
@@ -963,10 +962,10 @@ def test_linear_issue_asserts_rather_than_re_derive_a_missing_identifier():
 
 
 def test_linear_issue_resolves_first_by_id_when_identifier_repeats(tmp_path):
-    """`identifier` is not unique -- 107 issues share one key in a real corpus (#51, see the
-    schema comment on `linear_issues.parent_key`) -- so `issue(id: "DUP-1")` deliberately answers
-    the first match BY DOC_ID rather than pretending the lookup is unambiguous. `store.
-    linear_issue_by_identifier` already carries this rule (unchanged by this task); this pins
+    """`identifier` is not unique -- 107 issues share one key in a real corpus (see the schema
+    comment on `linear_issues.parent_key`) -- so `issue(id: "DUP-1")` deliberately answers the first
+    match BY SERVED ID rather than pretending the lookup is unambiguous.
+    `store.linear_issue_by_identifier` carries that rule; this pins
     that `resolve_issue`'s new served-id-first stage still falls through to it for an
     identifier -- a served UUID lookup can never itself be ambiguous like this, since `id`
     is UNIQUE. Placed after every `client`-fixture test in this module, not beside its sibling

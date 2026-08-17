@@ -517,7 +517,7 @@ def test_hubspot_record_shape(tmp_path):
     # a CRM record is {id, properties, createdAt, updatedAt, archived} — ids are numeric strings and
     # the timestamps are ISO 8601 with milliseconds, as the vendor emits them. `id` must be the
     # row's own STORED served_id, not a re-hash of a seed: hubspot's id space is probed on a
-    # collision (#51), so a re-hash can disagree with the value this row was actually assigned --
+    # collision, so a re-hash can disagree with the value this row was actually assigned --
     # equality with `synth.hubspot_record_id(row["doc_id"])` only holds here because this fixture
     # has no collision, which is exactly why that comparison is the wrong one to assert.
     assert obj["id"] == row["id"]
@@ -547,7 +547,7 @@ def test_hubspot_association_shape(tmp_path):
     assert [r["to_id"] for r in rows] == [served_id("hubspot", "hf-co")]
     # the v4 payload is {toObjectId, associationTypes:[{category, typeId, label}]} -- toObjectId
     # reads the target's own STORED served_id (joined in by store.hubspot_associations), not a
-    # re-hash of its doc_id: hubspot's id space is probed on a collision (#51), so a re-hash can
+    # re-hash of its doc_id: hubspot's id space is probed on a collision, so a re-hash can
     # disagree with the value the target row was actually assigned.
     assert (
         rows[0]["to_id"] == store.get_document(conn, "hubspot", served_id("hubspot", "hf-co"))["id"]
@@ -564,9 +564,9 @@ def test_hubspot_route_reads_the_stored_served_id_under_a_collision(tmp_path, mo
     """Route-level companion to the store-layer collision tests: `_record`'s `id`, `_page`'s
     `after` cursor, and `list_associations`' `toObjectId` all have to read the row's own stored
     `id`, not fall back to a live re-hash of a seed. Reverting all three to
-    `synth.hubspot_record_id(...)` left the FULL suite green (I-1 review round) -- every other
-    route test's fixture happens to have no collision, so the re-hash and the stored column
-    agreed by coincidence. Forced here the same way the store tests force one: the seed collapsed
+    `synth.hubspot_record_id(...)` leaves the FULL suite green -- every other route test's fixture
+    happens to have no collision, so the re-hash and the stored column agree by coincidence. Forced
+    here the same way the store tests force one: the seed collapsed
     to a constant, so every record but the first import order is walked away from the raw hash.
     """
     from backlot import store

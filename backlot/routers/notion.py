@@ -41,7 +41,7 @@ DEFAULT_VERSION = "2025-09-03"
 LEGACY_VERSION = "2022-06-28"
 
 
-# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# --- OpenAPI enrichment --------------------------------------------------
 # GET query params are documented with openapi_extra (merges with path params, no signature
 # change); POST bodies (search/query) are read via _json_body, so their shape is documented as a
 # requestBody the same way. Response models use extra="allow" to preserve the full field set.
@@ -187,7 +187,7 @@ def _cover(url: str | None) -> dict | None:
 
 
 def _parent_field(row) -> dict:
-    # `parent_id` already HOLDS the parent's served id (#51) — the importer resolved it there.
+    # `parent_id` already HOLDS the parent's served id — the importer resolved it there.
     # Hashing it again would name a page nothing serves.
     if row["parent_id"]:
         return {"type": "database_id", "database_id": row["parent_id"]}
@@ -368,11 +368,10 @@ async def get_data_source(data_source_id: str, request: Request):
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
-    # No subtype check needed here, unlike get_database's lookup by `id` (which spans both
-    # pages and databases): served_data_source_id is populated only for subtype='database' rows,
-    # and the importer writes it (or NULL) on EVERY import of a row, never leaving a stale value
-    # from an earlier import behind when a row's subtype changes (see the comment on the notion
-    # block in importer.byo._Loader.add) -- so a match here already implies the right kind.
+    # No subtype check needed here, unlike get_database's lookup by `id` (which spans both pages
+    # and databases): served_data_source_id is populated only for subtype='database' rows, and the
+    # importer writes it or NULL on every import (see the notion block in importer.byo._Loader.add).
+    # So a match here already implies the right kind.
     row = store.notion_by_data_source_id(
         conn, _norm(data_source_id), auth.visible_ids(request, caller)
     )

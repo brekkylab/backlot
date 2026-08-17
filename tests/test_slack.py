@@ -52,14 +52,14 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
     assert bad == {"ok": False, "error": "user_not_found"}
 
 
-# --- Slack fidelity (#33) ---------------------------------------------------------------------
+# --- Slack fidelity ---------------------------------------------------------------------
 #
 # Reported from building a filesystem-style Slack client against the mock. Slack answers an
 # application error as HTTP 200 with {"ok": false, "error": …}, which the mock already does — these
 # are about the cases where it answered something real Slack never would.
 #
-# NOTE: unlike the Google work in #37/#39, these expectations come from Slack's published reference
-# rather than from probing the live API — there are no Slack credentials in this environment. Each
+# NOTE: these expectations come from Slack's published reference rather than from probing the live
+# API — there are no Slack credentials in this environment. Each
 # one cites the documented behaviour it encodes.
 
 
@@ -329,7 +329,7 @@ def test_slack_reply_users_and_num_members(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    # A thread is addressed by (channel, the root's ts) — a slack message's own key (#51).
+    # A thread is addressed by (channel, the root's ts) — a slack message's own key.
     channel, root_ts = conn.execute(
         "SELECT channel, ts FROM slack_messages WHERE thread_seq = 0"
     ).fetchone()

@@ -30,7 +30,7 @@ from backlot.pagination import decode_cursor, next_page_token
 router = APIRouter(tags=["google"])
 
 
-# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# --- OpenAPI enrichment --------------------------------------------------
 # Query params are read query-only (via _int/request.query_params); documenting them with
 # openapi_extra keeps the handler bodies untouched and merges cleanly with the auto-generated
 # path params. Response models use extra="allow" so builders' full field set passes through.
@@ -444,7 +444,7 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
 # --- Gmail ids ------------------------------------------------------------------------------
 # A gmail id is a 16-hex integer (`synth.gmail_message_id`) and it IS the row's primary key
 # (`gmail_messages.id`, assigned at import — see `backlot.importer.byo`), so resolution is a point
-# lookup rather than a map rebuilt on every boot (#51). `thread_id` holds the ROOT MESSAGE'S id,
+# lookup rather than a map rebuilt on every boot. `thread_id` holds the ROOT MESSAGE'S id,
 # already resolved at import, so a thread resolves through the same key with no re-derivation.
 
 _GMAIL_HEX = re.compile(r"[0-9a-fA-F]+\Z")
@@ -464,7 +464,7 @@ def _gmail_check_shape(served_id: str) -> None:
 
 def _gmail_resolve(served_id: str) -> str | None:
     """Validate a served Gmail id's SHAPE and hand it back — a thread is keyed on the root
-    message's own id (#51), so there is nothing left to translate, only to reject.
+    message's own id, so there is nothing left to translate, only to reject.
 
     Kept as a named step rather than inlined because the shape check must run BEFORE any lookup:
     an unparsable id is 400 INVALID_ARGUMENT whether or not it would have resolved. No
@@ -493,7 +493,7 @@ def _gmail_ids(row) -> tuple[str, str]:
     """``(id, threadId)`` for a row. A message that is its own thread root reports the same value
     twice, as real Gmail does.
 
-    Both halves are read straight off the row (#51). `thread_id` holds the ROOT'S OWN id,
+    Both halves are read straight off the row. `thread_id` holds the ROOT'S OWN id,
     resolved once at import, so `threadId` reads one stored value rather than re-hashing the
     root's key and hoping the two agree."""
     return (row["id"], row["thread_id"] or row["id"])
@@ -1600,7 +1600,7 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id (#51, task 12) --
+    # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has
     # to resolve the file's own id.
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)

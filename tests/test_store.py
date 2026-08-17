@@ -75,8 +75,8 @@ def _pk_columns(conn, tbl: str) -> list[str]:
 
 
 def test_no_table_stores_the_datasets_own_identifier(tmp_path):
-    """#51's principle, at the schema level: the dataset's identifier scheme must not outlive the
-    import. A `dsid_…` (or a corpus-authored `doc_id`) is an INPUT — it seeds a synthesized id and
+    """The rule, at the schema level: the dataset's identifier scheme must not outlive the import.
+    A `dsid_…` (or a corpus-authored `doc_id`) is an INPUT — it seeds a synthesized id and
     is then discarded — so after import a row is addressed by the id the API serves, and by nothing
     else.
 
@@ -190,7 +190,7 @@ def test_id_seed_registry_covers_every_source_whose_id_is_a_1_arity_hash():
     - `s3`'s (bucket, key) is stated outright by the corpus; nothing synthesizes it at all.
 
     Widening the tuple to fit those would make every other source pay for their shape — the same
-    call `fireflies_users` and `linear_teams` made when they were converted (#51 task 9)."""
+    call `fireflies_users` and `linear_teams` made when they were converted."""
     assert set(store.ID_SEED) == set(store.SOURCE_TABLE) - {"jira", "slack", "s3"}
     # Confluence's own entry -- seed function, then the columns its probe holds fixed (none:
     # confluence resolves an id corpus-wide). The column the seed FILLS is not in this registry:
@@ -203,47 +203,31 @@ def test_id_seed_registry_covers_every_source_whose_id_is_a_1_arity_hash():
 
 
 def test_no_blanket_replace_writes_a_table_with_a_non_pk_unique_index(tmp_path):
-    """`INSERT OR REPLACE` has no scoped conflict target: on ANY unique-index violation, not only
-    the PRIMARY KEY, it resolves the conflict by silently DELETING the other row rather than
-    raising. For a table whose PRIMARY KEY is a real business key (a doc_id, a team, an email)
-    that ALSO carries an unrelated unique-indexed served id, a served-id collision between two
-    DIFFERENT rows then destroys the other row silently instead of failing the import loudly --
-    exactly the failure mode #51 exists to remove (see write_containers' and fireflies_users' own
-    upsert comments in backlot/importer/byo.py). This bug was independently reintroduced twice
-    while converting `linear_teams` and `fireflies_users` alone.
+    """`INSERT OR REPLACE` has no scoped conflict target: on ANY unique-index violation, not only the
+    PRIMARY KEY, it resolves the conflict by silently DELETING the other row. So for a table whose
+    PRIMARY KEY is a business key (a doc_id, a team, an email) but which ALSO carries an unrelated
+    unique-indexed served id, a served-id collision destroys the other row instead of failing the
+    import — the failure this whole scheme exists to remove.
 
-    A pure `grep 'INSERT OR REPLACE INTO <table>'` cannot catch a THIRD occurrence here: every
-    shared, multi-table write path in this codebase (the doc tables' `insert`, the comment
-    tables' shared insert, `write_containers`' own `else` branch) names its target through an
-    f-string variable (`{store.table(src)}`, `{ctable}`, `{gtable}`), never the literal table
-    name -- so a naive text search for a guarded table's literal name never matches those sites
-    regardless of whether the bug is present, which would make this guard a silent no-op for
-    every one of them. This version checks each shared path on its own terms instead:
+    A `grep 'INSERT OR REPLACE INTO <table>'` cannot catch this. Every shared write path here names
+    its target through an f-string variable (`{store.table(src)}`, `{ctable}`, `{gtable}`), so a
+    search for a literal table name never matches them whether the bug is present or not. This
+    checks each path on its own terms:
 
-    - The doc tables (`SOURCE_TABLE`) and comment tables (`COMMENT_TABLE`) are structurally safe
-      already: `insert` upserts on `ON CONFLICT(<the served key>) DO UPDATE` (never `OR
-      REPLACE`), and the
-      comment insert deliberately excludes `served_id` from its column list (github_comments'
-      own is set by a separate, non-`OR REPLACE`, `id`-scoped `UPDATE` -- see that insert's own
-      comment). Neither is re-verified here; this guard is about tables NOT already covered by
-      one of those two uniform mechanisms.
-    - `write_containers`' `else` branch is where BOTH real occurrences of this bug lived: it runs
-      one blanket `INSERT OR REPLACE` for every `GROUPING` table except the ones it special-cases
-      (currently only `linear`, which gets its own scoped upsert). If any OTHER grouping table
-      gains a non-PK unique index without also being added to that special-case set, this
-      assertion catches it at the SCHEMA level -- no text search needed, since it reasons about
-      which branch a table falls into, not what literal string appears near it.
-    - A table with its OWN one-off write, outside both mechanisms above (currently just
-      `fireflies_users`), is exactly the case a literal-name grep IS reliable for, since a
-      one-off write has no reason to interpolate its own table name through a variable.
+    - The doc tables (`SOURCE_TABLE`) and comment tables (`COMMENT_TABLE`) are structurally safe:
+      `insert` upserts on `ON CONFLICT(<the served key>) DO UPDATE`, and the comment insert excludes
+      `served_id` from its column list. Not re-verified here.
+    - `write_containers`' `else` branch runs one blanket `INSERT OR REPLACE` for every `GROUPING`
+      table it does not special-case (currently only `linear`). A grouping table that gains a non-PK
+      unique index without joining that set is caught here at the SCHEMA level.
+    - A table with its own one-off write (currently just `fireflies_users`) is the one case a
+      literal-name grep is reliable for, since such a write has no reason to interpolate its name.
 
-    What this guard deliberately does NOT re-verify: that `linear`'s OWN special-cased branch and
-    `fireflies_users`' OWN write are themselves correct -- that is what
+    Whether `linear`'s and `fireflies_users`' own writes are CORRECT is a different question, left to
+    the `pytest.raises(sqlite3.IntegrityError)` blocks in
     `test_linear_team_served_ids_are_stored_and_resolve` and
-    `test_fireflies_users_is_the_workspace_roster_not_every_named_person`'s trailing
-    `pytest.raises(sqlite3.IntegrityError)` blocks are for; a behavioural collision test is the
-    only way to verify a SPECIFIC write is right, while this guard's job is to catch a table that
-    fell through every mechanism this schema currently trusts."""
+    `test_fireflies_users_is_the_workspace_roster_not_every_named_person`. This guard's job is to
+    catch a table that fell through every mechanism the schema trusts."""
     from pathlib import Path
 
     conn = store.connect_rw(tmp_path / "schema-only.sqlite")
@@ -257,14 +241,14 @@ def test_no_blanket_replace_writes_a_table_with_a_non_pk_unique_index(tmp_path):
             if idx[2] == 1 and idx[3] != "pk":
                 guarded.add(t)
     conn.close()
-    # Sanity: the guard must find at least the tables this task's own bug lived in, or the
-    # PRAGMA-based detection above is broken and every assertion below is vacuous.
+    # Sanity: the guard must find at least these two, or the PRAGMA-based detection above is
+    # broken and every assertion below is vacuous.
     assert {"linear_teams", "fireflies_users"} <= guarded
 
     # `write_containers`: every grouping table except its declared special cases must have NO
     # non-PK unique index, or its generic `else` branch's blanket OR REPLACE reaches it.
     # `jira` joined `linear` here when jira_projects gained its own `key` column and its UNIQUE
-    # index (#51 identifier consolidation) -- this guard is what flagged that the generic branch
+    # index -- this guard is what flagged that the generic branch
     # would have reached it, and it now has its own scoped upsert in write_containers.
     write_containers_special_cases = {"linear", "jira"}
     for src, (gtable, _gcol) in store.GROUPING.items():
@@ -436,7 +420,7 @@ def _s3_mini_db(tmp_path):
         )
     # One object is ACL-restricted to group 'eng'; everything else is unrestricted (no s3_acl row
     # -> _acl_clause's EXISTS check only bites rows it has an entry for). An s3 grant names its
-    # object by (bucket, key), the same pair the table is keyed on (#51).
+    # object by (bucket, key), the same pair the table is keyed on.
     conn.execute("INSERT INTO s3_acl VALUES ('b','logs/2026/01/b.json','group','eng')")
     conn.commit()
     return conn
@@ -477,7 +461,7 @@ def test_list_s3_objects_prefix_uses_index_range_not_like(tmp_path):
         ("b", prefix, succ),
     ).fetchall()
     detail = " | ".join(row[-1] for row in plan)
-    # The PRIMARY KEY's own index IS (bucket, key) now (#51), so the range seek rides it
+    # The PRIMARY KEY's own index IS (bucket, key) now, so the range seek rides it
     # directly rather than a separate idx_s3_key.
     assert "USING INDEX sqlite_autoindex_s3_objects_1" in detail
     assert "LIKE" not in detail.upper()
@@ -559,7 +543,7 @@ def _drive_usage_db(tmp_path):
         conn.execute(
             "INSERT INTO gdrive_files(id, folder, author_email, title, content, subtype, "
             "created_ts, trashed) VALUES (?,?,?,?,?,?,1,?)",
-            # `id` is the primary key (#51); nothing here reads it back, so the fixture's own
+            # `id` is the primary key; nothing here reads it back, so the fixture's own
             # label serves as one rather than the real synth.gdrive_file_id — this DB is
             # hand-built to bypass the importer.
             (doc_id, "f", "a@x.com", doc_id, content, "document", trashed),
@@ -611,7 +595,7 @@ def _hubspot_mini_db(tmp_path):
         conn.execute(
             "INSERT INTO hubspot_objects(id, object_type, author_email, title, content, "
             "properties, created_ts) VALUES (?,?,?,?,?,?,1)",
-            # `id` is the primary key (#51); the fixture's own label serves as one rather than the
+            # `id` is the primary key; the fixture's own label serves as one rather than the
             # real synth.hubspot_record_id, since this DB is hand-built to bypass the importer.
             (record_id, object_type, "owner@x.com", title, title, properties),
         )
@@ -749,7 +733,7 @@ def test_connect_rw_refuses_a_pre_served_db(tmp_path, setup, match):
       write a new source's grants into the empty per-source tables SCHEMA creates while every
       pre-existing grant stays behind in `doc_acl`, which nothing reads any more, silently
       hiding every pre-existing document from every scoped token.
-    - built before #51's served-id primary keys (its documents still carry a `doc_id`) —
+    - built before the served-id primary keys (its documents still carry a `doc_id`) —
       `CREATE TABLE IF NOT EXISTS` would not alter the old table at all and `CREATE INDEX IF NOT
       EXISTS` guards only the index's own name, so it raises a bare `OperationalError: no such
       column` naming whichever table SCHEMA's text happens to reach first, saying nothing about
@@ -795,8 +779,8 @@ def test_github_comments_splits_review_from_conversation(tmp_path):
 
 def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, monkeypatch):
     """`synth.confluence_id` draws from 9,000,000 values, so a large space collides by the birthday
-    bound — ~222 in a 60,000-page corpus. The old reverse map was last-writer-wins, so a collision
-    made a page unreachable by its own id. Forced here by collapsing the seed.
+    bound — ~222 in a 60,000-page corpus, and a collision leaves one page unreachable by its own
+    id. Forced here by collapsing the seed.
 
     Patches `store.ID_SEED` directly, NOT `synth.confluence_id` (`monkeypatch.setattr(byo.synth,
     "confluence_id", ...)`, the original shape of this test): `store.id_seed("confluence")`
@@ -837,11 +821,10 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
         assert store.confluence_by_id(conn, sid)["id"] == sid
     conn.close()
 
-    # A re-import is REFUSED. This was #51's one open residue -- confluence and hubspot are probed
-    # like github and jira, but had no field in which to state an identity, so a re-imported row
-    # was recomputed, landed on a different id and duplicated in silence. `content_id` /
-    # `record_id` closed it: an append that omits one is refused, the same rule the other two
-    # probed sources already followed.
+    # A re-import is REFUSED. confluence and hubspot are probed like github and jira, so a
+    # re-imported row that stated no identity would be recomputed, land on a different id and
+    # duplicate in silence -- an append that omits `content_id` / `record_id` is refused instead,
+    # the same rule the other two probed sources follow.
     with pytest.raises(SystemExit, match="must carry"):
         byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
     conn = store.connect_ro(s.db_path)
@@ -852,13 +835,11 @@ def test_confluence_served_ids_are_unique_even_when_the_seed_collides(tmp_path, 
 
 
 def test_confluence_by_id_applies_the_acl(tmp_path):
-    """A regression `notion_by_id` shipped without (#51 review round), and every reader
+    """A regression `notion_by_id` shipped without, and every reader
     since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
     None, not the unscoped row -- otherwise the ACL clause could be deleted from
-    `confluence_by_id` invisibly. Confluence is the FIRST source #51 converted and the one
-    it was chartered on, and this test was the missing sibling of the family that already guards
-    the other three (`test_hubspot_by_id_applies_the_acl`,
-    `test_github_by_number_applies_the_acl`, `test_jira_by_served_number_applies_the_acl`).
+    `confluence_by_id` invisibly. One of a family, with `test_hubspot_by_id_applies_the_acl`,
+    `test_github_by_number_applies_the_acl` and `test_jira_by_served_number_applies_the_acl`.
     A non-empty set, so `_acl_clause` takes its EXISTS branch rather than the empty-set "AND 0"
     short-circuit."""
     from tests._helpers import tiny_corpus
@@ -925,7 +906,7 @@ def test_gmail_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
 
 
 def test_gdrive_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
-    """Drive was the one document source with no served-id column at all (#51, task 12) -- it
+    """Drive was the one document source with no served-id column at all -- it
     served the corpus's own `doc_id` straight through as the file id. Like gmail/notion/linear it
     does not probe: `synth.gdrive_file_id` draws from a 192-bit digest, so the seed is stored as-is
     and a collision is left to the UNIQUE index rather than walked around.
@@ -965,7 +946,7 @@ def test_gdrive_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
 
 
 def test_notion_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
-    """Notion has TWO synthesized id spaces per row (#51): `served_id` (synth.notion_id), every
+    """Notion has TWO synthesized id spaces per row: `served_id` (synth.notion_id), every
     row, like gmail unprobed since synth._uuid_from draws from the full digest space; and
     `served_data_source_id` (synth.notion_data_source_id), the 2025-09-03 API's data source id for
     a DATABASE row only -- real Notion has no data source for a page, so a page's column stays
@@ -980,8 +961,7 @@ def test_notion_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
     live off the module at call time in importer.byo (`from backlot import ... synth`), so patching
     the module attribute reaches it just fine there.
 
-    Also covers a regression the review round found: a database demoted to a non-database on a
-    later import of the SAME doc_id (two records sharing one doc_id are both written, the later
+    Also covers: a database demoted to a non-database on a later import of the SAME doc_id (two records sharing one doc_id are both written, the later
     one winning -- see importer.byo's `seen.add` comment) must clear the stale
     served_data_source_id, not leave the earlier import's value in place for a row that is now a
     page."""
@@ -1089,8 +1069,8 @@ def test_hubspot_served_ids_probe_on_a_collision_and_stay_stable_across_a_reimpo
 ):
     """`synth.hubspot_record_id` draws from 9,000,000,000 values -- wide enough to look safe, but
     unlike gmail's 2**63 and notion's UUID space it is STILL not wide enough to skip a probe:
-    measured over synthetic corpora it collides ~16 times at 500k documents (#51, see the task-5
-    brief). So hubspot follows CONFLUENCE's probe-and-walk, not gmail's/notion's bare-seed shape.
+    measured over synthetic corpora it collides ~16 times at 500k documents. So hubspot follows
+    CONFLUENCE's probe-and-walk, not gmail's/notion's bare-seed shape.
 
     Forced here by collapsing the seed to a CONSTANT -- and the assertion is the OPPOSITE of
     gmail's forced-collision test: gmail's must ABORT the import (no probe -- a duplicate is a
@@ -1135,11 +1115,10 @@ def test_hubspot_served_ids_probe_on_a_collision_and_stay_stable_across_a_reimpo
         assert row is not None and row["id"] == sid
     conn.close()
 
-    # A re-import is REFUSED. This was #51's one open residue -- confluence and hubspot are probed
-    # like github and jira, but had no field in which to state an identity, so a re-imported row
-    # was recomputed, landed on a different id and duplicated in silence. `content_id` /
-    # `record_id` closed it: an append that omits one is refused, the same rule the other two
-    # probed sources already followed.
+    # A re-import is REFUSED. confluence and hubspot are probed like github and jira, so a
+    # re-imported row that stated no identity would be recomputed, land on a different id and
+    # duplicate in silence -- an append that omits `content_id` / `record_id` is refused instead,
+    # the same rule the other two probed sources follow.
     with pytest.raises(SystemExit, match="must carry"):
         byo.load(s.data_dir / "_corpus.jsonl", s, reset=False)
     conn = store.connect_ro(s.db_path)
@@ -1150,7 +1129,7 @@ def test_hubspot_served_ids_probe_on_a_collision_and_stay_stable_across_a_reimpo
 
 
 def test_hubspot_by_id_applies_the_acl(tmp_path):
-    """A regression `notion_by_id` shipped without (#51 review round): a non-empty
+    """A regression `notion_by_id` shipped without: a non-empty
     ``visible_ids`` that grants nothing must come back None, not the unscoped row -- otherwise the
     ACL clause could be deleted from `hubspot_by_id` invisibly. A non-empty set, so
     `_acl_clause` takes its EXISTS branch rather than the empty-set "AND 0" short-circuit."""
@@ -1183,7 +1162,7 @@ def test_hubspot_associations_carry_the_targets_own_served_id_through_a_collisio
     (as `to_served_id`) rather than leaving the v4 payload to recompute
     `synth.hubspot_record_id(to_doc_id)` the way gmail's `threadId` re-hashes a root row (see
     `routers.google._gmail_ids`). That shortcut is safe for gmail because its seed is never probed
-    -- hash and stored column always agree -- but hubspot's IS probed (#51): a collision walk can
+    -- hash and stored column always agree -- but hubspot's IS probed: a collision walk can
     move a record to an id different from its raw hash, and the association payload must report
     the one the target's own row actually resolves at.
 
@@ -1236,9 +1215,9 @@ def test_github_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
     tmp_path, monkeypatch
 ):
     """github's served number, like hubspot's/confluence's, is PROBED against a collision, not
-    stored as the bare hash: `synth.github_number`'s space is only 1..90,000 PER REPO (#51's
-    tightest of the probed sources -- see store.ID_SEED's `scope`), so a real corpus collides
-    far short of the birthday bound. Forced here by collapsing the seed to a constant, the same
+    stored as the bare hash: `synth.github_number`'s space is only 1..90,000 PER REPO -- the
+    tightest of the probed sources (see store.ID_SEED's `scope`) -- so a real corpus collides far
+    short of the birthday bound. Forced here by collapsing the seed to a constant, the same
     shape as the hubspot test above.
 
     Also covers, in one corpus, the two things specific to github among the probed sources:
@@ -1304,13 +1283,13 @@ def test_github_numbers_probe_on_a_collision_and_stay_stable_across_a_reimport(
     assert len(issues) == 5 and len(set(issues.values())) == 5
     for title, n in issues.items():
         assert store.github_by_number(conn, "core", n)["title"] == title
-    # Every file carries a number too (#51 -- (repo, number) is the primary key), assigned AFTER
+    # Every file carries a number too, since (repo, number) is the primary key -- assigned AFTER
     # every issue, so none of them took a number an issue wanted.
     assert len(files) == 3 and all(n is not None for n in files)
     assert not set(files) & set(issues.values())
     conn.close()
 
-    # A re-import is REFUSED (#51), and github is the source where that can be enforced: a
+    # A re-import is REFUSED, and github is the source where that can be enforced: a
     # record may state its own `number`, so an append that omits one is refused rather than
     # adding the row a second time under a freshly probed number. Contrast the confluence and
     # hubspot versions of this check, whose records have no such field and therefore duplicate.
@@ -1381,7 +1360,7 @@ def test_github_serves_one_number_column(tmp_path, monkeypatch):
 
 
 def test_github_by_number_applies_the_acl(tmp_path):
-    """A regression `notion_by_id` shipped without (#51 review round), and every reader
+    """A regression `notion_by_id` shipped without, and every reader
     since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
     None, not the unscoped row -- otherwise the ACL clause could be deleted from
     `github_by_number` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
@@ -1462,9 +1441,8 @@ def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimp
     tmp_path, monkeypatch
 ):
     """jira's served suffix, like github's served number, is PROBED against a collision, not
-    stored as the bare hash: `synth.jira_key_number`'s space is only 1..9,000 PER PROJECT (#51's
-    task 8 -- see store.ID_SEED's `scope`), so a real project collides far short of the birthday
-    bound. Forced here by collapsing the seed to a constant, the same shape as the github test
+    stored as the bare hash: `synth.jira_key_number`'s space is only 1..9,000 PER PROJECT (see
+    store.ID_SEED's `scope`), so a real project collides far short of the birthday bound. Forced here by collapsing the seed to a constant, the same shape as the github test
     above (no `kind='file'` exclusion to also cover -- jira has no file-shaped row).
 
     Also covers stability across a re-import: like github's assignment (and unlike confluence's/
@@ -1483,10 +1461,9 @@ def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimp
     from tests._helpers import build_corpus
 
     # `synth.jira_key_number` directly, NOT `monkeypatch.setitem(store.ID_SEED, "jira", ...)`:
-    # jira left that registry when its served value became the composed KEY (#51 identifier
-    # consolidation), so a setitem patch is silently INERT now -- `_assign_jira_number` reads the
-    # synth attribute at call time. Same dead-patch shape this plan found in the confluence test;
-    # the assertion below pins a specific value so it cannot go unnoticed again.
+    # jira is not in that registry -- its served value is the composed KEY -- so a setitem patch
+    # is silently INERT, since `_assign_jira_number` reads the synth attribute at call time. The
+    # assertion below pins a specific value so a dead patch cannot go unnoticed.
     monkeypatch.setattr(synth, "jira_key_number", lambda doc_id: 7)
     docs = [
         {
@@ -1513,7 +1490,7 @@ def test_jira_served_numbers_probe_on_a_collision_and_stay_stable_across_a_reimp
         assert store.jira_by_key(conn, key)["title"] == title
     conn.close()
 
-    # A re-import is REFUSED (#51). A probed id is a function of the whole corpus, and with the
+    # A re-import is REFUSED. A probed id is a function of the whole corpus, and with the
     # dataset's own identifier gone there is nothing left to recognise a re-stated row by, so it
     # would be ADDED a second time at a second id rather than keeping the one a client may already
     # hold a url for. The import fails instead of duplicating in silence.
@@ -1584,7 +1561,7 @@ def test_jira_serves_one_key_column(tmp_path, monkeypatch):
 
 
 def test_jira_by_key_applies_the_acl(tmp_path):
-    """A regression `notion_by_id` shipped without (#51 review round), and every reader
+    """A regression `notion_by_id` shipped without, and every reader
     since has had to guard against: a non-empty ``visible_ids`` that grants nothing must come back
     None, not the unscoped row -- otherwise the ACL clause could be deleted from
     `jira_by_key` invisibly. A non-empty set, so `_acl_clause` takes its EXISTS branch
@@ -1854,7 +1831,7 @@ def test_linear_identifier_lookup(db, keys):
 
 
 def test_linear_served_ids_are_stored_and_resolve(tmp_path, monkeypatch):
-    """`served_id` is the UUID half of `issue(id:)` (#51), distinct from `identifier` -- the OTHER
+    """`served_id` is the UUID half of `issue(id:)`, distinct from `identifier` -- the OTHER
     half, which stays a plain lookup index because it is not unique (see the schema comment on
     idx_linear_doc_ident / idx_linear_identifier). Like gmail's, no probe: synth.linear_id draws
     from `_uuid_from`'s full digest space, so the seed is stored as-is, and a forced collision
@@ -1924,8 +1901,7 @@ def test_linear_team_issue_counts(db):
 def test_linear_team_served_ids_are_stored_and_resolve(tmp_path, monkeypatch, order):
     """`served_id` (the team UUID) and `served_key` (its short key, e.g. "ENG") are the OTHER two
     spellings `team(id:)` accepts, alongside the container's own raw name -- already a plain
-    primary-key lookup (`get_container`). Both are written at import now (#51), not rebuilt into a
-    startup reverse map by `main._build_index`.
+    primary-key lookup (`get_container`). Both are written at import.
 
     `synth.linear_team_key` is NOT injective: "night-shift" and "north-star" both reduce to "NS".
     `served_key` therefore carries no UNIQUE index, and the tie must break by team NAME order --
@@ -1966,7 +1942,7 @@ def test_linear_team_served_ids_are_stored_and_resolve(tmp_path, monkeypatch, or
     assert store.linear_team_by_served_key(conn, "nope") is None
     conn.close()
 
-    # No probe (#51): `synth.linear_team_id` draws from `_uuid_from`'s full digest space, so the
+    # No probe: `synth.linear_team_id` draws from `_uuid_from`'s full digest space, so the
     # raw seed is stored as-is -- a forced collision must fail the import loudly through
     # `idx_linear_teams_served`, not silently let one team's row overwrite the other's.
     monkeypatch.setattr(synth, "linear_team_id", lambda name: "dup-team-uuid")
@@ -1984,10 +1960,9 @@ def test_linear_distinct_values_feed_the_entity_table(db):
 
 
 def test_linear_entity_by_id_resolves_every_kind_from_the_stored_table(db):
-    """The last of #51's startup reverse maps. `main._build_index` hashed each of these six DISTINCT
-    values into a dict on EVERY BOOT, because none of them has a document row to be stored on -- a
-    Linear project or label exists only as a column value on some issue. `linear_entities` gives
-    them one, written at import.
+    """None of these six DISTINCT values has a document row to be stored on -- a Linear project or
+    label exists only as a column value on some issue. `linear_entities` gives them one, written at
+    import.
 
     Every kind is asserted, and each in the SHAPE its resolver serves: a bare name for the three
     corpus-wide entities, `(team, name)` for the two Linear scopes to a team, `(email, display)` for
@@ -2232,7 +2207,7 @@ def test_fireflies_transcript_by_id_is_unambiguous(db):
     row = store.list_fireflies_transcripts(db, limit=1)[0]
     assert store.fireflies_transcript_by_id(db, row["id"])["id"] == row["id"]
     assert store.fireflies_transcript_by_id(db, "deadbeefdeadbeefdeadbeef") is None
-    # unique by CONSTRAINT now -- it is the table's primary key (#51), not merely unique by
+    # unique by CONSTRAINT now -- it is the table's primary key, not merely unique by
     # construction the way a value derived from a corpus identifier was.
     n, distinct = db.execute(
         "SELECT COUNT(*), COUNT(DISTINCT id) FROM fireflies_transcripts"

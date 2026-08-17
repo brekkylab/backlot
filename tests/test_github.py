@@ -20,7 +20,7 @@ from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count
 
 
 def test_github_serves_a_comment_dated_at_the_epoch(tmp_path):
-    """A comment id is an INTEGER since #51, and `synth.epoch` hashes a string — so a comment
+    """A comment id is an INTEGER and `synth.epoch` hashes a string, so a comment
     dated 1970-01-01T00:00:00Z (which stores as 0, and reached that fallback under truthiness)
     took both endpoints down with an AttributeError."""
     s = tiny_corpus(
@@ -96,7 +96,7 @@ def test_admin_github_crawls_all(client, admin_h, ro_conn, org):
 def _gh_row(conn, title: str):
     """The github row a fixture record with this title became.
 
-    A github number is assigned against the whole corpus (#51), so it cannot be computed from the
+    A github number is assigned against the whole corpus, so it cannot be computed from the
     record's own identifier — which does not survive the import anyway. The row is found by
     something the fixture can still see, as any other client would have to."""
     return conn.execute("SELECT * FROM github_items WHERE title = ?", (title,)).fetchone()
@@ -543,7 +543,7 @@ def test_github_a_files_number_never_shadows_an_issue(gh_client, gh_admin_h, gh_
     """A file's number must never resolve as an issue or a pull. The hazard is real and pinned by
     the fixture: `gh-file-collide-88814` seeds to exactly `gh-issue-1`'s number.
 
-    A file row DOES carry a number now (#51). `github_items` holds two resources with different
+    A file row DOES carry a number now. `github_items` holds two resources with different
     natural keys — an issue at (repo, number), a file at (repo, path) — and only one pair can be
     the PRIMARY KEY, so a file draws a number too rather than keeping a NULL that would leave it
     unaddressable. What protects the issue is the ASSIGNMENT ORDER, not an exclusion: every
@@ -634,7 +634,7 @@ def test_github_file_acl_scoped(gh_client, gh_admin_h, gh_org, gh_user_tokens):
     assert c.get(secret, headers={**nonmember_h, **raw}).status_code == 404
 
 
-# --- media-type negotiation: Accept: application/vnd.github.raw (issue #49 D1) ----------
+# --- media-type negotiation: Accept: application/vnd.github.raw ----------
 
 _MAIN_PY = "def main():\n    return 1\n"
 _CODEBASE_README = "# codebase\n\nCore service source, browsable via the tree/contents API.\n"
@@ -701,7 +701,7 @@ def test_github_raw_accept_leaves_the_json_envelope_alone(gh_client, gh_admin_h,
     assert isinstance(dirs.json(), list)
 
 
-# --- GET /user/repos (issue #49 D3) ------------------------------------------------------
+# --- GET /user/repos ------------------------------------------------------
 
 
 def test_github_user_repos(gh_client, gh_admin_h, gh_user_tokens, gh_org):
@@ -839,7 +839,7 @@ def test_github_pull_sub_resources_the_new_links_point_at(gh_client, gh_admin_h,
     assert statuses.status_code == 200 and statuses.json() == []
 
 
-# --- GET /repos/{o}/{r}/git/ref/{ref} (issue #49 D4) -------------------------------------
+# --- GET /repos/{o}/{r}/git/ref/{ref} -------------------------------------
 
 
 def test_github_git_ref_resolves_a_ref_to_a_commit(gh_client, gh_admin_h, gh_org):
@@ -867,7 +867,7 @@ def test_github_git_ref_resolves_a_ref_to_a_commit(gh_client, gh_admin_h, gh_org
     assert unknown.status_code == 404
 
 
-# --- owner validation (issue #49 D7) -----------------------------------------------------
+# --- owner validation -----------------------------------------------------
 
 
 def test_github_validates_the_owner_segment(gh_client, gh_admin_h, gh_org):
@@ -895,7 +895,7 @@ def test_github_validates_the_owner_segment(gh_client, gh_admin_h, gh_org):
     assert c.get("/github/orgs/not-the-org/repos", headers=gh_admin_h).status_code == 404
 
 
-# --- X-GitHub-Api-Version negotiation (issue #55) -----------------------------------------
+# --- X-GitHub-Api-Version negotiation -----------------------------------------
 #
 # The two versions real GitHub currently supports, and the only field-level difference between them
 # on this surface. Both were read off api.github.com rather than the docs: `2026-03-10` drops
@@ -956,7 +956,7 @@ def test_github_unsupported_api_version_is_refused_ahead_of_everything(gh_client
     assert c.get("/github/search/issues", headers=bad, params={"q": "x"}).status_code == 400
 
 
-# --- a pull is a pull, not an issue with extra keys (issue #49 D8, issue #55) -------------
+# --- a pull is a pull, not an issue with extra keys -------------
 
 
 def test_github_pull_and_issue_views_are_distinct_objects(gh_client, gh_admin_h, gh_org):
@@ -1003,7 +1003,7 @@ def test_github_pull_and_issue_views_are_distinct_objects(gh_client, gh_admin_h,
     assert pull["auto_merge"] is None and pull["maintainer_can_modify"] is False
 
 
-# --- pull changeset: /pulls/{n}/files and the diff media types (issue #49 D6, D2) --------
+# --- pull changeset: /pulls/{n}/files and the diff media types --------
 
 
 @pytest.fixture(scope="module")
@@ -1348,7 +1348,7 @@ def test_github_pull_files_paginates(declared_pr):
     assert walked == unpaged
 
 
-# --- line-anchored review comments (issue #49 D5) ---------------------------------------
+# --- line-anchored review comments ---------------------------------------
 
 
 def test_github_pull_review_comments_are_served(declared_pr):
@@ -1565,10 +1565,8 @@ def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
     404s, an emitted URL built from a different notion of the org would be a dead link, and the
     builders do not all read the org from the same place.
 
-    Includes a comment's own `url`, whose id is a hash of the stored comment id — it resolves back
-    through the same startup reverse index that already serves gmail/jira/notion ids, and its route
-    has to be registered ahead of `…/pulls/{number}/comments` or the literal `comments` is parsed as
-    a pull number instead."""
+    Includes a comment's own `url`, whose route has to be registered ahead of
+    `…/pulls/{number}/comments` or the literal `comments` is parsed as a pull number instead."""
     c, _ = gh_client
     from backlot import synth
 
@@ -1630,7 +1628,7 @@ def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
         assert r.status_code == 200, f"emitted a dead URL: {url} -> {r.status_code}"
 
 
-# --- git trees: the real truncation cap (issue #49 D9) ----------------------------------
+# --- git trees: the real truncation cap ----------------------------------
 
 
 def test_github_tree_truncates_at_the_real_caps(gh_client, gh_admin_h, gh_org, monkeypatch):
@@ -1723,11 +1721,10 @@ def test_github_operation_ids_unique(client):
 
 
 def test_github_issue_number_asserts_rather_than_re_hash_a_null_number():
-    """`_issue_number` must not silently re-hash a NULL number back to a
-    plain `synth.github_number` -- exactly the shape the hubspot bug shipped as: a PROBED row
-    (one whose actual served number came from a walk, not a pure hash) would then advertise a
-    number nobody stored, unreachable at its own url (#51, task 11). An assertion is strictly
-    better: every non-file row gets a number at import (`resolve_github_numbers` raises
+    """`_issue_number` must not silently re-hash a NULL number back to a plain
+    `synth.github_number`: a PROBED row (one whose served number came from a walk, not a pure hash)
+    would then advertise a number nobody stored, unreachable at its own url. An assertion is
+    strictly better: every non-file row gets a number at import (`resolve_github_numbers` raises
     rather than leave one NULL), so reaching here with one is a bug upstream, and failing loudly
     beats silently serving the wrong number."""
     from backlot.routers.github import _issue_number

@@ -85,11 +85,11 @@ def test_jira_search_filtered_by_project(client, admin_h):
         client.get(f"/atlassian/rest/api/3/issue/{served_key}", headers=admin_h).status_code == 200
     )
     # ...but the literal container NAME as an issue-key prefix does not, even though it resolves
-    # perfectly well as a JQL project TOKEN just above (review round 1, I-1): `_jira_container_
-    # for_key`'s three-way tolerance (provided prefix / synthesized key / literal name) is a
-    # deliberate affordance for the project token, where real Jira's own pickers accept any of
-    # the three -- reusing it for ISSUE-KEY resolution would silently resurrect the alias #51 was
-    # written to drop, just widened to two extra namespaces per project. Real Jira 404s
+    # perfectly well as a JQL project TOKEN just above: `_jira_container_for_key`'s three-way
+    # tolerance (provided prefix / synthesized key / literal name) is a deliberate affordance for
+    # the project token, where real Jira's own pickers accept any of the three. Reusing it for
+    # ISSUE-KEY resolution would give every project two extra namespaces to answer at. Real Jira
+    # 404s
     # `/issue/payments-7` (the container's bare name, not its key) exactly like this.
     suffix = served_key.rsplit("-", 1)[1]
     aliased = client.get(f"/atlassian/rest/api/3/issue/payments-{suffix}", headers=admin_h)
@@ -329,11 +329,11 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
 
 
 def test_jira_issue_key_asserts_rather_than_re_derive_a_null_key():
-    """`_issue_key` must not fall back to re-deriving a key from a NULL one -- that is exactly the
-    shape the hubspot bug shipped as: a PROBED row (one whose served value came from a walk, not a
-    pure hash) would advertise a key nobody stored, unreachable at its own url (#51, task 11). An
-    assertion is strictly better: every jira row gets a key at import (`resolve_jira_keys` raises
-    rather than leave one NULL), so reaching here with one is a bug upstream, and failing loudly
+    """`_issue_key` must not fall back to re-deriving a key from a NULL one: a PROBED row (one whose
+    served value came from a walk, not a pure hash) would advertise a key nobody stored, unreachable
+    at its own url. An assertion is strictly better: every jira row gets a key at import
+    (`resolve_jira_keys` raises rather than leave one NULL), so reaching here with one is a bug
+    upstream, and failing loudly
     beats silently serving the wrong key."""
     from backlot.routers.atlassian import _issue_key
 
@@ -344,7 +344,7 @@ def test_jira_issue_key_asserts_rather_than_re_derive_a_null_key():
 def _jira_row(conn, title: str):
     """The jira row a fixture record with this title became.
 
-    A jira key is assigned across the whole corpus (#51), so unlike a hashed id it cannot be
+    A jira key is assigned across the whole corpus, so unlike a hashed id it cannot be
     computed from the record's own identifier — which does not survive the import anyway. The row
     is found by something the fixture can still see, as any other client would have to."""
     return conn.execute("SELECT * FROM jira_issues WHERE title = ?", (title,)).fetchone()
@@ -497,8 +497,8 @@ def test_confluence_child_page_and_restriction_match_a_nonexistent_id_for_an_out
     on a miss; `child/page` and `restriction/byOperation` used not to. That let an outsider use
     `child/page`'s 200 as an existence oracle for a page they cannot read, and
     `restriction/byOperation` handed back the READER ROSTER -- emails, account ids, display names
-    -- for that same page: data, not just existence (pre-existing, #51 review). Fixed the same
-    way `child/comment`/`label` already were: a restricted page must be byte-identical, status AND
+    -- for that same page: data, not just existence. Handled the same way `child/comment`/`label`
+    are: a restricted page must be byte-identical, status AND
     body, to a made-up id -- checked here on the actual response bytes, not merely "not 200"."""
     cid = served_id("confluence", "cf-comp")  # people-only
     h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}  # engineering; cannot see cf-comp

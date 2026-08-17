@@ -137,7 +137,7 @@ def drive_folder_id(container: str) -> str:
 
 
 def gdrive_file_id(seed: str) -> str:
-    """A Drive file's served id (#51, task 12): 33 characters, base64url alphabet
+    """A Drive file's served id: 33 characters, base64url alphabet
     (``[A-Za-z0-9_-]``), starting with ``1`` — the shape of a modern real Drive file id.
     Stored as ``gdrive_files.id`` (see ``store.gdrive_by_id``), not hashed at serve time.
 
@@ -196,9 +196,9 @@ JIRA_KEY_NUMBER_RANGE = 9_000
 def jira_key_number(seed: str) -> int:
     """The numeric suffix of `jira_key(seed, project_key)`, split out so the two cannot drift.
 
-    A key's PREFIX is a fact about the container (its project), not this row — a corpus's own key
-    always wins (see importer.byo) — but the SUFFIX is a fact about the row alone, and is what a
-    served id can be assigned and probed on within one project (see store.ID_SEED): the prefix
+    A key's PREFIX is a fact about the container (its project), not this row, and a corpus's own key
+    always wins (see importer.byo). The SUFFIX is a fact about the row alone, so it is what a served
+    id is assigned and probed on within one project (see store.ID_SEED): the prefix
     is under-constrained (two containers may share one — a corpus-provided prefix is checked 1:1
     against its project in importer.byo, but `jira_project_key`'s OWN digest can still collide
     with an unrelated project's provided one at ~1/16.7M odds; see its own docstring), so a probe
@@ -223,7 +223,7 @@ def hubspot_record_id(seed: str) -> str:
     Only a seed, unlike confluence_id's neighbours gmail/notion: this space is 9,000,000,000
     values, wide enough to look safe, but measured at a corpus this project actually generates
     (500k documents) it still collides ~16 times by the birthday bound -- so it gets confluence's
-    probe, not gmail's/notion's bare-seed shape (#51)."""
+    probe, not gmail's/notion's bare-seed shape."""
     return str(HUBSPOT_ID_MIN + hnum(seed, 0, 10) % HUBSPOT_ID_RANGE)
 
 

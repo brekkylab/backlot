@@ -950,6 +950,18 @@ def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
         assert "data" in missing.json() and missing.json()["errors"]
 
 
+def test_linear_issue_asserts_rather_than_re_derive_a_missing_identifier():
+    """`_issue` must not fall back to `synth.linear_identifier`: the importer seeds that on the
+    DATASET id and the resolver only has the served UUID, so the fallback answered an identifier
+    the issue is not reachable by (`PLA-4821` where the row serves `PLA-4442`). Every issue
+    carries one by the time it is served, so reaching here without one is a bug upstream —
+    the same reasoning as github's `_issue_number`."""
+    from backlot.graphql.linear_resolvers import _issue
+
+    with pytest.raises(AssertionError, match="no identifier"):
+        _issue({"id": "u-1", "identifier": None, "team": "engineering", "title": "T"}, None)
+
+
 def test_linear_issue_resolves_first_by_id_when_identifier_repeats(tmp_path):
     """`identifier` is not unique -- 107 issues share one key in a real corpus (#51, see the
     schema comment on `linear_issues.parent_key`) -- so `issue(id: "DUP-1")` deliberately answers

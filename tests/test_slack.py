@@ -473,3 +473,59 @@ def test_thread_rooted_at_epoch_zero_stays_coherent(tmp_path):
     assert thread[0]["ts"].split(".")[0] == "0"
     # and every message in the thread points at that same root ts
     assert {_message(r)["thread_ts"] for r in thread} == {thread[0]["ts"]}
+
+
+def test_slack_chronology_is_numeric_not_lexicographic(tmp_path):
+    """A ts is TEXT (`"<seconds>.<fraction>"`, the spelling Slack's own API uses), so ordering by
+    it compares digit by digit and puts second 9 after second 10. Every slack listing orders by
+    the integer second first, with the ts breaking ties so an offset page still cannot skip a row.
+
+    Seconds 9 and 10 rather than something larger: a digit-count change is the whole failure, and
+    the 1970 era where one happens is a corpus this project supports."""
+    from backlot.routers.slack import _message
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "doc_id": "s-root",
+                "channel": "inc",
+                "content": "root",
+                "author_email": "bob@x.com",
+                "visibility": "public",
+                "created": 0,
+                "replies": [
+                    {"content": "at nine", "author_email": "ava@x.com", "created": 9},
+                    {"content": "at ten", "author_email": "ava@x.com", "created": 10},
+                ],
+            },
+            {
+                "source_type": "slack",
+                "doc_id": "s-nine",
+                "channel": "inc",
+                "content": "standalone at nine",
+                "author_email": "bob@x.com",
+                "visibility": "public",
+                "created": 9,
+            },
+            {
+                "source_type": "slack",
+                "doc_id": "s-ten",
+                "channel": "inc",
+                "content": "standalone at ten",
+                "author_email": "bob@x.com",
+                "visibility": "public",
+                "created": 10,
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    listed = store.list_slack_top_level(conn, "inc")
+    assert [r["created_ts"] for r in listed] == [0, 9, 10]
+    # latest_reply names the LAST reply, which a lexicographic MAX(ts) misses for the same reason
+    root = next(r for r in listed if r["thread_ts"] is not None)
+    thread = store.slack_thread(conn, "inc", root["ts"])
+    latest = store.slack_latest_reply_ts(conn, "inc", root["ts"])
+    assert latest == thread[-1]["ts"] and thread[-1]["created_ts"] == 10
+    assert _message(root, reply_count=2, latest_reply=latest)["latest_reply"] == latest

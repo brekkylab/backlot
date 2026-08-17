@@ -198,6 +198,15 @@ def _epoch_field(v, where, field):
     return sec
 
 
+def _message_second(stated, default: int) -> int:
+    """A child message's second: the one the corpus stated, else the caller's default.
+
+    A plain ``or`` reads the same until the stated second is 0 — 1970-01-01T00:00:00Z, which a
+    corpus can legitimately write — and then substitutes the default for a time the author
+    actually wrote."""
+    return default if stated is None else stated
+
+
 def _epoch(v):
     """Parse a BYO time (epoch seconds int/float, or ISO 8601 string) -> unix seconds.
 
@@ -1917,9 +1926,11 @@ class _Loader:
             # `Issue.comments` does) serves the thread inverted. Monotonic, so it cannot. For an
             # all-undated thread this is exactly `created + j`, as before. Never a hash of the
             # comment's own id, which would scatter one thread across two years.
-            c_ts = _epoch_field(c.get("created_ts"), f"{where}: comment {j}", "created_ts") or (
-                prev_c_ts + 1
-            )
+            c_ts = _epoch_field(c.get("created_ts"), f"{where}: comment {j}", "created_ts")
+            # `is None`, not truthiness: 1970-01-01T00:00:00Z parses to 0, and taking the default
+            # for it stores a time nobody wrote — the confusion `_epoch_field` exists to prevent.
+            if c_ts is None:
+                c_ts = prev_c_ts + 1
             prev_c_ts = max(prev_c_ts, c_ts)
             # The corpus's own comment id is a SEED, never stored (#51). For github it seeds the
             # id the API reports, assigned here and probed for uniqueness — a comment's `url`
@@ -2010,8 +2021,10 @@ class _Loader:
                 # `thread` is forced to the ROOT's thread: a child must never open a thread of
                 # its own, or `users.threads.get` would return a one-message thread.
                 ex={**msg, "thread": gmail_thread},
-                cts=_epoch_field(msg.get("created"), f"{where}: message {i}", "created")
-                or (created + i * 3600),
+                cts=_message_second(
+                    _epoch_field(msg.get("created"), f"{where}: message {i}", "created"),
+                    created + i * 3600,
+                ),
             )
 
     def write_containers(self) -> None:

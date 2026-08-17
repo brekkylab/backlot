@@ -1877,7 +1877,10 @@ def _hunk_around(file_row, line: int | None) -> str:
 
 
 def _gh_comment(owner: str, repo: str, number: int, c, api_base: str = "") -> dict:
-    ts = c["created_ts"] or synth.epoch(c["id"])
+    # `is not None`, and str(): a comment's id is an INTEGER since #51, and 0 is a second a corpus
+    # can write — under truthiness a comment dated 1970-01-01T00:00:00Z reached `synth.epoch`,
+    # which hashes a STRING, and the endpoint 500ed.
+    ts = c["created_ts"] if c["created_ts"] is not None else synth.epoch(str(c["id"]))
     email = c["author_email"] or "unknown@x"
     cid = c["id"]
     self_url = f"{api_base}/repos/{owner}/{repo}/issues/comments/{cid}"

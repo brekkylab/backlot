@@ -734,6 +734,45 @@ def test_byo_absent_clocks_still_take_their_defaults(tmp_path):
     assert c["created_ts"] == synth.epoch("cf-bare") + 1
 
 
+def test_byo_a_stated_epoch_zero_is_a_second_not_a_missing_value(tmp_path):
+    """1970-01-01T00:00:00Z parses to 0, which is falsy. Every field whose ABSENCE takes a default
+    had to test for absence rather than truthiness, or a second the author wrote is replaced by
+    one nobody did — the confusion `_epoch_field` exists to prevent, reintroduced by the `or`
+    that consumed its answer."""
+    load(
+        _write(
+            tmp_path,
+            [
+                {
+                    "source_type": "confluence",
+                    "title": "T",
+                    "content": "c",
+                    "doc_id": "cf-zero",
+                    "space": "handbook",
+                    "author_email": "b@a.com",
+                    "visibility": "public",
+                    "created": 1000,
+                    "comments": [{"content": "hi", "author_email": "a@a.com", "created_ts": 0}],
+                },
+                {
+                    "source_type": "gmail",
+                    "title": "S",
+                    "content": "c",
+                    "doc_id": "gm-zero",
+                    "author_email": "b@a.com",
+                    "visibility": "public",
+                    "created": 1000,
+                    "messages": [{"content": "m", "author_email": "a@a.com", "created": 0}],
+                },
+            ],
+        ),
+        Settings(data_dir=tmp_path),
+    )
+    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    assert conn.execute("SELECT created_ts FROM confluence_comments").fetchone()[0] == 0
+    assert conn.execute("SELECT created_ts FROM gmail_messages").fetchone()[0] == 0
+
+
 @pytest.mark.parametrize(
     "bad",
     [

@@ -618,8 +618,9 @@ def _issuetype(name: str, seed: str) -> dict:
 
 def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool = False) -> dict:
     site = _site(request)
-    created = row["created_ts"] or synth.epoch(row["key"])
-    updated = row["updated_ts"] or created + 3600
+    # `is not None`: an issue dated 1970-01-01T00:00:00Z stores 0 and must serve it.
+    created = row["created_ts"] if row["created_ts"] is not None else synth.epoch(row["key"])
+    updated = row["updated_ts"] if row["updated_ts"] is not None else created + 3600
     pkey = _project_key(conn, row["project"])
     reporter = _jira_actor(row["reporter_email"] or row["author_email"], site)
     creator = _jira_actor(row["author_email"], site)
@@ -887,7 +888,7 @@ async def confluence_cql_search(request: Request):
                 "url": page["_links"]["webui"],
                 "entityType": "content",
                 "lastModified": synth.rfc3339_millis(
-                    r["updated_ts"] or r["created_ts"] or synth.epoch(r["key"])
+                    _confluence_ts(r["updated_ts"], r["created_ts"], r["id"])
                 ),
             }
         )
@@ -1068,9 +1069,24 @@ def _conf_user(email: str) -> dict:
     }
 
 
+def _confluence_ts(updated_ts, created_ts, cid) -> int:
+    """A page's last-modified second: its own, else its creation second, else one seeded from its
+    id. One helper for the two places that need it, because the CQL result and the page body must
+    date the same page the same way — and because reaching for a jira column here (`key`) raised
+    IndexError on the search route while the page route was fine.
+
+    `is not None` at each step: 1970-01-01T00:00:00Z stores as 0, and a page that HAS a second
+    must serve it rather than a seeded one."""
+    if updated_ts is not None:
+        return updated_ts
+    if created_ts is not None:
+        return created_ts
+    return synth.epoch(str(cid))
+
+
 def _confluence_page(conn, request: Request, row, expand: str) -> dict:
-    created = row["created_ts"] or synth.epoch(str(row["id"]))
-    updated = row["updated_ts"] or created
+    created = row["created_ts"] if row["created_ts"] is not None else synth.epoch(str(row["id"]))
+    updated = row["updated_ts"] if row["updated_ts"] is not None else created
     cid = row["id"]
     key = synth.confluence_space_key(row["space"])
     author = row["author_email"]

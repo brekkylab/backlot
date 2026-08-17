@@ -469,9 +469,13 @@ def _gmail_resolve(conn, served_id: str) -> str | None:
     Kept as a named step rather than inlined because the shape check must run BEFORE any lookup:
     an unparsable id is 400 INVALID_ARGUMENT whether or not it would have resolved. No
     ``visible_ids``: the ACL read stays in the caller (`store.gmail_thread`), so an id naming a
-    thread the caller cannot see is not-found, never a different answer."""
+    thread the caller cannot see is not-found, never a different answer.
+
+    Lowercased, because the id is hex and real Gmail resolves either spelling: `store.gmail_by_id`
+    folds case, so returning the spelling as given made `threads.get` the one route that did not —
+    an uppercase id missed the exact `thread_id = ?` lookup and fell through to a single message."""
     _gmail_check_shape(served_id)
-    return served_id
+    return served_id.lower()
 
 
 def _gmail_doc(conn, ids, served_id: str):
@@ -651,7 +655,9 @@ def _gmail_ts(row) -> int:
     verbatim; only when it's missing do we synthesize a thread base and spread replies an hour
     apart so a thread still reads in order. Both the served Date and the after/before filter use
     this, so they agree."""
-    if row["created_ts"]:
+    # `is not None`: 1970-01-01T00:00:00Z stores as 0, and a message that HAS a second must serve
+    # it rather than a synthesized one.
+    if row["created_ts"] is not None:
         return row["created_ts"]
     return synth.epoch(row["thread_id"] or row["id"]) + (row["thread_seq"] or 0) * 3600
 
@@ -795,9 +801,21 @@ def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) 
     return {"sharedWithMeTime": synth.rfc3339(created)}
 
 
+def _drive_created(row) -> int:
+    """A file's creation second — its own, else one seeded from its id. `is not None`, because
+    1970-01-01T00:00:00Z stores as 0 and a file that HAS a second must serve it rather than a
+    seeded one (which would also make the `q` time filters disagree with the served body)."""
+    return row["created_ts"] if row["created_ts"] is not None else synth.epoch(row["id"])
+
+
+def _drive_modified(row) -> int:
+    """A file's last-modified second, an hour after creation when the corpus states none."""
+    return row["updated_ts"] if row["updated_ts"] is not None else _drive_created(row) + 3600
+
+
 def _drive_facts(row) -> dict:
     """The values `q` clauses are evaluated against, taken from a stored row."""
-    modified = row["updated_ts"] or (row["created_ts"] or synth.epoch(row["id"])) + 3600
+    modified = _drive_modified(row)
     return {
         "trashed": bool(row["trashed"]),
         "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
@@ -2026,8 +2044,8 @@ def _drive_mime(row) -> str:
 def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) -> dict:
     """The served ``files`` resource for a stored row. ``me`` is the caller's email, which decides
     the per-caller ``ownedByMe`` (None for the admin/service token, which owns nothing)."""
-    created = row["created_ts"] or synth.epoch(row["id"])
-    modified = row["updated_ts"] or created + 3600
+    created = _drive_created(row)
+    modified = _drive_modified(row)
     author = row["author_email"]
     native = _native(row)
     mime = _drive_mime(row)

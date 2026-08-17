@@ -213,6 +213,10 @@ def test_notion_page_shape(tmp_path):
     # a database row exposes its property values + a database_id parent
     row = _page_obj(conn, store.get_document(conn, "notion", served_id("notion", "nf-row")))
     assert row["parent"]["type"] == "database_id"
+    # ...and it is the database's OWN served id, which `parent_id` already holds (#51). Hashing
+    # that column again named a database nothing serves, so every row in every database
+    # advertised a parent that 404s.
+    assert row["parent"]["database_id"] == served_id("notion", "nf-db")
     assert row["properties"]["Status"]["select"]["name"] == "In Progress"
 
 

@@ -18,6 +18,40 @@ import pytest
 from backlot import store
 from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
 
+
+def test_github_serves_a_comment_dated_at_the_epoch(tmp_path):
+    """A comment id is an INTEGER since #51, and `synth.epoch` hashes a string — so a comment
+    dated 1970-01-01T00:00:00Z (which stores as 0, and reached that fallback under truthiness)
+    took both endpoints down with an AttributeError."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "gh-zero",
+                "repo": "gw",
+                "title": "Bug",
+                "content": "x",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "number": 7,
+                "comments": [
+                    {"content": "at the epoch", "author_email": "b@x.com", "created_ts": 0}
+                ],
+            }
+        ],
+    )
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+        org = c.get("/_mock/users", headers=h).json()["org"]
+        (comment,) = c.get(f"/github/repos/{org}/gw/issues/7/comments", headers=h).json()
+        assert comment["created_at"].startswith("1970-01-01T00:00:00")
+        assert (
+            c.get(f"/github/repos/{org}/gw/issues/comments/{comment['id']}", headers=h).json()["id"]
+            == comment["id"]
+        )
+
+
 # Which fields belong to which object, from a key-set diff of api.github.com's issue and pull
 # bodies. Only the ones this mock has reason to serve: real's issue also carries
 # `sub_issues_summary`, `type` and friends, which no corpus here has anything to fill in.

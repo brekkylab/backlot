@@ -187,8 +187,10 @@ def _cover(url: str | None) -> dict | None:
 
 
 def _parent_field(row) -> dict:
+    # `parent_id` already HOLDS the parent's served id (#51) — the importer resolved it there.
+    # Hashing it again would name a page nothing serves.
     if row["parent_id"]:
-        return {"type": "database_id", "database_id": synth.notion_id(row["parent_id"])}
+        return {"type": "database_id", "database_id": row["parent_id"]}
     return {"type": "workspace", "workspace": True}
 
 

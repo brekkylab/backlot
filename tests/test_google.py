@@ -18,7 +18,62 @@ import pytest
 
 from backlot import oauth, store
 from backlot.config import Settings
-from tests._helpers import crawl_drive, crawl_gmail, db_count, tiny_corpus, tok, served_id
+from tests._helpers import (
+    client_for,
+    crawl_drive,
+    crawl_gmail,
+    db_count,
+    served_id,
+    tiny_corpus,
+    tok,
+)
+
+
+def test_google_serves_a_corpus_declared_epoch_zero(tmp_path):
+    """1970-01-01T00:00:00Z stores as 0, and both Google surfaces must serve that second rather
+    than a seeded one. Under truthiness they did not — and for Drive the same expression feeds the
+    `q` time filters, so a file answered one date in its body and a different one to a search."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": "gm-zero",
+                "title": "S",
+                "content": "body",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "created": 0,
+            },
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-zero",
+                "folder": "Reports",
+                "title": "Q1",
+                "content": "body",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "created": 0,
+            },
+        ],
+    )
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+        msg = c.get(
+            f"/gmail/v1/users/me/messages/{served_id('gmail', 'gm-zero')}", headers=h
+        ).json()
+        assert msg["internalDate"] == "0"
+        f = c.get(
+            f"/drive/v3/files/{served_id('google_drive', 'gd-zero')}",
+            headers=h,
+            params={"fields": "id,createdTime,modifiedTime"},
+        ).json()
+        assert f["createdTime"].startswith("1970-01-01T00:00:00")
+        # the `q` filters read the same second, so a search agrees with the body it returns
+        hits = c.get(
+            "/drive/v3/files", headers=h, params={"q": "createdTime < '1970-01-02T00:00:00'"}
+        ).json()["files"]
+        assert served_id("google_drive", "gd-zero") in {x["id"] for x in hits}
 
 
 # --- admin full-crawl completeness ---------------------------------------------
@@ -121,6 +176,11 @@ def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin
     assert m["id"] == m["threadId"] == hexid
     t = client.get(f"/gmail/v1/users/me/threads/{hexid}", headers=admin_h)
     assert t.status_code == 200 and t.json()["id"] == hexid
+    # A gmail id is hex and real resolves either spelling, so `threads.get` must fold case the way
+    # `messages.get` does — an exact `thread_id = ?` lookup on the caller's spelling missed and
+    # served a one-message thread for a thread that has more.
+    upper = client.get(f"/gmail/v1/users/me/threads/{hexid.upper()}", headers=admin_h)
+    assert upper.status_code == 200 and upper.json() == t.json()
 
 
 def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):

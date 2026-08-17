@@ -174,6 +174,19 @@ ID_COLUMNS = {
 }
 
 
+# source_type -> the columns a listing is ORDERED by, where that is not the key itself. Only
+# slack differs, and it has to: its `ts` is TEXT (`"<seconds>.<fraction>"`, the spelling Slack's
+# own API uses), so ordering by it compares digit by digit — `"9.5"` after `"10.5"`. Ordering by
+# the integer second first restores chronology, with the ts breaking ties so the order stays
+# total and an offset page still cannot skip or repeat a row.
+ORDER_COLUMNS = {"slack": ("created_ts", "ts")}
+
+
+def order_columns(source_type: str) -> tuple[str, ...]:
+    """The columns a listing of this source is ordered by."""
+    return ORDER_COLUMNS.get(source_type) or id_columns(source_type)
+
+
 def id_columns(source_type: str) -> tuple[str, ...]:
     """The full key a row of this source is addressed by — its PRIMARY KEY, in key order."""
     try:
@@ -997,11 +1010,11 @@ def _acl_join(source_type: str, acl_alias: str, doc_alias: str) -> str:
 
 
 def _order_by(source_type: str, alias: str = "", *, desc: bool = False) -> str:
-    """The source's identifier columns as an ORDER BY term — the stable total order every offset
+    """The source's ordering columns as an ORDER BY term — the stable total order every offset
     page needs. A PAIR has to name both parts, or the order is not total within a container."""
     p = f"{alias}." if alias else ""
     d = " DESC" if desc else ""
-    return ", ".join(f"{p}{c}{d}" for c in id_columns(source_type))
+    return ", ".join(f"{p}{c}{d}" for c in order_columns(source_type))
 
 
 def _scope(
@@ -2173,7 +2186,7 @@ def list_slack_top_level(
         sql += " AND created_ts >= ? AND created_ts <= ?"
         params += [lo, hi]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
-    sql += clause + " ORDER BY ts LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {_order_by('slack')} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
@@ -2273,14 +2286,18 @@ def slack_channels_for_principals(conn, principals) -> set[str]:
 def slack_latest_reply_ts(conn, channel, thread_ts, visible_ids=None) -> str | None:
     """The ts of a thread's last reply — Slack's ``latest_reply``.
 
-    An exact MAX over the stored column, which costs one indexed lookup. Synthesizing it as "the
-    root's base second plus the reply count" would report a ts no message need actually have."""
-    sql = (
-        "SELECT MAX(ts) FROM slack_messages WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
-    )
+    The last reply's own stored ts, which costs one indexed lookup. Synthesizing it as "the root's
+    base second plus the reply count" would report a ts no message need actually have.
+
+    Ordered rather than ``MAX(ts)``: ts is TEXT, so a max over it is lexicographic and a thread
+    whose replies straddle a digit-count change (second 9 to second 10) names the wrong reply."""
+    sql = "SELECT ts FROM slack_messages WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
     params: list = [channel, thread_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
-    return conn.execute(sql + clause, params + cparams).fetchone()[0]
+    row = conn.execute(
+        sql + clause + " ORDER BY created_ts DESC, thread_seq DESC LIMIT 1", params + cparams
+    ).fetchone()
+    return row["ts"] if row else None
 
 
 def slack_reply_authors(conn, channel, thread_ts, visible_ids=None) -> list[str]:

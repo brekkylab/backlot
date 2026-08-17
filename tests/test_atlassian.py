@@ -14,6 +14,7 @@ import pytest
 from backlot import store
 from tests._helpers import (
     bare_request,
+    client_for,
     crawl_confluence,
     crawl_jira,
     db_count,
@@ -134,6 +135,41 @@ def test_confluence_content_filtered_by_space_key(client, admin_h):
     # no spaceKey at all -> unfiltered (still includes the other space)
     unfiltered = client.get("/atlassian/wiki/rest/api/content", headers=admin_h).json()
     assert "Compensation Bands 2026" in {r["title"] for r in unfiltered["results"]}
+
+
+def test_confluence_dates_an_epoch_zero_page_on_both_routes(tmp_path):
+    """1970-01-01T00:00:00Z stores as 0, and both routes that date a page must serve it.
+
+    The CQL result read a `key` column off a confluence row — jira's spelling — which raised
+    IndexError and 500ed the whole search whenever a page had no timestamps to short-circuit on.
+    One helper now dates a page for both, so the body and the search hit cannot disagree."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "doc_id": "cf-zero",
+                "space": "handbook",
+                "title": "Epoch",
+                "content": "a page dated at the epoch",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "created": 0,
+            }
+        ],
+    )
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+        hit = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": 'text~"epoch"'})
+        assert hit.status_code == 200
+        (result,) = hit.json()["results"]
+        assert result["lastModified"].startswith("1970-01-01T00:00:00")
+        page = c.get(
+            f"/atlassian/wiki/rest/api/content/{served_id('confluence', 'cf-zero')}",
+            headers=h,
+            params={"expand": "history"},
+        ).json()
+        assert page["history"]["createdDate"].startswith("1970-01-01T00:00:00")
 
 
 def test_confluence_cql_search_filtered_by_space(client, admin_h):

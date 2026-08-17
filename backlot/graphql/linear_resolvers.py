@@ -584,9 +584,12 @@ def _issue(row, info) -> dict:
     The stubs are deliberate and listed in the SDL header: reactions, SLA timestamps, board /
     sort orders, bot actors and shared access are declared because `@linear/sdk`'s fragment
     selects them, and resolve empty because a document corpus has nothing behind them."""
-    identifier = row["identifier"] or synth.linear_identifier(
-        row["id"], synth.linear_team_key(row["team"])
-    )
+    # Asserted, not re-derived: every issue carries an identifier by the time it is served (the
+    # importer assigns one — see byo's linear branch), and deriving one here would seed
+    # `synth.linear_identifier` on the served uuid where the importer seeded it on the dataset id,
+    # so the fallback answered a DIFFERENT identifier than the row is reachable by.
+    identifier = row["identifier"]
+    assert identifier, f"linear: issue {row['id']!r} reached the serializer with no identifier"
     title = row["title"] or ""
     created = row["created_ts"]
     # updatedAt is non-null in Linear; an issue with no recorded edit reports its creation time,

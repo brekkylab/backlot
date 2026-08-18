@@ -3579,17 +3579,17 @@ def _jira_rec(did, project, key=None):
 @pytest.mark.parametrize(
     "project",
     ["platform-infra-reliability-and-cost-ops", "3d-printing"],
-    ids=["key-longer-than-real-jiras-10", "key-starting-with-a-digit"],
+    ids=["six-word-name", "name-starting-with-a-digit"],
 )
 def test_byo_a_project_can_state_the_key_it_was_served(tmp_path, project):
-    """An --append MUST state a key (`_require_provided_id`), so the key the mock served has to be
-    one the corpus is allowed to write back. It was not, for two shapes of project name, and that
-    left those projects with no legal key at all: not stating one is refused by the importer, and
-    stating the served one was refused by validation.
+    """An --append MUST state a key (`_require_provided_id`), so the key the mock serves has to be
+    one the corpus is allowed to write back. Two shapes of project name had none: omitting the key
+    is refused by the importer, and the key they were served was refused by validation.
 
-    `synth.jira_project_key` is `_key` plus a 6-digit hash, so it passes real Jira's 10-character
-    limit as soon as a project name has five words, and takes a leading digit from a name whose
-    first word starts with one. A pattern written to real Jira's rule refused both."""
+    Both shapes are facts about the NAME, which is what `jira_project_key` derives from. A name past
+    four words used to carry the key past real Jira's ten characters, and a name whose first word
+    starts with a digit used to hand the key that digit. The cap ends both, so what this asserts is
+    that the round trip closes: import, read the served project key, append an issue stating it."""
     settings = Settings(data_dir=tmp_path / "d")
     load(_write(tmp_path, [_jira_rec("j-1", project)], "a.jsonl"), settings)
     conn = store.connect_ro(settings.db_path)
@@ -3611,7 +3611,8 @@ def test_byo_a_project_can_state_the_key_it_was_served(tmp_path, project):
 @pytest.mark.parametrize("bad", ["pay-1", "PAY 1", "1", "PAY", "PAY-0", "PAY-1-x", "A-1"])
 def test_byo_a_mistyped_jira_key_is_refused(tmp_path, bad):
     """The prefix is a fact about the whole project, so a typo in one key renames every issue in it.
-    Widening the pattern to admit the served key must not give that up.
+    Capping the derivation is what makes the served key legal to state, and the rule a corpus is
+    held to does not move with it: this pattern is the one main already enforced.
 
     `A-1` is in the list on purpose: real Jira rejects a single-character project key and so do
     strict clients (see `synth._key`), and no derivation produces one -- `jira_project_key` is at

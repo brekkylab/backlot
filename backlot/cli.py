@@ -245,6 +245,7 @@ _BYO_ONLY: dict[str, object] = {
     "--append": False,
     "--dry-run": False,
     "--roster": None,
+    "--id-map": None,
 }
 
 
@@ -325,6 +326,16 @@ def import_(
             rich_help_panel=_BYO_PANEL,
         ),
     ] = None,
+    id_map: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--id-map",
+            help="write a JSON manifest mapping each record's dataset id to the id it is served "
+            "under, plus container ids — the corpus's own ids are seeds the DB never stores, so "
+            "tooling that checks documents by id joins through this file",
+            rich_help_panel=_BYO_PANEL,
+        ),
+    ] = None,
 ) -> None:
     """Build the data dir from a corpus.
 
@@ -343,6 +354,7 @@ def import_(
                 "--append": append,
                 "--dry-run": dry_run,
                 "--roster": roster,
+                "--id-map": id_map,
             }
         )
         if corpus is not None:
@@ -363,6 +375,14 @@ def import_(
             "give a corpus path or --bundled (the corpus bundled with the package), not both",
             param_hint="'CORPUS'",
         )
+    if dry_run and id_map is not None:
+        # The map records ids an import ASSIGNED; a validation pass assigns none, so an empty or
+        # stale file would be worse than the refusal. `byo.run` refuses it too, for the library
+        # entry point — here it is a parameter conflict like the ones above, and answers like one.
+        raise typer.BadParameter(
+            "--id-map records the ids an import assigns; --dry-run assigns none",
+            param_hint="'--id-map'",
+        )
     if bundled:
         from backlot.testing import HELLO_CORPUS
 
@@ -371,7 +391,7 @@ def import_(
     _use_data_dir(data_dir)
     from backlot.importer import byo
 
-    raise typer.Exit(byo.run(corpus, append=append, dry_run=dry_run, roster=roster))
+    raise typer.Exit(byo.run(corpus, append=append, dry_run=dry_run, roster=roster, id_map=id_map))
 
 
 # --------------------------------------------------------------------------- export

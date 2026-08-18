@@ -133,7 +133,10 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   them and the id is derived, under the prefix this project's provided keys carry, so a corpus
   need only write the ids its documents actually cite. A jira key is shaped
   `^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$`, enforced because the prefix is a fact about the whole
-  project.
+  project. The mirror case stops the import too: two records sharing a `doc_id` are one document,
+  so stating ids that put them on two rows is refused, since a link naming that `doc_id` could
+  only mean one of them. Sharing a `doc_id` while stating no id is not that — those settle onto
+  one row, which is what a repeated document in a corpus means.
 - **`--append` into a source that already holds documents** requires the id above for github,
   jira, confluence and hubspot: their ids are assigned against the whole corpus, so without one
   a record cannot be told apart from a row already imported. There is no update path — an id an
@@ -141,6 +144,12 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   fireflies `transcript_id`. Re-import from scratch to change a document that is already in.
   (slack is the one source with nothing to state: a re-imported message is recognised by its
   channel, second, author and text.)
+- **`--id-map out.json`** writes what the import served each record under: per source, the
+  record's dataset id (`doc_id`, or its documented default) mapped to the row's full served key,
+  plus the container ids a client needs to address them (slack channel ids, drive folder ids,
+  linear team id/key, jira project keys, confluence space keys). A dataset id is a seed the DB
+  never stores, so this file is what corpus-side tooling joins on to check documents by id.
+  It covers one run — a sharded corpus loaded with `--append` gets one manifest per shard.
 - **Per-service fidelity fields** (all optional; see each schema):
   gmail `html`; drive `trashed`; github `closed_at`/`closed_by`/`merged_by`/`milestone`/
   `requested_reviewers`/`changed_paths` (+ comment `reactions`, and `path`/`line`/`diff_hunk` to make

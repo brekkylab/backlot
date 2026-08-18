@@ -2186,6 +2186,24 @@ class _Loader:
             # `keys` answers "what did the record called `did` resolve to", which is what a
             # cross-reference needs and which can only have one answer. `_pending` is per ROW, so
             # the deferred pass reaches every row even when two records shared a dataset id.
+            #
+            # Two records sharing a dataset id are ONE document, and the sources whose identity is
+            # synthesized enforce that by reusing the first row's key (`repeat`, above) — so they
+            # arrive here twice with the same value, which is fine. Where the corpus STATES the id
+            # the record decides, and two records can leave two rows under one dataset id. Nothing
+            # then says which of them the id means: `resolve` below reads this dict for a linear
+            # parent, a hubspot association or a slack reply's target, and would bind to whichever
+            # row was written last. Refused rather than resolved arbitrarily.
+            prior = self.keys.get((src, did))
+            if prior is not None and prior != key:
+                raise SystemExit(
+                    f"{where}: this record and an earlier one both call themselves "
+                    f"{did!r}, but they resolve to different rows -- "
+                    f"{store.id_columns(src)} = {prior} and {key}. Two records sharing a dataset "
+                    "id are the same document, and a link that names it could only mean one of "
+                    "these. Give them different dataset ids, or (if they are the same document) "
+                    "the same served id."
+                )
             self.keys[(src, did)] = key
             if provisional:
                 self._pending.setdefault(src, []).append((key, did))
@@ -3003,8 +3021,79 @@ class _Loader:
                 )
 
 
+def _check_id_map_destination(path: Path) -> None:
+    """Fail on a destination the manifest cannot be written to, BEFORE the load starts.
+
+    A typo in an output path should cost nothing, not a full import — and the write itself happens
+    after the load commits (see :func:`load_records`), where raising would leave a corpus loaded and
+    the command dead. So the path is opened for append here, which reports the directory or the
+    permission that a later write would have hit.
+
+    Opening for append is also the only way to learn that an EXISTING file cannot be written, which
+    probing the parent directory would miss. The cost is that it creates the file when there was
+    none, so a load that fails afterwards would leave a 0-byte manifest behind — the empty file the
+    ``--dry-run`` refusal exists to prevent. Hence the unlink: one this call created is removed
+    again, and the real write in :func:`load_records` creates it. A file that was already there is
+    left alone, stale contents and all, because it is not this function's to delete.
+    """
+    existed = path.exists()
+    try:
+        with path.open("a"):
+            pass
+    except OSError as e:
+        raise SystemExit(f"--id-map {path}: {e.strerror}")
+    if not existed:
+        path.unlink(missing_ok=True)
+
+
+def _id_map_manifest(loader, conn) -> str:
+    """Build the ``--id-map`` manifest: what this run served each dataset id under.
+
+    A dataset id is a seed, never stored, so once the import ends nothing in the DB can say which
+    record produced which row. Corpus-side tooling that checks documents by id (an ACL audit, a
+    pass that rewrites prose to cite served ids) needs that join, and this file carries it.
+
+    ``documents`` comes from ``loader.keys``, the run's own record of what it wrote each document
+    under, settled through the deferred passes — never re-derived, so it cannot disagree with the
+    row. It covers THIS run only: an ``--append`` emits the appended documents, and a sharded
+    corpus concatenates one manifest per shard. ``containers`` is the current DB state instead
+    (container ids are pure functions of their names, identical across runs): read back from the
+    tables where the import stored them (linear, jira), or spelled by the same ``synth`` call the
+    router serves them with (slack, drive, confluence). Space/project NUMERIC ids are serve-time
+    spellings of the routers and are deliberately absent.
+    """
+    documents: dict[str, dict] = {}
+    for (src, did), written in sorted(loader.keys.items()):
+        key = loader._settled(src, written)
+        documents.setdefault(src, {})[did] = dict(zip(store.id_columns(src), key))
+    containers: dict[str, dict] = {}
+    for team, sid, skey in conn.execute("SELECT team, served_id, served_key FROM linear_teams"):
+        containers.setdefault("linear", {})[team] = {"id": sid, "key": skey}
+    for project, key in conn.execute("SELECT project, key FROM jira_projects"):
+        containers.setdefault("jira", {})[project] = {"key": key}
+    for (channel,) in conn.execute("SELECT channel FROM slack_channels"):
+        containers.setdefault("slack", {})[channel] = {"id": synth.slack_channel_id(channel)}
+    for (folder,) in conn.execute("SELECT folder FROM gdrive_folders"):
+        containers.setdefault("google_drive", {})[folder] = {"id": synth.drive_folder_id(folder)}
+    for (space,) in conn.execute("SELECT space FROM confluence_spaces"):
+        containers.setdefault("confluence", {})[space] = {"key": synth.confluence_space_key(space)}
+    return (
+        json.dumps(
+            {"format": "backlot-id-map/1", "documents": documents, "containers": containers},
+            ensure_ascii=False,
+            indent=1,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
 def load(
-    path: Path, settings: Settings | None = None, reset: bool = True, roster: Path | None = None
+    path: Path,
+    settings: Settings | None = None,
+    reset: bool = True,
+    roster: Path | None = None,
+    id_map: Path | None = None,
 ) -> dict:
     """Load a BYO-JSONL corpus — a file, a ``.jsonl.gz``, or a sharded directory — into the DB."""
 
@@ -3018,7 +3107,7 @@ def load(
             except json.JSONDecodeError as e:
                 raise SystemExit(f"line {lineno}: invalid JSON: {e}")
 
-    return load_records(_from_file, settings, reset, roster)
+    return load_records(_from_file, settings, reset, roster, id_map=id_map)
 
 
 def load_records(
@@ -3027,6 +3116,7 @@ def load_records(
     reset: bool = True,
     roster: Path | None = None,
     validate: bool = True,
+    id_map: Path | None = None,
 ) -> dict:
     """Load already-parsed BYO records into the DB, leaving the previous one in place if it fails.
 
@@ -3036,13 +3126,17 @@ def load_records(
     rather than a copy. An --append is already all-or-nothing (one commit for the whole import).
     """
     settings = settings or get_settings()
+    if id_map is not None:
+        _check_id_map_destination(Path(id_map))
     salvage = None
     if reset and settings.db_path.exists():
         salvage = settings.db_path.with_name(settings.db_path.name + ".replaced")
         salvage.unlink(missing_ok=True)
         settings.db_path.rename(salvage)
     try:
-        result = _load_records(records_factory, settings, reset, roster, validate)
+        result, manifest = _load_records(
+            records_factory, settings, reset, roster, validate, id_map is not None
+        )
     except BaseException:
         if salvage is not None:
             settings.db_path.unlink(missing_ok=True)
@@ -3050,6 +3144,13 @@ def load_records(
         raise
     if salvage is not None:
         salvage.unlink(missing_ok=True)
+    # OUTSIDE the salvage-protected region on purpose. The manifest is written after the load is
+    # committed and its tokens.yaml is on disk, so a destination that fails at the last moment
+    # cannot roll the DB back to a corpus the tokens no longer describe — and cannot throw away a
+    # completed import over an output path. Under --append there is no salvage to restore at all,
+    # so a raise in there left the rows in place and the command dead, and a re-run appended twice.
+    if manifest is not None:
+        Path(id_map).write_text(manifest)
     return result
 
 
@@ -3059,7 +3160,8 @@ def _load_records(
     reset: bool,
     roster: Path | None,
     validate: bool,
-) -> dict:
+    want_id_map: bool = False,
+) -> tuple[dict, str | None]:
     """The load itself. See :func:`load_records`, which is this plus the replace-safely dance.
 
     ``records_factory`` returns a FRESH iterator of ``(where, record)`` pairs and may be called
@@ -3244,6 +3346,9 @@ def _load_records(
     # it — see the docstring). On append the prior value already reflects earlier loads.
     prior = 0 if reset else int(store.read_meta(conn, "source_documents") or 0)
     store.write_meta(conn, "source_documents", prior + source_docs)
+    # Built while the loader and the connection are still alive; WRITTEN by `load_records`, once
+    # the load can no longer be rolled back.
+    manifest = _id_map_manifest(loader, conn) if want_id_map else None
     conn.close()
     return {
         "counts": counts,
@@ -3252,11 +3357,16 @@ def _load_records(
         "org": org_name,
         "org_domain": org_domain,
         "total": sum(counts.values()),
-    }
+    }, manifest
 
 
 def run(
-    corpus: Path, *, append: bool = False, dry_run: bool = False, roster: Path | None = None
+    corpus: Path,
+    *,
+    append: bool = False,
+    dry_run: bool = False,
+    roster: Path | None = None,
+    id_map: Path | None = None,
 ) -> int:
     """Load ``corpus`` into the mock DB (or, with ``dry_run``, only validate it).
 
@@ -3265,6 +3375,13 @@ def run(
     arguments, so there is no second place for a default to drift.
     """
     corpus = Path(corpus)
+
+    if dry_run and id_map is not None:
+        # The map records ids an import ASSIGNED; a validation pass assigns none, so an empty or
+        # stale file would be worse than the refusal. A command line never gets this far -- `cli`
+        # rejects the pair as the parameter conflict it is, with usage and an exit 2 -- so this is
+        # the guard for a caller that reaches `run` directly.
+        raise SystemExit("--id-map records the ids an import assigns; --dry-run assigns none")
 
     if dry_run:
         # A sharded artifact is checked against its manifest first: a truncated download is a
@@ -3333,8 +3450,10 @@ def run(
     if roster is None and corpus.is_dir() and (corpus / "roster.yaml").exists():
         roster = corpus / "roster.yaml"
         print(f"using the artifact's own roster: {roster}", file=sys.stderr)
-    res = load(corpus, settings, reset=not append, roster=roster)
+    res = load(corpus, settings, reset=not append, roster=roster, id_map=id_map)
     print(f"Loaded {res['total']} documents into {settings.db_path}")
+    if id_map is not None:
+        print(f"Id map written to {id_map}")
     for src, n in sorted(res["counts"].items()):
         print(f"  {src:14s} {n}")
     print(f"Principals: {res['users']} users, {res['groups']} groups")

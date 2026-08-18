@@ -202,11 +202,18 @@ def test_type_routes_to_the_bench_importer(spy_erb):
 
 def test_byo_options_reach_the_byo_importer_typed(tmp_path, spy_byo):
     roster = tmp_path / "roster.yaml"
-    assert cli.main(["import", "c.jsonl", "--append", "--roster", str(roster)]) == 0
+    id_map = tmp_path / "ids.json"
+    assert (
+        cli.main(
+            ["import", "c.jsonl", "--append", "--roster", str(roster), "--id-map", str(id_map)]
+        )
+        == 0
+    )
     assert spy_byo["corpus"] == Path("c.jsonl")  # a Path, not the string
     assert spy_byo["append"] is True
     assert spy_byo["dry_run"] is False
     assert spy_byo["roster"] == roster
+    assert spy_byo["id_map"] == id_map
 
 
 def test_the_bundled_flag_resolves_to_the_packaged_corpus_path(spy_byo):
@@ -235,13 +242,25 @@ def test_an_unknown_type_is_a_usage_error(capsys):
         assert valid in err, valid
 
 
-@pytest.mark.parametrize("flag", ["--dry-run", "--bundled", "--append"])
-def test_a_byo_option_under_the_bench_type_is_refused(flag, capsys):
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--dry-run"],
+        ["--bundled"],
+        ["--append"],
+        # The ones that take a value have to be given one, or click stops at the missing argument
+        # before the refusal this test is about.
+        ["--roster", "roster.yaml"],
+        ["--id-map", "ids.json"],
+    ],
+    ids=lambda argv: argv[0],
+)
+def test_a_byo_option_under_the_bench_type_is_refused(argv, capsys):
     """The bench importer has no options, so every one of `import`'s belongs to BYO. Giving one with
     the bench type is a real flag in the wrong place, worth saying rather than ignoring."""
-    assert cli.main(["import", "-t", "enterpriserag-bench", flag]) == 2
+    assert cli.main(["import", "-t", "enterpriserag-bench", *argv]) == 2
     err = plain(capsys.readouterr().err)
-    assert flag in err and "--type" in err
+    assert argv[0] in err and "--type" in err
 
 
 def test_a_corpus_path_under_the_bench_type_is_refused(capsys):
@@ -249,6 +268,16 @@ def test_a_corpus_path_under_the_bench_type_is_refused(capsys):
     the bench downloads its own corpus."""
     assert cli.main(["import", "-t", "enterpriserag-bench", "some.jsonl"]) == 2
     assert "downloads its own corpus" in plain(capsys.readouterr().err)
+
+
+def test_a_dry_run_with_an_id_map_is_a_parameter_conflict(tmp_path, capsys):
+    """A validation pass assigns no ids, so there is nothing for the manifest to record. It answers
+    like every other option conflict in this command — exit 2, with usage and the param named —
+    rather than the exit 1 and bare line the importer's own guard raises."""
+    assert cli.main(["import", "c.jsonl", "--dry-run", "--id-map", str(tmp_path / "ids.json")]) == 2
+    err = plain(capsys.readouterr().err)
+    assert "--id-map" in err and "--dry-run assigns none" in err
+    assert "Usage" in err
 
 
 def test_shard_records_must_be_at_least_one(capsys):
@@ -528,7 +557,15 @@ def test_import_help_shows_every_option_it_accepts(capsys):
     visible at once. Before, they were split across two importers' argparse parsers."""
     assert cli.main(["import", "--help"]) == 0
     out = plain(capsys.readouterr().out)
-    for option in ("--type", "--data-dir", "--bundled", "--append", "--dry-run", "--roster"):
+    for option in (
+        "--type",
+        "--data-dir",
+        "--bundled",
+        "--append",
+        "--dry-run",
+        "--roster",
+        "--id-map",
+    ):
         assert option in out, option
     assert "BYO corpus" in out  # the panel that says which importer they belong to
 

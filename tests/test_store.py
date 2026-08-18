@@ -1613,6 +1613,95 @@ def test_fts_add_docs_noop_without_index(tmp_path):
     assert store.fts_add_docs(conn, "notion", ["x"]) == 0
 
 
+def test_opening_a_db_without_the_snapshot_column_adds_it(tmp_path):
+    """A DB imported before `ref` existed opens and gains the column, rather than dying on a bare
+    `no such column: ref` the first time anything reads github_items.
+
+    Unlike the id-keying change this cannot be a refusal: `ref` unset means "the snapshot at
+    created_ts", which is exactly what every pre-existing file row is, so the column backfills
+    losslessly as NULL and the corpus does not have to be re-imported to be readable.
+    """
+    import sqlite3
+
+    path = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE github_items ("
+        " repo TEXT NOT NULL, number INTEGER NOT NULL, author_email TEXT NOT NULL,"
+        " title TEXT NOT NULL, content TEXT NOT NULL, kind TEXT, created_ts INTEGER NOT NULL,"
+        " path TEXT, PRIMARY KEY (repo, number));"
+        "INSERT INTO github_items"
+        " VALUES('gw',1,'a@x','a.py','print(1)','file',1,'src/a.py');"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = store.connect_rw(path)
+    assert "ref" in {c["name"] for c in conn.execute("PRAGMA table_info(github_items)")}
+    row = store.get_repo_file(conn, "gw", "src/a.py")
+    assert row["content"] == "print(1)"  # the row still reads, and is its own snapshot
+    assert row["ref"] is None
+    conn.close()
+
+
+def test_a_ref_lookup_on_a_db_without_the_column_answers_head(tmp_path):
+    """`?ref=` must not 500 on a DB imported before the column existed.
+
+    The write path adds it (see above), but SERVING opens read-only and never applies the schema, so
+    an operator who upgrades the code without re-importing keeps a DB with no `ref` column — and
+    that is the one path that names it in SQL. Answering HEAD is not a compromise: a DB without the
+    column holds one snapshot per path, so HEAD *is* the file, which is the same answer the
+    documented no-history tolerance already gives an unknown ref.
+    """
+    import sqlite3
+
+    path = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE github_items ("
+        " repo TEXT NOT NULL, number INTEGER NOT NULL, author_email TEXT NOT NULL,"
+        " title TEXT NOT NULL, content TEXT NOT NULL, kind TEXT, created_ts INTEGER NOT NULL,"
+        " path TEXT, PRIMARY KEY (repo, number));"
+        "INSERT INTO github_items"
+        " VALUES('gw',1,'a@x','a.py','print(1)','file',1,'src/a.py');"
+    )
+    conn.commit()
+    conn.close()
+
+    ro = store.connect_ro(path)  # read-only: the column cannot be added here
+    assert "ref" not in {c["name"] for c in ro.execute("PRAGMA table_info(github_items)")}
+    assert store.get_repo_file(ro, "gw", "src/a.py", ref="pr-9")["content"] == "print(1)"
+    assert store.get_repo_file(ro, "gw", "src/a.py")["content"] == "print(1)"
+    ro.close()
+
+
+def test_head_between_snapshots_sharing_an_instant_is_broken_by_ref(tmp_path):
+    """When two snapshots share a `created_ts`, the one served is decided by `ref` — the field the
+    author writes — and not by `number`.
+
+    `number` is an internal handle probed from a hash of the dataset id, so tie-breaking on it made
+    the served content a property of a doc_id: renaming a document flipped which snapshot the repo
+    answered with. The schema tells an author to state a `ref` when two snapshots share an instant,
+    so `ref` has to be the thing that settles it, or that advice buys identity and leaves serving
+    undefined.
+
+    The numbers here are ordered AGAINST the refs, so a tie-break on `number` picks 'pr-1'.
+    """
+    conn = store.connect_rw(tmp_path / "g.sqlite")
+    for number, ref, content in ((9, "pr-1", "one"), (2, "pr-2", "two")):
+        conn.execute(
+            "INSERT INTO github_items(number,repo,author_email,title,content,kind,path,created_ts,"
+            "ref) VALUES(?,'svc','a@x','r.py',?,'file','src/r.py',5,?)",
+            (number, content, ref),
+        )
+    conn.commit()
+    assert store.get_repo_file(conn, "svc", "src/r.py")["content"] == "two"
+    # both remain addressable, and the path is still one entry
+    assert store.get_repo_file(conn, "svc", "src/r.py", ref="pr-1")["content"] == "one"
+    assert store.list_repo_file_paths(conn, "svc") == ["src/r.py"]
+    conn.close()
+
+
 def test_repo_files_listing_and_kind_isolation(tmp_path):
     conn = store.connect_rw(tmp_path / "g.sqlite")
     # two files + one issue in the same repo
@@ -1628,12 +1717,20 @@ def test_repo_files_listing_and_kind_isolation(tmp_path):
         "INSERT INTO github_items(number,repo,author_email,title,content,kind,created_ts) "
         "VALUES(3,'svc','a@x','a bug','...', 'issue',1)"
     )
+    # a SECOND snapshot of src/b.py, taken later: a file's history, not a second file
+    conn.execute(
+        "INSERT INTO github_items(number,repo,author_email,title,content,kind,path,created_ts) "
+        "VALUES(4,'svc','a@x','b.py','print(22)','file','src/b.py',9)"
+    )
     conn.commit()
     files = store.list_repo_files(conn, "svc")
+    # one row per path: a tree that names src/b.py twice is not a tree
     assert [f["path"] for f in files] == ["src/a.py", "src/b.py"]  # only files, sorted, no issue
     assert store.count_repo_files(conn, "svc") == 2
+    # the listing carries HEAD's content, not whichever snapshot the scan reached first
+    assert [f["content"] for f in files] == ["print(1)", "print(22)"]
     got = store.get_repo_file(conn, "svc", "src/b.py")
-    assert got["content"] == "print(2)"
+    assert got["content"] == "print(22)"  # newest by created_ts
     assert store.get_repo_file(conn, "svc", "nope.py") is None
 
 
@@ -1673,6 +1770,25 @@ def test_list_repo_file_paths_agrees_with_the_full_listing(tmp_path):
             f["path"] for f in store.list_repo_files(conn, "svc", ids)
         ]
     assert store.list_repo_file_paths(conn, "svc", {"everyone"}) == ["src/a.py", "src/b.py"]
+
+    # A NEWER snapshot of src/a.py that only 'people' may read. HEAD is resolved among the rows the
+    # CALLER can see, so an 'everyone' caller is still served the older snapshot as the file. The
+    # alternative -- resolving HEAD corpus-wide, then ACL-filtering -- answers 404 for a path they
+    # hold a readable snapshot of, which tells them a newer one exists.
+    conn.execute(
+        "INSERT INTO github_items(number,repo,author_email,title,content,kind,path,created_ts)"
+        " VALUES(5,'svc','a@x','a.py','secret','file','src/a.py',9)"
+    )
+    conn.execute(
+        "INSERT INTO github_acl(repo, number, principal_id, principal_type) "
+        "VALUES('svc',5,'people','group')"
+    )
+    conn.commit()
+    assert store.get_repo_file(conn, "svc", "src/a.py", {"everyone"})["content"] == "body"
+    assert store.get_repo_file(conn, "svc", "src/a.py", {"people"})["content"] == "secret"
+    # and it is still ONE entry in either caller's listing
+    assert store.list_repo_file_paths(conn, "svc", {"everyone"}) == ["src/a.py", "src/b.py"]
+    assert store.count_repo_files(conn, "svc", {"everyone", "people"}) == 3
 
 
 def test_hubspot_listing_is_an_index_range_seek(tmp_path):

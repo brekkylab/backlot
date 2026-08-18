@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 from email.utils import formatdate
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -734,8 +735,9 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     without this route such a branch cannot be pinned to a commit at all.
 
     Any ref resolves to the repo's snapshot commit, as ``/branches`` and ``git/trees`` already do —
-    the mock keeps no history and the schema carries no branch list, so ref EXISTENCE is not
-    knowable here. That is the documented no-history simplification (see :func:`get_tree`), not the
+    the mock keeps no COMMIT history and the schema carries no branch list, so ref EXISTENCE is not
+    knowable here. (A file's own snapshots are a separate axis, reachable on ``/contents`` — see
+    :func:`get_tree`.) That is the documented no-history simplification (see :func:`get_tree`), not the
     unvalidated-segment bug that the owner check fixes: an owner IS knowable.
     """
     conn = auth.conn(request)
@@ -768,9 +770,13 @@ async def get_tree(
     """The repo's file set as a git tree (real API shape). `recursive` (any truthy value,
     GitHub-style) returns every blob/tree entry; otherwise only the entries directly under root.
 
-    **We keep no history**, so any `ref` — a branch name, or a sha from /branches, /commits or
-    git/ref — resolves to the repo's CURRENT files. Two consequences a client author will otherwise
-    assume away:
+    **A tree keeps no history**, so any `ref` — a branch name, or a sha from /branches, /commits or
+    git/ref — resolves to the repo's CURRENT files. FILES themselves do have history: a corpus may
+    state several snapshots of one path, and `/contents/{path}?ref=` reaches them (see
+    :func:`get_contents`). What has no per-ref shape is the tree — there is no mapping from a ref to
+    the set of snapshots that were current at it — so this route answers HEAD for every ref, and a
+    path appears exactly once however many snapshots it holds. Two consequences a client author will
+    otherwise assume away:
 
     - Pinning to a commit sha gives no immutability guarantee. A blob sha is content-addressed and
       stable, but the tree a commit sha resolves to moves whenever the corpus changes, so caching a
@@ -820,7 +826,9 @@ def _cap_tree(entries: list[dict]) -> tuple[list[dict], bool]:
     return kept, True
 
 
-async def _contents_response(owner: str, repo: str, path: str, request: Request):
+async def _contents_response(
+    owner: str, repo: str, path: str, request: Request, ref: str | None = None
+):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -828,10 +836,10 @@ async def _contents_response(owner: str, repo: str, path: str, request: Request)
     ab = _api_base(request)
     path = path.strip("/")
     if path:
-        row = store.get_repo_file(conn, repo, path, ids)
+        row = store.get_repo_file(conn, repo, path, ids, ref=ref)
         if row is not None:
             return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
-                owner, repo, row, ab
+                owner, repo, row, ab, ref
             )
     rows = store.list_repo_files(conn, repo, ids)
     entries = _tree_from_paths(owner, repo, rows, ab)
@@ -845,13 +853,18 @@ async def _contents_response(owner: str, repo: str, path: str, request: Request)
 
 
 @router.get("/repos/{owner}/{repo}/contents")
-async def get_contents_root(owner: str, repo: str, request: Request):
-    return await _contents_response(owner, repo, "", request)
+async def get_contents_root(owner: str, repo: str, request: Request, ref: str | None = Query(None)):
+    return await _contents_response(owner, repo, "", request, ref)
 
 
 @router.get("/repos/{owner}/{repo}/contents/{path:path}")
-async def get_contents(owner: str, repo: str, path: str, request: Request):
-    return await _contents_response(owner, repo, path, request)
+async def get_contents(
+    owner: str, repo: str, path: str, request: Request, ref: str | None = Query(None)
+):
+    """`ref` selects a SNAPSHOT of the file when the corpus named one; see store.get_repo_file for
+    why an unnamed ref answers HEAD instead of 404. A directory listing ignores it — the tree has
+    no per-ref shape here (the no-history simplification in :func:`get_tree`)."""
+    return await _contents_response(owner, repo, path, request, ref)
 
 
 @router.get("/repos/{owner}/{repo}/git/blobs/{sha}")
@@ -860,8 +873,16 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
+    # every snapshot, not just HEAD: a blob sha is content-addressed, so a superseded snapshot
+    # keeps its own and stays fetchable at it (see store.iter_repo_file_snapshots). Streamed, so a
+    # match stops the scan rather than reading the repo's every file first.
     row = next(
-        (r for r in store.list_repo_files(conn, repo, ids) if _blob_sha(r["content"]) == sha), None
+        (
+            r
+            for r in store.iter_repo_file_snapshots(conn, repo, ids)
+            if _blob_sha(r["content"]) == sha
+        ),
+        None,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
@@ -921,18 +942,21 @@ async def get_commit(owner: str, repo: str, sha: str, request: Request):
 
 
 @router.get("/repos/{owner}/{repo}/readme")
-async def get_readme(owner: str, repo: str, request: Request):
+async def get_readme(owner: str, repo: str, request: Request, ref: str | None = Query(None)):
+    """`ref` selects a snapshot, as on `/contents` — real GitHub takes it here too, and both serve
+    the same underlying object (see :func:`_file_obj`), so a README the corpus snapshots would
+    otherwise be reachable at an older revision through one route and not the other."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
     ab = _api_base(request)
-    row = store.get_repo_file(conn, repo, "README.md", ids) or store.get_repo_file(
-        conn, repo, "readme.md", ids
+    row = store.get_repo_file(conn, repo, "README.md", ids, ref=ref) or store.get_repo_file(
+        conn, repo, "readme.md", ids, ref=ref
     )
     if row is not None:
         return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
-            owner, repo, row, ab
+            owner, repo, row, ab, ref
         )
     text = f"# {repo}\n\nRepository `{owner}/{repo}`.\n"
     raw = _raw_response(request, text, _CONTENT_RAW_TYPE)
@@ -1091,17 +1115,26 @@ def _tree_from_paths(owner: str, repo: str, files, api_base: str = "") -> list[d
     return [entries[p] for p in sorted(entries)]
 
 
-def _file_obj(owner: str, repo: str, row, api_base: str = "") -> dict:
+def _file_obj(owner: str, repo: str, row, api_base: str = "", ref: str | None = None) -> dict:
     """The Contents API's file-object shape (base64 body), used by both /contents/{path}
-    and /readme — real GitHub serves both from the same underlying object."""
+    and /readme — real GitHub serves both from the same underlying object.
+
+    `ref` is carried into every link, as real GitHub does. Without it a `?ref=`-selected response
+    holds one snapshot's bytes while `url`/`_links.self` fetch HEAD, so a client re-reading the file
+    it was just handed gets different content under the same `path`. It is the SELECTED ref rather
+    than the row's own, so a ref that named no snapshot (and fell back to HEAD) does not invent a
+    revision the corpus never stated.
+    """
     content = row["content"]
     path = row["path"]
     name = path.rsplit("/", 1)[-1]
     sha = _blob_sha(content)
-    url = f"{api_base}/repos/{owner}/{repo}/contents/{path}"
+    q = f"?ref={quote(ref, safe='')}" if ref else ""
+    rev = quote(ref, safe="") if ref else "main"
+    url = f"{api_base}/repos/{owner}/{repo}/contents/{path}{q}"
     git_url = f"{api_base}/repos/{owner}/{repo}/git/blobs/{sha}"
-    html_url = f"https://github.com/{owner}/{repo}/blob/main/{path}"
-    download_url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/{path}"
+    html_url = f"https://github.com/{owner}/{repo}/blob/{rev}/{path}"
+    download_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{rev}/{path}"
     return {
         "type": "file",
         "name": name,

@@ -24,7 +24,7 @@
     },
     "team": {
       "type": "string",
-      "description": "The owning team, e.g. \"engineering\". Its short key (ENG) is derived from the name and is what identifiers are prefixed with. Default: the source_type."
+      "description": "The owning team, e.g. \"engineering\". Its short key (ENG) is the prefix its identifiers carry: derived from the name, unless the team's own issues spell a different one out, in which case that is the key on every surface — real Linear derives an identifier FROM its team's key, so the two can never disagree. Default: the source_type."
     },
     "group": {
       "type": [
@@ -35,7 +35,8 @@
     },
     "identifier": {
       "type": "string",
-      "description": "Human identifier, e.g. \"ENG-123\". Default: synthesized as <TEAMKEY>-<n> from the doc_id. Not required to be unique — the bench's own keys repeat — and `issue(id:)` resolves a repeated identifier to the first matching issue."
+      "pattern": "^[A-Z0-9]+-\\S+$",
+      "description": "Human identifier, e.g. \"ENG-123\". Default: synthesized as <TEAMKEY>-<n> from the doc_id, under the prefix this team's provided identifiers carry — one issue spelling out ENG-7 makes the whole team answer at ENG, so a corpus need only write the identifiers its documents actually cite. The PREFIX is what is checked, and only the prefix, because that is the half that is a fact about the whole team: it becomes the team's key, so a single mistyped identifier would otherwise rename the team for every one of its issues. Everything after the first hyphen is the corpus's own business — an identifier is an opaque lookup string here, repeats and all. The prefix is checked against what the mock itself can hand out rather than against real Linear's 1-5 character key: `synth.linear_team_key` takes one initial per word with no upper bound and no leading-letter rule, so `platform-infra-reliability-and-cost-ops` serves `PIRACO-…` and `3d-printing` serves `3P-…`, and a narrower rule refused as input the identifiers this mock had just written. A well-shaped prefix that is simply the WRONG one (`ENGG-7` for a team the corpus calls `ENG`) is not something a pattern can catch; the 1:1 refusal at load is what names that. Not required to be unique — the bench's own keys repeat — and `issue(id:)` resolves a repeated identifier to the first matching issue."
     },
     "parent": {
       "type": "string",

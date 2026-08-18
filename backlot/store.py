@@ -2544,17 +2544,41 @@ def linear_team_by_served_id(conn, served_id) -> str | None:
     return row["team"] if row else None
 
 
+def linear_team_keys(conn) -> dict[str, str]:
+    """team -> the key its issues' identifiers are prefixed with, for every linear team.
+
+    One scan of a table with one row per team, so callers that need the key of more than one team
+    (the ``teams`` filter, the compiled issue filter, a page of issues each selecting
+    ``team { key }``) read it once instead of per row. A team's key is
+    :func:`synth.linear_team_key` of its name UNLESS its own issues spell a different prefix out,
+    in which case the importer stored that -- which is exactly why this reads the column rather
+    than deriving."""
+    return {
+        r["team"]: r["served_key"]
+        for r in conn.execute("SELECT team, served_key FROM linear_teams")
+    }
+
+
 def linear_team_by_served_key(conn, served_key) -> str | None:
     """Resolve a team KEY (`synth.linear_team_key`, e.g. "ENG") to its container name.
 
     The key is NOT injective -- two containers can reduce to the same one -- so `served_key`
-    carries no UNIQUE index. The tie is broken by team NAME, keeping the first team a key is seen
-    on: `ORDER BY team LIMIT 1` -- change
-    either without the other and a key silently resolves to a different team."""
-    row = conn.execute(
-        "SELECT team FROM linear_teams WHERE served_key = ? ORDER BY team LIMIT 1", (served_key,)
-    ).fetchone()
-    return row["team"] if row else None
+    carries no UNIQUE index. A key the corpus SPELLED OUT wins the tie: it is a fact about that
+    team, where a colliding one is only the shape another team's name happens to shorten to, and
+    `team(id: "ENG")` answering with the latter left the team the corpus called ENG unreachable at
+    its own key. Told apart by re-deriving: a served key that is not its team's derived key is one
+    the importer was told (see `byo._Loader._claim_linear_prefix`). Among equals the tie goes to
+    team NAME order, keeping the first team a key is seen on -- change either half of that without
+    the other and a key silently resolves to a different team."""
+    rows = conn.execute(
+        "SELECT team FROM linear_teams WHERE served_key = ? ORDER BY team", (str(served_key),)
+    ).fetchall()
+    if not rows:
+        return None
+    for row in rows:
+        if synth.linear_team_key(row["team"]) != str(served_key):
+            return row["team"]
+    return rows[0]["team"]
 
 
 def list_users(conn) -> list[sqlite3.Row]:

@@ -4432,6 +4432,35 @@ def test_byo_two_snapshots_of_one_file_both_load(tmp_path):
     conn.close()
 
 
+def test_byo_snapshots_ordered_by_a_synthesized_clock_are_reported(tmp_path, capsys):
+    """A path whose snapshots state no `created` loads, and says so.
+
+    With no `created` the clock is `synth.epoch(doc_id)` — a stable fake, but one that orders
+    snapshots by a hash of their dataset ids, so which one the file is SERVED at is not something
+    the corpus chose. This was a hard refusal before snapshots existed, and neither the load nor
+    `--dry-run` can see it any other way, so it gets the same one-line notice an unresolved
+    `changed_paths` gets rather than passing in silence.
+    """
+    settings = Settings(data_dir=tmp_path)
+    corpus = tmp_path / "c.jsonl"
+    corpus.write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                _gh_file("gh-old-version", "src/a.py", content="v1\n"),
+                _gh_file("gh-new-version", "src/a.py", content="v2\n"),
+                # a path with ONE snapshot needs no clock and must not be reported
+                _gh_file("gh-solo", "src/b.py", content="only\n"),
+            ]
+        )
+    )
+    load(corpus, settings)
+    err = capsys.readouterr().err
+    assert "src/a.py" in err or "1 file path" in err
+    assert "created" in err
+    assert "src/b.py" not in err
+
+
 def test_byo_two_file_rows_at_one_instant_are_refused_naming_the_path(tmp_path):
     """Two DIFFERENT documents claiming one file at the same instant are still a conflict — there
     is no order that makes one of them HEAD — and the message must name `path`.
@@ -4464,6 +4493,70 @@ def test_byo_two_file_rows_at_one_instant_are_refused_naming_the_path(tmp_path):
     assert "src/a.py" in msg
     assert "gh-1" in msg
     assert "ref" in msg  # points at the field that WOULD separate them
+
+
+def test_byo_two_file_rows_sharing_a_ref_are_told_to_change_the_ref(tmp_path):
+    """Rows that already state one `ref` are told to change the REF, not the `created`.
+
+    `ref` wins over `created` in the snapshot key, so an author who follows "or its own `created`"
+    here re-imports and hits the identical error.
+    """
+    settings = Settings(data_dir=tmp_path)
+    corpus = tmp_path / "c.jsonl"
+    corpus.write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                _gh_file(
+                    "gh-1",
+                    "src/a.py",
+                    content="v1\n",
+                    created="2025-01-01T00:00:00+00:00",
+                    ref="pr-9",
+                ),
+                _gh_file(
+                    "gh-2",
+                    "src/a.py",
+                    content="v2\n",
+                    created="2025-06-01T00:00:00+00:00",
+                    ref="pr-9",
+                ),
+            ]
+        )
+    )
+    with pytest.raises(SystemExit) as exc:
+        load(corpus, settings)
+    msg = str(exc.value)
+    assert "different `ref`" in msg
+    assert "will not separate them" in msg
+
+
+def test_byo_a_ref_on_a_row_that_is_not_a_file_is_refused(tmp_path):
+    """`ref` names which snapshot of a path a row is, so it means nothing on an issue or a pull.
+
+    Stored and ignored is the failure this check exists to prevent — the same reason
+    `changed_paths` on a non-pull is an error rather than a no-op: the corpus author gets no signal
+    that the field they wrote is not the one being served.
+    """
+    settings = Settings(data_dir=tmp_path)
+    corpus = tmp_path / "c.jsonl"
+    corpus.write_text(
+        json.dumps(
+            {
+                "source_type": "github",
+                "doc_id": "gh-i",
+                "repo": "gw",
+                "title": "Bug",
+                "content": "x",
+                "author_email": "ava@acme.com",
+                "ref": "pr-11",
+            }
+        )
+    )
+    with pytest.raises(SystemExit) as exc:
+        load(corpus, settings)
+    assert "ref" in str(exc.value)
+    assert "file" in str(exc.value)
 
 
 def test_byo_a_stated_ref_separates_two_snapshots_sharing_an_instant(tmp_path):

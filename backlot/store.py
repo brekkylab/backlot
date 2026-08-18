@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from backlot import synth
@@ -856,6 +856,17 @@ _ADDED_COLUMNS = {
     # `ref` unset means "the snapshot at created_ts", which is what every row predating it is.
     "github_items": (("ref", "TEXT"),),
 }
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """Whether `table` carries `column`.
+
+    Uncached on purpose. `sqlite3.Connection` takes no attributes, so memoising it means a
+    module-level map keyed on the connection's identity, which outlives the connection and can be
+    handed to a reused id. Measured at 16 us against a 12 us lookup: real, but this asks once per
+    file fetch, not once per row, and it only guards a path a caller opted into with `?ref=`.
+    """
+    return column in {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
@@ -2438,32 +2449,48 @@ def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
     return conn.execute(f"SELECT * FROM jira_issues WHERE key = ?{clause}", [key, *cp]).fetchone()
 
 
-def _file_head_clause(visible_ids=None, tbl: str = "t") -> tuple[str, list]:
+def _file_head_clause(visible_ids=None, tbl: str = "t", has_ref: bool = True) -> tuple[str, list]:
     """SQL restricting `tbl` to the HEAD of its `(repo, path)` — no snapshot the caller can also
     see is newer.
 
     A github file is ADDRESSED by `(repo, path)` but STORED one row per snapshot (see the
     `idx_github_file_snapshot` comment), so every read of a file has to choose one. HEAD is the
-    newest `created_ts`, with `number` breaking a tie so the choice is total: two snapshots may
-    share a timestamp and differ only by `ref`.
+    newest `created_ts`, and `ref` breaks a tie.
+
+    `ref` and not `number`: two snapshots may share an instant, which is precisely when the schema
+    tells an author to state a `ref`, and `number` is an internal handle probed from a hash of the
+    dataset id. Tie-breaking on it made the served content a property of a doc_id — renaming a
+    document flipped which snapshot the repo answered with — so stating a `ref` bought identity and
+    left serving undefined. Ordering on `ref` gives that advice something to settle. The snapshot
+    index makes `(created_ts, ref)` total for a path: they cannot both be equal.
 
     Resolved among the rows the CALLER can see, not corpus-wide. A snapshot hidden from them is
     not the file they are served — otherwise a path whose newest snapshot is restricted answers
     404 for a caller who can read an older one, which reveals that a newer one exists.
+
+    `has_ref` is False for a DB imported before the column existed, which serving opens read-only
+    and so cannot migrate. Such a DB holds one row per path — the importer refused a second — so
+    there is no tie to break and naming the column would only make every file read fail.
     """
     inner, ip = _acl_clause("github", tbl="x", visible_ids=visible_ids)
+    # COALESCE so a stated ref still orders against an unstated one rather than dropping out of the
+    # comparison, as any NULL operand would.
+    tie = (
+        f" OR (x.created_ts = {tbl}.created_ts AND COALESCE(x.ref, '') > COALESCE({tbl}.ref, ''))"
+        if has_ref
+        else ""
+    )
     return (
         f" AND NOT EXISTS (SELECT 1 FROM github_items x WHERE x.repo = {tbl}.repo"
         f" AND x.path = {tbl}.path AND x.kind = 'file'{inner}"
-        f" AND (x.created_ts > {tbl}.created_ts"
-        f" OR (x.created_ts = {tbl}.created_ts AND x.number > {tbl}.number)))",
+        f" AND (x.created_ts > {tbl}.created_ts{tie}))",
         ip,
     )
 
 
 def list_repo_files(conn, repo, visible_ids=None, limit=10_000, offset=0) -> list[sqlite3.Row]:
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    head, hp = _file_head_clause(visible_ids)
+    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
     sql = (
         "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file'"
         + clause
@@ -2482,7 +2509,7 @@ def list_repo_file_paths(conn, repo, visible_ids=None, limit=10_000, offset=0) -
     ``/pulls`` page synthesizes a changeset per row.
     """
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    head, hp = _file_head_clause(visible_ids)
+    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
     sql = (
         "SELECT t.path FROM github_items t WHERE t.repo = ? AND t.kind = 'file'"
         + clause
@@ -2557,7 +2584,7 @@ def github_comments(conn, repo, number, *, anchored: bool | None = None) -> list
 
 def count_repo_files(conn, repo, visible_ids=None) -> int:
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    head, hp = _file_head_clause(visible_ids)
+    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
     return conn.execute(
         "SELECT COUNT(*) FROM github_items t WHERE t.repo = ? AND t.kind = 'file'" + clause + head,
         [repo, *cp, *hp],
@@ -2574,7 +2601,11 @@ def get_repo_file(conn, repo, path, visible_ids=None, ref=None) -> sqlite3.Row |
     so it wins.
     """
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    if ref is not None:
+    if ref is not None and _has_column(conn, "github_items", "ref"):
+        # The column guard is for a DB imported before it existed: SERVING opens read-only, so
+        # _add_missing_columns never runs against it, and this is the one read that names `ref` in
+        # SQL. Such a DB holds one snapshot per path, so HEAD is the file -- the same answer the
+        # no-history tolerance already gives a ref no snapshot claims.
         named = conn.execute(
             "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file' AND t.path = ?"
             " AND t.ref = ?" + clause,
@@ -2582,7 +2613,7 @@ def get_repo_file(conn, repo, path, visible_ids=None, ref=None) -> sqlite3.Row |
         ).fetchone()
         if named is not None:
             return named
-    head, hp = _file_head_clause(visible_ids)
+    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
     return conn.execute(
         "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file' AND t.path = ?"
         + clause
@@ -2591,7 +2622,7 @@ def get_repo_file(conn, repo, path, visible_ids=None, ref=None) -> sqlite3.Row |
     ).fetchone()
 
 
-def list_repo_file_snapshots(conn, repo, visible_ids=None) -> list[sqlite3.Row]:
+def iter_repo_file_snapshots(conn, repo, visible_ids=None) -> Iterator[sqlite3.Row]:
     """EVERY file row in the repo, superseded snapshots included — the one read that does not
     collapse to HEAD.
 
@@ -2599,12 +2630,18 @@ def list_repo_file_snapshots(conn, repo, visible_ids=None) -> list[sqlite3.Row]:
     stays fetchable after a newer one supersedes it. SQLite cannot compute the digest, so the
     caller has to scan candidates, and scanning :func:`list_repo_files` would 404 every blob but
     HEAD's.
+
+    A cursor rather than a list, and uncapped where its siblings take a `limit`. Both follow from
+    what the caller does: it compares a digest and stops at the first match, so streaming means the
+    common fetch reads a few rows instead of materialising a repo's every file (`SELECT *` here is
+    content included — the ~4 MB `list_repo_file_paths` exists to avoid). A cap would instead make
+    a blob past it a false 404, which is the bug this replaced.
     """
     clause, cp = _acl_clause("github", visible_ids=visible_ids)
     return conn.execute(
         "SELECT * FROM github_items WHERE repo = ? AND kind = 'file'" + clause + " ORDER BY path",
         [repo, *cp],
-    ).fetchall()
+    )
 
 
 # --- grouping units (channels/mailboxes/folders/repos/projects/spaces) & principals ---

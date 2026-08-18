@@ -851,6 +851,11 @@ def _github_pairing_errors(rec: dict) -> list[str]:
     subtype = rec.get("subtype")
     is_pull = subtype == "pull_request"
     msgs = []
+    if rec.get("ref") is not None and subtype != "file":
+        # `ref` says WHICH SNAPSHOT of a path this row is, so it means nothing off a file. Every
+        # reader of the column is scoped to kind='file', so an unchecked one would be stored and
+        # serve nothing -- the same silent no-op `changed_paths` is checked for below.
+        msgs.append(f"ref is for subtype='file' only (this is {subtype or 'issue'!r})")
     if rec.get("changed_paths") is not None:
         if not is_pull:
             msgs.append(
@@ -1461,6 +1466,10 @@ class _Loader:
         # A pull's declared changeset, resolved after the whole corpus is read: the `file` document
         # a path names may be on a later line, or in a shard already loaded.
         self.gh_changesets = []  # (where, repo, paths)
+        # (repo, path) -> whether every snapshot of it left `created` to be synthesized. A path
+        # with several snapshots and no stated clock is served at whichever doc_id hashes latest,
+        # which is not something the corpus chose; reported once at the end (see _report_unclocked).
+        self.gh_file_clocks: dict[tuple[str, str], list[bool]] = {}
         # Linear's teams, held to the same 1:1 as jira's projects above: real Linear keeps team
         # keys workspace-unique because an identifier is DERIVED from its team's key, so a team
         # answering at two prefixes (or two teams answering at one) is a shape only the loader can
@@ -2052,6 +2061,9 @@ class _Loader:
                 cols["number"] = self._existing_file_number(
                     container, cols.get("path"), cols.get("ref"), created
                 )
+                self.gh_file_clocks.setdefault((container, cols.get("path")), []).append(
+                    created_written is None
+                )
                 file_row = True
             else:
                 file_row = False
@@ -2113,14 +2125,23 @@ class _Loader:
                     # changes nothing, and the number in `key` is an internal provisional that
                     # names nothing the author wrote. What separates two rows at one path is the
                     # snapshot they stand for.
+                    # A stated `ref` WINS over `created` in the snapshot key, so telling an author
+                    # with two same-`ref` rows to change a `created` sends them back to this same
+                    # error. The remedy has to name the field that actually decides.
+                    fix = (
+                        "give one of them a different `ref`  (`ref` is what identifies the "
+                        "snapshot once stated, so changing `created` alone will not separate them)"
+                        if cols.get("ref")
+                        else "give one of them its own `created`, or state a `ref` on each"
+                    )
                     raise SystemExit(
                         f"{where}: this file row is (repo, path) = "
                         f"({container!r}, {cols.get('path')!r}) at the same snapshot as "
                         f"{claimed_by!r} in this corpus. Several rows MAY state one path -- they "
                         f"are that file's history -- but two of them cannot stand for the same "
                         f"moment, since neither would be the one the file is served at. A file's "
-                        f"`number` is ignored, so a different number will not separate them: give "
-                        f"one of them its own `ref`, or its own `created`."
+                        f"`number` is ignored, so a different number will not separate them: "
+                        f"{fix}."
                     )
                 raise SystemExit(
                     f"{where}: this row resolves to {store.id_columns(src)} = {key}, which "
@@ -2666,6 +2687,9 @@ class _Loader:
                 ),
             )
 
+        # Outside the changeset block below: a corpus of files with no pulls has no changesets and
+        # is exactly where an unordered snapshot stack goes unnoticed.
+        self._report_unclocked()
         # A pull's declared changeset, against the `file` documents that now exist. Asked of the DB
         # rather than of this run's records, so a path whose file arrived in an earlier `--append`
         # resolves; memoized because a path repeats across the pulls that touched it.
@@ -2689,6 +2713,32 @@ class _Loader:
                     f"names it (`--dry-run` names them)",
                     file=sys.stderr,
                 )
+
+    def _report_unclocked(self) -> None:
+        """Name the file paths whose snapshots are ordered by a synthesized clock.
+
+        A path holding one snapshot needs no order, and a path whose rows state `created` was
+        ordered by the corpus. What is worth a line is the rest: several snapshots, no stated
+        clock, so `synth.epoch` of each dataset id decides which one the file is served at.
+        Reported rather than refused -- the corpus loads and every snapshot is addressable -- but
+        not in silence, because nothing downstream can tell that the order was not chosen.
+        """
+        bad = sorted(
+            p for p, clocks in self.gh_file_clocks.items() if len(clocks) > 1 and all(clocks)
+        )
+        if not bad:
+            return
+        noun = "path" if len(bad) == 1 else "paths"
+        print(
+            f"  github: {len(bad)} file {noun} hold several snapshots with no `created` of their "
+            f"own, so which one the file is served at follows a hash of the dataset ids rather "
+            f"than the corpus. State `created` (or a `ref`) on them:",
+            file=sys.stderr,
+        )
+        for repo, path in bad[:10]:
+            print(f"    {repo}: {path}", file=sys.stderr)
+        if len(bad) > 10:
+            print(f"    ... and {len(bad) - 10} more", file=sys.stderr)
 
     def _settle(self, src: str, final: list) -> None:
         """Move rows in a deferred source from their provisional key to the settled one.

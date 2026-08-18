@@ -272,6 +272,36 @@ _GH_FILE_DOCS = [
         "author_email": "ava@acme.com",
         "author_groups": ["engineering"],
     },
+    {
+        "source_type": "github",
+        "doc_id": "gh-hist-readme-v1",
+        "repo": "history-repo",
+        "subtype": "file",
+        "path": "README.md",
+        "ref": "pr-1",
+        "title": "README.md",
+        "content": "# history-repo\n\nfirst\n",
+        "created": "2026-01-01T00:00:00Z",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
+    {
+        "source_type": "github",
+        "doc_id": "gh-hist-readme-v2",
+        "repo": "history-repo",
+        "subtype": "file",
+        "path": "README.md",
+        "ref": "pr-3",
+        "title": "README.md",
+        "content": "# history-repo\n\nsecond\n",
+        "created": "2026-03-01T00:00:00Z",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
     # a second path in the same repo, so the tree has something to be a set OF
     {
         "source_type": "github",
@@ -619,7 +649,8 @@ def test_github_a_files_snapshots_are_one_tree_entry_served_at_head(gh_client, g
         params={"recursive": "1"},
     ).json()
     blobs = [e for e in tree["tree"] if e["type"] == "blob"]
-    assert sorted(e["path"] for e in blobs) == ["svc/other.py", "svc/rate.py"]
+    # README.md and svc/rate.py each hold several snapshots; each is ONE entry
+    assert sorted(e["path"] for e in blobs) == ["README.md", "svc/other.py", "svc/rate.py"]
 
     body = c.get(f"/github/repos/{gh_org}/history-repo/contents/svc", headers=gh_admin_h).json()
     assert sorted(e["path"] for e in body) == ["svc/other.py", "svc/rate.py"]
@@ -648,6 +679,37 @@ def test_github_contents_serves_a_snapshot_by_its_stated_ref(gh_client, gh_admin
 
     body = c.get(url, headers=gh_admin_h, params={"ref": "pr-1"}).json()
     assert body["path"] == "svc/rate.py"  # the file's address, not the snapshot's
+
+
+def test_github_a_ref_selected_file_carries_the_ref_in_its_own_links(gh_client, gh_admin_h, gh_org):
+    """A `?ref=` response has to round-trip: following its own `url` must return the same bytes.
+
+    Real GitHub carries the ref in `url`, `_links.self`, `html_url` and `download_url`. Without it
+    the body is the older snapshot while every link on it fetches HEAD — a client that follows
+    `_links.self` to re-read the file it was just handed gets different content and the same `path`.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/history-repo/contents/svc/rate.py"
+    body = c.get(url, headers=gh_admin_h, params={"ref": "pr-1"}).json()
+
+    assert "ref=pr-1" in body["url"]
+    assert "ref=pr-1" in body["_links"]["self"]
+    assert "pr-1" in body["html_url"] and "pr-1" in body["download_url"]
+
+    # the promise those links make, kept
+    again = c.get(body["url"].split("testserver", 1)[1], headers=gh_admin_h).json()
+    assert again["sha"] == body["sha"]
+    assert again["content"] == body["content"]
+
+    # HEAD's own response is unchanged -- no ref, no query string
+    head = c.get(url, headers=gh_admin_h).json()
+    assert "?" not in head["url"] and "?" not in head["_links"]["self"]
+
+    # /readme serves the same underlying object, so it takes the ref too
+    readme = f"/github/repos/{gh_org}/history-repo/readme"
+    raw = {**gh_admin_h, "Accept": "application/vnd.github.raw"}
+    assert "second" in c.get(readme, headers=raw).text  # HEAD
+    assert "first" in c.get(readme, headers=raw, params={"ref": "pr-1"}).text
 
 
 def test_github_every_snapshot_keeps_its_own_blob(gh_client, gh_admin_h, gh_org):

@@ -1,13 +1,11 @@
 """FastAPI app hosting every vendor mock under path prefixes.
 
-Startup opens the read-only SQLite DB, loads the ACL/token map, and builds reverse
-indexes (issue number / Jira key / Confluence id -> doc_id) for O(1) get-by-id.
+Startup opens the read-only DB, loads the ACL/token map, and starts a background cache warm-up.
 """
 
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 from contextlib import asynccontextmanager
 
@@ -36,217 +34,6 @@ from backlot.routers import (
 )
 
 
-# Numbers a derived id may take before the search gives up. A repository with more
-# documents than this has run out of the space `synth.github_number` draws from, which is
-# a corpus-scale problem and not something a silent duplicate should paper over.
-_PROBE_LIMIT = 90_000
-
-
-def _free_number(taken: dict, container: str, start: int) -> int:
-    """A number in `container` that nothing has claimed, starting from the derived one.
-
-    A derived number is a hash, so it can land on one a document provided outright — or on
-    another row's derived one. The earlier claimant keeps it and this row moves,
-    deterministically, to the next free number. That next number may itself be a later
-    row's derived spelling, so one collision can move rows that never collided themselves.
-
-    What this makes a served id is a function of the container's WHOLE row set, not of the
-    row alone: stable across restarts of the same DB, free to move when `--append` changes
-    the set. That is the deliberate choice — the alternative, storing the resolved value,
-    is what the loader comment in `byo._Loader.add` rejects, since a stored synthesized id
-    is indistinguishable from a provided one. The invariant kept instead is
-    self-consistency at every moment: the id a row advertises is the id that fetches it,
-    because the routers read the same map this function fills."""
-    n = start
-    for _ in range(_PROBE_LIMIT):
-        if (container, n) not in taken:
-            return n
-        n = n % _PROBE_LIMIT + 1
-    return start
-
-
-def _free_key(taken: dict, prefix: str, start: str) -> str:
-    """The jira analogue of `_free_number`: same prefix, next free sequence number."""
-    n = int(start.rsplit("-", 1)[-1]) if "-" in start else 1
-    for _ in range(_PROBE_LIMIT):
-        key = f"{prefix}-{n}"
-        if key not in taken:
-            return key
-        n = n % _PROBE_LIMIT + 1
-    return start
-
-
-def _build_index(conn) -> dict:
-    idx = {
-        "github": {},
-        "jira": {},
-        "confluence": {},
-        "notion": {},
-        "s3": {},
-        "hubspot": {},
-        "gmail": {},
-        "linear": {},
-        "linear_teams": {},
-        "linear_users": {},
-        "linear_states": {},
-        "linear_projects": {},
-        "linear_cycles": {},
-        "linear_labels": {},
-        "linear_releases": {},
-        "fireflies_users": {},
-        # container -> the project-key prefix its corpus-provided issue keys carry, and
-        # the reverse — so `project = PAY` JQL, the project picker and every issue's
-        # `fields.project.key` speak the spelling the documents cite.
-        "jira_project_keys": {},
-        "jira_project_containers": {},
-        # doc_id -> the number/key the document answers to. The routers read these rather
-        # than deriving the id themselves: a keyless row's derived spelling can already be
-        # held by a row that provided it, and then the row served a number that fetched
-        # somebody else while being reachable at nothing. Resolving it belongs here, the
-        # one place the whole container is visible.
-        "github_number": {},
-        "jira_key": {},
-    }
-    # Gmail ids are 16-hex integers, not dsids, so the served id has to be reversed back to a row.
-    # ONE map covers messages AND threads: a thread key is the root message's doc_id (verified on
-    # a real corpus -- 0 of 121,390 thread keys is anything else), which is also why real Gmail
-    # reports id == threadId for a lone message. Measured cost on a 556,238-message corpus:
-    # +2.2s and +88 MiB, taking this whole function from 6.4s to ~8.6s, with 0 collisions.
-    for r in conn.execute(f"SELECT doc_id FROM {store.table('gmail')}"):
-        idx["gmail"][synth.gmail_message_id(r["doc_id"])] = r["doc_id"]
-
-    # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
-    # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
-    # Two passes each: corpus-provided ids claim their spelling first, then every row's
-    # synthesized spelling registers as an alias — a collision can therefore never make the
-    # losing document unreachable, it just answers to its synthesized id. Scans are in doc_id
-    # order with setdefault (first row wins, stable across restarts — Linear's contract for
-    # repeated identifiers). A DB from before the columns existed is opened READ-ONLY here, so
-    # no migration can run; the column-less query serves it exactly as that version did.
-    def _scan(with_cols: str, without_cols: str, tail: str):
-        try:
-            return list(conn.execute(with_cols + tail))
-        except sqlite3.OperationalError as e:
-            # Only a missing column means "a DB from before these columns existed". Any
-            # other OperationalError — a locked database, a corrupt page — must surface:
-            # swallowed, it boots a server that ignores every corpus-provided id and 404s
-            # at all of them, with nothing said. Same narrowing as `store.read_meta`.
-            if "no such column" not in str(e).lower():
-                raise
-            return list(conn.execute(without_cols + tail))
-
-    gh_rows = _scan(
-        f"SELECT doc_id, {store.grouping_col('github')} AS container, number ",
-        f"SELECT doc_id, {store.grouping_col('github')} AS container, NULL AS number ",
-        f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file' ORDER BY doc_id",
-    )
-    for r in gh_rows:
-        if r["number"]:
-            idx["github"].setdefault((r["container"], r["number"]), r["doc_id"])
-            idx["github_number"][r["doc_id"]] = r["number"]
-    for r in gh_rows:
-        if r["doc_id"] in idx["github_number"]:
-            continue
-        n = _free_number(idx["github"], r["container"], synth.github_number(r["doc_id"]))
-        idx["github"][(r["container"], n)] = r["doc_id"]
-        idx["github_number"][r["doc_id"]] = n
-    # A record that provided a number keeps answering at its derived spelling too, where
-    # that is still free. Last, so it never takes the number a displaced row wanted.
-    for r in gh_rows:
-        if r["number"]:
-            idx["github"].setdefault(
-                (r["container"], synth.github_number(r["doc_id"])), r["doc_id"]
-            )
-
-    j_rows = _scan(
-        f"SELECT doc_id, {store.grouping_col('jira')} AS container, key ",
-        f"SELECT doc_id, {store.grouping_col('jira')} AS container, NULL AS key ",
-        f"FROM {store.table('jira')} ORDER BY doc_id",
-    )
-    for r in j_rows:
-        if r["key"]:
-            idx["jira"].setdefault(r["key"], r["doc_id"])
-            idx["jira_key"][r["doc_id"]] = r["key"]
-            prefix = str(r["key"]).rsplit("-", 1)[0]
-            if prefix:
-                idx["jira_project_keys"].setdefault(r["container"], prefix)
-                idx["jira_project_containers"].setdefault(prefix.upper(), r["container"])
-    for r in j_rows:
-        if r["key"]:
-            continue
-        # The synthesized alias carries the container's provided prefix when one exists,
-        # so a keyless row in a keyed project still serves `<PAY>-<n>` — real Jira
-        # guarantees an issue key's prefix IS its project's key.
-        pkey = idx["jira_project_keys"].get(r["container"]) or synth.jira_project_key(
-            r["container"]
-        )
-        key = _free_key(idx["jira"], pkey, synth.jira_key(r["doc_id"], pkey))
-        idx["jira"][key] = r["doc_id"]
-        idx["jira_key"][r["doc_id"]] = key
-    for r in j_rows:
-        if r["key"]:
-            pkey = idx["jira_project_keys"].get(r["container"]) or synth.jira_project_key(
-                r["container"]
-            )
-            idx["jira"].setdefault(synth.jira_key(r["doc_id"], pkey), r["doc_id"])
-    for r in conn.execute(f"SELECT doc_id FROM {store.table('confluence')}"):
-        idx["confluence"][synth.confluence_id(r["doc_id"])] = r["doc_id"]
-    # Notion ids are dashed UUIDs; key the index by the dashless form so a client sending either
-    # dashed or dashless (both valid to real Notion) resolves — see routers.notion._norm.
-    for r in conn.execute(f"SELECT doc_id FROM {store.table('notion')}"):
-        idx["notion"][synth.notion_id(r["doc_id"]).replace("-", "")] = r["doc_id"]
-    for r in conn.execute(f"SELECT doc_id, bucket, key FROM {store.table('s3')}"):
-        idx["s3"][f"{r['bucket']}/{r['key']}"] = r["doc_id"]
-    # HubSpot record ids are numeric strings; the CRM routes and the v4 association payload both
-    # speak them, so one index resolves either back to a doc_id.
-    for r in conn.execute(f"SELECT doc_id FROM {store.table('hubspot')}"):
-        idx["hubspot"][synth.hubspot_record_id(r["doc_id"])] = r["doc_id"]
-    # Linear's `issue(id:)` accepts the UUID *or* the human identifier (ENG-123), and `team(id:)`
-    # the team UUID or its key — so one dict per entity resolves either spelling back to the row.
-    # Identifiers are NOT required to be unique (5,055 keys repeat in one real corpus) and two
-    # containers can reduce to one team key, so both use setdefault: the first row in doc_id/name
-    # order wins and the
-    # mapping stays stable across restarts, while the UUID form always addresses a row exactly.
-    # Exactly (doc_id, identifier), in that order: idx_linear_doc_ident covers it, so this is an
-    # index-only scan and never touches the wide issue rows.
-    for r in conn.execute(
-        f"SELECT doc_id, identifier FROM {store.table('linear')} ORDER BY doc_id"
-    ):
-        idx["linear"][synth.linear_id(r["doc_id"])] = r["doc_id"]
-        if r["identifier"]:
-            idx["linear"].setdefault(r["identifier"], r["doc_id"])
-    for r in store.list_containers(conn, "linear"):
-        idx["linear_teams"][synth.linear_team_id(r["name"])] = r["name"]
-        idx["linear_teams"].setdefault(synth.linear_team_key(r["name"]), r["name"])
-        # A mock affordance on top of the two real spellings: the container's own name. Costs
-        # nothing and saves a caller from having to derive `ENG` from `engineering` by hand.
-        idx["linear_teams"].setdefault(r["name"], r["name"])
-    # `@linear/sdk` resolves an issue's relations LAZILY: `await issue.state` issues a fresh
-    # `workflowState(id: <uuid>)`. Those uuids are one-way hashes of a name, so the only way to
-    # answer is a reverse map built here. Each source list is a DISTINCT over one column (see
-    # store.linear_distinct_values), so this is a handful of scans of one table, not per-row work.
-    distinct = store.linear_distinct_values(conn)
-    for email, display in distinct["users"]:
-        idx["linear_users"][synth.linear_user_id(email)] = (email, display)
-    for team, name in distinct["states"]:
-        idx["linear_states"][synth.linear_state_id(name, team)] = (team, name)
-    for name in distinct["projects"]:
-        idx["linear_projects"][synth.linear_project_id(name)] = name
-    for team, name in distinct["cycles"]:
-        idx["linear_cycles"][synth.linear_cycle_id(name, team)] = (team, name)
-    for name in distinct["labels"]:
-        idx["linear_labels"][synth.linear_label_id(name)] = name
-    for name in distinct["releases"]:
-        idx["linear_releases"][synth.linear_release_id(name)] = name
-    # Fireflies needs NO transcript-id index: `transcript(id:)` resolves against the stored
-    # `transcript_id` column (indexed), because unlike Linear's identifier that id is unique by
-    # construction. Only `user_id` needs reversing — it is a one-way hash of an address, and both
-    # `user(id:)` and the `transcripts(user_id:)` filter accept it.
-    for r in store.list_users(conn):
-        idx["fireflies_users"][synth.fireflies_user_id(r["email"])] = r["email"]
-    return idx
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -255,10 +42,8 @@ async def lifespan(app: FastAPI):
             f"DB not found at {settings.db_path}. Build it first: "
             "backlot import <corpus.jsonl>  (see `backlot import --help` for the other sources)"
         )
-    # A BYO import records the corpus-derived org in tokens.yaml; adopt it so the routers
-    # (which read get_settings().org_name/org_domain) stay consistent with the ACL. A tokens.yaml
-    # written from a stated roster instead of a corpus's own addresses has no org, so the settings
-    # defaults stand.
+    # Adopt the corpus-derived org a BYO import recorded, so the routers (which read these off
+    # settings) agree with the ACL. A roster-built tokens.yaml has no org; the defaults then stand.
     if settings.tokens_path.exists():
         data = yaml.safe_load(settings.tokens_path.read_text()) or {}
         if data.get("org"):
@@ -275,36 +60,25 @@ async def lifespan(app: FastAPI):
     app.state.conn = conn
     app.state.acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     app.state.oauth = Oauth.load(settings.credentials_path)  # None if credentials.yaml absent
-    app.state.index = _build_index(conn)
 
-    # One indexed lookup, not a background warm-up like doc_counts below — the value can't
-    # change while the server runs. None on a DB built before the meta table existed.
+    # None on a DB predating the meta table.
     _src = store.read_meta(conn, "source_documents")
     app.state.source_documents = int(_src) if _src is not None else None
 
-    # Per-source COUNT(*) can be slow on a very large / cold DB, so compute it once in a
-    # background thread (its own RO connection) and cache it — /health then stays O(1) and never
-    # blocks the ALB health check, even right after a cold start.
+    # Three caches the warm-up below fills, each too slow to compute per request on a large corpus:
+    # per-source COUNT(*), channel -> principals granted on any of its docs, and channel -> member
+    # count. Every consumer treats None as "not warm yet" and falls back to its own query.
     app.state.doc_counts = None
-    # channel -> {principals granted on any of its docs}, so conversations.list can decide a
-    # non-admin caller's visible channels by set-intersection (O(channels)) instead of a
-    # per-request doc_acl⋈messages join that scales with the docs granted to the caller.
     app.state.channel_acl = None
-    # channel -> its member count (its distinct speakers). conversations.info/.list report it
-    # for every channel in a page, and a per-channel COUNT(DISTINCT) is far too slow for that.
     app.state.channel_members = None
 
     app.state.warm_error = None
 
     def _warm_caches():
-        """Fill the caches above, and RECORD a failure rather than dying quietly.
+        """Fill the caches above, RECORDING a failure rather than dying quietly.
 
-        A daemon thread that raises takes its traceback with it: every cache stays None, which each
-        consumer treats as "not warm yet" — the Slack routes fall back to their per-request queries
-        and keep answering correctly, so nothing 500s and nothing retries. That is the right
-        behaviour for a warm-up, and exactly why the failure has to be reported: without this, a
-        broken warm-up is indistinguishable from a slow one forever, and /health goes on saying
-        `status: "ok"` with `documents: null` while a load balancer stays green.
+        The fallbacks mean a dead thread breaks nothing — which is exactly why it must be reported,
+        or a broken warm-up looks like a slow one forever and /health stays `ok` with null counts.
         """
         try:
             c = store.connect_ro(
@@ -316,8 +90,7 @@ async def lifespan(app: FastAPI):
             try:
                 cacl: dict[str, set] = {}
                 for ch, pid in c.execute(
-                    "SELECT DISTINCT d.channel, a.principal_id "
-                    "FROM doc_acl a JOIN slack_messages d ON d.doc_id = a.doc_id"
+                    f"SELECT DISTINCT a.channel, a.principal_id FROM {store.acl_table('slack')} a"
                 ):
                     cacl.setdefault(ch, set()).add(pid)
                 app.state.channel_acl = {k: frozenset(v) for k, v in cacl.items()}
@@ -332,8 +105,7 @@ async def lifespan(app: FastAPI):
             app.state.warm_error = f"{type(e).__name__}: {e}"
             logging.getLogger(__name__).exception("cache warm-up failed; /health will say degraded")
 
-    # Kept on app.state (rather than fire-and-forget) so a caller — namely tests — can wait for
-    # it deterministically instead of polling /health and hoping doc_counts landed in time.
+    # On app.state, not fire-and-forget, so tests can join it instead of polling /health.
     app.state.warm_thread = threading.Thread(target=_warm_caches, daemon=True)
     app.state.warm_thread.start()
     try:
@@ -343,21 +115,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    # The server's name, not a corpus's: it serves whatever was imported, so naming one dataset
-    # here would put it in /openapi.json, every generated client, and every MCP bridge's tool
-    # descriptions.
+    # The server's name, never a corpus's: it reaches /openapi.json and every generated client.
     title="Backlot Mock Server",
     lifespan=lifespan,
-    # NOT FastAPI's default, which derives the id's method suffix from a set and so
-    # changes between restarts — see openapi.unique_operation_id.
+    # FastAPI's default derives the method suffix from a set, so it changes between restarts.
     generate_unique_id_function=openapi.unique_operation_id,
 )
 
 
-# A vendor whose clients parse error bodies gets its own envelope, and each lives in
-# ``backlot/errors/`` with the reasoning for its shape. Both handlers below ask that package and fall
-# back to FastAPI's ``{"detail": ...}`` — so neither carries a branch per vendor, and neither has to
-# be edited to add one.
+# Per-vendor error envelopes live in ``backlot/errors/``. Both handlers ask that package and fall
+# back to FastAPI's ``{"detail": ...}``.
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -409,21 +176,13 @@ async def parse_slack_form(request: Request, call_next):
 
 @app.get("/health")
 async def health():
-    # O(1): return the cached per-source counts (see lifespan). `by_source` is {} for the brief
-    # window after a cold start until the background count finishes.
-    #
-    # Two counts, deliberately. `documents` sums store.SOURCE_TABLE only — the 11 root-document
-    # tables. It does NOT include store.COMMENT_TABLE (jira/confluence/github/notion/linear
-    # comments, fireflies_sentences): those rows are served too, each with its own
-    # endpoint, but they're children of a root doc rather than documents themselves, so they
-    # aren't counted here. `source_documents` is what the corpus offered, which is smaller than
-    # `documents` because faithful parsing turns one Slack transcript into many message rows.
-    # Publishing only the larger of the two reads as inflation, which is why both are reported.
+    # Two counts, deliberately. `documents` sums the root-document tables only (SOURCE_TABLE, not
+    # COMMENT_TABLE); `source_documents` is what the corpus OFFERED, which is smaller because
+    # parsing turns one Slack transcript into many messages. Reporting only the larger inflates.
     counts = getattr(app.state, "doc_counts", None)
     warm_error = getattr(app.state, "warm_error", None)
-    # `degraded`, not a non-200: the corpus is still served correctly — every consumer of the warm
-    # caches falls back to a per-request query — so failing the healthcheck would take down a server
-    # that works. What must not happen is `ok` alongside counts that will never arrive.
+    # `degraded`, not a non-200: the corpus is still served correctly (see the fallbacks), so
+    # failing the check would take down a working server. Only `ok` with null counts is wrong.
     body = {
         "status": "degraded" if warm_error else "ok",
         "source_documents": getattr(app.state, "source_documents", None),
@@ -435,9 +194,8 @@ async def health():
         body["documents"] = None
         body["by_source"] = {}
     if warm_error:
-        # Set even when the counts DID land: the warm-up fills three caches in sequence, so a
-        # failure part-way leaves some of them populated. `degraded` without the reason is a worse
-        # answer than either "ok" or a plain failure.
+        # Reported even when the counts landed: the warm-up fills three caches in sequence, so it
+        # can fail part-way.
         body["warm_error"] = warm_error
     return body
 
@@ -460,9 +218,8 @@ async def mock_users():
     conn = app.state.conn
     acl = app.state.acl
     tok = acl.email_to_token()
-    # Only authenticating users (those with a bearer token) are listed — the org's real roster.
-    # Other people the corpus references are display-only: they appear as owners/authors on
-    # documents, but aren't identities you can pick a token for here.
+    # Only users with a token: everyone else the corpus names is display-only (an author or owner,
+    # not an identity you can authenticate as).
     users = [
         {
             "email": u["email"],

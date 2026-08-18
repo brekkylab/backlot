@@ -14,7 +14,7 @@ ACL-filtered. Errors use Notion's envelope: ``{"object":"error","status","code",
   rows are read via ``POST /databases/{id}/query``.
 
 Both query paths and both retrieve shapes are always served; the mock has one data source per
-database, its id derived deterministically from the database's doc_id.
+database, its id assigned at import alongside the database's own.
 
 Object mapping: a Notion *page* is one doc (``subtype='page'``); a *database* is one doc
 (``subtype='database'``, ``content`` → its description); a *database row* is a page whose
@@ -41,7 +41,7 @@ DEFAULT_VERSION = "2025-09-03"
 LEGACY_VERSION = "2022-06-28"
 
 
-# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# --- OpenAPI enrichment --------------------------------------------------
 # GET query params are documented with openapi_extra (merges with path params, no signature
 # change); POST bodies (search/query) are read via _json_body, so their shape is documented as a
 # requestBody the same way. Response models use extra="allow" to preserve the full field set.
@@ -101,20 +101,43 @@ def _version(request: Request) -> str:
 
 
 def _norm(nid: str) -> str:
-    """Notion accepts ids with or without dashes; normalize to the 32-hex index key."""
-    return (nid or "").replace("-", "").lower()
+    """Notion accepts an id dashed or dashless, any case. Canonicalize to the dashed lowercase
+    form the stored ``id`` / ``data_source_id`` columns actually hold (see
+    ``synth._uuid_from``) rather than to a dashless key: a UUID's dashes sit at fixed offsets
+    (8-4-4-4-12), so reconstructing them is deterministic, and the column's job is to hold the
+    value the API reports, not a lookup key a reader has to rebuild dashes from.
+
+    Malformed input (the wrong length once dashes are stripped) comes back unchanged, which just
+    won't match any stored id -- the same 404 every unknown-but-well-formed id already gets.
+    Notion draws no 400-vs-404 shape distinction the way gmail does (see
+    routers.google._gmail_check_shape); there is nothing to preserve here."""
+    h = (nid or "").replace("-", "").lower()
+    if len(h) != 32:
+        return h
+    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
 
 
-def _doc_id_for(request: Request, page_id: str) -> str | None:
-    return request.app.state.index["notion"].get(_norm(page_id))
+def _existing_id(request: Request, page_id: str) -> str | None:
+    """The canonical form of a served page/database/block id, or None if it names nothing -- a
+    PRIMARY KEY lookup (see store.notion_by_id). All it does is normalise the spelling and
+    confirm a row holds that id.
+
+    Unscoped by ACL on purpose: used only by query_database (via _query_rows), which needs the id
+    to drive a further, separately ACL-scoped query (store.children, a DIFFERENT table) rather
+    than to serve this row itself -- see get_page and friends (and list_comments), which read the
+    row directly instead of going through here, so as not to resolve it once and refetch it a
+    second time for the ACL check."""
+    row = store.notion_by_id(auth.conn(request), _norm(page_id))
+    return row["id"] if row is not None else None
 
 
 def _db_doc_for_data_source(request: Request, dsid: str) -> str | None:
-    key = _norm(dsid)
-    for doc_id in request.app.state.index["notion"].values():
-        if _norm(synth.notion_data_source_id(doc_id)) == key:
-            return doc_id
-    return None
+    """The database `id` behind a data source id -- a unique-indexed column lookup (see
+    store.notion_by_data_source_id), not the O(pages) scan -- hashing every notion row's data
+    source id on every request. Unscoped by ACL for the same reason as
+    _existing_id."""
+    row = store.notion_by_data_source_id(auth.conn(request), _norm(dsid))
+    return row["id"] if row is not None else None
 
 
 def _page_size(raw, default: int = _PAGE_MAX) -> int:
@@ -164,8 +187,10 @@ def _cover(url: str | None) -> dict | None:
 
 
 def _parent_field(row) -> dict:
+    # `parent_id` already HOLDS the parent's served id — the importer resolved it there.
+    # Hashing it again would name a page nothing serves.
     if row["parent_id"]:
-        return {"type": "database_id", "database_id": synth.notion_id(row["parent_id"])}
+        return {"type": "database_id", "database_id": row["parent_id"]}
     return {"type": "workspace", "workspace": True}
 
 
@@ -185,7 +210,7 @@ def _prop_value(name: str, value) -> dict:
 
 
 def _page_obj(conn, row) -> dict:
-    pid = synth.notion_id(row["doc_id"])
+    pid = row["id"]
     created = row["created_ts"]
     updated = row["updated_ts"] or created
     props = {"title": _title_prop(row["title"])}
@@ -220,7 +245,7 @@ def _schema_props(row) -> dict:
 
 
 def _database_obj(conn, row, version: str) -> dict:
-    did = synth.notion_id(row["doc_id"])
+    did = row["id"]
     created = row["created_ts"]
     updated = row["updated_ts"] or created
     obj = {
@@ -244,19 +269,17 @@ def _database_obj(conn, row, version: str) -> dict:
     if version == LEGACY_VERSION:
         obj["properties"] = _schema_props(row)
     else:
-        obj["data_sources"] = [
-            {"id": synth.notion_data_source_id(row["doc_id"]), "name": row["title"]}
-        ]
+        obj["data_sources"] = [{"id": row["data_source_id"], "name": row["title"]}]
     return obj
 
 
 def _data_source_obj(conn, row) -> dict:
     return {
         "object": "data_source",
-        "id": synth.notion_data_source_id(row["doc_id"]),
+        "id": row["data_source_id"],
         "name": row["title"],
-        "parent": {"type": "database_id", "database_id": synth.notion_id(row["doc_id"])},
-        "database_parent": {"type": "database_id", "database_id": synth.notion_id(row["doc_id"])},
+        "parent": {"type": "database_id", "database_id": row["id"]},
+        "database_parent": {"type": "database_id", "database_id": row["id"]},
         "properties": _schema_props(row),
     }
 
@@ -270,12 +293,10 @@ async def get_page(page_id: str, request: Request):
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
-    doc_id = _doc_id_for(request, page_id)
-    row = (
-        store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller))
-        if doc_id
-        else None
-    )
+    # One ACL-scoped query, not a resolve followed by a get_document refetch of the same row:
+    # `id` is the PRIMARY KEY, so the ACL clause can only narrow "found" to "not found", never
+    # redirect to a different row (see store.notion_by_id).
+    row = store.notion_by_id(conn, _norm(page_id), auth.visible_ids(request, caller))
     if row is None or row["subtype"] == "database":
         return _error(404, "object_not_found", f"Could not find page with ID: {page_id}.")
     return _page_obj(conn, row)
@@ -287,15 +308,10 @@ async def get_block(block_id: str, request: Request):
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
-    doc_id = _doc_id_for(request, block_id)
-    row = (
-        store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller))
-        if doc_id
-        else None
-    )
+    row = store.notion_by_id(conn, _norm(block_id), auth.visible_ids(request, caller))
     if row is None:
         return _error(404, "object_not_found", f"Could not find block with ID: {block_id}.")
-    bid = synth.notion_id(row["doc_id"])
+    bid = row["id"]
     kind = "child_database" if row["subtype"] == "database" else "child_page"
     return {
         "object": "block",
@@ -321,15 +337,10 @@ async def get_block_children(block_id: str, request: Request):
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
-    doc_id = _doc_id_for(request, block_id)
-    row = (
-        store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller))
-        if doc_id
-        else None
-    )
+    row = store.notion_by_id(conn, _norm(block_id), auth.visible_ids(request, caller))
     if row is None:
         return _error(404, "object_not_found", f"Could not find block with ID: {block_id}.")
-    blocks = synth.notion_blocks(row["doc_id"], row["content"])
+    blocks = synth.notion_blocks(row["id"], row["content"])
     offset = pagination.decode_cursor(request.query_params.get("start_cursor"))
     limit = _page_size(request.query_params.get("page_size"))
     page = blocks[offset : offset + limit]
@@ -345,12 +356,7 @@ async def get_database(database_id: str, request: Request):
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
-    doc_id = _doc_id_for(request, database_id)
-    row = (
-        store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller))
-        if doc_id
-        else None
-    )
+    row = store.notion_by_id(conn, _norm(database_id), auth.visible_ids(request, caller))
     if row is None or row["subtype"] != "database":
         return _error(404, "object_not_found", f"Could not find database with ID: {database_id}.")
     return _database_obj(conn, row, _version(request))
@@ -362,32 +368,33 @@ async def get_data_source(data_source_id: str, request: Request):
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
-    doc_id = _db_doc_for_data_source(request, data_source_id)
-    row = (
-        store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller))
-        if doc_id
-        else None
+    # No subtype check needed here, unlike get_database's lookup by `id` (which spans both pages
+    # and databases): served_data_source_id is populated only for subtype='database' rows, and the
+    # importer writes it or NULL on every import (see the notion block in importer.byo._Loader.add).
+    # So a match here already implies the right kind.
+    row = store.notion_by_data_source_id(
+        conn, _norm(data_source_id), auth.visible_ids(request, caller)
     )
-    if row is None or row["subtype"] != "database":
+    if row is None:
         return _error(
             404, "object_not_found", f"Could not find data source with ID: {data_source_id}."
         )
     return _data_source_obj(conn, row)
 
 
-async def _query_rows(request: Request, db_doc_id: str | None):
+async def _query_rows(request: Request, db_id: str | None):
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
     visible = auth.visible_ids(request, caller)
-    db = store.get_document(conn, "notion", db_doc_id, visible) if db_doc_id else None
+    db = store.get_document(conn, "notion", db_id, visible_ids=visible) if db_id else None
     if db is None or db["subtype"] != "database":
         return _error(404, "object_not_found", "Could not find the requested database.")
     body = await json_body(request)
     offset = pagination.decode_cursor(body.get("start_cursor"))
     limit = _page_size(body.get("page_size"))
-    rows = store.children(conn, "notion", db_doc_id, visible, limit=limit + 1, offset=offset)
+    rows = store.children(conn, "notion", db_id, visible, limit=limit + 1, offset=offset)
     page = rows[:limit]
     total = offset + len(rows)  # +1 probe tells us whether there's a next page
     results = [_page_obj(conn, r) for r in page]
@@ -403,7 +410,7 @@ async def query_data_source(data_source_id: str, request: Request):
 
 @router.post("/databases/{database_id}/query", response_model=NotionList, openapi_extra=_B_QUERY)
 async def query_database(database_id: str, request: Request):
-    return await _query_rows(request, _doc_id_for(request, database_id))
+    return await _query_rows(request, _existing_id(request, database_id))
 
 
 # --------------------------------------------------------------------------- search
@@ -508,17 +515,17 @@ async def list_comments(request: Request):
         return _error(401, "unauthorized", "API token is invalid.")
     conn = auth.conn(request)
     block_id = request.query_params.get("block_id")
-    doc_id = _doc_id_for(request, block_id) if block_id else None
-    # the parent must itself be visible to the caller
+    # One ACL-scoped query (the parent must itself be visible to the caller), not
+    # a resolve followed by a get_document refetch of the same row -- see get_page and friends.
     row = (
-        store.get_document(conn, "notion", doc_id, auth.visible_ids(request, caller))
-        if doc_id
+        store.notion_by_id(conn, _norm(block_id), auth.visible_ids(request, caller))
+        if block_id
         else None
     )
     if row is None:
         return _list_obj([], 0, 0, 0, "comment")
-    parent_id = synth.notion_id(row["doc_id"])
-    comments = store.doc_comments(conn, "notion", doc_id)
+    parent_id = row["id"]
+    comments = store.doc_comments(conn, "notion", parent_id)
     offset = pagination.decode_cursor(request.query_params.get("start_cursor"))
     limit = _page_size(request.query_params.get("page_size"))
     page = comments[offset : offset + limit]
@@ -527,7 +534,7 @@ async def list_comments(request: Request):
             "object": "comment",
             "id": synth.notion_id(c["id"]),
             "parent": {"type": "page_id", "page_id": parent_id},
-            "discussion_id": synth.notion_id(f"disc:{row['doc_id']}"),
+            "discussion_id": synth.notion_id(f"disc:{row['id']}"),
             "created_time": synth.rfc3339(c["created_ts"]),
             "last_edited_time": synth.rfc3339(c["created_ts"]),
             "created_by": _user_obj(conn, c["author_email"]),

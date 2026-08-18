@@ -64,16 +64,10 @@ async def graphql(request: Request):
         # service identity's address is built from (an org NAME is not a domain).
         "org": getattr(state.acl, "org_name", None),
         "org_domain": get_settings().org_domain,
-        # uuid/identifier -> doc_id and uuid/key -> team, built once at startup (backlot.main).
-        "index": state.index.get("linear", {}),
-        "team_index": state.index.get("linear_teams", {}),
-        # Reverse maps for the by-id roots the SDK's lazy relation accessors call.
-        "user_index": state.index.get("linear_users", {}),
-        "state_index": state.index.get("linear_states", {}),
-        "project_index": state.index.get("linear_projects", {}),
-        "cycle_index": state.index.get("linear_cycles", {}),
-        "label_index": state.index.get("linear_labels", {}),
-        "release_index": state.index.get("linear_releases", {}),
+        # Every id the SDK's lazy relation accessors ask for resolves through a stored table: a
+        # team through store.linear_team_by_served_id / linear_team_by_served_key, and the six
+        # entities with no table of their own through `linear_entities`
+        # (store.linear_entity_by_id, called by the resolvers' own `_by_id`).
     }
     result = ENGINE.execute_request(await request.body(), context=context)
     return JSONResponse(result.payload, status_code=400 if result.request_error else 200)

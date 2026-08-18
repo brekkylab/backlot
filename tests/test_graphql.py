@@ -303,7 +303,7 @@ def _resolve_documents(_root, info, source, limit=None):
         visible_ids=ctx["visible_ids"],
         limit=pagination.clamp_limit(limit, 10, 50),
     )
-    return [{"id": r["doc_id"], "title": r["title"]} for r in rows]
+    return [{"id": r["id"], "title": r["title"]} for r in rows]
 
 
 ACME = engine.Engine(ACME_SDL, {"Query": {"documents": _resolve_documents}})

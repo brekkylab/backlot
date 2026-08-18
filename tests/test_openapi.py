@@ -75,7 +75,7 @@ def test_served_operation_ids_are_stable_across_processes():
 
 
 def test_qp_builds_an_openapi_query_parameter():
-    """Every router advertises its honoured query params through this one helper — there used to be
+    """Every router advertises its honoured query params through this one helper. Without it there is
     five copies of it (``_qp``/``_gqp``/``_aqp``/``_nqp``), two of which omitted ``required``."""
     assert openapi.qp("limit", "integer") == {
         "name": "limit",

@@ -98,11 +98,10 @@ def patch_s3fs_walk() -> None:
 # googleapiclient serviceName ("gmail" / "drive") -> the api_endpoint it should be built with.
 # Consulted, at call time, by the ONE shared wrapper `_ensure_google_build_wrapped` installs.
 #
-# point_gmail_at and point_drive_at used to each wrap `discovery.build` independently, guarded by
-# the same `_points_at_mock` flag on the symbol. That flag records only THAT a wrapper is
-# installed, not which function installed it or which endpoint it points at — so whichever ran
-# second found the flag already set, returned immediately, and left its service silently pointed
-# at the OTHER function's endpoint (Drive traffic hitting Gmail's `api_endpoint`, or vice versa).
+# ONE wrapper, not one per function: two wrappers guarded by the same `_points_at_mock` flag on
+# the symbol cannot coexist. That flag records only THAT a wrapper is installed, not which endpoint
+# it points at, so whichever ran second would find it set, return immediately, and leave its service
+# pointed at the OTHER's endpoint (Drive traffic hitting Gmail's `api_endpoint`, or vice versa).
 # A per-service registry keyed by the `serviceName` `build()` is actually invoked with — llama-index
 # calls `build("gmail", "v1", ...)` / `build("drive", "v3", ...)`, confirmed by reading both
 # readers' source — lets both stay active at once, in either order, through one wrapper.

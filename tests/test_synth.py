@@ -15,13 +15,15 @@ def test_hnum_and_timestamps_are_deterministic():
 
 
 def test_distinct_docs_get_distinct_values():
-    assert synth.slack_ts(DOC) != synth.slack_ts(DOC2)
     assert synth.github_number(DOC) != synth.github_number(DOC2)
     assert synth.confluence_id(DOC) != synth.confluence_id(DOC2)
 
 
 def test_slack_ts_format():
-    ts = synth.slack_ts(DOC)
+    """`slack_fmt_ts` is the whole of Slack's ts shape now: the seconds come from the row's own
+    `created_ts` and the fraction from a seed the importer picks, so there is no
+    single-argument `slack_ts` left to test."""
+    ts = synth.slack_fmt_ts(synth.epoch(DOC), DOC)
     secs, micro = ts.split(".")
     assert secs.isdigit() and len(micro) == 6
 
@@ -103,6 +105,20 @@ def test_jira_project_key_unique_for_colliding_names():
     assert synth.jira_project_key("eng-serving-runtime") == a  # deterministic
 
 
+def test_jira_key_number_matches_jira_keys_suffix():
+    """`jira_key_number` is `jira_key`'s numeric suffix, split out so a served id can be assigned
+    and probed on the suffix ALONE (see store.ID_SEED -- a key's prefix is under-constrained,
+    since a corpus-provided key can claim any prefix for its project). `jira_key` calls
+    `jira_key_number` rather than recomputing it, so the two cannot drift apart -- if they did, a
+    served id assigned from the seed would stop matching the number the key itself carries."""
+    for doc_id in (DOC, DOC2):
+        for project_key in ("PAY", "ENG"):
+            assert (
+                synth.jira_key(doc_id, project_key)
+                == f"{project_key}-{synth.jira_key_number(doc_id)}"
+            )
+
+
 def test_gmail_message_id_matches_the_real_id_shape():
     """Measured against the live API: Gmail hands out 16 lowercase hex digits, and it rejects an id
     whose integer value is >= 2**63 with 400 "Invalid id value" (`7fffffffffffffff` resolves,
@@ -127,8 +143,86 @@ def test_gmail_message_id_stays_in_range_across_many_docs():
     assert len(set(ids)) == len(ids)
 
 
+_B64URL_ALPHABET = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+
+
+def test_gdrive_file_id_matches_the_real_id_shape():
+    """Measured against real Drive: a modern file id is 33 characters, base64url alphabet
+    (``[A-Za-z0-9_-]``), and always starts with ``1``. `synth.gdrive_file_id` has to match that
+    shape, not `drive_folder_id`'s hex slice -- hex spans only 16 of the 64 available symbols and
+    reads noticeably unlike a real one."""
+    fid = synth.gdrive_file_id(DOC)
+    assert len(fid) == 33
+    assert fid[0] == "1"
+    assert all(c in _B64URL_ALPHABET for c in fid)
+
+
+def test_gdrive_file_id_is_stable_and_distinct():
+    assert synth.gdrive_file_id(DOC) == synth.gdrive_file_id(DOC)
+    assert synth.gdrive_file_id(DOC) != synth.gdrive_file_id(DOC2)
+
+
+def test_gdrive_file_id_never_collides_with_a_folder_id():
+    """A file id and a folder id must be disjoint spaces: `routers.google._drive_folder_name_by_id`
+    tries every container name's `drive_folder_id` against an incoming id, and a file id that also
+    matched would resolve to the wrong kind of object. Every folder id starts ``0A``, every file id
+    starts ``1``, so the two can never collide by construction, not merely by low probability.
+
+    Both are base64url over the alphabet a real Drive id draws on, at the length real uses for each
+    kind — a folder id was a hex slice, which reads noticeably unlike either."""
+    import re
+
+    assert synth.gdrive_file_id(DOC)[:1] == "1"
+    folder = synth.drive_folder_id("some-folder")
+    assert folder[:2] == "0A" and len(folder) == 19
+    assert re.fullmatch(r"[A-Za-z0-9_-]+", folder)
+    assert synth.gdrive_file_id(DOC) != synth.drive_folder_id(DOC)
+
+
+def test_served_uuids_are_rfc_4122_version_4():
+    """Real Notion and Linear ids are v4 UUIDs, and a strict validator says so — zod's `.uuid()`
+    and class-validator's `IsUUID(4)` reject anything else. A raw digest slice satisfied them about
+    1 time in 70, so ~93% of every served page, block, user, comment, issue and team id was
+    rejected by a client that checks. Over a spread of seeds, not one: the version nibble and the
+    variant bits are what the digest would otherwise vary."""
+    import re
+
+    v4 = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z")
+    ids = [synth.notion_id(f"seed-{i}") for i in range(200)]
+    ids += [synth.linear_id(f"seed-{i}") for i in range(200)]
+    ids += [synth.notion_block_id(f"seed-{i}", i) for i in range(200)]
+    assert all(v4.fullmatch(i) for i in ids), next(i for i in ids if not v4.fullmatch(i))
+    # ...and still a pure function of the seed, so a stored id keeps resolving
+    assert synth.notion_id(DOC) == synth.notion_id(DOC) != synth.notion_id(DOC2)
+
+
+def test_gmail_message_ids_are_never_zero_padded():
+    """Real Gmail renders the id as an integer, so an id whose top nibble is zero is 15 digits
+    there — and the real API resolves that spelling while refusing the padded one. `:016x` padded
+    roughly one id in 16, and the mock served the spelling real 404s."""
+    ids = [synth.gmail_message_id(f"seed-{i}") for i in range(3000)]
+    assert not [i for i in ids if i.startswith("0")]
+    assert all(int(i, 16) < synth.GMAIL_ID_MAX for i in ids)
+    # the padded spelling of a served id is still the same message (store.gmail_id_spelling)
+    from backlot import store
+
+    assert store.gmail_id_spelling(ids[0].rjust(16, "0")) == ids[0]
+    assert store.gmail_id_spelling(ids[0].upper()) == ids[0]
+
+
+def test_atlassian_comment_ids_do_not_leak_the_child_spelling():
+    """A stored comment id composes its PARENT's key with the comment's position (`PAY-7::c1`) —
+    the mock's own bookkeeping. Real Jira and Confluence report a numeric string, so a client that
+    parses or pattern-matches the id rejected what this served, and the internal scheme leaked to
+    the wire. notion and linear already wrapped theirs."""
+    cid = synth.atlassian_comment_id("PAY-7::c1")
+    assert cid.isdigit() and "::" not in cid
+    assert cid == synth.atlassian_comment_id("PAY-7::c1")  # stable, or a stored url stops resolving
+    assert cid != synth.atlassian_comment_id("PAY-7::c2")
+
+
 def test_linear_url_is_the_real_vendor_domain():
-    """Regression: a rename's blind substitution once turned this into `linear.backlot`. Asserted
+    """A rename's blind substitution can turn this into `linear.backlot`. Asserted
     on the parsed host (no trailing slash) rather than a URL literal, because the vulnerable
     pattern is the literal characters `app` immediately followed by a slash — spelling that
     combination anywhere, even in a comment, makes a repeat of the bug rewrite it right alongside

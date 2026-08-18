@@ -22,7 +22,7 @@ from backlot.pagination import decode_cursor_or_none, next_cursor
 router = APIRouter(prefix="/slack/api", tags=["slack"])
 
 
-# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# --- OpenAPI enrichment --------------------------------------------------
 # Params are read query-or-form via _param/_int, so we document them with openapi_extra instead
 # of changing the handler signatures (which would break the form-body read path). Response models
 # use extra="allow" so the builders' full field set passes through unfiltered.
@@ -335,7 +335,7 @@ async def conversations_history(request: Request):
         inclusive = _param(request, "inclusive") in ("1", "true", "True")
 
         def _in_window(r) -> bool:
-            ts = float(_msg_ts(r))
+            ts = float(r["ts"])
             # Slack: latest is inclusive; oldest is exclusive unless inclusive=true
             if lo is not None and (ts < lo if inclusive else ts <= lo):
                 return False
@@ -361,13 +361,12 @@ async def conversations_history(request: Request):
         rows = store.list_slack_top_level(conn, name, ids, limit=limit, offset=offset)
     messages = []
     for r in rows:
-        rc = store.slack_reply_count(conn, r["doc_id"], ids) if r["thread_id"] else 0
-        latest = _latest_reply(conn, r, rc, ids) if rc else None
-        ru = store.slack_reply_authors(conn, r["doc_id"], ids) if rc else []
+        rc = store.slack_reply_count(conn, name, r["ts"], ids) if r["thread_ts"] else 0
+        latest = store.slack_latest_reply_ts(conn, name, r["ts"], ids) if rc else None
+        ru = store.slack_reply_authors(conn, name, r["ts"], ids) if rc else []
         ruids = [synth.slack_user_id(e) for e in ru[:5]]
         messages.append(
             _message(
-                conn,
                 r,
                 reply_count=rc,
                 latest_reply=latest,
@@ -404,9 +403,10 @@ async def conversations_replies(request: Request):
     # Resolve the ts against ALL messages in the channel, not just roots: Slack accepts any in-thread
     # ts here, and a client that got its ts from a search hit will often pass a REPLY's ts. Find the
     # matched message, then return the thread it belongs to (its root's).
-    # Fast path: a public ts's integer part IS the row's created_ts, so narrow to that second instead
-    # of loading the whole channel (eng-ml is ~340k rows → ~4s). Fall back to the full scan only for
-    # a ts synthesized from a doc id (created_ts NULL), which the second query can't target.
+    # Fast path: a ts's integer part IS the row's created_ts (see the importer's `_slack_ts`), so
+    # narrow to that second instead of loading the whole channel (eng-ml is ~340k rows → ~4s).
+    # The full scan stays as a fallback for a row with no created_ts, which that query cannot
+    # target.
     hit = None
     try:
         epoch = int(str(ts).split(".", 1)[0])
@@ -414,40 +414,33 @@ async def conversations_replies(request: Request):
         epoch = None
     if epoch is not None:
         candidates = store.slack_messages_at_created_ts(conn, name, epoch, ids)
-        hit = next((r for r in candidates if _msg_ts(r) == ts), None)
+        hit = next((r for r in candidates if r["ts"] == ts), None)
     if hit is None:
         msgs = store.list_slack_channel_messages(conn, name, ids)
-        hit = next((r for r in msgs if _msg_ts(r) == ts), None)
+        hit = next((r for r in msgs if r["ts"] == ts), None)
     if hit is None:
         return _err("thread_not_found")
-    if not hit["thread_id"]:  # standalone message (no thread)
-        return {"ok": True, "messages": [_message(conn, hit)], "has_more": False}
-    # The root's own created_ts differs from a reply's ts, so don't re-scan the channel for it —
-    # derive its doc_id from the hit (a root's doc_id == its thread_id) and pull the root out of the
-    # ordered thread rows below.
-    root_doc_id = hit["doc_id"] if hit["thread_seq"] == 0 else hit["thread_id"]
-    rows = store.slack_thread(conn, root_doc_id, ids)  # root + replies, ordered
+    if not hit["thread_ts"]:  # standalone message (no thread)
+        return {"ok": True, "messages": [_message(hit)], "has_more": False}
+    # `thread_ts` IS the root's ts, stored on every message of the thread — a root carries
+    # its own, so this needs no case analysis and no re-derivation.
+    rows = store.slack_thread(conn, name, hit["thread_ts"], ids)  # root + replies
     root = next((r for r in rows if r["thread_seq"] == 0), None)
     if root is None:
         return _err("thread_not_found")
     rc = sum(1 for x in rows if x["thread_seq"] > 0)
-    latest = _latest_reply(conn, root, rc, ids) if rc else None
-    ru = store.slack_reply_authors(conn, root["doc_id"], ids)
+    latest = store.slack_latest_reply_ts(conn, name, root["ts"], ids) if rc else None
+    ru = store.slack_reply_authors(conn, name, root["ts"], ids)
     ruids = [synth.slack_user_id(e) for e in ru[:5]]
     parent_uid = synth.slack_user_id(root["author_email"])
-    # Every message here shares one thread_ts and the root it comes from is already in
-    # hand, so resolve that second once rather than letting each reply read the root row.
-    base = _root_epoch(conn, root)
     messages = [
         _message(
-            conn,
             x,
             reply_count=(rc if x["thread_seq"] == 0 else 0),
             latest_reply=(latest if x["thread_seq"] == 0 else None),
             reply_users=(ruids if x["thread_seq"] == 0 else None),
             reply_users_count=(len(ru) if x["thread_seq"] == 0 else 0),
             parent_user_id=(parent_uid if x["thread_seq"] > 0 else None),
-            root_epoch=base,
         )
         for x in rows
     ]
@@ -495,7 +488,7 @@ async def users_list(request: Request):
         return _err("not_authed")
     # The roster is the registered user principals — the employee directory plus internal mail/doc
     # authors. Slack transcript speakers are NOT added, and that is a limitation of the upstream
-    # dataset rather than a modelling choice, so it is stated plainly here and in the README (#33).
+    # dataset rather than a modelling choice, so it is stated plainly here and in the README.
     #
     # The speakers are NOT "mostly external": measured on a real corpus, of 74,138 distinct
     # speakers only 3,971 (5.4%) are principals and ALL 70,167 of the rest are on the org's own
@@ -615,8 +608,7 @@ def _messages_block(request: Request):
         order_by=order_by,
     )
     total = store.count_search(conn, terms, "slack", ids, container=container, phrase=phrase)
-    roots: dict = {}  # one root read per thread on this page, not one per hit
-    matches = [_search_match(conn, r, roots) for r in rows]
+    matches = [_search_match(conn, r) for r in rows]
     pages = (total + count - 1) // count if count else 1
     block = {
         "total": total,
@@ -712,13 +704,12 @@ async def search_all(request: Request):
 # --- helpers --------------------------------------------------------------------
 
 
-def _search_match(conn, row, roots: dict | None = None) -> dict:
-    """A search.messages `matches[]` entry for a slack row. ``roots`` memoizes the root
-    second per thread across a page of hits, which are commonly all in one thread."""
+def _search_match(conn, row) -> dict:
+    """A search.messages `matches[]` entry for a slack row."""
     ch = row["channel"]
     cid = synth.slack_channel_id(ch)
     text = f"*{row['title']}*\n{row['content']}" if row["title"] else row["content"]
-    ts = _msg_ts(row)
+    ts = row["ts"]
     m = {
         "type": "message",
         "team": "T0000MOCK",
@@ -734,63 +725,29 @@ def _search_match(conn, row, roots: dict | None = None) -> dict:
         "permalink": f"https://{get_settings().org_name}.slack.com/archives/{cid}/p{ts.replace('.', '')}",
     }
     if row[
-        "thread_id"
+        "thread_ts"
     ]:  # a hit inside a thread carries its root ts so the client can fetch replies
-        m["thread_ts"] = synth.slack_fmt_ts(_root_epoch(conn, row, roots), row["thread_id"])
+        m["thread_ts"] = row["thread_ts"]
     return m
-
-
-def _root_epoch(conn, row, memo: dict | None = None) -> int:
-    """The thread root's base second. A root answers from its own row; a reply looks
-    the root up (a primary-key read). The old shortcut — the reply's own second with
-    its position backed out — assumed every reply sits exactly its position in
-    seconds after the root, which stopped holding once a corpus could write a
-    reply's own clock. Corpora without one resolve identically either way: the
-    root's stored second is the same number the subtraction produced.
-
-    ``memo`` caches the lookup by thread for callers holding rows from more than one
-    thread, so a page of search hits inside one thread reads its root once.
-
-    Every test here is against None rather than truthiness, because 1970-01-01T00:00:00Z
-    is a second a corpus can write and the importer stores it as 0 — under `if base:` a
-    thread rooted there fell into the position arithmetic this function retires and
-    served a root, a `thread_ts` and a reply `ts` that agreed with nothing."""
-    if not row["thread_id"] or row["thread_seq"] == 0:
-        base = row["created_ts"]
-        return synth.epoch(row["thread_id"] or row["doc_id"]) if base is None else base
-    if memo is not None and row["thread_id"] in memo:
-        base = memo[row["thread_id"]]
-    else:
-        base = store.slack_root_created_ts(conn, row["thread_id"])
-        if memo is not None:
-            memo[row["thread_id"]] = base
-    if base is not None:
-        return base
-    # No root second to ground on: either the root row is outside this corpus or it
-    # stores no clock at all. Fall back to the old arithmetic, which is right for the
-    # clockless thread it was written for.
-    if row["created_ts"] is not None:
-        return row["created_ts"] - row["thread_seq"]
-    return synth.epoch(row["thread_id"])
 
 
 def _compute_channel_created(conn, name: str) -> int:
     """Channel creation second, pinned at/or before its earliest message so it never postdates
-    one. The synthesized per-channel ``epoch(name)`` and per-message ``epoch(doc_id)`` are
-    independent draws, so a message could otherwise predate its channel — which breaks clients
-    (e.g. mirage) that list a day per date between creation and the latest message.
+    one. The synthesized per-channel ``epoch(name)`` and a message's own clock are independent
+    draws, so a message could otherwise predate its channel — which breaks clients (e.g. mirage)
+    that list a day per date between creation and the latest message.
 
     Derived from a cheap aggregate rather than scanning every message: messages with an explicit
-    ``created_ts`` contribute ``MIN(created_ts)``; messages without one synthesize their ts as
-    ``epoch(doc_id)``, which is always ``>= BASE_EPOCH`` — so ``BASE_EPOCH`` is a safe lower
-    bound for that group. ``created`` is the min of whichever groups are present."""
+    ``created_ts`` contribute ``MIN(created_ts)``; any without one were synthesized at or after
+    ``BASE_EPOCH``, so that is a safe lower bound for the group. ``created`` is the min of
+    whichever groups are present."""
     b = store.slack_created_bounds(conn, name)
     if not b["total"]:
         return synth.epoch(name)
     candidates = []
     if b["have"]:  # rows with an explicit created_ts
         candidates.append(b["min_ts"])
-    if b["have"] < b["total"]:  # rows whose ts is synthesized as epoch(doc_id)
+    if b["have"] < b["total"]:  # rows whose clock was synthesized rather than given
         candidates.append(synth.BASE_EPOCH)
     return min(candidates)
 
@@ -816,41 +773,14 @@ def _member_count(request: Request, conn, name: str) -> int:
     return store.count_slack_channel_members(conn, name)
 
 
-def _msg_ts(row) -> str:
-    # None, not truthiness: a corpus may write 1970-01-01T00:00:00Z, which stores as 0,
-    # and a message that has a second should serve it rather than a synthesized one.
-    if row["created_ts"] is not None:
-        return synth.slack_fmt_ts(row["created_ts"], row["thread_id"] or row["doc_id"])
-    if row["thread_id"]:
-        return synth.slack_thread_ts(row["thread_id"], row["thread_seq"])
-    return synth.slack_ts(row["doc_id"])
-
-
-def _latest_reply(conn, root_row, reply_count: int, visible_ids=None) -> str:
-    """ts of the last visible reply in a thread — its real stored second, keyed on
-    the root the way every in-thread ts is. Root-plus-count was the same number
-    while replies sat one second apart; it drifted once a reply could carry its own
-    clock, and it already pointed at the wrong second when a hidden reply sat
-    mid-thread and the count shrank while the survivors kept their seconds."""
-    last = store.slack_last_reply_ts(conn, root_row["doc_id"], visible_ids)
-    if last is None:
-        last = _root_epoch(conn, root_row) + reply_count
-    return synth.slack_fmt_ts(last, root_row["doc_id"])
-
-
 def _message(
-    conn,
     row,
     reply_count: int = 0,
     latest_reply: str | None = None,
     reply_users: list[str] | None = None,
     reply_users_count: int = 0,
     parent_user_id: str | None = None,
-    root_epoch: int | None = None,
 ) -> dict:
-    """``root_epoch`` is the thread root's second, for a caller that already holds the
-    root row: resolving it here costs a primary-key read per reply, which turned one
-    ``conversations.replies`` response into a read of the same root once per reply."""
     # Slack messages have no title; only prepend one as a lead line when present
     # (a converted corpus's messages may carry a title, hand-written slack records typically don't).
     title = row["title"]
@@ -859,9 +789,12 @@ def _message(
         "type": "message",
         "user": synth.slack_user_id(row["author_email"]),
         "text": text,
-        "ts": _msg_ts(row),
+        "ts": row["ts"],
         "team": "T0000MOCK",
-        "client_msg_id": synth.gmail_id(row["doc_id"], salt="cmid"),
+        # Seeded on (channel, ts), not ts alone: a ts is unique within its channel (see
+        # store.ID_COLUMNS), so the same second in two channels produced one client_msg_id — a
+        # value real Slack makes globally unique.
+        "client_msg_id": synth.gmail_id(f"{row['channel']}:{row['ts']}", salt="cmid"),
     }
     reactions = store.jcol(row, "reactions")
     if reactions:
@@ -874,9 +807,8 @@ def _message(
         m["edited"] = edited
     if row["subtype"]:
         m["subtype"] = row["subtype"]
-    if row["thread_id"]:  # part of a thread
-        base = _root_epoch(conn, row) if root_epoch is None else root_epoch
-        m["thread_ts"] = synth.slack_fmt_ts(base, row["thread_id"])
+    if row["thread_ts"]:  # part of a thread
+        m["thread_ts"] = row["thread_ts"]
         if row["thread_seq"] == 0 and reply_count > 0:  # thread root
             m.update(
                 {

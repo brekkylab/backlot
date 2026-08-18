@@ -23,6 +23,24 @@ from starlette.testclient import TestClient
 from backlot.config import Settings, get_settings
 
 
+def served_id(source_type: str, seed: str):
+    """The id a row with corpus ``doc_id == seed`` lands under, computed rather than looked up.
+
+    A corpus's own identifier does not outlive the import, so a test cannot ask the DB
+    "which row was `dsid_1`?". For the sources whose served id is a pure function of that
+    identifier it does not need to: the same seed gives the same answer here as it did at import,
+    which is what makes the value stable in the first place.
+
+    Valid for gmail, google_drive, notion, linear, fireflies (never probed) and for confluence and
+    hubspot (probed, but the probe only moves a row off its seed on a collision, which a
+    fixture-sized corpus does not produce). NOT valid for github, jira or slack, whose key is
+    assigned against the whole corpus — a test needing one of those reads it back off the row.
+    """
+    from backlot import store
+
+    return store.id_seed(source_type)(seed)
+
+
 def build_corpus(data_dir: Path, records: list[dict], *, name: str = "_corpus.jsonl") -> Settings:
     """Write ``records`` as a BYO-JSONL corpus under ``data_dir`` and load it into a fresh DB."""
     from backlot.importer.byo import load

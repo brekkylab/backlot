@@ -445,7 +445,7 @@ def _attachment(row, info) -> dict:
         "creator": None,
         "externalUserCreator": None,
         "originalIssue": None,
-        "_doc_id": row["doc_id"],
+        "_issue_id": row["issue_id"],
     }
 
 
@@ -457,8 +457,8 @@ def _relation(row, info) -> dict:
         "createdAt": ts,
         "updatedAt": ts,
         "archivedAt": None,
-        "_from": row["from_doc_id"],
-        "_to": row["to_doc_id"],
+        "_from": row["from_id"],
+        "_to": row["to_id"],
     }
 
 
@@ -584,16 +584,19 @@ def _issue(row, info) -> dict:
     The stubs are deliberate and listed in the SDL header: reactions, SLA timestamps, board /
     sort orders, bot actors and shared access are declared because `@linear/sdk`'s fragment
     selects them, and resolve empty because a document corpus has nothing behind them."""
-    identifier = row["identifier"] or synth.linear_identifier(
-        row["doc_id"], synth.linear_team_key(row["team"])
-    )
+    # Asserted, not re-derived: every issue carries an identifier by the time it is served (the
+    # importer assigns one — see byo's linear branch), and deriving one here would seed
+    # `synth.linear_identifier` on the served uuid where the importer seeded it on the dataset id,
+    # so the fallback answered a DIFFERENT identifier than the row is reachable by.
+    identifier = row["identifier"]
+    assert identifier, f"linear: issue {row['id']!r} reached the serializer with no identifier"
     title = row["title"] or ""
     created = row["created_ts"]
     # updatedAt is non-null in Linear; an issue with no recorded edit reports its creation time,
     # which is what Linear itself shows for a never-edited issue.
     updated = row["updated_ts"] if row["updated_ts"] is not None else created
     return {
-        "id": synth.linear_id(row["doc_id"]),
+        "id": row["id"],
         "identifier": identifier,
         "number": float(synth.linear_issue_number(identifier)),
         "title": title,
@@ -684,7 +687,7 @@ def _comment(row, info) -> dict:
         "reactionData": {},
         "reactions": [],
         "user": _user(row["author_email"], None, info),
-        "issueId": synth.linear_id(row["doc_id"]),
+        "issueId": row["issue_id"],
         "quotedText": None,
         "archivedAt": None,
         "editedAt": None,
@@ -716,21 +719,38 @@ def _comment(row, info) -> dict:
 # --- Query roots ---------------------------------------------------------------------
 
 
+def _resolve_one_issue_id(conn, value: str) -> str:
+    """Translate one filter value -- a served UUID or a human identifier -- to an issue id. A miss
+    returns the sentinel ``"\\x00none"``, which matches no row, so the filter narrows to nothing
+    rather than being silently dropped (see ``_resolve_issue_ids``).
+
+    Unscoped by ACL on purpose: this is a translation step,
+    not the visibility decision. ``_issue_page``'s own store calls (``list_linear_issues`` /
+    ``count_linear_issues``) apply ``visible_ids`` to the real query, so a value that resolves to
+    an issue the caller cannot see still gets filtered out there -- translating it here to
+    anything other than its real id would just make an invisible-issue filter behave
+    differently from every other predicate instead of consistently answering empty."""
+    row = store.linear_by_id(conn, value)
+    if row is None:
+        row = store.linear_issue_by_identifier(conn, value)
+    return row["id"] if row else "\x00none"
+
+
 def _resolve_issue_ids(info, flt):
-    """Rewrite an ``IssueFilter``'s ``id`` comparator from Linear UUIDs to doc_ids, since the
-    UUID is derived from the doc_id and only the app index can invert it. An unknown UUID maps
-    to a sentinel that matches nothing, so it filters everything out instead of being dropped."""
+    """Rewrite an ``IssueFilter``'s ``id`` comparator from Linear UUIDs (or human identifiers)
+    to issue ids. An id is the row's own primary key, so each value costs a lookup. See
+    ``_resolve_one_issue_id`` for the per-value resolution and its sentinel."""
     if not isinstance(flt, dict):
         return flt
+    conn = _ctx(info)["conn"]
     out = {}
     for k, v in flt.items():
         if k == "id" and isinstance(v, dict):
-            idx = info.context.get("index", {})
             out[k] = {
                 op: (
-                    [idx.get(str(x), "\x00none") for x in val]
+                    [_resolve_one_issue_id(conn, str(x)) for x in val]
                     if isinstance(val, list)
-                    else idx.get(str(val), "\x00none")
+                    else _resolve_one_issue_id(conn, str(val))
                 )
                 for op, val in v.items()
             }
@@ -795,8 +815,7 @@ def resolve_issue(_root, info, id):
     ("Entity not found")."""
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
-    doc_id = ctx.get("index", {}).get(str(id))
-    row = store.get_document(conn, "linear", doc_id, visible_ids=visible) if doc_id else None
+    row = store.linear_by_id(conn, str(id), visible_ids=visible)
     if row is None:
         row = store.linear_issue_by_identifier(conn, str(id), visible_ids=visible)
     if row is None:
@@ -805,17 +824,37 @@ def resolve_issue(_root, info, id):
 
 
 def resolve_team(_root, info, id):
-    """``team(id:)`` takes a team UUID or its key (``ENG``).
+    """``team(id:)`` takes a team UUID, its key (``ENG``), or -- a mock-only affordance, not a
+    real spelling, kept because it costs nothing (see the schema comment on ``linear_teams``) --
+    the container's own raw name. Tried in that FIXED order: served UUID, then served key, then
+    raw name.
+
+    The UUID leg is unique-indexed, so a match there can never be ambiguous, and it is checked
+    first so nothing else can shadow it (pinned by
+    test_linear_team_uuid_wins_a_raw_name_collision). A key two containers reduce to breaks ITS OWN
+    tie by team-name order (see ``store.linear_team_by_served_key``).
+
+    KEY BEFORE RAW NAME is a fixed priority, not an accident of iteration order: when one team's
+    key spells identically to a DIFFERENT team's raw name, the real Linear spelling has to win,
+    because the raw name is a mock-only affordance
+    (test_linear_team_key_precedes_the_raw_name_affordance pins it).
 
     Scoped the same way ``teams`` is: a team the caller can see no issue in is not a team they can
     see. Without this the two roots contradict each other — ``teams`` would omit the team while
     ``team(id: "BLA")`` confirmed its existence and name."""
     ctx = _ctx(info)
-    container = ctx.get("team_index", {}).get(str(id))
+    conn = ctx["conn"]
+    sid = str(id)
+    container = store.linear_team_by_served_id(conn, sid)
+    if container is None:
+        container = store.linear_team_by_served_key(conn, sid)
+    if container is None:
+        row = store.get_container(conn, "linear", sid)
+        container = row["name"] if row else None
     if (
         container is not None
         and ctx["visible_ids"] is not None
-        and not store.linear_team_has_visible(ctx["conn"], container, ctx["visible_ids"])
+        and not store.linear_team_has_visible(conn, container, ctx["visible_ids"])
     ):
         container = None
     if container is None:
@@ -883,11 +922,11 @@ def resolve_users(
 
 # --- by-id roots for the SDK's lazy relation accessors ------------------------------------
 # `await issue.state` does NOT read the state off the issue the SDK already has — it fires
-# `workflowState(id:)`. Each id is a one-way hash of a name, so each root reads the reverse map
-# the app built at startup (see backlot.main._build_index). All five are declared non-null in Linear,
-# so a miss is an "Entity not found" error, matching the real API.
+# `workflowState(id:)`. Each id is a one-way hash of a name, so each root reads `linear_entities`.
+# All five are declared non-null in Linear, so a miss is an "Entity not found" error, matching the
+# real API.
 #
-# THE INDEX IS NOT ACL-SCOPED, so the lookup alone is not enough. It is an unfiltered DISTINCT
+# THE TABLE IS NOT ACL-SCOPED, so the lookup alone is not enough. It is an unfiltered DISTINCT
 # over every issue, and these entities have no table of their own — a project, cycle, workflow
 # state, label or assignee exists only as a COLUMN VALUE on some issue. Resolving one without a
 # visibility check would hand a caller field values off a row they are denied: the name of a
@@ -902,15 +941,22 @@ def resolve_users(
 # entities hanging off an issue it just successfully read, so the probe always finds that issue.
 
 
-def _by_id(info, index_key: str, id_value, entity: str, kind: str | None = None):
+def _by_id(info, kind: str, id_value, entity: str):
+    """The entity a by-id root names, or a GraphQL "not found" error.
+
+    Two questions, deliberately separate. `linear_entity_by_id` answers "does the corpus hold this
+    id" from `linear_entities`. `linear_entity_has_visible` then answers "may THIS caller see it",
+    which no lookup can fold in: an entity is a distinct column value with no ACL of its own, so
+    visibility is whether any issue carrying it is readable.
+
+    A hit the caller cannot see answers exactly as a miss does. Without that, the by-id roots are an
+    existence oracle: the id is a one-way hash of a name, so anyone can compute it offline, and a
+    distinguishable error would confirm the project/label/person exists.
+    """
     ctx = _ctx(info)
-    found = ctx.get(index_key, {}).get(str(id_value))
-    if (
-        found is not None
-        and kind is not None
-        and not store.linear_entity_has_visible(
-            ctx["conn"], kind, found, visible_ids=ctx["visible_ids"]
-        )
+    found = store.linear_entity_by_id(ctx["conn"], kind, id_value)
+    if found is not None and not store.linear_entity_has_visible(
+        ctx["conn"], kind, found, visible_ids=ctx["visible_ids"]
     ):
         found = None  # exists in the corpus, but not for this caller — answer as if absent
     if found is None:
@@ -921,36 +967,36 @@ def _by_id(info, index_key: str, id_value, entity: str, kind: str | None = None)
 
 
 def resolve_user(_root, info, id) -> dict:
-    email, display = _by_id(info, "user_index", id, "User", kind="user")
+    email, display = _by_id(info, "user", id, "User")
     return _user(email, display, info)
 
 
 def resolve_workflow_state(_root, info, id) -> dict:
-    team, name = _by_id(info, "state_index", id, "WorkflowState", kind="state")
+    team, name = _by_id(info, "state", id, "WorkflowState")
     return _state(name, team, info)
 
 
 def resolve_project(_root, info, id) -> dict:
-    return _project(_by_id(info, "project_index", id, "Project", kind="project"), info)
+    return _project(_by_id(info, "project", id, "Project"), info)
 
 
 def resolve_cycle(_root, info, id) -> dict:
-    team, name = _by_id(info, "cycle_index", id, "Cycle", kind="cycle")
+    team, name = _by_id(info, "cycle", id, "Cycle")
     return _cycle(name, team, info)
 
 
 def resolve_issue_label(_root, info, id) -> dict:
-    name = _by_id(info, "label_index", id, "IssueLabel", kind="label")
+    name = _by_id(info, "label", id, "IssueLabel")
     return _label(name, synth.rfc3339(synth.epoch("linear-label:" + name)))
 
 
 def resolve_release(_root, info, id) -> dict:
-    return _release(_by_id(info, "release_index", id, "Release", kind="release"), info)
+    return _release(_by_id(info, "release", id, "Release"), info)
 
 
 def resolve_attachment(_root, info, id) -> dict:
     """Attachments live in their own table, so this resolves by row id and scopes on the parent
-    issue rather than going through the name-keyed reverse index the other roots use."""
+    issue rather than through the name-keyed entities the other roots use."""
     ctx = _ctx(info)
     row = store.linear_attachment_by_id(ctx["conn"], str(id), visible_ids=ctx["visible_ids"])
     if row is None:
@@ -997,7 +1043,7 @@ def resolve_issue_comments(
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
-    doc_id = issue["_row"]["doc_id"]
+    issue_id = issue["_row"]["id"]
     prefilter = compile_comment_filter(conn, filter)
     if offset is None:
         offset = _from_end(
@@ -1005,12 +1051,12 @@ def resolve_issue_comments(
             limit,
             floor,
             store.count_linear_comments(
-                conn, doc_id=doc_id, visible_ids=visible, prefilter=prefilter
+                conn, issue_id=issue_id, visible_ids=visible, prefilter=prefilter
             ),
         )
     rows = store.list_linear_comments(
         conn,
-        doc_id=doc_id,
+        issue_id=issue_id,
         visible_ids=visible,
         limit=limit + 1,
         offset=offset,
@@ -1021,7 +1067,7 @@ def resolve_issue_comments(
 
 
 def resolve_issue_parent(issue, info):
-    """``Issue.parent`` — read off the ``parent_doc_id`` resolved at import, ACL-scoped, so a
+    """``Issue.parent`` — read off the ``parent_id`` resolved at import, ACL-scoped, so a
     parent the caller cannot read is null rather than a way to confirm it exists.
 
     Reads the SAME column ``Issue.children`` does, which is the entire point of resolving the key
@@ -1030,24 +1076,24 @@ def resolve_issue_parent(issue, info):
     `@linear/sdk`'s Issue fragment selects ``parent { id }`` on every node, so a page would
     otherwise do one indexed-identifier search per row. Bound rather than precomputed in
     :func:`_issue`, so a page pays nothing unless ``parent`` is selected."""
-    parent_doc_id = issue["_row"]["parent_doc_id"]
-    if not parent_doc_id:
+    parent_id = issue["_row"]["parent_id"]
+    if not parent_id:
         return None
     ctx = _ctx(info)
-    row = store.get_document(ctx["conn"], "linear", parent_doc_id, visible_ids=ctx["visible_ids"])
+    row = store.get_document(ctx["conn"], "linear", parent_id, visible_ids=ctx["visible_ids"])
     return _issue(row, info) if row is not None else None
 
 
 def resolve_issue_children(
     issue, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
 ) -> dict:
-    """``Issue.children`` — the exact inverse of ``Issue.parent``, read off the ``parent_doc_id``
+    """``Issue.children`` — the exact inverse of ``Issue.parent``, read off the ``parent_id``
     resolved at import. Not a join on ``identifier``: keys repeat, so that would attach one
     issue's children to every issue sharing its key."""
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
-    doc_id = issue["_row"]["doc_id"]
+    issue_id = issue["_row"]["id"]
     prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter))
     if offset is None:
         offset = _from_end(
@@ -1056,12 +1102,12 @@ def resolve_issue_children(
             floor,
             len(
                 store.linear_children(
-                    conn, doc_id, visible_ids=visible, limit=PAGE_MAX, prefilter=prefilter
+                    conn, issue_id, visible_ids=visible, limit=PAGE_MAX, prefilter=prefilter
                 )
             ),
         )
     rows = store.linear_children(
-        conn, doc_id, visible_ids=visible, limit=limit + 1, offset=offset, prefilter=prefilter
+        conn, issue_id, visible_ids=visible, limit=limit + 1, offset=offset, prefilter=prefilter
     )
     rows, has_next = _page(rows, limit)
     return _connection([_issue(r, info) for r in rows], offset, has_next)
@@ -1071,7 +1117,7 @@ def _relations_page(issue, info, *, inverse, first, after, last, before) -> dict
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
-    doc_id = issue["_row"]["doc_id"]
+    issue_id = issue["_row"]["id"]
     if offset is None:
         offset = _from_end(
             None,
@@ -1079,12 +1125,12 @@ def _relations_page(issue, info, *, inverse, first, after, last, before) -> dict
             floor,
             len(
                 store.linear_relations(
-                    conn, doc_id, inverse=inverse, visible_ids=visible, limit=PAGE_MAX
+                    conn, issue_id, inverse=inverse, visible_ids=visible, limit=PAGE_MAX
                 )
             ),
         )
     rows = store.linear_relations(
-        conn, doc_id, inverse=inverse, visible_ids=visible, limit=limit + 1, offset=offset
+        conn, issue_id, inverse=inverse, visible_ids=visible, limit=limit + 1, offset=offset
     )
     rows, has_next = _page(rows, limit)
     return _connection([_relation(r, info) for r in rows], offset, has_next)
@@ -1107,18 +1153,18 @@ def resolve_issue_inverse_relations(
 
 
 def resolve_relation_issue(relation, info) -> dict:
-    return _issue_by_doc_id(info, relation["_from"])
+    return _issue_by_id(info, relation["_from"])
 
 
 def resolve_relation_related_issue(relation, info) -> dict:
-    return _issue_by_doc_id(info, relation["_to"])
+    return _issue_by_id(info, relation["_to"])
 
 
-def _issue_by_doc_id(info, doc_id):
+def _issue_by_id(info, issue_id):
     """Both ends of a relation are declared non-null, and `linear_relations` already ACL-filtered
     on the far end — so this only re-reads the row, and a miss means the ACL changed under us."""
     ctx = _ctx(info)
-    row = store.get_document(ctx["conn"], "linear", doc_id, visible_ids=ctx["visible_ids"])
+    row = store.get_document(ctx["conn"], "linear", issue_id, visible_ids=ctx["visible_ids"])
     if row is None:
         raise GraphQLError("Entity not found: Issue - Could not find referenced Issue.")
     return _issue(row, info)
@@ -1130,11 +1176,11 @@ def resolve_issue_attachments(
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
-    doc_id = issue["_row"]["doc_id"]
+    issue_id = issue["_row"]["id"]
     nodes = [
         _attachment(r, info)
         for r in store.linear_attachments(
-            conn, doc_id, visible_ids=visible, limit=PAGE_MAX, url=url
+            conn, issue_id, visible_ids=visible, limit=PAGE_MAX, url=url
         )
     ]
     nodes = [n for n in nodes if _match_attachment(n, filter)]
@@ -1143,7 +1189,7 @@ def resolve_issue_attachments(
 
 
 def resolve_attachment_issue(attachment, info) -> dict:
-    return _issue_by_doc_id(info, attachment["_doc_id"])
+    return _issue_by_id(info, attachment["_issue_id"])
 
 
 def resolve_issue_releases(

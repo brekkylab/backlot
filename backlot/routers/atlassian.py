@@ -22,7 +22,7 @@ from backlot.pagination import confluence_next_link, decode_cursor, next_page_to
 router = APIRouter(prefix="/atlassian", tags=["atlassian"])
 
 
-# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# --- OpenAPI enrichment --------------------------------------------------
 # jira_search reads params query-or-body (GET+POST) so they're documented with openapi_extra (no
 # signature change); confluence params are query-only. Response models use extra="allow" to
 # preserve every field. Error paths raise HTTPException (Atlassian-shaped), not filtered here.
@@ -123,15 +123,13 @@ def _adf(content: str) -> dict:
     }
 
 
-def _project_key(request: Request, container: str) -> str:
+def _project_key(conn, container: str) -> str:
     """The project key a container serves and navigates by: the prefix its corpus-provided
     issue keys carry (aliased at index build) when the corpus wrote any, else the
     synthesized key. One spelling for the issue prefix, the project payload, JQL and the
     picker — real Jira guarantees an issue key's prefix IS its project's key, and an agent
     that reads PAY-7 out of a document will navigate by PAY."""
-    return (_index_maps(request).get("jira_project_keys") or {}).get(
-        container
-    ) or synth.jira_project_key(container)
+    return store.jira_project_key(conn, container) or synth.jira_project_key(container)
 
 
 def _index_maps(request: Request) -> dict:
@@ -149,14 +147,32 @@ def _jira_container_for_key(conn, token: str, request: Request | None = None) ->
     the literal container name (e.g. ``payments``, case-insensitive) — real Jira project
     pickers accept both key and name. Anything else is unresolvable -> None (callers must
     treat this as "0 results", never silently fall back to the unfiltered corpus)."""
-    if request is not None:
-        aliased = (_index_maps(request).get("jira_project_containers") or {}).get(token.upper())
-        if aliased is not None:
-            return aliased
+    stored = store.jira_project_by_key(conn, token)
+    if stored is not None:
+        return stored
     for r in store.list_containers(conn, "jira"):
         if synth.jira_project_key(r["name"]) == token.upper() or r["name"].lower() == token.lower():
             return r["name"]
     return None
+
+
+# `PREFIX-N` (see jira.schema.json's `key` pattern — an uppercase-led alnum prefix, a literal `-`,
+# then a positive integer with no leading zero). Anchored, so a malformed key (no trailing digits,
+# or none at all) simply fails to match rather than mis-splitting on an earlier `-`.
+_JIRA_KEY_RE = re.compile(r"^(.+)-([1-9][0-9]*)$")
+
+
+def _resolve_jira_key(request: Request, conn, key: str, ids):
+    """One issue by its served key, ACL-scoped — a unique-indexed column lookup (see
+    store.jira_by_key).
+
+    One line, because the whole key is stored. Resolving it in parts instead — split the key, map
+    the prefix to a project through `_jira_container_for_key`, look the suffix up scoped to it —
+    lets that function's three-way tolerance into the ISSUE-KEY namespace. The tolerance is a
+    deliberate and correct affordance for the JQL project TOKEN, where real Jira pickers accept a
+    key OR a name, but here it makes `payments-7` resolve to `PAY-7`'s issue and issue-key lookup
+    case-insensitive. Matching the stored key directly has no seam for either to enter."""
+    return store.jira_by_key(conn, key, visible_ids=ids)
 
 
 @router.get(
@@ -181,7 +197,7 @@ async def jira_project_search(request: Request):
     _require(request)
     values = []
     for r in store.list_containers(conn, "jira"):
-        key = _project_key(request, r["name"])
+        key = _project_key(conn, r["name"])
         values.append(
             {
                 "id": str(synth.github_user_id(r["name"])),
@@ -282,10 +298,7 @@ async def jira_get_issue(key: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = request.app.state.index["jira"].get(key)
-    if doc_id is None:
-        raise HTTPException(status_code=404, detail="Issue does not exist")
-    row = store.get_document(conn, "jira", doc_id, visible_ids=ids)
+    row = _resolve_jira_key(request, conn, key, ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Issue does not exist")
     return _jira_issue(conn, request, row, expand=request.query_params.get("expand", ""))
@@ -297,10 +310,10 @@ async def jira_issue_comments(key: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = request.app.state.index["jira"].get(key)
-    if doc_id is None or store.get_document(conn, "jira", doc_id, visible_ids=ids) is None:
+    row = _resolve_jira_key(request, conn, key, ids)
+    if row is None:
         raise HTTPException(status_code=404, detail="Issue does not exist")
-    cs = store.doc_comments(conn, "jira", doc_id)
+    cs = store.doc_comments(conn, "jira", row["key"])
     site = _site(request)
     return {
         "startAt": 0,
@@ -546,30 +559,26 @@ def _jira_actor(email: str, site: str = "") -> dict:
 
 
 def _issue_key(request: Request, row) -> str:
-    """The key this issue answers to, as the reverse index resolved it.
+    """The key this issue answers to — its own stored `key` column, whole.
 
-    Deriving it here instead would disagree with the index whenever the derived key was
-    already held by an issue that provided it: the row then advertised a key that fetched
-    somebody else, and was reachable at nothing."""
-    provided = synth.stored(row, "key")
-    if provided:
-        return str(provided)
-    # Shape tests call the builders with a bare Request that carries no app, and they only
-    # read the derived spelling — so reach the index through the scope rather than the
-    # `app` property, which raises there.
-    state = getattr(request.scope.get("app"), "state", None)
-    resolved = (getattr(state, "index", None) or {}).get("jira_key") or {}
-    return resolved.get(row["doc_id"]) or synth.jira_key(
-        row["doc_id"], _project_key(request, row["project"])
-    )
+    Nothing is composed here. The prefix and the suffix are joined at import by
+    `resolve_jira_keys`, at the one moment the project's prefix is settled for the whole corpus, so
+    a stated key and a derived one are the same kind of value by the time they reach here.
+
+    Asserted, not defensively re-derived: every jira row gets a key at import (`resolve_jira_keys`
+    raises rather than leave one NULL), so reaching this with a NULL one is a bug upstream. A silent
+    re-derive would serve a PROBED row's synthesized suffix instead of failing where the problem
+    is."""
+    assert row["key"] is not None, "jira: a row reached the serializer with no key"
+    return row["key"]
 
 
 def _jira_ref(request: Request, row, site: str = "") -> dict:
     status = row["status"] or "To Do"
     return {
-        "id": str(synth.jira_numeric_id(row["doc_id"])),
+        "id": str(synth.jira_numeric_id(row["key"])),
         "key": _issue_key(request, row),
-        "self": f"{site}/rest/api/3/issue/{synth.jira_numeric_id(row['doc_id'])}" if site else None,
+        "self": f"{site}/rest/api/3/issue/{synth.jira_numeric_id(row['key'])}" if site else None,
         "fields": {
             "summary": row["title"],
             "status": {"name": status, "statusCategory": _status_category(status)},
@@ -580,11 +589,12 @@ def _jira_ref(request: Request, row, site: str = "") -> dict:
 
 
 def _jira_comment(c, site: str = "") -> dict:
-    ts = c["created_ts"] or synth.epoch(c["id"])
+    ts = c["created_ts"] if c["created_ts"] is not None else synth.epoch(str(c["id"]))
     actor = _jira_actor(c["author_email"], site)
+    cid = synth.atlassian_comment_id(c["id"])
     return {
-        "id": c["id"],
-        "self": f"{site}/rest/api/3/issue/comment/{c['id']}" if site else None,
+        "id": cid,
+        "self": f"{site}/rest/api/3/issue/comment/{cid}" if site else None,
         "author": actor,
         "body": _adf(c["body"]),
         "updateAuthor": actor,
@@ -594,7 +604,7 @@ def _jira_comment(c, site: str = "") -> dict:
     }
 
 
-def _issuetype(name: str, doc_id: str) -> dict:
+def _issuetype(name: str, seed: str) -> dict:
     name = name or "Task"
     subtask = name.lower() in ("sub-task", "subtask")
     return {
@@ -608,9 +618,10 @@ def _issuetype(name: str, doc_id: str) -> dict:
 
 def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool = False) -> dict:
     site = _site(request)
-    created = row["created_ts"] or synth.epoch(row["doc_id"])
-    updated = row["updated_ts"] or created + 3600
-    pkey = _project_key(request, row["project"])
+    # `is not None`: an issue dated 1970-01-01T00:00:00Z stores 0 and must serve it.
+    created = row["created_ts"] if row["created_ts"] is not None else synth.epoch(row["key"])
+    updated = row["updated_ts"] if row["updated_ts"] is not None else created + 3600
+    pkey = _project_key(conn, row["project"])
     reporter = _jira_actor(row["reporter_email"] or row["author_email"], site)
     creator = _jira_actor(row["author_email"], site)
     assignee = _jira_actor(row["assignee_email"], site) if row["assignee_email"] else None
@@ -627,7 +638,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
     fields = {
         "summary": row["title"],
         "description": _adf(row["content"]),
-        "issuetype": _issuetype(row["issuetype"], row["doc_id"]),
+        "issuetype": _issuetype(row["issuetype"], row["key"]),
         "project": {
             "id": str(synth.github_user_id(row["project"])),
             "key": pkey,
@@ -677,7 +688,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
         "timetracking": {},
     }
     if not fields_only:
-        cs = store.doc_comments(conn, "jira", row["doc_id"])
+        cs = store.doc_comments(conn, "jira", row["key"])
         fields["comment"] = {
             "comments": [_jira_comment(c, site) for c in cs],
             "maxResults": len(cs),
@@ -685,13 +696,13 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
             "startAt": 0,
         }
         fields["issuelinks"] = store.jcol(row, "issuelinks")
-        subs = store.children(conn, "jira", row["doc_id"])
+        subs = store.children(conn, "jira", row["key"])
         fields["subtasks"] = [_jira_ref(request, s, site) for s in subs]
         if row["parent_id"]:
             prow = store.get_document(conn, "jira", row["parent_id"])
             if prow:
                 fields["parent"] = _jira_ref(request, prow, site)
-    nid = synth.jira_numeric_id(row["doc_id"])
+    nid = synth.jira_numeric_id(row["key"])
     issue = {
         "id": str(nid),
         "key": _issue_key(request, row),
@@ -877,7 +888,7 @@ async def confluence_cql_search(request: Request):
                 "url": page["_links"]["webui"],
                 "entityType": "content",
                 "lastModified": synth.rfc3339_millis(
-                    r["updated_ts"] or r["created_ts"] or synth.epoch(r["doc_id"])
+                    _confluence_ts(r["updated_ts"], r["created_ts"], r["id"])
                 ),
             }
         )
@@ -937,17 +948,10 @@ async def confluence_content_get(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = request.app.state.index["confluence"].get(content_id)
-    if doc_id is None:
-        raise HTTPException(status_code=404, detail="No content found with id")
-    row = store.get_document(conn, "confluence", doc_id, visible_ids=ids)
+    row = store.confluence_by_id(conn, content_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     return _confluence_page(conn, request, row, request.query_params.get("expand", "body.storage"))
-
-
-def _confluence_doc_id(request: Request, content_id: int) -> str | None:
-    return request.app.state.index["confluence"].get(content_id)
 
 
 @router.get(
@@ -959,11 +963,10 @@ async def confluence_child_pages(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = _confluence_doc_id(request, content_id)
-    if doc_id is None:
+    if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     expand = request.query_params.get("expand", "")
-    kids = store.children(conn, "confluence", doc_id, visible_ids=ids)
+    kids = store.children(conn, "confluence", content_id, visible_ids=ids)
     results = [_confluence_page(conn, request, k, expand) for k in kids]
     return {
         "results": results,
@@ -979,16 +982,16 @@ async def confluence_comments(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = _confluence_doc_id(request, content_id)
-    if doc_id is None or store.get_document(conn, "confluence", doc_id, visible_ids=ids) is None:
+    if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     results = []
-    for c in store.doc_comments(conn, "confluence", doc_id):
-        ts = c["created_ts"] or synth.epoch(c["id"])
+    for c in store.doc_comments(conn, "confluence", content_id):
+        ts = c["created_ts"] if c["created_ts"] is not None else synth.epoch(str(c["id"]))
         author = c["author_email"] or "unknown"
+        cid = synth.atlassian_comment_id(c["id"])
         results.append(
             {
-                "id": c["id"],
+                "id": cid,
                 "type": "comment",
                 "status": "current",
                 "title": f"Re: {content_id}",
@@ -1004,7 +1007,7 @@ async def confluence_comments(content_id: int, request: Request):
                     "message": "",
                 },
                 "extensions": {"location": "footer"},
-                "_links": {"webui": f"/spaces/x/pages/{content_id}?focusedCommentId={c['id']}"},
+                "_links": {"webui": f"/spaces/x/pages/{content_id}?focusedCommentId={cid}"},
             }
         )
     return {"results": results, "start": 0, "limit": len(results), "size": len(results)}
@@ -1015,8 +1018,7 @@ async def confluence_labels(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    doc_id = _confluence_doc_id(request, content_id)
-    row = store.get_document(conn, "confluence", doc_id, visible_ids=ids) if doc_id else None
+    row = store.get_document(conn, "confluence", content_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="No content found with id")
     labels = store.jcol(row, "labels")
@@ -1030,11 +1032,11 @@ async def confluence_labels(content_id: int, request: Request):
 @router.get("/wiki/rest/api/content/{content_id}/restriction/byOperation")
 async def confluence_restrictions(content_id: int, request: Request):
     conn = auth.conn(request)
-    _require(request)
-    doc_id = request.app.state.index["confluence"].get(content_id)
-    if doc_id is None:
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
-    emails = store.doc_member_emails(conn, doc_id)
+    emails = store.doc_member_emails(conn, "confluence", content_id)
     users = [] if emails is None else [_conf_user(e) for e in sorted(emails)]
 
     def _op(name):
@@ -1068,10 +1070,25 @@ def _conf_user(email: str) -> dict:
     }
 
 
+def _confluence_ts(updated_ts, created_ts, cid) -> int:
+    """A page's last-modified second: its own, else its creation second, else one seeded from its
+    id. One helper for the two places that need it, because the CQL result and the page body must
+    date the same page the same way — and because reaching for a jira column here (`key`) raised
+    IndexError on the search route while the page route was fine.
+
+    `is not None` at each step: 1970-01-01T00:00:00Z stores as 0, and a page that HAS a second
+    must serve it rather than a seeded one."""
+    if updated_ts is not None:
+        return updated_ts
+    if created_ts is not None:
+        return created_ts
+    return synth.epoch(str(cid))
+
+
 def _confluence_page(conn, request: Request, row, expand: str) -> dict:
-    created = row["created_ts"] or synth.epoch(row["doc_id"])
-    updated = row["updated_ts"] or created
-    cid = synth.confluence_id(row["doc_id"])
+    created = row["created_ts"] if row["created_ts"] is not None else synth.epoch(str(row["id"]))
+    updated = row["updated_ts"] if row["updated_ts"] is not None else created
+    cid = row["id"]
     key = synth.confluence_space_key(row["space"])
     author = row["author_email"]
     ctype = row["subtype"] or "page"  # page | blogpost
@@ -1174,7 +1191,7 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             prow = store.get_document(conn, "confluence", pid)
             if prow is None:
                 break
-            pcid = synth.confluence_id(prow["doc_id"])
+            pcid = prow["id"]
             ancestors.insert(
                 0,
                 {

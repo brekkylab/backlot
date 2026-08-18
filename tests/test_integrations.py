@@ -77,7 +77,7 @@ def test_point_gmail_at_is_idempotent():
 
 
 def test_point_gmail_and_drive_at_each_redirect_their_own_service():
-    """Regression: point_gmail_at and point_drive_at used to wrap the same
+    """point_gmail_at and point_drive_at must not each wrap the same
     googleapiclient.discovery.build behind one shared `_points_at_mock` flag, so whichever ran
     second found the flag already set and silently no-opped — leaving its service pointed at the
     OTHER function's endpoint. Confirmed failing on the pre-fix code: calling gmail@1111 then
@@ -110,7 +110,7 @@ def test_point_gmail_and_drive_at_each_redirect_their_own_service():
 
 
 def test_google_build_registry_does_not_survive_a_direct_uninstall():
-    """Regression: `_MOCK_SERVICE_ENDPOINTS` is a module-level dict that could outlive the wrapper
+    """`_MOCK_SERVICE_ENDPOINTS` is a module-level dict that can outlive the wrapper
     reading it — unlike the old per-function closures, which were discarded whenever
     `discovery.build` was reset. Reproduction: point_gmail_at(A) installs the wrapper and
     registers "gmail" -> A; something resets `discovery.build` directly (exactly what this file's
@@ -172,7 +172,7 @@ def _isolate_mirage(monkeypatch, modules: dict[str, dict[str, str]]):
 
 
 def test_mirage_patchers_raise_when_a_constant_is_renamed(monkeypatch):
-    """Regression: the sweep was `if hasattr: setattr` with no counter, so a mirage upgrade that
+    """A sweep of `if hasattr: setattr` with no counter means a mirage upgrade that
     renamed a constant made both patchers return successfully having changed nothing — and the run
     then addressed gmail.googleapis.com / api.github.com with the caller's real credentials.
     `integrations/__init__.py` promises the opposite ("fails loudly if its seam disappears").

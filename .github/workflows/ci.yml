@@ -16,7 +16,8 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
       - name: Unit tests
-        run: pytest -q
+        # -n auto: pytest-xdist comes from the dev extra; --dist loadfile is in pyproject's addopts.
+        run: pytest -n auto
 
       # Node is for the Linear example at the end of this job: `@linear/sdk` is the only client
       # Linear publishes and there is no official Python one, so pytest cannot drive it.

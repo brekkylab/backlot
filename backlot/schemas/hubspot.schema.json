@@ -21,6 +21,11 @@
       "type": "string",
       "description": "Stable id (default: dsid_<sha256(source_type+title+content)>). Association targets reference this."
     },
+    "record_id": {
+      "type": "string",
+      "pattern": "^[0-9]+$",
+      "description": "The id `/crm/v3/objects/{objectType}/{id}` serves this record under, as the corpus writes it. Stored and served verbatim. An omitted id is synthesized from the doc_id and assigned at import, probed so it stays unique. Provide one when APPENDING to a corpus that already has hubspot records: without it a re-imported record cannot be told apart from a new one."
+    },
     "object_type": {
       "type": "string",
       "description": "CRM object type, plural as in the API path (contacts, companies, deals, tickets, notes, emails, meetings, calls, tasks, or a custom object). Default: the source_type."

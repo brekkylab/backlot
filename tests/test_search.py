@@ -1,14 +1,20 @@
 """Full-text search: store.build_fts + search_documents (FTS5) over the SAMPLE corpus.
 
-The `db` fixture is built via backlot.importer.byo.load, which now builds the docs_fts index, so
+The `db` fixture is built via backlot.importer.byo.load, which builds every source's own FTS
+index, so
 these exercise the real FTS path (search.messages / confluence CQL both sit on search_documents).
 """
 
+import pytest
+
 from backlot import store
+from tests._helpers import served_id
 
 
 def test_fts_index_built(db):
-    assert store._has_fts(db), "importer should have built the docs_fts full-text index"
+    assert all(store._has_fts(db, src) for src in store.SOURCE_TABLE), (
+        "the importer should have built every source's full-text index"
+    )
 
 
 def test_fts_slack_search(db):
@@ -26,21 +32,29 @@ def test_fts_matches_title(db):
     assert any("runbook" in (r["title"] or "").lower() for r in rows)
 
 
-def test_fts_acl_scoped(db, acl, tokens):
-    # 'compensation' appears only in the group-restricted People page; a non-member can't find it
-    admin_hits = store.count_search(db, "compensation", "confluence", visible_ids=None)
-    bob_ids = acl.visible_ids(db, acl.resolve(tokens["bob@acme.com"]))  # not in 'people'
-    assert admin_hits >= 1
-    assert store.count_search(db, "compensation", "confluence", visible_ids=bob_ids) == 0
+@pytest.mark.parametrize(
+    "term, source, caller",
+    [
+        # each term appears only in a group-restricted document, and the caller is outside the group
+        pytest.param("compensation", "confluence", "bob@acme.com", id="confluence"),
+        pytest.param("confidential", "notion", "ava@acme.com", id="notion"),
+        pytest.param("rotation", "linear", "ava@acme.com", id="linear"),
+    ],
+)
+def test_fts_is_acl_scoped(db, acl, tokens, term, source, caller):
+    """An index hit still has to pass the ACL: admin finds the restricted document, a caller outside
+    its group finds nothing."""
+    assert store.count_search(db, term, source, visible_ids=None) >= 1
+    ids = acl.visible_ids(db, acl.resolve(tokens[caller]))
+    assert store.count_search(db, term, source, visible_ids=ids) == 0
 
 
-def test_fts_source_aware_index(db):
-    # the importer rebuilds docs_fts with the indexed `src` column → fast source-intersection
-    assert store._fts_has_src(db)
-    assert (
-        store._fts_match("latency spike", "jira", has_src=True)
-        == 'src:srcjira AND ("latency" AND "spike")'
-    )
+def test_fts_search_returns_only_its_own_source(db):
+    # Was `test_fts_source_aware_index`, which asserted the shared index's `src:` intersection.
+    # Each source has its own index rather than one shared, tagged one, but the PROPERTY is
+    # the same and still worth pinning: a source-scoped search must never return another
+    # source's rows, whatever enforces it.
+    #
     # 'gateway' is in slack + confluence (SAMPLE); each source-scoped search returns only its
     # own rows, and a source whose title/content lacks the term returns nothing
     sl = store.search_documents(db, "gateway", "slack")
@@ -50,8 +64,38 @@ def test_fts_source_aware_index(db):
     assert store.search_documents(db, "gateway", "github") == []
 
 
+@pytest.mark.parametrize("src", sorted(store.SOURCE_TABLE))
+def test_fts_every_source_has_its_own_index(db, src):
+    """Each source searches its OWN FTS table.
+
+    The split is about bm25's IDF, not scan cost: IDF is computed over whatever table the term is
+    in, so a shared index made how a term ranks INSIDE one source depend on how often it appeared
+    in the others.
+    """
+    fts = f"{src}_fts"
+    assert store._fts_table(src) == fts
+    names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert fts in names
+    assert store._fts_match("latency spike") == '"latency" AND "spike"'
+    # every doc of this source is in its own index and nothing else is
+    n_src = db.execute(f"SELECT COUNT(*) FROM {store.table(src)}").fetchone()[0]
+    n_fts = db.execute(f"SELECT COUNT(*) FROM {fts}").fetchone()[0]
+    assert n_fts == n_src, f"{fts} should hold exactly {src}'s rows"
+
+
+def test_fts_jira_search_survived_its_move(db):
+    """The documents jira search returns did not change when it moved off the shared index —
+    only their relative ORDER can, and only for a multi-term query (see the commit that added
+    `jira_fts`: a single term's IDF is one constant factor across every match, so it cannot
+    reorder)."""
+    rows = store.search_documents(db, "latency", "jira")
+    assert rows and all("project" in r.keys() for r in rows)
+    assert store.search_documents(db, "gateway", "jira") == []
+    assert store.count_search(db, "latency", "jira") >= 1
+
+
 def test_fts_drive_source(db):
-    # Drive is in the source-aware index, so fullText search hits it via FTS (title + content)
+    # Drive has its own FTS index, so fullText search hits it via FTS (title + content)
     rows = store.search_documents(db, "palette", "google_drive")
     assert rows and any("palette" in (r["content"] or "").lower() for r in rows)
     # scoping is exact: a term absent from Drive title/content returns nothing for Drive
@@ -69,14 +113,9 @@ def test_fts_container_scoped(db):
 def test_fts_phrase_match_is_adjacent():
     # phrase=True requires the tokens ADJACENT (an FTS5 phrase); the default ANDs them anywhere.
     # This is what a grep push-down needs so a literal pattern isn't buried under scattered hits.
-    assert (
-        store._fts_match("upload csv", "slack", has_src=True)
-        == 'src:srcslack AND ("upload" AND "csv")'
-    )
-    assert (
-        store._fts_match("upload csv", "slack", has_src=True, phrase=True)
-        == 'src:srcslack AND ("upload csv")'
-    )
+    # No `src:` term: every source has its own index now, so there is nothing to intersect against.
+    assert store._fts_match("upload csv") == '"upload" AND "csv"'
+    assert store._fts_match("upload csv", phrase=True) == '"upload csv"'
 
 
 def test_fts_phrase_boosts_literal_substring():
@@ -94,18 +133,18 @@ def test_fts_phrase_boosts_literal_substring():
     ]
     for doc_id, content in rows:
         con.execute(
-            "INSERT INTO slack_messages(doc_id, channel, author_email, title, content, thread_seq, "
+            "INSERT INTO slack_messages(ts, channel, author_email, title, content, thread_seq, "
             "created_ts) VALUES (?, 'eng', 'a@x.com', '', ?, 0, 1000)",
             (doc_id, content),
         )
     store.build_fts(con)
     hits = store.search_documents(con, "upload.csv", "slack", phrase=True)
-    assert [h["doc_id"] for h in hits][:2] == ["d_literal", "d_space"], (
+    assert [h["ts"] for h in hits][:2] == ["d_literal", "d_space"], (
         "the doc literally containing 'upload.csv' must rank first"
     )
     # a plain (non-phrase) search does not reorder — it only ANDs the tokens
     plain = store.search_documents(con, "upload.csv", "slack")
-    assert {h["doc_id"] for h in plain} == {"d_literal", "d_space"}
+    assert {h["ts"] for h in plain} == {"d_literal", "d_space"}
 
 
 def test_search_order_by_recency():
@@ -117,15 +156,15 @@ def test_search_order_by_recency():
     con.executescript(store.SCHEMA)
     for doc_id, ts in [("old", 1000), ("new", 2000), ("mid", 1500)]:
         con.execute(
-            "INSERT INTO slack_messages(doc_id, channel, author_email, title, content, thread_seq, "
+            "INSERT INTO slack_messages(ts, channel, author_email, title, content, thread_seq, "
             "created_ts) VALUES (?, 'eng', 'a@x.com', '', 'quarterly planning notes', 0, ?)",
             (doc_id, ts),
         )
     store.build_fts(con)
     recency = store.search_documents(con, "planning", "slack", order_by="recency")
-    assert [r["doc_id"] for r in recency] == ["new", "mid", "old"], "recency = newest ts first"
+    assert [r["ts"] for r in recency] == ["new", "mid", "old"], "recency = newest ts first"
     asc = store.search_documents(con, "planning", "slack", order_by="recency_asc")
-    assert [r["doc_id"] for r in asc] == ["old", "mid", "new"], "recency_asc = oldest first"
+    assert [r["ts"] for r in asc] == ["old", "mid", "new"], "recency_asc = oldest first"
 
 
 def test_parse_slack_query():
@@ -188,7 +227,7 @@ def test_gmail_relative_date_parse():
 
 
 def test_gmail_relative_date_query_not_zeroed(db):
-    # Regression: newer_than:/older_than: used to fall through as free text, FTS-match nothing, and
+    # Unhandled, newer_than:/older_than: fall through as free text, FTS-match nothing, and
     # zero out ANY relative-date query. They must filter by age (anchored to now) like real Gmail.
     from backlot.routers.google import _gmail_query
 
@@ -212,16 +251,8 @@ def test_github_issue_q_parse():
 def test_fts_notion_search(db):
     # the SAMPLE 'Notion On-call Runbook' body mentions dashboards
     rows = store.search_documents(db, "dashboards", "notion")
-    assert rows and any(r["doc_id"] == "nt-runbook" for r in rows)
+    assert rows and any(r["id"] == served_id("notion", "nt-runbook") for r in rows)
     assert all("teamspace" in r.keys() for r in rows)  # source-scoped to notion's own table
-
-
-def test_fts_notion_acl_scoped(db, acl, tokens):
-    # 'confidential' appears only in the group-restricted people-ops page (nt-secret);
-    # an engineer (ava) can't find it, admin can
-    assert store.count_search(db, "confidential", "notion", visible_ids=None) >= 1
-    ava_ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))  # not in 'people'
-    assert store.count_search(db, "confidential", "notion", visible_ids=ava_ids) == 0
 
 
 def test_fts_s3_search(db):
@@ -242,16 +273,8 @@ def test_fts_s3_acl_scoped(db, acl, tokens):
 
 def test_fts_linear_search(db):
     rows = store.search_documents(db, "token-bucket", "linear")
-    assert rows and any(r["doc_id"] == "lin-rl" for r in rows)
+    assert rows and any(r["id"] == served_id("linear", "lin-rl") for r in rows)
     assert all("team" in r.keys() for r in rows)  # source-scoped to linear's own table
-
-
-def test_fts_linear_acl_scoped(db, acl, tokens):
-    # 'rotation' appears only in the reader-restricted issue; assert it IS findable unfiltered
-    # first, so the ==0 below proves the ACL rather than a vacuous no-match.
-    assert store.count_search(db, "rotation", "linear", visible_ids=None) >= 1
-    ava_ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
-    assert store.count_search(db, "rotation", "linear", visible_ids=ava_ids) == 0
 
 
 def test_fts_linear_scoped_to_one_team(db):
@@ -267,9 +290,9 @@ def test_fts_linear_scoped_to_one_team(db):
 # makes "sentences" a column match and keeps FTS (title+content) meaningful for this source too.
 
 
-def test_fireflies_transcripts_are_in_the_shared_fts_index(db):
+def test_fireflies_transcripts_are_in_their_own_fts_index(db):
     rows = store.search_documents(db, "batching", "fireflies")
-    assert {r["doc_id"] for r in rows} == {"ff-discovery"}
+    assert {r["id"] for r in rows} == {served_id("fireflies", "ff-discovery")}
     assert store.search_documents(db, "zqxjkbrqznope", "fireflies") == []
 
 
@@ -277,50 +300,48 @@ def test_fireflies_fts_indexes_the_sentence_text(db):
     """The transcript is indexed through `content`, i.e. through its sentences — so a word only
     ever spoken (never in a title or a summary) is still findable."""
     rows = store.search_documents(db, "crosstalk", "fireflies")
-    assert {r["doc_id"] for r in rows} == {"ff-discovery"}
+    assert {r["id"] for r in rows} == {served_id("fireflies", "ff-discovery")}
 
 
 def test_fireflies_scope_title_ignores_the_transcript_body(db):
     # "selects" is spoken in ff-allhands but appears in no title
     assert store.list_fireflies_transcripts(db, keyword="selects", scope="title") == []
     assert [
-        r["doc_id"]
-        for r in store.list_fireflies_transcripts(db, keyword="selects", scope="sentences")
-    ] == ["ff-allhands"]
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="selects", scope="sentences")
+    ] == [served_id("fireflies", "ff-allhands")]
 
 
 def test_fireflies_scope_sentences_ignores_the_title(db):
     # "all-hands" is the title of ff-allhands and is never spoken in it
     assert store.list_fireflies_transcripts(db, keyword="all-hands", scope="sentences") == []
     assert [
-        r["doc_id"]
-        for r in store.list_fireflies_transcripts(db, keyword="all-hands", scope="title")
-    ] == ["ff-allhands"]
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="all-hands", scope="title")
+    ] == [served_id("fireflies", "ff-allhands")]
 
 
 def test_fireflies_scope_all_is_the_union(db):
     title_hits = {
-        r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="title")
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="title")
     }
     sent_hits = {
-        r["doc_id"]
-        for r in store.list_fireflies_transcripts(db, keyword="latency", scope="sentences")
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="sentences")
     }
     all_hits = {
-        r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="all")
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="all")
     }
     assert all_hits == title_hits | sent_hits
     assert title_hits and sent_hits  # both sides actually contribute
 
 
 def test_fireflies_scope_defaults_to_all(db):
-    assert {r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency")} == {
-        r["doc_id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="all")
+    assert {r["id"] for r in store.list_fireflies_transcripts(db, keyword="latency")} == {
+        r["id"] for r in store.list_fireflies_transcripts(db, keyword="latency", scope="all")
     }
 
 
 def test_fireflies_summary_prose_is_not_keyword_searchable_as_a_sentence(db):
     """The summary is auto-notes, not speech. `scope: sentences` must not match words that only
     appear there, or a RAG consumer would attribute them to a speaker."""
-    assert "sub-300ms" in (store.get_document(db, "fireflies", "ff-discovery")["summary"] or "")
+    row = store.get_document(db, "fireflies", served_id("fireflies", "ff-discovery"))
+    assert "sub-300ms" in (row["summary"] or "")
     assert store.list_fireflies_transcripts(db, keyword="sub-300ms", scope="sentences") == []

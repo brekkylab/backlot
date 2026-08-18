@@ -234,6 +234,6 @@ def test_fireflies_offset_walk_visits_every_transcript_once(db):
         page = store.list_fireflies_transcripts(db, limit=2, offset=skip)
         if not page:
             break
-        seen += [r["doc_id"] for r in page]
+        seen += [r["id"] for r in page]
         skip += 2
     assert len(seen) == total == len(set(seen))

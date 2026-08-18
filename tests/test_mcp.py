@@ -97,14 +97,15 @@ def _notion_params(base: str, token: str):
     )
 
 
-def _restricted_doc(settings, user_token: str, source: str, where: str = "1=1"):
+def _restricted_doc(settings, user_token: str, source: str, where: str | None = None):
     """A doc of ``source`` the admin can read but this user cannot (per the mock's own ACL)."""
     conn = store.connect_ro(settings.db_path)
     acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     caller = acl.resolve(user_token)
     vids = acl.visible_ids(conn, caller)
-    for row in conn.execute(f"SELECT * FROM {store.table(source)} WHERE {where}"):
-        if store.get_document(conn, source, row["doc_id"], visible_ids=vids) is None:
+    for row in conn.execute(f"SELECT * FROM {store.table(source)} WHERE {where or '1=1'}"):
+        key = tuple(row[c] for c in store.id_columns(source))
+        if store.get_document(conn, source, *key, visible_ids=vids) is None:
             return row, caller.email
     return None, caller.email
 
@@ -134,7 +135,7 @@ def test_mcp_atlassian_acl_enforced(live_server):
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "jira")
     assert row is not None, f"no Jira issue is ACL-restricted from {email} in the sample corpus"
-    key = synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"]))
+    key = row["key"]  # the stored column: jira is probed, so a re-derived hash can disagree
 
     def reads(token):
         return asyncio.run(
@@ -159,7 +160,10 @@ def test_mcp_notion_acl_enforced(live_server):
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "notion", "subtype IS NOT 'database'")
     assert row is not None, f"no Notion page is ACL-restricted from {email} in the sample corpus"
-    page_id = synth.notion_id(row["doc_id"])
+    # The row's own `id`, not a fresh `synth.notion_id(row["doc_id"])`: notion never
+    # probes, so the two agree today, but a test that re-derives instead of reading the stored
+    # column would stop exercising the ACL path the day that stops being true and not notice.
+    page_id = row["id"]
 
     def reads(token):
         return asyncio.run(
@@ -259,65 +263,117 @@ def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None
         return False
 
 
-def test_mcp_github_bridge_acl_enforced(live_server):
-    """A GitHub issue the admin can read via the bridge's get_issue tool is 404 for a scoped user."""
+# --- one ACL property, seven surfaces -----------------------------------------------------
+# Every generic-bridge source enforces the ACL the same way: the bridge forwards the caller's
+# credential, so a document the admin reads through a tool is not-found for a scoped user. The
+# cases differ only in which tool, which arguments, and how the document's id is spelled.
+#
+# Each `args` reads the row's OWN stored id column rather than re-deriving it from the dataset id.
+# For github and hubspot that is load-bearing (both are probed, so a re-derived hash can disagree
+# with what the row was assigned); for the rest it keeps the test exercising the ACL path on the
+# day that stops being true.
+
+_BRIDGE_CASES = [
+    pytest.param(
+        "github",
+        "kind IS NULL OR kind != 'file'",  # a file has no served number; it is (repo, path)
+        # `get_issue`, not `get_issue_comment` — a prefix match picks whichever the bridge lists
+        # first, and these arguments only fit the one that takes a `number`
+        lambda n: n.startswith("get_issue") and "comment" not in n,
+        # the org the CORPUS produced, which tokens.yaml records — not `settings.org_name`, still
+        # the unloaded default here. The GitHub surface 404s any other owner.
+        lambda row, st: {
+            "owner": yaml.safe_load(st.tokens_path.read_text())["org"],
+            "repo": row["repo"],
+            "number": row["number"],
+        },
+        lambda t, row: '"number"' in t and '"title"' in t,
+        None,
+        id="github",
+    ),
+    pytest.param(
+        "hubspot",
+        None,
+        lambda n: n.startswith("get_object"),
+        lambda row, st: {"object_type": row["object_type"], "record_id": row["id"]},
+        lambda t, row: '"properties"' in t and row["id"] in t,
+        None,
+        id="hubspot",
+    ),
+    pytest.param(
+        "slack",
+        None,
+        lambda n: n.startswith("search_messages"),
+        lambda row, st: {"query": "reorg"},  # the restricted people-confidential message
+        lambda t, row: "headcount" in t,  # a word only that message carries
+        None,
+        id="slack-search",
+    ),
+    pytest.param(
+        "gmail",
+        None,
+        lambda n: n.startswith("gmail_messages_get"),
+        lambda row, st: {"user_id": "me", "msg_id": row["id"], "format": "full"},
+        lambda t, row: '"payload"' in t or '"snippet"' in t,
+        None,
+        id="gmail",
+    ),
+    pytest.param(
+        "gdrive",
+        None,
+        lambda n: n.startswith("drive_files_get"),
+        lambda row, st: {"file_id": row["id"]},
+        lambda t, row: '"name"' in t and '"mimeType"' in t,
+        None,
+        id="google_drive",
+    ),
+    pytest.param(
+        "notion",
+        "subtype IS NOT 'database'",
+        lambda n: n.startswith("get_page"),
+        lambda row, st: {"page_id": row["id"]},
+        lambda t, row: '"object": "page"' in t or '"object":"page"' in t,
+        None,
+        id="notion",
+    ),
+    pytest.param(
+        "atlassian",
+        None,
+        lambda n: n.startswith("jira_get_issue"),
+        lambda row, st: {"key": row["key"]},
+        lambda t, row: '"key"' in t and '"fields"' in t,
+        "svc@example.com",  # this bridge authenticates with basic auth
+        id="atlassian",
+    ),
+]
+
+
+@pytest.mark.parametrize("source, where, tool_pred, build_args, ok, username", _BRIDGE_CASES)
+def test_mcp_bridge_enforces_the_acl(
+    live_server, source, where, tool_pred, build_args, ok, username
+):
+    """A document the admin reads through the bridge's own tool is not-found for a scoped user."""
     pytest.importorskip("fastmcp")
     base, settings = live_server
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
-    row, email = _restricted_doc(settings, user["token"], "github")
-    assert row is not None, f"no GitHub issue is ACL-restricted from {email} in the sample corpus"
-    number = synth.github_number(row["doc_id"])
-    # the org the CORPUS produced, which tokens.yaml records — not `settings.org_name`, which is
-    # still the unloaded default here (the importer writes the derived org to tokens.yaml and the
-    # server reads it from there at startup; see backlot.main). The GitHub surface 404s any other
-    # owner, so the two are not interchangeable.
-    owner = yaml.safe_load(settings.tokens_path.read_text())["org"]
-    repo = row["repo"]
+    doc_source = {"gdrive": "google_drive", "atlassian": "jira"}.get(source, source)
+    row, email = _restricted_doc(settings, user["token"], doc_source, where)
+    assert row is not None, f"no {doc_source} document is ACL-restricted from {email} in SAMPLE"
+    args = build_args(row, settings)
 
     def reads(token):
         return _bridge_call(
             base,
-            "github",
+            source,
             token,
-            # `get_issue`, not `get_issue_comment` — a prefix match picks whichever the bridge
-            # lists first, and the arguments below only fit the one that takes a `number`
-            tool_pred=lambda n: n.startswith("get_issue") and "comment" not in n,
-            args={"owner": owner, "repo": repo, "number": number},
-            ok_pred=lambda t: '"number"' in t and '"title"' in t,
+            username=username,
+            tool_pred=tool_pred,
+            args=args,
+            ok_pred=lambda t: ok(t, row),
         )
 
-    assert reads(settings.admin_token), "admin should read the issue through the OpenAPI bridge"
-    assert not reads(user["token"]), f"{email} should be blocked from the issue via the bridge"
-
-
-# ------------------------------------------------------ Slack (generic OpenAPI→MCP bridge)
-
-
-def test_mcp_hubspot_bridge_acl_enforced(live_server):
-    """A CRM record the admin can read through the bridge's get_object tool is 404 for a scoped user.
-
-    HubSpot has no base-URL-switchable vendor MCP server, so the OpenAPI bridge is its only MCP
-    path — and because the API is polymorphic over `{object_type}`, one tool covers every object
-    type rather than there being a tool per type."""
-    pytest.importorskip("fastmcp")
-    base, settings = live_server
-    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
-    row, email = _restricted_doc(settings, user["token"], "hubspot")
-    assert row is not None, f"no HubSpot record is ACL-restricted from {email} in the sample corpus"
-    record_id = synth.hubspot_record_id(row["doc_id"])
-
-    def reads(token):
-        return _bridge_call(
-            base,
-            "hubspot",
-            token,
-            tool_pred=lambda n: n.startswith("get_object"),
-            args={"object_type": row["object_type"], "record_id": record_id},
-            ok_pred=lambda t: '"properties"' in t and record_id in t,
-        )
-
-    assert reads(settings.admin_token), "admin should read the record through the OpenAPI bridge"
-    assert not reads(user["token"]), f"{email} should be blocked from the record via the bridge"
+    assert reads(settings.admin_token), f"admin should read the {doc_source} document"
+    assert not reads(user["token"]), f"{email} should be blocked from the {doc_source} document"
 
 
 def test_mcp_hubspot_bridge_search_tool(live_server):
@@ -338,138 +394,3 @@ def test_mcp_hubspot_bridge_search_tool(live_server):
         },
         ok_pred=lambda t: '"total"' in t and "Acme Health" in t,
     )
-
-
-def test_mcp_slack_bridge_acl_enforced(live_server):
-    """A message in an ACL-restricted Slack channel is found by admin search but not a scoped user."""
-    pytest.importorskip("fastmcp")
-    base, settings = live_server
-    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
-    row, email = _restricted_doc(settings, user["token"], "slack")
-    assert row is not None, f"no Slack message is ACL-restricted from {email} in the sample corpus"
-
-    def finds(token):
-        return _bridge_call(
-            base,
-            "slack",
-            token,
-            tool_pred=lambda n: n.startswith("search_messages"),
-            args={"query": "reorg"},  # the restricted people-confidential message
-            ok_pred=lambda t: "headcount" in t,
-        )  # a word only that message carries
-
-    assert finds(settings.admin_token), "admin search should surface the restricted message"
-    assert not finds(user["token"]), f"{email} search should not surface the restricted message"
-
-
-# ------------------------------------------------------ Gmail (generic OpenAPI→MCP bridge)
-
-
-def test_mcp_gmail_bridge_acl_enforced(live_server):
-    """A Gmail message the admin can read via the bridge's messages.get tool is 404 for a user."""
-    pytest.importorskip("fastmcp")
-    base, settings = live_server
-    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
-    row, email = _restricted_doc(settings, user["token"], "gmail")
-    assert row is not None, f"no Gmail message is ACL-restricted from {email} in the sample corpus"
-    # Gmail serves hex ids, not dsids (#39) — the bridge forwards whatever the caller passes, so a
-    # dsid here would be refused as an invalid id value before the ACL was ever consulted.
-    from backlot import synth
-
-    msg_id = synth.gmail_message_id(row["doc_id"])
-
-    def reads(token):
-        return _bridge_call(
-            base,
-            "gmail",
-            token,
-            tool_pred=lambda n: n.startswith("gmail_messages_get"),
-            args={"user_id": "me", "msg_id": msg_id, "format": "full"},
-            ok_pred=lambda t: '"payload"' in t or '"snippet"' in t,
-        )
-
-    assert reads(settings.admin_token), "admin should read the message through the bridge"
-    assert not reads(user["token"]), f"{email} should be blocked from the message via the bridge"
-
-
-# ------------------------------------------------------ Google Drive (generic OpenAPI→MCP bridge)
-
-
-def test_mcp_gdrive_bridge_acl_enforced(live_server):
-    """A Drive file the admin can read via the bridge's files.get tool is 404 for a scoped user."""
-    pytest.importorskip("fastmcp")
-    base, settings = live_server
-    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
-    row, email = _restricted_doc(settings, user["token"], "google_drive")
-    assert row is not None, f"no Drive file is ACL-restricted from {email} in the sample corpus"
-    file_id = row["doc_id"]
-
-    def reads(token):
-        return _bridge_call(
-            base,
-            "gdrive",
-            token,
-            tool_pred=lambda n: n.startswith("drive_files_get"),
-            args={"file_id": file_id},
-            ok_pred=lambda t: '"name"' in t and '"mimeType"' in t,
-        )
-
-    assert reads(settings.admin_token), "admin should read the file through the bridge"
-    assert not reads(user["token"]), f"{email} should be blocked from the file via the bridge"
-
-
-# ------------------------------------------------------ Notion (generic OpenAPI→MCP bridge)
-# Notion also has a vendor-server example (test_mcp_notion_acl_enforced); this proves the same
-# ACL additively through the generic bridge, with no vendor server.
-
-
-def test_mcp_notion_bridge_acl_enforced(live_server):
-    pytest.importorskip("fastmcp")
-    base, settings = live_server
-    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
-    row, email = _restricted_doc(settings, user["token"], "notion", "subtype IS NOT 'database'")
-    assert row is not None, f"no Notion page is ACL-restricted from {email} in the sample corpus"
-    page_id = synth.notion_id(row["doc_id"])
-
-    def reads(token):
-        return _bridge_call(
-            base,
-            "notion",
-            token,
-            tool_pred=lambda n: n.startswith("get_page"),
-            args={"page_id": page_id},
-            ok_pred=lambda t: '"object": "page"' in t or '"object":"page"' in t,
-        )
-
-    assert reads(settings.admin_token), "admin should read the page through the bridge"
-    assert not reads(user["token"]), f"{email} should be blocked from the page via the bridge"
-
-
-# ------------------------------------------------------ Atlassian (generic OpenAPI→MCP bridge)
-# Atlassian also has a vendor-server example (test_mcp_atlassian_acl_enforced, Docker); this
-# proves the same ACL additively through the generic bridge (basic auth), with no vendor server.
-
-
-def test_mcp_atlassian_bridge_acl_enforced(live_server):
-    pytest.importorskip("fastmcp")
-    base, settings = live_server
-    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
-    row, email = _restricted_doc(settings, user["token"], "jira")
-    assert row is not None, f"no Jira issue is ACL-restricted from {email} in the sample corpus"
-    key = synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"]))
-
-    def reads(token):
-        return _bridge_call(
-            base,
-            "atlassian",
-            token,
-            username="svc@example.com",
-            tool_pred=lambda n: n.startswith("jira_get_issue"),
-            args={"key": key},
-            ok_pred=lambda t: '"key"' in t and '"fields"' in t,
-        )
-
-    assert reads(settings.admin_token), (
-        "admin should read the issue through the bridge (basic auth)"
-    )
-    assert not reads(user["token"]), f"{email} should be blocked from the issue via the bridge"

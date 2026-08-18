@@ -129,14 +129,18 @@ def gmail():
             f"{len(svc.users().threads().get(userId='me', id=msgs[0]['id']).execute()['messages'])} msgs"
         )
     )
-    # Served ids must look like Gmail's own (#39): 16 lowercase hex under 2**63. A dsid would be
+    # Served ids must look like Gmail's own: 16 lowercase hex under 2**63. A dsid would be
     # refused by the real API as an invalid id value, so a client written against the mock would
     # only discover that in production.
     check("Gmail", "ids are Gmail-shaped")(
         lambda: (
             f"{len(msgs)} hex ids"
             if all(
-                len(m["id"]) == 16 and int(m["id"], 16) < 2**63 and m["id"] == m["id"].lower()
+                # up to 16 digits and never zero-padded: real Gmail renders the integer
+                1 <= len(m["id"]) <= 16
+                and not m["id"].startswith("0")
+                and int(m["id"], 16) < 2**63
+                and m["id"] == m["id"].lower()
                 for m in msgs
             )
             else 1 / 0
@@ -228,10 +232,15 @@ def sheets():
         client_options=ClientOptions(api_endpoint=f"{BASE}/drive/v3"),
         static_discovery=True,
     )
+    # By NAME, not "the first spreadsheet": the assertions below are about this sheet's contents,
+    # and the listing order is the order of an opaque synthesized id, so taking whichever
+    # came first would silently hand them the corpus's other spreadsheet.
     fid = next(
         f["id"]
-        for f in drive.files().list(pageSize=100, fields="files(id,mimeType)").execute()["files"]
-        if f["mimeType"].endswith("spreadsheet")
+        for f in drive.files()
+        .list(pageSize=100, fields="files(id,name,mimeType)")
+        .execute()["files"]
+        if f["mimeType"].endswith("spreadsheet") and f["name"] == "Q1 Revenue Model"
     )
     # the service path lives under /sheets here, so the discovery-built URL is /sheets/v4/...
     svc = build(

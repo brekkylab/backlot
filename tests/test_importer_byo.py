@@ -3561,6 +3561,70 @@ def test_byo_two_projects_cannot_share_a_provided_key_prefix(tmp_path):
         load(first, settings, reset=False)
 
 
+def _jira_rec(did, project, key=None):
+    r = {
+        "source_type": "jira",
+        "doc_id": did,
+        "project": project,
+        "title": did,
+        "content": "c",
+        "author_email": "ava@acme.com",
+        "created": "2026-02-01T00:00:00Z",
+    }
+    if key:
+        r["key"] = key
+    return r
+
+
+@pytest.mark.parametrize(
+    "project",
+    ["platform-infra-reliability-and-cost-ops", "3d-printing"],
+    ids=["key-longer-than-real-jiras-10", "key-starting-with-a-digit"],
+)
+def test_byo_a_project_can_state_the_key_it_was_served(tmp_path, project):
+    """An --append MUST state a key (`_require_provided_id`), so the key the mock served has to be
+    one the corpus is allowed to write back. It was not, for two shapes of project name, and that
+    left those projects with no legal key at all: not stating one is refused by the importer, and
+    stating the served one was refused by validation.
+
+    `synth.jira_project_key` is `_key` plus a 6-digit hash, so it passes real Jira's 10-character
+    limit as soon as a project name has five words, and takes a leading digit from a name whose
+    first word starts with one. A pattern written to real Jira's rule refused both."""
+    settings = Settings(data_dir=tmp_path / "d")
+    load(_write(tmp_path, [_jira_rec("j-1", project)], "a.jsonl"), settings)
+    conn = store.connect_ro(settings.db_path)
+    project_key = conn.execute("SELECT key FROM jira_projects").fetchone()["key"]
+    assert project_key == synth.jira_project_key(project)
+    # The append states the served prefix, which is the only key that keeps the project on one
+    # prefix -- anything else is refused by the 1:1 prefix claim instead.
+    load(
+        _write(tmp_path, [_jira_rec("j-2", project, f"{project_key}-2")], "b.jsonl"),
+        settings,
+        reset=False,
+    )
+    conn = store.connect_ro(settings.db_path)
+    assert sorted(r["key"] for r in conn.execute("SELECT key FROM jira_issues")) == sorted(
+        [synth.jira_key("j-1", project_key), f"{project_key}-2"]
+    )
+
+
+@pytest.mark.parametrize("bad", ["pay-1", "PAY 1", "1", "PAY", "PAY-0", "PAY-1-x", "A-1"])
+def test_byo_a_mistyped_jira_key_is_refused(tmp_path, bad):
+    """The prefix is a fact about the whole project, so a typo in one key renames every issue in it.
+    Widening the pattern to admit the served key must not give that up.
+
+    `A-1` is in the list on purpose: real Jira rejects a single-character project key and so do
+    strict clients (see `synth._key`), and no derivation produces one -- `jira_project_key` is at
+    least seven characters. `PAY-1-x` matters for a different reason: the loader reads a prefix by
+    splitting on the LAST hyphen, so admitting a second one would let `PAY-1` become the project's
+    key."""
+    with pytest.raises(SystemExit, match=r"\[key\]"):
+        load(
+            _write(tmp_path, [_jira_rec("j-1", "payments", bad), _jira_rec("j-2", "payments")]),
+            Settings(data_dir=tmp_path / "d"),
+        )
+
+
 def _linear_rec(did, team="payments-platform", identifier=None):
     r = {
         "source_type": "linear",

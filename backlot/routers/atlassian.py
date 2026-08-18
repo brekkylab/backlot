@@ -156,12 +156,6 @@ def _jira_container_for_key(conn, token: str, request: Request | None = None) ->
     return None
 
 
-# `PREFIX-N` (see jira.schema.json's `key` pattern — an uppercase-led alnum prefix, a literal `-`,
-# then a positive integer with no leading zero). Anchored, so a malformed key (no trailing digits,
-# or none at all) simply fails to match rather than mis-splitting on an earlier `-`.
-_JIRA_KEY_RE = re.compile(r"^(.+)-([1-9][0-9]*)$")
-
-
 def _resolve_jira_key(request: Request, conn, key: str, ids):
     """One issue by its served key, ACL-scoped — a unique-indexed column lookup (see
     store.jira_by_key).

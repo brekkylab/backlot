@@ -288,11 +288,29 @@ def _key(container: str, fallback: str) -> str:
     return fallback
 
 
+# Real Jira Cloud's cap on a project key. `CreateProjectDetails.key` states the whole rule: "Project
+# keys must be unique and start with an uppercase letter followed by one or more uppercase
+# alphanumeric characters. The maximum length is 10 characters." -- which is the pattern
+# `jira.schema.json` enforces on a corpus-provided key, so a key this module DERIVES has to satisfy
+# it too or the mock serves one it would refuse as input.
+JIRA_PROJECT_KEY_MAX = 10
+
+
 def jira_project_key(container: str) -> str:
     """A project key meant to be unique per container: the readable word-initials prefix (see
     :func:`_key`) plus a short hash of the full name, so two SYNTHESIZED keys practically never
     collide with each other (the router's reverse key->project lookup + the derived issue keys
-    stay unambiguous). Deterministic, valid Jira shape (uppercase letter start, uppercase alnum).
+    stay unambiguous). Deterministic, and a shape real Jira can issue: uppercase letter start,
+    uppercase alphanumeric, at most :data:`JIRA_PROJECT_KEY_MAX` characters.
+
+    The readable half is what gives, because the digest is what keeps keys distinct: it is trimmed
+    to whatever the cap leaves after the 6-hex suffix, and leading digits are dropped so the key
+    starts with a letter (`3d-printing` reduced to `3P`, which no Jira accepts). A container whose
+    initials are ALL digits keeps the `PROJ` fallback rather than starting with the digest.
+
+    Only an already-invalid key moves. A key that satisfies the real rule is at most 10 characters
+    and letter-led, so its readable half is at most 4 and starts with a letter -- both the trim and
+    the strip are then no-ops and the key is byte-identical.
 
     NOT guaranteed unique against a corpus-PROVIDED prefix, though: a project with no provided
     keys of its own is never checked against `importer.byo`'s 1:1 prefix<->project enforcement
@@ -300,7 +318,9 @@ def jira_project_key(container: str) -> str:
     equal another project's provided prefix — or, symmetrically, another KEYLESS project's own
     digest, at the identical ~1/16.7M order (6 hex digits). See the residual documented on
     `store.py`'s `idx_jira_served` schema comment and `importer.byo`'s `resolve_jira_numbers`."""
-    return _key(container, "PROJ") + _digest(container)[:6].upper()
+    digest = _digest(container)[:6].upper()
+    readable = _key(container, "PROJ").lstrip("0123456789")[: JIRA_PROJECT_KEY_MAX - len(digest)]
+    return (readable or "PROJ") + digest
 
 
 def confluence_space_key(container: str) -> str:

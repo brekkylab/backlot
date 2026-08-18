@@ -3808,14 +3808,16 @@ def test_byo_appending_to_a_settled_team_leaves_every_identifier_alone(tmp_path)
     assert len(set(after.values())) == len(after)
 
 
-@pytest.mark.parametrize("bad", ["eng-7", "ENG 7", "7", "ENG-0007", "ENG_7", "ENG-7x"])
+@pytest.mark.parametrize("bad", ["eng-7", "ENG 7", "7", "ENG_7", "ENG-", "ENG- 7"])
 def test_byo_a_mistyped_linear_identifier_is_refused(tmp_path, bad):
     """The prefix is a fact about the whole team, so a typo in one issue renames every one of them
     — `identifier: "7"` made the team answer at `7` and stamped its siblings `7-n`. That is why
     jira's key carries a pattern, and the same reasoning now reaches Linear's identifier.
 
-    Length is deliberately NOT one of the refused shapes: see
-    test_byo_a_derived_identifier_is_accepted_as_input."""
+    Only the PREFIX is refusable. Length is not a refused shape (see
+    test_byo_a_derived_identifier_is_accepted_as_input) and neither is anything after the first
+    hyphen (see test_byo_a_slug_shaped_key_claims_only_its_leading_prefix) -- the number half cannot
+    rename a team, so validating it would only refuse corpora for no gain."""
     with pytest.raises(SystemExit, match=r"\[identifier\]"):
         load(
             _linear_shard(
@@ -3831,26 +3833,30 @@ def test_byo_a_slug_shaped_key_claims_only_its_leading_prefix(tmp_path):
     (`ENG-453210-kms-hsm-deployment-lifecycle-telemetry-orbiter`). Read to the LAST hyphen, each of
     those renamed `engineering` to a 50-character pseudo-key and stamped the team's keyless issues
     under it, and a sibling stating a real `ENG-…` was then refused for disagreeing with its own
-    team. Read to the FIRST, the whole corpus loads unchanged. The ERB path imports with
-    `validate=False`, so the schema pattern cannot stand in for this."""
+    team. Read to the FIRST, the whole corpus loads unchanged.
+
+    Loaded BOTH ways, and that is half the test. `erb.import_structured` imports with
+    `validate=False`, so the schema pattern cannot stand in for the prefix rule on that path -- but
+    `erb.export_byo` writes the same slug into `corpus.jsonl`, which `byo.load` reads with
+    validation ON. A pattern that refuses the slug turns `backlot export` into an artifact
+    `backlot import` cannot read, and breaks the equivalence
+    `test_erb_to_byo_round_trip_builds_an_equivalent_database` asserts between the two paths."""
     slug = "ENG-453210-kms-hsm-deployment-lifecycle-telemetry-orbiter"
-    settings = Settings(data_dir=tmp_path / "d")
-    byo.load_records(
-        lambda: enumerate(
-            [
-                _linear_rec("ln-slug", team="engineering", identifier=slug),
-                _linear_rec("ln-real", team="engineering", identifier="ENG-7"),
-                _linear_rec("ln-keyless", team="engineering"),
-            ],
-            1,
-        ),
-        settings,
-        reset=True,
-        validate=False,
-    )
-    conn = store.connect_ro(settings.db_path)
-    assert store.linear_team_keys(conn) == {"engineering": "ENG"}
-    idents = _stored_identifiers(settings, ["ln-slug", "ln-real", "ln-keyless"])
+    recs = [
+        _linear_rec("ln-slug", team="engineering", identifier=slug),
+        _linear_rec("ln-real", team="engineering", identifier="ENG-7"),
+        _linear_rec("ln-keyless", team="engineering"),
+    ]
+    dids = [r["doc_id"] for r in recs]
+    seen = []
+    for name, validate in (("validated", True), ("unvalidated", False)):
+        settings = Settings(data_dir=tmp_path / name)
+        byo.load_records(lambda: enumerate(recs, 1), settings, reset=True, validate=validate)
+        conn = store.connect_ro(settings.db_path)
+        assert store.linear_team_keys(conn) == {"engineering": "ENG"}
+        seen.append(_stored_identifiers(settings, dids))
+    assert seen[0] == seen[1], "validation changed what the corpus loaded as"
+    idents = seen[0]
     assert idents["ln-slug"] == slug  # the corpus's own spelling, untouched
     assert idents["ln-real"] == "ENG-7"
     assert idents["ln-keyless"] == synth.linear_identifier("ln-keyless", "ENG")

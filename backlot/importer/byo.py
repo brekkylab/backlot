@@ -2751,14 +2751,24 @@ def _check_id_map_destination(path: Path) -> None:
 
     A typo in an output path should cost nothing, not a full import — and the write itself happens
     after the load commits (see :func:`load_records`), where raising would leave a corpus loaded and
-    the command dead. So the path is opened for append here, which creates it if the directory
-    exists and reports the directory or the permission if it does not.
+    the command dead. So the path is opened for append here, which reports the directory or the
+    permission that a later write would have hit.
+
+    Opening for append is also the only way to learn that an EXISTING file cannot be written, which
+    probing the parent directory would miss. The cost is that it creates the file when there was
+    none, so a load that fails afterwards would leave a 0-byte manifest behind — the empty file the
+    ``--dry-run`` refusal exists to prevent. Hence the unlink: one this call created is removed
+    again, and the real write in :func:`load_records` creates it. A file that was already there is
+    left alone, stale contents and all, because it is not this function's to delete.
     """
+    existed = path.exists()
     try:
         with path.open("a"):
             pass
     except OSError as e:
         raise SystemExit(f"--id-map {path}: {e.strerror}")
+    if not existed:
+        path.unlink(missing_ok=True)
 
 
 def _id_map_manifest(loader, conn) -> str:

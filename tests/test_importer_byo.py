@@ -4726,6 +4726,30 @@ def test_an_unwritable_id_map_is_refused_before_the_load_starts(tmp_path, reset)
     assert settings.tokens_path.read_text() == tokens_before
 
 
+def test_a_refused_load_leaves_no_id_map_behind(tmp_path):
+    """The up-front check opens the destination for append, which is the only way to learn that an
+    existing file cannot be written — and which creates one when there was none. A load that fails
+    after it must not leave that 0-byte manifest sitting there: it is the empty file the --dry-run
+    refusal exists to prevent, and tooling reading it would join through nothing."""
+    settings = Settings(data_dir=tmp_path)
+    dest = tmp_path / "ids.json"
+    bad = _ID_MAP_CORPUS + [{"source_type": "nope", "title": "t", "content": "c"}]
+
+    with pytest.raises(SystemExit, match="source_type must be one of"):
+        load(_write(tmp_path, bad), settings, id_map=dest)
+    assert not dest.exists()
+
+    # One that was already there is not this check's to delete, so it keeps its contents until a
+    # load actually succeeds and overwrites them.
+    dest.write_text("stale\n")
+    with pytest.raises(SystemExit, match="source_type must be one of"):
+        load(_write(tmp_path, bad, "again.jsonl"), settings, id_map=dest)
+    assert dest.read_text() == "stale\n"
+
+    load(_write(tmp_path, _ID_MAP_CORPUS, "good.jsonl"), settings, id_map=dest)
+    assert json.loads(dest.read_text())["format"] == "backlot-id-map/1"
+
+
 def test_an_id_map_that_fails_at_the_last_moment_keeps_the_import(tmp_path, monkeypatch):
     """The write is outside the salvage-protected region, so a destination that passes the up-front
     check and breaks anyway costs the manifest, not the corpus."""
@@ -4738,7 +4762,7 @@ def test_an_id_map_that_fails_at_the_last_moment_keeps_the_import(tmp_path, monk
 
     def and_then_the_directory_goes_away(loader, conn):
         text = real(loader, conn)
-        dest.unlink()
+        # The check does not leave a file here, so the directory is already empty.
         dest_dir.rmdir()
         return text
 

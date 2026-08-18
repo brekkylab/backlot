@@ -2137,10 +2137,24 @@ def test_gmail_raw_and_headers(tmp_path):
 
     decoded = base64.urlsafe_b64decode(raw["raw"]).decode()
     assert "Subject: Hi" in decoded and "MIME-Version: 1.0" in decoded
-    # Bcc must NOT appear in a fetched message's headers (stripped in transit)
-    full = _gmail_message(row, "full")
-    names = {h["name"] for h in full["payload"]["headers"]}
-    assert "Bcc" not in names and "MIME-Version" in names
+    # Bcc survives only on the SENDER's own copy, which is where real Gmail keeps it: a recipient's
+    # copy has it stripped in transit, so a reader who is not the author must not learn who was
+    # blind-copied.
+    mine = _gmail_message(row, "full", "ceo@x.com")
+    hdrs = {h["name"]: h["value"] for h in mine["payload"]["headers"]}
+    assert hdrs["Bcc"] == "secret@x.com" and "MIME-Version" in hdrs
+
+    theirs = _gmail_message(row, "full", "someone.else@x.com")
+    assert "Bcc" not in {h["name"] for h in theirs["payload"]["headers"]}
+    # and an admin/service caller (no email) is not the sender either
+    assert "Bcc" not in {h["name"] for h in _gmail_message(row, "full")["payload"]["headers"]}
+
+    # the raw RFC822 form follows the same rule -- it is the same message, serialized
+    assert (
+        "Bcc: secret@x.com"
+        in base64.urlsafe_b64decode(_gmail_message(row, "raw", "ceo@x.com")["raw"]).decode()
+    )
+    assert "secret@x.com" not in decoded  # `decoded` above was fetched with no caller
 
     # The declared Content-Type (multipart/alternative here, no attachments) must be backed by a
     # genuinely boundary-delimited body -- not just plain text under a multipart header (invalid

@@ -165,7 +165,6 @@ def test_byo_readers_and_defaults(tmp_path):
             },
             {
                 "source_type": "slack",
-                "title": "hi",
                 "content": "c",
             },  # no author, no visibility -> public + dsid_ id
         ],
@@ -192,29 +191,12 @@ def test_byo_readers_and_defaults(tmp_path):
     assert store.get_document(conn, "slack", *slack, visible_ids={res["org"]}) is not None
 
 
-def test_slack_title_optional(tmp_path):
-    # slack needs no title; the other sources still require one
-    load(
-        _write(tmp_path, [{"source_type": "slack", "content": "deploy freeze Friday"}]),
-        Settings(data_dir=tmp_path),
-    )
-    conn = store.connect_ro((tmp_path / "mock.sqlite"))
-    assert conn.execute("SELECT title FROM slack_messages").fetchone()["title"] == ""
-
-    with pytest.raises(SystemExit):
-        load(
-            _write(tmp_path, [{"source_type": "confluence", "content": "no title here"}]),
-            Settings(data_dir=tmp_path),
-        )
-
-
 def _row(**kw):
     kw.setdefault("channel", "inc")
     kw.setdefault("thread_ts", None)
     kw.setdefault("thread_seq", 0)
     kw.setdefault("subtype", None)
     kw.setdefault("created_ts", None)
-    kw.setdefault("meta", None)
     return kw
 
 
@@ -242,7 +224,7 @@ def test_byo_meta_comments_hierarchy(tmp_path):
                     "source_type": "jira",
                     "title": "Bug",
                     "content": "b",
-                    "meta": {"issuelinks": [{"key": "X-1"}]},
+                    "issuelinks": [{"key": "X-1"}],
                     "comments": [{"content": "fixed in main", "author_email": "dev@a.com"}],
                 },
             ],
@@ -267,17 +249,10 @@ def test_byo_meta_comments_hierarchy(tmp_path):
     assert len(store.doc_comments(conn, "jira", bug["key"])) == 1
 
 
-def test_slack_message_text_without_title():
-    # empty title -> the message text is just the content (no bold lead line)
-    assert _message(_row(ts="1.0", title="", content="hi", author_email="a@x.com"))["text"] == "hi"
-    assert (
-        _message(_row(ts="2.0", title="T", content="hi", author_email="a@x.com"))["text"]
-        == "*T*\nhi"
-    )
+def test_slack_message_text_is_the_content():
+    assert _message(_row(ts="1.0", content="hi", author_email="a@x.com"))["text"] == "hi"
     # a standalone message has no thread_ts / reply_count
-    assert "thread_ts" not in _message(
-        _row(ts="1.0", title="", content="hi", author_email="a@x.com")
-    )
+    assert "thread_ts" not in _message(_row(ts="1.0", content="hi", author_email="a@x.com"))
 
 
 def test_byo_slack_threads(tmp_path):
@@ -1656,80 +1631,6 @@ def test_byo_gmail_message_requires_the_content_key(tmp_path):
 
 
 # --- per-service people/scope fields ----------------------------------------------
-
-
-def test_byo_per_service_people_and_scope_fields(tmp_path):
-    """The fields an ERB import writes that BYO could not: confluence confidentiality/owner_team/
-    reviewers, drive collaborators, jira severity/squad, slack participants, and the owner's
-    display name on every source whose table has one."""
-    corpus = _write(
-        tmp_path,
-        [
-            {
-                "source_type": "confluence",
-                "doc_id": "c1",
-                "space": "ENG",
-                "title": "Runbook",
-                "content": "x",
-                "author_email": "ava@a.com",
-                "author_name": "Tomás Rré",
-                "confidentiality": "restricted (customer-sensitive)",
-                "owner_team": "engineering",
-                "reviewers": ["bob@a.com", "cara@a.com"],
-            },
-            {
-                "source_type": "google_drive",
-                "doc_id": "d1",
-                "folder": "research",
-                "title": "Model",
-                "content": "x",
-                "author_email": "ava@a.com",
-                "author_name": "Ava Chen",
-                "collaborators": ["bob@a.com"],
-            },
-            {
-                "source_type": "jira",
-                "doc_id": "j1",
-                "project": "PAY",
-                "title": "Latency",
-                "content": "x",
-                "author_email": "ava@a.com",
-                "author_name": "Ava Chen",
-                "severity": "Sev1",
-                "squad": "payments-core",
-            },
-            {
-                "source_type": "slack",
-                "doc_id": "s1",
-                "channel": "incidents",
-                "content": "502s?",
-                "author_email": "ava@a.com",
-                "participants": ["ava", "bob"],
-            },
-        ],
-    )
-    settings = Settings(data_dir=tmp_path)
-    load(corpus, settings)
-    conn = store.connect_ro(settings.db_path)
-    try:
-        c = store.get_document(conn, "confluence", served_id("confluence", "c1"))
-        assert c["confidentiality"] == "restricted (customer-sensitive)"
-        assert c["owner_team"] == "engineering"
-        assert json.loads(c["reviewers"]) == ["bob@a.com", "cara@a.com"]
-        # the display name is STORED: it cannot be recovered from the email (the accents are lost)
-        assert c["owner_display"] == "Tomás Rré"
-        d = store.get_document(conn, "google_drive", served_id("google_drive", "d1"))
-        assert json.loads(d["collaborators"]) == ["bob@a.com"] and d["owner_display"] == "Ava Chen"
-        j = conn.execute("SELECT * FROM jira_issues").fetchone()
-        assert (j["severity"], j["squad"], j["owner_display"]) == (
-            "Sev1",
-            "payments-core",
-            "Ava Chen",
-        )
-        s = conn.execute("SELECT * FROM slack_messages").fetchone()
-        assert json.loads(s["participants"]) == ["ava", "bob"]
-    finally:
-        conn.close()
 
 
 def test_byo_group_null_means_the_container_owns_no_group(tmp_path):
@@ -3323,15 +3224,31 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
             assert resp.status_code == 404, cased_key
 
 
-def test_byo_meta_cannot_smuggle_a_tracker_id(tmp_path):
-    """A tracker id is read from the field its schema declares and from nowhere else.
-    `meta` is documented free-form, so seeding the extras from it let
-    `meta: {"number": 3}` claim issue 3 in a repository exactly as a top-level `number`
-    would — a spelling no schema describes, that shadows a real issue, and that the
-    uniqueness check would then refuse an import over."""
-    import sqlite3
+def test_byo_a_tracker_id_is_read_from_the_field_its_schema_declares(tmp_path):
+    """A tracker id has one spelling, and an unknown one is refused rather than dropped.
 
-    from backlot import store
+    There was a `meta` object that seeded the extras, so `meta: {"number": 3}` was accepted and then
+    discarded — the record served under a synthesized number while its own prose cited 3. It went
+    unnoticed across a 10k corpus: 2,015 jira keys and 635 github numbers written that way. The
+    field is gone, so the same corpus now fails validation naming the key.
+    """
+    from backlot.validation import record_errors
+
+    for source, extra in (
+        ("github", {"repo": "core", "subtype": "issue", "meta": {"number": 777}}),
+        ("jira", {"project": "payments", "meta": {"key": "PAY-777"}}),
+    ):
+        rec = {
+            "source_type": source,
+            "doc_id": "smug",
+            "title": "t",
+            "content": "c",
+            "author_email": "ava@acme.com",
+            **extra,
+        }
+        assert any("meta" in e for e in record_errors(rec)), f"{source} still accepts meta"
+
+    # and the declared spelling is honoured, which is the whole point of refusing the other one
     from tests._helpers import build_corpus
 
     settings = build_corpus(
@@ -3339,36 +3256,20 @@ def test_byo_meta_cannot_smuggle_a_tracker_id(tmp_path):
         [
             {
                 "source_type": "github",
-                "doc_id": "smug",
+                "doc_id": "plain",
                 "repo": "core",
                 "subtype": "issue",
                 "title": "t",
                 "content": "c",
                 "author_email": "ava@acme.com",
-                "meta": {"number": 777},
-            },
-            {
-                "source_type": "jira",
-                "doc_id": "j-smug",
-                "project": "payments",
-                "title": "t",
-                "content": "c",
-                "author_email": "ava@acme.com",
-                "meta": {"key": "PAY-777"},
-            },
+                "number": 777,
+            }
         ],
     )
     conn = sqlite3.connect(settings.db_path)
     conn.row_factory = sqlite3.Row
-    gh = conn.execute(f"SELECT number FROM {store.table('github')}").fetchone()
-    jira = conn.execute(f"SELECT key FROM {store.table('jira')}").fetchone()
-    # github's `number` is now the one served column, so it is
-    # non-NULL for every issue -- the import assigns one. What must NOT happen is meta's value
-    # being taken as a CLAIM on that spelling, so assert the served number is anything but 777.
-    assert gh["number"] != 777, "meta must not claim a number the way a top-level `number` does"
-    # Same for jira: `key` is the one served column now, so it is non-NULL for every issue. What
-    # must not happen is meta's value being taken as a CLAIM on that spelling.
-    assert jira["key"] != "PAY-777", "meta must not claim a key the way a top-level `key` does"
+    assert conn.execute("SELECT number FROM github_items").fetchone()["number"] == 777
+    conn.close()
 
 
 def test_byo_a_repeated_document_may_restate_its_own_tracker_id(tmp_path):
@@ -4757,17 +4658,19 @@ def test_byo_two_records_sharing_a_dataset_id_are_one_document(tmp_path, extra):
     base = {
         "source_type": source_type,
         "doc_id": "dup",
-        "title": "first",
         "content": "one",
         "author_email": "ava@acme.com",
         **extra,
     }
+    if source_type != "slack":  # slack messages carry no title
+        base["title"] = "first"
     settings = Settings(data_dir=tmp_path)
-    load(_write(tmp_path, [base, {**base, "title": "second", "content": "two"}]), settings)
+    # `content`, not `title`, is what tells the two apart: it is the one field every source has
+    load(_write(tmp_path, [base, {**base, "content": "two"}]), settings)
     conn = store.connect_ro(settings.db_path)
-    rows = conn.execute(f"SELECT title FROM {store.table(source_type)}").fetchall()
+    rows = conn.execute(f"SELECT content FROM {store.table(source_type)}").fetchall()
     conn.close()
-    assert [r["title"] for r in rows] == ["second"]
+    assert [r["content"] for r in rows] == ["two"]
 
 
 def test_byo_a_parent_declared_on_a_repeated_dataset_id_reaches_the_row(tmp_path):

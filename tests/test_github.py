@@ -394,7 +394,9 @@ _GH_DIFF_DOCS = (
             "visibility": "public",
             "author_email": "bob@acme.com",
             "author_groups": ["engineering"],
-            "meta": {"state": "open", "head": "fix/argv", "base": "main"},
+            "state": "open",
+            "head": "fix/argv",
+            "base": "main",
         },
         # The same repo's other pull, this one DECLARING its changeset and carrying both kinds of
         # comment. Four paths so a small per_page actually produces a second page — the synthesized
@@ -410,7 +412,9 @@ _GH_DIFF_DOCS = (
             "visibility": "public",
             "author_email": "bob@acme.com",
             "author_groups": ["engineering"],
-            "meta": {"state": "open", "head": "chore/rename", "base": "main"},
+            "state": "open",
+            "head": "chore/rename",
+            "base": "main",
             "changed_paths": ["pkg/core.py", "app.py", "pkg/conf.toml", "README.md"],
             "comments": [
                 {"content": "conversation, not anchored", "author_email": "ava@acme.com"},

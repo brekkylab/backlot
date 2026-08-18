@@ -841,11 +841,13 @@ def test_slack_text_variant_not_empty():
     }
     _load_one(conn, "slack", "dsid_s1", raw, P)
     rows = conn.execute(
-        "SELECT title, content, thread_seq FROM slack_messages "
+        "SELECT content, thread_seq FROM slack_messages "
         "WHERE thread_ts IS NOT NULL ORDER BY thread_seq"
     ).fetchall()
     assert len(rows) == 2
-    assert rows[0]["title"] == "" and "Heads up" in rows[0]["content"]  # not '*file_name*'
+    # the transcript's own turns, and only those — the source document's `file_name` is not folded
+    # in as a lead line
+    assert "Heads up" in rows[0]["content"] and "1711-foo.json" not in rows[0]["content"]
     assert "On it" in rows[1]["content"]
 
 

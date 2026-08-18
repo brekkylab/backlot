@@ -112,7 +112,8 @@ SAMPLE = [
         "author_email": "bob@acme.com",
         "author_groups": ["engineering"],
         "visibility": "public",
-        "meta": {"state": "open", "labels": ["bug", "gateway"]},
+        "state": "open",
+        "labels": ["bug", "gateway"],
         "comments": [{"content": "Confirmed with a repro test.", "author_email": "ava@acme.com"}],
     },
     {
@@ -126,14 +127,12 @@ SAMPLE = [
         "author_groups": ["engineering"],
         "visibility": "public",
         "subtype": "pull_request",
-        "meta": {
-            "state": "closed",
-            "merged_at": "2026-02-10T12:00:00Z",
-            "head": "fix/rl",
-            "base": "main",
-            "labels": ["bug"],
-            "reviews": [{"author_email": "ava@acme.com", "state": "APPROVED", "body": "LGTM."}],
-        },
+        "state": "closed",
+        "merged_at": "2026-02-10T12:00:00Z",
+        "head": "fix/rl",
+        "base": "main",
+        "labels": ["bug"],
+        "reviews": [{"author_email": "ava@acme.com", "state": "APPROVED", "body": "LGTM."}],
         "comments": [
             {"content": "Add a metric for dropped bursts?", "author_email": "ava@acme.com"}
         ],
@@ -148,7 +147,8 @@ SAMPLE = [
         "author_email": "hana@acme.com",
         "author_groups": ["people"],
         "visibility": "group",
-        "meta": {"state": "open", "labels": ["security"]},
+        "state": "open",
+        "labels": ["security"],
     },
     {
         "source_type": "jira",
@@ -160,25 +160,23 @@ SAMPLE = [
         "author_email": "bob@acme.com",
         "author_groups": ["payments", "engineering"],
         "visibility": "group",
-        "meta": {
-            "status": "In Progress",
-            "issuetype": "Incident",
-            "priority": "High",
-            "issuelinks": [
-                {
-                    "id": "1",
-                    "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
-                    "outwardIssue": {
-                        "key": "PAY-42",
-                        "fields": {
-                            "summary": "Right-size the pool",
-                            "status": {"name": "To Do"},
-                            "issuetype": {"name": "Task"},
-                        },
+        "status": "In Progress",
+        "issuetype": "Incident",
+        "priority": "High",
+        "issuelinks": [
+            {
+                "id": "1",
+                "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                "outwardIssue": {
+                    "key": "PAY-42",
+                    "fields": {
+                        "summary": "Right-size the pool",
+                        "status": {"name": "To Do"},
+                        "issuetype": {"name": "Task"},
                     },
-                }
-            ],
-        },
+                },
+            }
+        ],
         "comments": [
             {"content": "Rolled back; latency recovering.", "author_email": "ava@acme.com"},
             {"content": "p95 back to ~240ms.", "author_email": "bob@acme.com"},
@@ -195,7 +193,8 @@ SAMPLE = [
         "author_email": "ava@acme.com",
         "author_groups": ["payments", "engineering"],
         "visibility": "group",
-        "meta": {"issuetype": "Sub-task", "status": "To Do"},
+        "issuetype": "Sub-task",
+        "status": "To Do",
     },
     {
         "source_type": "jira",
@@ -297,7 +296,7 @@ SAMPLE = [
         "author_groups": ["security-compliance"],
         "visibility": "public",
         "subtype": "pdf",
-        "meta": {"mime_type": "application/pdf"},
+        "mime_type": "application/pdf",
     },
     # A sheet whose content carries a BLANK line, which the real corpus is full of (its spreadsheets
     # are prose). Real Sheets returns an interior blank row as `[]`, not `[""]`, and nothing else in
@@ -327,7 +326,7 @@ SAMPLE = [
         "author_groups": ["finance"],
         "visibility": "public",
         "subtype": "xlsx",
-        "meta": {"mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     },
     {
         "source_type": "notion",

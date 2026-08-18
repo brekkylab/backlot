@@ -2091,7 +2091,7 @@ def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
                 "content": "%PDF-1.7",
                 "author_email": "a@x.com",
                 "subtype": "pdf",
-                "meta": {"mime_type": "application/pdf"},
+                "mime_type": "application/pdf",
             },
         ],
     )

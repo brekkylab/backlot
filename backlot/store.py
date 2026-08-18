@@ -276,7 +276,7 @@ SCHEMA = """
 -- standalone message carries NULL.
 CREATE TABLE IF NOT EXISTS slack_messages (
     channel TEXT NOT NULL, ts TEXT NOT NULL, author_email TEXT NOT NULL,
-    title TEXT NOT NULL, content TEXT NOT NULL,
+    content TEXT NOT NULL,
     thread_ts TEXT, thread_seq INTEGER NOT NULL DEFAULT 0, subtype TEXT,
     reactions TEXT, files TEXT, edited TEXT, created_ts INTEGER NOT NULL, participants TEXT,
     PRIMARY KEY (channel, ts)
@@ -333,7 +333,7 @@ CREATE TABLE IF NOT EXISTS gdrive_files (
     id TEXT PRIMARY KEY, folder TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, mime_type TEXT, parents TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    trashed INTEGER, collaborators TEXT, owner_display TEXT
+    trashed INTEGER, owner_display TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_gdrive_folder ON gdrive_files(folder);
 DROP INDEX IF EXISTS idx_gdrive_served;
@@ -420,7 +420,7 @@ CREATE TABLE IF NOT EXISTS jira_issues (
     status TEXT, issuetype TEXT, priority TEXT, labels TEXT, components TEXT,
     issuelinks TEXT, parent_id TEXT, changelog TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     assignee_email TEXT, reporter_email TEXT, resolution TEXT, resolution_ts INTEGER,
-    duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, owner_display TEXT
+    duedate TEXT, fix_versions TEXT, owner_display TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_jira_project ON jira_issues(project);
 CREATE INDEX IF NOT EXISTS idx_jira_parent ON jira_issues(parent_id);
@@ -449,7 +449,7 @@ CREATE TABLE IF NOT EXISTS confluence_pages (
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, parent_id INT, labels TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     version_number INTEGER, version_message TEXT, minor_edit INTEGER,
-    reviewers TEXT, confidentiality TEXT, owner_team TEXT, owner_display TEXT,
+    owner_display TEXT,
     PRIMARY KEY (id)
 );
 CREATE INDEX IF NOT EXISTS idx_confluence_space ON confluence_pages(space);
@@ -2009,6 +2009,18 @@ def _fts_table(source_type: str) -> str:
         raise ValueError(f"unknown source_type {source_type!r}")
 
 
+# Sources with no `title` column. The FTS index keeps a `title` column for every source so its shape
+# and the queries over it stay uniform; for these it is fed a constant.
+TITLELESS = frozenset({"slack"})
+
+
+def title_expr(source_type: str, alias: str = "") -> str:
+    """SQL for a source's title, `''` where the table has no such column."""
+    if source_type in TITLELESS:
+        return "''"
+    return f"{alias}.title" if alias else "title"
+
+
 def build_fts(conn) -> bool:
     """(Re)build every source's FTS index. No-op (False) without FTS5 — search then uses the LIKE
     fallback.
@@ -2038,7 +2050,8 @@ def build_fts(conn) -> bool:
             f"{decl}, title, content, tokenize='porter unicode61')"
         )
         conn.execute(
-            f"INSERT INTO {fts}({key}, title, content) SELECT {key}, title, content FROM {tbl}"
+            f"INSERT INTO {fts}({key}, title, content) "
+            f"SELECT {key}, {title_expr(src)}, content FROM {tbl}"
         )
         conn.commit()
     return True
@@ -2069,7 +2082,8 @@ def fts_add_docs(conn, source_type: str, doc_keys: list) -> int:
         conn.execute(f"DELETE FROM {fts} WHERE ({key}) IN (VALUES {values})", flat)
         conn.execute(
             f"INSERT INTO {fts}({key}, title, content) "
-            f"SELECT {key}, title, content FROM {tbl} WHERE ({key}) IN (VALUES {values})",
+            f"SELECT {key}, {title_expr(source_type)}, content FROM {tbl} "
+            f"WHERE ({key}) IN (VALUES {values})",
             flat,
         )
         n += len(chunk)
@@ -2151,7 +2165,7 @@ def search_documents(
         elif lit and re.search(r"\w[^\w\s]\w", lit):
             order_sql = (
                 "(instr(lower(t.content), lower(?)) > 0 "
-                f"OR instr(lower(t.title), lower(?)) > 0) DESC, {fts}.rank"
+                f"OR instr(lower({title_expr(source_type, 't')}), lower(?)) > 0) DESC, {fts}.rank"
             )
             order_p = [lit, lit]
         sql = (

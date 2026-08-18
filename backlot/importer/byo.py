@@ -7,7 +7,7 @@ Each line is one document:
       "source_type": "confluence",        # required: one of the served source types
                                           #   (slack|gmail|google_drive|github|jira|confluence|
                                           #    notion|s3|hubspot|linear|fireflies)
-      "title": "Onboarding guide",         # required except for slack (messages have no title)
+      "title": "Onboarding guide",         # required (slack has no title)
       "content": "Full text...",            # required
       "doc_id": "my-123",                  # optional (default: dsid_<sha256(src+title+content)>)
       "space": "handbook",                 # the grouping unit, named per service: slack/fireflies
@@ -23,8 +23,9 @@ Each line is one document:
       "subtype": "page",                    # optional: drive document|spreadsheet|presentation;
                                              #   github issue|pull_request; confluence page|blogpost
       "parent": "doc-id-of-parent",         # optional: hierarchy (confluence child page, jira subtask)
-      "labels": ["eng","runbook"],          # optional facets -> meta.labels
-      "meta": {"issuelinks": [...]},        # optional per-source structured extras (merged into meta JSON)
+      "labels": ["eng","runbook"],          # optional facets
+      "issuelinks": [...],                  # optional per-source structured extras, each a
+                                             #   declared field of the source that has it
       "comments": [                         # optional: comments on this doc (jira/confluence/github/drive)
         {"content": "LGTM", "author_email": "rev@acme.com"}
       ],
@@ -410,7 +411,6 @@ def _service_columns(
             "created_ts": created,
             "updated_ts": updated,
             "trashed": (1 if ex.get("trashed") else None),
-            "collaborators": _j(ex.get("collaborators")),
             "owner_display": owner_display,
         }
     if src == "github":
@@ -455,10 +455,6 @@ def _service_columns(
             "resolution_ts": _epoch(ex.get("resolutiondate")),
             "duedate": ex.get("duedate"),
             "fix_versions": _j(ex.get("fix_versions")),
-            # `severity` is a separate axis from `priority` (how bad vs. when to fix) and
-            # `squad` is the owning team, which need not be the project's ACL group.
-            "severity": ex.get("severity"),
-            "squad": ex.get("squad"),
             "key": ex.get("key"),
             "owner_display": owner_display,
         }
@@ -475,14 +471,6 @@ def _service_columns(
             "version_number": ex.get("version_number"),
             "version_message": ex.get("version_message"),
             "minor_edit": (1 if ex.get("minor_edit") else None),
-            # Confluence's own confidentiality label, free text and stored verbatim rather
-            # than forced into an enum: real corpora write "restricted (customer-sensitive)" and
-            # "restricted (finance/customer-sensitive)" alongside plain "internal". It is a
-            # served label only — ACL still comes from `visibility`/`readers`, so a corpus that
-            # wants a restricted page group-scoped says so there too.
-            "reviewers": _j(ex.get("reviewers")),
-            "confidentiality": ex.get("confidentiality"),
-            "owner_team": ex.get("owner_team"),
             "owner_display": owner_display,
         }
     if src == "notion":
@@ -1734,16 +1722,9 @@ class _Loader:
             grant_types = [("org", org)]
 
         # structured extras: rec.meta merged with convenience top-level keys
-        extras = dict(rec.get("meta") or {})
-        # A tracker id is read from the field the schema declares it in, and from nowhere
-        # else. `meta` is documented free-form, so seeding `extras` from it let
-        # `meta: {"number": 3}` claim issue 3 in a repository just as a top-level `number`
-        # would — a spelling no schema describes, that shadows a real issue, and that the
-        # uniqueness check below would then refuse an import over. Both ids are ordinary
-        # `meta` content again: carried through, never promoted to the served column. Read from
-        # DEFERRED_ID so a source that gains a stateable id is covered by declaring it there.
-        for reserved in (*DEFERRED_ID.values(), "transcript_id"):
-            extras.pop(reserved, None)
+        # Every per-source field is read from the top level, and each name below is one the schema
+        # declares -- so an unknown key is a validation error rather than a value read and dropped.
+        extras: dict = {}
         for k in (
             "labels",
             "reactions",
@@ -1809,14 +1790,7 @@ class _Loader:
             "size",
             "path",
             "archived",
-            # confluence confidentiality/ownership, drive collaborators, jira severity/squad,
-            # slack participants — the per-service people-and-scope fields
-            "reviewers",
-            "confidentiality",
-            "owner_team",
-            "collaborators",
-            "severity",
-            "squad",
+            # slack participants — the per-service people-and-scope field
             "participants",
             # Linear (its own field names: `state` not status, camelCase timestamps)
             "identifier",
@@ -1939,7 +1913,9 @@ class _Loader:
             cols = _service_columns(
                 src, ex or {}, sub, par, did, gmail_thread, seq, org_domain, cts, uts, odisp
             )
-            cols.update(author_email=email or f"unknown@{org_domain}", title=ttl, content=body)
+            cols.update(author_email=email or f"unknown@{org_domain}", content=body)
+            if src not in store.TITLELESS:
+                cols["title"] = ttl
             if src == "s3" and cols.get("size") is None:
                 cols["size"] = len((body or "").encode("utf-8"))
             cols[gcol] = container

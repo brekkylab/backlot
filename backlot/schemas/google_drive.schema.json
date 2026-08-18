@@ -63,10 +63,6 @@
       },
       "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
     },
-    "meta": {
-      "type": "object",
-      "description": "Free-form per-source structured extras merged into the record."
-    },
     "subtype": {
       "enum": [
         "csv",
@@ -120,13 +116,6 @@
     "trashed": {
       "type": "boolean",
       "description": "Whether the file is trashed (files.list excludes trashed by default)."
-    },
-    "collaborators": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Collaborator principals (emails) — served as the file's non-owner permissions."
     }
   },
   "required": [

@@ -133,8 +133,8 @@ def test_fts_phrase_boosts_literal_substring():
     ]
     for doc_id, content in rows:
         con.execute(
-            "INSERT INTO slack_messages(ts, channel, author_email, title, content, thread_seq, "
-            "created_ts) VALUES (?, 'eng', 'a@x.com', '', ?, 0, 1000)",
+            "INSERT INTO slack_messages(ts, channel, author_email, content, thread_seq, "
+            "created_ts) VALUES (?, 'eng', 'a@x.com', ?, 0, 1000)",
             (doc_id, content),
         )
     store.build_fts(con)
@@ -156,8 +156,8 @@ def test_search_order_by_recency():
     con.executescript(store.SCHEMA)
     for doc_id, ts in [("old", 1000), ("new", 2000), ("mid", 1500)]:
         con.execute(
-            "INSERT INTO slack_messages(ts, channel, author_email, title, content, thread_seq, "
-            "created_ts) VALUES (?, 'eng', 'a@x.com', '', 'quarterly planning notes', 0, ?)",
+            "INSERT INTO slack_messages(ts, channel, author_email, content, thread_seq, "
+            "created_ts) VALUES (?, 'eng', 'a@x.com', 'quarterly planning notes', 0, ?)",
             (doc_id, ts),
         )
     store.build_fts(con)

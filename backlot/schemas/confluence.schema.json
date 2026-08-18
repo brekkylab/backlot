@@ -68,10 +68,6 @@
       },
       "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
     },
-    "meta": {
-      "type": "object",
-      "description": "Free-form per-source structured extras merged into the record."
-    },
     "subtype": {
       "enum": [
         "page",
@@ -167,21 +163,6 @@
         ],
         "additionalProperties": false
       }
-    },
-    "confidentiality": {
-      "type": "string",
-      "description": "Confluence confidentiality label (free text: `internal`, `restricted`, `restricted (customer-sensitive)`). Served as a label; ACL still comes from `visibility`/`readers`."
-    },
-    "owner_team": {
-      "type": "string",
-      "description": "The team that owns the page (`version.by` team label)."
-    },
-    "reviewers": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Reviewer principals (emails) named on the page."
     }
   },
   "required": [

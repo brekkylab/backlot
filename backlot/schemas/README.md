@@ -117,17 +117,17 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   unknown top-level key is almost always a typo). Gmail's `content` and its `messages[].content`
   are the one exception to non-empty content: a thread opened or continued by a header-only message
   (auto-ack, bare forward) is real, and dropping it would renumber the rest of the thread.
-- **Permissive** — the free-form `meta` object and the loosely typed per-service extras
-  (`reactions`, `attachments`, `issuelinks`, `reviews`, `changelog`, …), which the loader stores
-  as JSON without a fixed shape.
+- **Permissive** — the loosely typed per-service extras (`reactions`, `attachments`,
+  `issuelinks`, `reviews`, `changelog`, …), which the loader stores as JSON without a fixed shape.
+  Each is a declared field of the source that has it: there is no free-form object, so a key no
+  schema names is a validation error rather than a value read and dropped.
 - **Timestamps** — every source accepts `created` (epoch seconds or ISO 8601); drive/github/
   jira/confluence also accept `updated`. Both are optional — when omitted the router synthesizes
   a stable time from the `doc_id`. Slack `replies` are full messages (`reactions`/`files`/
   `subtype`/`edited`, not just `content`); gmail accepts an explicit `to`.
 - **Ids the corpus owns** (all optional): github `number`, jira `key`, confluence `content_id`,
   hubspot `record_id`, fireflies `transcript_id` — the spelling a document cites, stored and
-  served verbatim so that citation is a working lookup. Read from these fields only; the same
-  name inside `meta` stays ordinary `meta` content. Each is unique within its scope — a number
+  served verbatim so that citation is a working lookup. Each is unique within its scope — a number
   within its repository, everything else within the instance — and a second record claiming one
   stops the import, whether that record is in this corpus or was loaded by an earlier one. Omit
   them and the id is derived, under the prefix this project's provided keys carry, so a corpus

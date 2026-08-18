@@ -51,11 +51,6 @@ def test_unknown_top_level_key_rejected():
     assert any("athor_email" in e for e in errs)
 
 
-def test_title_required_except_slack():
-    assert _first_error({"source_type": "gmail", "content": "c"})  # missing title -> error
-    assert _first_error({"source_type": "slack", "content": "c"}) == []  # slack ok without title
-
-
 def test_hubspot_record_accepted():
     # a CRM record: the object type is the grouping unit, typed properties are free-form, and
     # associations name the target record by doc_id
@@ -207,6 +202,63 @@ def test_linear_priority_accepts_a_label_or_the_numeric_scale():
             )
             == []
         )
+
+
+# Fields no vendor response carries, so a corpus writing one had it silently dropped. Removed from
+# the schemas; each is now the ordinary unknown-key refusal. Same reasoning as
+# `test_linear_rejects_jiras_vocabulary` below — the value went nowhere, and a refusal says so.
+@pytest.mark.parametrize(
+    "source, field, value",
+    [
+        # Slack messages have no title. Whether a CONVERTER folds one into the text is that
+        # converter's business (see importer.erb); the schema should not offer the field.
+        ("slack", "title", "t"),
+        # Jira has no `severity` or `squad`; both would be customfield_* and none is served.
+        ("jira", "severity", "SEV2"),
+        ("jira", "squad", "payments"),
+        # `issuetype` is Jira's own word and is what the API returns.
+        ("jira", "subtype", "Bug"),
+        # Confluence exposes labels, not these.
+        ("confluence", "reviewers", ["a@b.com"]),
+        ("confluence", "confidentiality", "internal"),
+        ("confluence", "owner_team", "platform"),
+        # Drive exposes owners/permissions; `collaborators` reached a column nothing read.
+        ("google_drive", "collaborators", ["a@b.com"]),
+    ],
+)
+def test_fields_no_response_carries_are_rejected(source, field, value):
+    rec = {"source_type": source, "title": "t", "content": "c", field: value}
+    assert any(field in e for e in record_errors(rec)), f"{source}.{field} still accepted"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "confluence",
+        "fireflies",
+        "github",
+        "gmail",
+        "google_drive",
+        "hubspot",
+        "jira",
+        "linear",
+        "notion",
+        "s3",
+        "slack",
+    ],
+)
+def test_meta_is_rejected_on_every_source(source):
+    """`meta` accepted arbitrary keys and served none of them.
+
+    Declared as "extras merged into the record", it merged nothing: the importer seeded a dict from
+    it, overlaid the declared names from the TOP level, and consumed only names it knew — so a
+    declared key was overwritten and an undeclared one was dropped. Measured before removal: none of
+    the twelve `meta` keys the example corpus carried reached any table. It is also how 2,015 jira
+    keys and 635 github numbers went missing, served under synthesized ids their own prose never
+    cited.
+    """
+    rec = {"source_type": source, "title": "t", "content": "c", "meta": {"anything": 1}}
+    assert any("meta" in e for e in record_errors(rec)), f"{source} still accepts meta"
 
 
 def test_linear_rejects_jiras_vocabulary():
@@ -438,55 +490,6 @@ def test_fireflies_schema_duration_is_minutes_not_seconds():
 
 
 # --- fields that make an ERB import expressible ------------------------------
-
-
-def test_confluence_accepts_confidentiality_ownership_and_reviewers():
-    assert (
-        record_errors(
-            {
-                "source_type": "confluence",
-                "space": "ENG",
-                "title": "Runbook",
-                "content": "c",
-                "author_email": "ava@a.com",
-                "author_name": "Tom\u00e1s Rr\u00e9",
-                # free text, not an enum: the bench writes "restricted (finance/customer-sensitive)" too
-                "confidentiality": "restricted (customer-sensitive)",
-                "owner_team": "engineering",
-                "reviewers": ["bob@a.com"],
-            }
-        )
-        == []
-    )
-
-
-def test_drive_collaborators_and_jira_severity_squad_accepted():
-    assert (
-        record_errors(
-            {
-                "source_type": "google_drive",
-                "folder": "research",
-                "title": "t",
-                "content": "c",
-                "collaborators": ["bob@a.com"],
-                "author_name": "Ava Chen",
-            }
-        )
-        == []
-    )
-    assert (
-        record_errors(
-            {
-                "source_type": "jira",
-                "project": "PAY",
-                "title": "t",
-                "content": "c",
-                "severity": "Sev1",
-                "squad": "payments-core",
-            }
-        )
-        == []
-    )
 
 
 def test_slack_participants_accepted():

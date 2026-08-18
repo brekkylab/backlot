@@ -708,7 +708,7 @@ def _search_match(conn, row) -> dict:
     """A search.messages `matches[]` entry for a slack row."""
     ch = row["channel"]
     cid = synth.slack_channel_id(ch)
-    text = f"*{row['title']}*\n{row['content']}" if row["title"] else row["content"]
+    text = row["content"]
     ts = row["ts"]
     m = {
         "type": "message",
@@ -781,10 +781,7 @@ def _message(
     reply_users_count: int = 0,
     parent_user_id: str | None = None,
 ) -> dict:
-    # Slack messages have no title; only prepend one as a lead line when present
-    # (a converted corpus's messages may carry a title, hand-written slack records typically don't).
-    title = row["title"]
-    text = f"*{title}*\n{row['content']}" if title else row["content"]
+    text = row["content"]
     m = {
         "type": "message",
         "user": synth.slack_user_id(row["author_email"]),

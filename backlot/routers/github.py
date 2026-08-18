@@ -820,7 +820,9 @@ def _cap_tree(entries: list[dict]) -> tuple[list[dict], bool]:
     return kept, True
 
 
-async def _contents_response(owner: str, repo: str, path: str, request: Request):
+async def _contents_response(
+    owner: str, repo: str, path: str, request: Request, ref: str | None = None
+):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -828,7 +830,7 @@ async def _contents_response(owner: str, repo: str, path: str, request: Request)
     ab = _api_base(request)
     path = path.strip("/")
     if path:
-        row = store.get_repo_file(conn, repo, path, ids)
+        row = store.get_repo_file(conn, repo, path, ids, ref=ref)
         if row is not None:
             return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
                 owner, repo, row, ab
@@ -845,13 +847,18 @@ async def _contents_response(owner: str, repo: str, path: str, request: Request)
 
 
 @router.get("/repos/{owner}/{repo}/contents")
-async def get_contents_root(owner: str, repo: str, request: Request):
-    return await _contents_response(owner, repo, "", request)
+async def get_contents_root(owner: str, repo: str, request: Request, ref: str | None = Query(None)):
+    return await _contents_response(owner, repo, "", request, ref)
 
 
 @router.get("/repos/{owner}/{repo}/contents/{path:path}")
-async def get_contents(owner: str, repo: str, path: str, request: Request):
-    return await _contents_response(owner, repo, path, request)
+async def get_contents(
+    owner: str, repo: str, path: str, request: Request, ref: str | None = Query(None)
+):
+    """`ref` selects a SNAPSHOT of the file when the corpus named one; see store.get_repo_file for
+    why an unnamed ref answers HEAD instead of 404. A directory listing ignores it — the tree has
+    no per-ref shape here (the no-history simplification in :func:`get_tree`)."""
+    return await _contents_response(owner, repo, path, request, ref)
 
 
 @router.get("/repos/{owner}/{repo}/git/blobs/{sha}")
@@ -860,8 +867,15 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
+    # every snapshot, not just HEAD: a blob sha is content-addressed, so a superseded snapshot
+    # keeps its own and stays fetchable at it (see store.list_repo_file_snapshots).
     row = next(
-        (r for r in store.list_repo_files(conn, repo, ids) if _blob_sha(r["content"]) == sha), None
+        (
+            r
+            for r in store.list_repo_file_snapshots(conn, repo, ids)
+            if _blob_sha(r["content"]) == sha
+        ),
+        None,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")

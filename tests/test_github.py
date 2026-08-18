@@ -222,6 +222,71 @@ _GH_FILE_DOCS = [
         "author_email": "ava@acme.com",
         "author_groups": ["engineering"],
     },
+    # Three snapshots of ONE path, in a repo of its own so the exact tree/contents sets asserted
+    # for 'codebase' stay untouched. This is what a corpus recording a file's edits produces: a
+    # file is addressed by (repo, path), so these are one file's history, not three files. `created`
+    # is explicit on each because a synthesized one lands in 2023-2024 and HEAD would be a coin
+    # toss; the middle one states no `ref`, which is the shape a corpus that just dates its
+    # snapshots produces.
+    {
+        "source_type": "github",
+        "doc_id": "gh-hist-v1",
+        "repo": "history-repo",
+        "subtype": "file",
+        "path": "svc/rate.py",
+        "ref": "pr-1",
+        "title": "rate.py",
+        "content": "LIMIT = 1\n",
+        "created": "2026-01-01T00:00:00Z",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
+    {
+        "source_type": "github",
+        "doc_id": "gh-hist-v2",
+        "repo": "history-repo",
+        "subtype": "file",
+        "path": "svc/rate.py",
+        "title": "rate.py",
+        "content": "LIMIT = 2\n",
+        "created": "2026-02-01T00:00:00Z",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
+    {
+        "source_type": "github",
+        "doc_id": "gh-hist-v3",
+        "repo": "history-repo",
+        "subtype": "file",
+        "path": "svc/rate.py",
+        "ref": "pr-3",
+        "title": "rate.py",
+        "content": "LIMIT = 3\n",
+        "created": "2026-03-01T00:00:00Z",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
+    # a second path in the same repo, so the tree has something to be a set OF
+    {
+        "source_type": "github",
+        "doc_id": "gh-hist-other",
+        "repo": "history-repo",
+        "subtype": "file",
+        "path": "svc/other.py",
+        "title": "other.py",
+        "content": "OTHER = 0\n",
+        "created": "2026-01-15T00:00:00Z",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
     # a file doc, deliberately chosen (by brute force over the doc_id) so its synthesized
     # `number` collides with gh-issue-1's in the SAME repo ('gateway') -- reproduces the
     # (repo, number) index-shadowing bug: a file's number must never be able to hide a
@@ -537,6 +602,69 @@ def test_github_file_excluded_from_search_issues(gh_client, gh_admin_h):
     body = c.get("/github/search/issues", headers=gh_admin_h, params={"q": "helper"}).json()
     assert body["total_count"] == 0
     assert body["items"] == []
+
+
+def test_github_a_files_snapshots_are_one_tree_entry_served_at_head(gh_client, gh_admin_h, gh_org):
+    """A path the corpus states three times is ONE file in the tree and in a directory listing, and
+    the version served is the newest.
+
+    A file is addressed by (repo, path); the extra rows are that file's history. Listing a path
+    once per snapshot would not be a git tree, and picking a snapshot by scan order (which is what
+    an unordered lookup did) makes the served content arbitrary.
+    """
+    c, _ = gh_client
+    tree = c.get(
+        f"/github/repos/{gh_org}/history-repo/git/trees/main",
+        headers=gh_admin_h,
+        params={"recursive": "1"},
+    ).json()
+    blobs = [e for e in tree["tree"] if e["type"] == "blob"]
+    assert sorted(e["path"] for e in blobs) == ["svc/other.py", "svc/rate.py"]
+
+    body = c.get(f"/github/repos/{gh_org}/history-repo/contents/svc", headers=gh_admin_h).json()
+    assert sorted(e["path"] for e in body) == ["svc/other.py", "svc/rate.py"]
+
+    raw = c.get(
+        f"/github/repos/{gh_org}/history-repo/contents/svc/rate.py",
+        headers={**gh_admin_h, "Accept": "application/vnd.github.raw"},
+    )
+    assert raw.text == "LIMIT = 3\n"  # newest by created, not whichever row was reached first
+
+
+def test_github_contents_serves_a_snapshot_by_its_stated_ref(gh_client, gh_admin_h, gh_org):
+    """`?ref=` reaches a snapshot the corpus named, which is the only way an older one is
+    addressable by path.
+
+    A ref the corpus does not name keeps the documented no-history tolerance and answers HEAD,
+    rather than becoming a new 404 surface: real clients pass a branch name, and a corpus that
+    dates its snapshots without naming them still has to answer `?ref=main`.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/history-repo/contents/svc/rate.py"
+    raw = {**gh_admin_h, "Accept": "application/vnd.github.raw"}
+    assert c.get(url, headers=raw, params={"ref": "pr-1"}).text == "LIMIT = 1\n"
+    assert c.get(url, headers=raw, params={"ref": "pr-3"}).text == "LIMIT = 3\n"
+    assert c.get(url, headers=raw, params={"ref": "main"}).text == "LIMIT = 3\n"  # unknown -> HEAD
+
+    body = c.get(url, headers=gh_admin_h, params={"ref": "pr-1"}).json()
+    assert body["path"] == "svc/rate.py"  # the file's address, not the snapshot's
+
+
+def test_github_every_snapshot_keeps_its_own_blob(gh_client, gh_admin_h, gh_org):
+    """A blob sha is content-addressed, so each snapshot already has its own and stays fetchable
+    even when it is not HEAD. Nothing about this route needed to change; it is pinned because it is
+    the only route on which a superseded snapshot is reachable by id."""
+    import hashlib
+
+    c, _ = gh_client
+    for content in ("LIMIT = 1\n", "LIMIT = 2\n", "LIMIT = 3\n"):
+        sha = hashlib.sha1(content.encode()).hexdigest()
+        got = c.get(
+            f"/github/repos/{gh_org}/history-repo/git/blobs/{sha}",
+            headers={**gh_admin_h, "Accept": "application/vnd.github.raw"},
+        )
+        assert got.status_code == 200, content
+        assert got.text == content
 
 
 def test_github_a_files_number_never_shadows_an_issue(gh_client, gh_admin_h, gh_org):

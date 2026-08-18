@@ -80,6 +80,11 @@
       "minLength": 1,
       "description": "File path (required for subtype='file')."
     },
+    "ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "subtype='file' only: which SNAPSHOT of `path` this row is — a commit sha, a branch, or any label the corpus chooses. A file is addressed by (repo, path), so several rows may state one path; `ref` is what tells two of them apart. Omitted, the row's `created` is the discriminator and the newest snapshot is the one served, so a corpus recording one edit per date needs no ref. State one when two snapshots share a `created`, or to name the change they came from."
+    },
     "state": {
       "type": "string",
       "description": "open | closed."

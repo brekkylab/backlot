@@ -417,6 +417,7 @@ def _service_columns(
         return {
             "kind": subtype or "issue",
             "path": ex.get("path"),
+            "ref": ex.get("ref"),
             "number": ex.get("number"),
             "state": ex.get("state"),
             "labels": _j(ex.get("labels")),
@@ -1218,17 +1219,27 @@ class _Loader:
         holders[prefix] = container
         prefixes[container] = prefix
 
-    def _existing_file_number(self, repo: str, path):
-        """The number a github `file` row already holds in this repo, or None for a new file.
+    def _existing_file_number(self, repo: str, path, ref, created_ts):
+        """The number this SNAPSHOT of a github file already holds in this repo, or None if the
+        repo does not hold it yet.
 
         A file is addressed by (repo, path) -- its number exists only so the row is addressable
         under the primary key -- so this is the lookup that recognises a re-imported file, in
-        place of the stated id the other github rows are recognised by."""
+        place of the stated id the other github rows are recognised by. It matches on the
+        snapshot, `(repo, path, COALESCE(ref, created_ts))`, and not on the path alone: several
+        rows may stand for one path (see store's `idx_github_file_snapshot`), and keying on the
+        path made the SECOND of them adopt the first's number, which the corpus-wide identity
+        check then refused as two documents sharing one served id.
+
+        `COALESCE`, not `ref = ?`: a NULL never compares equal in SQL, so a row that omits `ref`
+        would match nothing and every re-import of it would draw a fresh number and land twice.
+        """
         if not path:
             return None
         row = self.conn.execute(
-            "SELECT number FROM github_items WHERE repo = ? AND path = ? AND kind = 'file'",
-            (repo, path),
+            "SELECT number FROM github_items WHERE repo = ? AND path = ? AND kind = 'file'"
+            " AND COALESCE(ref, created_ts) = ?",
+            (repo, path, ref if ref is not None else created_ts),
         ).fetchone()
         return row["number"] if row else None
 
@@ -1761,6 +1772,7 @@ class _Loader:
             "requested_reviewers",
             "changed_paths",
             "number",
+            "ref",
             "content_id",
             "record_id",
             # A transcript's own id and a jira issue's history: both declared by their schema, both
@@ -2034,7 +2046,12 @@ class _Loader:
                 # full, so an --append needs no `number` from the corpus -- and a corpus sharded
                 # so a pull's files arrive after the pull (which this importer's own changeset
                 # report tells authors to do) was otherwise unloadable past the first shard.
-                cols["number"] = self._existing_file_number(container, cols.get("path"))
+                # Keyed on the SNAPSHOT: `ref` when the corpus states one, else this row's own
+                # clock. Two rows at one path are that file's history, and each keeps its own
+                # number.
+                cols["number"] = self._existing_file_number(
+                    container, cols.get("path"), cols.get("ref"), created
+                )
                 file_row = True
             else:
                 file_row = False
@@ -2090,6 +2107,21 @@ class _Loader:
             key = tuple(cols[c] for c in store.id_columns(src))
             claimed_by = self._claimed.get((src, key))
             if claimed_by is not None and claimed_by != did:
+                if file_row:
+                    # A file's own message, because the generic one's advice cannot be followed
+                    # here: `number` is ignored for a file row, so handing this row a different one
+                    # changes nothing, and the number in `key` is an internal provisional that
+                    # names nothing the author wrote. What separates two rows at one path is the
+                    # snapshot they stand for.
+                    raise SystemExit(
+                        f"{where}: this file row is (repo, path) = "
+                        f"({container!r}, {cols.get('path')!r}) at the same snapshot as "
+                        f"{claimed_by!r} in this corpus. Several rows MAY state one path -- they "
+                        f"are that file's history -- but two of them cannot stand for the same "
+                        f"moment, since neither would be the one the file is served at. A file's "
+                        f"`number` is ignored, so a different number will not separate them: give "
+                        f"one of them its own `ref`, or its own `created`."
+                    )
                 raise SystemExit(
                     f"{where}: this row resolves to {store.id_columns(src)} = {key}, which "
                     f"{claimed_by!r} in this corpus already resolves to. Two documents cannot "

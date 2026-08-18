@@ -375,6 +375,14 @@ def import_(
             "give a corpus path or --bundled (the corpus bundled with the package), not both",
             param_hint="'CORPUS'",
         )
+    if dry_run and id_map is not None:
+        # The map records ids an import ASSIGNED; a validation pass assigns none, so an empty or
+        # stale file would be worse than the refusal. `byo.run` refuses it too, for the library
+        # entry point — here it is a parameter conflict like the ones above, and answers like one.
+        raise typer.BadParameter(
+            "--id-map records the ids an import assigns; --dry-run assigns none",
+            param_hint="'--id-map'",
+        )
     if bundled:
         from backlot.testing import HELLO_CORPUS
 

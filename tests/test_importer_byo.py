@@ -4685,6 +4685,129 @@ def test_an_appended_id_map_emits_only_the_run_it_belongs_to(tmp_path):
 
 
 def test_a_dry_run_refuses_the_id_map(tmp_path):
+    """The CLI refuses this as a parameter conflict (see test_cli.py); this is the same refusal for
+    the library entry point, which no `typer` context reaches."""
     corpus = _write(tmp_path, _ID_MAP_CORPUS)
     with pytest.raises(SystemExit, match="--dry-run assigns none"):
         byo.run(corpus, dry_run=True, id_map=tmp_path / "m.json")
+
+
+@pytest.mark.parametrize("reset", [True, False], ids=["replace", "append"])
+def test_an_unwritable_id_map_is_refused_before_the_load_starts(tmp_path, reset):
+    """The manifest is written after the load commits, so a destination that cannot be written has
+    to be caught up front. Otherwise a replace rolls the DB back to the corpus its freshly written
+    tokens.yaml no longer describes, and an --append (which has no salvage) keeps the rows it added
+    while the command dies, so a re-run appends them twice."""
+    settings = Settings(data_dir=tmp_path)
+    load(_write(tmp_path, _ID_MAP_CORPUS, "one.jsonl"), settings)
+    before = _dump_tables(settings.db_path)
+    tokens_before = settings.tokens_path.read_text()
+
+    more = [
+        {
+            "source_type": "jira",
+            "doc_id": "j2",
+            "project": "payments",
+            "title": "later",
+            "content": "x",
+            "author_email": "someone-else@y.com",
+        }
+    ]
+    with pytest.raises(SystemExit, match="--id-map"):
+        load(
+            _write(tmp_path, more, "two.jsonl"),
+            settings,
+            reset=reset,
+            id_map=tmp_path / "no" / "such" / "ids.json",
+        )
+
+    # Nothing moved: not the rows, and not the tokens that describe whose rows they are.
+    assert _dump_tables(settings.db_path) == before
+    assert settings.tokens_path.read_text() == tokens_before
+
+
+def test_an_id_map_that_fails_at_the_last_moment_keeps_the_import(tmp_path, monkeypatch):
+    """The write is outside the salvage-protected region, so a destination that passes the up-front
+    check and breaks anyway costs the manifest, not the corpus."""
+    settings = Settings(data_dir=tmp_path)
+    dest_dir = tmp_path / "vanishes"
+    dest_dir.mkdir()
+    dest = dest_dir / "ids.json"
+
+    real = byo._id_map_manifest
+
+    def and_then_the_directory_goes_away(loader, conn):
+        text = real(loader, conn)
+        dest.unlink()
+        dest_dir.rmdir()
+        return text
+
+    monkeypatch.setattr(byo, "_id_map_manifest", and_then_the_directory_goes_away)
+    with pytest.raises(OSError):
+        load(_write(tmp_path, _ID_MAP_CORPUS), settings, id_map=dest)
+
+    conn = store.connect_ro(settings.db_path)
+    assert conn.execute("SELECT COUNT(*) FROM jira_issues").fetchone()[0] == 1
+    assert settings.tokens_path.exists()
+
+
+def test_one_dataset_id_on_two_rows_is_refused(tmp_path):
+    """Where the corpus STATES the id, two records sharing a `doc_id` leave two rows, and nothing
+    says which of them a link naming that `doc_id` meant — `resolve_cross_references` reads the same
+    per-doc_id dict and would bind to whichever was written last. Refused at the second row."""
+    records = [
+        {
+            "source_type": "jira",
+            "doc_id": "dup",
+            "project": "payments",
+            "key": "PAY-1",
+            "title": "one",
+            "content": "x",
+            "author_email": "a@x.com",
+        },
+        {
+            "source_type": "jira",
+            "doc_id": "dup",
+            "project": "payments",
+            "key": "PAY-2",
+            "title": "two",
+            "content": "x",
+            "author_email": "a@x.com",
+        },
+    ]
+    with pytest.raises(SystemExit, match="both call themselves 'dup'"):
+        load(_write(tmp_path, records), Settings(data_dir=tmp_path))
+
+
+def test_two_records_that_settle_on_one_row_still_share_a_dataset_id(tmp_path):
+    """The counterpart: the guard is "one dataset id, two ROWS", not "a `doc_id` repeats". A real
+    corpus has pairs that state no key and no number, and those are meant to collapse — a keyless
+    jira issue settles on the key the first one took, confluence reuses its memo, slack its ts."""
+    records = [
+        {
+            "source_type": "jira",
+            "doc_id": "same",
+            "project": "payments",
+            "title": "one",
+            "content": "x",
+            "author_email": "a@x.com",
+        },
+        {
+            "source_type": "jira",
+            "doc_id": "same",
+            "project": "payments",
+            "title": "two",
+            "content": "x",
+            "author_email": "a@x.com",
+        },
+    ]
+    settings = Settings(data_dir=tmp_path)
+    out = tmp_path / "ids.json"
+    load(_write(tmp_path, records), settings, id_map=out)
+
+    conn = store.connect_ro(settings.db_path)
+    # One row, the later record's (DO UPDATE), and one manifest entry pointing at it.
+    rows = conn.execute("SELECT title, key FROM jira_issues").fetchall()
+    assert [r["title"] for r in rows] == ["two"]
+    key = rows[0]["key"]
+    assert json.loads(out.read_text())["documents"]["jira"] == {"same": {"key": key}}

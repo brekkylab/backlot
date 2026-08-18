@@ -133,7 +133,10 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   them and the id is derived, under the prefix this project's provided keys carry, so a corpus
   need only write the ids its documents actually cite. A jira key is shaped
   `^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$`, enforced because the prefix is a fact about the whole
-  project.
+  project. The mirror case stops the import too: two records sharing a `doc_id` are one document,
+  so stating ids that put them on two rows is refused, since a link naming that `doc_id` could
+  only mean one of them. Sharing a `doc_id` while stating no id is not that — those settle onto
+  one row, which is what a repeated document in a corpus means.
 - **`--append` into a source that already holds documents** requires the id above for github,
   jira, confluence and hubspot: their ids are assigned against the whole corpus, so without one
   a record cannot be told apart from a row already imported. There is no update path — an id an

@@ -270,6 +270,16 @@ def test_a_corpus_path_under_the_bench_type_is_refused(capsys):
     assert "downloads its own corpus" in plain(capsys.readouterr().err)
 
 
+def test_a_dry_run_with_an_id_map_is_a_parameter_conflict(tmp_path, capsys):
+    """A validation pass assigns no ids, so there is nothing for the manifest to record. It answers
+    like every other option conflict in this command — exit 2, with usage and the param named —
+    rather than the exit 1 and bare line the importer's own guard raises."""
+    assert cli.main(["import", "c.jsonl", "--dry-run", "--id-map", str(tmp_path / "ids.json")]) == 2
+    err = plain(capsys.readouterr().err)
+    assert "--id-map" in err and "--dry-run assigns none" in err
+    assert "Usage" in err
+
+
 def test_shard_records_must_be_at_least_one(capsys):
     """0 makes `n >= shard_records` always true: one shard per record, 600k files for the bench."""
     assert cli.main(["export", "out", "--shard-records", "0"]) == 2

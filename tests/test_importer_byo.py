@@ -3808,11 +3808,14 @@ def test_byo_appending_to_a_settled_team_leaves_every_identifier_alone(tmp_path)
     assert len(set(after.values())) == len(after)
 
 
-@pytest.mark.parametrize("bad", ["eng-7", "ENG 7", "7", "ENG-0007", "TOOLONGPREFIX-7"])
+@pytest.mark.parametrize("bad", ["eng-7", "ENG 7", "7", "ENG-0007", "ENG_7", "ENG-7x"])
 def test_byo_a_mistyped_linear_identifier_is_refused(tmp_path, bad):
     """The prefix is a fact about the whole team, so a typo in one issue renames every one of them
     — `identifier: "7"` made the team answer at `7` and stamped its siblings `7-n`. That is why
-    jira's key carries a pattern, and the same reasoning now reaches Linear's identifier."""
+    jira's key carries a pattern, and the same reasoning now reaches Linear's identifier.
+
+    Length is deliberately NOT one of the refused shapes: see
+    test_byo_a_derived_identifier_is_accepted_as_input."""
     with pytest.raises(SystemExit, match=r"\[identifier\]"):
         load(
             _linear_shard(
@@ -3820,6 +3823,57 @@ def test_byo_a_mistyped_linear_identifier_is_refused(tmp_path, bad):
             ),
             Settings(data_dir=tmp_path / "d"),
         )
+
+
+def test_byo_a_slug_shaped_key_claims_only_its_leading_prefix(tmp_path):
+    """`importer.erb`'s linear mapping passes the bench's `key` through verbatim, and 43 of the
+    corpus's 35,308 linear documents state a slug rather than an identifier
+    (`ENG-453210-kms-hsm-deployment-lifecycle-telemetry-orbiter`). Read to the LAST hyphen, each of
+    those renamed `engineering` to a 50-character pseudo-key and stamped the team's keyless issues
+    under it, and a sibling stating a real `ENG-…` was then refused for disagreeing with its own
+    team. Read to the FIRST, the whole corpus loads unchanged. The ERB path imports with
+    `validate=False`, so the schema pattern cannot stand in for this."""
+    slug = "ENG-453210-kms-hsm-deployment-lifecycle-telemetry-orbiter"
+    settings = Settings(data_dir=tmp_path / "d")
+    byo.load_records(
+        lambda: enumerate(
+            [
+                _linear_rec("ln-slug", team="engineering", identifier=slug),
+                _linear_rec("ln-real", team="engineering", identifier="ENG-7"),
+                _linear_rec("ln-keyless", team="engineering"),
+            ],
+            1,
+        ),
+        settings,
+        reset=True,
+        validate=False,
+    )
+    conn = store.connect_ro(settings.db_path)
+    assert store.linear_team_keys(conn) == {"engineering": "ENG"}
+    idents = _stored_identifiers(settings, ["ln-slug", "ln-real", "ln-keyless"])
+    assert idents["ln-slug"] == slug  # the corpus's own spelling, untouched
+    assert idents["ln-real"] == "ENG-7"
+    assert idents["ln-keyless"] == synth.linear_identifier("ln-keyless", "ENG")
+
+
+@pytest.mark.parametrize(
+    "team",
+    ["platform-infra-reliability-and-cost-ops", "3d-printing"],
+    ids=["prefix-longer-than-real-linears-5", "prefix-starting-with-a-digit"],
+)
+def test_byo_a_derived_identifier_is_accepted_as_input(tmp_path, team):
+    """Whatever the mock materializes, it must also accept: `synth.linear_team_key` takes one
+    initial per word with no upper bound and no leading-letter rule, so it serves `PIRACO-8079` and
+    `3P-8079` — and a pattern written to real Linear's 1-5 character team key refused a corpus
+    stating the very identifier the mock had handed out. The round trip is the assertion: derive the
+    identifier, state it, load with validation on."""
+    derived = synth.linear_identifier("ln-a", synth.linear_team_key(team))
+    settings = Settings(data_dir=tmp_path / "d")
+    load(
+        _linear_shard(tmp_path, "c.jsonl", [_linear_rec("ln-a", team=team, identifier=derived)]),
+        settings,
+    )
+    assert _stored_identifiers(settings, ["ln-a"])["ln-a"] == derived
 
 
 def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):

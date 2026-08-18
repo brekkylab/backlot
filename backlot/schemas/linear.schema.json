@@ -35,8 +35,8 @@
     },
     "identifier": {
       "type": "string",
-      "pattern": "^[A-Z][A-Z0-9]{0,4}-[1-9][0-9]*$",
-      "description": "Human identifier, e.g. \"ENG-123\". Default: synthesized as <TEAMKEY>-<n> from the doc_id, under the prefix this team's provided identifiers carry — one issue spelling out ENG-7 makes the whole team answer at ENG, so a corpus need only write the identifiers its documents actually cite. The shape is real Linear's (a key is 1-5 uppercase alphanumerics), and it is enforced because the prefix is a fact about the whole team: a single mistyped identifier would otherwise rename it for every one of its issues. Not required to be unique — the bench's own keys repeat — and `issue(id:)` resolves a repeated identifier to the first matching issue."
+      "pattern": "^[A-Z0-9]+-[1-9][0-9]*$",
+      "description": "Human identifier, e.g. \"ENG-123\". Default: synthesized as <TEAMKEY>-<n> from the doc_id, under the prefix this team's provided identifiers carry — one issue spelling out ENG-7 makes the whole team answer at ENG, so a corpus need only write the identifiers its documents actually cite. The shape is deliberately WIDER than real Linear's 1-5 character team key, because it has to accept everything this mock's own derivation can hand out: `synth.linear_team_key` takes one initial per word with no upper bound and no leading-letter rule, so `platform-infra-reliability-and-cost-ops` serves `PIRACO-…` and `3d-printing` serves `3P-…`, and refusing those as input would mean refusing the identifiers the mock itself materializes. What it does enforce is the shape a typo breaks — case, spacing, a missing prefix, a padded number — because the prefix is a fact about the whole team: a single mistyped identifier would otherwise rename it for every one of its issues. Not required to be unique — the bench's own keys repeat — and `issue(id:)` resolves a repeated identifier to the first matching issue."
     },
     "parent": {
       "type": "string",

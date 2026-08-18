@@ -171,6 +171,21 @@ def _principal(pid: str) -> tuple[str, str]:
     return ("user", pid) if "@" in pid else ("group", pid)
 
 
+def _linear_prefix(identifier) -> str:
+    """The team key a linear identifier carries: everything before its FIRST hyphen.
+
+    Not the last, which is where a jira key splits. A real Linear team key holds no hyphen (it is a
+    short run of alphanumerics), so the first one is the only correct place to cut -- and the bench's
+    own corpus is what proves it matters rather than a hypothetical: 43 of its 35,308 linear
+    documents state a slug-shaped `key` (`ENG-453210-kms-hsm-deployment-lifecycle-telemetry-orbiter`),
+    which `importer.erb`'s `_byo_linear` passes through verbatim as the identifier. Cut at the LAST
+    hyphen, each of those renamed `engineering` to a 50-character pseudo-key, stamped every keyless
+    issue in the team under it, and then refused any sibling stating a real `ENG-…` for disagreeing
+    with the team's own key. Cut at the first, all 43 claim `ENG` and the corpus loads unchanged.
+    """
+    return str(identifier).split("-", 1)[0]
+
+
 def _time_given(v) -> bool:
     """Whether the corpus wrote a time in this field at all, as opposed to leaving it
     out. Told apart from an unreadable one, which ``_epoch`` also answers None for: a
@@ -1184,7 +1199,10 @@ class _Loader:
             if src == "jira"
             else (self.linear_prefixes, self.linear_prefix_holders)
         )
-        prefix = str(provided).rsplit("-", 1)[0]
+        # Where the prefix ends differs by service: see `_linear_prefix`. Jira keeps the last-hyphen
+        # cut it has always used -- `importer.erb`'s jira mapping drops the bench's `key` rather than
+        # passing it through, so no slug has ever reached this claim from that side.
+        prefix = _linear_prefix(provided) if src == "linear" else str(provided).rsplit("-", 1)[0]
         holder = holders.get(prefix)
         if holder is not None and holder != container:
             raise SystemExit(
@@ -1512,8 +1530,7 @@ class _Loader:
         for (identifier,) in self.conn.execute(
             "SELECT identifier FROM linear_issues WHERE identifier IS NOT NULL"
         ):
-            prefix = str(identifier).rsplit("-", 1)[0]
-            self._linear_identifiers.setdefault(prefix, set()).add(identifier)
+            self._linear_identifiers.setdefault(_linear_prefix(identifier), set()).add(identifier)
         # Every row carries a key, stated or derived, and for a claim the difference is immaterial:
         # both mean the value is taken. The `dataset id` side of `tracker_ids` is unknowable for a
         # row from an earlier run, so it is recorded as None; the check that reads it only needs to
@@ -1947,9 +1964,9 @@ class _Loader:
                 # provided one that repeats another provided one is left alone; what this stops is
                 # a SYNTHESIZED value shadowing a spelling the corpus wrote, which would leave the
                 # corpus's own issue unreachable at the id its documents cite.
-                self._linear_identifiers.setdefault(
-                    str(cols["identifier"]).rsplit("-", 1)[0], set()
-                ).add(str(cols["identifier"]))
+                self._linear_identifiers.setdefault(_linear_prefix(cols["identifier"]), set()).add(
+                    str(cols["identifier"])
+                )
                 self._linear_provided.add(str(cols["identifier"]))
             elif src == "linear":
                 # MATERIALIZE the identifier the server would otherwise synthesize per request.

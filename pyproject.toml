@@ -45,7 +45,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-xdist>=3.6",
     "httpx>=0.27",
+    # starlette 1.6's TestClient wants httpx2; httpx stays for the tests that call it directly.
+    "httpx2",
     # Pinned, not a lower bound: a ruff minor can change both the formatter and the lint
     # defaults. CI installs it from here, so local and CI cannot disagree.
     "ruff~=0.15.22",
@@ -69,7 +72,11 @@ mcp = [
     "openai>=1.40",
     "openai-agents>=0.1",
     "pyyaml>=6.0",
-    "fastmcp>=2.0",
+    # >=3: fastmcp 2.x imports `mcp.shared.exceptions.McpError`, which mcp 2.0 renamed to
+    # `MCPError` — so an unbounded pair resolves to two packages that cannot import each other and
+    # every MCP test fails inside fastmcp's own module body. 3.x is the version that agrees with a
+    # current `mcp`.
+    "fastmcp>=3",
 ]
 # LlamaIndex reader examples (examples/using-llamaindex-readers/): point each official
 # llama-index reader at the mock and load Documents. The client libs below are the ones the
@@ -121,12 +128,15 @@ ignore = ["E402"]  # module-level import not at top: the examples must set sys.p
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# loadfile, not the default: several modules share a module-scoped corpus.
+addopts = "-q -n auto --dist loadfile"
 # Several routes serve more than one HTTP method for vendor fidelity (Slack GET+POST, Jira v2/v3,
 # S3 GET+HEAD), so FastAPI warns about duplicate operationIds — expected, and collapsed by
 # backlot.openapi. Silenced at import there too, but pytest resets filters per test.
 filterwarnings = [
     "ignore:Duplicate Operation ID:UserWarning",
+    # llama-index reads a pydantic field API pydantic itself deprecated; nothing here to change.
+    "ignore:Call to deprecated function \\(or staticmethod\\) extra_info:DeprecationWarning",
 ]
 
 [tool.setuptools.packages.find]

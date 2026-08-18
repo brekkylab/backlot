@@ -297,9 +297,8 @@ async def search_issues(
     # _org, not the setting directly: the owner in the URLs these items carry has to be the one the
     # repo routes accept, or every link a client follows out of a search hit 404s
     owner = _org(request)
-    idx = request.app.state.index
     items = [
-        _issue_obj(conn, owner, r["repo"], r, ab, idx, _version(request))
+        _issue_obj(conn, owner, r["repo"], r, ab, _version(request))
         for r in matched[start : start + per_page]
     ]
     return {"total_count": len(matched), "incomplete_results": False, "items": items}
@@ -428,8 +427,7 @@ async def list_issues(
     rows = all_rows[start : start + per_page]
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
-    idx = request.app.state.index
-    body = [_issue_obj(conn, owner, repo, r, ab, idx, _version(request)) for r in rows]
+    body = [_issue_obj(conn, owner, repo, r, ab, _version(request)) for r in rows]
     return _paged(request, len(all_rows), {"state": state}, body, page, per_page)
 
 
@@ -450,7 +448,7 @@ def _comment_by_id(request, conn, repo: str, cid: int, ids, *, anchored: bool):
     row = store.get_github_comment(conn, cid)
     if row is None or (row["path"] is not None) != anchored:
         raise HTTPException(status_code=404, detail="Not Found")
-    doc = store.get_document(conn, "github", row["doc_id"], visible_ids=ids)
+    doc = store.get_document(conn, "github", row["repo"], row["number"], visible_ids=ids)
     if doc is None or doc["repo"] != repo:
         raise HTTPException(status_code=404, detail="Not Found")
     return row, doc
@@ -463,7 +461,7 @@ async def get_issue_comment(owner: str, repo: str, comment_id: int, request: Req
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     row, doc = _comment_by_id(request, conn, repo, comment_id, ids, anchored=False)
-    number = _issue_number(request.app.state.index, doc)
+    number = _issue_number(doc)
     return _gh_comment(owner, repo, number, row, _api_base(request))
 
 
@@ -481,7 +479,7 @@ async def get_pull_review_comment(owner: str, repo: str, comment_id: int, reques
     if f is None:
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
-    number = _issue_number(request.app.state.index, doc)
+    number = _issue_number(doc)
     patches = {
         x["filename"]: x.get("patch") for x in _pr_files(conn, owner, repo, doc, ab, ids, src)
     }
@@ -493,12 +491,10 @@ async def get_issue(owner: str, repo: str, number: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = _resolve(request, conn, repo, number, ids)
+    row = _resolve(conn, repo, number, ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    return _issue_obj(
-        conn, owner, repo, row, _api_base(request), request.app.state.index, _version(request)
-    )
+    return _issue_obj(conn, owner, repo, row, _api_base(request), _version(request))
 
 
 @router.get("/repos/{owner}/{repo}/issues/{number}/comments")
@@ -506,7 +502,7 @@ async def issue_comments(owner: str, repo: str, number: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = _resolve(request, conn, repo, number, ids)
+    row = _resolve(conn, repo, number, ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
@@ -514,7 +510,7 @@ async def issue_comments(owner: str, repo: str, number: int, request: Request):
         _gh_comment(owner, repo, number, c, ab)
         # anchored=False: a line-anchored review comment belongs to /pulls/{n}/comments, and
         # serving it here too would duplicate it under a resource that means something else
-        for c in store.github_comments(conn, row["doc_id"], anchored=False)
+        for c in store.github_comments(conn, row["repo"], row["number"], anchored=False)
     ]
 
 
@@ -544,11 +540,8 @@ async def list_pulls(
     ab = _api_base(request)
     # one _RepoFiles for the whole page: every PR's changeset reads through it (see _pr_files)
     repo_files = _RepoFiles(conn, repo, ids)
-    idx = request.app.state.index
     body = [
-        _pr_obj(
-            conn, owner, repo, r, ab, idx, ids=ids, repo_files=repo_files, version=_version(request)
-        )
+        _pr_obj(conn, owner, repo, r, ab, ids=ids, repo_files=repo_files, version=_version(request))
         for r in prs[start : start + per_page]
     ]
     return _paged(request, len(prs), {"state": state}, body, page, per_page)
@@ -564,16 +557,15 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = _resolve(request, conn, repo, number, ids)
+    row = _resolve(conn, repo, number, ids)
     if row is None or row["kind"] != "pull_request":
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
-    idx = request.app.state.index
     wants_diff, wants_patch = _github_media(request, "diff"), _github_media(request, "patch")
     if not (wants_diff or wants_patch):
-        return _pr_obj(conn, owner, repo, row, ab, idx, ids=ids, version=_version(request))
+        return _pr_obj(conn, owner, repo, row, ab, ids=ids, version=_version(request))
     files = _pr_files(conn, owner, repo, row, ab, ids)
-    obj = _pr_obj(conn, owner, repo, row, ab, idx, ids=ids, files=files, version=_version(request))
+    obj = _pr_obj(conn, owner, repo, row, ab, ids=ids, files=files, version=_version(request))
     diff = _pr_diff(files, obj["base"]["sha"])
     if wants_patch:
         return Response(
@@ -588,15 +580,15 @@ async def pull_reviews(owner: str, repo: str, number: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = _resolve(request, conn, repo, number, ids)
+    row = _resolve(conn, repo, number, ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
-    number = _issue_number(request.app.state.index, row)
-    sha = hashlib.sha1(row["doc_id"].encode()).hexdigest()[:40]
+    number = _issue_number(row)
+    sha = hashlib.sha1(_seed(row).encode()).hexdigest()[:40]
     out = []
     for i, rv in enumerate(store.jcol(row, "reviews"), start=1):
-        rid = synth.github_number(row["doc_id"] + str(i))
+        rid = synth.github_number(_seed(row) + str(i))
         pr_url = f"{ab}/repos/{owner}/{repo}/pulls/{number}"
         out.append(
             {
@@ -605,7 +597,7 @@ async def pull_reviews(owner: str, repo: str, number: int, request: Request):
                 "user": _gh_user(rv.get("author_email", "reviewer@x"), ab),
                 "body": rv.get("body", ""),
                 "state": rv.get("state", "COMMENTED"),
-                "submitted_at": synth.rfc3339(synth.epoch(row["doc_id"]) + i * 60),
+                "submitted_at": synth.rfc3339(synth.epoch(_seed(row)) + i * 60),
                 "commit_id": sha,
                 "author_association": "MEMBER",
                 "html_url": f"https://github.com/{owner}/{repo}/pull/{number}#pullrequestreview-{rid}",
@@ -634,7 +626,7 @@ async def pull_review_comments(owner: str, repo: str, number: int, request: Requ
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = _resolve(request, conn, repo, number, ids)
+    row = _resolve(conn, repo, number, ids)
     if row is None or row["kind"] != "pull_request":
         raise HTTPException(status_code=404, detail="Not Found")
     src = _RepoFiles(conn, repo, ids)
@@ -661,13 +653,13 @@ async def pull_commits(owner: str, repo: str, number: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = _resolve(request, conn, repo, number, ids)
+    row = _resolve(conn, repo, number, ids)
     if row is None or row["kind"] != "pull_request":
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
-    sha = hashlib.sha1(row["doc_id"].encode()).hexdigest()
+    sha = hashlib.sha1(_seed(row).encode()).hexdigest()
     author = _gh_user(row["author_email"], ab)
-    created = synth.rfc3339(row["created_ts"] or synth.epoch(row["doc_id"]))
+    created = synth.rfc3339(row["created_ts"] or synth.epoch(_seed(row)))
     # `commit.author` is a GIT author — name/email/date — and not the GitHub user beside it. Real
     # serves both because they are different things: one signed the commit, one has an account.
     git_author = {"name": author["login"], "email": row["author_email"], "date": created}
@@ -722,7 +714,7 @@ async def pull_files(
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    row = _resolve(request, conn, repo, number, ids)
+    row = _resolve(conn, repo, number, ids)
     if row is None or row["kind"] != "pull_request":
         raise HTTPException(status_code=404, detail="Not Found")
     files = _json_file_objects(_pr_files(conn, owner, repo, row, _api_base(request), ids))
@@ -1255,11 +1247,14 @@ def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
     }
 
 
-def _resolve(request: Request, conn, repo: str, number: int, ids):
-    doc_id = request.app.state.index["github"].get((repo, number))
-    row = store.get_document(conn, "github", doc_id, visible_ids=ids) if doc_id else None
-    # a 'file' doc's synthesized number lives in the same index but must never surface as
-    # an issue/PR (it has no title/body/state in the issue sense).
+def _resolve(conn, repo: str, number: int, ids):
+    """One issue/PR by its served number, ACL-scoped — a PRIMARY KEY lookup (see
+    store.github_by_number).
+
+    A `kind='file'` row carries a number too (the table holds two resources and only one key can be
+    primary — see the schema), so this guard is load-bearing: a file has no title/body/state in the
+    issue sense and is addressed by (repo, path)."""
+    row = store.github_by_number(conn, repo, number, visible_ids=ids)
     return row if row is not None and row["kind"] != "file" else None
 
 
@@ -1267,7 +1262,7 @@ def _milestone(row, owner, repo, api_base):
     title = row["milestone"]
     if not title:
         return None
-    num = synth.github_number(row["doc_id"] + ":ms") % 100
+    num = synth.github_number(_seed(row) + ":ms") % 100
     return {
         "number": num,
         "title": title,
@@ -1277,18 +1272,16 @@ def _milestone(row, owner, repo, api_base):
     }
 
 
-def _issue_number(index, row) -> int:
-    """The number this document answers to, as the reverse index resolved it.
+def _issue_number(row) -> int:
+    """The number this document answers to — its own stored `number`, assigned at import (see
+    backlot.importer.byo's `resolve_github_numbers`).
 
-    Deriving it here instead would disagree with the index whenever the derived number
-    was already held by a document that provided it: the row then advertised a number
-    that fetched somebody else, and was reachable at nothing. The index resolves that
-    once, where the whole repository is visible."""
-    provided = synth.stored(row, "number")
-    if provided:
-        return int(provided)
-    resolved = (index or {}).get("github_number") or {}
-    return resolved.get(row["doc_id"]) or synth.github_number(row["doc_id"])
+    Deriving it here would disagree with that assignment whenever a row's plain hash was already
+    claimed by a record that stated it outright: this row would advertise a number that fetches
+    somebody else, and be reachable at nothing. Asserted rather than re-derived, because every
+    github row carries a number by the time it is served."""
+    assert row["number"] is not None, "github: a row reached the serializer with no number"
+    return row["number"]
 
 
 # Which versions still carry a field a later one removed. Stated as "who HAS it" rather than "who
@@ -1298,7 +1291,7 @@ _HAS_SINGULAR_ASSIGNEE = frozenset({"2022-11-28"})  # 2026-03-10: superseded by 
 _HAS_MERGE_COMMIT_SHA = frozenset({"2022-11-28"})  # 2026-03-10: removed from every pull body
 
 
-def _shared_obj(conn, owner: str, repo: str, row, api_base: str, index, version: str) -> dict:
+def _shared_obj(conn, owner: str, repo: str, row, api_base: str, version: str) -> dict:
     """The fields real GitHub's issue body and its pull body BOTH carry.
 
     Split out because a pull is not an issue with extra keys — real serves each its own field set,
@@ -1309,10 +1302,10 @@ def _shared_obj(conn, owner: str, repo: str, row, api_base: str, index, version:
     ``comments_url`` is shared and shared in VALUE too: a pull's conversation comments are the
     issue's, and real points both objects at the same collection.
     """
-    created = row["created_ts"] or synth.epoch(row["doc_id"])
+    created = row["created_ts"] or synth.epoch(_seed(row))
     updated = row["updated_ts"] or created + 3600
-    number = _issue_number(index, row)
-    iid = synth.jira_numeric_id(row["doc_id"])  # a stable large numeric db id (≠ number)
+    number = _issue_number(row)
+    iid = synth.jira_numeric_id(_seed(row))  # a stable large numeric db id (≠ number)
     is_pr = row["kind"] == "pull_request"
     state = row["state"] or "open"
     assignees = [_gh_user(a, api_base) for a in store.jcol(row, "assignees")]
@@ -1329,7 +1322,7 @@ def _shared_obj(conn, owner: str, repo: str, row, api_base: str, index, version:
         "user": _gh_user(row["author_email"], api_base),
         "labels": [
             {
-                "id": synth.github_number(row["doc_id"] + lbl),
+                "id": synth.github_number(_seed(row) + lbl),
                 "name": lbl,
                 "color": "ededed",
                 "default": False,
@@ -1339,7 +1332,7 @@ def _shared_obj(conn, owner: str, repo: str, row, api_base: str, index, version:
         ],
         "assignees": assignees,
         "milestone": _milestone(row, owner, repo, api_base),
-        "comments": len(store.github_comments(conn, row["doc_id"], anchored=False)),
+        "comments": len(store.github_comments(conn, row["repo"], row["number"], anchored=False)),
         "author_association": "MEMBER",
         "created_at": synth.rfc3339(created),
         "updated_at": synth.rfc3339(updated),
@@ -1366,11 +1359,10 @@ def _issue_obj(
     repo: str,
     row,
     api_base: str = "",
-    index=None,
     version: str = DEFAULT_API_VERSION,
 ) -> dict:
     """An issue. A pull seen through ``/issues`` is one of these too — plus the marker saying so."""
-    obj = _shared_obj(conn, owner, repo, row, api_base, index, version)
+    obj = _shared_obj(conn, owner, repo, row, api_base, version)
     self_url = f"{api_base}/repos/{owner}/{repo}/issues/{obj['number']}"
     obj.update(
         {
@@ -1402,7 +1394,6 @@ def _pr_obj(
     repo: str,
     row,
     api_base: str = "",
-    index=None,
     ids=None,
     files=None,
     repo_files=None,
@@ -1415,8 +1406,8 @@ def _pr_obj(
     hypermedia is for. Every href here names a route this mock serves, so following one gets an
     answer rather than a 404 — ``review_comment`` excepted, which real serves as a template too.
     """
-    obj = _shared_obj(conn, owner, repo, row, api_base, index, version)
-    sha = hashlib.sha1(row["doc_id"].encode()).hexdigest()
+    obj = _shared_obj(conn, owner, repo, row, api_base, version)
+    sha = hashlib.sha1(_seed(row).encode()).hexdigest()
     number = obj["number"]
     repo_url = f"{api_base}/repos/{owner}/{repo}"
     self_url = f"{repo_url}/pulls/{number}"
@@ -1509,7 +1500,7 @@ def _pr_obj(
 #
 # WHICH files a pull changed comes from its `changed_paths` when the corpus declared it. Nothing
 # records the HUNKS, so those are always synthesized — deterministically, seeded on the pull's
-# doc_id — but they invent no content: every line on either side is a line of that file's own
+# served key — but they invent no content: every line on either side is a line of that file's own
 # snapshot. A `modified` file's "before" state is the snapshot with one real block either taken out
 # or duplicated (see _patch_modified), so the hunk is a well-formed diff against real bytes in both
 # directions. Without `changed_paths` the file list is chosen deterministically too, which is
@@ -1583,7 +1574,7 @@ def _pr_files(
     one :class:`_RepoFiles` across a page of pulls.
     """
     src = repo_files if repo_files is not None else _RepoFiles(conn, repo, ids)
-    doc_id = row["doc_id"]
+    seed = _seed(row)
     declared = store.jcol(row, "changed_paths")
     if declared:
         # dict.fromkeys: declared order, minus repeats. A path named twice would put the same file
@@ -1598,26 +1589,33 @@ def _pr_files(
         paths = src.paths
         if not paths:
             return []
-        n = 1 + synth.hnum(doc_id, salt="pr-nfiles") % min(_MAX_CHANGED_FILES, len(paths))
-        start = synth.hnum(doc_id, salt="pr-offset") % len(paths)
+        n = 1 + synth.hnum(seed, salt="pr-nfiles") % min(_MAX_CHANGED_FILES, len(paths))
+        start = synth.hnum(seed, salt="pr-offset") % len(paths)
         chosen = [paths[(start + i) % len(paths)] for i in range(n)]
         # Seeded on (pull, path) rather than the file's position, so a file's status does not shift
         # when an ACL-hidden sibling drops out of the list.
         statuses = {
-            p: _CHANGE_STATUSES[synth.hnum(f"{doc_id}:{p}", salt="pr-status") % 2] for p in chosen
+            p: _CHANGE_STATUSES[synth.hnum(f"{seed}:{p}", salt="pr-status") % 2] for p in chosen
         }
-    head_sha = hashlib.sha1(doc_id.encode()).hexdigest()
+    head_sha = hashlib.sha1(seed.encode()).hexdigest()
     out = []
     for path in chosen:
         f = src.get(path)
         if f is None:  # not visible to this caller, or no such file — see _RepoFiles.get
             continue
-        out.append(_changed_file(doc_id, owner, repo, f, statuses[path], head_sha, api_base))
+        out.append(_changed_file(seed, owner, repo, f, statuses[path], head_sha, api_base))
     return out
 
 
+def _seed(row) -> str:
+    """A stable seed for the values GitHub derives rather than stores — a commit sha, a review id,
+     a milestone number. It was the corpus's own document id; it is the row's OWN identity now
+    , which is equally stable and is what the row is actually addressed by."""
+    return f"{row['repo']}#{row['number']}"
+
+
 def _changed_file(
-    doc_id: str, owner: str, repo: str, row, status: str, head_sha: str, api_base: str
+    seed: str, owner: str, repo: str, row, status: str, head_sha: str, api_base: str
 ) -> dict:
     content = row["content"] or ""
     path = row["path"]
@@ -1633,7 +1631,7 @@ def _changed_file(
     elif status == "added":
         added, deleted, patch = len(lines), 0, _patch_new_file(lines)
     else:
-        added, deleted, patch = _patch_modified(f"{doc_id}:{path}", lines, selectable)
+        added, deleted, patch = _patch_modified(f"{seed}:{path}", lines, selectable)
     sha = _blob_sha(content)
     obj = {
         "sha": sha,
@@ -1662,8 +1660,8 @@ def _patch_modified(seed: str, lines: list[str], selectable: int) -> tuple[int, 
     ``(additions, deletions, patch)``.
 
     Both express the change against the snapshot as the HEAD, and neither writes a line the file
-    does not already contain — a replacement would need "before" text that is nowhere in the corpus,
-    and inventing a line the file never held is the fabrication this module exists to avoid:
+    does not already contain. A replacement would need "before" text that is nowhere in the corpus,
+    and inventing a line is the fabrication this module exists to avoid:
 
     - ``insertion`` — the pull added a real block of the file; the base is the snapshot with that
       block taken out. Pure additions.
@@ -1734,7 +1732,7 @@ def _pr_mbox(row, obj: dict, diff: str) -> str:
     """The pull as a mail patch (`Accept: application/vnd.github.patch`). Real GitHub's `patch`
     media type is a `git am`-able mbox, NOT the same bytes as `diff` — a client that pipes one to
     the wrong tool has to be able to tell them apart here too."""
-    ts = row["created_ts"] or synth.epoch(row["doc_id"])
+    ts = row["created_ts"] or synth.epoch(_seed(row))
     email_addr = row["author_email"] or "unknown@users.noreply.github.com"
     login = synth.github_login(email_addr)
     head = obj["head"]["sha"]
@@ -1757,7 +1755,7 @@ def _resolved_review_comments(conn, row, repo_files) -> list[tuple]:
     ``review_comments`` items never finished — and leaked that a hidden file carries a comment.
     """
     out = []
-    for c in store.github_comments(conn, row["doc_id"], anchored=True):
+    for c in store.github_comments(conn, row["repo"], row["number"], anchored=True):
         f = repo_files.get(c["path"])
         if f is not None:  # else: hidden from this caller, or no such file — see _RepoFiles.get
             out.append((c, f))
@@ -1770,14 +1768,14 @@ def _gh_review_comment(
     """One line-anchored review comment, in the real API's shape.
 
     ``diff_hunk`` prefers what the corpus supplied, then the hunk this pull's own diff carries for
-    that file — so the comment and the diff agree — and falls back to a context window from the
-    snapshot when the comment is anchored to a file the changeset does not touch (real GitHub cannot
-    produce that, but there is no reason to drop the comment over it).
+    that file, so the comment and the diff agree. It falls back to a context window from the
+    snapshot when the comment anchors to a file the changeset does not touch — real GitHub cannot
+    produce that, but there is no reason to drop the comment over it.
     """
     ts = c["created_ts"] or synth.epoch(c["id"])
     email = c["author_email"] or "unknown@x"
-    cid = c["served_id"]
-    head = hashlib.sha1(pr_row["doc_id"].encode()).hexdigest()
+    cid = c["id"]
+    head = hashlib.sha1(_seed(pr_row).encode()).hexdigest()
     self_url = f"{api_base}/repos/{owner}/{repo}/pulls/comments/{cid}"
     pr_url = f"{api_base}/repos/{owner}/{repo}/pulls/{number}"
     html_url = f"https://github.com/{owner}/{repo}/pull/{number}#discussion_r{cid}"
@@ -1785,7 +1783,7 @@ def _gh_review_comment(
     return {
         "id": cid,
         "node_id": synth.node_id("PullRequestReviewComment", cid),
-        "pull_request_review_id": synth.github_number(pr_row["doc_id"] + ":review"),
+        "pull_request_review_id": synth.github_number(_seed(pr_row) + ":review"),
         "path": c["path"],
         "line": c["line"],
         "original_line": c["line"],
@@ -1879,9 +1877,12 @@ def _hunk_around(file_row, line: int | None) -> str:
 
 
 def _gh_comment(owner: str, repo: str, number: int, c, api_base: str = "") -> dict:
-    ts = c["created_ts"] or synth.epoch(c["id"])
+    # `is not None`, and str(): a comment's id is an INTEGER, and 0 is a second a corpus can write,
+    # so under truthiness a comment dated 1970-01-01T00:00:00Z reaches `synth.epoch` — which hashes
+    # a STRING.
+    ts = c["created_ts"] if c["created_ts"] is not None else synth.epoch(str(c["id"]))
     email = c["author_email"] or "unknown@x"
-    cid = c["served_id"]
+    cid = c["id"]
     self_url = f"{api_base}/repos/{owner}/{repo}/issues/comments/{cid}"
     return {
         "id": cid,

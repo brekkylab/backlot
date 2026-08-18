@@ -119,7 +119,7 @@ def spy_erb(monkeypatch):
 
 @pytest.fixture
 def spy_erb_export(monkeypatch):
-    """`backlot export`'s target — a separate entry point from the import one it used to be a flag on."""
+    """`backlot export`'s target — its own entry point, not a flag on `import`."""
     return _spy(monkeypatch, erb, "run_export")
 
 

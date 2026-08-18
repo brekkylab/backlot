@@ -24,7 +24,7 @@ def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
     """The message is part of the emulated surface — a client that string-matches its vendor's
     error has to keep matching — which is why the shared guard takes it as a parameter.
 
-    GitHub only: Google no longer goes through `auth.require_bearer`, because its answer is not one
+    GitHub only: Google does not go through `auth.require_bearer`, because its answer is not one
     status (403 on Drive/Sheets, 401 on the OAuth-only families) and it carries Google's own error
     envelope, not `detail`. That surface is covered by the tests below."""
     r = client.get("/github/orgs/acme")
@@ -124,7 +124,7 @@ def test_router_advertises_the_params_it_honours(client, path, expected):
     assert expected <= {p["name"] for p in op.get("parameters", [])}
 
 
-# --- /_mock/openapi/{source}: the MCP-ready spec endpoint (issue #4 bridge) ---------------
+# --- /_mock/openapi/{source}: the MCP-ready spec endpoint ---------------
 
 
 def test_mock_openapi_spec_endpoint(client):
@@ -195,7 +195,7 @@ def _one_slack_doc(tmp_path):
 
 
 def test_a_failing_warm_up_is_recorded_instead_of_dying_with_its_thread(tmp_path, monkeypatch):
-    """The warm-up runs in a daemon thread, so an exception inside it used to vanish with the thread.
+    """The warm-up runs in a daemon thread, so an exception inside it vanishes with the thread.
 
     Every cache then stayed None, which each consumer reads as "not warm yet" — the Slack routes fall
     back to per-request queries and keep answering correctly — so nothing 500d, nothing retried, and

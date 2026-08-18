@@ -21,6 +21,11 @@
       "type": "string",
       "description": "Stable id (default: dsid_<sha256(source_type+title+content)>)."
     },
+    "content_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The id `/wiki/rest/api/content/{id}` serves this page under, as the corpus writes it. Stored and served verbatim. An omitted id is synthesized from the doc_id and assigned at import, probed so it stays unique. Provide one when APPENDING to a corpus that already has confluence pages: without it a re-imported page cannot be told apart from a new one."
+    },
     "space": {
       "type": "string",
       "description": "The space this document belongs to (default: the source_type)."

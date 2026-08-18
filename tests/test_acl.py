@@ -1,42 +1,53 @@
 """ACL resolution + visibility, asserted against the SAMPLE corpus's generated ACL."""
 
+import yaml
+
 from backlot import store
 from tests._helpers import client_for, gql
 
 
 def _visible(db, acl, token, source):
+    """The SERVED keys this token can see in one source — the same tuples `keys` hands back, so an
+    assertion names a document by its corpus id and compares what the API actually addresses."""
     ids = acl.visible_ids(db, acl.resolve(token))
-    return {r["doc_id"] for r in store.list_documents(db, source, visible_ids=ids, limit=100)}
-
-
-def test_admin_sees_all_confluence(db, acl):
-    assert acl.resolve("admin-service-token").is_admin
-    assert _visible(db, acl, "admin-service-token", "confluence") == {
-        "cf-handbook",
-        "cf-oncall",
-        "cf-comp",
+    cols = store.id_columns(source)
+    return {
+        tuple(r[c] for c in cols)
+        for r in store.list_documents(db, source, visible_ids=ids, limit=100)
     }
 
 
-def test_public_visible_to_everyone(db, acl, tokens):
+def test_admin_sees_all_confluence(db, acl, keys):
+    assert acl.resolve("admin-service-token").is_admin
+    assert _visible(db, acl, "admin-service-token", "confluence") == {
+        keys["cf-handbook"],
+        keys["cf-oncall"],
+        keys["cf-comp"],
+    }
+
+
+def test_public_visible_to_everyone(db, acl, tokens, keys):
     # a public page is visible to any user, regardless of group
-    assert "cf-handbook" in _visible(db, acl, tokens["ava@acme.com"], "confluence")
-    assert "cf-handbook" in _visible(db, acl, tokens["mia@acme.com"], "confluence")
+    assert keys["cf-handbook"] in _visible(db, acl, tokens["ava@acme.com"], "confluence")
+    assert keys["cf-handbook"] in _visible(db, acl, tokens["mia@acme.com"], "confluence")
 
 
-def test_group_restricted_hidden_from_nonmember(db, acl, tokens):
+def test_group_restricted_hidden_from_nonmember(db, acl, tokens, keys):
     # ava is in engineering, not 'people' -> cannot see the people-only comp page
-    assert _visible(db, acl, tokens["ava@acme.com"], "confluence") == {"cf-handbook", "cf-oncall"}
+    assert _visible(db, acl, tokens["ava@acme.com"], "confluence") == {
+        keys["cf-handbook"],
+        keys["cf-oncall"],
+    }
 
 
-def test_group_restricted_visible_to_member(db, acl, tokens):
+def test_group_restricted_visible_to_member(db, acl, tokens, keys):
     # hana is in 'people' -> sees the comp page
-    assert "cf-comp" in _visible(db, acl, tokens["hana@acme.com"], "confluence")
+    assert keys["cf-comp"] in _visible(db, acl, tokens["hana@acme.com"], "confluence")
 
 
-def test_private_doc_only_its_author(db, acl, tokens):
-    assert "jira-private" in _visible(db, acl, tokens["bob@acme.com"], "jira")
-    assert "jira-private" not in _visible(db, acl, tokens["ava@acme.com"], "jira")
+def test_private_doc_only_its_author(db, acl, tokens, keys):
+    assert keys["jira-private"] in _visible(db, acl, tokens["bob@acme.com"], "jira")
+    assert keys["jira-private"] not in _visible(db, acl, tokens["ava@acme.com"], "jira")
 
 
 def test_unknown_token_resolves_to_none(acl):
@@ -44,15 +55,12 @@ def test_unknown_token_resolves_to_none(acl):
     assert acl.resolve(None) is None
 
 
-def test_forbidden_direct_fetch_is_hidden(db, acl, tokens):
+def test_forbidden_direct_fetch_is_hidden(db, acl, tokens, keys):
     ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
-    assert store.get_document(db, "jira", "jira-private", visible_ids=ids) is None  # hidden
-    assert (
-        store.get_document(db, "confluence", "cf-handbook", visible_ids=ids) is not None
-    )  # public
-    assert (
-        store.get_document(db, "jira", "jira-private", visible_ids=None) is not None
-    )  # admin bypass
+    priv, pub = keys["jira-private"], keys["cf-handbook"]
+    assert store.get_document(db, "jira", *priv, visible_ids=ids) is None  # hidden
+    assert store.get_document(db, "confluence", *pub, visible_ids=ids) is not None  # public
+    assert store.get_document(db, "jira", *priv, visible_ids=None) is not None  # admin bypass
 
 
 def test_admin_visible_ids_is_none(db, acl):
@@ -65,34 +73,38 @@ def test_admin_visible_ids_is_none(db, acl):
 # rows, which carry no grant of their own and inherit the parent issue's.
 
 
-def test_linear_restricted_issue_hidden_from_nonreader(db, acl, tokens):
-    assert _visible(db, acl, tokens["ava@acme.com"], "linear") == {"lin-rl", "lin-batch", "lin-des"}
-
-
-def test_linear_restricted_issue_visible_to_its_reader(db, acl, tokens):
-    assert "lin-secret" in _visible(db, acl, tokens["hana@acme.com"], "linear")
-
-
-def test_linear_admin_sees_every_issue(db, acl):
-    assert _visible(db, acl, "admin-service-token", "linear") == {
-        "lin-rl",
-        "lin-batch",
-        "lin-des",
-        "lin-secret",
-        "lin-blackops",
+def test_linear_restricted_issue_hidden_from_nonreader(db, acl, tokens, keys):
+    assert _visible(db, acl, tokens["ava@acme.com"], "linear") == {
+        keys["lin-rl"],
+        keys["lin-batch"],
+        keys["lin-des"],
     }
 
 
-def test_linear_comments_inherit_the_parent_issues_acl(db, acl, tokens):
+def test_linear_restricted_issue_visible_to_its_reader(db, acl, tokens, keys):
+    assert keys["lin-secret"] in _visible(db, acl, tokens["hana@acme.com"], "linear")
+
+
+def test_linear_admin_sees_every_issue(db, acl, keys):
+    assert _visible(db, acl, "admin-service-token", "linear") == {
+        keys["lin-rl"],
+        keys["lin-batch"],
+        keys["lin-des"],
+        keys["lin-secret"],
+        keys["lin-blackops"],
+    }
+
+
+def test_linear_comments_inherit_the_parent_issues_acl(db, acl, tokens, keys):
     """A comment row has no ACL grant of its own — visibility is the issue's. Without the join in
     `list_linear_comments` a hidden issue's comments would leak through `Query.comments`."""
     from backlot import store as st
 
     ids = acl.visible_ids(db, acl.resolve(tokens["mia@acme.com"]))
     # mia sees the public issues, so she sees their comments...
-    assert st.count_linear_comments(db, doc_id="lin-rl", visible_ids=ids) == 2
+    assert st.count_linear_comments(db, issue_id=keys["lin-rl"][0], visible_ids=ids) == 2
     # ...but not a restricted issue's.
-    assert st.count_linear_comments(db, doc_id="lin-secret", visible_ids=ids) == 0
+    assert st.count_linear_comments(db, issue_id=keys["lin-secret"][0], visible_ids=ids) == 0
 
 
 def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
@@ -109,9 +121,9 @@ def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
 
 # --- Linear: the by-id relation roots ---------------------------------------------
 # `@linear/sdk` resolves relations lazily, so `await issue.project` fires `project(id:)`. Those
-# roots read a reverse index built at startup from an UNFILTERED `DISTINCT` over every issue, and
-# the entities have no table of their own — a project/cycle/state/label/assignee exists only as a
-# column value on some issue. Left unscoped they hand a caller field values off rows they are
+# roots read `linear_entities`, an UNFILTERED `DISTINCT` over every issue, because the entities have
+# no table of their own — a project/cycle/state/label/assignee exists only as a column value on
+# some issue. Left unscoped they hand a caller field values off rows they are
 # denied, and because the ids are pure functions of the name (backlot/synth.py), they are computable
 # offline: an enumerable oracle, not merely a confirmable one.
 
@@ -307,13 +319,16 @@ def _ff_gql(client, query, token, **variables):
     return gql(client, "/fireflies/graphql", query, f"Bearer {token}", **variables).json()
 
 
-def test_fireflies_store_reads_are_acl_scoped(db, acl, tokens):
-    assert "ff-secret" in _visible(db, acl, "admin-service-token", "fireflies")  # admin
-    assert "ff-secret" in _visible(db, acl, tokens["hana@acme.com"], "fireflies")  # granted
-    assert "ff-secret" not in _visible(db, acl, tokens["ava@acme.com"], "fireflies")
+def test_fireflies_store_reads_are_acl_scoped(db, acl, tokens, keys):
+    secret = keys["ff-secret"]
+    assert secret in _visible(db, acl, "admin-service-token", "fireflies")  # admin
+    assert secret in _visible(db, acl, tokens["hana@acme.com"], "fireflies")  # granted
+    assert secret not in _visible(db, acl, tokens["ava@acme.com"], "fireflies")
     # the org-visible transcripts are readable by both
     for email in ("hana@acme.com", "ava@acme.com"):
-        assert {"ff-discovery", "ff-allhands"} <= _visible(db, acl, tokens[email], "fireflies")
+        assert {keys["ff-discovery"], keys["ff-allhands"]} <= _visible(
+            db, acl, tokens[email], "fireflies"
+        )
 
 
 def test_fireflies_transcripts_list_hides_denied_meetings(sample_settings, tokens):
@@ -391,3 +406,196 @@ def test_fireflies_mine_returns_nothing_for_a_token_that_is_not_a_person(sample_
             client, "{ transcripts(mine: true, limit: 50) { title } }", sample_settings.admin_token
         )
         assert got["data"]["transcripts"] == []
+
+
+def test_grants_are_written_to_their_own_source_table(tmp_path):
+    """A grant belongs to one source's document. Two documents sharing a doc_id across sources
+    must not share a grant — a union of the two makes a public page make a restricted
+    drive file readable by anyone in the org."""
+    from tests._helpers import build_corpus
+
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "space": "handbook",
+                "doc_id": "shared-1",
+                "title": "Public page",
+                "content": "anyone may read this",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "group": "engineering",
+                "author_groups": ["engineering"],
+            },
+            {
+                "source_type": "google_drive",
+                "folder": "vault",
+                "doc_id": "shared-1",
+                "title": "Secret sheet",
+                "content": "hana only",
+                "author_email": "hana@acme.com",
+                "readers": ["hana@acme.com"],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    # Each source's grants are read through its OWN table, keyed on its own served id -- the two
+    # documents shared a corpus id and share nothing after import.
+    page = conn.execute("SELECT id FROM confluence_pages").fetchone()["id"]
+    file_id = conn.execute("SELECT id FROM gdrive_files").fetchone()["id"]
+    conf = {
+        r["principal_id"]
+        for r in conn.execute("SELECT principal_id FROM confluence_acl WHERE id = ?", (page,))
+    }
+    drive = {
+        r["principal_id"]
+        for r in conn.execute("SELECT principal_id FROM google_drive_acl WHERE id = ?", (file_id,))
+    }
+    assert "hana@acme.com" in drive and "acme" not in drive
+    assert "acme" in conf
+    conn.close()
+
+
+def test_a_shared_doc_id_does_not_share_visibility(tmp_path):
+    """The defect the per-source ACL tables exist to remove: bob is in no granted group, and the
+    drive file is readable only by hana. A confluence page sharing its corpus id must not grant
+    the org. The two never even resolve to the same id -- each source assigns its own -- so this
+    pins the property from both directions: separate tables AND separate id spaces."""
+    from tests._helpers import build_corpus
+
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "space": "handbook",
+                "doc_id": "shared-1",
+                "title": "Public page",
+                "content": "anyone may read this",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "group": "engineering",
+                "author_groups": ["engineering"],
+            },
+            {
+                "source_type": "google_drive",
+                "folder": "vault",
+                "doc_id": "shared-1",
+                "title": "Secret sheet",
+                "content": "hana only",
+                "author_email": "hana@acme.com",
+                "readers": ["hana@acme.com"],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    bob = {"acme", "bob@acme.com", *store.user_group_ids(conn, "bob@acme.com")}
+    titles = [r["title"] for r in store.list_documents(conn, "google_drive", None, bob, limit=10)]
+    assert titles == []  # bob sees no drive document at all
+    hana = {"acme", "hana@acme.com", *store.user_group_ids(conn, "hana@acme.com")}
+    titles = [r["title"] for r in store.list_documents(conn, "google_drive", None, hana, limit=10)]
+    assert titles == ["Secret sheet"]
+    # doc_grants/docs_with_grants answer for ONE source's document: the drive row is hana-only
+    # even though the confluence row that shared its corpus id is org-public.
+    page = conn.execute("SELECT id FROM confluence_pages").fetchone()["id"]
+    file_id = conn.execute("SELECT id FROM gdrive_files").fetchone()["id"]
+    drive = {
+        (r["principal_type"], r["principal_id"])
+        for r in store.doc_grants(conn, "google_drive", file_id)
+    }
+    assert drive == {("user", "hana@acme.com")}
+    assert store.docs_with_grants(conn, "google_drive", [file_id]) == {file_id}
+    conf = {
+        (r["principal_type"], r["principal_id"]) for r in store.doc_grants(conn, "confluence", page)
+    }
+    assert ("org", "acme") in conf
+    conn.close()
+
+    # The leak was user-facing at the ROUTER layer, not just the store — assert it there too, with
+    # a real HTTP request carrying a non-admin bearer token. ava is a member of the org the public
+    # confluence grant names, but holds no grant of her own on the drive file: in the pre-fix world
+    # a shared doc_acl table would OR the two sources' rows together for "shared-1" and let any org
+    # member (ava included) through on the strength of the confluence grant alone.
+    toks = yaml.safe_load(s.tokens_path.read_text())
+    ava_token = next(u["token"] for u in toks["users"] if u["email"] == "ava@acme.com")
+    hana_token = next(u["token"] for u in toks["users"] if u["email"] == "hana@acme.com")
+    with client_for(s) as client:
+        r = client.get("/drive/v3/files", headers={"Authorization": f"Bearer {ava_token}"})
+        assert [f["name"] for f in r.json()["files"]] == []
+        r = client.get("/drive/v3/files", headers={"Authorization": f"Bearer {hana_token}"})
+        assert "Secret sheet" in {f["name"] for f in r.json()["files"]}
+
+
+def test_slack_channels_for_principals_reads_its_own_acl_table(tmp_path):
+    """The principal-indexed lookup ``conversations.list`` falls back to while the channel-ACL
+    cache is cold (see ``routers/slack.py``'s ``else`` branch). It must answer from ``slack_acl``,
+    not some other source's table — a doc_id shared with a github item, granted to a DIFFERENT
+    principal there, would leak (or hide) a channel if the query read the wrong table."""
+    from tests._helpers import build_corpus
+
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "eng-private",
+                "doc_id": "collide-1",
+                "content": "restricted to engineering",
+                "author_email": "ava@acme.com",
+                "readers": ["engineering"],
+            },
+            {
+                "source_type": "github",
+                "repo": "unrelated-repo",
+                "doc_id": "collide-1",
+                "title": "Unrelated issue",
+                "content": "granted to a different group entirely",
+                "author_email": "bob@acme.com",
+                "readers": ["design"],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    # granted via slack_acl -> the channel is found
+    assert store.slack_channels_for_principals(conn, ["engineering"]) == {"eng-private"}
+    # granted only in github_acl (same doc_id, different table) -> must NOT surface the channel
+    assert store.slack_channels_for_principals(conn, ["design"]) == set()
+    conn.close()
+
+
+def test_container_has_public_reads_its_own_acl_table(tmp_path):
+    """A cross-source doc_id collision must not leak a grant from one source's ACL into another
+    source's ``container_has_public`` answer — the container-level analogue of the doc-id bug this
+    plan exists to fix. A slack channel and a github repo share a doc_id here; the slack message is
+    group-restricted and the github item is public, so the two sources must disagree."""
+    from tests._helpers import build_corpus
+
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "shared-name",
+                "doc_id": "collide-2",
+                "content": "restricted to engineering",
+                "author_email": "ava@acme.com",
+                "visibility": "group",
+                "group": "engineering",
+                "author_groups": ["engineering"],
+            },
+            {
+                "source_type": "github",
+                "repo": "collide-repo",
+                "doc_id": "collide-2",
+                "title": "Public issue",
+                "content": "anyone may read this",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    assert store.container_has_public(conn, "github", "collide-repo") is True
+    assert store.container_has_public(conn, "slack", "shared-name") is False
+    conn.close()

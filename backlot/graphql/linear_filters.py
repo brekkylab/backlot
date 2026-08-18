@@ -269,10 +269,11 @@ def _issue_filter(conn, flt: dict) -> tuple[str, list]:
                 parts.append("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
             continue
         if key == "id":
-            # The filter speaks Linear UUIDs; the column is the doc_id they are derived from, so
-            # the values are mapped through the app's uuid->doc_id index by the caller before
-            # they get here (see linear_resolvers._resolve_issue_ids).
-            add(*_Comparator("doc_id").render(spec))
+            # The filter speaks a Linear UUID or a human identifier; the column is the issue
+            # `id` either is resolved to, so the caller translates every value to its id (a
+            # served_id column lookup, falling back to identifier) before it gets here — see
+            # linear_resolvers._resolve_issue_ids / _resolve_one_issue_id.
+            add(*_Comparator("id").render(spec))
         elif key == "title":
             add(*_Comparator("title").render(spec))
         elif key == "description":
@@ -401,7 +402,7 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
 def _map_comment_ids(conn, spec: dict) -> dict:
     """Rewrite a comparator over ``Comment.id`` from served UUIDs back to stored row ids.
 
-    Unlike an issue, a comment has no app-level reverse index (there are 165k at the scale measured and
+    Unlike an issue, a comment has no id table of its own (there are 165k at the scale measured and
     they are only ever reached through their parent), so the mapping is built on demand for just
     the ids the comparator names. An unresolvable id becomes a sentinel that matches nothing,
     which is what "no such comment" should return."""

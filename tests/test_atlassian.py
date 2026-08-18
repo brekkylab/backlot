@@ -9,9 +9,18 @@ from __future__ import annotations
 from starlette.requests import Request
 import re
 
+import pytest
 
 from backlot import store
-from tests._helpers import bare_request, crawl_confluence, crawl_jira, db_count, tiny_corpus
+from tests._helpers import (
+    bare_request,
+    client_for,
+    crawl_confluence,
+    crawl_jira,
+    db_count,
+    tiny_corpus,
+    served_id,
+)
 
 
 def test_admin_jira_crawls_all(client, admin_h, ro_conn):
@@ -68,6 +77,24 @@ def test_jira_search_filtered_by_project(client, admin_h):
     ).json()
     assert {i["fields"]["summary"] for i in by_key["issues"]} == titles
 
+    # "payments" carries no provided key in the SAMPLE corpus, so its served issue-key prefix IS
+    # the synthesized one above -- the served spelling resolves...
+    served_key = by_key["issues"][0]["key"]
+    assert served_key.startswith(synth_key + "-")
+    assert (
+        client.get(f"/atlassian/rest/api/3/issue/{served_key}", headers=admin_h).status_code == 200
+    )
+    # ...but the literal container NAME as an issue-key prefix does not, even though it resolves
+    # perfectly well as a JQL project TOKEN just above: `_jira_container_for_key`'s three-way
+    # tolerance (provided prefix / synthesized key / literal name) is a deliberate affordance for
+    # the project token, where real Jira's own pickers accept any of the three. Reusing it for
+    # ISSUE-KEY resolution would give every project two extra namespaces to answer at. Real Jira
+    # 404s
+    # `/issue/payments-7` (the container's bare name, not its key) exactly like this.
+    suffix = served_key.rsplit("-", 1)[1]
+    aliased = client.get(f"/atlassian/rest/api/3/issue/payments-{suffix}", headers=admin_h)
+    assert aliased.status_code == 404
+
     # an unresolvable project is strict: zero results, not the unfiltered corpus
     bogus = client.get(
         "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "project = BOGUS_NOPE"}
@@ -110,6 +137,84 @@ def test_confluence_content_filtered_by_space_key(client, admin_h):
     assert "Compensation Bands 2026" in {r["title"] for r in unfiltered["results"]}
 
 
+def test_atlassian_comment_ids_are_numeric_on_the_wire(tmp_path):
+    """The stored id composes the parent's key with the comment's position (`PAY-7::c1`) — this
+    mock's own bookkeeping. Real Jira and Confluence report numeric strings, and both the `self`
+    link and Confluence's `focusedCommentId` carry the value, so the internal scheme leaked into
+    three places a client reads."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": "j-c",
+                "project": "payments",
+                "title": "T",
+                "content": "c",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "key": "PAY-7",
+                "comments": [{"content": "hi", "author_email": "b@x.com"}],
+            },
+            {
+                "source_type": "confluence",
+                "doc_id": "cf-c",
+                "space": "handbook",
+                "title": "P",
+                "content": "c",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "comments": [{"content": "hi", "author_email": "b@x.com"}],
+            },
+        ],
+    )
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+        (jc,) = c.get("/atlassian/rest/api/3/issue/PAY-7/comment", headers=h).json()["comments"]
+        assert jc["id"].isdigit() and jc["self"].endswith(f"/comment/{jc['id']}")
+        page = served_id("confluence", "cf-c")
+        (cc,) = c.get(f"/atlassian/wiki/rest/api/content/{page}/child/comment", headers=h).json()[
+            "results"
+        ]
+        assert cc["id"].isdigit()
+        assert cc["_links"]["webui"].endswith(f"focusedCommentId={cc['id']}")
+
+
+def test_confluence_dates_an_epoch_zero_page_on_both_routes(tmp_path):
+    """1970-01-01T00:00:00Z stores as 0, and both routes that date a page must serve it.
+
+    The CQL result read a `key` column off a confluence row — jira's spelling — which raised
+    IndexError and 500ed the whole search whenever a page had no timestamps to short-circuit on.
+    One helper now dates a page for both, so the body and the search hit cannot disagree."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "doc_id": "cf-zero",
+                "space": "handbook",
+                "title": "Epoch",
+                "content": "a page dated at the epoch",
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "created": 0,
+            }
+        ],
+    )
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+        hit = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": 'text~"epoch"'})
+        assert hit.status_code == 200
+        (result,) = hit.json()["results"]
+        assert result["lastModified"].startswith("1970-01-01T00:00:00")
+        page = c.get(
+            f"/atlassian/wiki/rest/api/content/{served_id('confluence', 'cf-zero')}",
+            headers=h,
+            params={"expand": "history"},
+        ).json()
+        assert page["history"]["createdDate"].startswith("1970-01-01T00:00:00")
+
+
 def test_confluence_cql_search_filtered_by_space(client, admin_h):
     # "software" appears only in cf-handbook's body (SAMPLE), so this term narrows to one hit
     # when the space clause matches, and correctly to zero when it points elsewhere/unresolvable
@@ -139,9 +244,7 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
 
 def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
     doc = ro_conn.execute("SELECT * FROM confluence_pages LIMIT 1").fetchone()
-    from backlot import synth
-
-    cid = synth.confluence_id(doc["doc_id"])
+    cid = doc["id"]
     page = client.get(
         f"/atlassian/wiki/rest/api/content/{cid}",
         headers=admin_h,
@@ -225,6 +328,28 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
 # --- Jira ------------------------------------------------------------------------
 
 
+def test_jira_issue_key_asserts_rather_than_re_derive_a_null_key():
+    """`_issue_key` must not fall back to re-deriving a key from a NULL one: a PROBED row (one whose
+    served value came from a walk, not a pure hash) would advertise a key nobody stored, unreachable
+    at its own url. An assertion is strictly better: every jira row gets a key at import
+    (`resolve_jira_keys` raises rather than leave one NULL), so reaching here with one is a bug
+    upstream, and failing loudly
+    beats silently serving the wrong key."""
+    from backlot.routers.atlassian import _issue_key
+
+    with pytest.raises(AssertionError, match="no key"):
+        _issue_key(bare_request(), {"key": None, "project": "x"})
+
+
+def _jira_row(conn, title: str):
+    """The jira row a fixture record with this title became.
+
+    A jira key is assigned across the whole corpus, so unlike a hashed id it cannot be
+    computed from the record's own identifier — which does not survive the import anyway. The row
+    is found by something the fixture can still see, as any other client would have to."""
+    return conn.execute("SELECT * FROM jira_issues WHERE title = ?", (title,)).fetchone()
+
+
 def test_jira_status_category_and_fields(tmp_path):
     from backlot.routers.atlassian import _jira_issue
 
@@ -256,7 +381,7 @@ def test_jira_status_category_and_fields(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    f = _jira_issue(conn, bare_request(), store.get_document(conn, "jira", "j1"))["fields"]
+    f = _jira_issue(conn, bare_request(), _jira_row(conn, "T"))["fields"]
     # the real 3-category model: "In Progress" -> indeterminate (not the old hardcoded "new")
     assert f["status"]["statusCategory"]["key"] == "indeterminate"
     assert f["assignee"]["emailAddress"] == "a@x.com"
@@ -268,7 +393,7 @@ def test_jira_status_category_and_fields(tmp_path):
     # scaffolds present so probing clients get [] / null, not KeyError
     assert f["attachment"] == [] and f["votes"]["votes"] == 0
 
-    done = _jira_issue(conn, bare_request(), store.get_document(conn, "jira", "j2"))["fields"]
+    done = _jira_issue(conn, bare_request(), _jira_row(conn, "D"))["fields"]
     assert done["status"]["statusCategory"]["key"] == "done"
     assert done["assignee"] is None  # unassigned by default
 
@@ -298,7 +423,7 @@ def test_confluence_body_and_version(tmp_path):
         ],
     )
     conn = store.connect_ro(s.db_path)
-    row = store.get_document(conn, "confluence", "c1")
+    row = store.get_document(conn, "confluence", served_id("confluence", "c1"))
     page = _confluence_page(
         conn,
         bare_request(),
@@ -324,7 +449,7 @@ def test_confluence_restrictions_has_update(tmp_path):
     # restrictions/byOperation must return BOTH read and update operations
     import asyncio
     import types
-    from backlot import synth
+
     from backlot.acl import Acl
     from backlot.routers.atlassian import confluence_restrictions
 
@@ -342,12 +467,12 @@ def test_confluence_restrictions_has_update(tmp_path):
             },
         ],
     )
-    cid = synth.confluence_id("c2")
+    conn = store.connect_ro(s.db_path)
+    cid = served_id("confluence", "c2")
     app = types.SimpleNamespace(
         state=types.SimpleNamespace(
-            conn=store.connect_ro(s.db_path),
+            conn=conn,
             acl=Acl.load(s.tokens_path, s.admin_token, s.org_name),
-            index={"confluence": {cid: "c2"}},
         )
     )
     scope = {
@@ -362,3 +487,23 @@ def test_confluence_restrictions_has_update(tmp_path):
     result = asyncio.run(confluence_restrictions(cid, Request(scope)))
     assert "read" in result and "update" in result
     assert result["read"]["restrictions"]["user"]["results"]  # the private doc's author
+
+
+def test_confluence_child_page_and_restriction_match_a_nonexistent_id_for_an_outsider(
+    client, tokens, ro_conn
+):
+    """`_confluence_doc_id` (`:981`) is deliberately unscoped -- of its four callers, `child/
+    comment` and `label` already re-check with `store.get_document(..., visible_ids=...)` and 404
+    on a miss; `child/page` and `restriction/byOperation` used not to. That let an outsider use
+    `child/page`'s 200 as an existence oracle for a page they cannot read, and
+    `restriction/byOperation` handed back the READER ROSTER -- emails, account ids, display names
+    -- for that same page: data, not just existence. Handled the same way `child/comment`/`label`
+    are: a restricted page must be byte-identical, status AND
+    body, to a made-up id -- checked here on the actual response bytes, not merely "not 200"."""
+    cid = served_id("confluence", "cf-comp")  # people-only
+    h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}  # engineering; cannot see cf-comp
+    for path in ("child/page", "restriction/byOperation"):
+        hidden = client.get(f"/atlassian/wiki/rest/api/content/{cid}/{path}", headers=h)
+        made_up = client.get(f"/atlassian/wiki/rest/api/content/999999999/{path}", headers=h)
+        assert hidden.status_code == made_up.status_code == 404
+        assert hidden.content == made_up.content

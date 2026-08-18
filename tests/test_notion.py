@@ -7,7 +7,7 @@ or call the response builder directly.
 from __future__ import annotations
 
 from backlot import store, synth
-from tests._helpers import tiny_corpus, tok
+from tests._helpers import tiny_corpus, tok, served_id
 
 
 def test_notion_page_retrieve_and_blocks(client, admin_h):
@@ -24,8 +24,17 @@ def test_notion_page_retrieve_and_blocks(client, admin_h):
 
 
 def test_notion_dashless_id_resolves(client, admin_h):
-    pid = synth.notion_id("nt-runbook").replace("-", "")
-    assert client.get(f"/notion/v1/pages/{pid}", headers=admin_h).status_code == 200
+    """Notion accepts a page id dashed, dashless, or in any case -- and all three spellings must
+    resolve to the SAME document, not merely 200: a normalization bug in `_norm` could still land
+    on a different (or no) row while a bare status-code check stayed green. Mutation-verified: see
+    the report -- both the dash-reinsertion and the case-fold in `routers.notion._norm` were
+    individually broken and each turned one of these spellings' response into a 404, then
+    restored."""
+    dashed = synth.notion_id("nt-runbook")
+    dashless = dashed.replace("-", "")
+    for spelling in (dashless, dashless.upper(), dashed.upper()):
+        r = client.get(f"/notion/v1/pages/{spelling}", headers=admin_h)
+        assert r.status_code == 200 and r.json()["id"] == dashed
 
 
 def test_notion_search_and_comments(client, admin_h):
@@ -192,7 +201,7 @@ def test_notion_page_shape(tmp_path):
     from backlot.routers.notion import _page_obj
 
     conn = _notion_conn(tmp_path)
-    obj = _page_obj(conn, store.get_document(conn, "notion", "nf-page"))
+    obj = _page_obj(conn, store.get_document(conn, "notion", served_id("notion", "nf-page")))
     assert obj["object"] == "page"
     assert obj["id"] == synth.notion_id("nf-page")
     assert obj["created_by"]["object"] == "user"
@@ -202,8 +211,12 @@ def test_notion_page_shape(tmp_path):
     assert obj["icon"] == {"type": "emoji", "emoji": "📟"}
     assert obj["url"].startswith("https://www.notion.so/")
     # a database row exposes its property values + a database_id parent
-    row = _page_obj(conn, store.get_document(conn, "notion", "nf-row"))
+    row = _page_obj(conn, store.get_document(conn, "notion", served_id("notion", "nf-row")))
     assert row["parent"]["type"] == "database_id"
+    # ...and it is the database's OWN served id, which `parent_id` already holds. Hashing
+    # that column again named a database nothing serves, so every row in every database
+    # advertised a parent that 404s.
+    assert row["parent"]["database_id"] == served_id("notion", "nf-db")
     assert row["properties"]["Status"]["select"]["name"] == "In Progress"
 
 
@@ -211,7 +224,7 @@ def test_notion_database_and_data_source_shape(tmp_path):
     from backlot.routers.notion import _data_source_obj, _database_obj
 
     conn = _notion_conn(tmp_path)
-    dbrow = store.get_document(conn, "notion", "nf-db")
+    dbrow = store.get_document(conn, "notion", served_id("notion", "nf-db"))
     new = _database_obj(conn, dbrow, "2025-09-03")
     assert new["object"] == "database"
     assert new["data_sources"][0]["id"] == synth.notion_data_source_id("nf-db")

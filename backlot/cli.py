@@ -6,14 +6,13 @@
     backlot export out/                 # the bench as a BYO artifact instead of a database
     backlot status                      # what the data dir currently holds
 
-This module is the ONE place the command line is defined. The importers used to declare their own
-flags in their own ``argparse`` parsers, which meant ``backlot import --help`` was assembled from
-three files and reading this one told you almost nothing. Each importer now exposes plain functions
-taking keyword arguments, and the flags that drive them are the parameters below.
+This module is the ONE place the command line is defined. Importers expose plain functions taking
+keyword arguments, and the flags that drive them are the parameters below, so ``backlot import
+--help`` is assembled from this file alone rather than from three ``argparse`` parsers.
 
 ``import`` keeps both corpus types behind one command (``--type``) because the bench importer has no
-options left to separate: writing an artifact became ``export``, and the rest went. So every option
-on ``import`` is BYO's, and one given under the bench type is refused rather than ignored — see
+options of its own — writing an artifact is ``export``. So every option on ``import`` is BYO's, and
+one given under the bench type is refused rather than ignored — see
 ``_reject_byo_flags_under_bench``.
 """
 
@@ -166,7 +165,7 @@ def serve(
     host: Annotated[str, typer.Option(help="bind address")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="bind port")] = 8000,
     # "--reload" spelled out, not left to typer: a bool option with no explicit name renders as a
-    # `--reload/--no-reload` pair, and `--no-reload` is a flag this CLI never had.
+    # `--reload/--no-reload` pair, exposing a second flag this CLI does not want.
     reload: Annotated[
         bool, typer.Option("--reload", help="restart on source changes (development)")
     ] = False,

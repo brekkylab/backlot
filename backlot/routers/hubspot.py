@@ -39,7 +39,7 @@ _PAGE_MAX = 100
 _ASSOC_PAGE_MAX = 500
 
 
-# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# --- OpenAPI enrichment --------------------------------------------------
 # Query params are documented with openapi_extra (merges with path params, no signature change);
 # POST bodies are read via _json_body, so they are declared as a requestBody the same way.
 
@@ -132,8 +132,18 @@ def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSO
     )
 
 
-def _doc_id_for(request: Request, record_id: str) -> str | None:
-    return request.app.state.index["hubspot"].get(record_id)
+def _existing_id(request: Request, record_id: str) -> str | None:
+    """``record_id`` if a record holds it, else None -- a PRIMARY KEY lookup (see
+    store.hubspot_by_id). All it does is confirm a row holds that id.
+
+    Unscoped by ACL on purpose: used only by _resolve_cursor, which needs the id to drive a
+    further, separately ACL-scoped query (list_hubspot_objects/hubspot_associations,
+    keyset-paginated past it) rather than to serve this row itself.
+
+    ``columns="id"``: this runs on every paged listing/association request's ``after``, and the row
+    it would otherwise pull in full is never used for anything but its existence."""
+    row = store.hubspot_by_id(auth.conn(request), record_id, columns="id")
+    return row["id"] if row is not None else None
 
 
 def _clamp(raw, default: int, cap: int) -> int:
@@ -161,7 +171,10 @@ def _record(row, keep: list[str] | None = None) -> dict:
     if keep:
         props = {k: v for k, v in props.items() if k in keep}
     out = {
-        "id": synth.hubspot_record_id(row["doc_id"]),
+        # The stored column (assigned at import, see backlot.importer.byo), not a re-hash of
+        # HubSpot's id space is probed on a collision, so the row's own stored value
+        # with the value this very row was actually assigned and is looked up by.
+        "id": row["id"],
         "properties": props,
         "createdAt": synth.rfc3339_millis(row["created_ts"]),
         "updatedAt": synth.rfc3339_millis(row["updated_ts"] or row["created_ts"]),
@@ -179,7 +192,7 @@ def _page(rows, limit: int, keep: list[str] | None) -> dict:
     rows = rows[:limit]
     out: dict = {"results": [_record(r, keep) for r in rows]}
     if has_more:
-        after = synth.hubspot_record_id(rows[-1]["doc_id"])
+        after = rows[-1]["id"]
         out["paging"] = {"next": {"after": after, "link": f"?after={after}"}}
     return out
 
@@ -226,15 +239,22 @@ def _known_type(request: Request, object_type: str) -> bool:
 
 
 def _resolve_cursor(request: Request, after: str | None):
-    """(doc_id, error) for an ``after`` cursor. A cursor that names no record is an error rather
+    """(record id, error) for an ``after`` cursor. A cursor that names no record is an error rather
     than a silent restart — a client resuming with a stale cursor would otherwise re-read the whole
-    object type as though it were the first page."""
+    object type as though it were the first page.
+
+    An existence oracle, called out rather than closed: `_existing_id` is unscoped by ACL, so an
+    `after` naming a record the caller cannot see resolves (400 only for an id that names NOTHING),
+    while the same id as a `GET .../objects/{type}/{id}` path segment is 404 either way. So a caller
+    who knows an id is restricted can still learn it EXISTS by passing it as `after` and getting a
+    200 instead of a 400. Closing it is a deliberate change of its own — give `_resolve_cursor` a
+    `visible_ids` narrowing, like every other reader here."""
     if not after:
         return None, None
-    doc_id = _doc_id_for(request, after)
-    if doc_id is None:
+    rid = _existing_id(request, after)
+    if rid is None:
         return None, _error(400, f"Invalid 'after' cursor: {after}")
-    return doc_id, None
+    return rid, None
 
 
 # --------------------------------------------------------------------------- search filters
@@ -448,7 +468,7 @@ async def list_objects(object_type: str, request: Request):
     rows = store.list_hubspot_objects(
         auth.conn(request),
         object_type,
-        after_doc_id=after_doc,
+        after_id=after_doc,
         visible_ids=auth.visible_ids(request, caller),
         limit=limit + 1,
         archived=_flag(qp.get("archived")),
@@ -465,12 +485,10 @@ async def get_object(object_type: str, record_id: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
-    doc_id = _doc_id_for(request, record_id)
-    row = (
-        store.get_document(auth.conn(request), "hubspot", doc_id, auth.visible_ids(request, caller))
-        if doc_id
-        else None
-    )
+    # One ACL-scoped query, not a resolve followed by a get_document refetch of the same row:
+    # `id` is the PRIMARY KEY, so the ACL clause can only narrow "found" to "not found", never
+    # redirect to a different row (see store.hubspot_by_id).
+    row = store.hubspot_by_id(auth.conn(request), record_id, auth.visible_ids(request, caller))
     if row is None or row["object_type"] != object_type:
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")
     return _record(row, _keep(request.query_params.get("properties")))
@@ -501,7 +519,8 @@ async def search_objects(object_type: str, request: Request):
     # Read only the columns the scan will actually use. `title`/`content` are needed solely to match
     # a free-text `query`, and `content` is the widest column there is (a note's whole body), so
     # pulling it for every row of a 69k-row object type dwarfs the filtering itself.
-    cols = "doc_id, object_type, properties, archived, created_ts, updated_ts, owner_display" + (
+    # `id` rides along as the row's identity, which is also what `after` pages on.
+    cols = "id, object_type, properties, archived, created_ts, updated_ts, owner_display" + (
         ", title, content" if (body.get("query") or "").strip() else ""
     )
     pre = _sql_prefilter(body)
@@ -511,7 +530,7 @@ async def search_objects(object_type: str, request: Request):
         batch = store.list_hubspot_objects(
             conn,
             object_type,
-            after_doc_id=cursor,
+            after_id=cursor,
             visible_ids=visible,
             limit=2000,
             columns=cols,
@@ -519,13 +538,13 @@ async def search_objects(object_type: str, request: Request):
         )
         if not batch:
             break
-        cursor = batch[-1]["doc_id"]
+        cursor = batch[-1]["id"]
         hits += [r for r in batch if _matches(r, body)]
     total = len(hits)
     hits = _sorted(hits, body.get("sorts"))
 
     if after_doc is not None:
-        ids = [r["doc_id"] for r in hits]
+        ids = [r["id"] for r in hits]
         if after_doc not in ids:
             return _error(400, f"Invalid 'after' cursor: {body.get('after')}")
         hits = hits[ids.index(after_doc) + 1 :]
@@ -549,8 +568,9 @@ async def batch_read(object_type: str, request: Request):
     results, errors = [], []
     for item in body.get("inputs") or []:
         rid = str(item.get("id"))
-        doc_id = _doc_id_for(request, rid)
-        row = store.get_document(conn, "hubspot", doc_id, visible) if doc_id else None
+        # One ACL-scoped query, not a resolve followed by a get_document refetch of the same
+        # row -- see get_object's comment for why the collapse is safe.
+        row = store.hubspot_by_id(conn, rid, visible)
         if row is None or row["object_type"] != object_type:
             errors.append(
                 {
@@ -585,9 +605,10 @@ async def list_associations(
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
-    doc_id = _doc_id_for(request, record_id)
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
-    row = store.get_document(conn, "hubspot", doc_id, visible) if doc_id else None
+    # One ACL-scoped query, not a resolve followed by a get_document refetch of the same row --
+    # see get_object's comment for why the collapse is safe.
+    row = store.hubspot_by_id(conn, record_id, visible)
     if row is None or row["object_type"] != object_type:
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")
     limit = _clamp(request.query_params.get("limit"), _ASSOC_PAGE_MAX, _ASSOC_PAGE_MAX)
@@ -597,14 +618,24 @@ async def list_associations(
     # limit+1 for the same reason listings do it: the extra row is the only evidence of a further
     # page, and without paging here every association past the first page would be unreachable.
     rows = store.hubspot_associations(
-        conn, doc_id, to_object_type, after_to_doc_id=after_to, visible_ids=visible, limit=limit + 1
+        conn,
+        row["id"],
+        to_object_type,
+        after_to_id=after_to,
+        visible_ids=visible,
+        limit=limit + 1,
     )
     has_more = len(rows) > limit
     rows = rows[:limit]
     out: dict = {
         "results": [
             {
-                "toObjectId": synth.hubspot_record_id(r["to_doc_id"]),
+                # The target's own served id, stored on the association row itself —
+                # there is no join and no re-hash, because the link names the target by the id
+                # the API reports it under. `int`, because real v4 sends this one as a NUMBER
+                # while the v3 `id` beside it is a string, and the official python client models
+                # it as an int — a typed SDK rejects the string the TEXT column holds.
+                "toObjectId": int(r["to_id"]),
                 "associationTypes": [
                     {
                         "category": r["assoc_category"],

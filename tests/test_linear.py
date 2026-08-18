@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import pytest
 
 from backlot import synth
-from tests._helpers import build_corpus, client_for, corpus_client, db_count
+from tests._helpers import build_corpus, client_for, corpus_client, db_count, served_id
 
 
 # --- Linear (GraphQL) -------------------------------------------------------------
@@ -102,7 +102,7 @@ def test_linear_reader_field_set_all_resolves(client, admin_h):
     assert rl["dueDate"] == "2026-03-15"
 
 
-def test_linear_issue_by_uuid_and_by_identifier(client, admin_h):
+def test_linear_issue_by_uuid_and_by_identifier(client, admin_h, ro_conn):
     by_key = gql(client, '{ issue(id: "ENG-101") { id identifier title } }', admin_h)
     issue = by_key.json()["data"]["issue"]
     assert issue["identifier"] == "ENG-101"
@@ -111,7 +111,7 @@ def test_linear_issue_by_uuid_and_by_identifier(client, admin_h):
 
 
 def test_linear_issue_url_is_the_real_vendor_domain(client, admin_h):
-    """Regression: a rename's blind substitution once turned every served `url` field into
+    """A rename's blind substitution can turn every served `url` field into
     `linear.backlot`. Asserted on the parsed host (no trailing slash) rather than a URL literal,
     because the vulnerable pattern is the literal characters `app` immediately followed by a
     slash — spelling that combination anywhere, even in a comment, makes a repeat of the bug
@@ -135,13 +135,19 @@ def test_linear_missing_issue_is_a_field_error_not_a_400(client, admin_h):
     assert "Entity not found" in r.json()["errors"][0]["message"]
 
 
-def test_linear_team_resolves_by_key_and_uuid(client, admin_h):
+def test_linear_team_resolves_by_key_and_uuid(client, admin_h, ro_conn):
     key = gql(client, '{ team(id: "ENG") { id key name } }', admin_h).json()["data"]["team"]
     assert (key["key"], key["name"]) == ("ENG", "engineering")
     assert (
         gql(client, "{ team(id: %s) { key } }" % lit(key["id"]), admin_h).json()["data"]["team"][
             "key"
         ]
+        == "ENG"
+    )
+    # The container's own raw name is a third, mock-only affordance on top of the two real
+    # spellings above (key, uuid) -- costs nothing, so it stays alongside them.
+    assert (
+        gql(client, '{ team(id: "engineering") { key } }', admin_h).json()["data"]["team"]["key"]
         == "ENG"
     )
 
@@ -165,6 +171,11 @@ def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_ya
     }
     # ava cannot see lin-secret or the blackops team at all.
     assert ava == {"ENG": 2, "DES": 1}
+    # `team(id:)` applies the same scoping directly, not only through the `teams` connection ava's
+    # own count above already exercises for the LIST root.
+    hidden = gql(client, '{ team(id: "BLA") { key } }', ava_h)
+    assert hidden.json()["data"] is None
+    assert "Entity not found" in hidden.json()["errors"][0]["message"]
 
 
 def test_linear_state_type_is_linears_category(client, admin_h):
@@ -360,12 +371,12 @@ def test_linear_sort_input_overrides_the_default_ordering(client, admin_h):
     assert got == sorted(got, reverse=True)
 
 
-# --- Linear relations / children / attachments / releases (#25) -----------------------
+# --- Linear relations / children / attachments / releases -----------------------
 
 
 def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):
     """Linear DEFINES `children` as the inverse of `parent`, so the two must never disagree. They
-    are both read off the `parent_doc_id` resolved at import rather than joined on `identifier`,
+    are both read off the `parent_id` resolved at import rather than joined on `identifier`,
     because bench keys repeat — a join would attach one issue's children to every issue sharing
     its key."""
     kids = gql(
@@ -378,12 +389,18 @@ def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):
     assert back["identifier"] == "ENG-103"
 
 
-def test_linear_children_is_acl_scoped(client, tokens_yaml):
+def test_linear_children_is_acl_scoped(client, admin_h, tokens_yaml):
     """ENG-103 is restricted to hana, so ava cannot even reach it to ask for its children — and
     the children list must never become a way to observe an issue she is denied."""
     ava = {"Authorization": linear_user_token(tokens_yaml, "ava@acme.com")}
     denied = gql(client, '{ issue(id: "ENG-103") { children { nodes { identifier } } } }', ava)
     assert "Entity not found" in denied.json()["errors"][0]["message"]
+    # Same denial via the OTHER spelling `issue(id:)` accepts: the served UUID. This exercises
+    # `linear_by_id`'s own ACL clause rather than `linear_issue_by_identifier`'s (the
+    # denial above never reaches the UUID lookup at all, since ava's query never named one).
+    uuid = gql(client, '{ issue(id: "ENG-103") { id } }', admin_h).json()["data"]["issue"]["id"]
+    denied_by_uuid = gql(client, "{ issue(id: %s) { identifier } }" % lit(uuid), ava)
+    assert "Entity not found" in denied_by_uuid.json()["errors"][0]["message"]
 
 
 def test_linear_relations_and_their_inverse(client, admin_h):
@@ -489,7 +506,7 @@ def test_linear_issue_with_no_relations_returns_empty_connections(client, admin_
 
 
 def test_linear_parent_and_children_read_the_same_column(client, admin_h, ro_conn):
-    """Both directions must consult the resolved `parent_doc_id`, not two independent lookups
+    """Both directions must consult the resolved `parent_id`, not two independent lookups
     that happen to agree — that is the whole reason the key is resolved once at import.
 
     Also a performance contract: `@linear/sdk`'s Issue fragment selects `parent { id }` on every
@@ -497,11 +514,12 @@ def test_linear_parent_and_children_read_the_same_column(client, admin_h, ro_con
     # `ro_conn` is the SAMPLE db; a fresh get_settings() would follow whatever BACKLOT_DATA_DIR
     # another module last set, which is why this reads the fixture instead.
     row = ro_conn.execute(
-        "SELECT doc_id, parent_doc_id, parent_key FROM linear_issues WHERE doc_id = 'lin-batch'"
+        "SELECT id, parent_id, parent_key FROM linear_issues WHERE id = ?",
+        (served_id("linear", "lin-batch"),),
     ).fetchone()
-    # the import pass resolved the KEY into a doc_id
+    # the import pass resolved the KEY into the parent's own id
     assert row["parent_key"] == "ENG-103"
-    assert row["parent_doc_id"] == "lin-secret"
+    assert row["parent_id"] == served_id("linear", "lin-secret")
     served = gql(client, '{ issue(id: "ENG-102") { parent { identifier } } }', admin_h).json()[
         "data"
     ]["issue"]["parent"]
@@ -629,6 +647,26 @@ def test_neq_keeps_rows_whose_column_is_null(fclient):
 def test_empty_in_list_matches_nothing_and_empty_nin_matches_everything(fclient):
     assert ids(fclient, "{priority: {in: []}}") == []
     assert ids(fclient, "{priority: {nin: []}}") == ALL
+
+
+# --- the `id` comparator: a served UUID or the human identifier, not a plain column --------
+
+
+def test_issue_filter_by_id_resolves_both_key_spaces_and_a_bogus_id_matches_nothing(fclient):
+    """`IssueFilter.id` accepts the same two spellings `issue(id:)` does: a served UUID, or
+    the human identifier. `_resolve_issue_ids` translates a filter's `id` values to issue ids
+    before the query runs, so both must resolve -- and a value that resolves to NEITHER must
+    substitute the sentinel `"\\x00none"`, matching nothing, rather than being dropped (which
+    would silently turn the filter into "match everything")."""
+    uuid = fclient.post(
+        "/linear/graphql",
+        json={"query": '{ issue(id: "ENG-1") { id } }'},
+        headers={"Authorization": fclient.__dict__["_admin"]},
+    ).json()["data"]["issue"]["id"]
+    assert ids(fclient, '{id: {eq: "ENG-1"}}') == ["ENG-1"]  # identifier form
+    assert ids(fclient, '{id: {eq: "%s"}}' % uuid) == ["ENG-1"]  # served UUID form
+    assert ids(fclient, '{id: {eq: "totally-bogus-id"}}') == []  # sentinel: matches nothing
+    assert ids(fclient, '{id: {in: ["%s", "ENG-2", "nope"]}}' % uuid) == ["ENG-1", "ENG-2"]
 
 
 # --- string comparators --------------------------------------------------------------
@@ -889,3 +927,136 @@ def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
         )
         assert missing.status_code == 200
         assert "data" in missing.json() and missing.json()["errors"]
+
+
+def test_linear_issue_asserts_rather_than_re_derive_a_missing_identifier():
+    """`_issue` must not fall back to `synth.linear_identifier`: the importer seeds that on the
+    DATASET id and the resolver only has the served UUID, so the fallback answered an identifier
+    the issue is not reachable by (`PLA-4821` where the row serves `PLA-4442`). Every issue
+    carries one by the time it is served, so reaching here without one is a bug upstream —
+    the same reasoning as github's `_issue_number`."""
+    from backlot.graphql.linear_resolvers import _issue
+
+    with pytest.raises(AssertionError, match="no identifier"):
+        _issue({"id": "u-1", "identifier": None, "team": "engineering", "title": "T"}, None)
+
+
+def test_linear_issue_resolves_first_by_id_when_identifier_repeats(tmp_path):
+    """`identifier` is not unique -- 107 issues share one key in a real corpus (see the schema
+    comment on `linear_issues.parent_key`) -- so `issue(id: "DUP-1")` deliberately answers the first
+    match BY SERVED ID rather than pretending the lookup is unambiguous.
+    `store.linear_issue_by_identifier` carries that rule; this pins
+    that `resolve_issue`'s new served-id-first stage still falls through to it for an
+    identifier -- a served UUID lookup can never itself be ambiguous like this, since `id`
+    is UNIQUE. Placed after every `client`-fixture test in this module, not beside its sibling
+    `issue(id:)` tests above: it opens a SECOND app over a different DB via `corpus_client`,
+    which overwrites the module-scoped `client` fixture's shared `app.state` (see
+    `tests._helpers.client_for`'s docstring) -- fine here because nothing after it needs `client`."""
+    docs = [
+        {
+            "source_type": "linear",
+            "team": "engineering",
+            "doc_id": "dup-a",
+            "title": "First",
+            "content": "x",
+            "author_email": "a@acme.com",
+            "identifier": "DUP-1",
+        },
+        {
+            "source_type": "linear",
+            "team": "engineering",
+            "doc_id": "dup-b",
+            "title": "Second",
+            "content": "x",
+            "author_email": "a@acme.com",
+            "identifier": "DUP-1",
+        },
+    ]
+    with corpus_client(tmp_path, docs) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+        r = gql(client, '{ issue(id: "DUP-1") { title } }', h)
+        assert r.json()["data"]["issue"]["title"] == "First"
+
+
+@pytest.mark.parametrize(
+    "order",
+    [("night-shift", "north-star"), ("north-star", "night-shift")],
+    ids=["insertion-agrees-with-name-order", "insertion-disagrees-with-name-order"],
+)
+def test_linear_team_key_collision_resolves_to_the_first_team_by_name(tmp_path, order):
+    """`synth.linear_team_key` is NOT injective: "night-shift" and "north-star" both reduce to
+    "NS" (see the schema comment on `linear_teams`). The resolution must keep picking the same
+    team every time -- the first by container NAME -- or a key resolving to one team
+    silently resolves to a different one after a reimport.
+
+    Parametrized over BOTH insertion orders: with a single fixed order, insertion order and name
+    order happen to coincide, so a lookup with no tie-break at all would still pass by accident.
+    Reversing insertion order removes that coincidence."""
+    assert synth.linear_team_key("night-shift") == synth.linear_team_key("north-star") == "NS"
+    docs = [
+        {
+            "source_type": "linear",
+            "team": t,
+            "doc_id": f"{t}-1",
+            "title": t,
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for t in order
+    ]
+    with corpus_client(tmp_path, docs) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+        got = gql(client, '{ team(id: "NS") { name } }', h).json()["data"]["team"]
+        assert got["name"] == "night-shift"  # "night-shift" < "north-star" by name, either way
+
+
+def test_linear_team_key_precedes_the_raw_name_affordance(tmp_path):
+    """`resolve_team` tries the served KEY before the raw-name affordance, unconditionally (see
+    `resolve_team`'s docstring).
+
+    The collision that makes the order observable: a container literally named "ABCD", and a second
+    one whose KEY is also "ABCD" (`synth.linear_team_key("alpha-beta-charlie-delta")` takes word
+    initials). Resolving both spellings out of one shared lookup would settle it by team-NAME order
+    -- "ABCD" sorts before "alpha-beta-charlie-delta", so the literal name would win. It must
+    resolve to the KEY's team instead: a real Linear spelling beats the mock-only affordance."""
+    assert synth.linear_team_key("ABCD") == "ABC"  # its own key -- not a collision with itself
+    assert synth.linear_team_key("alpha-beta-charlie-delta") == "ABCD"
+    docs = [
+        {
+            "source_type": "linear",
+            "team": t,
+            "doc_id": f"{i}",
+            "title": t,
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i, t in enumerate(("ABCD", "alpha-beta-charlie-delta"))
+    ]
+    with corpus_client(tmp_path, docs) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+        got = gql(client, '{ team(id: "ABCD") { name } }', h).json()["data"]["team"]
+        assert got["name"] == "alpha-beta-charlie-delta"
+
+
+def test_linear_team_uuid_wins_a_raw_name_collision(tmp_path):
+    """The served UUID is checked FIRST, so it can never be shadowed by another team's raw-name
+    affordance -- even in the constructed case where the two literally collide: a second
+    container named exactly the UUID string `synth.linear_team_id` derives for the first one."""
+    uuid_of_widgets = synth.linear_team_id("widgets")
+    docs = [
+        {
+            "source_type": "linear",
+            "team": t,
+            "doc_id": f"{i}",
+            "title": t,
+            "content": "x",
+            "author_email": "a@acme.com",
+        }
+        for i, t in enumerate(("widgets", uuid_of_widgets))
+    ]
+    with corpus_client(tmp_path, docs) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+        got = gql(client, "{ team(id: %s) { name } }" % lit(uuid_of_widgets), h).json()["data"][
+            "team"
+        ]
+        assert got["name"] == "widgets"

@@ -91,11 +91,8 @@ def _bucket_visible(conn, bucket: str, visible) -> bool:
     return bool(store.list_documents(conn, "s3", container=bucket, visible_ids=visible, limit=1))
 
 
-def _object_row(request: Request, conn, bucket: str, key: str, visible):
-    doc_id = request.app.state.index["s3"].get(f"{bucket}/{key}")
-    if doc_id is None:
-        return None
-    return store.get_document(conn, "s3", doc_id, visible)
+def _object_row(conn, bucket: str, key: str, visible):
+    return store.s3_by_bucket_key(conn, bucket, key, visible_ids=visible)
 
 
 def _encode_key_token(key: str) -> str:
@@ -294,7 +291,7 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
             body.append(
                 f"<Contents><Key>{escape(val)}</Key>"
                 f"<LastModified>{synth.s3_iso(ts)}</LastModified>"
-                f"<ETag>{escape(synth.s3_etag(r['doc_id'], r['content']))}</ETag>"
+                f"<ETag>{escape(synth.s3_etag(r['key'], r['content']))}</ETag>"
                 f"<Size>{len(r['content'].encode())}</Size>"
                 f"<StorageClass>{escape(r['subtype'] or 'STANDARD')}</StorageClass></Contents>"
             )
@@ -308,7 +305,7 @@ async def object_get(request: Request, bucket: str, key: str):
     if err:
         return err if request.method == "GET" else Response(status_code=err.status_code)
     conn = auth.conn(request)
-    row = _object_row(request, conn, bucket, key, visible)
+    row = _object_row(conn, bucket, key, visible)
     if row is None:
         if request.method == "HEAD":
             return Response(status_code=404)
@@ -318,10 +315,11 @@ async def object_get(request: Request, bucket: str, key: str):
     total = len(data)
     ts = row["updated_ts"] or row["created_ts"]
     headers = {
-        "ETag": synth.s3_etag(row["doc_id"], row["content"]),
+        "ETag": synth.s3_etag(row["key"], row["content"]),
         "Last-Modified": synth.s3_http_date(ts),
         "Accept-Ranges": "bytes",
-        "x-amz-request-id": synth._digest("s3-req:" + row["doc_id"])[:16].upper(),
+        # Seeded from the object's own address, which is what identifies the object being served.
+        "x-amz-request-id": synth._digest(f"s3-req:{row['bucket']}/{row['key']}")[:16].upper(),
     }
     ctype = row["content_type"] or "text/plain"
     # Set Content-Type via the headers dict, not the `media_type=` kwarg: Starlette auto-appends

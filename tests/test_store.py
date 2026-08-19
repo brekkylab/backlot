@@ -1613,6 +1613,44 @@ def test_fts_add_docs_noop_without_index(tmp_path):
     assert store.fts_add_docs(conn, "notion", ["x"]) == 0
 
 
+def test_dropping_a_column_reindexes_the_source_it_belonged_to(tmp_path):
+    """A search must not match on text the served record no longer carries.
+
+    The FTS index of a DB built before the removal still holds what it indexed, and an --append only
+    adds the new ids — so without a rebuild an upgraded DB answered a slack search on a word that
+    lived only in the dropped title. Only the source whose table changed is reindexed; the rest of
+    the corpus is left alone.
+    """
+    import sqlite3
+
+    path = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE slack_messages ("
+        " channel TEXT NOT NULL, ts TEXT NOT NULL, author_email TEXT NOT NULL,"
+        " title TEXT NOT NULL, content TEXT NOT NULL, thread_ts TEXT,"
+        " thread_seq INTEGER NOT NULL DEFAULT 0, subtype TEXT, reactions TEXT, files TEXT,"
+        " edited TEXT, created_ts INTEGER NOT NULL, participants TEXT,"
+        " PRIMARY KEY (channel, ts));"
+        "INSERT INTO slack_messages(channel, ts, author_email, title, content, created_ts)"
+        " VALUES('eng','1.0','a@x.com','quarterly','nothing to see here',1000);"
+        "CREATE VIRTUAL TABLE slack_fts USING fts5("
+        " channel UNINDEXED, ts UNINDEXED, title, content, tokenize='porter unicode61');"
+        "INSERT INTO slack_fts(channel, ts, title, content)"
+        " SELECT channel, ts, title, content FROM slack_messages;"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = store.connect_rw(path)
+    # the word lived only in the dropped title, so it must no longer match
+    assert store.search_documents(conn, "quarterly", "slack") == []
+    assert store.count_search(conn, "quarterly", "slack") == 0
+    # and the content the record does serve still does
+    assert [r["ts"] for r in store.search_documents(conn, "nothing", "slack")] == ["1.0"]
+    conn.close()
+
+
 def test_opening_a_db_with_a_removed_column_drops_it(tmp_path):
     """A DB imported before a column was removed loses it on open, so an --append still writes.
 

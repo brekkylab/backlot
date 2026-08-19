@@ -16,8 +16,9 @@ spelled the way its vendor spells it (``number``, ``key``, ``ts``, otherwise ``i
 
 Every doc table carries ``author_email`` and ``content`` after its identifier and its grouping
 column, plus ``title`` on the ten sources whose documents have one (see ``TITLELESS``), which is
-what keeps listing / ACL / pagination uniform via the ``GROUPING`` registry. Every listing takes ``visible_ids``: ``None`` = admin, otherwise results
-are filtered to docs whose ACL grants intersect it. JSON columns are TEXT — read with :func:`jcol`.
+what keeps listing / ACL / pagination uniform via the ``GROUPING`` registry. Every listing takes
+``visible_ids``: ``None`` = admin, otherwise results are filtered to docs whose ACL grants intersect
+it. JSON columns are TEXT — read with :func:`jcol`.
 """
 
 from __future__ import annotations
@@ -841,8 +842,15 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
     refuse_pre_served_db(conn, path)
-    _reconcile_columns(conn)
+    changed = _reconcile_columns(conn)
     conn.executescript(SCHEMA)
+    # A source whose columns just moved has an index built from the old ones, and an --append only
+    # adds the new ids -- so without this a search could match text the served record no longer
+    # carries. Only the sources that changed, and only where an index already exists: a fresh
+    # import builds its own at the end of the load.
+    for src in changed:
+        if _has_fts(conn, src):
+            build_fts_for(conn, src)
     return conn
 
 
@@ -887,8 +895,11 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     )
 
 
-def _reconcile_columns(conn: sqlite3.Connection) -> None:
-    """Add the columns an older DB lacks, and drop the ones it should no longer carry."""
+def _reconcile_columns(conn: sqlite3.Connection) -> set[str]:
+    """Add the columns an older DB lacks and drop the ones it should no longer carry, returning the
+    sources whose table changed."""
+    changed: set[str] = set()
+    source_of = {t: src for src, t in SOURCE_TABLE.items()}
     for table, columns in _ADDED_COLUMNS.items():
         if not _table_exists(conn, table):
             continue  # a fresh DB: SCHEMA's CREATE TABLE already carries the column
@@ -896,6 +907,7 @@ def _reconcile_columns(conn: sqlite3.Connection) -> None:
         for name, decl in columns:
             if name not in have:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                changed.add(source_of[table])
     for table, columns in _DROPPED_COLUMNS.items():
         if not _table_exists(conn, table):
             continue
@@ -903,7 +915,9 @@ def _reconcile_columns(conn: sqlite3.Connection) -> None:
         for name in columns:
             if name in have:
                 conn.execute(f"ALTER TABLE {table} DROP COLUMN {name}")
+                changed.add(source_of[table])
     conn.commit()
+    return changed
 
 
 def refuse_pre_served_db(conn: sqlite3.Connection, path) -> None:
@@ -2060,25 +2074,33 @@ def build_fts(conn) -> bool:
     # Commit per source rather than once at the end: on an in-place rebuild of a large DB this
     # keeps each writer lock window to one source's index, so a concurrent reader (the live
     # server, with a busy_timeout) rides through instead of blocking on a single multi-GB commit.
-    for src, tbl in SOURCE_TABLE.items():
-        fts = _fts_table(src)
-        # The index carries the source's OWN identifier columns, so the join back to the doc
-        # table is on the same key that table is now stored under. They are UNINDEXED: FTS5 must
-        # not tokenize an id, but it DOES preserve the value's type, so an integer github number
-        # comes back an integer and matches its INTEGER column rather than the string '7'.
-        key = ", ".join(id_columns(src))
-        decl = ", ".join(f"{c} UNINDEXED" for c in id_columns(src))
-        conn.execute(f"DROP TABLE IF EXISTS {fts}")
-        conn.execute(
-            f"CREATE VIRTUAL TABLE {fts} USING fts5("
-            f"{decl}, title, content, tokenize='porter unicode61')"
-        )
-        conn.execute(
-            f"INSERT INTO {fts}({key}, title, content) "
-            f"SELECT {key}, {title_expr(src)}, content FROM {tbl}"
-        )
-        conn.commit()
+    for src in SOURCE_TABLE:
+        build_fts_for(conn, src)
     return True
+
+
+def build_fts_for(conn, src: str) -> None:
+    """(Re)build ONE source's index, replacing whatever it held.
+
+    Split out of :func:`build_fts` so a source whose columns just changed can be reindexed on its
+    own: rebuilding the whole corpus to correct one table is the wrong cost on a large DB.
+    """
+    tbl, fts = SOURCE_TABLE[src], _fts_table(src)
+    # The index carries the source's OWN identifier columns, so the join back to the doc
+    # table is on the same key that table is now stored under. They are UNINDEXED: FTS5 must
+    # not tokenize an id, but it DOES preserve the value's type, so an integer github number
+    # comes back an integer and matches its INTEGER column rather than the string '7'.
+    key = ", ".join(id_columns(src))
+    decl = ", ".join(f"{c} UNINDEXED" for c in id_columns(src))
+    conn.execute(f"DROP TABLE IF EXISTS {fts}")
+    conn.execute(
+        f"CREATE VIRTUAL TABLE {fts} USING fts5({decl}, title, content, tokenize='porter unicode61')"
+    )
+    conn.execute(
+        f"INSERT INTO {fts}({key}, title, content) "
+        f"SELECT {key}, {title_expr(src)}, content FROM {tbl}"
+    )
+    conn.commit()
 
 
 def fts_add_docs(conn, source_type: str, doc_keys: list) -> int:

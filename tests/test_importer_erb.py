@@ -400,6 +400,50 @@ def test_gmail_thread_with_no_headers_takes_its_recipients_from_the_participants
     assert rec["to"] == "rachel.kim@redwood.com, alyssa.chen@cascadefg.com"
 
 
+@pytest.mark.parametrize(
+    "raw_state,merged_at,state,merged",
+    [
+        ("merged", "2026-02-10T12:00:00Z", "closed", "2026-02-10T12:00:00Z"),
+        ("closed", None, "closed", None),
+        ("open", None, "open", None),
+    ],
+)
+def test_github_state_is_one_the_api_can_return(raw_state, merged_at, state, merged):
+    """GitHub returns open or closed; a merge is `merged_at`. The bench writes "merged"."""
+    raw = {
+        "repo": "runtime",
+        "title": "Fix the refill tick",
+        "description": "Off by one.",
+        "pr_number": 1892,
+        "author": "Bob Ito",
+        "state": raw_state,
+        "created_at": "2026-02-09T09:00:00Z",
+    }
+    if merged_at:
+        raw["merged_at"] = merged_at
+    (rec,), _bundle = C._byo_github("gh-1", raw, Principals([], "redwood.com"))
+    assert rec["state"] == state
+    assert rec.get("merged_at") == merged
+
+
+def test_github_a_merged_pull_without_a_merge_time_still_reads_as_merged():
+    """Dropping "merged" without recording a merge time would make the pull indistinguishable
+    from one closed unmerged, so its last update stands in."""
+    raw = {
+        "repo": "runtime",
+        "title": "Fix the refill tick",
+        "description": "Off by one.",
+        "pr_number": 1892,
+        "author": "Bob Ito",
+        "state": "merged",
+        "created_at": "2026-02-09T09:00:00Z",
+        "updated_at": "2026-02-10T12:00:00Z",
+    }
+    (rec,), _bundle = C._byo_github("gh-2", raw, Principals([], "redwood.com"))
+    assert rec["state"] == "closed"
+    assert rec["merged_at"] == "2026-02-10T12:00:00Z"
+
+
 def test_parse_gmail_thread():
     msgs = [
         "From: Vivek K <vivek_k@redwoodinference.com>\n"

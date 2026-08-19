@@ -1649,12 +1649,24 @@ def _byo_drive(dsid, raw, P):
     return [rec], {"owner": owner_email, "people": collabs, "group": group, "confidentiality": None}
 
 
+# GitHub's `state` is open or closed; a merge is `merged_at`, not a third state. The bench writes
+# "merged", so the fact moves to the field that carries it -- dropping it instead would make a
+# merged pull indistinguishable from one closed unmerged.
+_GH_STATE = {"merged": "closed", "closed": "closed", "open": "open"}
+
+
 def _byo_github(dsid, raw, P):
     title, content = _title_content(raw)
     author = raw.get("author", "")
     author_email = P.resolve(author, role="author", group_hint=raw.get("repo")) if author else None
     reviewers = _resolved(P, raw.get("reviewers"), role="reviewer")
     repo = raw.get("repo") or "repo"
+    raw_state = str(raw.get("state") or "").lower()
+    # A merged pull with no merge time recorded: its last update is the closest second the bench
+    # states, and a merged pull carrying no `merged_at` reads as never merged.
+    merged_at = (
+        (raw.get("merged_at") or raw.get("updated_at")) if raw_state == "merged" else None
+    )
     rec = _rec(
         source_type="github",
         doc_id=dsid,
@@ -1664,7 +1676,8 @@ def _byo_github(dsid, raw, P):
         author_email=author_email,
         author_name=author,
         subtype=("pull_request" if raw.get("pr_number") else "issue"),
-        state=raw.get("state"),
+        state=_GH_STATE.get(raw_state),
+        merged_at=merged_at,
         labels=_names(raw.get("labels")),
         requested_reviewers=reviewers,
         created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),

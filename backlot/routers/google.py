@@ -542,7 +542,7 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     row = _gmail_doc(conn, ids, msg_id)
     if row is None:
         raise gerr.not_found_entity()
-    return _gmail_message(row, request.query_params.get("format", "full"))
+    return _gmail_message(row, request.query_params.get("format", "full"), caller.email)
 
 
 @router.get(
@@ -625,7 +625,7 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
         "id": thread_id.lower(),
         "snippet": msgs[0]["content"][:200],
         "historyId": "1",
-        "messages": [_gmail_message(m, fmt) for m in msgs],
+        "messages": [_gmail_message(m, fmt, caller.email) for m in msgs],
     }
 
 
@@ -662,12 +662,17 @@ def _gmail_ts(row) -> int:
     return synth.epoch(row["thread_id"] or row["id"]) + (row["thread_seq"] or 0) * 3600
 
 
-def _gmail_message(row, fmt: str) -> dict:
+def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
+    """One message in the API's shape.
+
+    `caller_email` decides Bcc. Real Gmail keeps the Bcc header only on the sender's own copy — a
+    recipient's is stripped in transit — so a reader who is not the author must not learn who was
+    blind-copied. An admin/service caller has no email and is not the sender either.
+    """
     ts = _gmail_ts(row)
     author = row["author_email"]
     display = author.split("@")[0].replace(".", " ").title()
     msg_id = row["message_id"] or f"<{row['id']}@{get_settings().org_domain}>"
-    # a fetched (received) message carries transport/MIME headers but NOT Bcc (stripped in transit)
     headers = [
         {
             "name": "Delivered-To",
@@ -680,12 +685,15 @@ def _gmail_message(row, fmt: str) -> dict:
         {"name": "Date", "value": synth.rfc2822(ts)},
         {"name": "Message-ID", "value": msg_id},
     ]
-    for hname, col in (
+    optional = [
         ("Cc", "cc"),
         ("Reply-To", "reply_to"),
         ("In-Reply-To", "in_reply_to"),
         ("References", "refs"),
-    ):
+    ]
+    if caller_email and caller_email == author:
+        optional.insert(1, ("Bcc", "bcc"))
+    for hname, col in optional:
         if row[col]:
             headers.append({"name": hname, "value": row[col]})
     attachments = store.jcol(row, "attachments")

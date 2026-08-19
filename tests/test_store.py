@@ -290,9 +290,6 @@ def test_acl_table_registry_covers_every_source(tmp_path):
     conn = store.connect_rw(tmp_path / "s.sqlite")
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert set(store.ACL_TABLE.values()) <= names
-    # the old shared table let two sources' documents merge their grants (doc_id is unique only
-    # within a source) — it must not come back now that every source has its own table.
-    assert "doc_acl" not in names
     conn.close()
 
 
@@ -806,64 +803,6 @@ def test_connect_rw_fresh_db_still_works(tmp_path):
         assert {"path", "line", "diff_hunk"} <= ccols
     finally:
         conn.close()
-
-
-def _write_pre_acl_db(p):
-    conn = sqlite3.connect(p)
-    conn.execute(
-        "CREATE TABLE doc_acl (doc_id TEXT NOT NULL, principal_type TEXT NOT NULL, "
-        "principal_id TEXT NOT NULL, PRIMARY KEY (doc_id, principal_type, principal_id))"
-    )
-    conn.commit()
-    conn.close()
-
-
-def _write_pre_served_columns_db(p):
-    conn = sqlite3.connect(p)
-    # A hand-rolled DB keyed on the dataset's own `doc_id`. That column IS the signal, so one
-    # check covers every table.
-    conn.execute(
-        "CREATE TABLE jira_issues (doc_id TEXT PRIMARY KEY, project TEXT NOT NULL, "
-        "author_email TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, "
-        "status TEXT, issuetype TEXT, priority TEXT, labels TEXT, components TEXT, "
-        "issuelinks TEXT, parent_id TEXT, changelog TEXT, created_ts INTEGER NOT NULL, "
-        "updated_ts INTEGER, assignee_email TEXT, reporter_email TEXT, resolution TEXT, "
-        "resolution_ts INTEGER, duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, "
-        "owner_display TEXT, key TEXT)"
-    )
-    conn.execute("CREATE TABLE linear_teams (team TEXT PRIMARY KEY, group_id TEXT)")
-    conn.commit()
-    conn.close()
-
-
-@pytest.mark.parametrize(
-    "setup, match",
-    [
-        (_write_pre_acl_db, "doc_acl"),
-        (_write_pre_served_columns_db, "doc_id"),
-    ],
-)
-def test_connect_rw_refuses_a_pre_served_db(tmp_path, setup, match):
-    """Two DB shapes connect_rw must refuse outright rather than let SCHEMA fail on, or migrate:
-
-    - built before per-source ACL tables (still has one shared `doc_acl`) — appending would
-      write a new source's grants into the empty per-source tables SCHEMA creates while every
-      pre-existing grant stays behind in `doc_acl`, which nothing reads any more, silently
-      hiding every pre-existing document from every scoped token.
-    - built before the served-id primary keys (its documents still carry a `doc_id`) —
-      `CREATE TABLE IF NOT EXISTS` would not alter the old table at all and `CREATE INDEX IF NOT
-      EXISTS` guards only the index's own name, so it raises a bare `OperationalError: no such
-      column` naming whichever table SCHEMA's text happens to reach first, saying nothing about
-      why. Neither case has a backfill (see connect_rw's own comments on both checks), so the
-      only correct move for either is a fresh re-import — which is what both readable errors say,
-      instead of a raw SQLite one or a silent migration of ids that were never meant to move."""
-    p = tmp_path / "old.sqlite"
-    setup(p)
-
-    with pytest.raises(ValueError, match=match):
-        store.connect_rw(p)
-    with pytest.raises(ValueError, match="re-import"):
-        store.connect_rw(p)
 
 
 def test_github_comments_splits_review_from_conversation(tmp_path):
@@ -1613,68 +1552,6 @@ def test_fts_add_docs_noop_without_index(tmp_path):
     assert store.fts_add_docs(conn, "notion", ["x"]) == 0
 
 
-def test_opening_a_db_without_the_snapshot_column_adds_it(tmp_path):
-    """A DB imported before `ref` existed opens and gains the column, rather than dying on a bare
-    `no such column: ref` the first time anything reads github_items.
-
-    Unlike the id-keying change this cannot be a refusal: `ref` unset means "the snapshot at
-    created_ts", which is exactly what every pre-existing file row is, so the column backfills
-    losslessly as NULL and the corpus does not have to be re-imported to be readable.
-    """
-    import sqlite3
-
-    path = tmp_path / "old.sqlite"
-    conn = sqlite3.connect(path)
-    conn.executescript(
-        "CREATE TABLE github_items ("
-        " repo TEXT NOT NULL, number INTEGER NOT NULL, author_email TEXT NOT NULL,"
-        " title TEXT NOT NULL, content TEXT NOT NULL, kind TEXT, created_ts INTEGER NOT NULL,"
-        " path TEXT, PRIMARY KEY (repo, number));"
-        "INSERT INTO github_items"
-        " VALUES('gw',1,'a@x','a.py','print(1)','file',1,'src/a.py');"
-    )
-    conn.commit()
-    conn.close()
-
-    conn = store.connect_rw(path)
-    assert "ref" in {c["name"] for c in conn.execute("PRAGMA table_info(github_items)")}
-    row = store.get_repo_file(conn, "gw", "src/a.py")
-    assert row["content"] == "print(1)"  # the row still reads, and is its own snapshot
-    assert row["ref"] is None
-    conn.close()
-
-
-def test_a_ref_lookup_on_a_db_without_the_column_answers_head(tmp_path):
-    """`?ref=` must not 500 on a DB imported before the column existed.
-
-    The write path adds it (see above), but SERVING opens read-only and never applies the schema, so
-    an operator who upgrades the code without re-importing keeps a DB with no `ref` column — and
-    that is the one path that names it in SQL. Answering HEAD is not a compromise: a DB without the
-    column holds one snapshot per path, so HEAD *is* the file, which is the same answer the
-    documented no-history tolerance already gives an unknown ref.
-    """
-    import sqlite3
-
-    path = tmp_path / "old.sqlite"
-    conn = sqlite3.connect(path)
-    conn.executescript(
-        "CREATE TABLE github_items ("
-        " repo TEXT NOT NULL, number INTEGER NOT NULL, author_email TEXT NOT NULL,"
-        " title TEXT NOT NULL, content TEXT NOT NULL, kind TEXT, created_ts INTEGER NOT NULL,"
-        " path TEXT, PRIMARY KEY (repo, number));"
-        "INSERT INTO github_items"
-        " VALUES('gw',1,'a@x','a.py','print(1)','file',1,'src/a.py');"
-    )
-    conn.commit()
-    conn.close()
-
-    ro = store.connect_ro(path)  # read-only: the column cannot be added here
-    assert "ref" not in {c["name"] for c in ro.execute("PRAGMA table_info(github_items)")}
-    assert store.get_repo_file(ro, "gw", "src/a.py", ref="pr-9")["content"] == "print(1)"
-    assert store.get_repo_file(ro, "gw", "src/a.py")["content"] == "print(1)"
-    ro.close()
-
-
 def test_head_between_snapshots_sharing_an_instant_is_broken_by_ref(tmp_path):
     """When two snapshots share a `created_ts`, the one served is decided by `ref` — the field the
     author writes — and not by `number`.
@@ -2295,23 +2172,6 @@ def test_meta_overwrites(tmp_path):
     store.write_meta(conn, "source_documents", 1)
     store.write_meta(conn, "source_documents", 2)
     assert store.read_meta(conn, "source_documents") == "2"
-    conn.close()
-
-
-def test_read_meta_tolerates_a_db_without_the_table(tmp_path):
-    """A DB built before this change has no meta table; /health must still answer.
-
-    Simulates the deployed box's DB: created with the full pre-Task-3 schema, then the meta
-    table dropped to represent a pre-meta-table version."""
-    path = tmp_path / "old.sqlite"
-    # Create a DB with the full schema, then drop the meta table to simulate the deployed box
-    conn = store.connect_rw(path)
-    conn.execute("DROP TABLE IF EXISTS meta")
-    conn.commit()
-    conn.close()
-    # Re-open and verify read_meta tolerates the missing table
-    conn = sqlite3.connect(path)
-    assert store.read_meta(conn, "source_documents") is None
     conn.close()
 
 

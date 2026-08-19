@@ -227,10 +227,6 @@
         "additionalProperties": false
       }
     },
-    "meta": {
-      "type": "object",
-      "description": "Free-form per-source structured extras merged into the record."
-    },
     "created": {
       "type": [
         "integer",

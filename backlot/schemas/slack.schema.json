@@ -13,10 +13,6 @@
       "minLength": 1,
       "description": "The retrieval payload served verbatim as the body."
     },
-    "title": {
-      "type": "string",
-      "description": "Document title (email subject / file name / issue title / page title)."
-    },
     "doc_id": {
       "type": "string",
       "description": "Stable id (default: dsid_<sha256(source_type+title+content)>)."
@@ -62,10 +58,6 @@
         "type": "string"
       },
       "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
-    },
-    "meta": {
-      "type": "object",
-      "description": "Free-form per-source structured extras merged into the record."
     },
     "subtype": {
       "type": "string",

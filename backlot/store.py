@@ -14,10 +14,11 @@ and is then discarded, so there is no ``doc_id`` column anywhere and no map from
 PRIMARY KEY is that served id — see :data:`ID_COLUMNS`, which also names it, since the column is
 spelled the way its vendor spells it (``number``, ``key``, ``ts``, otherwise ``id``).
 
-Every doc table carries the same three core columns (``author_email, title, content``) after its
-identifier and its grouping column, which is what keeps listing / ACL / pagination uniform via the
-``GROUPING`` registry. Every listing takes ``visible_ids``: ``None`` = admin, otherwise results
-are filtered to docs whose ACL grants intersect it. JSON columns are TEXT — read with :func:`jcol`.
+Every doc table carries ``author_email`` and ``content`` after its identifier and its grouping
+column, plus ``title`` on the ten sources whose documents have one (see ``TITLELESS``), which is
+what keeps listing / ACL / pagination uniform via the ``GROUPING`` registry. Every listing takes
+``visible_ids``: ``None`` = admin, otherwise results are filtered to docs whose ACL grants intersect
+it. JSON columns are TEXT — read with :func:`jcol`.
 """
 
 from __future__ import annotations
@@ -276,7 +277,7 @@ SCHEMA = """
 -- standalone message carries NULL.
 CREATE TABLE IF NOT EXISTS slack_messages (
     channel TEXT NOT NULL, ts TEXT NOT NULL, author_email TEXT NOT NULL,
-    title TEXT NOT NULL, content TEXT NOT NULL,
+    content TEXT NOT NULL,
     thread_ts TEXT, thread_seq INTEGER NOT NULL DEFAULT 0, subtype TEXT,
     reactions TEXT, files TEXT, edited TEXT, created_ts INTEGER NOT NULL, participants TEXT,
     PRIMARY KEY (channel, ts)
@@ -333,7 +334,7 @@ CREATE TABLE IF NOT EXISTS gdrive_files (
     id TEXT PRIMARY KEY, folder TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, mime_type TEXT, parents TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    trashed INTEGER, collaborators TEXT, owner_display TEXT
+    trashed INTEGER, owner_display TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_gdrive_folder ON gdrive_files(folder);
 DROP INDEX IF EXISTS idx_gdrive_served;
@@ -420,7 +421,7 @@ CREATE TABLE IF NOT EXISTS jira_issues (
     status TEXT, issuetype TEXT, priority TEXT, labels TEXT, components TEXT,
     issuelinks TEXT, parent_id TEXT, changelog TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     assignee_email TEXT, reporter_email TEXT, resolution TEXT, resolution_ts INTEGER,
-    duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, owner_display TEXT
+    duedate TEXT, fix_versions TEXT, owner_display TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_jira_project ON jira_issues(project);
 CREATE INDEX IF NOT EXISTS idx_jira_parent ON jira_issues(parent_id);
@@ -449,7 +450,7 @@ CREATE TABLE IF NOT EXISTS confluence_pages (
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, parent_id INT, labels TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     version_number INTEGER, version_message TEXT, minor_edit INTEGER,
-    reviewers TEXT, confidentiality TEXT, owner_team TEXT, owner_display TEXT,
+    owner_display TEXT,
     PRIMARY KEY (id)
 );
 CREATE INDEX IF NOT EXISTS idx_confluence_space ON confluence_pages(space);
@@ -840,98 +841,8 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # live server is reading rides through the reader's lock instead of a spurious "locked".
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
-    refuse_pre_served_db(conn, path)
-    _add_missing_columns(conn)
     conn.executescript(SCHEMA)
     return conn
-
-
-# Columns added after a table shipped, and so absent from a DB built by an earlier version. SCHEMA
-# is all CREATE ... IF NOT EXISTS, which leaves an EXISTING table untouched, so a new column has to
-# be added here or the first statement that mentions it dies on `no such column` -- and for
-# `github_items.ref` that is the snapshot index in SCHEMA itself, i.e. every open, not some later
-# read. Only for columns whose absence is losslessly equivalent to NULL: a served ID cannot be
-# backfilled and is a refusal instead (see refuse_pre_served_db).
-_ADDED_COLUMNS = {
-    # `ref` unset means "the snapshot at created_ts", which is what every row predating it is.
-    "github_items": (("ref", "TEXT"),),
-}
-
-
-def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    """Whether `table` carries `column`.
-
-    Uncached on purpose. `sqlite3.Connection` takes no attributes, so memoising it means a
-    module-level map keyed on the connection's identity, which outlives the connection and can be
-    handed to a reused id. Measured at 16 us against a 12 us lookup: real, but this asks once per
-    file fetch, not once per row, and it only guards a path a caller opted into with `?ref=`.
-    """
-    return column in {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
-
-
-def _add_missing_columns(conn: sqlite3.Connection) -> None:
-    for table, columns in _ADDED_COLUMNS.items():
-        if not conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
-        ).fetchone():
-            continue  # a fresh DB: SCHEMA's CREATE TABLE already carries the column
-        have = {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
-        for name, decl in columns:
-            if name not in have:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
-    conn.commit()
-
-
-def refuse_pre_served_db(conn: sqlite3.Connection, path) -> None:
-    """Raise unless this DB is keyed the way :data:`ID_COLUMNS` says, naming what is wrong with it.
-
-    Two shapes, neither migratable, and the reason is the same for both: a served id is assigned at
-    import from the WHOLE corpus, so it cannot be backfilled onto rows stored under the dataset's
-    own identifiers. Run by every opener — a writer before it appends, a reader before it serves —
-    because the alternatives are worse than a refusal. Appending produced grants nothing reads;
-    SERVING produced a boot that looks healthy and then answers `no such column` on a listing and
-    a false 404 on a fetch, with the one sentence the operator needs ("re-import the corpus")
-    nowhere in it.
-    """
-    # A DB built before this branch has one shared `doc_acl` table, keyed corpus-wide by `doc_id`
-    # rather than a table per source. An append onto it would write the new source's grants into
-    # the per-source tables SCHEMA creates below while every pre-existing grant stays behind in
-    # `doc_acl`, which nothing reads -- every document from before the append silently
-    # becomes invisible to every scoped token. There is deliberately no backfill here: `doc_acl`
-    # has no source column, so it cannot say which source a colliding `doc_id`'s grant belonged
-    # to, and copying its rows into the per-source tables blind would silently re-create exactly
-    # the cross-source union this branch was written to remove (see the `ACL_TABLE` comment
-    # above). The only correct move is a fresh re-import.
-    if conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'doc_acl'"
-    ).fetchone():
-        raise ValueError(
-            f"{path} predates per-source ACL tables (it still has a `doc_acl` table) -- "
-            "re-import this corpus from scratch instead of appending to it; the old grants "
-            "cannot be safely migrated"
-        )
-    # Same shape as the doc_acl check above: a DB keyed on the dataset's own `doc_id` cannot be
-    # migrated, because the served ids were never stored on those rows and the assignment that
-    # would produce them depends on the whole corpus (a probed source's id is a function of every
-    # other row's), not on any one row that could be rewritten in place. Refused, not healed.
-    #
-    # `CREATE TABLE IF NOT EXISTS` would not alter the old table at all, and `CREATE INDEX IF NOT
-    # EXISTS` guards only the INDEX's NAME -- so without this check the failure surfaces as a bare
-    # `no such column: id` naming whichever table comes first in SCHEMA's text, explaining nothing.
-    stale = sorted(
-        t
-        for (t,) in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-        )
-        if any(c["name"] == "doc_id" for c in conn.execute(f"PRAGMA table_info({t})"))
-    )
-    if stale:
-        raise ValueError(
-            f"{path} predates the served-id primary keys (it still has a `doc_id` column on "
-            f"{', '.join(stale)}) -- re-import this corpus from scratch instead of appending to "
-            "it; a row's served id is assigned at import from the whole corpus, so it cannot be "
-            "backfilled onto rows that were stored under the dataset's own identifiers"
-        )
 
 
 def write_meta(conn: sqlite3.Connection, key: str, value) -> None:
@@ -945,17 +856,8 @@ def write_meta(conn: sqlite3.Connection, key: str, value) -> None:
 
 
 def read_meta(conn: sqlite3.Connection, key: str) -> str | None:
-    """A build-time fact, or None when absent — including on a DB built before the meta table
-    existed. Only a missing-table error is swallowed; other OperationalErrors (e.g. database
-    locked) must surface, not masquerade as absent metadata."""
-    try:
-        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    except sqlite3.OperationalError as e:
-        # Only "no such table" means the meta table doesn't exist. A different OperationalError
-        # (e.g. "database is locked") must surface, not masquerade as metadata absence.
-        if "no such table" not in str(e).lower():
-            raise
-        return None
+    """A build-time fact, or None when this import did not write that key."""
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row[0] if row else None
 
 
@@ -972,7 +874,6 @@ def connect_ro(
     """
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    refuse_pre_served_db(conn, path)
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
     if cache_mb:
@@ -2009,6 +1910,24 @@ def _fts_table(source_type: str) -> str:
         raise ValueError(f"unknown source_type {source_type!r}")
 
 
+# Sources with no `title` column. The FTS index keeps a `title` column for every source so its shape
+# and the queries over it stay uniform; for these it is fed a constant.
+TITLELESS = frozenset({"slack"})
+
+
+def title_expr(source_type: str, alias: str = "") -> str:
+    """SQL for a source's title, `''` where the table has no such column — for the LIKE fallback,
+    whose one statement covers every source."""
+    if source_type in TITLELESS:
+        return "''"
+    return f"{alias}.title" if alias else "title"
+
+
+def _fts_text_columns(source_type: str) -> tuple[str, ...]:
+    """The text columns a source's index holds — `content`, and `title` where the table has one."""
+    return ("content",) if source_type in TITLELESS else ("title", "content")
+
+
 def build_fts(conn) -> bool:
     """(Re)build every source's FTS index. No-op (False) without FTS5 — search then uses the LIKE
     fallback.
@@ -2032,14 +1951,12 @@ def build_fts(conn) -> bool:
         # comes back an integer and matches its INTEGER column rather than the string '7'.
         key = ", ".join(id_columns(src))
         decl = ", ".join(f"{c} UNINDEXED" for c in id_columns(src))
+        cols = ", ".join(_fts_text_columns(src))
         conn.execute(f"DROP TABLE IF EXISTS {fts}")
         conn.execute(
-            f"CREATE VIRTUAL TABLE {fts} USING fts5("
-            f"{decl}, title, content, tokenize='porter unicode61')"
+            f"CREATE VIRTUAL TABLE {fts} USING fts5({decl}, {cols}, tokenize='porter unicode61')"
         )
-        conn.execute(
-            f"INSERT INTO {fts}({key}, title, content) SELECT {key}, title, content FROM {tbl}"
-        )
+        conn.execute(f"INSERT INTO {fts}({key}, {cols}) SELECT {key}, {cols} FROM {tbl}")
         conn.commit()
     return True
 
@@ -2067,9 +1984,10 @@ def fts_add_docs(conn, source_type: str, doc_keys: list) -> int:
         values = ",".join("(" + ",".join("?" for _ in cols) + ")" for _ in chunk)
         flat = [v for row in chunk for v in row]
         conn.execute(f"DELETE FROM {fts} WHERE ({key}) IN (VALUES {values})", flat)
+        cols = ", ".join(_fts_text_columns(source_type))
         conn.execute(
-            f"INSERT INTO {fts}({key}, title, content) "
-            f"SELECT {key}, title, content FROM {tbl} WHERE ({key}) IN (VALUES {values})",
+            f"INSERT INTO {fts}({key}, {cols}) "
+            f"SELECT {key}, {cols} FROM {tbl} WHERE ({key}) IN (VALUES {values})",
             flat,
         )
         n += len(chunk)
@@ -2151,7 +2069,7 @@ def search_documents(
         elif lit and re.search(r"\w[^\w\s]\w", lit):
             order_sql = (
                 "(instr(lower(t.content), lower(?)) > 0 "
-                f"OR instr(lower(t.title), lower(?)) > 0) DESC, {fts}.rank"
+                f"OR instr(lower({title_expr(source_type, 't')}), lower(?)) > 0) DESC, {fts}.rank"
             )
             order_p = [lit, lit]
         sql = (
@@ -2161,11 +2079,12 @@ def search_documents(
         )
         return conn.execute(sql, [m, *cont_p, *cparams, *order_p, limit, offset]).fetchall()
     like = f"%{query}%"
-    sql = f"SELECT * FROM {tbl} WHERE (title LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
+    ttl = title_expr(source_type)
+    sql = f"SELECT * FROM {tbl} WHERE ({ttl} LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
     params: list = [like, like, *cont_p]
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += (
-        clause + " ORDER BY (CASE WHEN title LIKE ? THEN 0 ELSE 1 END), "
+        clause + f" ORDER BY (CASE WHEN {ttl} LIKE ? THEN 0 ELSE 1 END), "
         f"{_order_by(source_type)} LIMIT ? OFFSET ?"
     )
     params += cparams + [like, limit, offset]
@@ -2199,7 +2118,8 @@ def count_search(
     like = f"%{query}%"
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql = (
-        f"SELECT COUNT(*) FROM (SELECT 1 FROM {tbl} WHERE (title LIKE ? OR content LIKE ?)"
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM {tbl} WHERE "
+        f"({title_expr(source_type)} LIKE ? OR content LIKE ?)"
         f"{cont_sql.format(a=tbl)}{clause} LIMIT ?)"
     )
     return conn.execute(sql, [like, like, *cont_p, *cparams, cap]).fetchone()[0]
@@ -2449,7 +2369,7 @@ def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
     return conn.execute(f"SELECT * FROM jira_issues WHERE key = ?{clause}", [key, *cp]).fetchone()
 
 
-def _file_head_clause(visible_ids=None, tbl: str = "t", has_ref: bool = True) -> tuple[str, list]:
+def _file_head_clause(visible_ids=None, tbl: str = "t") -> tuple[str, list]:
     """SQL restricting `tbl` to the HEAD of its `(repo, path)` — no snapshot the caller can also
     see is newer.
 
@@ -2468,29 +2388,23 @@ def _file_head_clause(visible_ids=None, tbl: str = "t", has_ref: bool = True) ->
     not the file they are served — otherwise a path whose newest snapshot is restricted answers
     404 for a caller who can read an older one, which reveals that a newer one exists.
 
-    `has_ref` is False for a DB imported before the column existed, which serving opens read-only
-    and so cannot migrate. Such a DB holds one row per path — the importer refused a second — so
-    there is no tie to break and naming the column would only make every file read fail.
     """
     inner, ip = _acl_clause("github", tbl="x", visible_ids=visible_ids)
-    # COALESCE so a stated ref still orders against an unstated one rather than dropping out of the
-    # comparison, as any NULL operand would.
-    tie = (
-        f" OR (x.created_ts = {tbl}.created_ts AND COALESCE(x.ref, '') > COALESCE({tbl}.ref, ''))"
-        if has_ref
-        else ""
-    )
     return (
         f" AND NOT EXISTS (SELECT 1 FROM github_items x WHERE x.repo = {tbl}.repo"
         f" AND x.path = {tbl}.path AND x.kind = 'file'{inner}"
-        f" AND (x.created_ts > {tbl}.created_ts{tie}))",
+        f" AND (x.created_ts > {tbl}.created_ts"
+        # COALESCE so a stated ref still orders against an unstated one rather than dropping out of
+        # the comparison, as any NULL operand would.
+        f" OR (x.created_ts = {tbl}.created_ts"
+        f" AND COALESCE(x.ref, '') > COALESCE({tbl}.ref, ''))))",
         ip,
     )
 
 
 def list_repo_files(conn, repo, visible_ids=None, limit=10_000, offset=0) -> list[sqlite3.Row]:
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
+    head, hp = _file_head_clause(visible_ids)
     sql = (
         "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file'"
         + clause
@@ -2509,7 +2423,7 @@ def list_repo_file_paths(conn, repo, visible_ids=None, limit=10_000, offset=0) -
     ``/pulls`` page synthesizes a changeset per row.
     """
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
+    head, hp = _file_head_clause(visible_ids)
     sql = (
         "SELECT t.path FROM github_items t WHERE t.repo = ? AND t.kind = 'file'"
         + clause
@@ -2584,7 +2498,7 @@ def github_comments(conn, repo, number, *, anchored: bool | None = None) -> list
 
 def count_repo_files(conn, repo, visible_ids=None) -> int:
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
+    head, hp = _file_head_clause(visible_ids)
     return conn.execute(
         "SELECT COUNT(*) FROM github_items t WHERE t.repo = ? AND t.kind = 'file'" + clause + head,
         [repo, *cp, *hp],
@@ -2601,11 +2515,7 @@ def get_repo_file(conn, repo, path, visible_ids=None, ref=None) -> sqlite3.Row |
     so it wins.
     """
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    if ref is not None and _has_column(conn, "github_items", "ref"):
-        # The column guard is for a DB imported before it existed: SERVING opens read-only, so
-        # _add_missing_columns never runs against it, and this is the one read that names `ref` in
-        # SQL. Such a DB holds one snapshot per path, so HEAD is the file -- the same answer the
-        # no-history tolerance already gives a ref no snapshot claims.
+    if ref is not None:
         named = conn.execute(
             "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file' AND t.path = ?"
             " AND t.ref = ?" + clause,
@@ -2613,7 +2523,7 @@ def get_repo_file(conn, repo, path, visible_ids=None, ref=None) -> sqlite3.Row |
         ).fetchone()
         if named is not None:
             return named
-    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
+    head, hp = _file_head_clause(visible_ids)
     return conn.execute(
         "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file' AND t.path = ?"
         + clause

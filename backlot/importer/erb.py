@@ -1493,9 +1493,6 @@ def _byo_confluence(dsid, raw, P):
         author_name=author,
         subtype="page",
         labels=_names(raw.get("labels")),
-        reviewers=reviewers,
-        confidentiality=raw.get("confidentiality"),
-        owner_team=raw.get("owner_team"),
         created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
         updated=to_epoch(raw.get("last_updated")),
     )
@@ -1528,7 +1525,6 @@ def _byo_drive(dsid, raw, P):
         author_name=owner,
         subtype=subtype,
         mime_type=mime_type,
-        collaborators=collabs,
         created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
         updated=to_epoch(raw.get("last_modified")),
     )
@@ -1600,8 +1596,6 @@ def _byo_jira(dsid, raw, P):
         components=_names(raw.get("components")),
         assignee=assignee_email,
         reporter=reporter_email,
-        severity=raw.get("severity"),
-        squad=raw.get("squad"),
         duedate=raw.get("due_date"),
         comments=(comments or None),
         created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),

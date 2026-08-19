@@ -512,11 +512,10 @@ def test_a_shared_doc_id_does_not_share_visibility(tmp_path):
     assert ("org", "acme") in conf
     conn.close()
 
-    # The leak was user-facing at the ROUTER layer, not just the store — assert it there too, with
-    # a real HTTP request carrying a non-admin bearer token. ava is a member of the org the public
-    # confluence grant names, but holds no grant of her own on the drive file: in the pre-fix world
-    # a shared doc_acl table would OR the two sources' rows together for "shared-1" and let any org
-    # member (ava included) through on the strength of the confluence grant alone.
+    # Asserted at the ROUTER layer too, with a real HTTP request carrying a non-admin bearer token:
+    # ava is a member of the org the public confluence grant names but holds no grant of her own on
+    # the drive file, and a scoping that read the two sources' grants together would let her
+    # through on the strength of the confluence one alone.
     toks = yaml.safe_load(s.tokens_path.read_text())
     ava_token = next(u["token"] for u in toks["users"] if u["email"] == "ava@acme.com")
     hana_token = next(u["token"] for u in toks["users"] if u["email"] == "hana@acme.com")

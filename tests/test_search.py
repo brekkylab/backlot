@@ -133,8 +133,8 @@ def test_fts_phrase_boosts_literal_substring():
     ]
     for doc_id, content in rows:
         con.execute(
-            "INSERT INTO slack_messages(ts, channel, author_email, title, content, thread_seq, "
-            "created_ts) VALUES (?, 'eng', 'a@x.com', '', ?, 0, 1000)",
+            "INSERT INTO slack_messages(ts, channel, author_email, content, thread_seq, "
+            "created_ts) VALUES (?, 'eng', 'a@x.com', ?, 0, 1000)",
             (doc_id, content),
         )
     store.build_fts(con)
@@ -147,6 +147,42 @@ def test_fts_phrase_boosts_literal_substring():
     assert {h["ts"] for h in plain} == {"d_literal", "d_space"}
 
 
+def test_search_falls_back_to_like_without_an_fts_index():
+    """The LIKE path the docstring promises, exercised for a source with no `title` column.
+
+    `_fts5_ok` / `_has_fts` exist because a build without FTS5 has to keep answering, and slack is
+    the one source whose doc table has no `title` — so the fallback's own SQL has to ask each source
+    for its title the same way the index build does.
+    """
+    import sqlite3
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(store.SCHEMA)
+    con.execute(
+        "INSERT INTO slack_messages(channel, ts, author_email, content, thread_seq, created_ts)"
+        " VALUES('eng','1.0','a@x.com','latency spike in the gateway',0,1000)"
+    )
+    # a titled source alongside it, so the fallback is covered on both shapes
+    con.execute(
+        "INSERT INTO jira_issues(key, project, author_email, title, content, created_ts)"
+        " VALUES('PAY-1','PAY','a@x.com','Latency','p99 is up',1000)"
+    )
+    con.commit()
+    # no build_fts: this is the no-FTS5 build the fallback exists for
+    assert [r["ts"] for r in store.search_documents(con, "latency", "slack")] == ["1.0"]
+    assert store.count_search(con, "latency", "slack") == 1
+    assert [r["key"] for r in store.search_documents(con, "latency", "jira")] == ["PAY-1"]
+    assert store.count_search(con, "latency", "jira") == 1
+    # a jira hit in the TITLE still sorts ahead of one only in the body
+    con.execute(
+        "INSERT INTO jira_issues(key, project, author_email, title, content, created_ts)"
+        " VALUES('PAY-2','PAY','a@x.com','Rollout','latency mentioned in the body',1000)"
+    )
+    con.commit()
+    assert [r["key"] for r in store.search_documents(con, "latency", "jira")] == ["PAY-1", "PAY-2"]
+
+
 def test_search_order_by_recency():
     # Slack sort=timestamp -> results ordered by the message's own ts (newest first), NOT relevance.
     import sqlite3
@@ -156,8 +192,8 @@ def test_search_order_by_recency():
     con.executescript(store.SCHEMA)
     for doc_id, ts in [("old", 1000), ("new", 2000), ("mid", 1500)]:
         con.execute(
-            "INSERT INTO slack_messages(ts, channel, author_email, title, content, thread_seq, "
-            "created_ts) VALUES (?, 'eng', 'a@x.com', '', 'quarterly planning notes', 0, ?)",
+            "INSERT INTO slack_messages(ts, channel, author_email, content, thread_seq, "
+            "created_ts) VALUES (?, 'eng', 'a@x.com', 'quarterly planning notes', 0, ?)",
             (doc_id, ts),
         )
     store.build_fts(con)

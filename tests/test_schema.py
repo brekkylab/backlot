@@ -51,11 +51,6 @@ def test_unknown_top_level_key_rejected():
     assert any("athor_email" in e for e in errs)
 
 
-def test_title_required_except_slack():
-    assert _first_error({"source_type": "gmail", "content": "c"})  # missing title -> error
-    assert _first_error({"source_type": "slack", "content": "c"}) == []  # slack ok without title
-
-
 def test_hubspot_record_accepted():
     # a CRM record: the object type is the grouping unit, typed properties are free-form, and
     # associations name the target record by doc_id
@@ -438,55 +433,6 @@ def test_fireflies_schema_duration_is_minutes_not_seconds():
 
 
 # --- fields that make an ERB import expressible ------------------------------
-
-
-def test_confluence_accepts_confidentiality_ownership_and_reviewers():
-    assert (
-        record_errors(
-            {
-                "source_type": "confluence",
-                "space": "ENG",
-                "title": "Runbook",
-                "content": "c",
-                "author_email": "ava@a.com",
-                "author_name": "Tom\u00e1s Rr\u00e9",
-                # free text, not an enum: the bench writes "restricted (finance/customer-sensitive)" too
-                "confidentiality": "restricted (customer-sensitive)",
-                "owner_team": "engineering",
-                "reviewers": ["bob@a.com"],
-            }
-        )
-        == []
-    )
-
-
-def test_drive_collaborators_and_jira_severity_squad_accepted():
-    assert (
-        record_errors(
-            {
-                "source_type": "google_drive",
-                "folder": "research",
-                "title": "t",
-                "content": "c",
-                "collaborators": ["bob@a.com"],
-                "author_name": "Ava Chen",
-            }
-        )
-        == []
-    )
-    assert (
-        record_errors(
-            {
-                "source_type": "jira",
-                "project": "PAY",
-                "title": "t",
-                "content": "c",
-                "severity": "Sev1",
-                "squad": "payments-core",
-            }
-        )
-        == []
-    )
 
 
 def test_slack_participants_accepted():

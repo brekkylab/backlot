@@ -150,6 +150,27 @@ _NON_PERSON_WORDS = {
 }
 
 
+# Words that make a label an ACTIVITY rather than somebody: "Design review", "PM review",
+# "Kickoff notes". `_person_like` accepts every one of them -- two capitalised tokens is all it
+# asks -- so 19,450 linear comments would otherwise be attributed to a meeting. A label carrying
+# one of these words is a passage heading, and the passage keeps it.
+_ACTIVITY_WORDS = frozenset(
+    """review reviews planning notes note feedback sync standup retro retrospective demo kickoff
+    meeting discussion session update updates check checkin followup follow follow-ups followups
+    triage decision decisions escalation handoff walkthrough audit signoff call debrief postmortem
+    grooming refinement alignment status summary recap readout onboarding training workshop spike
+    research analysis testing rollout launch release migration cleanup hardening hotfix context
+    background blocked blocker blockers risk risks outcome
+    created opened closed resolved filed reported merged deployed shipped scheduled""".split()
+)
+_CUSTOMER_LABELS = frozenset({"customer", "client", "customer success", "account"})
+
+
+def _names_an_activity(label: str | None) -> bool:
+    """True when a label names something that happened rather than somebody who acted."""
+    return bool({t.lower().strip(".") for t in str(label or "").split()} & _ACTIVITY_WORDS)
+
+
 def _person_like(name: str) -> bool:
     """A name worth minting as a real org user: a genuine 'First Last' (2–4 name tokens).
     Rejects transcript junk, aliases/emails in a name field, team/placeholder names
@@ -408,6 +429,44 @@ class Principals:
     def display_email(self, name: str) -> tuple[str | None, str]:
         c = canonical(name or "")
         return self._by_canon.get(c), (name or "")
+
+    def display_only_email(self, name: str) -> str:
+        """An address for somebody the corpus NAMES but the roster does not hold -- a generated
+        person, a desk ("Support"), a rota ("SRE Oncall").
+
+        NOT entered in ``users``, so it gets no bearer token: the corpus can say who wrote a row
+        without the mock claiming that identity can sign in. This is the treatment a Slack first
+        name already gets (see ``resolve``'s ``SLACK_ROLE`` branch).
+        """
+        return f"{_slug(name)}@{self.org_domain}"
+
+    def customer_email(self, label: str, company: str | None) -> str:
+        """A customer-side commenter -> an address on the counterparty's domain when the document
+        names one, else the placeholder external domain. Never a principal: the counterparty is not
+        part of this org."""
+        domain = f"{_slug(company).replace('.', '')}.example" if company else EXTERNAL_DOMAIN
+        # The company's own tokens are dropped from the local part, since the domain already carries
+        # them -- "LexiHealth (Customer)" on a LexiHealth ticket is customer@lexihealth.example.
+        company_tokens = set(_slug(company or "").split("."))
+        local = ".".join(t for t in _slug(label).split(".") if t not in company_tokens)
+        return f"{local or 'customer'}@{domain}"
+
+    def unattributed(self) -> str:
+        """The address for a row the bench never attributes.
+
+        Stated by the importer rather than left for the loader to invent: the corpus is what the
+        server answers from, so a row nobody signed has to say that it is unsigned.
+        """
+        return f"unknown@{self.org_domain}"
+
+    def label_email(self, label: str | None, company: str | None = None) -> str:
+        """The address a comment label that names no person resolves to."""
+        key = (label or "").strip().lower()
+        if not key or _names_an_activity(label):
+            return self.unattributed()
+        if key in _CUSTOMER_LABELS or (company and _slug(company) in _slug(key)):
+            return self.customer_email(label, company)
+        return self.display_only_email(label)
 
     def local_part_index(self) -> dict[str, str]:
         """Email local part -> the address, for a ``From`` carrying only ``marissa_cole``."""
@@ -1604,7 +1663,7 @@ def _byo_confluence(dsid, raw, P):
         space=space,
         title=title,
         content=content,
-        author_email=author_email,
+        author_email=(author_email or P.unattributed()),
         author_name=author,
         subtype="page",
         labels=_names(raw.get("labels")),
@@ -1636,7 +1695,7 @@ def _byo_drive(dsid, raw, P):
         folder=(raw.get("drive_area") or group or "drive"),
         title=title,
         content=content,
-        author_email=owner_email,
+        author_email=(owner_email or P.unattributed()),
         author_name=owner,
         subtype=subtype,
         mime_type=mime_type,
@@ -1673,7 +1732,7 @@ def _byo_github(dsid, raw, P):
         repo=repo,
         title=title,
         content=content,
-        author_email=author_email,
+        author_email=(author_email or P.unattributed()),
         author_name=author,
         subtype=("pull_request" if raw.get("pr_number") else "issue"),
         state=_GH_STATE.get(raw_state),
@@ -1710,11 +1769,20 @@ def _byo_jira(dsid, raw, P):
             if n and len(str(n).split()) > 1
         },
     }
+
+    def _jira_author(c: dict) -> str | None:
+        """The person a comment names, or None when its label names an activity instead."""
+        return c["person"] if c["person"] and not _names_an_activity(c["person"]) else None
+
     comments = [
         _rec(
             id=f"{dsid}::c{seq}",
-            content=(c["body"] if c["person"] else c["body_with_label"]),
-            author_email=(P.resolve(c["person"], role="author") if c["person"] else None),
+            content=(c["body"] if _jira_author(c) else c["body_with_label"]),
+            author_email=(
+                P.resolve(_jira_author(c), role="author")
+                if _jira_author(c)
+                else P.label_email(c["person"] or c["role"], raw.get("customer_company"))
+            ),
             created_ts=to_epoch(f"{c['date']}T{c['time'] or '00:00'}") if c["date"] else None,
         )
         for seq, c in enumerate(
@@ -1804,7 +1872,7 @@ def _byo_gmail(dsid, raw, P):
         mailbox=mailbox,
         title=(title or root.get("subject") or ""),
         content=(root.get("body") or (content if not msgs else "")),
-        author_email=(sender(root) or owner_email),
+        author_email=(sender(root) or owner_email or P.unattributed()),
         mailbox_owner=owner_name,
         thread=dsid,
         to=to_addr,
@@ -1834,7 +1902,7 @@ def _byo_slack(dsid, raw, P):
         _rec(
             doc_id=f"{dsid}::m{seq}",
             content=text,
-            author_email=P.resolve(spk, role="slack_participant"),
+            author_email=(P.resolve(spk, role="slack_participant") or P.unattributed()),
         )
         for seq, (spk, text) in enumerate(turns[1:], start=1)
     ]
@@ -1843,7 +1911,7 @@ def _byo_slack(dsid, raw, P):
         doc_id=dsid,
         channel=channel,
         content=(turns[0][1] if turns else content),
-        author_email=root_author,
+        author_email=(root_author or P.unattributed()),
         participants=participants,
         replies=(replies or None),
         # The remapped value, NOT the source `first_message_ts`: the remap is rank-based over
@@ -1857,6 +1925,8 @@ def _byo_slack(dsid, raw, P):
 
 
 def _byo_hubspot(dsid, raw, P):
+    # HubSpot notes have no name, and 82% of the bench's records are notes. An empty string is
+    # not a title -- the key is left out, which its schema allows for this source alone.
     title, content = _title_content(raw)
     object_type = group = "companies"
     owner = raw.get("owner", "")
@@ -1878,9 +1948,8 @@ def _byo_hubspot(dsid, raw, P):
             source_type="hubspot",
             doc_id=note_id,
             object_type="notes",
-            title="",
             content=body,
-            author_email=owner_email,
+            author_email=(owner_email or P.unattributed()),
             properties={"hs_note_body": body, "hs_timestamp": synth.rfc3339(created + i)},
             created=created + i,
         )
@@ -1891,9 +1960,9 @@ def _byo_hubspot(dsid, raw, P):
         source_type="hubspot",
         doc_id=dsid,
         object_type=object_type,
-        title=title,
+        title=(title or None),
         content=content,
-        author_email=owner_email,
+        author_email=(owner_email or P.unattributed()),
         author_name=owner,
         properties=props,
         associations=(links or None),
@@ -1941,11 +2010,14 @@ def _byo_linear(dsid, raw, P):
     for seq, c in enumerate(
         parse_comment_lines(raw.get("comments"), first_names=first_names), start=1
     ):
-        # Matched against the EXISTING roster, never minted. Linear's label segment holds 16,108
-        # distinct strings and `_person_like` accepts plenty of them that name no person at all
-        # ("Design review", "Legal feedback", "Sprint planning"), so minting would fill the roster
-        # with meetings. A name the roster does not already hold leaves the comment unattributed.
-        author = P.display_email(c["person"])[0] if c["person"] else None
+        # A name the roster already holds becomes that principal. A name it does not -- 130,434
+        # comments across 12,169 distinct names, because the bench generates far more people than
+        # the directory lists -- becomes a DISPLAY-ONLY address instead: the attribution the bench
+        # wrote is kept without minting a principal that could sign in. A label naming an activity
+        # ("Design review") is not a person at all, so its passage keeps the label and the comment
+        # is unattributed.
+        named = c["person"] if c["person"] and not _names_an_activity(c["person"]) else None
+        author = (P.display_email(named)[0] or P.display_only_email(named)) if named else None
         # A stated time is used exactly as stated -- never nudged to stay ahead of the comment
         # before it, which would serve a second nobody wrote. Only an undated comment is derived,
         # and it follows the one before it rather than the issue's own clock plus a position.
@@ -1956,8 +2028,8 @@ def _byo_linear(dsid, raw, P):
         comments.append(
             _rec(
                 id=f"{dsid}::c{seq}",
-                content=(c["body"] if author else c["body_with_label"]),
-                author_email=author,
+                content=(c["body"] if named else c["body_with_label"]),
+                author_email=(author or P.label_email(c["role"])),
                 created_ts=ts,
             )
         )
@@ -1980,7 +2052,7 @@ def _byo_linear(dsid, raw, P):
         team=team,
         title=title,
         content=content,
-        author_email=creator_email,
+        author_email=(creator_email or P.unattributed()),
         author_name=creator,
         identifier=identifier,
         state=state,

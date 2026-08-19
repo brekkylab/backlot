@@ -444,6 +444,64 @@ def test_github_a_merged_pull_without_a_merge_time_still_reads_as_merged():
     assert rec["merged_at"] == "2026-02-10T12:00:00Z"
 
 
+def test_a_named_but_unrostered_writer_gets_an_address_and_no_token():
+    P = Principals([], "redwood.com")
+    assert P.display_only_email("SRE Oncall") == "sre.oncall@redwood.com"
+    assert P.display_only_email("Ravi Kulkarni") == "ravi.kulkarni@redwood.com"
+    # display only: an address the corpus can attribute to, not an identity that can sign in
+    assert P.users == {}
+
+
+def test_a_customer_commenter_lands_on_the_counterpartys_domain():
+    P = Principals([], "redwood.com")
+    assert P.customer_email("Customer", "BrightCart") == "customer@brightcart.example"
+    assert P.customer_email("Customer", None) == f"customer@{C.EXTERNAL_DOMAIN}"
+
+
+@pytest.mark.parametrize(
+    "label,email",
+    [
+        ("Support", "support@redwood.com"),
+        ("SRE", "sre@redwood.com"),
+        ("Design review", "unknown@redwood.com"),  # an activity, not somebody
+        ("Follow-ups", "unknown@redwood.com"),
+        (None, "unknown@redwood.com"),
+    ],
+)
+def test_a_label_that_names_no_person_resolves_by_what_it_names(label, email):
+    assert Principals([], "redwood.com").label_email(label) == email
+
+
+def test_a_jira_desk_comment_is_attributed_to_the_desk_and_a_customer_to_their_domain():
+    raw = {
+        "key": "SUP-1",
+        "project": "customer-support",
+        "summary": "Latency spike",
+        "description": "Body.",
+        "issue_type": "Support Request",
+        "status": "In Progress",
+        "reporter": "Aisha Patel",
+        "created_at": "2026-03-13",
+        "customer_company": "LexiHealth",
+        "comments": [
+            "2026-03-13 14:42 - Support: Performed initial triage.",
+            "2026-03-13 14:18 - LexiHealth (Customer): Provided the audit links.",
+        ],
+    }
+    (rec,), _bundle = C._byo_jira("jr-1", raw, Principals([], "redwood.com"))
+    assert [c["author_email"] for c in rec["comments"]] == [
+        "support@redwood.com",
+        "customer@lexihealth.example",
+    ]
+
+
+def test_a_document_whose_author_the_bench_never_names_says_so():
+    """The corpus is what the server answers from, so an unsigned document states that it is."""
+    raw = {"channel": "incidents", "messages": "", "first_message_ts": 1770000000}
+    (rec,), _bundle = C._byo_slack("sl-1", raw, Principals([], "redwood.com"))
+    assert rec["author_email"] == "unknown@redwood.com"
+
+
 def test_parse_gmail_thread():
     msgs = [
         "From: Vivek K <vivek_k@redwoodinference.com>\n"
@@ -1657,8 +1715,8 @@ def test_linear_comment_shapes_are_all_parsed():
 
 
 def test_linear_comment_author_prefix_is_kept_when_the_name_is_not_a_person():
-    """ "Created:" and "Design review:" are labels, not attributions. If they don't resolve to
-    somebody, the body must keep them rather than silently losing the words."""
+    """ "Created:" and "Design review:" are labels, not attributions. The body keeps them rather
+    than silently losing the words, and the comment is attributed to nobody in particular."""
     conn = _conn()
     P = Principals(
         [
@@ -1687,8 +1745,9 @@ def test_linear_comment_author_prefix_is_kept_when_the_name_is_not_a_person():
     # resolved -> attributed, and the name is not repeated in the body
     assert rows[0]["author_email"] == "maya.patel@redwoodinference.com"
     assert rows[0]["body"] == "filed the PRD."
-    # unresolved -> unattributed, and the text is intact
-    assert rows[1]["author_email"] is None
+    # a label -> the corpus says so explicitly rather than leaving the loader to invent a sender,
+    # and the text is intact
+    assert rows[1]["author_email"] == "unknown@redwoodinference.com"
     assert rows[1]["body"] == "Created: initial hypothesis captured."
 
 
@@ -1745,10 +1804,14 @@ def test_linear_comments_become_rows_with_real_dates():
     assert comments[1]["created_ts"] == erb.to_epoch("2025-02-20")
 
 
-def test_linear_comment_author_is_matched_never_minted():
-    """The `Name:` segment is far noisier than Jira's — 16,108 distinct strings, mostly labels
-    like "Design review" that `_person_like` would happily accept. A comment therefore matches
-    against the EXISTING roster and stays unattributed otherwise."""
+def test_linear_comment_author_is_never_minted_as_a_principal():
+    """The `Name:` segment is far noisier than Jira's — 16,108 distinct strings, and `_person_like`
+    accepts labels like "Design review" that name no person at all.
+
+    So a name the roster already holds becomes that principal; a name it does not becomes a
+    DISPLAY-ONLY address, which attributes the comment without minting an identity that could sign
+    in; and a label naming an activity is not a person at all.
+    """
     conn = _conn()
     P = Principals([], "redwoodinference.com")
     raw = {
@@ -1758,6 +1821,7 @@ def test_linear_comment_author_is_matched_never_minted():
         "comments": [
             "2025-02-20 Amaya Chen: known person, resolved from the issue's creator.",
             "2025-02-21 Design review: a label, not a person.",
+            "2025-02-22 Ravi Kulkarni: a person the roster does not hold.",
         ],
     }
     _load_one(conn, "linear", "dsid_c", raw, P)
@@ -1766,8 +1830,11 @@ def test_linear_comment_author_is_matched_never_minted():
         (served_id("linear", "dsid_c"),),
     ).fetchall()
     assert rows[0]["author_email"] == "amaya.chen@redwoodinference.com"
-    assert rows[1]["author_email"] is None
+    assert rows[1]["author_email"] == "unknown@redwoodinference.com"
     assert "design.review@redwoodinference.com" not in P.users
+    # named, unknown to the roster: attributed, but not an identity that can authenticate
+    assert rows[2]["author_email"] == "ravi.kulkarni@redwoodinference.com"
+    assert "ravi.kulkarni@redwoodinference.com" not in P.users
 
 
 def test_linear_undated_comment_stays_on_the_issues_clock():

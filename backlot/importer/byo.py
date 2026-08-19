@@ -108,8 +108,6 @@ def _states_own_id(src: str, rec: dict) -> bool:
     if src == "s3":
         return True
     if src == "fireflies":
-        # The schema's own spelling only: `meta.transcript_id` is ordinary meta content, stripped
-        # before extras are seeded, exactly as `meta.number` is for github.
         return bool(rec.get("transcript_id"))
     return False
 
@@ -353,7 +351,7 @@ def _service_columns(
     updated=None,
     owner_display=None,
 ) -> dict:
-    """Map generic BYO fields (+ meta) to the target service table's own columns.
+    """Map generic BYO fields to the target service table's own columns.
 
     ``seed`` is the incoming record's own dataset identifier. It is an INPUT: several sources
     derive a served id from it here, and it is never itself stored. ``parent_id`` and
@@ -1721,7 +1719,6 @@ class _Loader:
         else:
             grant_types = [("org", org)]
 
-        # structured extras: rec.meta merged with convenience top-level keys
         # Every per-source field is read from the top level, and each name below is one the schema
         # declares -- so an unknown key is a validation error rather than a value read and dropped.
         extras: dict = {}
@@ -1765,18 +1762,12 @@ class _Loader:
             "ref",
             "content_id",
             "record_id",
-            # A transcript's own id and a jira issue's history: both declared by their schema, both
-            # read off `extras` — so without them here the schema's spelling was dropped on the
-            # floor and only the `meta` one worked. For `transcript_id` that also meant the served
-            # id came from a spelling no schema describes, which is what the loop above exists to
-            # prevent.
             "transcript_id",
             "changelog",
             "resolution",
             "resolutiondate",
             "duedate",
             "fix_versions",
-            "versions",
             "assignee",
             "reporter",
             "minor_edit",

@@ -14,9 +14,9 @@ and is then discarded, so there is no ``doc_id`` column anywhere and no map from
 PRIMARY KEY is that served id — see :data:`ID_COLUMNS`, which also names it, since the column is
 spelled the way its vendor spells it (``number``, ``key``, ``ts``, otherwise ``id``).
 
-Every doc table carries the same three core columns (``author_email, title, content``) after its
-identifier and its grouping column, which is what keeps listing / ACL / pagination uniform via the
-``GROUPING`` registry. Every listing takes ``visible_ids``: ``None`` = admin, otherwise results
+Every doc table carries ``author_email`` and ``content`` after its identifier and its grouping
+column, plus ``title`` on the ten sources whose documents have one (see ``TITLELESS``), which is
+what keeps listing / ACL / pagination uniform via the ``GROUPING`` registry. Every listing takes ``visible_ids``: ``None`` = admin, otherwise results
 are filtered to docs whose ACL grants intersect it. JSON columns are TEXT — read with :func:`jcol`.
 """
 
@@ -841,7 +841,7 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
     refuse_pre_served_db(conn, path)
-    _add_missing_columns(conn)
+    _reconcile_columns(conn)
     conn.executescript(SCHEMA)
     return conn
 
@@ -857,6 +857,16 @@ _ADDED_COLUMNS = {
     "github_items": (("ref", "TEXT"),),
 }
 
+# Columns REMOVED after a table shipped, for the same reason in reverse: an earlier version's table
+# still carries them. A nullable one is harmless -- the importer stops writing it and it degrades to
+# NULL -- so only a column an insert would still trip over needs dropping. Lossless: nothing reads
+# these, which is why they went.
+_DROPPED_COLUMNS = {
+    # NOT NULL, and the importer no longer supplies it, so an --append onto an older DB failed on
+    # the constraint rather than on anything the operator could act on.
+    "slack_messages": ("title",),
+}
+
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     """Whether `table` carries `column`.
@@ -869,16 +879,30 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return column in {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
 
 
-def _add_missing_columns(conn: sqlite3.Connection) -> None:
-    for table, columns in _ADDED_COLUMNS.items():
-        if not conn.execute(
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return bool(
+        conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
-        ).fetchone():
+        ).fetchone()
+    )
+
+
+def _reconcile_columns(conn: sqlite3.Connection) -> None:
+    """Add the columns an older DB lacks, and drop the ones it should no longer carry."""
+    for table, columns in _ADDED_COLUMNS.items():
+        if not _table_exists(conn, table):
             continue  # a fresh DB: SCHEMA's CREATE TABLE already carries the column
         have = {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
         for name, decl in columns:
             if name not in have:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    for table, columns in _DROPPED_COLUMNS.items():
+        if not _table_exists(conn, table):
+            continue
+        have = {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
+        for name in columns:
+            if name in have:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {name}")
     conn.commit()
 
 
@@ -2175,11 +2199,12 @@ def search_documents(
         )
         return conn.execute(sql, [m, *cont_p, *cparams, *order_p, limit, offset]).fetchall()
     like = f"%{query}%"
-    sql = f"SELECT * FROM {tbl} WHERE (title LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
+    ttl = title_expr(source_type)
+    sql = f"SELECT * FROM {tbl} WHERE ({ttl} LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
     params: list = [like, like, *cont_p]
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += (
-        clause + " ORDER BY (CASE WHEN title LIKE ? THEN 0 ELSE 1 END), "
+        clause + f" ORDER BY (CASE WHEN {ttl} LIKE ? THEN 0 ELSE 1 END), "
         f"{_order_by(source_type)} LIMIT ? OFFSET ?"
     )
     params += cparams + [like, limit, offset]
@@ -2213,7 +2238,8 @@ def count_search(
     like = f"%{query}%"
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql = (
-        f"SELECT COUNT(*) FROM (SELECT 1 FROM {tbl} WHERE (title LIKE ? OR content LIKE ?)"
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM {tbl} WHERE "
+        f"({title_expr(source_type)} LIKE ? OR content LIKE ?)"
         f"{cont_sql.format(a=tbl)}{clause} LIMIT ?)"
     )
     return conn.execute(sql, [like, like, *cont_p, *cparams, cap]).fetchone()[0]

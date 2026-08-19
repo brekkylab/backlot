@@ -162,12 +162,10 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   computed from `content`), `subtype` (storage-class label, default `STANDARD`). These map to the
   fields the real vendor APIs return; everything else on each response is synthesized
   deterministically from the `doc_id`.
-- **Per-service people and scope** (all optional): confluence `confidentiality` (free text — a
-  served label; ACL still comes from `visibility`/`readers`), `owner_team`, `reviewers`; drive
-  `collaborators`; jira `severity` (a separate axis from `priority` — how bad, not when to fix)
-  and `squad`; slack `participants` (thread-level, so root-only); gmail `mailbox_owner`. Plus
-  `author_name` on every source whose table stores an owner display name, since a name is not
-  recoverable from an address ("Tomás Rré" does not survive `<slug>@<domain>`).
+- **Per-service people and scope** (all optional): slack `participants` (thread-level, so
+  root-only); gmail `mailbox_owner`. Plus `author_name` on every source whose table stores an owner
+  display name, since a name is not recoverable from an address ("Tomás Rré" does not survive
+  `<slug>@<domain>`).
 - **Principals** — a `readers` entry may state its type: `user:<email>` / `group:<id>` /
   `org:<name>`. Unprefixed, an address is a user and anything else a group, as before. The typed
   form exists because the shorthand cannot name the org principal, so "org-readable *and* owned by

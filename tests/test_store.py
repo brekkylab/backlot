@@ -1613,6 +1613,48 @@ def test_fts_add_docs_noop_without_index(tmp_path):
     assert store.fts_add_docs(conn, "notion", ["x"]) == 0
 
 
+def test_opening_a_db_with_a_removed_column_drops_it(tmp_path):
+    """A DB imported before a column was removed loses it on open, so an --append still writes.
+
+    `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so a column that has since gone
+    stays — and `slack_messages.title` was NOT NULL, which the importer no longer supplies. Every
+    other removal was nullable and degrades to NULL on its own; this one is a hard failure, and the
+    drop is lossless because nothing reads the column.
+    """
+    import sqlite3
+
+    path = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE slack_messages ("
+        " channel TEXT NOT NULL, ts TEXT NOT NULL, author_email TEXT NOT NULL,"
+        " title TEXT NOT NULL, content TEXT NOT NULL, thread_ts TEXT,"
+        " thread_seq INTEGER NOT NULL DEFAULT 0, subtype TEXT, reactions TEXT, files TEXT,"
+        " edited TEXT, created_ts INTEGER NOT NULL, participants TEXT,"
+        " PRIMARY KEY (channel, ts));"
+        "INSERT INTO slack_messages(channel, ts, author_email, title, content, created_ts)"
+        " VALUES('eng','1.0','a@x.com','','old message',1000);"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = store.connect_rw(path)
+    assert "title" not in {c["name"] for c in conn.execute("PRAGMA table_info(slack_messages)")}
+    # the row it already held still reads, and an append now writes
+    conn.execute(
+        "INSERT INTO slack_messages(channel, ts, author_email, content, thread_seq, created_ts)"
+        " VALUES('eng','2.0','b@x.com','new message',0,2000)"
+    )
+    conn.commit()
+    assert [
+        r["content"] for r in conn.execute("SELECT content FROM slack_messages ORDER BY ts")
+    ] == [
+        "old message",
+        "new message",
+    ]
+    conn.close()
+
+
 def test_opening_a_db_without_the_snapshot_column_adds_it(tmp_path):
     """A DB imported before `ref` existed opens and gains the column, rather than dying on a bare
     `no such column: ref` the first time anything reads github_items.

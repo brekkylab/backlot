@@ -92,7 +92,6 @@ _TZ = {
     "PT": -8,
 }
 _ADDR = re.compile(r"<([^>@\s]+@[^>\s]+)>")
-_JIRA = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<name>[^:]+?):\s*(?P<body>.*)$", re.DOTALL)
 # Slack speaker: 1–3 name-ish words / handles ("Alex", "ops-bot", "Maria L", "IT Help"), an
 # optional "(Team)"/"(Role)" label some docs append ("Elena (CFO)", "Asha (FinanceOps)"), then
 # ": ". The parenthetical is dropped so only the bare name resolves against the directory.
@@ -224,6 +223,11 @@ def person_reference(label, *, first_names=None) -> tuple[str | None, str | None
         hit = (first_names or {}).get(side.lower())
         if hit:
             return hit, other(i)
+    # A label wrapped entirely in parentheses -- "(Customer, Northpeak Health)" -- is unwrapped,
+    # since the brackets add nothing. Any other unresolved label is returned as written: half of
+    # "Support (Aisha)" is still part of what the corpus said about this comment.
+    if split is not None and not sides[0]:
+        return None, (sides[1] or None)
     return None, s
 
 
@@ -833,19 +837,82 @@ def _gmail_attachments(raw: dict) -> list[dict]:
     return out
 
 
-def parse_jira_comments(comments: list[str]) -> list[dict]:
-    """Jira ``comments`` is a list of ``YYYY-MM-DD Name: text``."""
+_CLOCK = r"\d{1,2}:\d{2}(?::\d{2})?"
+# The timezone abbreviations the bench appends to a comment stamp. Matched and discarded: a comment
+# stamp's own precision is the minute, and `_TZ` already carries the offsets for the gmail Date
+# headers that state a full timestamp.
+_TZ_ABBR = r"(?:UTC|GMT|Z|E[SD]T|C[SD]T|M[SD]T|P[SD]T|ET|CT|MT|PT)"
+# A comment's leading stamp: a date and/or a clock, bracketed or bare, in either the "date time"
+# or "dateTtime" spelling, optionally followed by a zone abbreviation and a dash.
+_STAMP = re.compile(
+    rf"^(?:\[?(?P<date>\d{{4}}-\d{{2}}-\d{{2}})\]?[T ]?\s*)?"
+    rf"(?:(?P<time>{_CLOCK})\]?\s*)?"
+    rf"(?:{_TZ_ABBR}\s*)?"
+    rf"(?:[-–—]\s*)?"
+)
+# "label: body". The lookahead requires a LETTER in the label, which is what keeps a clock from
+# becoming one: without it "2025-02-18 09:15: rolled back" parses as the author "09" with the body
+# truncated to "15: rolled back", inventing a person and losing text.
+_LABELLED = re.compile(
+    r"^(?=[^:\n]{0,80}[A-Za-zÀ-ÿ])(?P<label>[^:\n]{1,80}?)\s*:\s*(?P<body>.*)$", re.DOTALL
+)
+
+
+def _peel_stamp(line: str) -> tuple[str | None, str | None, str]:
+    """``(date, time, rest)``. The clock is peeled only when a label follows it -- a line whose
+    stamp is followed straight by its body ("2025-02-18 09:15: rolled back") keeps the clock in the
+    body, where the only alternative is to read it as somebody's name."""
+    m = _STAMP.match(line)
+    date, time, rest = m.group("date"), m.group("time"), line[m.end() :].strip()
+    if _LABELLED.match(rest):
+        return date, time, rest
+    # Re-peel with the date alone, so a stamp that swallowed the body's first field gives it back.
+    m = _STAMP.match(line)
+    date_only = m.group("date")
+    after_date = line[m.end("date") :].lstrip("T ").strip() if date_only else line.strip()
+    return date_only, None, after_date
+
+
+def parse_comment_lines(comments, *, first_names=None) -> list[dict]:
+    """Bench comment strings -> ``{date, time, person, role, body, body_with_label}`` each.
+
+    Serves jira and linear alike: the two sources write the same line format, and reading it in two
+    places is what let them diverge.
+
+    ``comments`` is a list of lines OR one blank-line-separated blob. 42 jira docs and 29 linear
+    docs carry the blob, and iterating a ``str`` yields characters -- so every comment in those
+    docs used to be discarded one character at a time.
+
+    Both bodies are returned because only the caller knows what an unresolved ``role`` means for
+    its source: a desk that should become an address, or a section heading ("Follow-ups:") whose
+    removal would delete text.
+    """
+    if isinstance(comments, str):
+        comments = [part for part in re.split(r"\n\s*\n", comments) if part.strip()]
     out = []
     for c in comments or []:
-        m = _JIRA.match(str(c).strip())
-        if m:
+        line = _unescape(str(c)).strip()
+        if not line:
+            continue
+        date, time, rest = _peel_stamp(line)
+        m = _LABELLED.match(rest)
+        if not m:
             out.append(
-                {
-                    "date": m.group("date"),
-                    "name": m.group("name").strip(),
-                    "body": m.group("body").strip(),
-                }
+                {"date": date, "time": time, "person": None, "role": None,
+                 "body": rest, "body_with_label": rest}
             )
+            continue
+        person, role = person_reference(m.group("label"), first_names=first_names)
+        out.append(
+            {
+                "date": date,
+                "time": time,
+                "person": person,
+                "role": role,
+                "body": m.group("body").strip(),
+                "body_with_label": rest,
+            }
+        )
     return out
 
 
@@ -1175,48 +1242,6 @@ def _linear_date(value) -> str | None:
 # Hence two independent steps, NOT a list of whole-line alternatives: peel the date (with its
 # optional dash), then try to peel a `Name:` off the remainder. Ordered whole-line patterns
 # silently swallow the author into the body whenever an earlier one lacks a name group.
-_LINEAR_C_DATE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s*(?:[-–—]\s*)?(?P<rest>.*)$", re.DOTALL)
-# The name must START WITH A LETTER. Without that, "2025-02-18 09:15: rolled back" parses as
-# author "09" with the body truncated to "15: rolled back" — inventing a person and losing text.
-_LINEAR_C_NAME = re.compile(
-    r"^\(?(?P<name>[A-Za-zÀ-ÿ][^:\n()]{0,39}?)\)?:\s*(?P<body>.*)$", re.DOTALL
-)
-
-
-def parse_linear_comments(comments) -> list[dict]:
-    """Bench comment strings -> ``{date, name, body, body_with_name}``.
-
-    Both bodies, because only the caller knows whether the ``Name:`` prefix is a person or a LABEL
-    ("Created:", "Design review with PM and Accessibility:") whose removal would delete text.
-    :func:`_byo_linear` takes ``body`` when the name resolves to somebody and ``body_with_name``
-    when it does not.
-    """
-    if isinstance(comments, str):  # 29 docs carry a single string instead of a list
-        comments = [comments]
-    out = []
-    for c in comments or []:
-        s = str(c).strip()
-        if not s:
-            continue
-        m = _LINEAR_C_DATE.match(s)
-        date, rest = (m.group("date"), m.group("rest")) if m else (None, s)
-        n = _LINEAR_C_NAME.match(rest)
-        if n:
-            out.append(
-                {
-                    "date": date,
-                    "name": n.group("name").strip(),
-                    "body": n.group("body").strip(),
-                    "body_with_name": rest.strip(),
-                }
-            )
-        else:
-            out.append(
-                {"date": date, "name": None, "body": rest.strip(), "body_with_name": rest.strip()}
-            )
-    return out
-
-
 # ---------------------------------------------------------------- fireflies
 # One meeting transcript per file. Four properties of the real data drive the mapping:
 #   * the transcript is ONE FLAT TEXT BLOB, so the per-sentence rows the API serves are PARSED
@@ -1648,14 +1673,26 @@ def _byo_jira(dsid, raw, P):
     reporter_email = P.resolve(reporter, role="reporter", group_hint=group) if reporter else None
     assignee_email = P.resolve(assignee, role="assignee", group_hint=group) if assignee else None
     project = raw.get("project") or "JIRA"
+    # The directory's unambiguous first names, widened by the people THIS ticket names -- so a bare
+    # "Diego" resolves inside a ticket whose reporter is a Diego and stays a label anywhere else.
+    first_names = {
+        **P.first_name_index(),
+        **{
+            str(n).split()[0].lower(): str(n)
+            for n in (reporter, assignee)
+            if n and len(str(n).split()) > 1
+        },
+    }
     comments = [
         _rec(
             id=f"{dsid}::c{seq}",
-            content=c["body"],
-            author_email=P.resolve(c["name"], role="author"),
-            created_ts=to_epoch(c["date"]),
+            content=(c["body"] if c["person"] else c["body_with_label"]),
+            author_email=(P.resolve(c["person"], role="author") if c["person"] else None),
+            created_ts=to_epoch(f"{c['date']}T{c['time'] or '00:00'}") if c["date"] else None,
         )
-        for seq, c in enumerate(parse_jira_comments(raw.get("comments", [])), start=1)
+        for seq, c in enumerate(
+            parse_comment_lines(raw.get("comments"), first_names=first_names), start=1
+        )
     ]
     rec = _rec(
         source_type="jira",
@@ -1845,15 +1882,34 @@ def _byo_linear(dsid, raw, P):
     state_type = synth.linear_state_type(state)
     ended = updated or created
 
+    first_names = {
+        **P.first_name_index(),
+        **{
+            str(n).split()[0].lower(): str(n)
+            for n in (raw.get("assignee"), raw.get("author"), raw.get("creator"))
+            if n and len(str(n).split()) > 1
+        },
+    }
     comments, prev_ts = [], created
-    for seq, c in enumerate(parse_linear_comments(raw.get("comments")), start=1):
-        author = P.display_email(c["name"])[0] if c["name"] else None
-        ts = to_epoch(c["date"]) or (prev_ts + 1)
+    for seq, c in enumerate(
+        parse_comment_lines(raw.get("comments"), first_names=first_names), start=1
+    ):
+        # Matched against the EXISTING roster, never minted. Linear's label segment holds 16,108
+        # distinct strings and `_person_like` accepts plenty of them that name no person at all
+        # ("Design review", "Legal feedback", "Sprint planning"), so minting would fill the roster
+        # with meetings. A name the roster does not already hold leaves the comment unattributed.
+        author = P.display_email(c["person"])[0] if c["person"] else None
+        # A stated time is used exactly as stated -- never nudged to stay ahead of the comment
+        # before it, which would serve a second nobody wrote. Only an undated comment is derived,
+        # and it follows the one before it rather than the issue's own clock plus a position.
+        ts = to_epoch(f"{c['date']}T{c['time'] or '00:00'}") if c["date"] else None
+        if ts is None:
+            ts = prev_ts + 1
         prev_ts = max(prev_ts, ts)
         comments.append(
             _rec(
                 id=f"{dsid}::c{seq}",
-                content=(c["body"] if author else c["body_with_name"]),
+                content=(c["body"] if author else c["body_with_label"]),
                 author_email=author,
                 created_ts=ts,
             )

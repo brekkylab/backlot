@@ -421,12 +421,64 @@ def test_first_name_index_drops_a_first_name_two_employees_share():
     assert P.first_name_index() == {"jonas": "Jonas Meyer"}
 
 
+def test_parse_comment_lines_keeps_the_clock_out_of_the_author_and_the_body():
+    out = C.parse_comment_lines(
+        ["2026-03-13 14:05 - Aisha Patel (Support): Acknowledged ticket and requested logs."]
+    )
+    assert out == [
+        {
+            "date": "2026-03-13",
+            "time": "14:05",
+            "person": "Aisha Patel",
+            "role": "Support",
+            "body": "Acknowledged ticket and requested logs.",
+            "body_with_label": "Aisha Patel (Support): Acknowledged ticket and requested logs.",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "line,person,role",
+    [
+        ("2025-11-01 09:28 ET (Kira Thompson, Support): Acknowledged.", "Kira Thompson", "Support"),
+        ("[2026-03-13 09:22] Support (Aisha Patel): Triaged.", "Aisha Patel", "Support"),
+        ("2026-03-13T09:22 - SRE (Liam O'Connor): Disks healthy.", "Liam O'Connor", "SRE"),
+        ("SRE (Priya Singh): Raised a cardinality concern.", "Priya Singh", "SRE"),
+        ("Jonas Meyer (ENG): Implemented the buffer prototype.", "Jonas Meyer", "ENG"),
+        ("Follow-ups: chase the vendor.", None, "Follow-ups"),
+    ],
+)
+def test_parse_comment_lines_reads_every_stamp_the_bench_writes(line, person, role):
+    (out,) = C.parse_comment_lines([line])
+    assert (out["person"], out["role"]) == (person, role)
+
+
+def test_parse_comment_lines_splits_a_blob_instead_of_iterating_its_characters():
+    blob = (
+        "2025-11-01 09:28 ET (Kira Thompson, Support): Requested the IAM policy.\n\n"
+        "2025-11-01 10:02 ET (Customer, Northpeak Health): Provided the excerpt."
+    )
+    out = C.parse_comment_lines(blob)
+    assert [c["person"] for c in out] == ["Kira Thompson", None]
+    assert out[1]["role"] == "Customer, Northpeak Health"
+    assert out[0]["body"] == "Requested the IAM policy."
+
+
+def test_parse_comment_lines_keeps_a_line_that_names_nobody_whole():
+    (out,) = C.parse_comment_lines(["rolled back the pool change"])
+    assert (out["person"], out["role"], out["body"]) == (None, None, "rolled back the pool change")
+
+
 def test_parse_jira_comments():
-    out = C.parse_jira_comments(
+    out = C.parse_comment_lines(
         ["2026-03-14 Jordan Kim: Filing request.", "2026-03-15 Priya Desai: On it."]
     )
-    assert out[0] == {"date": "2026-03-14", "name": "Jordan Kim", "body": "Filing request."}
-    assert out[1]["name"] == "Priya Desai"
+    assert (out[0]["date"], out[0]["person"], out[0]["body"]) == (
+        "2026-03-14",
+        "Jordan Kim",
+        "Filing request.",
+    )
+    assert out[1]["person"] == "Priya Desai"
 
 
 def test_parse_slack_transcript():
@@ -1475,7 +1527,7 @@ def test_linear_comment_shapes_are_all_parsed():
     """The shapes measured across all 165,243 bench comments. The date and the name are peeled
     off INDEPENDENTLY — an earlier whole-line-alternatives parse put the dash pattern first, and
     since it had no name group it swallowed the author of 60,282 comments into the body."""
-    parsed = erb.parse_linear_comments(
+    parsed = erb.parse_comment_lines(
         [
             "2025-02-18 - Maya Patel: Filed initial PRD.",  # dash + name: the most common
             "2025-02-18 - Created: initial hypothesis captured.",  # dash + a LABEL, not a person
@@ -1491,17 +1543,20 @@ def test_linear_comment_shapes_are_all_parsed():
         "2025-12-18",
         None,
     ]
-    assert [c["name"] for c in parsed] == [
+    # "Created" is one token, so it reads as a label rather than a name; the other four are
+    # name-shaped. Whether a name-shaped label is a PERSON is each source's own call to make.
+    assert [c["person"] for c in parsed] == [
         "Maya Patel",
-        "Created",
+        None,
         "Anjali Rao",
         "Naomi Feldman",
         "Implementation notes",
     ]
-    # `body` drops the prefix, `body_with_name` keeps it — the loader picks per comment, so an
+    assert parsed[1]["role"] == "Created"
+    # `body` drops the prefix, `body_with_label` keeps it — the loader picks per comment, so an
     # unresolvable label like "Created:" never gets deleted from the text.
     assert parsed[0]["body"] == "Filed initial PRD."
-    assert parsed[1]["body_with_name"] == "Created: initial hypothesis captured."
+    assert parsed[1]["body_with_label"] == "Created: initial hypothesis captured."
 
 
 def test_linear_comment_author_prefix_is_kept_when_the_name_is_not_a_person():
@@ -1575,14 +1630,15 @@ def test_linear_parent_issue_is_stored_for_resolution():
 def test_linear_comment_clock_prefix_is_not_read_as_an_author():
     """`2025-02-18 09:15: rolled back` must not parse as author "09" with the body truncated to
     "15: rolled back" — that both invents a person and loses text."""
-    parsed = erb.parse_linear_comments(["2025-02-18 09:15: rolled back"])
-    assert parsed[0]["name"] is None
+    parsed = erb.parse_comment_lines(["2025-02-18 09:15: rolled back"])
+    assert parsed[0]["person"] is None
+    assert parsed[0]["role"] is None
     assert parsed[0]["body"] == "09:15: rolled back"
 
 
 def test_linear_comment_string_instead_of_a_list_is_tolerated():
     """29 bench docs carry `comments` as a bare string."""
-    assert len(erb.parse_linear_comments("2025-02-18 - one note")) == 1
+    assert len(erb.parse_comment_lines("2025-02-18 - one note")) == 1
 
 
 def test_linear_comments_become_rows_with_real_dates():

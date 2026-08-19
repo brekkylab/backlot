@@ -167,6 +167,66 @@ def _person_like(name: str) -> bool:
     return all(_NAME_TOKEN.match(t) for t in toks)
 
 
+# The bench names a person in six interchangeable forms, and a role label sits on either side of
+# the name. One recognizer serves every call site that reads such a reference -- jira and linear
+# comments, fireflies speakers, slack speakers -- because the notation is one notation.
+_TRAILING_DATE = re.compile(r"\s*[-\u2013\u2014]?\s*\d{4}-\d{2}-\d{2}\s*$")
+_LEADING_NOISE = re.compile(r"^[|\-\u2013\u2014\s]+")
+# A SPACED dash, which is how the corpus joins a desk to the person staffing it
+# ("Support - Aisha Patel"). Unspaced hyphens are part of a word ("Follow-ups") and are left alone.
+_SPACED_DASH = re.compile(r"\s+[-\u2013\u2014]\s+")
+
+
+def _one_parenthetical(s: str) -> tuple[str, str] | None:
+    """``'Role (Name) tail'`` -> ``('Role tail', 'Name')``; None when there is no single
+    parenthetical to split on."""
+    m = re.fullmatch(r"([^()]*)\(([^()]*)\)([^()]*)", s)
+    if not m:
+        return None
+    return f"{m.group(1)} {m.group(3)}".strip(" ,-\u2013\u2014\t"), m.group(2).strip()
+
+
+def person_reference(label, *, first_names=None) -> tuple[str | None, str | None]:
+    """A bench person reference -> ``(person display name, role label)``.
+
+    Reads ``Name``, ``Name (Role)``, ``Role (Name)``, ``(Name)``, ``Name, Role``,
+    ``(Name, Role)``, ``Role - Name``, any of those trailed by a date, and the leading ``|`` a
+    table-shaped comment carries. Which side holds the person is decided by :func:`_person_like`,
+    not by position, because the corpus writes both orders.
+
+    ``(None, label)`` says no side names a person the directory could hold: a desk ("Support",
+    "QA") or a section heading ("Follow-ups"). The caller decides what that means for its source,
+    which is why the label is returned rather than dropped.
+
+    ``first_names`` resolves a bare first name -- transcripts and comment threads label people that
+    way -- and is deliberately a caller-supplied index of UNAMBIGUOUS names only.
+    """
+    s = _TRAILING_DATE.sub("", _LEADING_NOISE.sub("", str(label or "").strip())).strip()
+    if not s:
+        return None, None
+    split = _one_parenthetical(s)
+    sides = [s] if split is None else [split[0], split[1]]
+    if split is None and _SPACED_DASH.search(s):
+        sides = [p.strip() for p in _SPACED_DASH.split(s, 1)]
+
+    def other(i: int) -> str | None:
+        return (sides[1 - i] or None) if len(sides) == 2 else None
+
+    for i, side in enumerate(sides):
+        if _person_like(side):
+            return side, other(i)
+    for i, side in enumerate(sides):
+        if "," in side:
+            head, tail = (p.strip() for p in side.split(",", 1))
+            if _person_like(head):
+                return head, (tail or other(i))
+    for i, side in enumerate(sides):
+        hit = (first_names or {}).get(side.lower())
+        if hit:
+            return hit, other(i)
+    return None, s
+
+
 def _parse_named_email(s: str) -> tuple[str, str | None]:
     """'Alyssa Chen <alyssa.chen@x.com>' -> ('Alyssa Chen', 'alyssa.chen@x.com');
     a bare name -> (name, None). Used to dedup external participants by their real email."""
@@ -334,6 +394,22 @@ class Principals:
     def display_email(self, name: str) -> tuple[str | None, str]:
         c = canonical(name or "")
         return self._by_canon.get(c), (name or "")
+
+    def first_name_index(self) -> dict[str, str]:
+        """Lowercase first name -> the one DIRECTORY person who owns it.
+
+        A first name two employees share is left out: "Priya" names four people, and picking one
+        invents attribution. Built from the directory alone, so the index is the same whichever
+        documents have been read so far.
+        """
+        by_first: dict[str, set[str]] = {}
+        for u in self.users.values():
+            if not u.get("directory"):
+                continue
+            first = (u["name"].split() or [""])[0].lower()
+            if first:
+                by_first.setdefault(first, set()).add(u["name"])
+        return {k: next(iter(v)) for k, v in by_first.items() if len(v) == 1}
 
     def install(self, conn, settings) -> None:
         conn.execute(

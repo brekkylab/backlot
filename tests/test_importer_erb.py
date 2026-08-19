@@ -381,6 +381,46 @@ def test_to_epoch_parses_bench_date_formats():
     assert C.to_epoch("not a date") is None
 
 
+@pytest.mark.parametrize(
+    "label,person,role",
+    [
+        ("Aisha Patel", "Aisha Patel", None),
+        ("Aisha Patel (Support)", "Aisha Patel", "Support"),
+        ("Support (Aisha Patel)", "Aisha Patel", "Support"),
+        ("(Dev Patel)", "Dev Patel", None),
+        ("Kira Thompson, Support", "Kira Thompson", "Support"),
+        ("(Kira Thompson, Support)", "Kira Thompson", "Support"),
+        ("Maya Singh (Accessibility) \u2014 2026-03-12", "Maya Singh", "Accessibility"),
+        ("| Aisha Patel", "Aisha Patel", None),
+        ("Support - Aisha Patel", "Aisha Patel", "Support"),
+        ("Support", None, "Support"),
+        ("Follow-ups", None, "Follow-ups"),
+        ("", None, None),
+    ],
+)
+def test_person_reference_reads_every_form_the_bench_writes(label, person, role):
+    assert C.person_reference(label) == (person, role)
+
+
+def test_person_reference_resolves_an_unambiguous_first_name_only():
+    first = {"jonas": "Jonas Meyer"}
+    assert C.person_reference("Jonas (ENG)", first_names=first) == ("Jonas Meyer", "ENG")
+    # 'Priya' names four employees, so it is absent from the index and stays a label.
+    assert C.person_reference("Priya", first_names=first) == (None, "Priya")
+
+
+def test_first_name_index_drops_a_first_name_two_employees_share():
+    P = Principals(
+        [
+            {"name": "Jonas Meyer", "email": "jonas@x.com", "dept_slug": "eng"},
+            {"name": "Priya Nair", "email": "priya.n@x.com", "dept_slug": "eng"},
+            {"name": "Priya Shah", "email": "priya.s@x.com", "dept_slug": "eng"},
+        ],
+        "x.com",
+    )
+    assert P.first_name_index() == {"jonas": "Jonas Meyer"}
+
+
 def test_parse_jira_comments():
     out = C.parse_jira_comments(
         ["2026-03-14 Jordan Kim: Filing request.", "2026-03-15 Priya Desai: On it."]
@@ -1793,6 +1833,12 @@ def test_fireflies_speaker_resolution_tolerates_first_names_and_initials():
     assert erb._ff_resolve_speaker("Moderator - Ava", m) == "Ava Chen"  # role-prefixed
     assert erb._ff_resolve_speaker("Dana Ruiz", m) == "Dana Ruiz"  # role stripped from the decl
     assert erb._ff_resolve_speaker("Someone Else", m) is None
+    # `_ff_role_stripped` takes the HEAD of a declared attendee label; `person_reference` asks
+    # which SIDE names a person the directory could hold. On "Ari (Redwood AE)" those disagree --
+    # the parenthetical is the only side that reads as a full name -- so the two stay separate
+    # functions answering separate questions.
+    assert erb._ff_role_stripped("Ari (Redwood AE)") == "Ari"
+    assert erb.person_reference("Ari (Redwood AE)")[0] == "Redwood AE"
 
 
 def test_fireflies_anonymous_speakers_survive_when_nobody_is_recognized():

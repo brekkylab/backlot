@@ -841,61 +841,8 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # live server is reading rides through the reader's lock instead of a spurious "locked".
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
-    refuse_pre_served_db(conn, path)
     conn.executescript(SCHEMA)
     return conn
-
-
-def refuse_pre_served_db(conn: sqlite3.Connection, path) -> None:
-    """Raise unless this DB is keyed the way :data:`ID_COLUMNS` says, naming what is wrong with it.
-
-    Two shapes, neither migratable, and the reason is the same for both: a served id is assigned at
-    import from the WHOLE corpus, so it cannot be backfilled onto rows stored under the dataset's
-    own identifiers. Run by every opener — a writer before it appends, a reader before it serves —
-    because the alternatives are worse than a refusal. Appending produced grants nothing reads;
-    SERVING produced a boot that looks healthy and then answers `no such column` on a listing and
-    a false 404 on a fetch, with the one sentence the operator needs ("re-import the corpus")
-    nowhere in it.
-    """
-    # A DB built before this branch has one shared `doc_acl` table, keyed corpus-wide by `doc_id`
-    # rather than a table per source. An append onto it would write the new source's grants into
-    # the per-source tables SCHEMA creates below while every pre-existing grant stays behind in
-    # `doc_acl`, which nothing reads -- every document from before the append silently
-    # becomes invisible to every scoped token. There is deliberately no backfill here: `doc_acl`
-    # has no source column, so it cannot say which source a colliding `doc_id`'s grant belonged
-    # to, and copying its rows into the per-source tables blind would silently re-create exactly
-    # the cross-source union this branch was written to remove (see the `ACL_TABLE` comment
-    # above). The only correct move is a fresh re-import.
-    if conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'doc_acl'"
-    ).fetchone():
-        raise ValueError(
-            f"{path} predates per-source ACL tables (it still has a `doc_acl` table) -- "
-            "re-import this corpus from scratch instead of appending to it; the old grants "
-            "cannot be safely migrated"
-        )
-    # Same shape as the doc_acl check above: a DB keyed on the dataset's own `doc_id` cannot be
-    # migrated, because the served ids were never stored on those rows and the assignment that
-    # would produce them depends on the whole corpus (a probed source's id is a function of every
-    # other row's), not on any one row that could be rewritten in place. Refused, not healed.
-    #
-    # `CREATE TABLE IF NOT EXISTS` would not alter the old table at all, and `CREATE INDEX IF NOT
-    # EXISTS` guards only the INDEX's NAME -- so without this check the failure surfaces as a bare
-    # `no such column: id` naming whichever table comes first in SCHEMA's text, explaining nothing.
-    stale = sorted(
-        t
-        for (t,) in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-        )
-        if any(c["name"] == "doc_id" for c in conn.execute(f"PRAGMA table_info({t})"))
-    )
-    if stale:
-        raise ValueError(
-            f"{path} predates the served-id primary keys (it still has a `doc_id` column on "
-            f"{', '.join(stale)}) -- re-import this corpus from scratch instead of appending to "
-            "it; a row's served id is assigned at import from the whole corpus, so it cannot be "
-            "backfilled onto rows that were stored under the dataset's own identifiers"
-        )
 
 
 def write_meta(conn: sqlite3.Connection, key: str, value) -> None:
@@ -927,7 +874,6 @@ def connect_ro(
     """
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    refuse_pre_served_db(conn, path)
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
     if cache_mb:

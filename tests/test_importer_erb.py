@@ -347,6 +347,59 @@ def test_mint_does_not_clobber_directory_user(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "header,addr",
+    [
+        ("Jonas Weber <jonas_weber@redwood.com>", "jonas_weber@redwood.com"),
+        ("jonas_weber@redwood.com", "jonas_weber@redwood.com"),
+        ('"jonas_weber@redwood.com"', "jonas_weber@redwood.com"),
+        ("Jonas Weber", None),
+        ("", None),
+    ],
+)
+def test_addr_reads_a_bare_address_as_well_as_an_angle_bracketed_one(header, addr):
+    assert C._addr(header) == addr
+
+
+def test_gmail_thread_sender_is_the_bare_address_not_the_mailbox_owner():
+    """12% of bench thread messages carry `From: <address>` with no display name. Requiring angle
+    brackets left the address unread and fell back to whoever holds the mailbox."""
+    raw = {
+        "mailbox_owner": "Lauren Bishop",
+        "subject": "Post-cutover 502s",
+        "messages": [
+            "From: jonas_weber@redwood.com\nTo: lauren_bishop@redwood.com\n"
+            "Date: 2026-09-18T08:35:00-07:00\nSubject: Post-cutover 502s\n\nPutting this in inbox.",
+            "From: karthik_iyer@redwood.com\nTo: jonas_weber@redwood.com\n"
+            "Date: 2026-09-18T09:02:00-07:00\nSubject: Re: Post-cutover 502s\n\nEdge findings.",
+        ],
+    }
+    (rec,), _bundle = C._byo_gmail("gm-1", raw, Principals([], "redwood.com"))
+    assert rec["author_email"] == "jonas_weber@redwood.com"
+    assert rec["messages"][0]["author_email"] == "karthik_iyer@redwood.com"
+
+
+def test_gmail_thread_with_no_headers_takes_its_recipients_from_the_participants():
+    """A thread with no RFC822 headers states its recipients only through the participant lists."""
+    raw = {
+        "mailbox_owner": "Markus Klein",
+        "subject": "Vendor review",
+        "body": "Please review before Thursday.",
+        "participants_internal": ["Markus Klein", "Rachel Kim"],
+        "participants_external": ["Alyssa Chen <alyssa.chen@cascadefg.com>"],
+    }
+    P = Principals(
+        [
+            {"name": "Markus Klein", "email": "markus.klein@redwood.com", "dept_slug": "eng"},
+            {"name": "Rachel Kim", "email": "rachel.kim@redwood.com", "dept_slug": "eng"},
+        ],
+        "redwood.com",
+    )
+    (rec,), _bundle = C._byo_gmail("gm-2", raw, P)
+    assert rec["author_email"] == "markus.klein@redwood.com"
+    assert rec["to"] == "rachel.kim@redwood.com, alyssa.chen@cascadefg.com"
+
+
 def test_parse_gmail_thread():
     msgs = [
         "From: Vivek K <vivek_k@redwoodinference.com>\n"

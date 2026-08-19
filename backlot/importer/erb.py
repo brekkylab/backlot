@@ -92,6 +92,7 @@ _TZ = {
     "PT": -8,
 }
 _ADDR = re.compile(r"<([^>@\s]+@[^>\s]+)>")
+_BARE_ADDR = re.compile(r"^[^<>@\s,]+@[^<>@\s,]+$")
 # Slack speaker: 1–3 name-ish words / handles ("Alex", "ops-bot", "Maria L", "IT Help"), an
 # optional "(Team)"/"(Role)" label some docs append ("Elena (CFO)", "Asha (FinanceOps)"), then
 # ": ". The parenthetical is dropped so only the bare name resolves against the directory.
@@ -251,10 +252,19 @@ def _slug(name: str) -> str:
 
 
 def _addr(header: str | None) -> str | None:
+    """The address a header names: ``Name <a@b>`` or a bare ``a@b``.
+
+    The bare form is 12% of the bench's thread messages -- their ``From`` is the address with no
+    display name. Requiring angle brackets left that address unread in ``from_name`` while the
+    sender fell back to the mailbox owner, so the message was served from the wrong person.
+    """
     if not header:
         return None
     m = _ADDR.search(header)
-    return m.group(1).lower() if m else None
+    if m:
+        return m.group(1).lower()
+    bare = header.strip().strip('"')
+    return bare.lower() if _BARE_ADDR.match(bare) else None
 
 
 def _name(header: str | None) -> str:
@@ -398,6 +408,10 @@ class Principals:
     def display_email(self, name: str) -> tuple[str | None, str]:
         c = canonical(name or "")
         return self._by_canon.get(c), (name or "")
+
+    def local_part_index(self) -> dict[str, str]:
+        """Email local part -> the address, for a ``From`` carrying only ``marissa_cole``."""
+        return {e.split("@", 1)[0].lower(): e for e in self.users}
 
     def first_name_index(self) -> dict[str, str]:
         """Lowercase first name -> the one DIRECTORY person who owns it.
@@ -1732,9 +1746,19 @@ def _byo_gmail(dsid, raw, P):
     mailbox = _slug_mailbox(owner_name) or "inbox"
     owner_email = P.resolve(owner_name, role="mailbox_owner") if owner_name else None
     internal = _resolved(P, raw.get("participants_internal"), role="participant_internal")
+    external = _resolved(P, raw.get("participants_external"), role="participant_external")
     root = msgs[0] if msgs else {}
     attachments = _gmail_attachments(raw)
     root_ts = to_epoch(root.get("date")) or to_epoch(raw.get("first_email_at")) or synth.epoch(dsid)
+    locals_by_part = P.local_part_index()
+
+    def sender(msg: dict) -> str | None:
+        """A message's own sender: its address, or the address hiding in a `From` that carries only
+        a local part. Never the mailbox owner -- a thread's messages have different senders by
+        definition, so substituting the owner attributes a message to whoever holds the mailbox."""
+        return msg.get("from_email") or locals_by_part.get(
+            (msg.get("from_name") or "").strip().lower()
+        )
     # The thread's later messages, each a full message with its own sender/recipients/Message-ID.
     # A date-less one carries the hour-per-position time the loader gives it, since the artifact has
     # to be explicit about a value it computed rather than read.
@@ -1742,7 +1766,7 @@ def _byo_gmail(dsid, raw, P):
         _rec(
             doc_id=f"{dsid}::m{seq}",
             content=m.get("body", ""),
-            author_email=m.get("from_email"),
+            author_email=sender(m),
             title=(m.get("subject") or title),
             to=m.get("to"),
             cc=m.get("cc"),
@@ -1751,16 +1775,26 @@ def _byo_gmail(dsid, raw, P):
         )
         for seq, m in enumerate(msgs[1:], start=1)
     ]
+    # A thread with no RFC822 headers states its recipients only through the participant lists, so
+    # they are composed here rather than left for the server to invent a To header from the mailbox
+    # name. A thread that names nobody but its sender keeps no To at all, which is a real state:
+    # RFC 5322 allows a message with no destination field, and so does the Gmail API.
+    root_sender = sender(root) or owner_email
+    to_addr = root.get("to")
+    if not to_addr:
+        recipients = [a for a in (*internal, *external) if a and a != root_sender]
+        to_addr = ", ".join(dict.fromkeys(recipients)) or None
+
     rec = _rec(
         source_type="gmail",
         doc_id=dsid,
         mailbox=mailbox,
         title=(title or root.get("subject") or ""),
         content=(root.get("body") or (content if not msgs else "")),
-        author_email=(root.get("from_email") or owner_email),
+        author_email=(sender(root) or owner_email),
         mailbox_owner=owner_name,
         thread=dsid,
-        to=root.get("to"),
+        to=to_addr,
         cc=root.get("cc"),
         message_id=root.get("message_id"),
         attachments=(attachments or None),

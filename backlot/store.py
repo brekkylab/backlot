@@ -842,82 +842,8 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
     refuse_pre_served_db(conn, path)
-    changed = _reconcile_columns(conn)
     conn.executescript(SCHEMA)
-    # A source whose columns just moved has an index built from the old ones, and an --append only
-    # adds the new ids -- so without this a search could match text the served record no longer
-    # carries. Only the sources that changed, and only where an index already exists: a fresh
-    # import builds its own at the end of the load.
-    for src in changed:
-        if _has_fts(conn, src):
-            build_fts_for(conn, src)
     return conn
-
-
-# Columns added after a table shipped, and so absent from a DB built by an earlier version. SCHEMA
-# is all CREATE ... IF NOT EXISTS, which leaves an EXISTING table untouched, so a new column has to
-# be added here or the first statement that mentions it dies on `no such column` -- and for
-# `github_items.ref` that is the snapshot index in SCHEMA itself, i.e. every open, not some later
-# read. Only for columns whose absence is losslessly equivalent to NULL: a served ID cannot be
-# backfilled and is a refusal instead (see refuse_pre_served_db).
-_ADDED_COLUMNS = {
-    # `ref` unset means "the snapshot at created_ts", which is what every row predating it is.
-    "github_items": (("ref", "TEXT"),),
-}
-
-# Columns REMOVED after a table shipped, for the same reason in reverse: an earlier version's table
-# still carries them. A nullable one is harmless -- the importer stops writing it and it degrades to
-# NULL -- so only a column an insert would still trip over needs dropping. Lossless: nothing reads
-# these, which is why they went.
-_DROPPED_COLUMNS = {
-    # NOT NULL, and the importer no longer supplies it, so an --append onto an older DB failed on
-    # the constraint rather than on anything the operator could act on.
-    "slack_messages": ("title",),
-}
-
-
-def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    """Whether `table` carries `column`.
-
-    Uncached on purpose. `sqlite3.Connection` takes no attributes, so memoising it means a
-    module-level map keyed on the connection's identity, which outlives the connection and can be
-    handed to a reused id. Measured at 16 us against a 12 us lookup: real, but this asks once per
-    file fetch, not once per row, and it only guards a path a caller opted into with `?ref=`.
-    """
-    return column in {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return bool(
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
-        ).fetchone()
-    )
-
-
-def _reconcile_columns(conn: sqlite3.Connection) -> set[str]:
-    """Add the columns an older DB lacks and drop the ones it should no longer carry, returning the
-    sources whose table changed."""
-    changed: set[str] = set()
-    source_of = {t: src for src, t in SOURCE_TABLE.items()}
-    for table, columns in _ADDED_COLUMNS.items():
-        if not _table_exists(conn, table):
-            continue  # a fresh DB: SCHEMA's CREATE TABLE already carries the column
-        have = {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
-        for name, decl in columns:
-            if name not in have:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
-                changed.add(source_of[table])
-    for table, columns in _DROPPED_COLUMNS.items():
-        if not _table_exists(conn, table):
-            continue
-        have = {c["name"] for c in conn.execute(f"PRAGMA table_info({table})")}
-        for name in columns:
-            if name in have:
-                conn.execute(f"ALTER TABLE {table} DROP COLUMN {name}")
-                changed.add(source_of[table])
-    conn.commit()
-    return changed
 
 
 def refuse_pre_served_db(conn: sqlite3.Connection, path) -> None:
@@ -2053,10 +1979,16 @@ TITLELESS = frozenset({"slack"})
 
 
 def title_expr(source_type: str, alias: str = "") -> str:
-    """SQL for a source's title, `''` where the table has no such column."""
+    """SQL for a source's title, `''` where the table has no such column — for the LIKE fallback,
+    whose one statement covers every source."""
     if source_type in TITLELESS:
         return "''"
     return f"{alias}.title" if alias else "title"
+
+
+def _fts_text_columns(source_type: str) -> tuple[str, ...]:
+    """The text columns a source's index holds — `content`, and `title` where the table has one."""
+    return ("content",) if source_type in TITLELESS else ("title", "content")
 
 
 def build_fts(conn) -> bool:
@@ -2074,33 +2006,22 @@ def build_fts(conn) -> bool:
     # Commit per source rather than once at the end: on an in-place rebuild of a large DB this
     # keeps each writer lock window to one source's index, so a concurrent reader (the live
     # server, with a busy_timeout) rides through instead of blocking on a single multi-GB commit.
-    for src in SOURCE_TABLE:
-        build_fts_for(conn, src)
+    for src, tbl in SOURCE_TABLE.items():
+        fts = _fts_table(src)
+        # The index carries the source's OWN identifier columns, so the join back to the doc
+        # table is on the same key that table is now stored under. They are UNINDEXED: FTS5 must
+        # not tokenize an id, but it DOES preserve the value's type, so an integer github number
+        # comes back an integer and matches its INTEGER column rather than the string '7'.
+        key = ", ".join(id_columns(src))
+        decl = ", ".join(f"{c} UNINDEXED" for c in id_columns(src))
+        cols = ", ".join(_fts_text_columns(src))
+        conn.execute(f"DROP TABLE IF EXISTS {fts}")
+        conn.execute(
+            f"CREATE VIRTUAL TABLE {fts} USING fts5({decl}, {cols}, tokenize='porter unicode61')"
+        )
+        conn.execute(f"INSERT INTO {fts}({key}, {cols}) SELECT {key}, {cols} FROM {tbl}")
+        conn.commit()
     return True
-
-
-def build_fts_for(conn, src: str) -> None:
-    """(Re)build ONE source's index, replacing whatever it held.
-
-    Split out of :func:`build_fts` so a source whose columns just changed can be reindexed on its
-    own: rebuilding the whole corpus to correct one table is the wrong cost on a large DB.
-    """
-    tbl, fts = SOURCE_TABLE[src], _fts_table(src)
-    # The index carries the source's OWN identifier columns, so the join back to the doc
-    # table is on the same key that table is now stored under. They are UNINDEXED: FTS5 must
-    # not tokenize an id, but it DOES preserve the value's type, so an integer github number
-    # comes back an integer and matches its INTEGER column rather than the string '7'.
-    key = ", ".join(id_columns(src))
-    decl = ", ".join(f"{c} UNINDEXED" for c in id_columns(src))
-    conn.execute(f"DROP TABLE IF EXISTS {fts}")
-    conn.execute(
-        f"CREATE VIRTUAL TABLE {fts} USING fts5({decl}, title, content, tokenize='porter unicode61')"
-    )
-    conn.execute(
-        f"INSERT INTO {fts}({key}, title, content) "
-        f"SELECT {key}, {title_expr(src)}, content FROM {tbl}"
-    )
-    conn.commit()
 
 
 def fts_add_docs(conn, source_type: str, doc_keys: list) -> int:
@@ -2126,10 +2047,10 @@ def fts_add_docs(conn, source_type: str, doc_keys: list) -> int:
         values = ",".join("(" + ",".join("?" for _ in cols) + ")" for _ in chunk)
         flat = [v for row in chunk for v in row]
         conn.execute(f"DELETE FROM {fts} WHERE ({key}) IN (VALUES {values})", flat)
+        cols = ", ".join(_fts_text_columns(source_type))
         conn.execute(
-            f"INSERT INTO {fts}({key}, title, content) "
-            f"SELECT {key}, {title_expr(source_type)}, content FROM {tbl} "
-            f"WHERE ({key}) IN (VALUES {values})",
+            f"INSERT INTO {fts}({key}, {cols}) "
+            f"SELECT {key}, {cols} FROM {tbl} WHERE ({key}) IN (VALUES {values})",
             flat,
         )
         n += len(chunk)
@@ -2511,7 +2432,7 @@ def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
     return conn.execute(f"SELECT * FROM jira_issues WHERE key = ?{clause}", [key, *cp]).fetchone()
 
 
-def _file_head_clause(visible_ids=None, tbl: str = "t", has_ref: bool = True) -> tuple[str, list]:
+def _file_head_clause(visible_ids=None, tbl: str = "t") -> tuple[str, list]:
     """SQL restricting `tbl` to the HEAD of its `(repo, path)` — no snapshot the caller can also
     see is newer.
 
@@ -2530,29 +2451,23 @@ def _file_head_clause(visible_ids=None, tbl: str = "t", has_ref: bool = True) ->
     not the file they are served — otherwise a path whose newest snapshot is restricted answers
     404 for a caller who can read an older one, which reveals that a newer one exists.
 
-    `has_ref` is False for a DB imported before the column existed, which serving opens read-only
-    and so cannot migrate. Such a DB holds one row per path — the importer refused a second — so
-    there is no tie to break and naming the column would only make every file read fail.
     """
     inner, ip = _acl_clause("github", tbl="x", visible_ids=visible_ids)
-    # COALESCE so a stated ref still orders against an unstated one rather than dropping out of the
-    # comparison, as any NULL operand would.
-    tie = (
-        f" OR (x.created_ts = {tbl}.created_ts AND COALESCE(x.ref, '') > COALESCE({tbl}.ref, ''))"
-        if has_ref
-        else ""
-    )
     return (
         f" AND NOT EXISTS (SELECT 1 FROM github_items x WHERE x.repo = {tbl}.repo"
         f" AND x.path = {tbl}.path AND x.kind = 'file'{inner}"
-        f" AND (x.created_ts > {tbl}.created_ts{tie}))",
+        f" AND (x.created_ts > {tbl}.created_ts"
+        # COALESCE so a stated ref still orders against an unstated one rather than dropping out of
+        # the comparison, as any NULL operand would.
+        f" OR (x.created_ts = {tbl}.created_ts"
+        f" AND COALESCE(x.ref, '') > COALESCE({tbl}.ref, ''))))",
         ip,
     )
 
 
 def list_repo_files(conn, repo, visible_ids=None, limit=10_000, offset=0) -> list[sqlite3.Row]:
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
+    head, hp = _file_head_clause(visible_ids)
     sql = (
         "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file'"
         + clause
@@ -2571,7 +2486,7 @@ def list_repo_file_paths(conn, repo, visible_ids=None, limit=10_000, offset=0) -
     ``/pulls`` page synthesizes a changeset per row.
     """
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
+    head, hp = _file_head_clause(visible_ids)
     sql = (
         "SELECT t.path FROM github_items t WHERE t.repo = ? AND t.kind = 'file'"
         + clause
@@ -2646,7 +2561,7 @@ def github_comments(conn, repo, number, *, anchored: bool | None = None) -> list
 
 def count_repo_files(conn, repo, visible_ids=None) -> int:
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
+    head, hp = _file_head_clause(visible_ids)
     return conn.execute(
         "SELECT COUNT(*) FROM github_items t WHERE t.repo = ? AND t.kind = 'file'" + clause + head,
         [repo, *cp, *hp],
@@ -2663,11 +2578,7 @@ def get_repo_file(conn, repo, path, visible_ids=None, ref=None) -> sqlite3.Row |
     so it wins.
     """
     clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
-    if ref is not None and _has_column(conn, "github_items", "ref"):
-        # The column guard is for a DB imported before it existed: SERVING opens read-only, so
-        # _add_missing_columns never runs against it, and this is the one read that names `ref` in
-        # SQL. Such a DB holds one snapshot per path, so HEAD is the file -- the same answer the
-        # no-history tolerance already gives a ref no snapshot claims.
+    if ref is not None:
         named = conn.execute(
             "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file' AND t.path = ?"
             " AND t.ref = ?" + clause,
@@ -2675,7 +2586,7 @@ def get_repo_file(conn, repo, path, visible_ids=None, ref=None) -> sqlite3.Row |
         ).fetchone()
         if named is not None:
             return named
-    head, hp = _file_head_clause(visible_ids, has_ref=_has_column(conn, "github_items", "ref"))
+    head, hp = _file_head_clause(visible_ids)
     return conn.execute(
         "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file' AND t.path = ?"
         + clause

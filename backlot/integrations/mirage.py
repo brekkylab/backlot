@@ -5,8 +5,9 @@ SaaS backend and read it with bash-style commands (``ls``, ``cat``, ``grep``, ``
 
 Slack, Notion and S3 take the host as a config field, so they need nothing from here — pass the
 mock's URL for that resource straight in (``f"{base_url}/slack/api"``, ``…/notion/v1``, ``…/s3``).
-Google and GitHub do not expose one: they read the host from module-level constants in
-``mirage.core.*._client``, which is what ``point_google_at`` / ``point_github_at`` rebind.
+GitHub reads its host from a module-level constant. Google offers a single-host override, but
+Backlot needs a distinct prefix for each API. ``point_google_at`` / ``point_github_at`` therefore
+rebind the corresponding constants in ``mirage.core.*._client``.
 """
 
 from __future__ import annotations
@@ -85,10 +86,8 @@ def point_google_at(base_url: str) -> None:
             "TOKEN_URL": f"{base}/oauth2/token",
             "GMAIL_API_BASE": f"{base}/gmail/v1",
             "DRIVE_API_BASE": f"{base}/drive/v3",
-            # Backlot serves no upload route, so this one exists to make a write FAIL against the
-            # mock rather than succeed against real Drive: mirage reads it for uploads, and it is
-            # the only constant here whose vendor value would be reached by a caller who believed
-            # the whole client was redirected.
+            # Backlot serves no upload route, so bind it to the mock to make a write FAIL there
+            # rather than succeed against real Drive.
             "DRIVE_UPLOAD_BASE": f"{base}/upload/drive/v3",
             "DOCS_API_BASE": f"{base}/docs/v1",
             "SHEETS_API_BASE": f"{base}/sheets/v4",
@@ -96,9 +95,7 @@ def point_google_at(base_url: str) -> None:
             # Backlot serves neither Calendar nor Forms, so these two are here for the reason
             # DRIVE_UPLOAD_BASE is: mirage 0.0.5 added them, a caller who believed the whole client
             # was redirected would otherwise reach the real Google, and a 404 from the mock is the
-            # failure that says so. `/forms/v1` deliberately, not `{base}/v1` — that is what
-            # mirage's own `forms_base` composes from a single host, and it would land on the docs
-            # route the mock does serve.
+            # failure that says so.
             "CALENDAR_API_BASE": f"{base}/calendar/v3",
             "FORMS_API_BASE": f"{base}/forms/v1",
         },

@@ -502,6 +502,73 @@ def test_a_document_whose_author_the_bench_never_names_says_so():
     assert rec["author_email"] == "unknown@redwood.com"
 
 
+def test_slack_replies_state_their_own_second():
+    """The bench's slack docs are one transcript with no per-message clock, so the second each reply
+    lands on is computed here rather than left for the loader: the corpus is what the server answers
+    from, and a time nobody wrote is a time nobody can check."""
+    raw = {
+        "channel": "incidents",
+        "participants": ["Ava Ng", "Bob Ito"],
+        "content_field_names": ["messages"],
+        "messages": "Ava Ng: 502s from the gateway?\nBob Ito: Looking now.\nAva Ng: Rolled back.",
+        "first_message_ts": 1770000000,
+    }
+    (rec,), _bundle = C._byo_slack("sl-2", raw, Principals([], "redwood.com"))
+    assert rec["created"] == 1770000000
+    assert [r["created"] for r in rec["replies"]] == [1770000001, 1770000002]
+
+
+def test_a_comment_states_the_minute_the_bench_wrote():
+    raw = {
+        "key": "SUP-2",
+        "project": "customer-support",
+        "summary": "Latency spike",
+        "description": "Body.",
+        "issue_type": "Support Request",
+        "status": "Open",
+        "reporter": "Aisha Patel",
+        "created_at": "2026-03-13",
+        "comments": [
+            "2026-03-13 14:05 - Aisha Patel (Support): Acknowledged.",
+            "2026-03-13 14:42 - Marcus Reed (Support): Triaged.",
+        ],
+    }
+    (rec,), _bundle = C._byo_jira("jr-2", raw, Principals([], "redwood.com"))
+    assert [c["created_ts"] for c in rec["comments"]] == [
+        C.to_epoch("2026-03-13T14:05"),
+        C.to_epoch("2026-03-13T14:42"),
+    ]
+
+
+def test_every_comment_states_a_time_even_when_the_bench_states_none():
+    raw = {
+        "key": "SUP-3",
+        "project": "customer-support",
+        "summary": "Latency spike",
+        "description": "Body.",
+        "issue_type": "Support Request",
+        "status": "Open",
+        "reporter": "Aisha Patel",
+        "created_at": "2026-03-13",
+        "comments": ["Aisha Patel: first", "Marcus Reed: second"],
+    }
+    (rec,), _bundle = C._byo_jira("jr-3", raw, Principals([], "redwood.com"))
+    base = C.to_epoch("2026-03-13")
+    assert [c["created_ts"] for c in rec["comments"]] == [base + 1, base + 2]
+
+
+def test_every_sentence_states_a_start_time():
+    raw = {
+        "meeting_title": "April all-hands",
+        "transcript": "[00:00] Ada Chief: welcome everyone.\n[00:35] Dana Rep: pipeline is up.",
+        "duration_minutes": 25,
+        "meeting_date": "2026-04-10",
+    }
+    (rec,), _bundle = C._byo_fireflies("ff-1", raw, Principals([], "redwood.com"))
+    assert rec["sentences"]
+    assert all(s["start_time"] is not None for s in rec["sentences"])
+
+
 def test_parse_gmail_thread():
     msgs = [
         "From: Vivek K <vivek_k@redwoodinference.com>\n"

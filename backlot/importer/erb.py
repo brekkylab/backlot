@@ -946,6 +946,26 @@ def _peel_stamp(line: str) -> tuple[str | None, str | None, str]:
     return date_only, None, after_date
 
 
+def comment_seconds(parsed: list[dict], doc_created: int) -> list[int]:
+    """A second for every comment, in the order the bench wrote them.
+
+    A stated stamp is used EXACTLY as stated -- never nudged to stay ahead of the comment before it,
+    which would serve a second nobody wrote. An unstamped comment follows the comment before it, not
+    the document's clock plus a position: in a thread mixing the two that puts an unstamped comment
+    back at the document's creation, and a consumer ordering by createdAt -- Linear's
+    ``Issue.comments`` does -- then serves the thread inverted.
+    """
+    out: list[int] = []
+    prev = doc_created
+    for c in parsed:
+        sec = to_epoch(f"{c['date']}T{c['time'] or '00:00'}") if c["date"] else None
+        if sec is None:
+            sec = prev + 1
+        prev = max(prev, sec)
+        out.append(sec)
+    return out
+
+
 def parse_comment_lines(comments, *, first_names=None) -> list[dict]:
     """Bench comment strings -> ``{date, time, person, role, body, body_with_label}`` each.
 
@@ -1774,6 +1794,9 @@ def _byo_jira(dsid, raw, P):
         """The person a comment names, or None when its label names an activity instead."""
         return c["person"] if c["person"] and not _names_an_activity(c["person"]) else None
 
+    created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
+    parsed_comments = parse_comment_lines(raw.get("comments"), first_names=first_names)
+    comment_ts = comment_seconds(parsed_comments, created)
     comments = [
         _rec(
             id=f"{dsid}::c{seq}",
@@ -1783,11 +1806,9 @@ def _byo_jira(dsid, raw, P):
                 if _jira_author(c)
                 else P.label_email(c["person"] or c["role"], raw.get("customer_company"))
             ),
-            created_ts=to_epoch(f"{c['date']}T{c['time'] or '00:00'}") if c["date"] else None,
+            created_ts=comment_ts[seq - 1],
         )
-        for seq, c in enumerate(
-            parse_comment_lines(raw.get("comments"), first_names=first_names), start=1
-        )
+        for seq, c in enumerate(parsed_comments, start=1)
     ]
     rec = _rec(
         source_type="jira",
@@ -1806,7 +1827,7 @@ def _byo_jira(dsid, raw, P):
         reporter=reporter_email,
         duedate=raw.get("due_date"),
         comments=(comments or None),
-        created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
+        created=created,
         updated=to_epoch(raw.get("updated_at")),
     )
     rec["group"] = group
@@ -1898,11 +1919,15 @@ def _byo_slack(dsid, raw, P):
     root_ts = (
         _SLACK_TS_REMAP.get(dsid) or to_epoch(raw.get("first_message_ts")) or synth.epoch(dsid)
     )
+    # One second per turn. The bench's slack docs are a single transcript with no per-message clock,
+    # so this is the second the loader used to assign; stating it here makes the corpus answerable
+    # for the times it serves instead of leaving them to be recomputed.
     replies = [
         _rec(
             doc_id=f"{dsid}::m{seq}",
             content=text,
             author_email=(P.resolve(spk, role="slack_participant") or P.unattributed()),
+            created=root_ts + seq,
         )
         for seq, (spk, text) in enumerate(turns[1:], start=1)
     ]
@@ -2006,10 +2031,10 @@ def _byo_linear(dsid, raw, P):
             if n and len(str(n).split()) > 1
         },
     }
-    comments, prev_ts = [], created
-    for seq, c in enumerate(
-        parse_comment_lines(raw.get("comments"), first_names=first_names), start=1
-    ):
+    parsed_comments = parse_comment_lines(raw.get("comments"), first_names=first_names)
+    comment_ts = comment_seconds(parsed_comments, created)
+    comments = []
+    for seq, c in enumerate(parsed_comments, start=1):
         # A name the roster already holds becomes that principal. A name it does not -- 130,434
         # comments across 12,169 distinct names, because the bench generates far more people than
         # the directory lists -- becomes a DISPLAY-ONLY address instead: the attribution the bench
@@ -2018,19 +2043,12 @@ def _byo_linear(dsid, raw, P):
         # is unattributed.
         named = c["person"] if c["person"] and not _names_an_activity(c["person"]) else None
         author = (P.display_email(named)[0] or P.display_only_email(named)) if named else None
-        # A stated time is used exactly as stated -- never nudged to stay ahead of the comment
-        # before it, which would serve a second nobody wrote. Only an undated comment is derived,
-        # and it follows the one before it rather than the issue's own clock plus a position.
-        ts = to_epoch(f"{c['date']}T{c['time'] or '00:00'}") if c["date"] else None
-        if ts is None:
-            ts = prev_ts + 1
-        prev_ts = max(prev_ts, ts)
         comments.append(
             _rec(
                 id=f"{dsid}::c{seq}",
                 content=(c["body"] if named else c["body_with_label"]),
                 author_email=(author or P.label_email(c["role"])),
-                created_ts=ts,
+                created_ts=comment_ts[seq - 1],
             )
         )
     # A relation names its target by doc_id in BYO, so the bench's issue KEY is resolved here —

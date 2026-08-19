@@ -62,12 +62,21 @@ def _rebind_mirage_constants(source_module: str, overrides: dict[str, str]) -> N
 
 
 def point_google_at(base_url: str) -> None:
-    """Redirect mirage's Google connectors (Gmail/Drive/Docs/Sheets/Slides + OAuth) at the mock.
+    """Redirect mirage's Google connectors (Gmail/Drive/Docs/Sheets/Slides/Calendar/Forms + OAuth)
+    at the mock.
 
-    Google exposes no host config, so the ``_client`` constants are patched directly. The consuming
-    submodules import them BY VALUE (``from ..._client import GMAIL_API_BASE``), so both the source
-    and every already-imported copy are rebound — that is what makes this order-independent.
-    Idempotent; call once, before constructing the Google resources.
+    The constants are patched rather than configured, and the reason is NOT that mirage offers no
+    host config -- it does. ``GoogleConfig.api_base`` exists and its own comment calls it a
+    "single-host override for every Google API ... used to point backends at a fake server", and
+    every base in ``_client`` consults it first. What rules it out here is the SINGLE: with one
+    ``api_base``, mirage composes ``docs_base``, ``slides_base`` and ``forms_base`` as
+    ``{base}/v1`` alike, and the mock serves docs at ``/docs/v1`` and slides at ``/slides/v1``, so
+    three APIs would arrive on one prefix it cannot route apart. Per-constant rebinding is what
+    keeps them distinguishable.
+
+    The consuming submodules import them BY VALUE (``from ..._client import GMAIL_API_BASE``), so
+    both the source and every already-imported copy are rebound — that is what makes this
+    order-independent. Idempotent; call once, before constructing the Google resources.
     """
     base = base_url.rstrip("/")
     _rebind_mirage_constants(
@@ -84,6 +93,14 @@ def point_google_at(base_url: str) -> None:
             "DOCS_API_BASE": f"{base}/docs/v1",
             "SHEETS_API_BASE": f"{base}/sheets/v4",
             "SLIDES_API_BASE": f"{base}/slides/v1",
+            # Backlot serves neither Calendar nor Forms, so these two are here for the reason
+            # DRIVE_UPLOAD_BASE is: mirage 0.0.5 added them, a caller who believed the whole client
+            # was redirected would otherwise reach the real Google, and a 404 from the mock is the
+            # failure that says so. `/forms/v1` deliberately, not `{base}/v1` — that is what
+            # mirage's own `forms_base` composes from a single host, and it would land on the docs
+            # route the mock does serve.
+            "CALENDAR_API_BASE": f"{base}/calendar/v3",
+            "FORMS_API_BASE": f"{base}/forms/v1",
         },
     )
 

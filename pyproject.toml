@@ -102,7 +102,10 @@ llamaindex = [
 # The [fuse] extra powers the optional `--fuse` real-OS mount, which also needs an OS FUSE driver
 # (macFUSE / fuse3) — the Python dep itself installs everywhere.
 mirage = [
-    "mirage-ai[fuse]~=0.0.4",
+    # Floor is 0.0.5, not 0.0.4: that release added CALENDAR_API_BASE and FORMS_API_BASE, and
+    # `integrations.mirage` rebinds both. `_rebind_mirage_constants` RAISES on a name it cannot
+    # find anywhere, so on 0.0.4 `point_google_at` would fail outright rather than degrade.
+    "mirage-ai[fuse]~=0.0.5",
 ]
 
 [project.scripts]

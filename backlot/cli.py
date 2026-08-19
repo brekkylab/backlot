@@ -478,8 +478,8 @@ def status(data_dir: DataDir = None) -> None:
             src: conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
             for src, tbl in store.SOURCE_TABLE.items()
         }
-        # None on a DB built before the meta table existed; the counts above are rows, and parsing
-        # turns one Slack transcript into many message rows, so the two numbers differ by design.
+        # The counts above are rows, and parsing turns one Slack transcript into many message
+        # rows, so the two numbers differ by design.
         source_docs = store.read_meta(conn, "source_documents")
     finally:
         conn.close()

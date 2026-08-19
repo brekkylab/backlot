@@ -909,17 +909,8 @@ def write_meta(conn: sqlite3.Connection, key: str, value) -> None:
 
 
 def read_meta(conn: sqlite3.Connection, key: str) -> str | None:
-    """A build-time fact, or None when absent — including on a DB built before the meta table
-    existed. Only a missing-table error is swallowed; other OperationalErrors (e.g. database
-    locked) must surface, not masquerade as absent metadata."""
-    try:
-        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    except sqlite3.OperationalError as e:
-        # Only "no such table" means the meta table doesn't exist. A different OperationalError
-        # (e.g. "database is locked") must surface, not masquerade as metadata absence.
-        if "no such table" not in str(e).lower():
-            raise
-        return None
+    """A build-time fact, or None when this import did not write that key."""
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row[0] if row else None
 
 

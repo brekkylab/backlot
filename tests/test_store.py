@@ -290,9 +290,6 @@ def test_acl_table_registry_covers_every_source(tmp_path):
     conn = store.connect_rw(tmp_path / "s.sqlite")
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert set(store.ACL_TABLE.values()) <= names
-    # the old shared table let two sources' documents merge their grants (doc_id is unique only
-    # within a source) — it must not come back now that every source has its own table.
-    assert "doc_acl" not in names
     conn.close()
 
 

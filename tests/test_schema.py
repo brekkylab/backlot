@@ -747,6 +747,33 @@ def test_the_test_corpus_states_every_required_fact():
     assert [(i, _unstated(r)) for i, r in enumerate(SAMPLE) if _unstated(r)] == []
 
 
+def test_the_typescript_examples_corpus_would_load():
+    """The one example whose corpus is not Python, so the sweep above cannot see it. CI catches it
+    by running the example, which is a whole round trip away; this catches it here."""
+    import re
+
+    from tests.conftest import REPO_ROOT
+
+    path = REPO_ROOT / "examples/using-official-sdk/linear/index.ts"
+    text = path.read_text()
+    assert "const CORPUS = [" in text, f"{path.name}: no CORPUS literal -- fix this extractor"
+    body = text[text.index("const CORPUS = [") + len("const CORPUS = ") :]
+    depth = 0
+    end = None
+    for i, ch in enumerate(body):
+        depth += ch == "["
+        depth -= ch == "]"
+        if depth == 0 and ch == "]":
+            end = i + 1
+            break
+    assert end, f"{path.name}: unbalanced CORPUS literal"
+    # object-literal keys to JSON keys, then drop the trailing commas JSON does not allow
+    as_json = re.sub(r"(\n\s*|\{\s*|,\s*)([A-Za-z_][A-Za-z_0-9]*):", r'\1"\2":', body[:end])
+    records = json.loads(re.sub(r",(\s*[}\]])", r"\1", as_json))
+    assert records, f"{path.name}: parsed no records -- fix this extractor"
+    assert {r.get("doc_id"): record_errors(r) for r in records if record_errors(r)} == {}
+
+
 def test_every_record_the_docs_show_would_load():
     """A README snippet is the first corpus anybody writes, so one that no longer validates teaches
     a shape the importer refuses."""

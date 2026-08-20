@@ -1,0 +1,101 @@
+// The README's demo. Rendered by:
+//     D=assets/readme-demo
+//     python assets/make_cast.py $D/demo.screenplay $D/demo.cast 100 27
+//     agg --font-size 20 --theme asciinema --fps-cap 30 --idle-time-limit 2 \
+//         --last-frame-duration 4 $D/demo.cast /tmp/raw.gif
+//     gifsicle -O3 --lossy=80 --colors 48 /tmp/raw.gif -o $D/demo.gif
+//
+// WHAT RUNS AND WHAT DOES NOT. Read the directive list at the top of make_cast.py. The short
+// version, and the only thing needed to trust this: `!` and `!!` lines are really executed at build
+// time and `!` splices their real stdout. `$`, `|` and `J` lines are authored. So which half is
+// real is a matter of reading this file.
+//
+// Beat 3 is the one place those differ from what the frame implies. The `curl` there is typed like
+// any other command, but it is a `$` line: it does not run. It cannot — it carries `xoxb-xxxxxxxx`
+// and `YOUR_CHANNEL_ID` where your own workspace token and channel go, which is why the body under
+// it is the inline `J <<LIVE` block instead.
+//
+// That block is not invented. It is one real message from a live conversations.history response,
+// fetched with a workspace token on 2026-08-20, then masked and passed through the same jq filter
+// shown above it. What survives is the measurement: the field names, their order as the API
+// returned them, and the format of every value — `ts` is "<10>.<6>", `client_msg_id` is a
+// 36-character UUID, a user id is "U" + 10. What was replaced is every value that identifies the
+// workspace: the ids, the team and the text. `blocks` reads "[...]" because the filter collapsed
+// it, not because Slack sends it that way.
+//
+// So the claim the beat makes is true and narrow: the same response schema. What is staged is only
+// that one command producing that one body.
+//
+// Auth goes in the Authorization header, not a `token=` query parameter. Slack accepts the legacy
+// parameter but tells you not to put a credential in a URL, and the header is what every real
+// client sends — a demo about fidelity should not model the discouraged path to keep a line short.
+//
+// `.messages[-1]` — the oldest message on the page — rather than the newest, because in this corpus
+// every channel's newest message happens to be a thread parent. Slack adds `thread_ts`,
+// `reply_count`, `reply_users`, `reply_users_count`, `latest_reply` and `subscribed` to a parent and
+// to nothing else, and the mock does the same, so a parent is a fair response but a noisy one to
+// compare: measured 2026-08-20, a plain message carries 7 keys and a parent carries 14. The same
+// reasoning picked the live message embedded below — a plain one, not a parent and not a
+// `channel_join`, which answers only five keys.
+//
+// The two jq filters are character-for-character the same, which is the point: the same expression
+// over the live side and the mock's, so nothing in the comparison hinges on how each side was
+// queried.
+//
+// `blocks` is collapsed to "[...]" on both sides by that filter. It is one of the seven keys the
+// claim is about, so it stays visible rather than being deleted; its real contents are two dozen
+// lines of nesting that would push the comparison off the screen.
+//
+// The screen clears after the health check so the two messages sit together on a screen of their
+// own. A GIF loops, and that is the frame it should rest on.
+//
+// `backlot import --bundled` really runs and its real output is spliced — the per-source counts on
+// screen are what it printed. `BACKLOT_DATA_DIR` is set by the `E` line rather than typed in front
+// of the command, for two reasons: a reader would not type it, and `import` prints the absolute path
+// it wrote to, so a real checkout path would both wrap across lines and publish someone's directory
+// layout. /tmp/backlot keeps that line short and anonymous.
+//
+// There is no `/health` call: the import output already lists what went in, per source, so asking
+// the server to repeat it would be two screens saying one thing.
+//
+// The four uvicorn lines under `backlot serve` are transcribed from a real start, not captured:
+// running the server in the foreground would block the build, and backgrounding it puts a job
+// number and interleaved logs on screen for nothing. The server is really started, by the `!!` line
+// above them.
+
+E BACKLOT_DATA_DIR=/tmp/backlot/data
+!! rm -rf /tmp/backlot
+!! pkill -f 'backlot serve' ; sleep 1
+> Running backlot mock server
+
+! backlot import --bundled
+~ 1.6
+!! nohup backlot serve > /tmp/backlot.log 2>&1 & sleep 4
+$ backlot serve
+| INFO:     Started server process [41284]
+| INFO:     Waiting for application startup.
+| INFO:     Application startup complete.
+| INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+~ 2.2
+C
+> Getting a mock Slack message from backlot
+
+! curl -sH "Authorization: Bearer admin-service-token" "localhost:8000/slack/api/conversations.history?channel=C9CB165E444" | jq -C '.messages[-1] | .blocks |= "[...]"'
+~ 2.6
+> and this is exactly the same response schema as the real Slack API
+
+$ curl -sH "Authorization: Bearer xoxb-xxxxxxxx" "https://slack.com/api/conversations.history?channel=YOUR_CHANNEL_ID" | jq -C '.messages[-1] | .blocks |= "[...]"'
+J <<LIVE
+{
+  "user": "U0000000001",
+  "type": "message",
+  "ts": "1512086224.000218",
+  "client_msg_id": "9f5a1b2c-3d4e-5f60-8a71-b2c3d4e5f001",
+  "text": "Shipping the export fix this afternoon.",
+  "team": "T0000000002",
+  "blocks": "[...]"
+}
+LIVE
+~ 3.5
+
+!! pkill -f 'backlot serve' ; rm -rf /tmp/backlot /tmp/backlot.log

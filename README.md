@@ -10,9 +10,7 @@ Backlot serves enterprise SaaS APIs — Slack, Gmail, Drive, GitHub, Jira, Notio
 more — with the exact response shapes, pagination, auth and per-document ACLs the real ones have,
 over a corpus you supply.
 
-<!-- figure: demo — assets/demo.gif
-     alt: Installing backlot, importing the bundled corpus, starting the server, and listing Slack
-          channels with the official slack_sdk. -->
+![Importing the bundled corpus, starting the server, then reading a Slack message out of it with curl — beside the same call against the real Slack API, returning the same seven fields.](assets/readme-demo/demo.gif)
 
 <!-- figure: facades — assets/figures/facades-{light,dark}.svg
      alt: Vendor-shaped facades on one localhost port, all backed by a single corpus. -->

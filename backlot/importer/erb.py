@@ -991,8 +991,14 @@ def parse_comment_lines(comments, *, first_names=None) -> list[dict]:
         m = _LABELLED.match(rest)
         if not m:
             out.append(
-                {"date": date, "time": time, "person": None, "role": None,
-                 "body": rest, "body_with_label": rest}
+                {
+                    "date": date,
+                    "time": time,
+                    "person": None,
+                    "role": None,
+                    "body": rest,
+                    "body_with_label": rest,
+                }
             )
             continue
         person, role = person_reference(m.group("label"), first_names=first_names)
@@ -1743,9 +1749,7 @@ def _byo_github(dsid, raw, P):
     raw_state = str(raw.get("state") or "").lower()
     # A merged pull with no merge time recorded: its last update is the closest second the bench
     # states, and a merged pull carrying no `merged_at` reads as never merged.
-    merged_at = (
-        (raw.get("merged_at") or raw.get("updated_at")) if raw_state == "merged" else None
-    )
+    merged_at = (raw.get("merged_at") or raw.get("updated_at")) if raw_state == "merged" else None
     rec = _rec(
         source_type="github",
         doc_id=dsid,
@@ -1861,6 +1865,7 @@ def _byo_gmail(dsid, raw, P):
         return msg.get("from_email") or locals_by_part.get(
             (msg.get("from_name") or "").strip().lower()
         )
+
     # The thread's later messages, each a full message with its own sender/recipients/Message-ID.
     # A date-less one carries the hour-per-position time the loader gives it, since the artifact has
     # to be explicit about a value it computed rather than read.

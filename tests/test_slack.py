@@ -58,9 +58,57 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
 # application error as HTTP 200 with {"ok": false, "error": …}, which the mock already does — these
 # are about the cases where it answered something real Slack never would.
 #
-# NOTE: these expectations come from Slack's published reference rather than from probing the live
-# API — there are no Slack credentials in this environment. Each
-# one cites the documented behaviour it encodes.
+# NOTE: most expectations here come from Slack's published reference rather than from probing the
+# live API — there are no Slack credentials in this environment, and each one cites the documented
+# behaviour it encodes. The exception is the not_authed/invalid_auth split, which needs no account
+# to observe and so was measured directly (see test_slack_auth_errors_distinguish_...).
+
+
+# Measured 2026-08-20 against slack.com, which answers both of these without an account:
+#   curl -H "Authorization: Bearer xoxb-not-a-real-token" .../conversations.list -> invalid_auth
+#   curl                                                  .../conversations.list -> not_authed
+# A merely UNKNOWN token answers the same as a malformed one, so the only thing that decides it is
+# whether a non-empty credential was presented.
+@pytest.mark.parametrize(
+    "kwargs, error",
+    [
+        ({}, "not_authed"),
+        ({"headers": {"Authorization": "Bearer"}}, "not_authed"),
+        ({"headers": {"Authorization": "Basic abc"}}, "not_authed"),
+        ({"data": {"token": ""}}, "not_authed"),
+        ({"headers": {"Authorization": "Bearer xoxb-not-a-real-token"}}, "invalid_auth"),
+        ({"headers": {"Authorization": "Bearer xoxb"}}, "invalid_auth"),
+        ({"data": {"token": "bogus-token"}}, "invalid_auth"),
+    ],
+)
+def test_slack_auth_errors_distinguish_a_missing_token_from_an_unusable_one(client, kwargs, error):
+    """A connector branches on these two — invalid_auth means the credential is wrong and
+    re-authenticating is the fix, not_authed means none was sent. Answering not_authed to both sends
+    it down the wrong branch."""
+    r = client.post("/slack/api/conversations.list", **kwargs)
+    assert r.json() == {"ok": False, "error": error}
+
+
+def test_slack_auth_error_split_is_uniform_across_methods(client):
+    """The split is decided once, so no method is left answering the old single error."""
+    bogus = {"Authorization": "Bearer xoxb-not-a-real-token"}
+    for path in (
+        "conversations.list",
+        "conversations.info",
+        "conversations.history",
+        "conversations.members",
+        "conversations.replies",
+        "users.info",
+        "users.list",
+        "auth.test",
+        "search.messages",
+        "search.all",
+        "search.files",
+    ):
+        assert client.post(f"/slack/api/{path}").json()["error"] == "not_authed", path
+        assert client.post(f"/slack/api/{path}", headers=bogus).json()["error"] == (
+            "invalid_auth"
+        ), path
 
 
 def _a_channel_id(client, admin_h):
@@ -105,6 +153,64 @@ def test_slack_conversations_list_defaults_to_public_channels(client, admin_h):
     ).json()
     assert omitted["channels"] == explicit["channels"]
     assert omitted["channels"]
+
+
+# Transcribed from Slack's documented example response for conversations.list, which
+# conversations.info shapes a channel the same way:
+# https://docs.slack.dev/reference/methods/conversations.list
+_DOCUMENTED_CHANNEL_KEYS = frozenset(
+    {
+        "id",
+        "name",
+        "is_channel",
+        "is_group",
+        "is_im",
+        "created",
+        "creator",
+        "is_archived",
+        "is_general",
+        "unlinked",
+        "name_normalized",
+        "is_shared",
+        "is_ext_shared",
+        "is_org_shared",
+        "pending_shared",
+        "is_pending_ext_shared",
+        "is_member",
+        "is_private",
+        "is_mpim",
+        "updated",
+        "topic",
+        "purpose",
+        "previous_names",
+        "num_members",
+    }
+)
+
+
+def test_slack_channel_object_matches_slacks_documented_field_set(client, admin_h):
+    """Diffed against the transcription above rather than spot-checked, so a field that goes
+    missing or one this invents fails here instead of waiting to be noticed. `pending_shared` and
+    `is_pending_ext_shared` are inert constants, but a client validating the object against a
+    generated model still sees a shape real Slack never returns without them."""
+    listed = client.get(
+        "/slack/api/conversations.list", headers=admin_h, params={"limit": 1}
+    ).json()["channels"][0]
+    assert set(listed) == _DOCUMENTED_CHANNEL_KEYS
+
+    # conversations.info builds the same object, so it must not drift from .list
+    info = client.post(
+        "/slack/api/conversations.info", headers=admin_h, data={"channel": listed["id"]}
+    ).json()["channel"]
+    assert set(info) == _DOCUMENTED_CHANNEL_KEYS
+
+    # the shared-channel family is answered in full, and consistently
+    assert listed["pending_shared"] == [] and listed["is_pending_ext_shared"] is False
+    assert listed["is_shared"] is False and listed["is_ext_shared"] is False
+    assert listed["is_org_shared"] is False
+    # nesting is part of the shape too
+    assert set(listed["topic"]) == {"value", "creator", "last_set"}
+    assert set(listed["purpose"]) == {"value", "creator", "last_set"}
 
 
 def test_slack_conversations_list_rejects_an_unknown_type(client, admin_h):

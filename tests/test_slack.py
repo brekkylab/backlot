@@ -155,9 +155,15 @@ def test_slack_conversations_list_defaults_to_public_channels(client, admin_h):
     assert omitted["channels"]
 
 
-# Transcribed from Slack's documented example response for conversations.list, which
-# conversations.info shapes a channel the same way:
+# Transcribed from Slack's documented example response for conversations.list:
 # https://docs.slack.dev/reference/methods/conversations.list
+#
+# A FLOOR, not the exact shape. Measured against the live API, a channel object carries 29 keys —
+# the five extra ones (context_team_id, shared_team_ids, pending_connected_team_ids,
+# parent_conversation, properties) are documented on the conversation object reference rather than
+# on the method page, and .list and .info do not agree with each other either (num_members is
+# .list-only, last_read is .info-only). Both gaps are issue #74; until then this pins that nothing
+# documented goes missing, which is what regressed.
 _DOCUMENTED_CHANNEL_KEYS = frozenset(
     {
         "id",
@@ -188,21 +194,25 @@ _DOCUMENTED_CHANNEL_KEYS = frozenset(
 )
 
 
-def test_slack_channel_object_matches_slacks_documented_field_set(client, admin_h):
-    """Diffed against the transcription above rather than spot-checked, so a field that goes
-    missing or one this invents fails here instead of waiting to be noticed. `pending_shared` and
+def test_slack_channel_object_carries_slacks_documented_field_set(client, admin_h):
+    """Diffed against the transcription above rather than spot-checked, so a documented field that
+    goes missing fails here instead of waiting to be noticed. `pending_shared` and
     `is_pending_ext_shared` are inert constants, but a client validating the object against a
-    generated model still sees a shape real Slack never returns without them."""
+    generated model still sees a shape real Slack never returns without them.
+
+    A subset check, not an equality one: the live API sends more than the method page documents, so
+    pinning an exact set would fail the day a real field is added (see #74)."""
     listed = client.get(
         "/slack/api/conversations.list", headers=admin_h, params={"limit": 1}
     ).json()["channels"][0]
-    assert set(listed) == _DOCUMENTED_CHANNEL_KEYS
+    assert _DOCUMENTED_CHANNEL_KEYS <= set(listed)
 
-    # conversations.info builds the same object, so it must not drift from .list
+    # .info builds its channel from the same helper, so it must not drop what .list answers. The
+    # two are NOT the same object in real Slack, which is #74 — this only pins the documented floor.
     info = client.post(
         "/slack/api/conversations.info", headers=admin_h, data={"channel": listed["id"]}
     ).json()["channel"]
-    assert set(info) == _DOCUMENTED_CHANNEL_KEYS
+    assert _DOCUMENTED_CHANNEL_KEYS <= set(info)
 
     # the shared-channel family is answered in full, and consistently
     assert listed["pending_shared"] == [] and listed["is_pending_ext_shared"] is False

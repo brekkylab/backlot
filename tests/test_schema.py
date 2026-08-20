@@ -588,6 +588,65 @@ def test_readers_accept_typed_principal_ids():
 # field" was a claim rather than a fact (68 declared fields were unused when it was written).
 
 
+# The facts a record must state rather than leave for the loader to invent. Expressed as data so
+# every corpus in the repo -- the reference one, the test one, and the examples -- is held to the
+# same list by the three tests below.
+CONTAINER = {
+    "slack": "channel",
+    "gmail": "mailbox",
+    "google_drive": "folder",
+    "github": "repo",
+    "jira": "project",
+    "confluence": "space",
+    "notion": "teamspace",
+    "s3": "bucket",
+    "hubspot": "object_type",
+    "linear": "team",
+    "fireflies": "channel",
+}
+CHILD_TIME = {
+    "comments": "created_ts",
+    "replies": "created",
+    "messages": "created",
+    "sentences": "start_time",
+}
+
+
+def _unstated(rec: dict) -> list[str]:
+    """Facts this record leaves for the loader to invent."""
+    gaps = []
+    if not (rec.get("author_email") or rec.get("host_email")):
+        gaps.append("author_email")
+    if "created" not in rec:
+        gaps.append("created")
+    if not rec.get(CONTAINER[rec["source_type"]]):
+        gaps.append(CONTAINER[rec["source_type"]])
+    for array, field in CHILD_TIME.items():
+        for i, child in enumerate(rec.get(array) or []):
+            # A fireflies sentence is exempt from the author rule: the vendor's `Sentence` carries
+            # no email at all, and an unnamed speaker is what diarization produces.
+            if array != "sentences" and not child.get("author_email"):
+                gaps.append(f"{array}[{i}].author_email")
+            if child.get(field) is None:
+                gaps.append(f"{array}[{i}].{field}")
+    return gaps
+
+
+def test_the_sample_corpus_states_every_required_fact():
+    gaps = {
+        i: _unstated(rec)
+        for i, rec in enumerate(_example_records(), start=1)
+        if _unstated(rec)
+    }
+    assert gaps == {}
+
+
+def test_the_test_corpus_states_every_required_fact():
+    from tests.conftest import SAMPLE
+
+    assert [(i, _unstated(r)) for i, r in enumerate(SAMPLE) if _unstated(r)] == []
+
+
 def _example_corpus():
     from tests.conftest import REPO_ROOT
 

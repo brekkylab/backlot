@@ -43,6 +43,7 @@ SAMPLE = [
         "author_groups": ["engineering"],
         "visibility": "public",
         "labels": ["engineering", "handbook"],
+        "created": "2025-06-01T09:00:00Z",
     },
     {
         "source_type": "confluence",
@@ -57,8 +58,13 @@ SAMPLE = [
         "visibility": "public",
         "labels": ["oncall", "runbook"],
         "comments": [
-            {"content": "Add the rate-limiter rollback step.", "author_email": "bob@acme.com"}
+            {
+                "content": "Add the rate-limiter rollback step.",
+                "author_email": "bob@acme.com",
+                "created_ts": "2026-02-10T18:20:00Z",
+            }
         ],
+        "created": "2025-09-10T11:00:00Z",
     },
     {
         "source_type": "confluence",
@@ -70,6 +76,7 @@ SAMPLE = [
         "author_email": "hana@acme.com",
         "author_groups": ["people"],
         "visibility": "group",
+        "created": "2025-12-01T10:00:00Z",
     },
     {
         "source_type": "slack",
@@ -78,6 +85,7 @@ SAMPLE = [
         "content": "Reminder: production deploy freeze starts Friday.",
         "author_email": "ava@acme.com",
         "visibility": "public",
+        "created": "2026-02-05T17:00:00Z",
     },
     {
         "source_type": "slack",
@@ -89,9 +97,18 @@ SAMPLE = [
         "visibility": "public",
         "reactions": [{"name": "eyes", "count": 2, "users": ["U01", "U02"]}],
         "replies": [
-            {"content": "Yeah, looking now.", "author_email": "ava@acme.com"},
-            {"content": "Rolled back; 502s clearing.", "author_email": "bob@acme.com"},
+            {
+                "content": "Yeah, looking now.",
+                "author_email": "ava@acme.com",
+                "created": "2026-02-10T18:00:40Z",
+            },
+            {
+                "content": "Rolled back; 502s clearing.",
+                "author_email": "bob@acme.com",
+                "created": "2026-02-10T18:06:00Z",
+            },
         ],
+        "created": "2026-02-10T18:00:00Z",
     },
     {
         "source_type": "slack",
@@ -101,6 +118,7 @@ SAMPLE = [
         "author_email": "hana@acme.com",
         "author_groups": ["people"],
         "visibility": "group",
+        "created": "2026-02-06T11:00:00Z",
     },
     {
         "source_type": "github",
@@ -114,7 +132,14 @@ SAMPLE = [
         "visibility": "public",
         "state": "open",
         "labels": ["bug", "gateway"],
-        "comments": [{"content": "Confirmed with a repro test.", "author_email": "ava@acme.com"}],
+        "comments": [
+            {
+                "content": "Confirmed with a repro test.",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-02-09T15:30:00Z",
+            }
+        ],
+        "created": "2026-02-09T09:00:00Z",
     },
     {
         "source_type": "github",
@@ -134,8 +159,13 @@ SAMPLE = [
         "labels": ["bug"],
         "reviews": [{"author_email": "ava@acme.com", "state": "APPROVED", "body": "LGTM."}],
         "comments": [
-            {"content": "Add a metric for dropped bursts?", "author_email": "ava@acme.com"}
+            {
+                "content": "Add a metric for dropped bursts?",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-02-09T16:00:00Z",
+            }
         ],
+        "created": "2026-02-09T14:00:00Z",
     },
     {
         "source_type": "github",
@@ -149,6 +179,7 @@ SAMPLE = [
         "visibility": "group",
         "state": "open",
         "labels": ["security"],
+        "created": "2026-01-15T10:00:00Z",
     },
     {
         "source_type": "jira",
@@ -178,9 +209,18 @@ SAMPLE = [
             }
         ],
         "comments": [
-            {"content": "Rolled back; latency recovering.", "author_email": "ava@acme.com"},
-            {"content": "p95 back to ~240ms.", "author_email": "bob@acme.com"},
+            {
+                "content": "Rolled back; latency recovering.",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-02-08T21:30:00Z",
+            },
+            {
+                "content": "p95 back to ~240ms.",
+                "author_email": "bob@acme.com",
+                "created_ts": "2026-02-08T22:15:00Z",
+            },
         ],
+        "created": "2026-02-08T20:00:00Z",
     },
     {
         "source_type": "jira",
@@ -195,6 +235,7 @@ SAMPLE = [
         "visibility": "group",
         "issuetype": "Sub-task",
         "status": "To Do",
+        "created": "2026-02-09T03:00:00Z",
     },
     {
         "source_type": "jira",
@@ -205,6 +246,7 @@ SAMPLE = [
         "content": "Private note to self.",
         "author_email": "bob@acme.com",
         "visibility": "private",
+        "created": "2026-02-01T09:00:00Z",
     },
     {
         "source_type": "gmail",
@@ -222,6 +264,7 @@ SAMPLE = [
                 "content": "PDF bytes placeholder",
             }
         ],
+        "created": "2026-01-20T16:00:00Z",
     },
     {
         "source_type": "gmail",
@@ -230,6 +273,7 @@ SAMPLE = [
         "content": "Q3 compensation adjustments — do not forward.",
         "author_email": "cfo@acme.com",
         "readers": ["cfo@acme.com"],
+        "created": "2026-01-22T09:00:00Z",
     },
     # A threaded exchange. Every other gmail doc here is its own thread root, so the reply->root
     # mapping — which `threadId` reports and which the served hex ids have to agree on — had no
@@ -242,6 +286,7 @@ SAMPLE = [
         "content": "Seeing repeated 502s from the gateway.",
         "author_email": "ava@acme.com",
         "readers": ["ava@acme.com", "bob@acme.com"],
+        "created": "2026-02-11T08:00:00Z",
     },
     {
         "source_type": "gmail",
@@ -252,6 +297,7 @@ SAMPLE = [
         "content": "Rolled back the rate limiter; 502s clearing.",
         "author_email": "bob@acme.com",
         "readers": ["ava@acme.com", "bob@acme.com"],
+        "created": "2026-02-11T08:45:00Z",
     },
     {
         "source_type": "google_drive",
@@ -263,6 +309,7 @@ SAMPLE = [
         "author_groups": ["marketing"],
         "visibility": "public",
         "subtype": "document",
+        "created": "2025-11-01T12:00:00Z",
     },
     {
         "source_type": "google_drive",
@@ -274,6 +321,7 @@ SAMPLE = [
         "author_groups": ["finance"],
         "visibility": "group",
         "subtype": "spreadsheet",
+        "created": "2026-01-10T08:00:00Z",
     },
     {
         "source_type": "google_drive",
@@ -285,6 +333,7 @@ SAMPLE = [
         "author_groups": ["marketing"],
         "visibility": "public",
         "subtype": "presentation",
+        "created": "2026-01-25T15:00:00Z",
     },
     {
         "source_type": "google_drive",
@@ -297,6 +346,7 @@ SAMPLE = [
         "visibility": "public",
         "subtype": "pdf",
         "mime_type": "application/pdf",
+        "created": "2025-10-01T00:00:00Z",
     },
     # A sheet whose content carries a BLANK line, which the real corpus is full of (its spreadsheets
     # are prose). Real Sheets returns an interior blank row as `[]`, not `[""]`, and nothing else in
@@ -312,6 +362,7 @@ SAMPLE = [
         "author_groups": ["finance"],
         "visibility": "public",
         "subtype": "spreadsheet",
+        "created": "2026-01-12T09:00:00Z",
     },
     # An Office upload, not a native Sheet. Real Google answers an Office file differently from
     # both a native type and a plain binary — only the API owning its family (Sheets, for .xlsx)
@@ -327,6 +378,7 @@ SAMPLE = [
         "visibility": "public",
         "subtype": "xlsx",
         "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "created": "2026-01-15T09:00:00Z",
     },
     {
         "source_type": "notion",
@@ -339,7 +391,14 @@ SAMPLE = [
         "author_groups": ["engineering"],
         "visibility": "public",
         "icon": "📟",
-        "comments": [{"content": "add rate-limiter step", "author_email": "bob@acme.com"}],
+        "comments": [
+            {
+                "content": "add rate-limiter step",
+                "author_email": "bob@acme.com",
+                "created_ts": "2026-02-10T18:25:00Z",
+            }
+        ],
+        "created": "2026-02-01T09:00:00Z",
     },
     {
         "source_type": "notion",
@@ -353,6 +412,7 @@ SAMPLE = [
         "author_groups": ["engineering"],
         "visibility": "public",
         "properties": {"Status": {"type": "select"}, "Priority": {"type": "select"}},
+        "created": "2026-01-10T09:00:00Z",
     },
     {
         "source_type": "notion",
@@ -366,6 +426,7 @@ SAMPLE = [
         "author_groups": ["engineering"],
         "visibility": "public",
         "properties": {"Status": "In Progress", "Priority": "High"},
+        "created": "2026-02-02T10:00:00Z",
     },
     {
         "source_type": "notion",
@@ -377,6 +438,7 @@ SAMPLE = [
         "author_email": "hana@acme.com",
         "author_groups": ["people"],
         "visibility": "group",
+        "created": "2026-03-01T09:00:00Z",
     },
     {
         "source_type": "s3",
@@ -390,6 +452,7 @@ SAMPLE = [
         "author_email": "ava@acme.com",
         "author_groups": ["engineering"],
         "visibility": "public",
+        "created": "2026-02-11T09:00:00Z",
     },
     {
         "source_type": "s3",
@@ -403,6 +466,7 @@ SAMPLE = [
         "author_email": "bob@acme.com",
         "author_groups": ["engineering"],
         "visibility": "public",
+        "created": "2025-12-05T09:00:00Z",
     },
     {
         "source_type": "s3",
@@ -416,6 +480,7 @@ SAMPLE = [
         "author_email": "hana@acme.com",
         "author_groups": ["people"],
         "visibility": "group",
+        "created": "2026-01-05T10:00:00Z",
     },
     # HubSpot: the object type is the container, so these span three of them. The contact and the
     # note are associated with the company (declared once; the loader writes both directions).
@@ -437,6 +502,7 @@ SAMPLE = [
             "employees": "150",
             "founded": "2011-03-01",
         },
+        "created": "2026-03-01T09:00:00Z",
     },
     {
         "source_type": "hubspot",
@@ -450,6 +516,7 @@ SAMPLE = [
         "visibility": "public",
         "properties": {"firstname": "Ava", "lastname": "Stone", "email": "ava@acme-health.com"},
         "associations": [{"to": "hs-co-acme", "label": "Primary"}],
+        "created": "2026-03-02T11:00:00Z",
     },
     {
         "source_type": "hubspot",
@@ -463,6 +530,7 @@ SAMPLE = [
         "visibility": "public",
         "properties": {"hs_note_body": "Security review scheduled; wants EU data residency."},
         "associations": [{"to": "hs-co-acme"}],
+        "created": "2026-03-05T14:00:00Z",
     },
     # Restricted by explicit readers rather than group visibility, so the `companies` container
     # keeps a single owning group while still giving the ACL tests a hidden CRM record.
@@ -477,6 +545,7 @@ SAMPLE = [
         "author_groups": ["people"],
         "readers": ["hana@acme.com"],
         "properties": {"name": "Stealth Health Co", "lifecyclestage": "qualified"},
+        "created": "2026-03-06T09:00:00Z",
     },
     # Two more companies so a small page size actually produces a cursor: with only two rows a
     # `limit=2` crawl never takes the paging branch, and the cursor path would go untested.
@@ -498,6 +567,7 @@ SAMPLE = [
             "employees": "400",
             "founded": "2014-06-01",
         },
+        "created": "2026-03-08T09:00:00Z",
     },
     # `archived` is only meaningful if something is archived: this row is excluded from the default
     # listing and is the only row the archived view returns.
@@ -513,6 +583,7 @@ SAMPLE = [
         "visibility": "public",
         "archived": True,
         "properties": {"name": "Defunct Labs", "lifecyclestage": "qualified", "employees": "12"},
+        "created": "2025-08-01T09:00:00Z",
     },
     # Linear: the team is the container, so these span two of them. `lin-rl` carries the full
     # surface the LlamaIndex reader dereferences (state/project/labels/creator/assignee/estimate/
@@ -540,8 +611,16 @@ SAMPLE = [
         "created": "2026-02-18T00:00:00Z",
         "updated": "2026-03-04T00:00:00Z",
         "comments": [
-            {"content": "Reproduced with a burst test.", "author_email": "bob@acme.com"},
-            {"content": "Fix is in review.", "author_email": "ava@acme.com"},
+            {
+                "content": "Reproduced with a burst test.",
+                "author_email": "bob@acme.com",
+                "created_ts": "2026-02-18T10:00:00Z",
+            },
+            {
+                "content": "Fix is in review.",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-02-19T11:00:00Z",
+            },
         ],
     },
     {
@@ -587,6 +666,7 @@ SAMPLE = [
         "state": "In Review",
         "priority": "P2",
         "labels": ["tokens"],
+        "created": "2026-02-20T13:00:00Z",
     },
     # Restricted by explicit readers, so the `engineering` team keeps one owning group while the
     # ACL tests still have a Linear issue that must stay hidden. It carries a project, cycle,
@@ -611,7 +691,14 @@ SAMPLE = [
         "labels": ["restricted-only"],
         "assignee": "vault.keeper@acme.com",
         "assigneeName": "Vault Keeper",
-        "comments": [{"content": "Rotation window agreed.", "author_email": "hana@acme.com"}],
+        "comments": [
+            {
+                "content": "Rotation window agreed.",
+                "author_email": "hana@acme.com",
+                "created_ts": "2026-01-16T11:00:00Z",
+            }
+        ],
+        "created": "2026-01-16T10:00:00Z",
     },
     # A team no ACL-restricted caller can see into, so `teams` and `team(id:)` can be checked for
     # agreement. Only hana is granted it.
@@ -627,6 +714,7 @@ SAMPLE = [
         "readers": ["hana@acme.com"],
         "identifier": "BLA-1",
         "state": "Triage",
+        "created": "2026-02-25T09:00:00Z",
     },
     # --- fireflies: meeting transcripts -------------------------------------------------
     # Structured `sentences` (the child-row form), so content is DERIVED from them and the

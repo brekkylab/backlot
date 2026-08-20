@@ -108,10 +108,15 @@ def _user(email: str | None, display: str | None = None) -> dict | None:
         "name": display or _display_name(email),
         "num_transcripts": None,
         "recent_meeting": None,
+        "recent_transcript": None,
         # account/billing state this mock does not model — see the SDL header
         "minutes_consumed": None,
         "is_admin": None,
         "integrations": None,
+        "is_calendar_in_sync": None,
+        # The mock's ACL groups are a permission mechanism, not Fireflies user-groups, so they are
+        # not served under this name. Fireflies serves the empty list, not null.
+        "user_groups": [],
     }
 
 
@@ -163,20 +168,68 @@ def _summary(row) -> dict:
         "bullet_gist": None,
         "gist": None,
         "transcript_chapters": None,
+        "notes": None,
+        "short_overview": None,
+        "extended_sections": None,
     }
 
 
-def _speakers(row) -> list[dict]:
-    return (store.jcol(row, "analytics") or {}).get("speakers") or []
+def _words_per_minute(word_count, duration_secs) -> float | None:
+    """Words per minute over this speaker's own talk time. Null rather than a division error when
+    the corpus gives a speaker no measurable time."""
+    if word_count is None or not duration_secs:
+        return None
+    return round(float(word_count) * 60.0 / float(duration_secs), 2)
+
+
+def _analytics_speakers(row, numbers: dict) -> list[dict]:
+    """`analytics.speakers` is Fireflies' AnalyticsSpeaker: talk-time statistics keyed by the same
+    per-meeting speaker number the sentences carry. `numbers` maps name -> that number."""
+    out = []
+    for sp in (store.jcol(row, "analytics") or {}).get("speakers") or []:
+        name = sp.get("name")
+        duration = sp.get("duration")
+        out.append(
+            {
+                "speaker_id": numbers.get(name),
+                "name": name,
+                "duration": duration,
+                "word_count": sp.get("word_count"),
+                "longest_monologue": sp.get("longest_monologue"),
+                "monologues_count": sp.get("monologues_count"),
+                "filler_words": sp.get("filler_words"),
+                "questions": sp.get("questions"),
+                "duration_pct": sp.get("duration_pct"),
+                "words_per_minute": _words_per_minute(sp.get("word_count"), duration),
+            }
+        )
+    return out
 
 
 def _analytics(row) -> dict:
     a = store.jcol(row, "analytics") or {}
     return {
+        "_row": row,
         "sentiments": a.get("sentiments"),
-        "speakers": a.get("speakers") or [],
+        # bound explicitly (see RESOLVERS): the speaker numbers live in fireflies_sentences
         # classifier buckets — see the SDL header
         "categories": a.get("categories"),
+    }
+
+
+def _channel(name: str) -> dict:
+    """One Channel. `id` IS the channel name rather than a minted opaque id, because
+    `transcripts(channel_id:)` selects on the name — a client must be able to feed `channels { id }`
+    straight back in."""
+    return {
+        "_channel": name,
+        "id": name,
+        "title": name,
+        # the corpus states which channel a meeting is in, not the channel's own history
+        "created_at": None,
+        "updated_at": None,
+        "created_by": None,
+        "is_private": None,
     }
 
 
@@ -202,11 +255,18 @@ def _transcript(row, info) -> dict:
             for e in (store.jcol(row, "participants", []) or [])
             if isinstance(e, str) and "@external." not in e
         ],
+        # workspace membership and link-sharing state — see the SDL header. Fireflies serves the
+        # empty list for both, not null.
+        "workspace_users": [],
+        "shared_with": [],
+        # The corpus is finished recordings, so no meeting is ever mid-transcription.
+        "is_live": False,
+        "privacy": "link",
         "meeting_link": row["meeting_link"],
         "calendar_id": row["calendar_id"],
         "cal_id": row["calendar_id"],
         "calendar_type": row["calendar_type"],
-        "channels": [row["channel"]] if row["channel"] else [],
+        "channels": [_channel(row["channel"])] if row["channel"] else [],
         "transcript_url": row["transcript_url"],
         "audio_url": row["audio_url"],
         "video_url": row["video_url"],
@@ -220,8 +280,8 @@ def _transcript(row, info) -> dict:
             "silent_meeting": False,
             "summary_status": "processed",
         },
-        "apps_preview": None,
-        "speakers": _speakers(row),
+        # Fireflies serves the wrapper with an empty `outputs`, not null — see the SDL header.
+        "apps_preview": {"outputs": []},
     }
 
 
@@ -237,7 +297,11 @@ def resolve_transcripts(
     toDate=None,
     host_email=None,
     organizers=None,
+    organizer_email=None,
     participants=None,
+    participant_email=None,
+    title=None,
+    date=None,
     user_id=None,
     mine=None,
     channel_id=None,
@@ -265,14 +329,33 @@ def resolve_transcripts(
     if len({h.lower() for h in hosts}) > 1:
         return []
 
+    # The singular forms are aliases of the plural filters, so they combine the same way:
+    # `organizers` is any-of, `participants` is all-of.
+    organizers = [*(organizers or []), *([organizer_email] if organizer_email else [])]
+    participants = [*(participants or []), *([participant_email] if participant_email else [])]
+
+    from_ts = to_epoch_seconds(fromDate)
+    to_ts = to_epoch_seconds(toDate)
+    if date is not None:
+        # `date` selects a DAY, not an instant: the real API returns every meeting sharing the
+        # calendar day of the value passed. Narrowed against any fromDate/toDate already given.
+        day = to_epoch_seconds(date)
+        if day is None:
+            return []
+        start = day - (day % 86400)
+        from_ts = start if from_ts is None else max(from_ts, start)
+        end = start + 86399
+        to_ts = end if to_ts is None else min(to_ts, end)
+
     rows = store.list_fireflies_transcripts(
         ctx["conn"],
         channel=channel_id,
         host_email=hosts[0] if hosts else None,
         organizers=organizers or None,
         participants=participants or None,
-        from_ts=to_epoch_seconds(fromDate),
-        to_ts=to_epoch_seconds(toDate),
+        title=title,
+        from_ts=from_ts,
+        to_ts=to_ts,
         keyword=keyword,
         scope=scope,
         visible_ids=ctx.get("visible_ids"),
@@ -299,6 +382,39 @@ def resolve_transcript_sentences(transcript, info, **_ignored):
     row = transcript["_row"]
     rows = store.fireflies_sentences(_ctx(info)["conn"], row["id"])
     return [_sentence(r, i) for i, r in enumerate(rows)]
+
+
+def _speaker_numbers(info, transcript_id) -> dict:
+    return store.fireflies_speaker_numbers(_ctx(info)["conn"], transcript_id)
+
+
+def resolve_transcript_speakers(transcript, info, **_ignored):
+    """Fireflies' `Transcript.speakers` is identity only — name and the per-meeting number. Both
+    live in fireflies_sentences, so this queries; selecting metadata alone never does."""
+    numbers = _speaker_numbers(info, transcript["_row"]["id"])
+    return [{"id": float(num), "name": name} for name, num in numbers.items()]
+
+
+def resolve_analytics_speakers(analytics, info, **_ignored):
+    """`analytics.speakers` carries the stored talk-time statistics, joined to the same speaker
+    numbers `Transcript.speakers` reports."""
+    row = analytics["_row"]
+    return _analytics_speakers(row, _speaker_numbers(info, row["id"]))
+
+
+def resolve_channel_members(channel, info, **_ignored):
+    """A channel's roster, from the ACL group the channel is grouped by. Bound rather than built
+    eagerly: `channels { id title }` is the common selection and must not query."""
+    ctx = _ctx(info)
+    return [
+        {
+            "user_id": synth.fireflies_user_id(r["email"]),
+            "email": r["email"],
+            "name": r["display_name"] or _display_name(r["email"]),
+        }
+        for r in store.fireflies_channel_members(ctx["conn"], channel["_channel"])
+        if r["email"]
+    ]
 
 
 def resolve_user(_root, info, id=None):
@@ -345,7 +461,12 @@ RESOLVERS = {
         "user": resolve_user,
         "users": resolve_users,
     },
-    "Transcript": {"sentences": resolve_transcript_sentences},
+    "Transcript": {
+        "sentences": resolve_transcript_sentences,
+        "speakers": resolve_transcript_speakers,
+    },
+    "MeetingAnalytics": {"speakers": resolve_analytics_speakers},
+    "Channel": {"members": resolve_channel_members},
 }
 
 

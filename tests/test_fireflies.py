@@ -69,12 +69,15 @@ def test_fireflies_serves_the_documented_metadata_surface(client, admin_h):
         """
         { transcripts(limit: 1) {
             id title date dateString duration host_email organizer_email participants
-            meeting_link calendar_id cal_id calendar_type channels
+            meeting_link calendar_id cal_id calendar_type privacy is_live
+            channels { id title members { user_id email name } is_private created_at }
+            speakers { id name }
             transcript_url audio_url video_url
             user { user_id email name }
             summary { overview keywords action_items outline topics_discussed meeting_type }
             analytics { sentiments { positive_pct neutral_pct negative_pct }
-                        speakers { name duration word_count duration_pct } }
+                        speakers { speaker_id name duration word_count duration_pct
+                                   words_per_minute } }
             meeting_attendees { displayName email location }
             sentences { index speaker_name speaker_id text raw_text start_time end_time
                         ai_filters { text_cleanup } }
@@ -89,6 +92,30 @@ def test_fireflies_serves_the_documented_metadata_surface(client, admin_h):
     assert t["sentences"] and t["analytics"]["sentiments"]["positive_pct"] is not None
     s0 = t["sentences"][0]
     assert s0["ai_filters"]["text_cleanup"] == s0["text"]
+    # `date` is a bare number, as the vendor declares it — not an ISO string under a custom scalar
+    assert isinstance(t["date"], (int, float))
+    # the roster carries identity; the talk-time numbers are on analytics.speakers, keyed by the
+    # same per-meeting number the sentences use
+    assert t["speakers"] and all(sp["name"] for sp in t["speakers"])
+    assert {sp["id"] for sp in t["speakers"]} == {float(s["speaker_id"]) for s in t["sentences"]}
+    assert {sp["speaker_id"] for sp in t["analytics"]["speakers"]} == {
+        int(sp["id"]) for sp in t["speakers"]
+    }
+    assert t["is_live"] is False and t["privacy"]
+    # `channels.id` IS the channel name, so it can be fed straight back to `channel_id:`
+    ch = t["channels"][0]
+    assert ch["id"] == ch["title"]
+    back = ff_gql(
+        client, '{ transcripts(channel_id: "%s", limit: 50) { id } }' % ch["id"], admin_h
+    ).json()["data"]["transcripts"]
+    assert t["id"] in {x["id"] for x in back}
+    # the roster is who took part in the channel's meetings, not the channel's ACL group, so it
+    # covers this meeting's own participants and anyone else the channel's other meetings named
+    assert {m["email"] for m in ch["members"]} >= set(t["participants"])
+    assert ch["members"]
+    assert all(m["user_id"] and m["name"] for m in ch["members"])
+    # the channel's own history is not in the corpus
+    assert ch["is_private"] is None and ch["created_at"] is None
 
 
 def test_fireflies_sentence_windows_are_ordered_and_contiguous(client, admin_h):
@@ -177,6 +204,42 @@ def test_fireflies_keyword_scope_over_http(client, admin_h):
     assert titles(keyword="selects", scope="sentences") == {"April all-hands"}
     assert titles(keyword="selects", scope="all") == {"April all-hands"}
     assert titles(keyword="all-hands", scope="title") == {"April all-hands"}
+    # `title:` narrows on the title by SUBSTRING and takes no scope, which is what separates it
+    # from `keyword:` — a partial word still matches.
+    assert titles(title="all-hand") == {"April all-hands"}
+    assert titles(title="latency") == {"Acme x Northwind — latency discovery"}
+    # and it does not reach the sentences the way keyword+scope can
+    assert titles(title="selects") == set()
+
+
+def test_fireflies_date_selects_a_day_and_the_singular_email_filters_narrow(client, admin_h):
+    """`date:` is a DAY, not an instant — the live API returns every meeting sharing the calendar
+    day of the value passed, so any millisecond within the day has to match. `organizer_email` and
+    `participant_email` are the singular forms of the plural filters."""
+
+    def titles(arglist):
+        return {
+            t["title"]
+            for t in ff_gql(
+                client, "{ transcripts(%s, limit: 50) { title } }" % arglist, admin_h
+            ).json()["data"]["transcripts"]
+        }
+
+    # 2026-04-10T16:00:00Z, the all-hands meeting: its own instant, and midnight that day
+    assert titles("date: 1775836800000") == {"April all-hands"}
+    assert titles("date: 1775779200000") == {"April all-hands"}
+    # the discovery call is a different day, so it is not in either answer
+    assert titles("date: 1775142000000") == {"Acme x Northwind — latency discovery"}
+    # a day no meeting falls on
+    assert titles("date: 1600000000000") == set()
+    # `date` narrows AGAINST a range rather than replacing it: a toDate before that day wins
+    assert titles("date: 1775836800000, toDate: 1775142000000") == set()
+
+    assert titles('organizer_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
+    assert titles('participant_email: "ava@acme.com"') == {"Acme x Northwind — latency discovery"}
+    # `participants` is who the SENTENCES attribute, so a guest-list-only attendee is not one
+    assert titles('participant_email: "dana@northwind.example"') == set()
+    assert titles('participant_email: "nobody@acme.com"') == set()
 
 
 def test_fireflies_unknown_scope_is_a_field_error_not_a_silent_widening(client, admin_h):
@@ -219,7 +282,7 @@ def test_fireflies_introspection_describes_the_schema(client, admin_h):
     discovers the surface."""
     r = ff_gql(
         client,
-        '{ __schema { queryType { fields { name } } } '
+        "{ __schema { queryType { fields { name } } } "
         '__type(name: "Sentence") { fields { name type { name } } } }',
         admin_h,
     )
@@ -403,16 +466,26 @@ def test_fireflies_stubbed_fields_are_null_not_invented(tmp_path):
         t = _ff(
             client,
             settings,
-            "{ transcripts(limit: 1) { apps_preview "
-            "meeting_attendance { email joinedAt duration } "
-            "summary { bullet_gist gist transcript_chapters } "
+            "{ transcripts(limit: 1) { apps_preview { outputs { app_id } } "
+            "workspace_users shared_with { email } "
+            "meeting_attendance { name join_time leave_time } "
+            "summary { bullet_gist gist transcript_chapters notes short_overview "
+            "          extended_sections { title } } "
             "analytics { categories { questions tasks } } "
             "sentences { ai_filters { text_cleanup task question } } "
-            "user { minutes_consumed is_admin integrations } } }",
+            "user { minutes_consumed is_admin integrations is_calendar_in_sync "
+            "       user_groups { id } } } }",
         )["data"]["transcripts"][0]
-        assert t["meeting_attendance"] is None and t["apps_preview"] is None
+        assert t["meeting_attendance"] is None
+        # Fireflies serves the wrapper and the empty lists; only what it nulls is null here
+        assert t["apps_preview"] == {"outputs": []}
+        assert t["workspace_users"] == [] and t["shared_with"] == []
+        assert t["user"]["user_groups"] == []
+        assert t["user"]["is_calendar_in_sync"] is None
         assert t["summary"]["bullet_gist"] is None and t["summary"]["gist"] is None
         assert t["summary"]["transcript_chapters"] is None
+        assert t["summary"]["notes"] is None and t["summary"]["short_overview"] is None
+        assert t["summary"]["extended_sections"] is None
         assert t["analytics"]["categories"]["questions"] is None
         # the object is served; only the classifier flags inside it are null
         assert t["sentences"][0]["ai_filters"]["task"] is None

@@ -207,12 +207,26 @@ def test_slack_channel_object_carries_slacks_documented_field_set(client, admin_
     ).json()["channels"][0]
     assert _DOCUMENTED_CHANNEL_KEYS <= set(listed)
 
-    # .info builds its channel from the same helper, so it must not drop what .list answers. The
-    # two are NOT the same object in real Slack, which is #74 — this only pins the documented floor.
+    # .info answers the same core, minus the two fields that are not part of a plain info response:
+    # num_members is opt-in there, and the documented set is transcribed from the .list page.
     info = client.post(
         "/slack/api/conversations.info", headers=admin_h, data={"channel": listed["id"]}
     ).json()["channel"]
-    assert _DOCUMENTED_CHANNEL_KEYS <= set(info)
+    assert _DOCUMENTED_CHANNEL_KEYS - {"num_members"} <= set(info)
+    assert "num_members" not in info
+    # and it carries what only .info does
+    assert info["last_read"]
+
+    # Documented on the conversation object reference rather than the method page, and sent on
+    # every live response — a single-workspace channel shared with nobody.
+    for ch in (listed, info):
+        assert ch["context_team_id"] == "T0000MOCK"
+        assert ch["shared_team_ids"] == ["T0000MOCK"]
+        assert ch["pending_connected_team_ids"] == []
+        assert ch["parent_conversation"] is None
+        # contextual channel configuration, which no corpus states — present but empty, never
+        # furnished with settings this workspace does not have
+        assert ch["properties"] == {}
 
     # the shared-channel family is answered in full, and consistently
     assert listed["pending_shared"] == [] and listed["is_pending_ext_shared"] is False
@@ -341,8 +355,15 @@ def test_slack_num_members_agrees_with_the_member_list(client, admin_h):
             params={"channel": c["id"], "limit": 1000},
         ).json()["members"]
         assert c["num_members"] == len(listed), c["name"]
-        info = client.get(
+        # .info counts only when asked — the vendor's own include_num_members
+        plain = client.get(
             "/slack/api/conversations.info", headers=admin_h, params={"channel": c["id"]}
+        ).json()["channel"]
+        assert "num_members" not in plain, c["name"]
+        info = client.get(
+            "/slack/api/conversations.info",
+            headers=admin_h,
+            params={"channel": c["id"], "include_num_members": "true"},
         ).json()["channel"]
         assert info["num_members"] == len(listed), c["name"]
 
@@ -389,6 +410,17 @@ def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
 # --- Slack: enrichment did not change the responses ---------------------------------------
 
 
+def test_slack_history_envelope_carries_the_channel_action_counters(client, admin_h):
+    """Live Slack sends both keys on every conversations.history call rather than omitting them,
+    so a client projecting the envelope sees them. Neither is on the method page."""
+    cid = _a_channel_id(client, admin_h)
+    j = client.get("/slack/api/conversations.history", headers=admin_h, params={"channel": cid})
+    body = j.json()
+    assert body["ok"] is True
+    assert body["channel_actions_ts"] is None and body["channel_actions_count"] == 0
+    assert body["pin_count"] == 0
+
+
 def test_slack_responses_unchanged_by_enrichment(client, admin_h):
     lst = client.get("/slack/api/conversations.list", headers=admin_h).json()
     assert lst["ok"] and "channels" in lst and "response_metadata" in lst
@@ -424,7 +456,7 @@ def test_slack_api_test_has_typed_response_schema(client):
 
 
 def test_slack_reply_users_and_num_members(tmp_path):
-    from backlot.routers.slack import _message, _full_channel
+    from backlot.routers.slack import _message, _listed_channel
 
     s = tiny_corpus(
         tmp_path,
@@ -464,7 +496,7 @@ def test_slack_reply_users_and_num_members(tmp_path):
     import types
 
     req = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
-    ch = _full_channel(req, conn, "inc")
+    ch = _listed_channel(req, conn, "inc")
     assert ch["num_members"] > 0 and ch["creator"] == "USERVICE0"
 
 

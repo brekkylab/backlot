@@ -69,8 +69,13 @@ class SlackSearch(_SlackOk):
     messages: dict = {}
 
 
-_P_LIST = [qp("limit", "integer"), qp("cursor")]
+_P_LIST = [qp("limit", "integer"), qp("cursor"), qp("types")]
 _P_CHANNEL = [qp("channel", required=True)]
+_P_INFO = [qp("channel", required=True), qp("include_num_members", "boolean")]
+
+# The one workspace this mock emulates. Every conversation is in it, shared with nobody, so the
+# sharing ids below are all this team or empty.
+TEAM_ID = "T0000MOCK"
 _P_HISTORY = [
     qp("channel", required=True),
     qp("limit", "integer"),
@@ -152,10 +157,15 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
     return None, _err("invalid_auth" if token else "not_authed")
 
 
-def _full_channel(request: Request, conn, name: str) -> dict:
-    """A full conversation object (shared by conversations.list and .info)."""
+def _channel_core(request: Request, conn, name: str) -> dict:
+    """The conversation object as BOTH conversations.list and .info answer it.
+
+    What each adds is deliberately not here, because the real API does not agree between the two:
+    `num_members` is a `.list` field that `.info` returns only for `include_num_members=true`, and
+    `last_read` is `.info`-only (and member-only). Building one object for both made this mock the
+    only place a client could rely on them matching.
+    """
     is_private = not store.container_has_public(conn, "slack", name)
-    num = _member_count(request, conn, name)
     created = _channel_created(request, conn, name)
     return {
         "id": synth.slack_channel_id(name),
@@ -177,6 +187,12 @@ def _full_channel(request: Request, conn, name: str) -> dict:
         # validating the object against a generated model sees a shape real Slack never returns.
         "is_pending_ext_shared": False,
         "pending_shared": [],
+        # Single-workspace, nothing shared or nested: the ids are this team and the rest empty.
+        # Absent here, a client generated from the vendor schema has no field to bind them to.
+        "context_team_id": TEAM_ID,
+        "shared_team_ids": [TEAM_ID],
+        "pending_connected_team_ids": [],
+        "parent_conversation": None,
         "unlinked": 0,
         "created": created,
         "updated": created * 1000,
@@ -184,8 +200,31 @@ def _full_channel(request: Request, conn, name: str) -> dict:
         "topic": {"value": f"#{name}", "creator": "USERVICE0", "last_set": created},
         "purpose": {"value": f"Channel for {name}", "creator": "USERVICE0", "last_set": created},
         "previous_names": [],
-        "num_members": num,
+        # Contextual channel configuration — tabs, a channel canvas, posting restrictions. The key
+        # is always present in a real response, but no corpus states any of it, so it is served
+        # empty rather than furnished with settings this workspace does not have.
+        "properties": {},
     }
+
+
+def _listed_channel(request: Request, conn, name: str) -> dict:
+    """conversations.list's channel: the core plus its member count."""
+    return {**_channel_core(request, conn, name), "num_members": _member_count(request, conn, name)}
+
+
+def _info_channel(
+    request: Request, conn, name: str, *, include_num_members: bool, visible_ids
+) -> dict:
+    """conversations.info's channel. `num_members` is opt-in here (the vendor's own parameter), and
+    `last_read` is member-only — this mock's caller is always a member of what it can see, and
+    models no unread state, so the whole channel reads as caught up."""
+    ch = _channel_core(request, conn, name)
+    if include_num_members:
+        ch["num_members"] = _member_count(request, conn, name)
+    latest = store.slack_latest_ts(conn, name, visible_ids)
+    if latest is not None:
+        ch["last_read"] = latest
+    return ch
 
 
 def _channel_names(conn) -> list[str]:
@@ -200,7 +239,7 @@ def _user_obj(conn, email: str) -> dict:
     is_bot = not u and email.split("@")[0].endswith("bot")  # display-only "*bot" speakers
     return {
         "id": synth.slack_user_id(email),
-        "team_id": "T0000MOCK",
+        "team_id": TEAM_ID,
         "name": email.split("@")[0].replace(".", ""),
         "real_name": display,
         "deleted": False,
@@ -264,7 +303,7 @@ async def auth_test(request: Request):
         "team": get_settings().org_name,
         "user": who,
         "user_id": "USERVICE0",
-        "team_id": "T0000MOCK",
+        "team_id": TEAM_ID,
     }
 
 
@@ -302,7 +341,7 @@ async def conversations_list(request: Request):
             ]
 
     limit = _int(request, "limit", get_settings().default_page_size)
-    page = [_full_channel(request, conn, n) for n in names[offset : offset + limit]]
+    page = [_listed_channel(request, conn, n) for n in names[offset : offset + limit]]
     cursor = next_cursor(offset, len(page), len(names))
     return {"ok": True, "channels": page, "response_metadata": {"next_cursor": cursor}}
 
@@ -311,7 +350,7 @@ async def conversations_list(request: Request):
     "/conversations.info",
     methods=["GET", "POST"],
     response_model=SlackConversationInfo,
-    openapi_extra={"parameters": _P_CHANNEL},
+    openapi_extra={"parameters": _P_INFO},
 )
 async def conversations_info(request: Request):
     conn = auth.conn(request)
@@ -321,7 +360,15 @@ async def conversations_info(request: Request):
     name = _channel_name(conn, _param(request, "channel") or "")
     if name is None:
         return _err("channel_not_found")
-    return {"ok": True, "channel": _full_channel(request, conn, name)}
+    want_members = _param(request, "include_num_members") in ("1", "true", "True")
+    ch = _info_channel(
+        request,
+        conn,
+        name,
+        include_num_members=want_members,
+        visible_ids=auth.visible_ids(request, caller),
+    )
+    return {"ok": True, "channel": ch}
 
 
 @router.api_route(
@@ -407,6 +454,10 @@ async def conversations_history(request: Request):
         "messages": messages,
         "has_more": bool(cursor),
         "pin_count": 0,
+        # Channel actions (the workflow/action bar) are not something a corpus expresses, but the
+        # real API sends both keys on every call rather than omitting them.
+        "channel_actions_ts": None,
+        "channel_actions_count": 0,
         "response_metadata": {"next_cursor": cursor},
     }
 
@@ -739,7 +790,7 @@ def _search_match(conn, row) -> dict:
     ts = row["ts"]
     m = {
         "type": "message",
-        "team": "T0000MOCK",
+        "team": TEAM_ID,
         "channel": {
             "id": cid,
             "name": ch,
@@ -814,7 +865,7 @@ def _message(
         "user": synth.slack_user_id(row["author_email"]),
         "text": text,
         "ts": row["ts"],
-        "team": "T0000MOCK",
+        "team": TEAM_ID,
         # Seeded on (channel, ts), not ts alone: a ts is unique within its channel (see
         # store.ID_COLUMNS), so the same second in two channels produced one client_msg_id — a
         # value real Slack makes globally unique.

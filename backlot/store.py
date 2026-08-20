@@ -1754,6 +1754,7 @@ def _fireflies_where(
     host_email=None,
     organizers=None,
     participants=None,
+    title=None,
     from_ts=None,
     to_ts=None,
     keyword=None,
@@ -1783,6 +1784,11 @@ def _fireflies_where(
             "WHERE lower(json_each.value) = ?)"
         )
         params.append(email.lower())
+    if title:
+        # `transcripts(title:)` matches a SUBSTRING, which the live API demonstrates: "tes" returns
+        # the meeting titled "test". Distinct from `keyword`, which `scope` can point at sentences.
+        sql += " AND title LIKE ? ESCAPE '\\'"
+        params.append(f"%{_like_escape(title)}%")
     if from_ts is not None:
         sql += " AND created_ts >= ?"
         params.append(from_ts)
@@ -1804,6 +1810,7 @@ def list_fireflies_transcripts(
     host_email=None,
     organizers=None,
     participants=None,
+    title=None,
     from_ts=None,
     to_ts=None,
     keyword=None,
@@ -1823,6 +1830,7 @@ def list_fireflies_transcripts(
         host_email=host_email,
         organizers=organizers,
         participants=participants,
+        title=title,
         from_ts=from_ts,
         to_ts=to_ts,
         keyword=keyword,
@@ -1847,6 +1855,42 @@ def fireflies_transcript_by_id(conn, transcript_id, visible_ids=None) -> sqlite3
     sql = "SELECT * FROM fireflies_transcripts WHERE id = ?"
     clause, cparams = _acl_clause("fireflies", visible_ids=visible_ids)
     return conn.execute(sql + clause, [transcript_id] + cparams).fetchone()
+
+
+def fireflies_speaker_numbers(conn, transcript_id) -> dict[str, int]:
+    """A transcript's speakers as name -> the per-meeting number the sentences carry.
+
+    Fireflies numbers speakers WITHIN a meeting and reports that number on both `Sentence` and
+    `AnalyticsSpeaker`, so the roster has to come from the rows that already state it rather than
+    from a position in the analytics JSON, which carries no number of its own. DISTINCT over
+    idx_fireflies_sentences_doc, so it seeks the transcript rather than scanning the table.
+
+    A NULL name is a key like any other: diarization that produced no label still numbered the
+    speaker, and synth.fireflies_speaker_stats aggregates that run too, so dropping it here would
+    leave `analytics.speakers` with an entry no number could be found for."""
+    return {
+        r["speaker_name"]: r["speaker_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT speaker_name, speaker_id FROM fireflies_sentences "
+            "WHERE transcript_id = ? AND speaker_id IS NOT NULL ORDER BY speaker_id",
+            (transcript_id,),
+        )
+    }
+
+
+def fireflies_channel_members(conn, channel) -> list[sqlite3.Row]:
+    """A channel's roster: everyone who took part in a meeting in it.
+
+    The same choice slack_channel_member_emails documents — membership is the per-channel signal
+    the corpus actually carries. Answering with the channel's ACL group instead would give every
+    channel sharing a group the same members, which the real API cannot produce."""
+    return conn.execute(
+        "SELECT DISTINCT je.value AS email, p.display_name AS display_name "
+        "FROM fireflies_transcripts t, json_each(t.participants) je "
+        "LEFT JOIN principals p ON lower(p.email) = lower(je.value) "
+        "WHERE t.channel = ? ORDER BY je.value",
+        (channel,),
+    ).fetchall()
 
 
 def fireflies_sentences(conn, transcript_id) -> list[sqlite3.Row]:

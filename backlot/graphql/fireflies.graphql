@@ -11,17 +11,22 @@
 # NULLS ARE HONEST. Every field below is nullable except the ids, and a value the corpus does
 # not carry resolves to null rather than to an invented one. The specific stubs are:
 #
-#   * `Sentence.ai_filters` — Fireflies' per-sentence classifier output (task/question/metric
-#     flags). Deriving it would mean running the classifiers this mock deliberately does not.
+#   * `Sentence.ai_filters` classifier flags (task/question/metric) — deriving them would mean
+#     running the classifiers this mock deliberately does not. The object itself is served, as
+#     Fireflies serves it, with `text_cleanup` carrying the sentence text.
 #   * `Summary.transcript_chapters`, `bullet_gist`, `gist` — further LLM renderings of the same
 #     notes; the corpus carries one set of notes, served as `overview`/`action_items`/`outline`/
 #     `topics_discussed`/`keywords`, so the rest stay null instead of being duplicated under a
 #     second name.
-#   * `Analytics.categories` — its four buckets are classifier output, as `ai_filters` is.
+#   * `MeetingAnalytics.categories` — its four buckets are classifier output, as `ai_filters` is.
 #   * `Transcript.meeting_info` fields other than the ones the corpus states.
-#   * `Transcript.apps_preview` — third-party app output, which no corpus has.
-#   * `User.minutes_consumed`, `is_admin`, `integrations` — account/billing state, which is not
-#     what this mock models.
+#   * `Transcript.apps_preview.outputs` — third-party app output, which no corpus has. The `Apps`
+#     wrapper is served because Fireflies serves it even with nothing in it.
+#   * `Transcript.shared_with`, `workspace_users` — link-sharing and workspace membership state.
+#   * `Summary.notes`, `short_overview`, `extended_sections` — see the LLM-rendering note above.
+#   * `User.minutes_consumed`, `is_admin`, `integrations`, `is_calendar_in_sync`, `user_groups`
+#     — account/billing state, which is not what this mock models. The mock's own ACL groups are
+#     a permission mechanism, not Fireflies user-groups, so they are not served under that name.
 #
 # Mutations are deliberately absent: this is a read-only mock, so the schema declares no
 # Mutation type at all rather than accepting writes and dropping them.
@@ -49,9 +54,17 @@ type Query {
     "The meeting host's address."
     host_email: String
     "Match any of these organizer addresses."
-    organizers: [String]
+    organizers: [String!]
+    "One organizer address — the singular form of `organizers`."
+    organizer_email: String
     "Only meetings every one of these addresses took part in."
-    participants: [String]
+    participants: [String!]
+    "One participant address — the singular form of `participants`."
+    participant_email: String
+    "Substring to match against the title. Distinct from `keyword`, which can search sentences."
+    title: String
+    "Meetings recorded on this DAY, as epoch millis anywhere within it."
+    date: Float
     "The calling user's id, as returned by `user`."
     user_id: String
     "Only the calling user's own meetings (those they hosted)."
@@ -62,7 +75,7 @@ type Query {
     limit: Int
     "How many transcripts to skip before the page starts."
     skip: Int
-  ): [Transcript]
+  ): [Transcript!]
 
   "One transcript by its id. Null when it does not exist OR the caller may not read it."
   transcript(id: String!): Transcript
@@ -71,14 +84,14 @@ type Query {
   user(id: String): User
 
   "Users in the workspace."
-  users: [User]
+  users: [User!]
 }
 
 type Transcript {
-  id: String!
+  id: String
   title: String
-  "Epoch milliseconds, which is the shape Fireflies returns."
-  date: DateTime
+  "Epoch milliseconds, which is the shape Fireflies returns — a bare number, not a string."
+  date: Float
   "The same instant as an ISO 8601 string."
   dateString: String
   "Meeting length in MINUTES — Fireflies' unit, not seconds."
@@ -87,37 +100,48 @@ type Transcript {
   "Whoever put the meeting on the calendar. Falls back to the host, as it does in Fireflies."
   organizer_email: String
   "Addresses that took part in the meeting."
-  participants: [String]
+  participants: [String!]
   "The workspace user who owns the recording."
   user: User
   "Workspace members present. Distinct from `participants`, which is addresses."
-  fireflies_users: [String]
+  fireflies_users: [String!]
+  "Workspace membership state. Always empty — see the header."
+  workspace_users: [String!]
+  "Who the recording was shared with. Always empty — see the header."
+  shared_with: [SharedWith!]
+  "How the recording is reachable. The corpus records meetings, so this is a constant."
+  privacy: String
+  "Whether the meeting is being transcribed right now. Always false: the corpus is recordings."
+  is_live: Boolean
   meeting_link: String
   calendar_id: String
   "Alias Fireflies also exposes for `calendar_id`."
   cal_id: String
   calendar_type: String
   "Channels the meeting belongs to."
-  channels: [String]
+  channels: [Channel!]!
   transcript_url: String
   "URL of the recording. The mock serves the URL; there are no media bytes behind it."
   audio_url: String
   "URL of the recording. The mock serves the URL; there are no media bytes behind it."
   video_url: String
   "The utterances, in spoken order."
-  sentences: [Sentence]
+  sentences: [Sentence!]
   "Fireflies' auto-generated notes."
   summary: Summary
-  analytics: Analytics
+  analytics: MeetingAnalytics
   "The calendar guest list, which can name people who never spoke."
-  meeting_attendees: [Attendee]
+  meeting_attendees: [MeetingAttendeeModel!]
   "Per-attendee attendance. Null: the corpus records who was invited, not who dialed in."
-  meeting_attendance: [Attendance]
+  meeting_attendance: [MeetingAttendance!]
   meeting_info: MeetingInfo
-  "Third-party app output. Always null — no corpus carries it."
-  apps_preview: JSON
-  "Speaker roster with talk-time, the same values as `analytics.speakers`."
-  speakers: [Speaker]
+  "Third-party app output. The wrapper is served, its outputs empty — see the header."
+  apps_preview: Apps
+  """
+  Who spoke, by name and per-meeting number. Talk-time is NOT here: it lives on
+  `analytics.speakers`, which is a different type in Fireflies — see AnalyticsSpeaker.
+  """
+  speakers: [Speaker!]
 }
 
 type Sentence {
@@ -134,11 +158,12 @@ type Sentence {
   start_time: Float
   "Seconds from the start of the meeting."
   end_time: Float
-  "Per-sentence classifier flags. Always null — see the header."
-  ai_filters: AiFilters
+  "Per-sentence classifier output. The flags are null — see the header."
+  ai_filters: AIFilters
 }
 
-type AiFilters {
+type AIFilters {
+  text_cleanup: String
   task: String
   pricing: String
   metric: String
@@ -148,14 +173,14 @@ type AiFilters {
 }
 
 type Summary {
-  keywords: [String]
+  keywords: [String!]
   "Newline-joined action items, the shape Fireflies returns."
   action_items: String
   outline: String
   overview: String
   shorthand_bullet: String
   short_summary: String
-  topics_discussed: [String]
+  topics_discussed: [String!]
   "Which kind of meeting this was, e.g. discovery / demo / security_review."
   meeting_type: String
   "Further LLM renderings of the same notes. Null — see the header."
@@ -163,15 +188,26 @@ type Summary {
   "Further LLM renderings of the same notes. Null — see the header."
   gist: String
   "Further LLM renderings of the same notes. Null — see the header."
-  transcript_chapters: [String]
+  transcript_chapters: [String!]
+  "Further LLM renderings of the same notes. Null — see the header."
+  notes: String
+  "Further LLM renderings of the same notes. Null — see the header."
+  short_overview: String
+  "Further LLM renderings of the same notes. Null — see the header."
+  extended_sections: [SummarySection!]
 }
 
-type Analytics {
+type SummarySection {
+  title: String!
+  content: String!
+}
+
+type MeetingAnalytics {
   sentiments: Sentiments
   "Per-speaker talk time and word counts, computed from the sentences."
-  speakers: [Speaker]
+  speakers: [AnalyticsSpeaker!]
   "Classifier buckets. Always null — see the header."
-  categories: Categories
+  categories: AnalyticsCategories
 }
 
 type Sentiments {
@@ -180,27 +216,42 @@ type Sentiments {
   negative_pct: Float
 }
 
-type Categories {
+type AnalyticsCategories {
   questions: Int
   date_times: Int
   metrics: Int
   tasks: Int
 }
 
+"Who spoke. Fireflies' roster type carries an identity and nothing else."
 type Speaker {
+  """
+  The speaker's number WITHIN this meeting, as a Float — Fireflies' own choice of scalar here,
+  even though `Sentence.speaker_id` and `AnalyticsSpeaker.speaker_id` are Int.
+  """
+  id: Float
+  name: String
+}
+
+"Talk-time statistics per speaker. A DIFFERENT type from Speaker, which is identity only."
+type AnalyticsSpeaker {
+  "The speaker's number WITHIN this meeting, matching `Sentence.speaker_id`."
+  speaker_id: Int
   name: String
   "Talk time in SECONDS."
   duration: Float
   word_count: Int
-  "Share of the meeting this speaker held the floor, as a percentage."
-  duration_pct: Float
   longest_monologue: Float
   monologues_count: Int
   filler_words: Int
   questions: Int
+  "Share of the meeting this speaker held the floor, as a percentage."
+  duration_pct: Float
+  "Words per minute of this speaker's own talk time."
+  words_per_minute: Float
 }
 
-type Attendee {
+type MeetingAttendeeModel {
   displayName: String
   email: String
   phoneNumber: String
@@ -208,33 +259,101 @@ type Attendee {
   location: String
 }
 
-type Attendance {
-  displayName: String
-  email: String
-  "Null: the corpus records the guest list, not dial-in times."
-  joinedAt: String
-  duration: Float
+type MeetingAttendance {
+  name: String!
+  join_time: String!
+  leave_time: String
 }
 
 type MeetingInfo {
   fred_joined: Boolean
   silent_meeting: Boolean
-  summary_status: String
+  summary_status: SummaryStatus
+}
+
+enum SummaryStatus {
+  processing
+  processed
+  failed
+  skipped
+  default
 }
 
 type User {
-  user_id: String!
+  user_id: String
   email: String
   name: String
-  num_transcripts: Int
+  "Fireflies counts transcripts in a Float, not an Int."
+  num_transcripts: Float
   recent_meeting: String
+  "The id of the user's most recent transcript."
+  recent_transcript: String
+  "Account state, which this mock does not model. Always null."
+  is_calendar_in_sync: Boolean
+  "Account state, which this mock does not model. Always empty — see the header."
+  user_groups: [UserGroup!]
   "Account/billing state, which this mock does not model. Always null."
   minutes_consumed: Float
   "Account/billing state, which this mock does not model. Always null."
   is_admin: Boolean
   "Account/billing state, which this mock does not model. Always null."
-  integrations: [String]
+  integrations: [String!]
 }
 
-"An arbitrary JSON value, for the fields Fireflies types loosely."
-scalar JSON
+type UserGroup {
+  id: String!
+  name: String!
+  handle: String!
+  members: [UserGroupMember!]
+}
+
+type UserGroupMember {
+  user_id: String!
+  first_name: String!
+  last_name: String!
+  email: String!
+}
+
+"A channel a meeting belongs to. `members` is the channel's roster, which the corpus does carry."
+type Channel {
+  id: ID!
+  title: String
+  "Null: the corpus states which channel a meeting is in, not when the channel was made."
+  created_at: String
+  "Null: see created_at."
+  updated_at: String
+  "Null: see created_at."
+  created_by: String
+  "Null: the corpus carries no channel visibility flag."
+  is_private: Boolean
+  members: [ChannelMember!]!
+}
+
+type ChannelMember {
+  user_id: String!
+  email: String!
+  name: String!
+}
+
+"Third-party app output. See the header for why `outputs` is empty."
+type Apps {
+  outputs: [AppOutput!]
+}
+
+type AppOutput {
+  transcript_id: String
+  user_id: String
+  app_id: String
+  created_at: Float
+  title: String
+  prompt: String
+  response: String
+}
+
+"A person a recording was shared with."
+type SharedWith {
+  email: String
+  name: String
+  photo_url: String
+  expires_at: String
+}

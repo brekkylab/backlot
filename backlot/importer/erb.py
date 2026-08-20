@@ -473,7 +473,9 @@ class Principals:
     def label_email(self, label: str | None, company: str | None = None) -> str:
         """The address a comment label that names no person resolves to."""
         key = (label or "").strip().lower()
-        if not key or _names_an_activity(label):
+        # A label with no letter in it names nobody -- a bare date left over from a stamp this
+        # parser did not recognise would otherwise become an address that IS that date.
+        if not key or not any(ch.isalpha() for ch in key) or _names_an_activity(label):
             return self.unattributed()
         # Word-boundary, not an exact match: the corpus writes the counterparty into the label
         # ("BrightCart (Customer)", "Customer (NimbleDocs)", "Support (to customer)"), and an exact
@@ -960,6 +962,14 @@ _LABEL_THEN_STAMP = re.compile(
 )
 
 
+# A stamp where a name would go: "Security (2026-03-12)". Read as an identity it becomes part of an
+# address (`security.20260312@…`) and the date it states is lost, so it is peeled off the label and
+# used as the comment's clock instead.
+_PARENTHESISED_STAMP = re.compile(
+    rf"\(\s*(?P<date>\d{{4}}-\d{{2}}-\d{{2}})(?:[T ]\s*(?P<time>{_CLOCK}))?[^)]*\)?\s*$"
+)
+
+
 def _peel_stamp(line: str) -> tuple[str | None, str | None, str]:
     """``(date, time, rest)``. The clock is peeled only when a label follows it -- a line whose
     stamp is followed straight by its body ("2025-02-18 09:15: rolled back") keeps the clock in the
@@ -1049,7 +1059,13 @@ def parse_comment_lines(comments, *, first_names=None) -> list[dict]:
                 }
             )
             continue
-        person, role = person_reference(m.group("label"), first_names=first_names)
+        label = m.group("label")
+        parenthesised = _PARENTHESISED_STAMP.search(label)
+        if parenthesised:
+            date = date or parenthesised.group("date")
+            time = time or parenthesised.group("time")
+            label = label[: parenthesised.start()].strip(" ,-–—")
+        person, role = person_reference(label, first_names=first_names)
         out.append(
             {
                 "date": date,

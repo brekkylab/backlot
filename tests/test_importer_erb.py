@@ -702,6 +702,26 @@ def test_parse_comment_lines_reads_every_stamp_the_bench_writes(line, person, ro
     assert (out["person"], out["role"]) == (person, role)
 
 
+def test_a_stamp_where_a_name_would_go_is_read_as_the_clock():
+    """`Security (2026-03-12)` puts the date where the person goes. Read as an identity it became
+    part of an address -- `security.20260312@` -- and the date it states was lost with it."""
+    (out,) = C.parse_comment_lines(["Security (2026-03-12): patched the gateway."])
+    assert (out["date"], out["person"], out["role"]) == ("2026-03-12", None, "Security")
+    assert Principals([], "redwood.com").label_email(out["role"]) == "security@redwood.com"
+
+    # and the person is still found when the parenthetical holds one
+    (named,) = C.parse_comment_lines(["Support - Aisha Patel (2026-03-10): triaged."])
+    assert (named["date"], named["person"]) == ("2026-03-10", "Aisha Patel")
+
+
+def test_a_label_with_no_letter_in_it_names_nobody():
+    """A bare date left over from a stamp shape this parser does not know would otherwise become an
+    address that IS that date."""
+    P = Principals([], "redwood.com")
+    assert P.label_email("2026-03-07") == "unknown@redwood.com"
+    assert P.label_email("14:05") == "unknown@redwood.com"
+
+
 def test_a_stamp_after_its_label_is_still_a_stamp():
     """`IT (Jordan Liu) 2026-03-10 15:20 - body` carries no colon, so reading it as `label: body`
     took everything up to the clock's colon as the label and left the minutes at the head of the

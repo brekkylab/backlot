@@ -593,6 +593,56 @@ def test_slack_history_envelope_carries_the_channel_action_counters(client, admi
     assert body["pin_count"] == 0
 
 
+def test_slack_history_omits_response_metadata_on_a_last_page(client, admin_h):
+    """Measured: a live conversations.history with `has_more: false` carries no `response_metadata`
+    at all — not the key with an empty cursor. A client that subscripts it to decide whether to
+    keep paging must terminate on the key's ABSENCE, so serving it always hid that bug.
+
+    conversations.list is the other way round: it carries `{"next_cursor": ""}` with nothing more,
+    so the two are not one convention."""
+    cid = _a_channel_id(client, admin_h)
+    last = client.get(
+        "/slack/api/conversations.history", headers=admin_h, params={"channel": cid, "limit": 100}
+    ).json()
+    assert last["has_more"] is False
+    assert "response_metadata" not in last
+
+    # a page that IS followed by another still names the cursor
+    first = client.get(
+        "/slack/api/conversations.history", headers=admin_h, params={"channel": cid, "limit": 1}
+    ).json()
+    if first["has_more"]:
+        assert first["response_metadata"]["next_cursor"]
+
+    # conversations.list keeps the key even when exhausted, which is what live Slack does
+    lst = client.get("/slack/api/conversations.list", headers=admin_h, params={"limit": 100}).json()
+    assert lst["response_metadata"]["next_cursor"] == ""
+
+
+def test_slack_client_msg_id_is_a_v4_uuid(client, admin_h):
+    """Measured: every live value is canonical 8-4-4-4-12 with a v4's version nibble and variant
+    bits, because the posting client generates it. A 16-hex token satisfied anything that only
+    read the field and failed anything that validated it."""
+    import re
+    import uuid
+
+    cid = _a_channel_id(client, admin_h)
+    msgs = client.get(
+        "/slack/api/conversations.history", headers=admin_h, params={"channel": cid, "limit": 20}
+    ).json()["messages"]
+    assert msgs
+    seen = set()
+    for m in msgs:
+        got = m["client_msg_id"]
+        assert re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", got
+        ), got
+        assert uuid.UUID(got).version == 4
+        seen.add(got)
+    # globally unique, which is what the (channel, ts) seed buys
+    assert len(seen) == len(msgs)
+
+
 def test_slack_responses_unchanged_by_enrichment(client, admin_h):
     lst = client.get("/slack/api/conversations.list", headers=admin_h).json()
     assert lst["ok"] and "channels" in lst and "response_metadata" in lst

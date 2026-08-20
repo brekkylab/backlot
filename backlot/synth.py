@@ -201,6 +201,16 @@ def slack_blocks(text: str, seed: str) -> list[dict] | None:
     return [{"type": "rich_text", "block_id": slack_block_id(seed), "elements": elements}]
 
 
+def slack_client_msg_id(seed: str) -> str:
+    """Slack's ``client_msg_id``: a v4 UUID, not an opaque token.
+
+    Measured — every live value is 36 characters in canonical 8-4-4-4-12 form with the version
+    nibble and variant bits of a v4 (`c0524382-348d-4a0e-824a-a58e96ed76c3`), which is what the
+    posting client generates. A 16-hex token passed anything that only reads the field, and failed
+    anything that validates it as a UUID."""
+    return _uuid_from("slack-cmid:" + seed)
+
+
 def slack_user_id(email: str) -> str:
     h = _digest("user:" + email)
     return "U" + h[:10].upper()
@@ -220,9 +230,10 @@ def slack_fmt_ts(epoch_sec: int, key: str) -> str:
 
 
 def gmail_id(seed: str, salt: str = "msg") -> str:
-    """An opaque 16-hex token. Used for attachment ids and Slack's ``client_msg_id``, where the
-    value is never parsed — so it deliberately spans the full 64-bit range. A *message* id is
-    parsed by Gmail and must not; use ``gmail_message_id``."""
+    """An opaque 16-hex token, used for attachment ids — the value is never parsed, so it
+    deliberately spans the full 64-bit range. A *message* id is parsed by Gmail and must not; use
+    ``gmail_message_id``. Slack's ``client_msg_id`` was minted here once and is not: it is a v4
+    UUID (see ``slack_client_msg_id``)."""
     return hnum(seed, salt=salt, length=16).__format__("016x")
 
 

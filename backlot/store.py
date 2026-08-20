@@ -2264,6 +2264,22 @@ def slack_channels_for_principals(conn, principals) -> set[str]:
     return {r[0] for r in rows}
 
 
+def slack_latest_ts(conn, channel, visible_ids=None) -> str | None:
+    """The ts of the newest message in a channel — what conversations.info reports as the caller's
+    ``last_read``, this mock modelling no unread state of its own.
+
+    Ordered by ``created_ts`` rather than ``MAX(ts)`` for the reason slack_latest_reply_ts gives:
+    ts is TEXT, so a max over it is lexicographic and picks the wrong row when a channel straddles
+    a digit-count change in the epoch second."""
+    sql = "SELECT ts FROM slack_messages WHERE channel = ?"
+    params: list = [channel]
+    clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
+    row = conn.execute(
+        sql + clause + " ORDER BY created_ts DESC, ts DESC LIMIT 1", params + cparams
+    ).fetchone()
+    return row[0] if row else None
+
+
 def slack_latest_reply_ts(conn, channel, thread_ts, visible_ids=None) -> str | None:
     """The ts of a thread's last reply — Slack's ``latest_reply``.
 

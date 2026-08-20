@@ -681,11 +681,14 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
         {"name": "MIME-Version", "value": "1.0"},
         {"name": "Subject", "value": row["title"]},
         {"name": "From", "value": f"{display} <{author}>"},
-        {"name": "To", "value": row["to_addr"] or f"{row['mailbox']}@{get_settings().org_domain}"},
         {"name": "Date", "value": synth.rfc2822(ts)},
         {"name": "Message-ID", "value": msg_id},
     ]
     optional = [
+        # `To` among them: RFC 5322 allows a message with no destination field, and real Gmail
+        # returns the headers the message has. `Delivered-To` above keeps its default, since a
+        # receiving MTA really does add one.
+        ("To", "to_addr"),
         ("Cc", "cc"),
         ("Reply-To", "reply_to"),
         ("In-Reply-To", "in_reply_to"),

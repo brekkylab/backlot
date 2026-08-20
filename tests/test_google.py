@@ -124,6 +124,38 @@ def _a_gmail_row(ro_conn):
     return ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
 
 
+def test_a_message_with_no_recipient_serves_no_to_header(tmp_path):
+    """Real Gmail returns the headers a message has. RFC 5322 allows one with no destination field
+    at all -- a Bcc-only send -- so inventing a To makes a case this mock could never reproduce.
+    `Delivered-To` keeps its default: a receiving MTA really does add it."""
+    from tests._helpers import build_corpus, client_for, complete, served_id
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            complete(
+                "gmail",
+                doc_id="gm-no-to",
+                mailbox="ops",
+                title="Bcc-only note",
+                content="For the archive.",
+                author_email="ava@acme.com",
+                created="2026-02-11T08:00:00Z",
+            )
+        ],
+    )
+    # A second client over a different DB in this module, so the app is re-imported: the
+    # lifespan writes its connection onto module-level state (see `client_for`).
+    with client_for(settings, reload=True) as c:
+        admin = {"authorization": "Bearer admin-service-token"}
+        body = c.get(
+            f"/gmail/v1/users/me/messages/{served_id('gmail', 'gm-no-to')}", headers=admin
+        ).json()
+    names = [h["name"] for h in body["payload"]["headers"]]
+    assert "To" not in names
+    assert "Delivered-To" in names
+
+
 def test_gmail_messages_list_serves_hex_ids(client, admin_h):
     """The ids a client receives must look like Gmail's, not like the corpus's dsids: `dsid_…` is
     not hex, so real Gmail would call it an invalid id value.

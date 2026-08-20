@@ -23,6 +23,7 @@ from backlot import serve_or_connect
 
 CORPUS = [
     {
+        "updated": "2026-02-08T20:00:00Z",
         "author_email": "bob@acme.com",
         "created": "2026-02-08T20:00:00Z",
         "source_type": "notion",
@@ -32,6 +33,7 @@ CORPUS = [
         "rolling back.",
     },
     {
+        "updated": "2025-09-10T11:00:00Z",
         "author_email": "ava@acme.com",
         "created": "2025-09-10T11:00:00Z",
         "source_type": "notion",

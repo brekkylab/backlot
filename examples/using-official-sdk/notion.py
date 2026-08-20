@@ -18,6 +18,7 @@ from backlot import serve_or_connect
 
 CORPUS = [
     {
+        "updated": "2026-02-01T09:00:00Z",
         "author_email": "ava@acme.com",
         "created": "2026-02-01T09:00:00Z",
         "source_type": "notion",
@@ -33,6 +34,7 @@ CORPUS = [
         ],
     },
     {
+        "updated": "2026-01-10T09:00:00Z",
         "author_email": "ava@acme.com",
         "created": "2026-01-10T09:00:00Z",
         "source_type": "notion",
@@ -43,6 +45,7 @@ CORPUS = [
         "properties": {"Status": {"type": "select"}, "Priority": {"type": "select"}},
     },
     {
+        "updated": "2026-02-02T10:00:00Z",
         "author_email": "bob@acme.com",
         "created": "2026-02-02T10:00:00Z",
         "source_type": "notion",

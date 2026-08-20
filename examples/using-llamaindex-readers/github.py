@@ -26,6 +26,7 @@ from llama_index.readers.github import (  # noqa: E402
 
 CORPUS = [
     {
+        "state": "open",
         "author_email": "bob@acme.com",
         "created": "2026-02-09T09:00:00Z",
         "source_type": "github",
@@ -35,6 +36,7 @@ CORPUS = [
         "subtype": "issue",
     },
     {
+        "state": "open",
         "author_email": "bob@acme.com",
         "created": "2026-02-09T14:00:00Z",
         "source_type": "github",

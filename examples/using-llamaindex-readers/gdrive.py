@@ -39,6 +39,7 @@ from _common.google_creds import google_service_account_info
 
 CORPUS = [
     {
+        "updated": "2025-11-01T12:00:00Z",
         "created": "2025-11-01T12:00:00Z",
         "source_type": "google_drive",
         "folder": "marketing",
@@ -48,6 +49,7 @@ CORPUS = [
         "author_email": "mia@acme.com",
     },
     {
+        "updated": "2026-01-10T08:00:00Z",
         "created": "2026-01-10T08:00:00Z",
         "source_type": "google_drive",
         "folder": "finance",
@@ -57,6 +59,7 @@ CORPUS = [
         "author_email": "cfo@acme.com",
     },
     {
+        "updated": "2026-01-25T15:00:00Z",
         "created": "2026-01-25T15:00:00Z",
         "source_type": "google_drive",
         "folder": "marketing",

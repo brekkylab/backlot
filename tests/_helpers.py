@@ -55,7 +55,10 @@ _CONTAINER_VALUES = {
     "linear": "engineering",
     "fireflies": "all-hands",
 }
-_REQUIRED_RE = re.compile(r"'([^']+)' is a required property")
+# A required-property error about the RECORD, not about something inside it: a nested one carries
+# the path it is about in brackets ("… [associations/0]: 'to' is a required property"), and reading
+# that as a field of the record would have `complete` inventing an `associations` key called `to`.
+_REQUIRED_RE = re.compile(r"^[^\[\]]*: '([^']+)' is a required property")
 
 
 def _identifier_for(rec: dict) -> str:
@@ -83,13 +86,16 @@ def _seconds_after(when, offset: int):
     return stamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def complete(source_type: str, **overrides) -> dict:
+def complete(source_type: str, _omit: frozenset[str] | set[str] = frozenset(), **overrides) -> dict:
     """A record that states everything its schema asks for, so a test can say only what it is about.
 
     Read off the schema rather than from a list kept here: a helper carrying its own copy of the
     required fields would keep handing out records that pass while the contract moved underneath it.
     The tests that are ABOUT the contract build their records by hand instead -- see
     ``tests/test_schema.py``.
+
+    ``_omit`` names fields to leave unstated, for a test whose subject IS one missing field: the
+    record is complete except for that, so the only error is the one being examined.
     """
     from backlot import store
     from backlot.validation import record_errors
@@ -126,6 +132,9 @@ def complete(source_type: str, **overrides) -> dict:
     for _ in range(24):
         merged = {**rec, **overrides}
         missing = [m.group(1) for e in record_errors(merged) if (m := _REQUIRED_RE.search(e))]
+        if not missing:
+            return merged
+        missing = [f for f in missing if f not in _omit]
         if not missing:
             return merged
         for field in missing:

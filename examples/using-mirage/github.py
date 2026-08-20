@@ -38,6 +38,7 @@ from _helpers import FUSE_HELP, lines, run_mirage
 REPO = "gateway"  # the throwaway CORPUS's repo; a --url mock's own repos are discovered below
 CORPUS = [
     {
+        "state": "open",
         "author_email": "bob@acme.com",
         "created": "2026-02-09T09:00:00Z",
         "source_type": "github",

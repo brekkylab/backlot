@@ -30,6 +30,7 @@ from backlot import serve_or_connect
 
 CORPUS = [
     {
+        "reporter": "bob@acme.com",
         "author_email": "bob@acme.com",
         "created": "2026-02-08T20:00:00Z",
         "source_type": "jira",

@@ -48,6 +48,7 @@ CORPUS = [
         "author_email": "ceo@acme.com",
     },
     {
+        "updated": "2026-01-10T08:00:00Z",
         "created": "2026-01-10T08:00:00Z",
         "source_type": "google_drive",
         "folder": "finance",

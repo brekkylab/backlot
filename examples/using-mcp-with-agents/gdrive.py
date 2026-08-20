@@ -25,6 +25,7 @@ from backlot import serve_or_connect
 
 CORPUS = [
     {
+        "updated": "2026-02-12T10:00:00Z",
         "author_email": "ava@acme.com",
         "created": "2026-02-12T10:00:00Z",
         "source_type": "google_drive",
@@ -34,6 +35,7 @@ CORPUS = [
         "content": "p95 checkout latency 2.1s after the payments migration; rolled back.",
     },
     {
+        "updated": "2025-09-10T11:00:00Z",
         "author_email": "ava@acme.com",
         "created": "2025-09-10T11:00:00Z",
         "source_type": "google_drive",

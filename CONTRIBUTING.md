@@ -58,6 +58,8 @@ ruff check . && ruff format --check .    # both gate CI; ruff comes from the `de
 ```
 
 - **Unit + endpoint tests** run with no data and no network — these must pass for every change.
+  The unit half covers synth, pagination, ACL, the schemas and the importer parsers; the endpoint
+  half covers full-crawl completeness, content round-trip and ACL enforcement.
 - `tests/test_sdk.py` needs the `.[examples]` extra and `tests/test_mcp.py` needs Docker +
   the `.[mcp]` extra; both spin up their own server and **self-skip** when their prerequisites
   are absent. Run them when touching the relevant surface.
@@ -89,6 +91,21 @@ The whole point of this project is **fidelity to the real APIs**, so:
 - ACL scoping is enforced per bearer token (the admin token bypasses). New endpoints that
   expose corpus content must respect the same ACL rules — add a test proving an
   ACL-restricted item is readable by the admin token and blocked for a scoped user token.
+
+### Adding a source
+
+A new source is a new `backlot/schemas/<source_type>.schema.json`. That file alone makes
+`<source_type>` something the importer accepts, so `tests/test_docs.py` fails until the docs catch
+up. To get it green:
+
+1. add the source to `SOURCES` in [`scripts/gen_docs.py`](scripts/gen_docs.py) — display name and
+   URL prefixes;
+2. run `python scripts/gen_docs.py` to rewrite the generated table;
+3. write its row in the per-service table in [`docs/endpoints.md`](docs/endpoints.md), where the
+   fidelity notes live.
+
+The `README.md` needs no change — it names no source count and lists no sources, by design, so it
+does not go stale when this list grows.
 
 ## Reporting bugs & requesting features
 

@@ -1,0 +1,47 @@
+# Endpoints
+
+Every endpoint Backlot serves, per service. All of them are **read-only** — writes are out of
+scope. [← README](../README.md)
+
+## Every source it serves
+
+Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json` by
+`scripts/gen_docs.py`. Do not edit this table by hand — run the script.
+
+<!-- generated:sources start -->
+| `source_type` | Service | URL prefix | Endpoints | Record schema | What one record is |
+|---|---|---|---|---|---|
+| `confluence` | Confluence | `/atlassian/wiki/rest/api` | 10 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
+| `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one `POST`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
+| `github` | GitHub | `/github` | 28 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue or pull request. |
+| `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
+| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 11 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
+| `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
+| `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
+| `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
+| `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
+| `s3` | Amazon S3 | `/s3` | 4 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
+| `slack` | Slack | `/slack/api` | 12 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
+<!-- generated:sources end -->
+
+## Per-service detail
+
+| Prefix | Service | Endpoints |
+|---|---|---|
+| `/slack/api` | Slack | `conversations.list` (+`types`; this corpus has no DMs, so `im`/`mpim` select nothing, and an unknown value is `invalid_types`), `conversations.history` (+`oldest`/`latest`/`inclusive`), `conversations.replies`, `conversations.members` (per-channel, paginated), `users.list`, `users.info`, `auth.test`, `api.test` (auth-free connectivity check), `search.messages` |
+| `/gmail/v1` | Gmail | `users/{u}/messages` (+`q`: free text / `from:` `to:` `subject:` `after:` `before:` `newer_than:` `older_than:` `label:` `has:attachment`), `messages/{id}` (`format=full\|metadata\|minimal`), `messages/{id}/attachments/{id}`, `threads` (+`q`), `threads/{id}`, `labels`, `profile`. Message and thread ids are Gmail-shaped — 16 lowercase hex under 2^63, sharing one id space as the real API does — and map back to the corpus document; an id the real API could not parse is refused the same way |
+| `/drive/v3` | Drive | `files` (`q`: `fullText contains`, `name contains`, `mimeType`, `… in parents` incl. `'root'`, `trashed`, `modifiedTime`, `sharedWithMe`, `… in owners`; `orderBy`: `name`/`name_natural`/`createdTime`/`modifiedTime`/`recency`/`folder`/`starred`/`quotaBytesUsed`/`sharedWithMeTime` (+` desc`); `fields` projection, validated), `files/{id}` (+`fields`), `files/{id}/export`, `files/{id}/permissions`, `drives`, `about` (`fields` **required**, as in real Drive; `storageQuota` is measured from the caller's visible corpus). Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like stored rows. Trashed files are excluded unless `trashed = true` asks for them |
+| `/docs/v1`, `/sheets/v4`, `/slides/v1` | Docs/Sheets/Slides | `documents/{id}`, `spreadsheets/{id}`, `presentations/{id}` — native-doc content for editor-aware clients (read structurally instead of via Drive export). `spreadsheets/{id}` returns structure only — cells need `includeGridData=true` (+ optional `ranges`), as in real Sheets. Sheets also serves `spreadsheets/{id}/values/{range}` and `spreadsheets/{id}/values:batchGet` (A1 ranges incl. `Sheet1!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not; `majorDimension`, `valueRenderOption`). A spreadsheet row is one stored **line**, held in a single cell verbatim — the mock picks no column delimiter, so splitting (CSV, pipes, …) stays the corpus owner's decision. Reading a file of the wrong type through any of the three APIs is refused, as real Google does, not reinterpreted |
+| `/github` | GitHub | `search/issues` (`q`: free text + `repo:` `is:` `state:` `type:` `label:` `author:`), `orgs/{org}`, `orgs/{org}/repos`, `user/repos` (the token's own reach), `repos/{o}/{r}`, `.../issues[/{n}]`, `.../issues/{n}/comments`, `.../pulls[/{n}]`, `.../pulls/{n}/reviews`, `.../pulls/{n}/comments`, `.../pulls/{n}/files`, `.../pulls/{n}/commits`, `.../issues/comments/{id}`, `.../pulls/comments/{id}`, `.../readme`, `.../contents[/{path}]`, `.../git/trees/{ref}`, `.../git/blobs/{sha}`, `.../git/ref/{ref}` (takes the ref as a trailing path, so `heads/release/2026-03` resolves), `.../branches/{branch}`, `.../commits/{sha}`, `.../statuses/{sha}`, `.../collaborators`, `.../teams`, `orgs/{org}/teams`. **Media types are honoured**: `Accept: application/vnd.github.raw` on `contents`/`readme`/`git/blobs` returns the file's bytes, and `…diff`/`…patch` on a pull returns a real unified diff / `git am` mbox. **`X-GitHub-Api-Version` is honoured too**, in both values real currently supports: `2026-03-10` drops `assignee` (issues and pulls) and `merge_commit_sha` (pulls), `2022-11-28` keeps them, an unpinned request gets `2022-11-28`, anything else is the real API's 400, and every response reports its choice in `X-GitHub-Api-Version-Selected`. An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links` and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository carries a URL template for each sub-resource this mock actually serves, and none for the ones it doesn't: following a link is supposed to reach something. The `{owner}` segment is validated against the served org and 404s otherwise, as GitHub does. A pull's changed-file list comes from its corpus `changed_paths` when declared and is chosen deterministically otherwise; either way the hunks are derived from each file's own snapshot, so the diff applies with real `git` and `additions`/`deletions`/`changed_files` agree with `/files`. A comment carrying a `path` is served as a line-anchored review comment, kept apart from the conversation as GitHub keeps them |
+| `/atlassian/rest/api/3` | Jira | `search/jql` (JQL `project =`, `text\|summary\|description ~`), `issue/{key}`, `issue/{key}/comment`, `field`, `issueLinkType`, `project/search`, `project/{key}/role[/{id}]`, `serverInfo` (also under `rest/api/2`) |
+| `/atlassian/wiki/rest/api` | Confluence | `content`, `content/{id}`, `content/{id}/child/comment`, `content/{id}/restriction/byOperation`, `search` (CQL), `space`, `space/{key}`, `space/{key}/permission` |
+| `/notion/v1` | Notion | `search`, `pages/{id}`, `blocks/{id}`, `blocks/{id}/children`, `databases/{id}` (version-aware), `data_sources/{id}`, `data_sources/{id}/query`, `databases/{id}/query` (legacy), `users[/{id}]`, `users/me`, `comments` |
+| `/hubspot/crm/v3`, `/hubspot/crm/v4` | HubSpot | `objects/{objectType}` (+`limit` max 100, `after`, `properties`, `archived`), `objects/{objectType}/{id}`, `objects/{objectType}/search` (`filterGroups` OR-ed, `filters` AND-ed, 13 operators over any property), `objects/{objectType}/batch/read`, `v4/objects/{type}/{id}/associations/{toType}` |
+| `/s3` | Amazon S3 | `ListBuckets`, `HeadBucket`, `GetBucketLocation`, `ListObjectsV2` (`prefix`/`delimiter`/`continuation-token`), `GetObject` (+`Range`), `HeadObject` |
+| `/linear/graphql` | Linear | **GraphQL only** (one `POST`): `issues`, `issue(id:)` (UUID *or* `ENG-123`), `team(id:)` (UUID, key, or name), `teams`, `comments`, `users`, `viewer`, plus the `Team.issues` / `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}` connections and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`, `release`, `attachment`, `issueRelation`) the official SDK's lazy relation accessors call. Relay pagination (`first`/`after`, `last`/`before` → `{nodes, pageInfo}`), server-side `filter` compiled into SQL, and full introspection |
+| `/fireflies/graphql` | Fireflies | **GraphQL only** (one `POST`): `transcripts`, `transcript(id:)`, `user[(id:)]`, `users`. Offset pagination — `limit` (**max 50**, clamped) / `skip`, returning a **bare list**, not a Relay connection — plus the documented filters: `keyword` × `scope` (`title`\|`sentences`\|`all`), `fromDate`/`toDate`, `host_email`, `organizers`, `participants`, `user_id`, `mine`, `channel_id`. Field names are snake_case, as Fireflies' own schema has them. Full introspection |
+
+## Mock-only endpoints
+
+Not part of any vendor's API — Backlot's own: `/health`, `/_mock/users`, `/_mock/credentials`,
+`/_mock/openapi/<source>`, `/openapi.json`.

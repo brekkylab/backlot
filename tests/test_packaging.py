@@ -17,6 +17,7 @@ different shape — a path resolving *outside* the package entirely — which en
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tomllib
 from fnmatch import fnmatch
@@ -54,3 +55,35 @@ def test_every_shipped_non_py_file_is_covered_by_package_data():
         "[tool.setuptools.package-data] covers them, so a wheel build silently omits them: "
         f"{uncovered}"
     )
+
+
+# README.md carries relative image and link paths that only resolve on GitHub. PyPI passes them
+# through unchanged (measured 2026-08-14 against readme_renderer[md]: `<picture>` and `<details>`
+# survive, relative targets are left alone and therefore 404 under pypi.org), so the long
+# description points at a short absolute-URL-only page instead. The three tests below keep that
+# pair from drifting.
+_TAGLINE = "**Change the base URL. Nothing else.**"
+
+
+def test_long_description_is_the_pypi_readme():
+    with open(REPO_ROOT / "pyproject.toml", "rb") as f:
+        pyproject = tomllib.load(f)
+    assert pyproject["project"]["readme"] == "README.pypi.md"
+
+
+def test_both_readmes_lead_with_the_same_tagline_and_install():
+    for name in ("README.md", "README.pypi.md"):
+        text = (REPO_ROOT / name).read_text()
+        assert _TAGLINE in text, f"{name} does not carry the shared tagline"
+        assert "pip install backlot" in text, f"{name} does not show the install command"
+
+
+def test_pypi_readme_has_no_relative_links():
+    """A relative target resolves against pypi.org, where it is a 404."""
+    text = (REPO_ROOT / "README.pypi.md").read_text()
+    relative = [
+        target
+        for target in re.findall(r"!?\[[^\]]*\]\(([^)\s]+)", text)
+        if not target.startswith(("http://", "https://", "#"))
+    ]
+    assert not relative, f"README.pypi.md links break on PyPI: {relative}"

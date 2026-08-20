@@ -747,6 +747,32 @@ def test_the_test_corpus_states_every_required_fact():
     assert [(i, _unstated(r)) for i, r in enumerate(SAMPLE) if _unstated(r)] == []
 
 
+def test_every_record_the_docs_show_would_load():
+    """A README snippet is the first corpus anybody writes, so one that no longer validates teaches
+    a shape the importer refuses."""
+    from tests.conftest import REPO_ROOT
+
+    shown = {}
+    for rel in (
+        "README.md",
+        "examples/bring-your-own-corpus/README.md",
+        "backlot/schemas/README.md",
+    ):
+        for line in (REPO_ROOT / rel).read_text().split("\n"):
+            text = line.strip()
+            if text.startswith('{"source_type"') and text.endswith("}"):
+                shown.setdefault(rel, []).append(json.loads(text))
+    assert shown, "no record snippets found in the docs"
+
+    bad = {
+        f"{rel}: {rec.get('doc_id') or rec.get('title') or rec['source_type']}": errors
+        for rel, records in shown.items()
+        for rec in records
+        if (errors := record_errors(rec))
+    }
+    assert bad == {}
+
+
 def _inline_corpora():
     """Every inline `CORPUS` literal under examples/, as (path, records).
 

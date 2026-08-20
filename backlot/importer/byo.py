@@ -7,16 +7,16 @@ Each line is one document:
       "source_type": "confluence",        # required: one of the served source types
                                           #   (slack|gmail|google_drive|github|jira|confluence|
                                           #    notion|s3|hubspot|linear|fireflies)
-      "title": "Onboarding guide",         # required (slack has no title)
+      "title": "Onboarding guide",         # required (slack has none; a hubspot note has none)
       "content": "Full text...",            # required
       "doc_id": "my-123",                  # optional (default: dsid_<sha256(src+title+content)>)
-      "space": "handbook",                 # the grouping unit, named per service: slack/fireflies
+      "space": "handbook",                 # required: the grouping unit, named per service --
                                              #   "channel", gmail "mailbox", google_drive "folder",
                                              #   github "repo", jira "project", confluence "space",
                                              #   notion "teamspace", s3 "bucket", hubspot
                                              #   "object_type", linear "team" (default: source_type)
       "group": "people",                   # optional ACL group owning that unit (default: slug(unit))
-      "author_email": "ava@acme.com",      # optional author/sender/owner
+      "author_email": "ava@acme.com",      # required author/sender/owner (fireflies: host_email)
       "author_groups": ["people","eng"],   # optional groups the author belongs to
       "visibility": "public",              # optional: public|group|private (default: public)
       "readers": ["ava@acme.com","eng"],    # optional explicit reader principals (overrides visibility)
@@ -26,18 +26,20 @@ Each line is one document:
       "labels": ["eng","runbook"],          # optional facets
       "issuelinks": [...],                  # optional per-source structured extras, each a
                                              #   declared field of the source that has it
-      "comments": [                         # optional: comments on this doc (jira/confluence/github/drive)
-        {"content": "LGTM", "author_email": "rev@acme.com"}
+      "comments": [                         # optional: comments on this doc; each states its own
+        {"content": "LGTM", "author_email": "rev@acme.com",   # author and its own second
+         "created_ts": "2026-03-01T10:00:00Z"}
       ],
-      "created": "2026-03-01T09:00:00Z",    # optional creation time (epoch seconds or ISO 8601)
-      "updated": 1740900000,                # optional modified time (drive/github/jira/confluence)
+      "created": "2026-03-01T09:00:00Z",    # required creation time (epoch seconds or ISO 8601)
+      "updated": 1740900000,                # modified time; required on drive and notion
       "author_name": "Ava Chen",            # optional display name -> the owner's served name
       "replies": [                          # slack only: threaded replies — full messages, not just text
         {"content": "on it", "author_email": "bob@acme.com",
-         "reactions": [{"name": "eyes", "count": 1}]}
+         "created": "2026-03-01T09:00:01Z", "reactions": [{"name": "eyes", "count": 1}]}
       ],
       "messages": [                         # gmail only: the thread's later messages
-        {"content": "On it.", "author_email": "ava@acme.com", "message_id": "<b@acme>"}
+        {"content": "On it.", "author_email": "ava@acme.com", "message_id": "<b@acme>",
+         "created": "2026-03-01T10:00:00Z"}
       ]
     }
 

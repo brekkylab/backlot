@@ -410,6 +410,111 @@ def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
 # --- Slack: enrichment did not change the responses ---------------------------------------
 
 
+# Transcribed from live conversations.history responses, one per shape Slack builds. The mock
+# derives `blocks` from the same text a real client typed, so these are the payloads to match.
+_LIVE_BLOCKS = {
+    "test": [
+        {
+            "type": "rich_text",
+            "elements": [
+                {"type": "rich_text_section", "elements": [{"type": "text", "text": "test"}]}
+            ],
+        }
+    ],
+    "```code fence```": [
+        {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_preformatted",
+                    "elements": [{"type": "text", "text": "code fence"}],
+                    "border": 0,
+                }
+            ],
+        }
+    ],
+    "\u2022 bullet 1\n\u2022 bullet 2": [
+        {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_list",
+                    "style": "bullet",
+                    "indent": 0,
+                    "border": 0,
+                    "elements": [
+                        {
+                            "type": "rich_text_section",
+                            "elements": [{"type": "text", "text": "bullet 1"}],
+                        },
+                        {
+                            "type": "rich_text_section",
+                            "elements": [{"type": "text", "text": "bullet 2"}],
+                        },
+                    ],
+                }
+            ],
+        }
+    ],
+    "`inline` *bold*": [
+        {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_section",
+                    "elements": [
+                        {"type": "text", "text": "inline", "style": {"code": True}},
+                        {"type": "text", "text": " "},
+                        {"type": "text", "text": "bold", "style": {"bold": True}},
+                    ],
+                }
+            ],
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize("text", list(_LIVE_BLOCKS))
+def test_slack_blocks_match_what_live_slack_builds_from_the_same_text(text):
+    """`text` keeps the original markup in a real response, so `blocks` is a second rendering of
+    the same string — which is why it can be derived rather than stored."""
+    from backlot import synth
+
+    got = synth.slack_blocks(text, "chan:1.0")
+    assert got is not None
+    # block_id is seeded, so compare everything else
+    assert [{k: v for k, v in b.items() if k != "block_id"} for b in got] == _LIVE_BLOCKS[text]
+    assert len(got[0]["block_id"]) == 5
+
+
+def test_slack_blocks_are_absent_where_slack_does_not_build_them(client, admin_h):
+    """A message Slack itself generated carries neither `blocks` nor `client_msg_id` — measured on
+    channel_join, which answers only type/user/text/ts/subtype."""
+    from backlot import synth
+
+    assert synth.slack_blocks("", "s") is None
+    assert synth.slack_blocks("   ", "s") is None
+    # the block_id is stable for a given message and differs between messages
+    assert synth.slack_block_id("a:1") == synth.slack_block_id("a:1")
+    assert synth.slack_block_id("a:1") != synth.slack_block_id("a:2")
+
+
+def test_slack_history_messages_carry_blocks(client, admin_h):
+    """Every human-typed message the live API returns carries `blocks`; a client that renders rich
+    text, or validates against a generated model, sees a shape real Slack never returns without."""
+    cid = _a_channel_id(client, admin_h)
+    msgs = client.get(
+        "/slack/api/conversations.history", headers=admin_h, params={"channel": cid, "limit": 5}
+    ).json()["messages"]
+    assert msgs
+    for m in msgs:
+        assert m["blocks"][0]["type"] == "rich_text"
+        assert m["blocks"][0]["block_id"]
+        # the text field still carries the original string, blocks being the second rendering
+        assert m["text"]
+        assert "client_msg_id" in m
+
+
 def test_slack_history_envelope_carries_the_channel_action_counters(client, admin_h):
     """Live Slack sends both keys on every conversations.history call rather than omitting them,
     so a client projecting the envelope sees them. Neither is on the method page."""
@@ -498,6 +603,49 @@ def test_slack_reply_users_and_num_members(tmp_path):
     req = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
     ch = _listed_channel(req, conn, "inc")
     assert ch["num_members"] > 0 and ch["creator"] == "USERVICE0"
+
+
+def test_slack_a_system_message_carries_no_client_composed_fields(tmp_path):
+    """`client_msg_id` is minted by the posting client and `blocks` is what that client composed,
+    so a message Slack itself generated has neither — measured on channel_join, which answers only
+    type/user/text/ts/subtype. Reachable from a BYO corpus, which is what states a subtype: the ERB
+    importer writes none."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "doc_id": "sys",
+                "channel": "inc",
+                "subtype": "channel_join",
+                "content": "<@U123> has joined the channel",
+                "author_email": "bob@x.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "slack",
+                "doc_id": "human",
+                "channel": "inc",
+                "content": "shipped it",
+                "author_email": "ava@x.com",
+                "visibility": "public",
+            },
+        ],
+    )
+    from backlot.routers.slack import _message
+
+    conn = store.connect_ro(s.db_path)
+    rows = {r["content"]: r for r in conn.execute("SELECT * FROM slack_messages")}
+
+    sys_msg = _message(rows["<@U123> has joined the channel"])
+    assert sys_msg["subtype"] == "channel_join"
+    assert "client_msg_id" not in sys_msg and "blocks" not in sys_msg
+    # `team` stays on both: it is absent from a live channel_join too, but a bot_message is a real
+    # posted message and none was available to measure, so it is not dropped on the strength of one
+    assert sys_msg["team"]
+
+    human = _message(rows["shipped it"])
+    assert human["client_msg_id"] and human["blocks"][0]["type"] == "rich_text"
 
 
 def test_thread_ts_and_latest_reply_follow_a_replys_own_clock(tmp_path):

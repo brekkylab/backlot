@@ -934,56 +934,81 @@ _CLOCK = r"\d{1,2}:\d{2}(?::\d{2})?"
 # stamp's own precision is the minute, and `_TZ` already carries the offsets for the gmail Date
 # headers that state a full timestamp.
 _TZ_ABBR = r"(?:UTC|GMT|Z|E[SD]T|C[SD]T|M[SD]T|P[SD]T|ET|CT|MT|PT)"
-# A comment's leading stamp: a date and/or a clock, bracketed or bare, in either the "date time"
-# or "dateTtime" spelling, optionally followed by a zone abbreviation and a dash.
+# A stamp at the HEAD of a line, for a line that carries no label at all.
 _STAMP = re.compile(
     rf"^(?:\[?(?P<date>\d{{4}}-\d{{2}}-\d{{2}})\]?[T ]?\s*)?"
     rf"(?:(?P<time>{_CLOCK})\]?\s*)?"
     rf"(?:{_TZ_ABBR}\s*)?"
-    rf"(?:[-–—]\s*)?"
-)
-# "label: body". The lookahead requires a LETTER in the label, which is what keeps a clock from
-# becoming one: without it "2025-02-18 09:15: rolled back" parses as the author "09" with the body
-# truncated to "15: rolled back", inventing a person and losing text.
-_LABELLED = re.compile(
-    r"^(?=[^:\n]{0,80}[A-Za-zÀ-ÿ])(?P<label>[^:\n]{1,80}?)\s*:\s*(?P<body>.*)$", re.DOTALL
+    rf"(?:[-\u2013\u2014]\s*)?"
 )
 
 
-# The other order: the stamp FOLLOWS the label, with a dash and no colon --
-# "IT (Jordan Liu) 2026-03-10 15:20 - Laptop received at front desk". Read as `label: body` this
-# takes everything up to the clock's colon as the label and leaves the minutes at the head of the
-# body ("20 - Laptop received..."), losing the date and the time with it.
+# A stamp anywhere in a comment's label region: a date, a clock, or both, bracketed or parenthesised
+# or bare, with an optional zone. The bench writes it before the label, after it, and inside it, and
+# every one of those spellings is the comment's clock rather than part of somebody's name.
+_STAMP_ANYWHERE = re.compile(
+    rf"[\[(]?\s*(?:(?P<date>\d{{4}}-\d{{2}}-\d{{2}})(?:[T ]\s*(?P<time>{_CLOCK}))?"
+    rf"|(?P<time2>{_CLOCK}))\s*(?:{_TZ_ABBR})?\s*[\])]?"
+)
+# The colon that separates a label from its body is one NOT flanked by digits: the colon inside
+# "09:15" belongs to a clock, and reading it as the separator made "Support (Ethan Myers) 13" the
+# label and left "10: Thanks for reporting" as the body.
+_SEPARATOR_COLON = re.compile(r"(?<!\d):|:(?!\d)")
+# A label is at most this long and never spans a URL, whose "https:" would otherwise look like a
+# separator on a line that names nobody.
+_LABEL_MAX = 80
+
+
+# The one shape whose separator is a dash rather than a colon:
+# "IT (Jordan Liu) 2026-03-10 15:20 - Laptop received at front desk".
 _LABEL_THEN_STAMP = re.compile(
-    rf"^(?P<label>[^\n]*?)\s+(?P<date>\d{{4}}-\d{{2}}-\d{{2}})"
-    rf"(?:[T ]\s*(?P<time>{_CLOCK}))?"
-    rf"(?:\s*{_TZ_ABBR})?\s*[-–—]\s+(?P<body>.*)$",
+    rf"^(?P<label>[^\n]*?)\s+(?:\d{{4}}-\d{{2}}-\d{{2}})"
+    rf"(?:[T ]\s*{_CLOCK})?(?:\s*{_TZ_ABBR})?\s*[-\u2013\u2014]\s+(?P<body>.*)$",
     re.DOTALL,
 )
 
 
-# A stamp where a name would go: "Security (2026-03-12)". Read as an identity it becomes part of an
-# address (`security.20260312@…`) and the date it states is lost, so it is peeled off the label and
-# used as the comment's clock instead.
-_PARENTHESISED_STAMP = re.compile(
-    rf"\(\s*(?P<date>\d{{4}}-\d{{2}}-\d{{2}})(?:[T ]\s*(?P<time>{_CLOCK}))?[^)]*\)?\s*$"
-)
+def _split_label(line: str) -> tuple[str, str] | None:
+    """``(label region, body)``, or None when the line states no label.
+
+    A label lives on the comment's FIRST line and is separated from the body by a colon — or, when
+    the first line holds nothing but a stamp and a name, by the line break itself. Searching the
+    whole comment instead let a head span a newline: `2026-02-12 12:10 UTC — Benji Okafor` followed
+    by `Fix plan:` gave the label "Benji Okafor Fix plan" and a body starting at `1) …`.
+    """
+    first, _, remainder = line.partition("\n")
+    for m in _SEPARATOR_COLON.finditer(first):
+        head = first[: m.start()]
+        if len(head) > _LABEL_MAX or "//" in head or "http" in head.lower():
+            return None
+        if any(ch.isalpha() for ch in head):
+            return head, line[m.end() :].strip()
+        # No letter yet -- a leading stamp on its own. Keep looking for the real separator.
+    if not remainder:
+        return None
+    # The line break is the separator: a first line that is a stamp and a name is a header.
+    _date, _time, label = _peel_stamps(first)
+    if label and len(label) <= _LABEL_MAX and any(ch.isalpha() for ch in label):
+        return first, remainder.strip()
+    return None
 
 
-def _peel_stamp(line: str) -> tuple[str | None, str | None, str]:
-    """``(date, time, rest)``. The clock is peeled only when a label follows it -- a line whose
-    stamp is followed straight by its body ("2025-02-18 09:15: rolled back") keeps the clock in the
-    body, where the only alternative is to read it as somebody's name."""
-    m = _STAMP.match(line)
-    date, time = m.group("date"), m.group("time")
-    rest = line[m.end() :].strip()
-    if _LABELLED.match(rest):
-        return date, time, rest
-    # No label after the stamp, so the clock was part of the body. Keep only the date and give the
-    # rest back: "2025-02-18 09:15: rolled back" is a body that opens with a time, not an author.
-    if not date:
-        return None, None, line.strip()
-    return date, None, line[m.end("date") :].lstrip("T ").strip()
+def _peel_stamps(head: str) -> tuple[str | None, str | None, str]:
+    """``(date, time, what is left)``. Every stamp in the label region is removed from it."""
+    date = time = None
+    rest = head
+    while True:
+        m = _STAMP_ANYWHERE.search(rest)
+        if not m:
+            break
+        date = date or m.group("date")
+        time = time or m.group("time") or m.group("time2")
+        rest = (rest[: m.start()] + " " + rest[m.end() :]).strip(" ,-–—\t")
+    # An emptied parenthetical is what a peeled "(2026-03-01)" leaves behind. Only that is removed:
+    # stripping parentheses off the ends would unbalance "Aisha Patel (Support)" and with it the
+    # reading that tells the person from the role.
+    rest = re.sub(r"\(\s*\)", "", rest)
+    return date, time, re.sub(r"\s{2,}", " ", rest).strip(" ,-–—\t")
 
 
 def comment_seconds(parsed: list[dict], doc_created: int) -> list[int]:
@@ -1027,45 +1052,33 @@ def parse_comment_lines(comments, *, first_names=None) -> list[dict]:
         line = _unescape(str(c)).strip()
         if not line:
             continue
-        lead = _STAMP.match(line)
-        # A leading stamp wins; the other order is only read when there is none.
-        stamped = (
-            None if (lead.group("date") or lead.group("time")) else _LABEL_THEN_STAMP.match(line)
-        )
-        if stamped:
-            person, role = person_reference(stamped.group("label"), first_names=first_names)
-            out.append(
-                {
-                    "date": stamped.group("date"),
-                    "time": stamped.group("time"),
-                    "person": person,
-                    "role": role,
-                    "body": stamped.group("body").strip(),
-                    "body_with_label": line,
-                }
-            )
-            continue
+        split = _split_label(line)
+        if not split:
+            # A line with no separator colon states no label. `Role (Name) 2026-03-10 15:20 - body`
+            # is the one shape whose separator is a dash instead, so it is tried before giving up.
+            dashed = _LABEL_THEN_STAMP.match(line)
+            if not dashed:
+                # No label at all. A stamp at the head of it is still the comment's clock, so it is
+                # read and the rest is the body: "2025-02-18 09:15: rolled back" is a body that
+                # opens with a time, not an author called "09".
+                lead = _STAMP.match(line)
+                out.append(
+                    {
+                        "date": lead.group("date"),
+                        "time": lead.group("time"),
+                        "person": None,
+                        "role": None,
+                        "body": line[lead.end() :].strip(" :-–—") or line,
+                        "body_with_label": line,
+                    }
+                )
+                continue
+            # Everything before the body, stamp included: `_peel_stamps` is what reads the clock.
+            head, body = line[: dashed.start("body")], dashed.group("body").strip()
+        else:
+            head, body = split
 
-        date, time, rest = _peel_stamp(line)
-        m = _LABELLED.match(rest)
-        if not m:
-            out.append(
-                {
-                    "date": date,
-                    "time": time,
-                    "person": None,
-                    "role": None,
-                    "body": rest,
-                    "body_with_label": rest,
-                }
-            )
-            continue
-        label = m.group("label")
-        parenthesised = _PARENTHESISED_STAMP.search(label)
-        if parenthesised:
-            date = date or parenthesised.group("date")
-            time = time or parenthesised.group("time")
-            label = label[: parenthesised.start()].strip(" ,-–—")
+        date, time, label = _peel_stamps(head)
         person, role = person_reference(label, first_names=first_names)
         out.append(
             {
@@ -1073,8 +1086,8 @@ def parse_comment_lines(comments, *, first_names=None) -> list[dict]:
                 "time": time,
                 "person": person,
                 "role": role,
-                "body": m.group("body").strip(),
-                "body_with_label": rest,
+                "body": body,
+                "body_with_label": f"{label}: {body}" if label else body,
             }
         )
     return out

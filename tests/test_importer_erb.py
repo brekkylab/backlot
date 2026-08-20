@@ -702,6 +702,71 @@ def test_parse_comment_lines_reads_every_stamp_the_bench_writes(line, person, ro
     assert (out["person"], out["role"]) == (person, role)
 
 
+@pytest.mark.parametrize(
+    "line,date,time,person,role,body",
+    [
+        # the separator is a colon and the stamp follows the label
+        (
+            "Sofia Patel (support) 2026-03-12 09:10: Error rate at 12%.",
+            "2026-03-12",
+            "09:10",
+            "Sofia Patel",
+            "support",
+            "Error rate at 12%.",
+        ),
+        # a clock with no date, colon separator: the label ran to the clock's colon and left
+        # "10: Thanks for reporting" as the body
+        (
+            "Support (Ethan Myers) 13:10: Thanks for reporting.",
+            None,
+            "13:10",
+            "Ethan Myers",
+            "Support",
+            "Thanks for reporting.",
+        ),
+        # a parenthesised stamp in the middle, the person after a dash
+        (
+            "Support (2026-03-01) - Maya Chen: Reported after IdP rotation.",
+            "2026-03-01",
+            None,
+            "Maya Chen",
+            "Support",
+            "Reported after IdP rotation.",
+        ),
+        # the line break is the separator: a first line that is a stamp and a name is a header
+        (
+            "2026-02-12 12:10 UTC \u2014 Benji Okafor\nFix plan:\n1) Rename the audit event.",
+            "2026-02-12",
+            "12:10",
+            "Benji Okafor",
+            None,
+            "Fix plan:\n1) Rename the audit event.",
+        ),
+    ],
+)
+def test_a_stamp_is_read_wherever_the_bench_puts_it(line, date, time, person, role, body):
+    """One rule for four shapes: the colon that separates a label from its body is the one NOT
+    flanked by digits, the label lives on the first line, and every stamp in it is the clock."""
+    (out,) = C.parse_comment_lines([line])
+    assert (out["date"], out["time"]) == (date, time)
+    assert (out["person"], out["role"]) == (person, role)
+    assert out["body"] == body
+
+
+def test_a_label_never_spans_a_line_break():
+    """Searching the whole comment for the separator let the label swallow the body's first line:
+    `… — Benji Okafor` + `Fix plan:` gave the label "Benji Okafor Fix plan" and a body at `1) …`."""
+    (out,) = C.parse_comment_lines(["A B\nFix plan:\n1) do it"])
+    assert out["body"].startswith("Fix plan:")
+
+
+def test_a_url_is_not_a_label_separator():
+    """`https:` is a colon a line that names nobody carries."""
+    (out,) = C.parse_comment_lines(["See https://redwood.example/runbook for the steps"])
+    assert (out["person"], out["role"]) == (None, None)
+    assert out["body"] == "See https://redwood.example/runbook for the steps"
+
+
 def test_a_stamp_where_a_name_would_go_is_read_as_the_clock():
     """`Security (2026-03-12)` puts the date where the person goes. Read as an identity it became
     part of an address -- `security.20260312@` -- and the date it states was lost with it."""
@@ -1910,12 +1975,13 @@ def test_linear_parent_issue_is_stored_for_resolution():
 
 
 def test_linear_comment_clock_prefix_is_not_read_as_an_author():
-    """`2025-02-18 09:15: rolled back` must not parse as author "09" with the body truncated to
-    "15: rolled back" — that both invents a person and loses text."""
-    parsed = erb.parse_comment_lines(["2025-02-18 09:15: rolled back"])
-    assert parsed[0]["person"] is None
-    assert parsed[0]["role"] is None
-    assert parsed[0]["body"] == "09:15: rolled back"
+    """`2025-02-18 09:15: rolled back` states a stamp and then a body. Read as `label: body` the
+    author became "09" and the body was truncated to "15: rolled back" — inventing a person and
+    losing text. The stamp is the comment's clock, and what follows it is all body."""
+    (parsed,) = erb.parse_comment_lines(["2025-02-18 09:15: rolled back"])
+    assert (parsed["person"], parsed["role"]) == (None, None)
+    assert (parsed["date"], parsed["time"]) == ("2025-02-18", "09:15")
+    assert parsed["body"] == "rolled back"
 
 
 def test_linear_comment_string_instead_of_a_list_is_tolerated():

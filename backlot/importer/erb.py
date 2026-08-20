@@ -93,6 +93,8 @@ _TZ = {
 }
 _ADDR = re.compile(r"<([^>@\s]+@[^>\s]+)>")
 _BARE_ADDR = re.compile(r"^[^<>@\s,]+@[^<>@\s,]+$")
+# The same shape found INSIDE a label: "Customer (NimbleDocs, ops@nimbledocs.com)".
+_BARE_ADDR_IN_TEXT = re.compile(r"([^<>@\s,()]+@[^<>@\s,()]+)")
 # Slack speaker: 1–3 name-ish words / handles ("Alex", "ops-bot", "Maria L", "IT Help"), an
 # optional "(Team)"/"(Role)" label some docs append ("Elena (CFO)", "Asha (FinanceOps)"), then
 # ": ". The parenthetical is dropped so only the bare name resolves against the directory.
@@ -163,7 +165,9 @@ _ACTIVITY_WORDS = frozenset(
     background blocked blocker blockers risk risks outcome
     created opened closed resolved filed reported merged deployed shipped scheduled""".split()
 )
-_CUSTOMER_LABELS = frozenset({"customer", "client", "customer success", "account"})
+_CUSTOMER_WORD = re.compile(r"\b(customers?|client)\b", re.I)
+# "Support (to customer)" names the AUDIENCE, not the author: the desk wrote it.
+_CUSTOMER_AUDIENCE = re.compile(r"\bto (?:the )?(?:customers?|client)\b", re.I)
 
 
 def _names_an_activity(label: str | None) -> bool:
@@ -444,10 +448,17 @@ class Principals:
         """A customer-side commenter -> an address on the counterparty's domain when the document
         names one, else the placeholder external domain. Never a principal: the counterparty is not
         part of this org."""
-        domain = f"{_slug(company).replace('.', '')}.example" if company else EXTERNAL_DOMAIN
-        # The company's own tokens are dropped from the local part, since the domain already carries
-        # them -- "LexiHealth (Customer)" on a LexiHealth ticket is customer@lexihealth.example.
-        company_tokens = set(_slug(company or "").split("."))
+        # An address the label already carries is the counterparty's own, and beats anything derived
+        # from the words around it -- "Customer (NimbleDocs, ops@nimbledocs.com)" IS that address.
+        stated = _ADDR.search(label or "") or _BARE_ADDR_IN_TEXT.search(label or "")
+        if stated:
+            return stated.group(1).lower()
+        # Otherwise the counterparty's domain, with its own name dropped from the local part since
+        # the domain already carries it: "LexiHealth (Customer)" on a LexiHealth ticket is
+        # customer@lexihealth.example.
+        named = company or (_CUSTOMER_WORD.sub("", label or "").strip(" ()-,") or None)
+        domain = f"{_slug(named).replace('.', '')}.example" if named else EXTERNAL_DOMAIN
+        company_tokens = set(_slug(named or "").split("."))
         local = ".".join(t for t in _slug(label).split(".") if t not in company_tokens)
         return f"{local or 'customer'}@{domain}"
 
@@ -464,7 +475,13 @@ class Principals:
         key = (label or "").strip().lower()
         if not key or _names_an_activity(label):
             return self.unattributed()
-        if key in _CUSTOMER_LABELS or (company and _slug(company) in _slug(key)):
+        # Word-boundary, not an exact match: the corpus writes the counterparty into the label
+        # ("BrightCart (Customer)", "Customer (NimbleDocs)", "Support (to customer)"), and an exact
+        # test put 2,675 of those commenters on the ORG's domain — an external participant wearing
+        # an internal address.
+        if not _CUSTOMER_AUDIENCE.search(key) and (
+            _CUSTOMER_WORD.search(key) or (company and _slug(company) in _slug(key))
+        ):
             return self.customer_email(label, company)
         return self.display_only_email(label)
 

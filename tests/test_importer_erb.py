@@ -452,9 +452,33 @@ def test_a_named_but_unrostered_writer_gets_an_address_and_no_token():
     assert P.users == {}
 
 
-def test_a_customer_commenter_lands_on_the_counterpartys_domain():
+@pytest.mark.parametrize(
+    "label,company,email",
+    [
+        # the counterparty's own domain, with its name dropped from the local part
+        ("Customer", "BrightCart", "customer@brightcart.example"),
+        ("BrightCart (Customer)", "BrightCart", "customer@brightcart.example"),
+        # the ticket names no company, so the label does
+        ("Customer (NimbleDocs)", None, "customer@nimbledocs.example"),
+        ("LexaHealth (Customer)", None, "customer@lexahealth.example"),
+        # an address the label carries IS the counterparty's
+        ("Customer (NeonRetail, procurement@neonretail.com)", None, "procurement@neonretail.com"),
+        # the audience, not the author: the desk wrote it
+        ("Support (to customer)", "FinEdge", "support.to.customer@redwood.com"),
+        # not customer-side at all
+        ("Support", None, "support@redwood.com"),
+    ],
+)
+def test_a_customer_commenter_lands_on_the_counterpartys_domain(label, company, email):
+    """An external participant must not wear an internal address. The corpus writes the
+    counterparty into the label, so an exact-match test put 2,675 of them on the org's domain."""
     P = Principals([], "redwood.com")
-    assert P.customer_email("Customer", "BrightCart") == "customer@brightcart.example"
+    assert P.label_email(label, company) == email
+    assert P.users == {}  # display only: never a principal
+
+
+def test_a_customer_with_no_counterparty_named_falls_back_to_the_placeholder_domain():
+    P = Principals([], "redwood.com")
     assert P.customer_email("Customer", None) == f"customer@{C.EXTERNAL_DOMAIN}"
 
 

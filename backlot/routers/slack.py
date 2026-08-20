@@ -446,6 +446,7 @@ async def conversations_history(request: Request):
                 latest_reply=latest,
                 reply_users=ruids,
                 reply_users_count=len(ru),
+                subscribed=_subscribed(caller, r["author_email"], ru),
             )
         )
     cursor = next_cursor(offset, len(rows), total)
@@ -519,6 +520,9 @@ async def conversations_replies(request: Request):
             reply_users=(ruids if x["thread_seq"] == 0 else None),
             reply_users_count=(len(ru) if x["thread_seq"] == 0 else 0),
             parent_user_id=(parent_uid if x["thread_seq"] > 0 else None),
+            subscribed=(
+                _subscribed(caller, root["author_email"], ru) if x["thread_seq"] == 0 else False
+            ),
         )
         for x in rows
     ]
@@ -851,6 +855,18 @@ def _member_count(request: Request, conn, name: str) -> int:
     return store.count_slack_channel_members(conn, name)
 
 
+def _subscribed(caller: Caller, root_author: str | None, reply_authors) -> bool:
+    """Whether the CALLER follows this thread — Slack subscribes you to one you started or replied
+    in. An admin/service token is not a person and follows nothing, the same reasoning that makes
+    fireflies' `mine` empty for one."""
+    email = (caller.email or "").lower()
+    if not email:
+        return False
+    if (root_author or "").lower() == email:
+        return True
+    return any((e or "").lower() == email for e in reply_authors or ())
+
+
 def _message(
     row,
     reply_count: int = 0,
@@ -858,6 +874,7 @@ def _message(
     reply_users: list[str] | None = None,
     reply_users_count: int = 0,
     parent_user_id: str | None = None,
+    subscribed: bool = False,
 ) -> dict:
     text = row["content"]
     seed = f"{row['channel']}:{row['ts']}"
@@ -903,7 +920,15 @@ def _message(
                     "reply_users_count": reply_users_count or len(reply_users or []),
                     "reply_users": reply_users or [],
                     "latest_reply": latest_reply,
-                    "subscribed": False,
+                    # Per-CALLER state, which is why it is passed in rather than decided here:
+                    # Slack subscribes you to a thread you started or replied in. Measured only in
+                    # the affirmative -- the one token available authored both the root and the
+                    # replies and was answered `true` -- so the negative case rests on Slack's own
+                    # description of when it notifies you, not on an observation.
+                    "subscribed": subscribed,
+                    # A thread property rather than a per-caller one, and nothing in a corpus locks
+                    # a thread.
+                    "is_locked": False,
                 }
             )
         elif row["thread_seq"] > 0 and parent_user_id:  # a reply

@@ -515,6 +515,73 @@ def test_slack_history_messages_carry_blocks(client, admin_h):
         assert "client_msg_id" in m
 
 
+def _incident_root(client, headers):
+    """The `incidents` thread root, as whoever `headers` authenticates."""
+    chans = client.get(
+        "/slack/api/conversations.list", headers=headers, params={"limit": 100}
+    ).json()["channels"]
+    cid = next(c["id"] for c in chans if c["name"] == "incidents")
+    msgs = client.get(
+        "/slack/api/conversations.history", headers=headers, params={"channel": cid, "limit": 50}
+    ).json()["messages"]
+    return cid, next(m for m in msgs if m.get("reply_count"))
+
+
+# The fixture thread: bob started it, ava and bob replied. Slack subscribes you to a thread you
+# started or replied in, so who is asking decides the answer — measured only in the affirmative
+# (the one live token authored both root and replies and was answered `true`), so the negative
+# rests on Slack's description of when it notifies you rather than on an observation.
+@pytest.mark.parametrize(
+    "email, expected",
+    [
+        ("bob@acme.com", True),  # started the thread
+        ("ava@acme.com", True),  # replied in it
+        ("hana@acme.com", False),  # neither
+    ],
+)
+def test_slack_subscribed_is_the_callers_own_thread_state(client, tokens, email, expected):
+    _cid, root = _incident_root(client, {"Authorization": f"Bearer {tokens[email]}"})
+    assert root["subscribed"] is expected, email
+
+
+def test_slack_a_service_token_subscribes_to_nothing(client, admin_h):
+    """An admin/service token is not a person, so it follows no thread — the same reasoning that
+    makes fireflies' `mine` empty for one."""
+    _cid, root = _incident_root(client, admin_h)
+    assert root["subscribed"] is False
+    # a thread property rather than a per-caller one, and nothing in a corpus locks a thread
+    assert root["is_locked"] is False
+
+
+def test_slack_thread_root_carries_what_live_slack_adds_for_replies(client, admin_h):
+    """Measured: in one live conversations.history response a root with replies answered 15 keys
+    where a plain message answered 7 — the thread fields are ADDED, never a substitution."""
+    cid, root = _incident_root(client, admin_h)
+    plain = [
+        m
+        for m in client.get(
+            "/slack/api/conversations.history",
+            headers=admin_h,
+            params={"channel": cid, "limit": 50},
+        ).json()["messages"]
+        if not m.get("reply_count")
+    ]
+    added = {
+        "thread_ts",
+        "reply_count",
+        "reply_users",
+        "reply_users_count",
+        "latest_reply",
+        "subscribed",
+        "is_locked",
+    }
+    assert added <= set(root)
+    if plain:
+        # the root is a superset of a plain message, which is what the live response showed
+        assert set(plain[0]) <= set(root)
+        assert added & set(plain[0]) == set()
+
+
 def test_slack_history_envelope_carries_the_channel_action_counters(client, admin_h):
     """Live Slack sends both keys on every conversations.history call rather than omitting them,
     so a client projecting the envelope sees them. Neither is on the method page."""

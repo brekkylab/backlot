@@ -74,7 +74,20 @@
             "description": "Seconds from the start of the meeting. Default: the next sentence's start, or a speaking-rate estimate for the last one."
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "text"
+            ]
+          },
+          {
+            "required": [
+              "content"
+            ]
+          }
+        ],
+        "description": "A transcript utterance. Its text is required: `content` IS the sentence concatenation, so a sentence carrying none becomes a stored row the transcript's own text does not contain, and the inverse the two are defined by no longer holds."
       }
     },
     "doc_id": {

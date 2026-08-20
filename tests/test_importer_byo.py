@@ -1375,7 +1375,11 @@ def test_fireflies_byo_parses_sentences_out_of_a_plain_body(tmp_path):
 
 def test_fireflies_byo_content_and_sentences_always_round_trip(tmp_path):
     """The invariant that makes `content` a safe definition rather than a duplicate, checked for
-    both the supplied-sentences and the parsed-body path."""
+    both the supplied-sentences and the parsed-body path.
+
+    The stored sentence COUNT is part of it: a sentence the concatenation does not contain is a row
+    the API serves and full-text search cannot find.
+    """
     from backlot import synth
 
     corpus = _write(

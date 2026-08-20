@@ -26,6 +26,49 @@ def _first_error(rec):
     return record_errors(rec)
 
 
+def test_a_linear_comment_needs_a_body_like_every_other_sources():
+    errors = record_errors(
+        {
+            "source_type": "linear",
+            "team": "engineering",
+            "title": "Guardbands",
+            "content": "Body.",
+            "comments": [{}],
+        }
+    )
+    assert errors and "comments/0" in errors[0]
+
+
+def test_a_fireflies_sentence_needs_its_text():
+    """`content` IS the sentence concatenation, so a sentence with no text becomes a stored row the
+    transcript's own text does not contain — which breaks the inverse the two are defined by."""
+    errors = record_errors(
+        {
+            "source_type": "fireflies",
+            "channel": "all-hands",
+            "title": "April all-hands",
+            "sentences": [{"speaker_name": "A", "text": "hello"}, {}],
+        }
+    )
+    assert errors and "sentences/1" in errors[0]
+
+
+@pytest.mark.parametrize("state,ok", [("open", True), ("closed", True), ("merged", False)])
+def test_github_state_is_only_what_the_api_returns(state, ok):
+    """A merge is `merged_at`, not a third state."""
+    errors = record_errors(
+        {
+            "source_type": "github",
+            "repo": "gateway",
+            "title": "Fix the refill tick",
+            "content": "Off by one.",
+            "subtype": "pull_request",
+            "state": state,
+        }
+    )
+    assert (errors == []) is ok
+
+
 def test_unknown_source_type_rejected():
     errs = _first_error({"source_type": "drive", "content": "x", "title": "t"})
     assert errs and "source_type must be one of" in errs[0]

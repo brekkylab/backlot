@@ -193,6 +193,18 @@
       "description": "Comments on the issue, served through `Issue.comments`.",
       "items": {
         "type": "object",
+        "anyOf": [
+          {
+            "required": [
+              "content"
+            ]
+          },
+          {
+            "required": [
+              "body"
+            ]
+          }
+        ],
         "properties": {
           "content": {
             "type": "string"

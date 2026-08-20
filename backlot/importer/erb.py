@@ -931,6 +931,18 @@ _LABELLED = re.compile(
 )
 
 
+# The other order: the stamp FOLLOWS the label, with a dash and no colon --
+# "IT (Jordan Liu) 2026-03-10 15:20 - Laptop received at front desk". Read as `label: body` this
+# takes everything up to the clock's colon as the label and leaves the minutes at the head of the
+# body ("20 - Laptop received..."), losing the date and the time with it.
+_LABEL_THEN_STAMP = re.compile(
+    rf"^(?P<label>[^\n]*?)\s+(?P<date>\d{{4}}-\d{{2}}-\d{{2}})"
+    rf"(?:[T ]\s*(?P<time>{_CLOCK}))?"
+    rf"(?:\s*{_TZ_ABBR})?\s*[-–—]\s+(?P<body>.*)$",
+    re.DOTALL,
+)
+
+
 def _peel_stamp(line: str) -> tuple[str | None, str | None, str]:
     """``(date, time, rest)``. The clock is peeled only when a label follows it -- a line whose
     stamp is followed straight by its body ("2025-02-18 09:15: rolled back") keeps the clock in the
@@ -987,6 +999,25 @@ def parse_comment_lines(comments, *, first_names=None) -> list[dict]:
         line = _unescape(str(c)).strip()
         if not line:
             continue
+        lead = _STAMP.match(line)
+        # A leading stamp wins; the other order is only read when there is none.
+        stamped = (
+            None if (lead.group("date") or lead.group("time")) else _LABEL_THEN_STAMP.match(line)
+        )
+        if stamped:
+            person, role = person_reference(stamped.group("label"), first_names=first_names)
+            out.append(
+                {
+                    "date": stamped.group("date"),
+                    "time": stamped.group("time"),
+                    "person": person,
+                    "role": role,
+                    "body": stamped.group("body").strip(),
+                    "body_with_label": line,
+                }
+            )
+            continue
+
         date, time, rest = _peel_stamp(line)
         m = _LABELLED.match(rest)
         if not m:
@@ -1826,7 +1857,7 @@ def _byo_jira(dsid, raw, P):
         project=project,
         title=title,
         content=content,
-        author_email=reporter_email,
+        author_email=(reporter_email or P.unattributed()),
         author_name=reporter,
         # Jira's own defaults for an issue whose bench doc names neither.
         status=(raw.get("status") or "To Do"),

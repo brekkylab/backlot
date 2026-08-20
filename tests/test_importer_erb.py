@@ -668,11 +668,26 @@ def test_parse_comment_lines_keeps_the_clock_out_of_the_author_and_the_body():
         ("SRE (Priya Singh): Raised a cardinality concern.", "Priya Singh", "SRE"),
         ("Jonas Meyer (ENG): Implemented the buffer prototype.", "Jonas Meyer", "ENG"),
         ("Follow-ups: chase the vendor.", None, "Follow-ups"),
+        # the other order: the stamp FOLLOWS the label, with a dash and no colon
+        ("IT (Jordan Liu) 2026-03-10 15:20 - Laptop received.", "Jordan Liu", "IT"),
+        ("Maya Patel (Reporter) 2026-03-10 15:05 - Filed.", "Maya Patel", "Reporter"),
     ],
 )
 def test_parse_comment_lines_reads_every_stamp_the_bench_writes(line, person, role):
     (out,) = C.parse_comment_lines([line])
     assert (out["person"], out["role"]) == (person, role)
+
+
+def test_a_stamp_after_its_label_is_still_a_stamp():
+    """`IT (Jordan Liu) 2026-03-10 15:20 - body` carries no colon, so reading it as `label: body`
+    took everything up to the clock's colon as the label and left the minutes at the head of the
+    body -- losing the date and the time with them."""
+    (out,) = C.parse_comment_lines(
+        ["IT (Jordan Liu) 2026-03-10 15:20 - Laptop received at front desk."]
+    )
+    assert (out["date"], out["time"]) == ("2026-03-10", "15:20")
+    assert out["person"] == "Jordan Liu"
+    assert out["body"] == "Laptop received at front desk."
 
 
 def test_parse_comment_lines_splits_a_blob_instead_of_iterating_its_characters():

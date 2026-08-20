@@ -450,7 +450,7 @@ async def conversations_history(request: Request):
             )
         )
     cursor = next_cursor(offset, len(rows), total)
-    return {
+    body = {
         "ok": True,
         "messages": messages,
         "has_more": bool(cursor),
@@ -459,8 +459,13 @@ async def conversations_history(request: Request):
         # real API sends both keys on every call rather than omitting them.
         "channel_actions_ts": None,
         "channel_actions_count": 0,
-        "response_metadata": {"next_cursor": cursor},
     }
+    # Omitted entirely on a last page, which is what the live API does here — NOT served with an
+    # empty cursor. conversations.list is the other way round (it carries `{"next_cursor": ""}`
+    # even with nothing more), so the two are not a shared convention to factor out.
+    if cursor:
+        body["response_metadata"] = {"next_cursor": cursor}
+    return body
 
 
 @router.api_route(
@@ -896,7 +901,7 @@ def _message(
         # Seeded on (channel, ts), not ts alone: a ts is unique within its channel (see
         # store.ID_COLUMNS), so the same second in two channels produced one client_msg_id — a
         # value real Slack makes globally unique.
-        m["client_msg_id"] = synth.gmail_id(seed, salt="cmid")
+        m["client_msg_id"] = synth.slack_client_msg_id(seed)
         blocks = synth.slack_blocks(text, seed)
         if blocks:
             m["blocks"] = blocks

@@ -1863,13 +1863,16 @@ def fireflies_speaker_numbers(conn, transcript_id) -> dict[str, int]:
     Fireflies numbers speakers WITHIN a meeting and reports that number on both `Sentence` and
     `AnalyticsSpeaker`, so the roster has to come from the rows that already state it rather than
     from a position in the analytics JSON, which carries no number of its own. DISTINCT over
-    idx_fireflies_sentences_doc, so it seeks the transcript rather than scanning the table."""
+    idx_fireflies_sentences_doc, so it seeks the transcript rather than scanning the table.
+
+    A NULL name is a key like any other: diarization that produced no label still numbered the
+    speaker, and synth.fireflies_speaker_stats aggregates that run too, so dropping it here would
+    leave `analytics.speakers` with an entry no number could be found for."""
     return {
         r["speaker_name"]: r["speaker_id"]
         for r in conn.execute(
             "SELECT DISTINCT speaker_name, speaker_id FROM fireflies_sentences "
-            "WHERE transcript_id = ? AND speaker_name IS NOT NULL AND speaker_id IS NOT NULL "
-            "ORDER BY speaker_id",
+            "WHERE transcript_id = ? AND speaker_id IS NOT NULL ORDER BY speaker_id",
             (transcript_id,),
         )
     }

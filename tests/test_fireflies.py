@@ -96,7 +96,7 @@ def test_fireflies_serves_the_documented_metadata_surface(client, admin_h):
     assert isinstance(t["date"], (int, float))
     # the roster carries identity; the talk-time numbers are on analytics.speakers, keyed by the
     # same per-meeting number the sentences use
-    assert t["speakers"] and all(sp["name"] for sp in t["speakers"])
+    assert t["speakers"]
     assert {sp["id"] for sp in t["speakers"]} == {float(s["speaker_id"]) for s in t["sentences"]}
     assert {sp["speaker_id"] for sp in t["analytics"]["speakers"]} == {
         int(sp["id"]) for sp in t["speakers"]
@@ -154,6 +154,29 @@ def test_fireflies_organizer_falls_back_to_the_host(client, admin_h, ro_conn):
     served = r.json()["data"]["transcripts"]
     assert all(t["organizer_email"] for t in served)
     assert any(t["organizer_email"] == t["host_email"] for t in served)
+
+
+def test_fireflies_an_unnamed_speaker_still_carries_its_number(client, admin_h):
+    """Diarization that produced no label still numbered the speaker, so the roster and the
+    analytics have to agree about it rather than one of them dropping the run."""
+    t = ff_gql(
+        client,
+        '{ transcript(id: "%s") { speakers { id name } '
+        "analytics { speakers { speaker_id name word_count } } "
+        "sentences { speaker_id speaker_name } } }" % served_id("fireflies", "ff-discovery"),
+        admin_h,
+    ).json()["data"]["transcript"]
+
+    # the fixture's last sentence is "(crosstalk)", transcribed without a speaker label
+    assert None in {s["speaker_name"] for s in t["sentences"]}
+    # every speaker the sentences number appears in the roster, unnamed one included
+    assert {float(s["speaker_id"]) for s in t["sentences"]} == {sp["id"] for sp in t["speakers"]}
+    assert None in {sp["name"] for sp in t["speakers"]}
+    # and analytics keys on the same numbers, so no entry is left without one
+    assert all(sp["speaker_id"] is not None for sp in t["analytics"]["speakers"])
+    assert {sp["speaker_id"] for sp in t["analytics"]["speakers"]} == {
+        s["speaker_id"] for s in t["sentences"]
+    }
 
 
 def test_fireflies_transcript_by_id_matches_the_listing(client, admin_h):

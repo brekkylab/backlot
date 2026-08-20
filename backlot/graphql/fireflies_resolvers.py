@@ -126,7 +126,17 @@ def _sentence(row, index: int) -> dict:
         "raw_text": row["body"],
         "start_time": row["start_time"],
         "end_time": row["end_time"],
-        "ai_filters": None,
+        # Fireflies returns the object even when nothing classified: `text_cleanup` carries the
+        # cleaned text, and the classifier flags are null.
+        "ai_filters": {
+            "text_cleanup": row["body"],
+            "task": None,
+            "pricing": None,
+            "metric": None,
+            "question": None,
+            "date_and_time": None,
+            "sentiment": None,
+        },
     }
 
 

@@ -76,7 +76,8 @@ def test_fireflies_serves_the_documented_metadata_surface(client, admin_h):
             analytics { sentiments { positive_pct neutral_pct negative_pct }
                         speakers { name duration word_count duration_pct } }
             meeting_attendees { displayName email location }
-            sentences { index speaker_name speaker_id text raw_text start_time end_time }
+            sentences { index speaker_name speaker_id text raw_text start_time end_time
+                        ai_filters { text_cleanup } }
         } }""",
         admin_h,
     )
@@ -86,6 +87,8 @@ def test_fireflies_serves_the_documented_metadata_surface(client, admin_h):
     assert t["date"] and t["dateString"]
     assert t["channels"] and t["transcript_url"] and t["audio_url"] and t["video_url"]
     assert t["sentences"] and t["analytics"]["sentiments"]["positive_pct"] is not None
+    s0 = t["sentences"][0]
+    assert s0["ai_filters"]["text_cleanup"] == s0["text"]
 
 
 def test_fireflies_sentence_windows_are_ordered_and_contiguous(client, admin_h):
@@ -214,9 +217,20 @@ def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_y
 def test_fireflies_introspection_describes_the_schema(client, admin_h):
     """There is no OpenAPI entry for this route on purpose, so introspection is how a client
     discovers the surface."""
-    r = ff_gql(client, "{ __schema { queryType { fields { name } } } }", admin_h)
-    names = {f["name"] for f in r.json()["data"]["__schema"]["queryType"]["fields"]}
+    r = ff_gql(
+        client,
+        '{ __schema { queryType { fields { name } } } '
+        '__type(name: "Sentence") { fields { name type { name } } } }',
+        admin_h,
+    )
+    data = r.json()["data"]
+    names = {f["name"] for f in data["__schema"]["queryType"]["fields"]}
     assert {"transcripts", "transcript", "user", "users"} <= names
+    # a client generated against the vendor schema names these in fragments and deserializers
+    sentence = {f["name"]: f["type"]["name"] for f in data["__type"]["fields"]}
+    assert sentence["start_time"] == "Float" and sentence["end_time"] == "Float"
+    assert sentence["speaker_id"] == "Int"
+    assert sentence["ai_filters"] == "AIFilters"
 
 
 def test_fireflies_declares_no_mutations(client, admin_h):
@@ -393,14 +407,16 @@ def test_fireflies_stubbed_fields_are_null_not_invented(tmp_path):
             "meeting_attendance { email joinedAt duration } "
             "summary { bullet_gist gist transcript_chapters } "
             "analytics { categories { questions tasks } } "
-            "sentences { ai_filters { task question } } "
+            "sentences { ai_filters { text_cleanup task question } } "
             "user { minutes_consumed is_admin integrations } } }",
         )["data"]["transcripts"][0]
         assert t["meeting_attendance"] is None and t["apps_preview"] is None
         assert t["summary"]["bullet_gist"] is None and t["summary"]["gist"] is None
         assert t["summary"]["transcript_chapters"] is None
         assert t["analytics"]["categories"]["questions"] is None
-        assert t["sentences"][0]["ai_filters"] is None
+        # the object is served; only the classifier flags inside it are null
+        assert t["sentences"][0]["ai_filters"]["task"] is None
+        assert t["sentences"][0]["ai_filters"]["question"] is None
         assert t["user"]["minutes_consumed"] is None and t["user"]["is_admin"] is None
 
 

@@ -11,8 +11,9 @@
 # NULLS ARE HONEST. Every field below is nullable except the ids, and a value the corpus does
 # not carry resolves to null rather than to an invented one. The specific stubs are:
 #
-#   * `Sentence.ai_filters` — Fireflies' per-sentence classifier output (task/question/metric
-#     flags). Deriving it would mean running the classifiers this mock deliberately does not.
+#   * `Sentence.ai_filters` classifier flags (task/question/metric) — deriving them would mean
+#     running the classifiers this mock deliberately does not. The object itself is served, as
+#     Fireflies serves it, with `text_cleanup` carrying the sentence text.
 #   * `Summary.transcript_chapters`, `bullet_gist`, `gist` — further LLM renderings of the same
 #     notes; the corpus carries one set of notes, served as `overview`/`action_items`/`outline`/
 #     `topics_discussed`/`keywords`, so the rest stay null instead of being duplicated under a
@@ -134,11 +135,12 @@ type Sentence {
   start_time: Float
   "Seconds from the start of the meeting."
   end_time: Float
-  "Per-sentence classifier flags. Always null — see the header."
-  ai_filters: AiFilters
+  "Per-sentence classifier output. The flags are null — see the header."
+  ai_filters: AIFilters
 }
 
-type AiFilters {
+type AIFilters {
+  text_cleanup: String
   task: String
   pricing: String
   metric: String

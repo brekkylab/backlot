@@ -182,6 +182,7 @@ SAMPLE = [
         "created": "2026-01-15T10:00:00Z",
     },
     {
+        "reporter": "bob@acme.com",
         "source_type": "jira",
         "doc_id": "jira-sev2",
         "project": "payments",
@@ -223,6 +224,7 @@ SAMPLE = [
         "created": "2026-02-08T20:00:00Z",
     },
     {
+        "reporter": "bob@acme.com",
         "source_type": "jira",
         "doc_id": "jira-sub1",
         "parent": "jira-sev2",
@@ -238,6 +240,9 @@ SAMPLE = [
         "created": "2026-02-09T03:00:00Z",
     },
     {
+        "issuetype": "Task",
+        "status": "Done",
+        "reporter": "bob@acme.com",
         "source_type": "jira",
         "doc_id": "jira-private",
         "project": "payments",
@@ -300,6 +305,7 @@ SAMPLE = [
         "created": "2026-02-11T08:45:00Z",
     },
     {
+        "updated": "2026-01-30T09:00:00Z",
         "source_type": "google_drive",
         "folder": "marketing",
         "group": "marketing",
@@ -312,6 +318,7 @@ SAMPLE = [
         "created": "2025-11-01T12:00:00Z",
     },
     {
+        "updated": "2026-02-01T08:00:00Z",
         "source_type": "google_drive",
         "folder": "finance",
         "group": "finance",
@@ -324,6 +331,7 @@ SAMPLE = [
         "created": "2026-01-10T08:00:00Z",
     },
     {
+        "updated": "2026-01-26T15:00:00Z",
         "source_type": "google_drive",
         "folder": "marketing",
         "group": "marketing",
@@ -336,6 +344,7 @@ SAMPLE = [
         "created": "2026-01-25T15:00:00Z",
     },
     {
+        "updated": "2025-10-01T00:00:00Z",
         "source_type": "google_drive",
         "folder": "security",
         "group": "security-compliance",
@@ -352,6 +361,7 @@ SAMPLE = [
     # are prose). Real Sheets returns an interior blank row as `[]`, not `[""]`, and nothing else in
     # SAMPLE has one — without it a values read raises IndexError only against real data.
     {
+        "updated": "2026-01-12T09:30:00Z",
         "source_type": "google_drive",
         "doc_id": "gd-blankline",
         "folder": "finance",
@@ -368,6 +378,7 @@ SAMPLE = [
     # both a native type and a plain binary — only the API owning its family (Sheets, for .xlsx)
     # returns the "must not be an Office file" precondition — so the corpus needs one to test it.
     {
+        "updated": "2026-01-16T09:00:00Z",
         "source_type": "google_drive",
         "folder": "finance",
         "group": "finance",
@@ -381,6 +392,7 @@ SAMPLE = [
         "created": "2026-01-15T09:00:00Z",
     },
     {
+        "updated": "2026-02-11T09:30:00Z",
         "source_type": "notion",
         "doc_id": "nt-runbook",
         "teamspace": "engineering",
@@ -401,6 +413,7 @@ SAMPLE = [
         "created": "2026-02-01T09:00:00Z",
     },
     {
+        "updated": "2026-01-10T09:00:00Z",
         "source_type": "notion",
         "doc_id": "nt-tasks-db",
         "subtype": "database",
@@ -415,6 +428,7 @@ SAMPLE = [
         "created": "2026-01-10T09:00:00Z",
     },
     {
+        "updated": "2026-02-02T10:00:00Z",
         "source_type": "notion",
         "doc_id": "nt-task-1",
         "parent": "nt-tasks-db",
@@ -429,6 +443,7 @@ SAMPLE = [
         "created": "2026-02-02T10:00:00Z",
     },
     {
+        "updated": "2026-03-01T09:00:00Z",
         "source_type": "notion",
         "doc_id": "nt-secret",
         "teamspace": "people-ops",
@@ -772,6 +787,7 @@ SAMPLE = [
     # Only a `content` body, no `sentences` — the parse-it-back path, including a continuation
     # line that must fold into the sentence above it rather than becoming its own.
     {
+        "duration": 25.0,
         "source_type": "fireflies",
         "doc_id": "ff-allhands",
         "channel": "all-hands",

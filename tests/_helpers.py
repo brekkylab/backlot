@@ -16,11 +16,131 @@ import contextlib
 import importlib
 import json
 import os
+import re
 from pathlib import Path
 
 from starlette.testclient import TestClient
 
 from backlot.config import Settings, get_settings
+
+
+# A value for every field a schema can ask for, so `complete` can answer any of them. A field
+# missing here raises rather than guesses, which is how a new requirement announces itself.
+_FIELD_VALUES = {
+    "content": "Body text.",
+    "title": "A title",
+    "created": "2026-02-10T18:00:00Z",
+    "updated": "2026-02-11T09:00:00Z",
+    "author_email": "ava@acme.com",
+    "key": "runbooks/oncall.md",
+    "status": "In Progress",
+    "issuetype": "Task",
+    "reporter": "bob@acme.com",
+    "state": "open",
+    "identifier": "ENG-1",
+    "properties": {"name": "Acme Health"},
+    "duration": 30.0,
+    "host_email": "ava@acme.com",
+}
+_CONTAINER_VALUES = {
+    "slack": "incidents",
+    "gmail": "ops",
+    "google_drive": "runbooks",
+    "github": "gateway",
+    "jira": "payments",
+    "confluence": "handbook",
+    "notion": "engineering",
+    "s3": "eng-artifacts",
+    "hubspot": "companies",
+    "linear": "engineering",
+    "fireflies": "all-hands",
+}
+_REQUIRED_RE = re.compile(r"'([^']+)' is a required property")
+
+
+def _identifier_for(rec: dict) -> str:
+    """A Linear identifier for a record that did not state one.
+
+    The PREFIX comes from the team and the number from the document, because Linear's key space is
+    per-team: one prefix may not span two teams, and two issues in one team may not share a number.
+    A constant would break whichever rule the test was not about.
+    """
+    import hashlib
+
+    team = "".join(ch for ch in str(rec.get("team") or "team") if ch.isalnum())
+    seed = str(rec.get("doc_id") or rec.get("title") or "")
+    number = int(hashlib.sha256(seed.encode()).hexdigest()[:6], 16) % 9000 + 1
+    return f"{(team[:3] or 'TEA').upper()}-{number}"
+
+
+def _seconds_after(when, offset: int):
+    """``when`` plus ``offset`` seconds, in whichever form ``when`` was written."""
+    from datetime import datetime, timedelta, timezone
+
+    if isinstance(when, (int, float)):
+        return int(when) + offset
+    stamp = datetime.fromisoformat(str(when).replace("Z", "+00:00")) + timedelta(seconds=offset)
+    return stamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def complete(source_type: str, **overrides) -> dict:
+    """A record that states everything its schema asks for, so a test can say only what it is about.
+
+    Read off the schema rather than from a list kept here: a helper carrying its own copy of the
+    required fields would keep handing out records that pass while the contract moved underneath it.
+    The tests that are ABOUT the contract build their records by hand instead -- see
+    ``tests/test_schema.py``.
+    """
+    from backlot import store
+    from backlot.validation import record_errors
+
+    # A child row states its own author and second. Filled from the root's clock, one second apart,
+    # so a thread the test did not date still reads in the order it was written.
+    overrides = dict(overrides)
+    root_second = overrides.get("created") or _FIELD_VALUES["created"]
+    for array, time_field in (
+        ("comments", "created_ts"),
+        ("replies", "created"),
+        ("messages", "created"),
+        ("sentences", "start_time"),
+    ):
+        children = overrides.get(array)
+        if not isinstance(children, list):
+            continue
+        filled = []
+        for i, child in enumerate(children, start=1):
+            if not isinstance(child, dict):
+                filled.append(child)
+                continue
+            child = dict(child)
+            if array == "sentences":
+                child.setdefault(time_field, i - 1)
+            else:
+                child.setdefault("author_email", _FIELD_VALUES["author_email"])
+                child.setdefault(time_field, _seconds_after(root_second, i))
+            filled.append(child)
+        overrides[array] = filled
+
+    rec: dict = {"source_type": source_type}
+    container = store.grouping_col(source_type)
+    for _ in range(24):
+        merged = {**rec, **overrides}
+        missing = [m.group(1) for e in record_errors(merged) if (m := _REQUIRED_RE.search(e))]
+        if not missing:
+            return merged
+        for field in missing:
+            if field == container:
+                rec[field] = _CONTAINER_VALUES[source_type]
+            elif field == "identifier":
+                rec[field] = _identifier_for(merged)
+            elif field in _FIELD_VALUES:
+                rec[field] = _FIELD_VALUES[field]
+            else:
+                raise AssertionError(
+                    f"{source_type} now requires {field!r}; teach tests._helpers._FIELD_VALUES "
+                    f"a value for it"
+                )
+    raise AssertionError(f"{source_type}: {record_errors({**rec, **overrides})}")
 
 
 def served_id(source_type: str, seed: str):
@@ -41,14 +161,24 @@ def served_id(source_type: str, seed: str):
     return store.id_seed(source_type)(seed)
 
 
-def build_corpus(data_dir: Path, records: list[dict], *, name: str = "_corpus.jsonl") -> Settings:
-    """Write ``records`` as a BYO-JSONL corpus under ``data_dir`` and load it into a fresh DB."""
+def build_corpus(
+    data_dir: Path, records: list[dict], *, name: str = "_corpus.jsonl", raw: bool = False
+) -> Settings:
+    """Write ``records`` as a BYO-JSONL corpus under ``data_dir`` and load it into a fresh DB.
+
+    Each record is completed against its schema first (see :func:`complete`), so a test states only
+    the fields it is about. ``raw=True`` writes them as given, for the tests about refusal itself.
+    """
     from backlot.importer.byo import load
 
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(data_dir=data_dir)
     corpus = data_dir / name
+    if not raw:
+        records = [
+            complete(**r) if isinstance(r, dict) and "source_type" in r else r for r in records
+        ]
     corpus.write_text("\n".join(json.dumps(r) for r in records))
     load(corpus, settings)
     return settings

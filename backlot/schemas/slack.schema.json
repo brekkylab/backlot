@@ -139,7 +139,9 @@
           }
         },
         "required": [
-          "content"
+          "author_email",
+          "content",
+          "created"
         ],
         "additionalProperties": false
       },
@@ -154,8 +156,11 @@
     }
   },
   "required": [
-    "source_type",
-    "content"
+    "author_email",
+    "channel",
+    "content",
+    "created",
+    "source_type"
   ],
   "additionalProperties": false
 }

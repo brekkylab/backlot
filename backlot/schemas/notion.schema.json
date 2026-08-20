@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Page or database title."
+      "description": "Page or database title.",
+      "minLength": 1
     },
     "doc_id": {
       "type": "string",
@@ -156,14 +157,22 @@
             ]
           }
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "required": [
+          "author_email",
+          "created_ts"
+        ]
       }
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
-    "title"
+    "created",
+    "source_type",
+    "teamspace",
+    "title",
+    "updated"
   ],
   "additionalProperties": false
 }

@@ -14,7 +14,7 @@
     },
     "title": {
       "type": "string",
-      "description": "Document title (email subject / file name / issue title / page title)."
+      "description": "The message's Subject. Required but MAY be empty: a message with no Subject header is legal and the API serves it as one, so the corpus states the absence rather than inventing a line."
     },
     "doc_id": {
       "type": "string",
@@ -203,15 +203,20 @@
           }
         },
         "required": [
-          "content"
+          "author_email",
+          "content",
+          "created"
         ],
         "additionalProperties": false
       }
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
+    "created",
+    "mailbox",
+    "source_type",
     "title"
   ],
   "additionalProperties": false

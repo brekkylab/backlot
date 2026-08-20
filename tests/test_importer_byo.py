@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from backlot import store, synth
-from tests._helpers import served_id
+from tests._helpers import complete, served_id
 from backlot.acl import Acl
 from backlot.config import Settings, get_settings
 from backlot.routers.slack import _message
@@ -19,7 +19,13 @@ from backlot.importer import byo
 from backlot.importer.byo import load
 
 
-def _write(tmp_path, records, name="corpus.jsonl"):
+def _write(tmp_path, records, name="corpus.jsonl", *, raw=False):
+    """A corpus file. Each record is completed against its schema first, so a test states only the
+    fields it is about; ``raw=True`` writes them as given, for the tests about refusal itself."""
+    if not raw:
+        records = [
+            complete(**r) if isinstance(r, dict) and "source_type" in r else r for r in records
+        ]
     p = tmp_path / name
     p.write_text("\n".join(json.dumps(r) for r in records))
     return p

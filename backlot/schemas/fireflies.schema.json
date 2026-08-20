@@ -87,7 +87,10 @@
             ]
           }
         ],
-        "description": "A transcript utterance. Its text is required: `content` IS the sentence concatenation, so a sentence carrying none becomes a stored row the transcript's own text does not contain, and the inverse the two are defined by no longer holds."
+        "description": "A transcript utterance. Its text is required: `content` IS the sentence concatenation, so a sentence carrying none becomes a stored row the transcript's own text does not contain, and the inverse the two are defined by no longer holds. `start_time` is required too, because every sentence the API serves carries one.",
+        "required": [
+          "start_time"
+        ]
       }
     },
     "doc_id": {
@@ -306,8 +309,41 @@
     }
   },
   "required": [
+    "channel",
+    "created",
+    "duration",
     "source_type",
     "title"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "not": {
+          "required": [
+            "host_email"
+          ]
+        }
+      },
+      "then": {
+        "required": [
+          "author_email"
+        ]
+      }
+    },
+    {
+      "if": {
+        "not": {
+          "required": [
+            "sentences"
+          ]
+        }
+      },
+      "then": {
+        "required": [
+          "content"
+        ]
+      }
+    }
+  ]
 }

@@ -1715,6 +1715,7 @@ def _byo_drive(dsid, raw, P):
     # Workspace subtype or a binary's mime, and re-deriving it on load would need `_ATT_MIME` and the
     # title's extension inside `byo.py`. So the converted record carries the resolved pair.
     subtype, mime_type = _drive_type(raw, title)
+    created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
     rec = _rec(
         source_type="google_drive",
         doc_id=dsid,
@@ -1725,8 +1726,10 @@ def _byo_drive(dsid, raw, P):
         author_name=owner,
         subtype=subtype,
         mime_type=mime_type,
-        created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
-        updated=to_epoch(raw.get("last_modified")),
+        created=created,
+        # A file the bench never dates was never edited, so its creation time IS its modified time.
+        # Stated rather than left out: `modifiedTime` is a field Drive always serves.
+        updated=(to_epoch(raw.get("last_modified")) or created),
     )
     # A doc with no team owns no group, and `"group": null` is how BYO says so — inferring one from
     # the folder name would invent a grantable principal the direct import does not have.
@@ -1746,6 +1749,7 @@ def _byo_github(dsid, raw, P):
     author_email = P.resolve(author, role="author", group_hint=raw.get("repo")) if author else None
     reviewers = _resolved(P, raw.get("reviewers"), role="reviewer")
     repo = raw.get("repo") or "repo"
+    subtype = "pull_request" if raw.get("pr_number") else "issue"
     raw_state = str(raw.get("state") or "").lower()
     # A merged pull with no merge time recorded: its last update is the closest second the bench
     # states, and a merged pull carrying no `merged_at` reads as never merged.
@@ -1758,8 +1762,10 @@ def _byo_github(dsid, raw, P):
         content=content,
         author_email=(author_email or P.unattributed()),
         author_name=author,
-        subtype=("pull_request" if raw.get("pr_number") else "issue"),
-        state=_GH_STATE.get(raw_state),
+        subtype=subtype,
+        # Open unless the bench says otherwise: GitHub reports a state on every issue and
+        # pull, and a file row carries none at all.
+        state=(None if subtype == "file" else _GH_STATE.get(raw_state, "open") or "open"),
         merged_at=merged_at,
         labels=_names(raw.get("labels")),
         requested_reviewers=reviewers,
@@ -1822,13 +1828,14 @@ def _byo_jira(dsid, raw, P):
         content=content,
         author_email=reporter_email,
         author_name=reporter,
-        status=raw.get("status"),
-        issuetype=raw.get("issue_type"),
+        # Jira's own defaults for an issue whose bench doc names neither.
+        status=(raw.get("status") or "To Do"),
+        issuetype=(raw.get("issue_type") or "Task"),
         priority=raw.get("priority"),
         labels=_names(raw.get("labels")),
         components=_names(raw.get("components")),
         assignee=assignee_email,
-        reporter=reporter_email,
+        reporter=(reporter_email or P.unattributed()),
         duedate=raw.get("due_date"),
         comments=(comments or None),
         created=created,
@@ -1873,7 +1880,7 @@ def _byo_gmail(dsid, raw, P):
         _rec(
             doc_id=f"{dsid}::m{seq}",
             content=m.get("body", ""),
-            author_email=sender(m),
+            author_email=(sender(m) or P.unattributed()),
             title=(m.get("subject") or title),
             to=m.get("to"),
             cc=m.get("cc"),
@@ -2022,7 +2029,8 @@ def _byo_linear(dsid, raw, P):
     identifier = str(raw.get("key") or "").strip() or synth.linear_identifier(
         dsid, synth.linear_team_key(team)
     )
-    state = raw.get("status")
+    # `WorkflowState` is non-null on a Linear issue; "Todo" is its bucket for one not begun.
+    state = raw.get("status") or "Todo"
     created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
     updated = to_epoch(raw.get("updated_at"))
     state_type = synth.linear_state_type(state)
@@ -2126,13 +2134,15 @@ def _byo_fireflies(dsid, raw, P):
         e for e in (P.resolve(n, role="participant_external") for n in external) if e
     ]
 
-    # Parsed HERE (the parse needs attendee fields the record does not carry) but deliberately NOT
-    # timed here: `synth.fireflies_fill_times` REWRITES start_time, spreading a run of sentences that
-    # share one clock reading across its window, so feeding its output back in would change the run
-    # structure and produce a different timeline. The record carries the readings as transcribed.
-    # `content` is omitted for the same reason — it is DEFINED as the sentence concatenation, so
-    # emitting it would double the artifact's largest field and could drift.
+    # Parsed here, then timed here: every sentence the API serves carries a `start_time`, so the
+    # corpus states one. `synth.fireflies_fill_times` spreads a run of sentences sharing one clock
+    # reading across its window, which is the same rule the server would apply -- applying it once,
+    # at conversion, is what makes the reading a fact of the corpus rather than of the loader.
+    # `content` is still omitted: it is DEFINED as the sentence concatenation, so emitting it would
+    # double the artifact's largest field and could drift from the sentences it restates.
     sentences = parse_fireflies_transcript(_ff_transcript_text(raw), internal + external)
+    _ff_seconds = _ff_duration(raw.get("duration_minutes"))
+    synth.fireflies_fill_times(sentences, (_ff_seconds * 60) if _ff_seconds else None)
     ordinals: dict[str, int] = {}
     for s in sentences:
         ordinals.setdefault(s["speaker_name"] or "", len(ordinals))
@@ -2154,13 +2164,18 @@ def _byo_fireflies(dsid, raw, P):
         for s in sentences
     ]
     duration = _ff_duration(raw.get("duration_minutes"))
+    if duration is None:
+        # The last thing said is the earliest the meeting can have ended -- a reading the transcript
+        # carries, rather than a number invented for it.
+        last = max((snt.get("start_time") or 0) for snt in sentences) if sentences else 0
+        duration = round(last / 60, 2)
 
     rec = _rec(
         source_type="fireflies",
         doc_id=dsid,
         channel=channel,
         title=title,
-        host_email=host_email,
+        host_email=(host_email or P.unattributed()),
         host_name=(owner_display or None),
         calendar_id=raw.get("meeting_id"),
         calendar_type="google_calendar",

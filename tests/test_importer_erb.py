@@ -16,7 +16,7 @@ import yaml
 from backlot import store, synth
 from backlot.config import Settings, get_settings
 from backlot.importer import byo, erb
-from tests._helpers import client_for, served_id
+from tests._helpers import complete, client_for, served_id
 from backlot.importer.erb import Principals, canonical, grants_for
 
 C = erb
@@ -2763,14 +2763,14 @@ def test_byo_drive_subtypes_are_all_accepted_by_the_schema():
         }
         subtype, mime_type = erb._drive_type(raw, title)
         errs = record_errors(
-            {
-                "source_type": "google_drive",
-                "folder": "f",
-                "title": title,
-                "content": "x",
-                "subtype": subtype,
+            complete(
+                source_type="google_drive",
+                folder="f",
+                title=title,
+                content="x",
+                subtype=subtype,
                 **({"mime_type": mime_type} if mime_type else {}),
-            }
+            )
         )
         assert errs == [], f"{doc_type or title} -> subtype {subtype!r}: {errs}"
 

@@ -15,6 +15,7 @@ import sqlite3
 import pytest
 
 from backlot import store, synth
+from tests._helpers import complete
 
 ALL_SOURCES = [
     "slack",
@@ -1918,15 +1919,15 @@ def test_linear_entities_are_rebuilt_whole_so_an_append_is_resolvable(tmp_path):
     from backlot.config import Settings
 
     def issue(doc_id, project):
-        return {
-            "source_type": "linear",
-            "team": "engineering",
-            "doc_id": doc_id,
-            "title": doc_id,
-            "content": "c",
-            "author_email": "a@acme.com",
-            "project": project,
-        }
+        return complete(
+            source_type="linear",
+            team="engineering",
+            doc_id=doc_id,
+            title=doc_id,
+            content="c",
+            author_email="a@acme.com",
+            project=project,
+        )
 
     settings = Settings(data_dir=tmp_path)
     first = tmp_path / "a.jsonl"

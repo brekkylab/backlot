@@ -12,6 +12,15 @@ from backlot.validation import record_errors, validate_file
 from backlot.importer.byo import load
 
 
+def _unstated(rec: dict) -> list[str]:
+    """Facts this record leaves for the loader to invent, according to its own schema.
+
+    Derived from the schemas rather than from a list kept here: a second list of required fields is
+    a second contract, and the point of the schemas is that there is one.
+    """
+    return [e for e in record_errors(rec) if "is a required property" in e]
+
+
 def test_schema_per_service_matches_store():
     # one schema file per served source type, keyed identically to the store registry
     assert set(validation.SERVICE_SCHEMAS) == set(store.SOURCE_TABLE)
@@ -67,6 +76,128 @@ def test_github_state_is_only_what_the_api_returns(state, ok):
         }
     )
     assert (errors == []) is ok
+
+
+@pytest.mark.parametrize(
+    "source_type,container",
+    sorted((src, store.grouping_col(src)) for src in store.SOURCE_TABLE),
+)
+def test_a_record_must_state_its_container_author_and_time(source_type, container):
+    """The three facts a served document cannot exist without, and which the loader used to invent:
+    who wrote it, where it lives, and when it happened."""
+    minimal = {"source_type": source_type, "content": "Body."}
+    if source_type != "slack":  # a slack message has no title, and unknown keys are rejected
+        minimal["title"] = "T"
+    if source_type == "fireflies":
+        minimal["duration"] = 30
+    joined = " ".join(record_errors(minimal))
+    assert container in joined
+    assert "created" in joined
+    assert "author_email" in joined or "host_email" in joined
+
+
+def test_a_fireflies_record_may_name_its_owner_as_host_email():
+    """`host_email` is the API's own name for it, so a corpus written against Fireflies needs no
+    renaming."""
+    assert (
+        record_errors(
+            {
+                "source_type": "fireflies",
+                "channel": "all-hands",
+                "title": "April all-hands",
+                "host_email": "ceo@acme.com",
+                "created": "2026-04-10T16:00:00Z",
+                "duration": 25.0,
+                "content": "Ada Chief: welcome everyone.",
+            }
+        )
+        == []
+    )
+
+
+def test_an_empty_title_is_not_a_title():
+    errors = record_errors(
+        {
+            "source_type": "confluence",
+            "space": "handbook",
+            "title": "",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "created": "2026-02-01T09:00:00Z",
+        }
+    )
+    assert errors and "title" in errors[0]
+
+
+def test_a_hubspot_note_needs_no_name():
+    """HubSpot serves no name on a note, and notes are most of a real portal."""
+    assert (
+        record_errors(
+            {
+                "source_type": "hubspot",
+                "object_type": "notes",
+                "content": "Security review scheduled.",
+                "author_email": "rep@acme.com",
+                "created": "2026-03-05T14:00:00Z",
+                "properties": {"hs_note_body": "Security review scheduled."},
+            }
+        )
+        == []
+    )
+
+
+def test_a_github_file_needs_no_state_but_a_pull_does():
+    common = {
+        "source_type": "github",
+        "repo": "gateway",
+        "title": "gateway/limiter.py",
+        "content": "class TokenBucket: ...",
+        "author_email": "bob@acme.com",
+        "created": "2026-01-20T09:00:00Z",
+    }
+    assert record_errors({**common, "subtype": "file", "path": "gateway/limiter.py"}) == []
+    errors = record_errors({**common, "subtype": "pull_request", "state": "open"})
+    assert errors == []
+    errors = record_errors({**common, "subtype": "pull_request"})
+    assert errors and "state" in errors[0]
+
+
+def test_a_child_row_states_its_author_and_its_time():
+    errors = record_errors(
+        {
+            "source_type": "jira",
+            "project": "payments",
+            "title": "SEV2",
+            "content": "Body.",
+            "author_email": "bob@acme.com",
+            "created": "2026-02-08T20:00:00Z",
+            "status": "In Progress",
+            "issuetype": "Incident",
+            "reporter": "bob@acme.com",
+            "comments": [{"content": "Rolled back."}],
+        }
+    )
+    joined = " ".join(errors)
+    assert "author_email" in joined and "created_ts" in joined
+
+
+def test_a_fireflies_sentence_still_needs_no_author():
+    """The vendor's `Sentence` carries no email at all, and an unnamed speaker is what diarization
+    produces — so the mock must not be stricter than the API it stands in for."""
+    assert (
+        record_errors(
+            {
+                "source_type": "fireflies",
+                "channel": "all-hands",
+                "title": "April all-hands",
+                "host_email": "ceo@acme.com",
+                "created": "2026-04-10T16:00:00Z",
+                "duration": 25.0,
+                "sentences": [{"text": "(crosstalk)", "start_time": 12}],
+            }
+        )
+        == []
+    )
 
 
 def test_unknown_source_type_rejected():
@@ -586,50 +717,6 @@ def test_readers_accept_typed_principal_ids():
 # Until the test below existed, the only property pinned here was "covers every source" — which
 # hello.jsonl also satisfies, so nothing distinguished the two and the README's "fills in every
 # field" was a claim rather than a fact (68 declared fields were unused when it was written).
-
-
-# The facts a record must state rather than leave for the loader to invent. Expressed as data so
-# every corpus in the repo -- the reference one, the test one, and the examples -- is held to the
-# same list by the three tests below.
-CONTAINER = {
-    "slack": "channel",
-    "gmail": "mailbox",
-    "google_drive": "folder",
-    "github": "repo",
-    "jira": "project",
-    "confluence": "space",
-    "notion": "teamspace",
-    "s3": "bucket",
-    "hubspot": "object_type",
-    "linear": "team",
-    "fireflies": "channel",
-}
-CHILD_TIME = {
-    "comments": "created_ts",
-    "replies": "created",
-    "messages": "created",
-    "sentences": "start_time",
-}
-
-
-def _unstated(rec: dict) -> list[str]:
-    """Facts this record leaves for the loader to invent."""
-    gaps = []
-    if not (rec.get("author_email") or rec.get("host_email")):
-        gaps.append("author_email")
-    if "created" not in rec:
-        gaps.append("created")
-    if not rec.get(CONTAINER[rec["source_type"]]):
-        gaps.append(CONTAINER[rec["source_type"]])
-    for array, field in CHILD_TIME.items():
-        for i, child in enumerate(rec.get(array) or []):
-            # A fireflies sentence is exempt from the author rule: the vendor's `Sentence` carries
-            # no email at all, and an unnamed speaker is what diarization produces.
-            if array != "sentences" and not child.get("author_email"):
-                gaps.append(f"{array}[{i}].author_email")
-            if child.get(field) is None:
-                gaps.append(f"{array}[{i}].{field}")
-    return gaps
 
 
 def test_the_sample_corpus_states_every_required_fact():

@@ -15,7 +15,6 @@
     },
     "title": {
       "type": "string",
-      "description": "Optional for this source alone: HubSpot serves no name on a note, and notes are most of a real portal. The value is a search handle, not a served field.",
       "description": "Record display name (contact: full name; company: name; deal: dealname; note/email/meeting: subject)."
     },
     "doc_id": {
@@ -134,8 +133,12 @@
     }
   },
   "required": [
-    "source_type",
-    "content"
+    "author_email",
+    "content",
+    "created",
+    "object_type",
+    "properties",
+    "source_type"
   ],
   "additionalProperties": false
 }

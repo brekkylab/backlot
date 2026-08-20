@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Document title (email subject / file name / issue title / page title)."
+      "description": "Document title (email subject / file name / issue title / page title).",
+      "minLength": 1
     },
     "doc_id": {
       "type": "string",
@@ -202,7 +203,11 @@
             ]
           }
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "required": [
+          "author_email",
+          "created_ts"
+        ]
       }
     },
     "key": {
@@ -213,8 +218,14 @@
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
+    "created",
+    "issuetype",
+    "project",
+    "reporter",
+    "source_type",
+    "status",
     "title"
   ],
   "additionalProperties": false

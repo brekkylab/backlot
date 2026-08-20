@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Human title (metadata; the key is the address)."
+      "description": "Human title (metadata; the key is the address).",
+      "minLength": 1
     },
     "key": {
       "type": "string",
@@ -106,10 +107,13 @@
     }
   },
   "required": [
-    "source_type",
+    "author_email",
+    "bucket",
     "content",
-    "title",
-    "key"
+    "created",
+    "key",
+    "source_type",
+    "title"
   ],
   "additionalProperties": false
 }

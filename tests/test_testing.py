@@ -8,6 +8,7 @@ import sys
 import urllib.request
 
 import backlot
+from tests._helpers import complete
 from backlot.testing import _terminate
 
 
@@ -27,13 +28,13 @@ def test_mock_server_with_no_arguments_serves_the_hello_corpus():
 def test_mock_server_accepts_records():
     with backlot.mock_server(
         [
-            {
-                "source_type": "confluence",
-                "space": "handbook",
-                "title": "Only Page",
-                "content": "The only document.",
-                "author_email": "ava@acme.com",
-            },
+            complete(
+                source_type="confluence",
+                space="handbook",
+                title="Only Page",
+                content="The only document.",
+                author_email="ava@acme.com",
+            ),
         ]
     ) as m:
         body = _get(f"{m.base_url}/health")

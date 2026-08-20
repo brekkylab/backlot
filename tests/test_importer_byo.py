@@ -54,38 +54,44 @@ def test_load_records_builds_the_same_db_as_load_from_a_file(tmp_path):
     """The record-source seam has to be a pure refactor: the same records loaded from an
     in-memory factory and from a JSONL file must produce identical tables."""
     records = [
-        {
-            "source_type": "confluence",
-            "doc_id": "a",
-            "space": "handbook",
-            "group": "eng",
-            "title": "A",
-            "content": "alpha",
-            "author_email": "ava@acme.com",
-            "visibility": "public",
-            "comments": [{"content": "looks right", "author_email": "bob@acme.com"}],
-        },
-        {
-            "source_type": "slack",
-            "channel": "eng",
-            "group": "eng",
-            "content": "hello",
-            "author_email": "bob@acme.com",
-            "visibility": "public",
-            "replies": [{"content": "hi back", "author_email": "ava@acme.com"}],
-        },
-        {
-            "source_type": "linear",
-            "doc_id": "l1",
-            "team": "engineering",
-            "group": "eng",
-            "title": "Fix it",
-            "content": "broken",
-            "author_email": "ava@acme.com",
-            "identifier": "ENG-1",
-            "state": "Todo",
-            "visibility": "group",
-        },
+        complete(
+            **{
+                "source_type": "confluence",
+                "doc_id": "a",
+                "space": "handbook",
+                "group": "eng",
+                "title": "A",
+                "content": "alpha",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "comments": [{"content": "looks right", "author_email": "bob@acme.com"}],
+            }
+        ),
+        complete(
+            **{
+                "source_type": "slack",
+                "channel": "eng",
+                "group": "eng",
+                "content": "hello",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+                "replies": [{"content": "hi back", "author_email": "ava@acme.com"}],
+            }
+        ),
+        complete(
+            **{
+                "source_type": "linear",
+                "doc_id": "l1",
+                "team": "engineering",
+                "group": "eng",
+                "title": "Fix it",
+                "content": "broken",
+                "author_email": "ava@acme.com",
+                "identifier": "ENG-1",
+                "state": "Todo",
+                "visibility": "group",
+            }
+        ),
     ]
 
     (tmp_path / "file").mkdir(parents=True, exist_ok=True)
@@ -307,21 +313,25 @@ def test_byo_created_updated_times(tmp_path):
         _write(
             tmp_path,
             [
-                {
-                    "source_type": "jira",
-                    "title": "T",
-                    "content": "c",
-                    "doc_id": "j1",
-                    "created": "2026-03-01T09:00:00Z",
-                    "updated": 1740900000,
-                },
-                {
-                    "source_type": "google_drive",
-                    "title": "D",
-                    "content": "c",
-                    "doc_id": "d1",
-                    "created": "2026-01-15T00:00:00Z",
-                },
+                complete(
+                    **{
+                        "source_type": "jira",
+                        "title": "T",
+                        "content": "c",
+                        "doc_id": "j1",
+                        "created": "2026-03-01T09:00:00Z",
+                        "updated": 1740900000,
+                    }
+                ),
+                complete(
+                    **{
+                        "source_type": "google_drive",
+                        "title": "D",
+                        "content": "c",
+                        "doc_id": "d1",
+                        "created": "2026-01-15T00:00:00Z",
+                    }
+                ),
             ],
         ),
         Settings(data_dir=tmp_path),
@@ -438,23 +448,25 @@ def test_byo_slack_reply_carries_its_own_clock(tmp_path):
         _write(
             tmp_path,
             [
-                {
-                    "source_type": "slack",
-                    "content": "root",
-                    "channel": "incidents",
-                    "doc_id": "s-root",
-                    "author_email": "bob@a.com",
-                    "created": "2026-05-01T00:00:00Z",
-                    "replies": [
-                        {"content": "quick ack", "author_email": "ava@a.com"},
-                        {
-                            "content": "the real answer, hours later",
-                            "author_email": "ava@a.com",
-                            "created": "2026-05-01T03:00:00Z",
-                        },
-                        {"content": "thanks", "author_email": "bob@a.com"},
-                    ],
-                }
+                complete(
+                    **{
+                        "source_type": "slack",
+                        "content": "root",
+                        "channel": "incidents",
+                        "doc_id": "s-root",
+                        "author_email": "bob@a.com",
+                        "created": "2026-05-01T00:00:00Z",
+                        "replies": [
+                            {"content": "quick ack", "author_email": "ava@a.com"},
+                            {
+                                "content": "the real answer, hours later",
+                                "author_email": "ava@a.com",
+                                "created": "2026-05-01T03:00:00Z",
+                            },
+                            {"content": "thanks", "author_email": "bob@a.com"},
+                        ],
+                    }
+                )
             ],
         ),
         Settings(data_dir=tmp_path),
@@ -485,21 +497,23 @@ def test_byo_slack_clockless_root_is_grounded_on_its_replies(tmp_path):
         _write(
             tmp_path,
             [
-                {
-                    "source_type": "slack",
-                    "content": "root",
-                    "channel": "incidents",
-                    "doc_id": did,
-                    "author_email": "bob@a.com",
-                    "replies": [
-                        {"content": "quick ack", "author_email": "ava@a.com"},
-                        {
-                            "content": "the real answer",
-                            "author_email": "ava@a.com",
-                            "created": "2024-06-01T00:00:00Z",
-                        },
-                    ],
-                }
+                complete(
+                    **{
+                        "source_type": "slack",
+                        "content": "root",
+                        "channel": "incidents",
+                        "doc_id": did,
+                        "author_email": "bob@a.com",
+                        "replies": [
+                            {"content": "quick ack", "author_email": "ava@a.com"},
+                            {
+                                "content": "the real answer",
+                                "author_email": "ava@a.com",
+                                "created": "2024-06-01T00:00:00Z",
+                            },
+                        ],
+                    }
+                )
                 for did in ids
             ],
         ),
@@ -529,17 +543,19 @@ def test_byo_slack_clockless_thread_ignores_the_regrounding(tmp_path):
         _write(
             tmp_path,
             [
-                {
-                    "source_type": "slack",
-                    "content": "root",
-                    "channel": "incidents",
-                    "doc_id": "s-mute",
-                    "author_email": "bob@a.com",
-                    "replies": [
-                        {"content": "one", "author_email": "ava@a.com"},
-                        {"content": "two", "author_email": "ava@a.com"},
-                    ],
-                }
+                complete(
+                    **{
+                        "source_type": "slack",
+                        "content": "root",
+                        "channel": "incidents",
+                        "doc_id": "s-mute",
+                        "author_email": "bob@a.com",
+                        "replies": [
+                            {"content": "one", "author_email": "ava@a.com"},
+                            {"content": "two", "author_email": "ava@a.com"},
+                        ],
+                    }
+                )
             ],
         ),
         Settings(data_dir=tmp_path),
@@ -561,21 +577,23 @@ def test_byo_slack_reply_clock_refusal_owns_up_to_a_defaulted_second(tmp_path):
     corpus = _write(
         tmp_path,
         [
-            {
-                "source_type": "slack",
-                "content": "Anyone else seeing 502s?",
-                "channel": "incidents",
-                "author_email": "bob@a.com",
-                "created": "2026-02-10T18:00:00Z",
-                "replies": [
-                    {"content": "on it", "author_email": "ava@a.com"},
-                    {
-                        "content": "the real answer",
-                        "author_email": "ava@a.com",
-                        "created": "2026-02-10T18:00:01Z",
-                    },
-                ],
-            }
+            complete(
+                **{
+                    "source_type": "slack",
+                    "content": "Anyone else seeing 502s?",
+                    "channel": "incidents",
+                    "author_email": "bob@a.com",
+                    "created": "2026-02-10T18:00:00Z",
+                    "replies": [
+                        {"content": "on it", "author_email": "ava@a.com"},
+                        {
+                            "content": "the real answer",
+                            "author_email": "ava@a.com",
+                            "created": "2026-02-10T18:00:01Z",
+                        },
+                    ],
+                }
+            )
         ],
     )
     with pytest.raises(SystemExit, match="reply 1 carries no created of its own"):
@@ -694,16 +712,18 @@ def test_byo_absent_clocks_still_take_their_defaults(tmp_path):
         _write(
             tmp_path,
             [
-                {
-                    "source_type": "confluence",
-                    "title": "T",
-                    "content": "c",
-                    "doc_id": "cf-bare",
-                    "space": "handbook",
-                    "author_email": "b@a.com",
-                    "visibility": "public",
-                    "comments": [{"content": "hi", "author_email": "a@a.com"}],
-                }
+                complete(
+                    **{
+                        "source_type": "confluence",
+                        "title": "T",
+                        "content": "c",
+                        "doc_id": "cf-bare",
+                        "space": "handbook",
+                        "author_email": "b@a.com",
+                        "visibility": "public",
+                        "comments": [{"content": "hi", "author_email": "a@a.com"}],
+                    }
+                )
             ],
         ),
         Settings(data_dir=tmp_path),
@@ -952,7 +972,7 @@ def test_s3_byo_load(tmp_path):
         },
     ]
     corpus = tmp_path / "s3.jsonl"
-    corpus.write_text("\n".join(json.dumps(r) for r in records))
+    corpus.write_text("\n".join(json.dumps(complete(**r)) for r in records))
     settings = Settings(data_dir=tmp_path)
     res = load(corpus, settings)
     assert res["counts"]["s3"] == 3
@@ -976,17 +996,19 @@ def test_github_file_byo_load(tmp_path, monkeypatch):
     p = tmp_path / "c.jsonl"
     p.write_text(
         json.dumps(
-            {
-                "source_type": "github",
-                "subtype": "file",
-                "repo": "gateway",
-                "path": "src/rl/bucket.go",
-                "title": "bucket.go",
-                "content": "package rl\n",
-                "group": "eng",
-                "visibility": "group",
-                "author_email": "a@acme.com",
-            }
+            complete(
+                **{
+                    "source_type": "github",
+                    "subtype": "file",
+                    "repo": "gateway",
+                    "path": "src/rl/bucket.go",
+                    "title": "bucket.go",
+                    "content": "package rl\n",
+                    "group": "eng",
+                    "visibility": "group",
+                    "author_email": "a@acme.com",
+                }
+            )
         )
     )
     byo.load(p, s, reset=True)
@@ -1008,16 +1030,15 @@ def test_github_file_byo_requires_path(tmp_path):
 
 def test_s3_byo_rejects_missing_key(tmp_path):
     corpus = tmp_path / "bad.jsonl"
-    corpus.write_text(
-        json.dumps({"source_type": "s3", "bucket": "b", "title": "t", "content": "c"})
-    )  # no key
+    # As written: the missing `key` is the refusal under test.
+    corpus.write_text(json.dumps(complete("s3", _omit={"key"}, bucket="b", title="t", content="c")))
     with pytest.raises(SystemExit):
         load(corpus, Settings(data_dir=tmp_path))
 
 
 def _corpus(tmp_path, name, lines):
     p = tmp_path / name
-    p.write_text("\n".join(json.dumps(x) for x in lines))
+    p.write_text("\n".join(json.dumps(complete(**x)) for x in lines))
     return p
 
 
@@ -1579,29 +1600,31 @@ def test_byo_gmail_thread_messages(tmp_path):
     corpus = _write(
         tmp_path,
         [
-            {
-                "source_type": "gmail",
-                "doc_id": "th-1",
-                "mailbox": "ava",
-                "title": "Retry storm",
-                "content": "Seeing 5xx.",
-                "author_email": "ava@a.com",
-                "to": "ops@a.com",
-                "message_id": "<a@a>",
-                "created": "2026-01-04T09:00:00Z",
-                "mailbox_owner": "Ava Chen",
-                "messages": [
-                    {
-                        "content": "On it.",
-                        "author_email": "bob@a.com",
-                        "to": "ava@a.com",
-                        "message_id": "<b@a>",
-                        "created": "2026-01-04T10:00:00Z",
-                    },
-                    # header-only auto-ack: a real thread contains these, so an empty body is allowed
-                    {"content": "", "author_email": "bot@a.com", "title": "Re: Retry storm"},
-                ],
-            },
+            complete(
+                **{
+                    "source_type": "gmail",
+                    "doc_id": "th-1",
+                    "mailbox": "ava",
+                    "title": "Retry storm",
+                    "content": "Seeing 5xx.",
+                    "author_email": "ava@a.com",
+                    "to": "ops@a.com",
+                    "message_id": "<a@a>",
+                    "created": "2026-01-04T09:00:00Z",
+                    "mailbox_owner": "Ava Chen",
+                    "messages": [
+                        {
+                            "content": "On it.",
+                            "author_email": "bob@a.com",
+                            "to": "ava@a.com",
+                            "message_id": "<b@a>",
+                            "created": "2026-01-04T10:00:00Z",
+                        },
+                        # header-only auto-ack: a real thread contains these, so an empty body is allowed
+                        {"content": "", "author_email": "bot@a.com", "title": "Re: Retry storm"},
+                    ],
+                }
+            ),
         ],
     )
     settings = Settings(data_dir=tmp_path)
@@ -1867,14 +1890,14 @@ def test_byo_one_provided_key_sets_the_prefix_for_its_keyless_siblings(tmp_path)
     from tests._helpers import build_corpus, client_for
 
     def issue(did):
-        return {
-            "source_type": "jira",
-            "doc_id": did,
-            "project": "payments",
-            "title": did,
-            "content": "c",
-            "author_email": "ava@acme.com",
-        }
+        return complete(
+            source_type="jira",
+            doc_id=did,
+            project="payments",
+            title=did,
+            content="c",
+            author_email="ava@acme.com",
+        )
 
     # 'j-aaa' sorts before 'j-zzz': the keyless row is the one the index reaches first.
     settings = build_corpus(tmp_path, [issue("j-aaa"), {**issue("j-zzz"), "key": "PAY-7"}])
@@ -2286,8 +2309,17 @@ def test_byo_jsonl_records_split_only_on_newline(tmp_path):
         "\n".join(
             json.dumps(r, ensure_ascii=False)
             for r in [
-                {"source_type": "confluence", "doc_id": "c1", "title": "t", "content": body},
-                {"source_type": "confluence", "doc_id": "c2", "title": "t2", "content": "second"},
+                complete(
+                    **{"source_type": "confluence", "doc_id": "c1", "title": "t", "content": body}
+                ),
+                complete(
+                    **{
+                        "source_type": "confluence",
+                        "doc_id": "c2",
+                        "title": "t2",
+                        "content": "second",
+                    }
+                ),
             ]
         ),
         encoding="utf-8",
@@ -2350,21 +2382,26 @@ def test_byo_comment_times_are_monotonic_across_a_mixed_thread(tmp_path):
     corpus = _write(
         tmp_path,
         [
-            {
-                "source_type": "linear",
-                "doc_id": "ln-1",
-                "team": "engineering",
-                "title": "t",
-                "content": "c",
-                "author_email": "ava@a.com",
-                "created": "2026-02-08T09:00:00Z",
-                "comments": [
-                    {"content": "first, dated later", "created_ts": "2026-02-09T10:00:00Z"},
-                    {"content": "second, undated"},
-                    {"content": "third, dated later still", "created_ts": "2026-02-11T08:00:00Z"},
-                    {"content": "fourth, undated"},
-                ],
-            },
+            complete(
+                **{
+                    "source_type": "linear",
+                    "doc_id": "ln-1",
+                    "team": "engineering",
+                    "title": "t",
+                    "content": "c",
+                    "author_email": "ava@a.com",
+                    "created": "2026-02-08T09:00:00Z",
+                    "comments": [
+                        {"content": "first, dated later", "created_ts": "2026-02-09T10:00:00Z"},
+                        {"content": "second, undated"},
+                        {
+                            "content": "third, dated later still",
+                            "created_ts": "2026-02-11T08:00:00Z",
+                        },
+                        {"content": "fourth, undated"},
+                    ],
+                }
+            ),
         ],
     )
     settings = Settings(data_dir=tmp_path)
@@ -2482,7 +2519,7 @@ def _shard_artifact(tmp_path):
         d.mkdir(parents=True, exist_ok=True)
         p = d / "part-00000.jsonl.gz"
         with _io.TextIOWrapper(_gz.GzipFile(p, "wb", mtime=0), encoding="utf-8") as fh:
-            fh.write(_js.dumps(rec) + "\n")
+            fh.write(_js.dumps(complete(**rec)) + "\n")
         sources[src] = {
             "documents": 1,
             "records": 1,
@@ -2598,12 +2635,14 @@ def test_a_single_gzipped_corpus_file_loads(tmp_path):
     with io.TextIOWrapper(gzip.GzipFile(corpus, "wb", mtime=0), encoding="utf-8") as fh:
         fh.write(
             json.dumps(
-                {
-                    "source_type": "slack",
-                    "channel": "general",
-                    "author_email": "ava@acme.com",
-                    "content": "Gzipped.",
-                }
+                complete(
+                    **{
+                        "source_type": "slack",
+                        "channel": "general",
+                        "author_email": "ava@acme.com",
+                        "content": "Gzipped.",
+                    }
+                )
             )
             + "\n"
         )
@@ -2648,22 +2687,26 @@ def test_two_sources_may_share_a_doc_id(tmp_path):
         "\n".join(
             json.dumps(r)
             for r in [
-                {
-                    "source_type": "confluence",
-                    "space": "handbook",
-                    "doc_id": "shared-1",
-                    "title": "Sprint plan (page)",
-                    "content": "The confluence rendering.",
-                    "author_email": "ava@acme.com",
-                },
-                {
-                    "source_type": "google_drive",
-                    "folder": "users",
-                    "doc_id": "shared-1",
-                    "title": "Sprint plan (doc)",
-                    "content": "The drive document.",
-                    "author_email": "ava@acme.com",
-                },
+                complete(
+                    **{
+                        "source_type": "confluence",
+                        "space": "handbook",
+                        "doc_id": "shared-1",
+                        "title": "Sprint plan (page)",
+                        "content": "The confluence rendering.",
+                        "author_email": "ava@acme.com",
+                    }
+                ),
+                complete(
+                    **{
+                        "source_type": "google_drive",
+                        "folder": "users",
+                        "doc_id": "shared-1",
+                        "title": "Sprint plan (doc)",
+                        "content": "The drive document.",
+                        "author_email": "ava@acme.com",
+                    }
+                ),
             ]
         )
         + "\n"
@@ -2756,28 +2799,32 @@ def test_append_accumulates_source_documents(tmp_path):
     first = tmp_path / "a.jsonl"
     first.write_text(
         json.dumps(
-            {
-                "source_type": "confluence",
-                "space": "h",
-                "title": "A",
-                "content": "a",
-                "author_email": "ava@acme.com",
-            }
+            complete(
+                **{
+                    "source_type": "confluence",
+                    "space": "h",
+                    "title": "A",
+                    "content": "a",
+                    "author_email": "ava@acme.com",
+                }
+            )
         )
     )
     second = tmp_path / "b.jsonl"
     second.write_text(
         json.dumps(
-            {
-                "source_type": "confluence",
-                "space": "h",
-                # An append into a probed source states the id it wants: without
-                # one this row could not be told apart from a re-import of the first.
-                "content_id": 4242,
-                "title": "B",
-                "content": "b",
-                "author_email": "ava@acme.com",
-            }
+            complete(
+                **{
+                    "source_type": "confluence",
+                    "space": "h",
+                    # An append into a probed source states the id it wants: without
+                    # one this row could not be told apart from a re-import of the first.
+                    "content_id": 4242,
+                    "title": "B",
+                    "content": "b",
+                    "author_email": "ava@acme.com",
+                }
+            )
         )
     )
     load(first, settings)
@@ -3320,16 +3367,18 @@ def test_byo_a_tracker_id_claim_survives_append(tmp_path):
         p = tmp_path / name
         p.write_text(
             json.dumps(
-                {
-                    "source_type": "jira",
-                    "doc_id": doc_id,
-                    "project": "PAY",
-                    "title": doc_id,
-                    "content": "c",
-                    "author_email": "ava@acme.com",
-                    "key": "PAY-7",
-                    **extra,
-                }
+                complete(
+                    **{
+                        "source_type": "jira",
+                        "doc_id": doc_id,
+                        "project": "PAY",
+                        "title": doc_id,
+                        "content": "c",
+                        "author_email": "ava@acme.com",
+                        "key": "PAY-7",
+                        **extra,
+                    }
+                )
             )
             + "\n"
         )
@@ -3356,16 +3405,18 @@ def test_byo_a_tracker_id_claim_survives_append(tmp_path):
     for repo, doc in (("core", "g-a"), ("other", "g-b")):
         gh.write_text(
             json.dumps(
-                {
-                    "source_type": "github",
-                    "doc_id": doc,
-                    "repo": repo,
-                    "subtype": "issue",
-                    "title": doc,
-                    "content": "c",
-                    "author_email": "ava@acme.com",
-                    "number": 412,
-                }
+                complete(
+                    **{
+                        "source_type": "github",
+                        "doc_id": doc,
+                        "repo": repo,
+                        "subtype": "issue",
+                        "title": doc,
+                        "content": "c",
+                        "author_email": "ava@acme.com",
+                        "number": 412,
+                    }
+                )
             )
             + "\n"
         )
@@ -3434,15 +3485,15 @@ def test_byo_two_projects_cannot_share_a_provided_key_prefix(tmp_path):
     from tests._helpers import build_corpus
 
     def rec(did, project, key):
-        return {
-            "source_type": "jira",
-            "doc_id": did,
-            "project": project,
-            "title": did,
-            "content": "c",
-            "author_email": "ava@acme.com",
-            "key": key,
-        }
+        return complete(
+            source_type="jira",
+            doc_id=did,
+            project=project,
+            title=did,
+            content="c",
+            author_email="ava@acme.com",
+            key=key,
+        )
 
     # Two keys under one prefix in ONE project is the normal case and loads.
     with pytest.raises(SystemExit) as e:
@@ -3538,15 +3589,15 @@ def test_byo_a_mistyped_jira_key_is_refused(tmp_path, bad):
 
 
 def _linear_rec(did, team="payments-platform", identifier=None):
-    r = {
-        "source_type": "linear",
-        "doc_id": did,
-        "team": team,
-        "title": did,
-        "content": "c",
-        "author_email": "ava@acme.com",
-        "created": "2026-02-01T00:00:00Z",
-    }
+    r = complete(
+        "linear",
+        doc_id=did,
+        team=team,
+        title=did,
+        content="c",
+        author_email="ava@acme.com",
+        created="2026-02-01T00:00:00Z",
+    )
     if identifier:
         r["identifier"] = identifier
     return r
@@ -3554,7 +3605,7 @@ def _linear_rec(did, team="payments-platform", identifier=None):
 
 def _linear_shard(tmp_path, name, recs):
     p = tmp_path / name
-    p.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    p.write_text("".join(json.dumps(complete(**r)) + "\n" for r in recs))
     return p
 
 
@@ -3866,15 +3917,15 @@ def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):
     from tests._helpers import build_corpus
 
     def rec(did, key):
-        return {
-            "source_type": "jira",
-            "doc_id": did,
-            "project": "payments",
-            "title": did,
-            "content": "c",
-            "author_email": "ava@acme.com",
-            "key": key,
-        }
+        return complete(
+            source_type="jira",
+            doc_id=did,
+            project="payments",
+            title=did,
+            content="c",
+            author_email="ava@acme.com",
+            key=key,
+        )
 
     with pytest.raises(SystemExit) as e:
         build_corpus(tmp_path / "one", [rec("j-a", "BILL-2"), rec("j-b", "PAY-1")])
@@ -4013,14 +4064,16 @@ def test_byo_a_stated_id_already_held_by_an_earlier_import_is_refused(tmp_path):
         p = tmp_path / name
         p.write_text(
             json.dumps(
-                {
-                    "source_type": "confluence",
-                    "space": "eng",
-                    "title": name,
-                    "content": "c",
-                    "author_email": "a@acme.com",
-                    **extra,
-                }
+                complete(
+                    **{
+                        "source_type": "confluence",
+                        "space": "eng",
+                        "title": name,
+                        "content": "c",
+                        "author_email": "a@acme.com",
+                        **extra,
+                    }
+                )
             )
             + "\n"
         )
@@ -4094,15 +4147,15 @@ def test_byo_a_derived_number_no_longer_moves_across_append(tmp_path):
     from backlot.importer.byo import load
 
     def rec(did, **extra):
-        return {
-            "source_type": "github",
-            "doc_id": did,
-            "repo": "core",
-            "title": did,
-            "content": "c",
-            "author_email": "ava@acme.com",
+        return complete(
+            source_type="github",
+            doc_id=did,
+            repo="core",
+            title=did,
+            content="c",
+            author_email="ava@acme.com",
             **extra,
-        }
+        )
 
     settings = Settings(data_dir=tmp_path)
     shard1 = tmp_path / "s1.jsonl"
@@ -4147,14 +4200,16 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
     shard1 = tmp_path / "s1.jsonl"
     shard1.write_text(
         json.dumps(
-            {
-                "source_type": "github",
-                "doc_id": "a-victim",
-                "repo": "core",
-                "title": "v",
-                "content": "v",
-                "author_email": "ava@acme.com",
-            }
+            complete(
+                **{
+                    "source_type": "github",
+                    "doc_id": "a-victim",
+                    "repo": "core",
+                    "title": "v",
+                    "content": "v",
+                    "author_email": "ava@acme.com",
+                }
+            )
         )
     )
     settings = Settings(data_dir=tmp_path)
@@ -4167,15 +4222,17 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
     shard2 = tmp_path / "s2.jsonl"
     shard2.write_text(
         json.dumps(
-            {
-                "source_type": "github",
-                "doc_id": "z-provider",
-                "repo": "core",
-                "title": "p",
-                "content": "p",
-                "author_email": "ava@acme.com",
-                "number": stolen,
-            }
+            complete(
+                **{
+                    "source_type": "github",
+                    "doc_id": "z-provider",
+                    "repo": "core",
+                    "title": "p",
+                    "content": "p",
+                    "author_email": "ava@acme.com",
+                    "number": stolen,
+                }
+            )
         )
     )
     # An appended row claiming a number an existing row already serves is refused rather than
@@ -4208,14 +4265,16 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
     shard1 = tmp_path / "s1.jsonl"
     shard1.write_text(
         json.dumps(
-            {
-                "source_type": "jira",
-                "doc_id": "j-victim",
-                "project": "payments",
-                "title": "v",
-                "content": "v",
-                "author_email": "ava@acme.com",
-            }
+            complete(
+                **{
+                    "source_type": "jira",
+                    "doc_id": "j-victim",
+                    "project": "payments",
+                    "title": "v",
+                    "content": "v",
+                    "author_email": "ava@acme.com",
+                }
+            )
         )
     )
     settings = Settings(data_dir=tmp_path)
@@ -4230,15 +4289,17 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
     shard2 = tmp_path / "s2.jsonl"
     shard2.write_text(
         json.dumps(
-            {
-                "source_type": "jira",
-                "doc_id": "z-provider",
-                "project": "payments",
-                "title": "p",
-                "content": "p",
-                "author_email": "ava@acme.com",
-                "key": f"PAY-{stolen}",
-            }
+            complete(
+                **{
+                    "source_type": "jira",
+                    "doc_id": "z-provider",
+                    "project": "payments",
+                    "title": "p",
+                    "content": "p",
+                    "author_email": "ava@acme.com",
+                    "key": f"PAY-{stolen}",
+                }
+            )
         )
     )
     # Same trade as github's: with ONE `key` column there is no provided-vs-served distinction to
@@ -4364,8 +4425,15 @@ def test_byo_an_orphan_review_comment_anchor_is_reported(tmp_path, capsys):
 
 
 def _gh_file(doc_id, path, **extra):
-    return {
-        "source_type": "github",
+    """A github file row. Its clock is distinct per `doc_id` unless the caller states one: two
+    snapshots of a path are told apart by `created`, so a shared second is a different test."""
+    import hashlib
+
+    extra.setdefault(
+        "created",
+        1_770_000_000 + int(hashlib.sha256(doc_id.encode()).hexdigest()[:6], 16) % 5_000_000,
+    )
+    fields = {
         "doc_id": doc_id,
         "repo": "gw",
         "subtype": "file",
@@ -4375,6 +4443,7 @@ def _gh_file(doc_id, path, **extra):
         "author_email": "ava@acme.com",
         **extra,
     }
+    return complete("github", **fields)
 
 
 def test_byo_two_snapshots_of_one_file_both_load(tmp_path):
@@ -4518,15 +4587,17 @@ def test_byo_a_ref_on_a_row_that_is_not_a_file_is_refused(tmp_path):
     corpus = tmp_path / "c.jsonl"
     corpus.write_text(
         json.dumps(
-            {
-                "source_type": "github",
-                "doc_id": "gh-i",
-                "repo": "gw",
-                "title": "Bug",
-                "content": "x",
-                "author_email": "ava@acme.com",
-                "ref": "pr-11",
-            }
+            complete(
+                **{
+                    "source_type": "github",
+                    "doc_id": "gh-i",
+                    "repo": "gw",
+                    "title": "Bug",
+                    "content": "x",
+                    "author_email": "ava@acme.com",
+                    "ref": "pr-11",
+                }
+            )
         )
     )
     with pytest.raises(SystemExit) as exc:
@@ -4584,15 +4655,17 @@ def test_byo_a_github_file_is_appendable_and_keeps_its_number(tmp_path):
         "\n".join(
             json.dumps(r)
             for r in [
-                {
-                    "source_type": "github",
-                    "doc_id": "gh-issue",
-                    "repo": "gw",
-                    "title": "Bug",
-                    "content": "x",
-                    "author_email": "ava@acme.com",
-                    "number": 7,
-                },
+                complete(
+                    **{
+                        "source_type": "github",
+                        "doc_id": "gh-issue",
+                        "repo": "gw",
+                        "title": "Bug",
+                        "content": "x",
+                        "author_email": "ava@acme.com",
+                        "number": 7,
+                    }
+                ),
                 _gh_file("gh-a", "src/a.py"),
             ]
         )
@@ -5024,80 +5097,98 @@ def test_a_changed_path_matching_no_file_is_reported_and_loaded(tmp_path, capsys
 
 
 _ID_MAP_CORPUS = [
-    {
-        "source_type": "github",
-        "doc_id": "gh-stated",
-        "repo": "acme/app",
-        "number": 7,
-        "title": "stated",
-        "content": "a",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "github",
-        "doc_id": "gh-keyless",
-        "repo": "acme/app",
-        "title": "keyless",
-        "content": "b",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "jira",
-        "doc_id": "j1",
-        "project": "payments",
-        "title": "t",
-        "content": "c",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "slack",
-        "doc_id": "s1",
-        "channel": "general",
-        "content": "hello",
-        "author_email": "a@x.com",
-        "created": "2024-01-02T03:04:05Z",
-    },
-    {
-        "source_type": "s3",
-        "doc_id": "o1",
-        "bucket": "eng",
-        "key": "docs/readme.md",
-        "title": "readme",
-        "content": "d",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "linear",
-        "doc_id": "l1",
-        "team": "engineering",
-        "title": "t",
-        "content": "e",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "google_drive",
-        "doc_id": "d1",
-        "folder": "Design",
-        "title": "spec",
-        "content": "f",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "confluence",
-        "doc_id": "c1",
-        "space": "ENG",
-        "title": "page",
-        "content": "g",
-        "author_email": "a@x.com",
-    },
+    complete(
+        **{
+            "source_type": "github",
+            "doc_id": "gh-stated",
+            "repo": "acme/app",
+            "number": 7,
+            "title": "stated",
+            "content": "a",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "github",
+            "doc_id": "gh-keyless",
+            "repo": "acme/app",
+            "title": "keyless",
+            "content": "b",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "jira",
+            "doc_id": "j1",
+            "project": "payments",
+            "title": "t",
+            "content": "c",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "slack",
+            "doc_id": "s1",
+            "channel": "general",
+            "content": "hello",
+            "author_email": "a@x.com",
+            "created": "2024-01-02T03:04:05Z",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "s3",
+            "doc_id": "o1",
+            "bucket": "eng",
+            "key": "docs/readme.md",
+            "title": "readme",
+            "content": "d",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "linear",
+            "doc_id": "l1",
+            "team": "engineering",
+            "title": "t",
+            "content": "e",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "google_drive",
+            "doc_id": "d1",
+            "folder": "Design",
+            "title": "spec",
+            "content": "f",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "confluence",
+            "doc_id": "c1",
+            "space": "ENG",
+            "title": "page",
+            "content": "g",
+            "author_email": "a@x.com",
+        }
+    ),
     # doc_id omitted on purpose: the manifest must key it by the DEFAULTED dataset id.
-    {
-        "source_type": "gmail",
-        "mailbox": "a@x.com",
-        "title": "mail",
-        "content": "h",
-        "author_email": "a@x.com",
-    },
+    complete(
+        **{
+            "source_type": "gmail",
+            "mailbox": "a@x.com",
+            "title": "mail",
+            "content": "h",
+            "author_email": "a@x.com",
+        }
+    ),
 ]
 
 
@@ -5224,17 +5315,19 @@ def test_a_refused_load_leaves_no_id_map_behind(tmp_path):
     refusal exists to prevent, and tooling reading it would join through nothing."""
     settings = Settings(data_dir=tmp_path)
     dest = tmp_path / "ids.json"
+    # As written: `complete` has no values for a source type that does not exist, which is the
+    # refusal under test.
     bad = _ID_MAP_CORPUS + [{"source_type": "nope", "title": "t", "content": "c"}]
 
     with pytest.raises(SystemExit, match="source_type must be one of"):
-        load(_write(tmp_path, bad), settings, id_map=dest)
+        load(_write(tmp_path, bad, raw=True), settings, id_map=dest)
     assert not dest.exists()
 
     # One that was already there is not this check's to delete, so it keeps its contents until a
     # load actually succeeds and overwrites them.
     dest.write_text("stale\n")
     with pytest.raises(SystemExit, match="source_type must be one of"):
-        load(_write(tmp_path, bad, "again.jsonl"), settings, id_map=dest)
+        load(_write(tmp_path, bad, "again.jsonl", raw=True), settings, id_map=dest)
     assert dest.read_text() == "stale\n"
 
     load(_write(tmp_path, _ID_MAP_CORPUS, "good.jsonl"), settings, id_map=dest)

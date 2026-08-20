@@ -334,9 +334,7 @@ def test_s3_schema_registered():
     from backlot.validation import record_errors
 
     assert (
-        _first_error(
-            {"source_type": "s3", "bucket": "b", "key": "k", "title": "t", "content": "c"}
-        )
+        _first_error({"source_type": "s3", "bucket": "b", "key": "k", "title": "t", "content": "c"})
         == []
     )
     # As written: the point is that the missing `key` is refused.
@@ -378,9 +376,7 @@ def test_linear_record_accepts_linears_own_field_names():
 def test_linear_priority_accepts_a_label_or_the_numeric_scale():
     for value in (0, 4, "P0", "Urgent"):
         assert (
-            _first_error(
-                {"source_type": "linear", "title": "t", "content": "c", "priority": value}
-            )
+            _first_error({"source_type": "linear", "title": "t", "content": "c", "priority": value})
             == []
         )
 
@@ -522,9 +518,9 @@ def test_fireflies_record_with_neither_sentences_nor_content_is_rejected(tmp_pat
     Stated as a condition rather than an `anyOf`, which would report "not valid under any of the
     given schemas" and name neither field.
     """
-    assert record_errors(
-        complete("fireflies", _omit={"content"}, title="Empty")
-    ) == ["Empty: 'content' is a required property"]
+    assert record_errors(complete("fireflies", _omit={"content"}, title="Empty")) == [
+        "Empty: 'content' is a required property"
+    ]
 
     corpus = tmp_path / "c.jsonl"
     corpus.write_text(json.dumps({"source_type": "fireflies", "title": "Empty"}) + "\n")
@@ -707,9 +703,7 @@ def test_group_may_be_null_to_mean_no_group_owns_the_container():
         ("google_drive", {"folder": "scratch", "title": "t"}),
         ("slack", {"channel": "incidents"}),
     ):
-        assert _first_error({"source_type": src, "content": "c", "group": None, **extra}) == [], (
-            src
-        )
+        assert _first_error({"source_type": src, "content": "c", "group": None, **extra}) == [], src
 
 
 def test_readers_accept_typed_principal_ids():
@@ -879,9 +873,7 @@ def test_a_validation_error_names_the_record_it_is_about():
     """A line number is not an identifier: a sharded artifact numbers every shard from
     one, and the id is what the author's own build wrote down and can grep for. Absent an
     id, the title serves; absent both, the root placeholder is all there is."""
-    by_id = record_errors(
-        complete("github", title="t", content="c", doc_id="d1", subtype="nope")
-    )
+    by_id = record_errors(complete("github", title="t", content="c", doc_id="d1", subtype="nope"))
     assert by_id and by_id[0].startswith("d1 [subtype]: ")
 
     by_title = record_errors({"source_type": "linear", "title": "Cutover plan", "nope": 1})

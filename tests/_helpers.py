@@ -80,9 +80,11 @@ def _seconds_after(when, offset: int):
     """``when`` plus ``offset`` seconds, in whichever form ``when`` was written."""
     from datetime import datetime, timedelta, timezone
 
-    if isinstance(when, (int, float)):
-        return int(when) + offset
-    stamp = datetime.fromisoformat(str(when).replace("Z", "+00:00")) + timedelta(seconds=offset)
+    text = str(when).strip()
+    if isinstance(when, (int, float)) or text.lstrip("-").isdigit():
+        # Epoch seconds, in either spelling: a corpus may write them as a number or as a string.
+        return int(text) + offset if not isinstance(when, str) else str(int(text) + offset)
+    stamp = datetime.fromisoformat(text.replace("Z", "+00:00")) + timedelta(seconds=offset)
     return stamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -104,11 +106,14 @@ def complete(source_type: str, _omit: frozenset[str] | set[str] = frozenset(), *
     # so a thread the test did not date still reads in the order it was written.
     overrides = dict(overrides)
     root_second = overrides.get("created") or _FIELD_VALUES["created"]
-    for array, time_field in (
-        ("comments", "created_ts"),
-        ("replies", "created"),
-        ("messages", "created"),
-        ("sentences", "start_time"),
+    # The spacing each child array has: a slack reply lands a second after the message before it, a
+    # gmail thread message an hour later, a comment a minute. Matching the source keeps a test that
+    # asserts on the served time reading the number its source implies.
+    for array, time_field, step in (
+        ("comments", "created_ts", 60),
+        ("replies", "created", 1),
+        ("messages", "created", 3600),
+        ("sentences", "start_time", 0),
     ):
         children = overrides.get(array)
         if not isinstance(children, list):
@@ -123,7 +128,7 @@ def complete(source_type: str, _omit: frozenset[str] | set[str] = frozenset(), *
                 child.setdefault(time_field, i - 1)
             else:
                 child.setdefault("author_email", _FIELD_VALUES["author_email"])
-                child.setdefault(time_field, _seconds_after(root_second, i))
+                child.setdefault(time_field, _seconds_after(root_second, i * step))
             filled.append(child)
         overrides[array] = filled
 

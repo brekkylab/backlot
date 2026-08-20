@@ -80,10 +80,13 @@ def _seconds_after(when, offset: int):
     """``when`` plus ``offset`` seconds, in whichever form ``when`` was written."""
     from datetime import datetime, timedelta, timezone
 
+    # Epoch seconds in either spelling: a corpus may write them as a number or as a string, and the
+    # answer comes back the way the question was asked.
+    if isinstance(when, (int, float)):
+        return int(when) + offset
     text = str(when).strip()
-    if isinstance(when, (int, float)) or text.lstrip("-").isdigit():
-        # Epoch seconds, in either spelling: a corpus may write them as a number or as a string.
-        return int(text) + offset if not isinstance(when, str) else str(int(text) + offset)
+    if text.lstrip("-").isdigit():
+        return str(int(text) + offset)
     stamp = datetime.fromisoformat(text.replace("Z", "+00:00")) + timedelta(seconds=offset)
     return stamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 

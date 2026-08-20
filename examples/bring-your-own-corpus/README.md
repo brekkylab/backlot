@@ -67,20 +67,20 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   (a `@acme.com` corpus serves as org `acme`, so Slack `auth.test`, `/_mock/users`, and default
   emails all say `acme` — not a hardcoded default). Override with `BACKLOT_ORG_NAME` /
   `BACKLOT_ORG_DOMAIN`. The chosen values are persisted to `data/tokens.yaml`.
-- **Slack threads:** a slack record may carry a `replies` array. Each reply is a full message
-  (`content`, optional `author_email`/`author_name`/`subtype`/`reactions`/`files`/`edited`/
-  `created`), not just text. It becomes a thread — the record is the root, each reply a threaded
-  reply. Only the root appears in `conversations.history`; the full thread comes back from
-  `conversations.replies` (shared `thread_ts`, increasing `ts`, `reply_count` on the root). A
-  reply's time is its own `created` when given, else one second after the message before it —
-  and it must be after that message: a Slack `ts` is identity as well as clock, so a thread's
-  times are strictly increasing.
+- **Slack threads:** a slack record may carry a `replies` array. Each reply is a full message,
+  not just text: it states its own `content`, `author_email` and `created`, and may carry
+  `author_name`/`subtype`/`reactions`/`files`/`edited`. It becomes a thread — the record is the
+  root, each reply a threaded reply. Only the root appears in `conversations.history`; the full
+  thread comes back from `conversations.replies` (shared `thread_ts`, increasing `ts`,
+  `reply_count` on the root). A reply's `created` must be after the message before it: a Slack
+  `ts` is identity as well as clock, so two messages in one thread cannot share a second.
 - **Fireflies transcripts:** a fireflies record's child rows are `sentences`, not `replies`
   — a transcript should read like a transcript, so `replies` on a `fireflies` record is
-  rejected rather than ignored. Each sentence carries `text`, an optional `speaker_name`
-  (null for an unattributed utterance), an optional `author_email` resolving the speaker to
-  an identity, and optional `start_time`/`end_time` in **seconds** (`duration` on the record
-  is in **minutes** — Fireflies' own units). `content` and `sentences` are two views of the
+  rejected rather than ignored. Each sentence states its `text` and its
+  `start_time` in **seconds**, and may carry `speaker_name` (null for an unattributed utterance),
+  `author_email` resolving the speaker to an identity, and `end_time`. It states no author of its
+  own accord: the vendor's `Sentence` carries no email, and an unnamed speaker is what diarization
+  produces. `duration` on the record is in **minutes** — Fireflies' own units. `content` and `sentences` are two views of the
   same text: supply `sentences` and `content` is derived from them, or supply only `content`
   (a plain `Speaker: text` body) and the sentences are parsed back out of it. A line that
   names no speaker folds into the sentence above it. Either way the two round-trip exactly,

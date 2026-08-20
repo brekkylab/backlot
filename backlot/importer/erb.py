@@ -975,14 +975,15 @@ def _peel_stamp(line: str) -> tuple[str | None, str | None, str]:
     stamp is followed straight by its body ("2025-02-18 09:15: rolled back") keeps the clock in the
     body, where the only alternative is to read it as somebody's name."""
     m = _STAMP.match(line)
-    date, time, rest = m.group("date"), m.group("time"), line[m.end() :].strip()
+    date, time = m.group("date"), m.group("time")
+    rest = line[m.end() :].strip()
     if _LABELLED.match(rest):
         return date, time, rest
-    # Re-peel with the date alone, so a stamp that swallowed the body's first field gives it back.
-    m = _STAMP.match(line)
-    date_only = m.group("date")
-    after_date = line[m.end("date") :].lstrip("T ").strip() if date_only else line.strip()
-    return date_only, None, after_date
+    # No label after the stamp, so the clock was part of the body. Keep only the date and give the
+    # rest back: "2025-02-18 09:15: rolled back" is a body that opens with a time, not an author.
+    if not date:
+        return None, None, line.strip()
+    return date, None, line[m.end("date") :].lstrip("T ").strip()
 
 
 def comment_seconds(parsed: list[dict], doc_created: int) -> list[int]:
@@ -1864,26 +1865,26 @@ def _byo_jira(dsid, raw, P):
         },
     }
 
-    def _jira_author(c: dict) -> str | None:
-        """The person a comment names, or None when its label names an activity instead."""
-        return c["person"] if c["person"] and not _names_an_activity(c["person"]) else None
-
     created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
     parsed_comments = parse_comment_lines(raw.get("comments"), first_names=first_names)
     comment_ts = comment_seconds(parsed_comments, created)
-    comments = [
-        _rec(
-            id=f"{dsid}::c{seq}",
-            content=(c["body"] if _jira_author(c) else c["body_with_label"]),
-            author_email=(
-                P.resolve(_jira_author(c), role="author")
-                if _jira_author(c)
-                else P.label_email(c["person"] or c["role"], raw.get("customer_company"))
-            ),
-            created_ts=comment_ts[seq - 1],
+    comments = []
+    for seq, c in enumerate(parsed_comments, start=1):
+        # A name-shaped label that names an ACTIVITY ("Design review") is not a person, so its
+        # passage keeps the label and the comment is attributed by what the label does name.
+        named = c["person"] if c["person"] and not _names_an_activity(c["person"]) else None
+        comments.append(
+            _rec(
+                id=f"{dsid}::c{seq}",
+                content=(c["body"] if named else c["body_with_label"]),
+                author_email=(
+                    P.resolve(named, role="author")
+                    if named
+                    else P.label_email(c["person"] or c["role"], raw.get("customer_company"))
+                ),
+                created_ts=comment_ts[seq - 1],
+            )
         )
-        for seq, c in enumerate(parsed_comments, start=1)
-    ]
     rec = _rec(
         source_type="jira",
         doc_id=dsid,

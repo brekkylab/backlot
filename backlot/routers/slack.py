@@ -2,7 +2,10 @@
 
 Base URL for a client: ``http://<host>/slack/api/`` (methods live under ``/api/``).
 Slack always returns HTTP 200 with an ``{"ok": bool}`` envelope, so auth failures are
-signalled as ``{"ok": false, "error": "not_authed"}`` rather than a 401 status.
+signalled in the body rather than as a 401 status. There are TWO of them and they are not
+interchangeable: a MISSING credential is ``not_authed``, a credential that is present but does not
+resolve is ``invalid_auth``. Connectors branch on exactly that split — re-authenticate versus give
+up — so ``_caller_or_error`` decides it once for every method here.
 """
 
 from __future__ import annotations
@@ -126,8 +129,27 @@ def _slack_ts(value: str | None) -> float | None | bool:
         return False
 
 
-def _caller(request: Request) -> Caller | None:
-    return auth.acl(request).resolve(auth.slack_token(request))
+def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
+    """Resolve the caller, or say which of Slack's two auth errors applies.
+
+    Measured against the live API: a token that is merely unknown answers the same as a malformed
+    one, so "malformed" is not a category this has to recognise — what matters is only whether a
+    non-empty credential was presented at all.
+
+        no header, no `token` param      -> not_authed
+        `Authorization: Bearer ` (empty) -> not_authed
+        `token=` (empty)                 -> not_authed
+        a non-Bearer scheme (e.g. Basic) -> not_authed
+        any non-empty token that fails   -> invalid_auth
+
+    ``auth.slack_token`` already returns None for every case in the first group: it parses only
+    the bearer/token schemes, and an empty query or form value is falsy.
+    """
+    token = auth.slack_token(request)
+    caller = auth.acl(request).resolve(token)
+    if caller is not None:
+        return caller, None
+    return None, _err("invalid_auth" if token else "not_authed")
 
 
 def _full_channel(request: Request, conn, name: str) -> dict:
@@ -150,6 +172,11 @@ def _full_channel(request: Request, conn, name: str) -> dict:
         "is_shared": False,
         "is_ext_shared": False,
         "is_org_shared": False,
+        # No BYO corpus expresses a pending external share, so these are constants — but the
+        # shared-channel family is five fields in every response Slack documents, and a client
+        # validating the object against a generated model sees a shape real Slack never returns.
+        "is_pending_ext_shared": False,
+        "pending_shared": [],
         "unlinked": 0,
         "created": created,
         "updated": created * 1000,
@@ -227,9 +254,9 @@ async def api_test(request: Request):
 
 @router.api_route("/auth.test", methods=["GET", "POST"])
 async def auth_test(request: Request):
-    caller = _caller(request)
-    if caller is None:
-        return _err("not_authed")
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
     who = "service-account" if caller.is_admin else caller.email
     return {
         "ok": True,
@@ -249,9 +276,9 @@ async def auth_test(request: Request):
 )
 async def conversations_list(request: Request):
     conn = auth.conn(request)
-    caller = _caller(request)
-    if caller is None:
-        return _err("not_authed")
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
     types = _slack_types(request)
     if types is None:
         return _err("invalid_types")
@@ -288,9 +315,9 @@ async def conversations_list(request: Request):
 )
 async def conversations_info(request: Request):
     conn = auth.conn(request)
-    caller = _caller(request)
-    if caller is None:
-        return _err("not_authed")
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
     name = _channel_name(conn, _param(request, "channel") or "")
     if name is None:
         return _err("channel_not_found")
@@ -305,9 +332,9 @@ async def conversations_info(request: Request):
 )
 async def conversations_history(request: Request):
     conn = auth.conn(request)
-    caller = _caller(request)
-    if caller is None:
-        return _err("not_authed")
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
     channel_id = _param(request, "channel")
     if not channel_id:
         return _err("channel_not_found")
@@ -392,9 +419,9 @@ async def conversations_history(request: Request):
 )
 async def conversations_replies(request: Request):
     conn = auth.conn(request)
-    caller = _caller(request)
-    if caller is None:
-        return _err("not_authed")
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
     ts = _param(request, "ts")
     name = _channel_name(conn, _param(request, "channel") or "")
     if name is None or not ts:
@@ -455,9 +482,9 @@ async def conversations_replies(request: Request):
 )
 async def conversations_members(request: Request):
     conn = auth.conn(request)
-    caller = _caller(request)
-    if caller is None:
-        return _err("not_authed")
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
     name = _channel_name(conn, _param(request, "channel") or "")
     if name is None:
         return _err("channel_not_found")
@@ -483,9 +510,9 @@ async def conversations_members(request: Request):
 )
 async def users_list(request: Request):
     conn = auth.conn(request)
-    caller = _caller(request)
-    if caller is None:
-        return _err("not_authed")
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
     # The roster is the registered user principals — the employee directory plus internal mail/doc
     # authors. Slack transcript speakers are NOT added, and that is a limitation of the upstream
     # dataset rather than a modelling choice, so it is stated plainly here and in the README.
@@ -518,9 +545,9 @@ async def users_list(request: Request):
 )
 async def users_info(request: Request):
     conn = auth.conn(request)
-    caller = _caller(request)
-    if caller is None:
-        return _err("not_authed")
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
     uid = _param(request, "user")
     for e in store.all_user_emails(conn):
         if synth.slack_user_id(e) == uid:
@@ -578,9 +605,9 @@ def _messages_block(request: Request):
     """Shared message-search core for search.messages and search.all. Returns (query, block) or
     (error_dict, None)."""
     conn = auth.conn(request)
-    caller = _caller(request)
-    if caller is None:
-        return _err("not_authed"), None
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err, None
     query = _param(request, "query") or ""
     if not query.strip():
         return _err("missing_query"), None
@@ -650,9 +677,9 @@ async def search_files(request: Request):
     attachments), so matches are always empty — but the endpoint must exist and return ok=True:
     real Slack has it, and mirage's grep push-down calls search.files for any file-inclusive scope;
     a 404 there reads as an error and forces a slow full-tree per-file fallback."""
-    caller = _caller(request)
-    if caller is None:
-        return _err("not_authed")
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
     query = _param(request, "query") or ""
     if not query.strip():
         return _err("missing_query")

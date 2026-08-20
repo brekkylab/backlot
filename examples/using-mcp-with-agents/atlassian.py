@@ -30,6 +30,8 @@ from backlot import serve_or_connect
 
 CORPUS = [
     {
+        "author_email": "bob@acme.com",
+        "created": "2026-02-08T20:00:00Z",
         "source_type": "jira",
         "project": "payments",
         "title": "SEV2: checkout latency spike",
@@ -39,6 +41,8 @@ CORPUS = [
         "priority": "High",
     },
     {
+        "author_email": "ava@acme.com",
+        "created": "2025-09-10T11:00:00Z",
         "source_type": "confluence",
         "space": "runbooks",
         "title": "On-call Runbook: checkout latency & bad deploys",

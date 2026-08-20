@@ -18,6 +18,8 @@ from backlot.integrations.llamaindex import patch_notion_at
 
 CORPUS = [
     {
+        "author_email": "ava@acme.com",
+        "created": "2026-02-01T09:00:00Z",
         "source_type": "notion",
         "teamspace": "engineering",
         "doc_id": "runbook",
@@ -25,6 +27,8 @@ CORPUS = [
         "content": "# On-call\n\nCheck dashboards, roll back, page on-call.",
     },
     {
+        "author_email": "ava@acme.com",
+        "created": "2026-02-02T10:00:00Z",
         "source_type": "notion",
         "teamspace": "engineering",
         "doc_id": "howto",

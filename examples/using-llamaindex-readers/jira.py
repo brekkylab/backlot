@@ -23,6 +23,8 @@ from llama_index.readers.jira import JiraReader  # noqa: E402
 
 CORPUS = [
     {
+        "author_email": "bob@acme.com",
+        "created": "2026-02-08T20:00:00Z",
         "source_type": "jira",
         "project": "payments",
         "title": "SEV2: checkout latency spike",
@@ -32,6 +34,8 @@ CORPUS = [
         "priority": "High",
     },
     {
+        "author_email": "ava@acme.com",
+        "created": "2026-02-09T03:00:00Z",
         "source_type": "jira",
         "project": "payments",
         "title": "Write the postmortem",

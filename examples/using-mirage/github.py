@@ -38,6 +38,8 @@ from _helpers import FUSE_HELP, lines, run_mirage
 REPO = "gateway"  # the throwaway CORPUS's repo; a --url mock's own repos are discovered below
 CORPUS = [
     {
+        "author_email": "bob@acme.com",
+        "created": "2026-02-09T09:00:00Z",
         "source_type": "github",
         "repo": REPO,
         "title": "Rate limiter drops bursts under 50ms",
@@ -45,6 +47,8 @@ CORPUS = [
         "subtype": "issue",
     },
     {
+        "author_email": "bob@acme.com",
+        "created": "2026-01-20T09:00:00Z",
         "source_type": "github",
         "repo": REPO,
         "subtype": "file",
@@ -53,6 +57,8 @@ CORPUS = [
         "content": "# gateway\n\nToken-bucket rate limiter for inbound requests.\n",
     },
     {
+        "author_email": "bob@acme.com",
+        "created": "2026-01-20T09:05:00Z",
         "source_type": "github",
         "repo": REPO,
         "subtype": "file",
@@ -67,6 +73,8 @@ CORPUS = [
         "        self.tokens = min(self.tokens + elapsed * self.rate, self.tokens)\n",
     },
     {
+        "author_email": "bob@acme.com",
+        "created": "2026-02-10T12:00:00Z",
         "source_type": "github",
         "repo": REPO,
         "subtype": "file",

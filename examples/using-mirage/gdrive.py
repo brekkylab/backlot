@@ -34,6 +34,7 @@ from _helpers import FUSE_HELP, lines, run_mirage
 
 CORPUS = [
     {
+        "created": "2025-11-01T12:00:00Z",
         "source_type": "google_drive",
         "folder": "marketing",
         "title": "Brand guidelines v3",
@@ -42,6 +43,7 @@ CORPUS = [
         "author_email": "mia@acme.com",
     },
     {
+        "created": "2026-01-10T08:00:00Z",
         "source_type": "google_drive",
         "folder": "finance",
         "title": "Q1 Revenue Model",

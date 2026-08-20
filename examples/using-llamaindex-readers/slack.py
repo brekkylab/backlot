@@ -18,12 +18,31 @@ from backlot import serve_or_connect
 from backlot.integrations.llamaindex import slack_reader_at
 
 CORPUS = [
-    {"source_type": "slack", "channel": "eng", "content": "Deploy freeze starts Friday 5pm."},
     {
+        "author_email": "ava@acme.com",
+        "created": "2026-02-05T17:00:00Z",
+        "source_type": "slack",
+        "channel": "eng",
+        "content": "Deploy freeze starts Friday 5pm.",
+    },
+    {
+        "author_email": "bob@acme.com",
+        "created": "2026-02-10T18:00:00Z",
         "source_type": "slack",
         "channel": "incidents",
         "content": "Anyone seeing 502s from the gateway?",
-        "replies": [{"content": "Looking now."}, {"content": "Rolled back — clearing up."}],
+        "replies": [
+            {
+                "author_email": "ava@acme.com",
+                "created": "2026-02-10T18:00:40Z",
+                "content": "Looking now.",
+            },
+            {
+                "author_email": "bob@acme.com",
+                "created": "2026-02-10T18:06:00Z",
+                "content": "Rolled back — clearing up.",
+            },
+        ],
     },
 ]
 

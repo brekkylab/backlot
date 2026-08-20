@@ -634,9 +634,7 @@ def _unstated(rec: dict) -> list[str]:
 
 def test_the_sample_corpus_states_every_required_fact():
     gaps = {
-        i: _unstated(rec)
-        for i, rec in enumerate(_example_records(), start=1)
-        if _unstated(rec)
+        i: _unstated(rec) for i, rec in enumerate(_example_records(), start=1) if _unstated(rec)
     }
     assert gaps == {}
 
@@ -645,6 +643,56 @@ def test_the_test_corpus_states_every_required_fact():
     from tests.conftest import SAMPLE
 
     assert [(i, _unstated(r)) for i, r in enumerate(SAMPLE) if _unstated(r)] == []
+
+
+def _inline_corpora():
+    """Every inline `CORPUS` literal under examples/, as (path, records).
+
+    Read with `ast` rather than imported: an example's module body spins up a server.
+    """
+    import ast
+
+    from tests.conftest import REPO_ROOT
+
+    out = []
+    for path in sorted((REPO_ROOT / "examples").rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(getattr(t, "id", None) == "CORPUS" for t in node.targets):
+                continue
+            names = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+            try:
+                # The names an example interpolates are its own module constants -- a bucket, a
+                # repo, a mailbox owner's address. Standing in an address-shaped string for all of
+                # them keeps `format: email` satisfied wherever one of them is an author.
+                corpus = eval(  # noqa: S307
+                    compile(ast.Expression(node.value), "<corpus>", "eval"),
+                    {},
+                    dict.fromkeys(names, "placeholder@example.com"),
+                )
+            except Exception:
+                continue
+            if isinstance(corpus, list):
+                out.append((path.relative_to(REPO_ROOT).as_posix(), corpus))
+    return out
+
+
+def test_every_example_corpus_states_every_required_fact():
+    gaps = {}
+    for name, corpus in _inline_corpora():
+        found = [_unstated(r) for r in corpus if isinstance(r, dict) and _unstated(r)]
+        if found:
+            gaps[name] = found
+    assert gaps == {}
+
+
+def test_every_example_corpus_validates():
+    for name, corpus in _inline_corpora():
+        for rec in corpus:
+            if isinstance(rec, dict):
+                assert record_errors(rec) == [], f"{name}: {rec.get('doc_id') or rec.get('title')}"
 
 
 def _example_corpus():

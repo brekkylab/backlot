@@ -24,11 +24,15 @@ from backlot import serve_or_connect
 
 CORPUS = [
     {
+        "author_email": "ava@acme.com",
+        "created": "2026-02-05T17:00:00Z",
         "source_type": "slack",
         "channel": "incidents",
         "content": "checkout p95 latency hit 2.1s after the payments migration; rolling back now.",
     },
     {
+        "author_email": "bob@acme.com",
+        "created": "2026-02-10T18:00:00Z",
         "source_type": "slack",
         "channel": "runbooks",
         "content": "on-call: latency spike after a deploy → check dashboards, roll back, page on-call.",

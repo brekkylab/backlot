@@ -37,6 +37,8 @@ from llama_index.readers.hubspot import HubspotReader  # noqa: E402
 
 CORPUS = [
     {
+        "author_email": "rep@acme.com",
+        "created": "2026-03-01T09:00:00Z",
         "source_type": "hubspot",
         "object_type": "companies",
         "doc_id": "hs-co-acme",
@@ -50,6 +52,8 @@ CORPUS = [
         },
     },
     {
+        "author_email": "rep@acme.com",
+        "created": "2026-03-02T11:00:00Z",
         "source_type": "hubspot",
         "object_type": "contacts",
         "title": "Ava Stone",
@@ -58,6 +62,8 @@ CORPUS = [
         "associations": [{"to": "hs-co-acme", "label": "Primary"}],
     },
     {
+        "author_email": "rep@acme.com",
+        "created": "2026-03-03T09:00:00Z",
         "source_type": "hubspot",
         "object_type": "deals",
         "title": "Acme Health — renewal",

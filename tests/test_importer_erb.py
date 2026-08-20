@@ -753,6 +753,59 @@ def test_a_stamp_is_read_wherever_the_bench_puts_it(line, date, time, person, ro
     assert out["body"] == body
 
 
+@pytest.mark.parametrize(
+    "line,person,role,body",
+    [
+        # a dash ends the header, the way a colon does
+        (
+            "2026-03-10 09:25 \u2014 Customer (BrightWrite) \u2014 Submitted sample request IDs.",
+            None,
+            "Customer (BrightWrite)",
+            "Submitted sample request IDs.",
+        ),
+        (
+            "2026-03-10 10:05 \u2014 SRE (Marco Diaz) \u2014 Noted commit latency spikes.",
+            "Marco Diaz",
+            "SRE",
+            "Noted commit latency spikes.",
+        ),
+        # angle brackets close their own label
+        (
+            "2026-03-13T14:28Z - <Priya Kapoor (SRE)> NVMe compaction found.",
+            "Priya Kapoor",
+            "SRE",
+            "NVMe compaction found.",
+        ),
+        # so does a table row's second pipe
+        (
+            "| Priya Nair (oncall) | Flushed the identity-proxy cache.",
+            "Priya Nair",
+            "oncall",
+            "Flushed the identity-proxy cache.",
+        ),
+        # a dash inside a sentence is not a separator: the line states no author
+        (
+            "rolled back the pool change - see the logs for detail",
+            None,
+            None,
+            "rolled back the pool change - see the logs for detail",
+        ),
+        # the author IS the sentence's subject, so taking it out would leave the sentence without
+        # one -- the whole line is body
+        (
+            "2026-03-13 02:21 UTC - Customer (LexiDocs) reported increased 502s.",
+            None,
+            None,
+            "Customer (LexiDocs) reported increased 502s.",
+        ),
+    ],
+)
+def test_a_header_ends_at_whatever_delimiter_the_bench_used(line, person, role, body):
+    (out,) = C.parse_comment_lines([line])
+    assert (out["person"], out["role"]) == (person, role)
+    assert out["body"] == body
+
+
 def test_a_label_never_spans_a_line_break():
     """Searching the whole comment for the separator let the label swallow the body's first line:
     `… — Benji Okafor` + `Fix plan:` gave the label "Benji Okafor Fix plan" and a body at `1) …`."""

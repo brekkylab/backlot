@@ -954,9 +954,25 @@ _STAMP_ANYWHERE = re.compile(
 # "09:15" belongs to a clock, and reading it as the separator made "Support (Ethan Myers) 13" the
 # label and left "10: Thanks for reporting" as the body.
 _SEPARATOR_COLON = re.compile(r"(?<!\d):|:(?!\d)")
-# A label is at most this long and never spans a URL, whose "https:" would otherwise look like a
-# separator on a line that names nobody.
+# A label in angle brackets, which close it: `2026-03-13T14:13Z - <Aisha Khan> Customer ClarityAI
+# reports …` has no other separator between the name and the body.
+_ANGLED_LABEL = re.compile(r"^[^<\n]{0,40}<(?P<label>[^>\n]{1,60})>")
+# A table row closes its label with a second pipe: `| Jared Bloom | Notified SRE and oncall`.
+_PIPED_LABEL = re.compile(r"^\s*\|(?P<label>[^|\n]{1,60})\|")
+# A dash that separates a label from its body, spaced so a hyphenated word cannot match.
+_SEPARATOR_DASH = re.compile(r"\s+[-\u2013\u2014]\s+")
+# What a label region may be: short enough to be a label once its stamp is gone, and never spanning
+# a URL, whose "https:" would otherwise look like a separator on a line that names nobody.
 _LABEL_MAX = 80
+
+
+def _label_shaped(head: str) -> bool:
+    """Could this be a label region? Measured AFTER its stamp, which is not part of the label: the
+    raw head of `2026-03-12 16:45 UTC — BlackFjord Security (external comment via support@…)` is
+    over the cap while the label itself is well under it."""
+    if "//" in head or "http" in head.lower():
+        return False
+    return len(_peel_stamps(head)[2]) <= _LABEL_MAX
 
 
 # The one shape whose separator is a dash rather than a colon:
@@ -979,16 +995,38 @@ def _split_label(line: str) -> tuple[str, str] | None:
     first, _, remainder = line.partition("\n")
     for m in _SEPARATOR_COLON.finditer(first):
         head = first[: m.start()]
-        if len(head) > _LABEL_MAX or "//" in head or "http" in head.lower():
-            return None
-        if any(ch.isalpha() for ch in head):
+        if not _label_shaped(head):
+            break
+        if any(ch.isalpha() for ch in _peel_stamps(head)[2]):
             return head, line[m.end() :].strip()
-        # No letter yet -- a leading stamp on its own. Keep looking for the real separator.
+        # Only a stamp so far -- keep looking for the colon that ends the real label.
+    # A dash separates them just as often: `2026-03-10 09:25 — Customer (BrightWrite) — Submitted
+    # sample request IDs`. Tried after the colon, since a label may contain a dash but a stamp
+    # followed by one is where the label starts.
+    for m in _SEPARATOR_DASH.finditer(first):
+        head = first[: m.start()]
+        if not _label_shaped(head):
+            break
+        stamp_date, stamp_time, label = _peel_stamps(head)
+        if not (stamp_date or stamp_time):
+            # No stamp before this dash, so it is a dash inside a sentence rather than the one
+            # that ends a header. Only a line that opens with a stamp states a label this way.
+            break
+        if any(ch.isalpha() for ch in label):
+            return head, line[m.end() :].strip()
+        # Only the stamp so far -- the next dash is the one that ends the label.
+    # `<Aisha Khan>` closes its own label, with the body running straight on from the bracket.
+    piped = _PIPED_LABEL.match(first)
+    if piped:
+        return piped.group("label"), line[piped.end() :].strip()
+    angled = _ANGLED_LABEL.match(first)
+    if angled:
+        # Everything up to the closing bracket, stamp included: `_peel_stamps` reads the clock.
+        return first[: angled.end()], line[angled.end() :].strip()
     if not remainder:
         return None
     # The line break is the separator: a first line that is a stamp and a name is a header.
-    _date, _time, label = _peel_stamps(first)
-    if label and len(label) <= _LABEL_MAX and any(ch.isalpha() for ch in label):
+    if any(ch.isalpha() for ch in _peel_stamps(first)[2]) and _label_shaped(first):
         return first, remainder.strip()
     return None
 
@@ -1008,7 +1046,9 @@ def _peel_stamps(head: str) -> tuple[str | None, str | None, str]:
     # stripping parentheses off the ends would unbalance "Aisha Patel (Support)" and with it the
     # reading that tells the person from the role.
     rest = re.sub(r"\(\s*\)", "", rest)
-    return date, time, re.sub(r"\s{2,}", " ", rest).strip(" ,-–—\t")
+    # Angle brackets are pure delimiters around a name -- `<Aisha Khan>` is Aisha Khan -- unlike
+    # parentheses, which carry a role beside one.
+    return date, time, re.sub(r"\s{2,}", " ", rest).strip(" ,-–—<>\t")
 
 
 def comment_seconds(parsed: list[dict], doc_created: int) -> list[int]:

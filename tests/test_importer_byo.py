@@ -308,6 +308,43 @@ def _epoch(iso):
     return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
 
 
+def test_the_loader_invents_no_author_container_or_clock(tmp_path):
+    """Every value in the row is one the corpus wrote."""
+    settings = Settings(data_dir=tmp_path)
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "author_email": "bob@acme.com",
+                "created": "2026-02-10T18:00:00Z",
+                "content": "502s from the gateway?",
+            }
+        ],
+    )
+    byo.load(corpus, settings)
+    conn = sqlite3.connect(settings.db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM slack_messages").fetchone()
+    conn.close()
+    assert row["channel"] == "incidents"
+    assert row["author_email"] == "bob@acme.com"
+    assert row["created_ts"] == 1770746400
+
+
+def test_an_unvalidated_record_missing_a_required_field_names_the_record(tmp_path):
+    """The ERB path validates like any other, so a bug there surfaces as a message naming the
+    record rather than as a KeyError from inside the loader."""
+    settings = Settings(data_dir=tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        byo.load_records(
+            lambda: iter([(1, {"source_type": "slack", "channel": "eng", "content": "hi"})]),
+            settings,
+        )
+    assert "created" in str(exc.value)
+
+
 def test_byo_created_updated_times(tmp_path):
     load(
         _write(
@@ -325,7 +362,8 @@ def test_byo_created_updated_times(tmp_path):
                 ),
                 complete(
                     **{
-                        "source_type": "google_drive",
+                        "source_type": "jira",
+                        "project": "billing",
                         "title": "D",
                         "content": "c",
                         "doc_id": "d1",
@@ -339,7 +377,7 @@ def test_byo_created_updated_times(tmp_path):
     conn = store.connect_ro(tmp_path / "mock.sqlite")
 
     # created accepts ISO, updated accepts epoch int — both land as epoch seconds
-    j = conn.execute("SELECT created_ts, updated_ts FROM jira_issues").fetchone()
+    j = conn.execute("SELECT created_ts, updated_ts FROM jira_issues WHERE title = 'T'").fetchone()
     assert j["created_ts"] == _epoch("2026-03-01T09:00:00Z")
     assert j["updated_ts"] == 1740900000
 
@@ -357,15 +395,14 @@ def test_byo_created_updated_times(tmp_path):
             "path": "/",
         }
     )
-    fields = _jira_issue(conn, req, conn.execute("SELECT * FROM jira_issues").fetchone())["fields"]
+    fields = _jira_issue(
+        conn, req, conn.execute("SELECT * FROM jira_issues WHERE title = 'T'").fetchone()
+    )["fields"]
     assert fields["created"].startswith("2026-03-01T09:00:00")
     assert fields["updated"].startswith("2025-03-02")  # 1740900000 -> 2025-03-02
 
-    # updated defaults to created + 1h when omitted (drive)
-    d = conn.execute(
-        "SELECT created_ts, updated_ts FROM gdrive_files WHERE id = ?",
-        (served_id("google_drive", "d1"),),
-    ).fetchone()
+    # `updated` is still optional, and an omitted one stays NULL rather than being invented
+    d = conn.execute("SELECT created_ts, updated_ts FROM jira_issues WHERE title = 'D'").fetchone()
     assert d["created_ts"] == _epoch("2026-01-15T00:00:00Z") and d["updated_ts"] is None
 
 
@@ -440,10 +477,9 @@ def test_byo_slack_rich_replies(tmp_path):
 
 
 def test_byo_slack_reply_carries_its_own_clock(tmp_path):
-    """A reply's `created` is honored when the corpus writes one — the treatment a
-    gmail message already gets — and an absent one lands a second after the message
-    before it, which is exactly where root+position always put it. Every reply of a
-    clockless thread therefore loads byte-identically to the old rule."""
+    """Every reply's `created` is served as written, however far apart the thread's messages are:
+    a quick ack a second later and the real answer three hours after it both land where the corpus
+    put them, and the ts they are served under increase with them."""
     load(
         _write(
             tmp_path,
@@ -457,13 +493,21 @@ def test_byo_slack_reply_carries_its_own_clock(tmp_path):
                         "author_email": "bob@a.com",
                         "created": "2026-05-01T00:00:00Z",
                         "replies": [
-                            {"content": "quick ack", "author_email": "ava@a.com"},
+                            {
+                                "content": "quick ack",
+                                "author_email": "ava@a.com",
+                                "created": "2026-05-01T00:00:01Z",
+                            },
                             {
                                 "content": "the real answer, hours later",
                                 "author_email": "ava@a.com",
                                 "created": "2026-05-01T03:00:00Z",
                             },
-                            {"content": "thanks", "author_email": "bob@a.com"},
+                            {
+                                "content": "thanks",
+                                "author_email": "bob@a.com",
+                                "created": "2026-05-01T03:00:01Z",
+                            },
                         ],
                     }
                 )
@@ -478,126 +522,12 @@ def test_byo_slack_reply_carries_its_own_clock(tmp_path):
     base = _epoch("2026-05-01T00:00:00Z")
     assert [r["created_ts"] for r in thread] == [
         base,
-        base + 1,  # clockless: one second after the root
-        base + 3 * 3600,  # its own clock
-        base + 3 * 3600 + 1,  # clockless: one second after the clocked reply
+        base + 1,
+        base + 3 * 3600,
+        base + 3 * 3600 + 1,
     ]
     ts = [r["ts"] for r in thread]
     assert ts == sorted(ts) and len(set(ts)) == 4
-
-
-def test_byo_slack_clockless_root_is_grounded_on_its_replies(tmp_path):
-    """A root with no `created` of its own holds a second hashed from its doc_id, which
-    is not a fact about the thread. Left as the ordering anchor it made the import turn
-    on that hash — the same corpus loading or dying depending on the root's doc_id — and
-    when it loaded it served a root years before its own reply. It is re-grounded on the
-    first reply that carries a clock, so every doc_id resolves the same way."""
-    ids = [f"s-root-{n}" for n in range(12)]
-    load(
-        _write(
-            tmp_path,
-            [
-                complete(
-                    **{
-                        "source_type": "slack",
-                        "content": "root",
-                        "channel": "incidents",
-                        "doc_id": did,
-                        "author_email": "bob@a.com",
-                        "replies": [
-                            {"content": "quick ack", "author_email": "ava@a.com"},
-                            {
-                                "content": "the real answer",
-                                "author_email": "ava@a.com",
-                                "created": "2024-06-01T00:00:00Z",
-                            },
-                        ],
-                    }
-                )
-                for did in ids
-            ],
-        ),
-        Settings(data_dir=tmp_path),
-    )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
-    base = _epoch("2024-06-01T00:00:00Z")
-    threads: dict = {}
-    for r in conn.execute(
-        "SELECT thread_ts, created_ts FROM slack_messages ORDER BY thread_ts, thread_seq"
-    ):
-        threads.setdefault(r["thread_ts"], []).append(r["created_ts"])
-    assert len(threads) == len(ids)  # every doc_id, not just the ones whose hash sorts early
-    for secs in threads.values():
-        assert secs == [
-            base - 2,  # the root, one second ahead of the clockless reply
-            base - 1,  # clockless: one second before the clock it is grounded on
-            base,
-        ]
-
-
-def test_byo_slack_clockless_thread_ignores_the_regrounding(tmp_path):
-    """A thread that supplies no clock anywhere keeps the root's synthesized second and
-    lands every reply where root+position always put it — there is nothing to re-ground
-    on, and the whole point of the default is that such a corpus loads unchanged."""
-    load(
-        _write(
-            tmp_path,
-            [
-                complete(
-                    **{
-                        "source_type": "slack",
-                        "content": "root",
-                        "channel": "incidents",
-                        "doc_id": "s-mute",
-                        "author_email": "bob@a.com",
-                        "replies": [
-                            {"content": "one", "author_email": "ava@a.com"},
-                            {"content": "two", "author_email": "ava@a.com"},
-                        ],
-                    }
-                )
-            ],
-        ),
-        Settings(data_dir=tmp_path),
-    )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
-    base = synth.epoch("s-mute")
-    assert [
-        r["created_ts"]
-        for r in conn.execute("SELECT created_ts FROM slack_messages ORDER BY thread_seq")
-    ] == [base, base + 1, base + 2]
-
-
-def test_byo_slack_reply_clock_refusal_owns_up_to_a_defaulted_second(tmp_path):
-    """When an explicit clock collides with a second this importer chose rather than one
-    the author wrote, the error says so. Two adjacent seconds cannot both hold a message
-    — a Slack ts is identity as well as clock — so the refusal stands, but quoting the
-    defaulted second as though the corpus had supplied it sent authors hunting for a
-    value that is nowhere in their file."""
-    corpus = _write(
-        tmp_path,
-        [
-            complete(
-                **{
-                    "source_type": "slack",
-                    "content": "Anyone else seeing 502s?",
-                    "channel": "incidents",
-                    "author_email": "bob@a.com",
-                    "created": "2026-02-10T18:00:00Z",
-                    "replies": [
-                        {"content": "on it", "author_email": "ava@a.com"},
-                        {
-                            "content": "the real answer",
-                            "author_email": "ava@a.com",
-                            "created": "2026-02-10T18:00:01Z",
-                        },
-                    ],
-                }
-            )
-        ],
-    )
-    with pytest.raises(SystemExit, match="reply 1 carries no created of its own"):
-        load(corpus, Settings(data_dir=tmp_path))
 
 
 def test_byo_slack_reply_clock_must_move_forward(tmp_path):
@@ -702,38 +632,6 @@ def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
         corpus = _write(tmp_path, [rec])
         with pytest.raises(SystemExit, match=f"{field} is not a time this importer can read"):
             load(corpus, Settings(data_dir=tmp_path))
-
-
-def test_byo_absent_clocks_still_take_their_defaults(tmp_path):
-    """Refusing an unreadable time must not refuse an absent one. A record with no
-    `created` keeps `epoch(doc_id)`; `updated` left out stays NULL; an undated comment
-    follows the one before it."""
-    load(
-        _write(
-            tmp_path,
-            [
-                complete(
-                    **{
-                        "source_type": "confluence",
-                        "title": "T",
-                        "content": "c",
-                        "doc_id": "cf-bare",
-                        "space": "handbook",
-                        "author_email": "b@a.com",
-                        "visibility": "public",
-                        "comments": [{"content": "hi", "author_email": "a@a.com"}],
-                    }
-                )
-            ],
-        ),
-        Settings(data_dir=tmp_path),
-    )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
-    row = conn.execute("SELECT created_ts, updated_ts FROM confluence_pages").fetchone()
-    assert row["created_ts"] == synth.epoch("cf-bare")
-    assert row["updated_ts"] is None
-    c = conn.execute("SELECT created_ts FROM confluence_comments").fetchone()
-    assert c["created_ts"] == synth.epoch("cf-bare") + 1
 
 
 def test_byo_a_stated_epoch_zero_is_a_second_not_a_missing_value(tmp_path):
@@ -2374,80 +2272,6 @@ def test_byo_gmail_messages_join_the_root_s_declared_thread(tmp_path):
         conn.close()
 
 
-def test_byo_comment_times_are_monotonic_across_a_mixed_thread(tmp_path):
-    """A thread that mixes dated and undated comments must stay in order. `created + position`
-    lands an undated comment back at the DOCUMENT's creation time, so a dated one written earlier
-    in the array sorts after it — and `Issue.comments` orders by createdAt, so the thread is served
-    inverted. This is the rule `erb.load_linear` already applied."""
-    corpus = _write(
-        tmp_path,
-        [
-            complete(
-                **{
-                    "source_type": "linear",
-                    "doc_id": "ln-1",
-                    "team": "engineering",
-                    "title": "t",
-                    "content": "c",
-                    "author_email": "ava@a.com",
-                    "created": "2026-02-08T09:00:00Z",
-                    "comments": [
-                        {"content": "first, dated later", "created_ts": "2026-02-09T10:00:00Z"},
-                        {"content": "second, undated"},
-                        {
-                            "content": "third, dated later still",
-                            "created_ts": "2026-02-11T08:00:00Z",
-                        },
-                        {"content": "fourth, undated"},
-                    ],
-                }
-            ),
-        ],
-    )
-    settings = Settings(data_dir=tmp_path)
-    load(corpus, settings)
-    conn = store.connect_ro(settings.db_path)
-    try:
-        rows = store.doc_comments(conn, "linear", served_id("linear", "ln-1"))
-        times = [r["created_ts"] for r in rows]
-        assert times == sorted(times), f"comments out of order: {times}"
-        # the undated one follows its predecessor rather than jumping back to the doc's clock
-        assert times[1] == times[0] + 1 and times[3] == times[2] + 1
-    finally:
-        conn.close()
-
-
-def test_byo_all_undated_comments_keep_the_doc_clock_plus_position(tmp_path):
-    """The monotonic rule must not change the ordinary case."""
-    corpus = _write(
-        tmp_path,
-        [
-            {
-                "source_type": "jira",
-                "doc_id": "j-1",
-                "project": "PAY",
-                "title": "t",
-                "content": "c",
-                "author_email": "ava@a.com",
-                "created": 1_700_000_000,
-                "comments": [{"content": "one"}, {"content": "two"}, {"content": "three"}],
-            },
-        ],
-    )
-    settings = Settings(data_dir=tmp_path)
-    load(corpus, settings)
-    conn = store.connect_ro(settings.db_path)
-    try:
-        key = conn.execute("SELECT key FROM jira_issues").fetchone()[0]
-        assert [r["created_ts"] for r in store.doc_comments(conn, "jira", key)] == [
-            1_700_000_001,
-            1_700_000_002,
-            1_700_000_003,
-        ]
-    finally:
-        conn.close()
-
-
 def test_byo_empty_readers_means_nobody(tmp_path):
     """`"readers": []` is the only way to say "admin-only", and it has to mean that: falling
     through to the public default would make the most restrictive spelling produce the least
@@ -3862,12 +3686,9 @@ def test_byo_a_slug_shaped_key_claims_only_its_leading_prefix(tmp_path):
     under it, and a sibling stating a real `ENG-…` was then refused for disagreeing with its own
     team. Read to the FIRST, the whole corpus loads unchanged.
 
-    Loaded BOTH ways, and that is half the test. `erb.import_structured` imports with
-    `validate=False`, so the schema pattern cannot stand in for the prefix rule on that path -- but
-    `erb.export_byo` writes the same slug into `corpus.jsonl`, which `byo.load` reads with
-    validation ON. A pattern that refuses the slug turns `backlot export` into an artifact
-    `backlot import` cannot read, and breaks the equivalence
-    `test_erb_to_byo_round_trip_builds_an_equivalent_database` asserts between the two paths."""
+    A pattern that refused the slug would turn `backlot export` into an artifact `backlot import`
+    cannot read, and break the equivalence `test_erb_to_byo_round_trip_builds_an_equivalent_database`
+    asserts between the two paths."""
     slug = "ENG-453210-kms-hsm-deployment-lifecycle-telemetry-orbiter"
     recs = [
         _linear_rec("ln-slug", team="engineering", identifier=slug),
@@ -3875,15 +3696,11 @@ def test_byo_a_slug_shaped_key_claims_only_its_leading_prefix(tmp_path):
         _linear_rec("ln-keyless", team="engineering"),
     ]
     dids = [r["doc_id"] for r in recs]
-    seen = []
-    for name, validate in (("validated", True), ("unvalidated", False)):
-        settings = Settings(data_dir=tmp_path / name)
-        byo.load_records(lambda: enumerate(recs, 1), settings, reset=True, validate=validate)
-        conn = store.connect_ro(settings.db_path)
-        assert store.linear_team_keys(conn) == {"engineering": "ENG"}
-        seen.append(_stored_identifiers(settings, dids))
-    assert seen[0] == seen[1], "validation changed what the corpus loaded as"
-    idents = seen[0]
+    settings = Settings(data_dir=tmp_path / "loaded")
+    byo.load_records(lambda: enumerate(recs, 1), settings, reset=True)
+    conn = store.connect_ro(settings.db_path)
+    assert store.linear_team_keys(conn) == {"engineering": "ENG"}
+    idents = _stored_identifiers(settings, dids)
     assert idents["ln-slug"] == slug  # the corpus's own spelling, untouched
     assert idents["ln-real"] == "ENG-7"
     assert idents["ln-keyless"] == synth.linear_identifier("ln-keyless", "ENG")
@@ -4475,35 +4292,6 @@ def test_byo_two_snapshots_of_one_file_both_load(tmp_path):
     assert len({r["number"] for r in rows}) == 2  # each snapshot is addressable in its own right
     assert store.get_repo_file(conn, "gw", "src/a.py")["content"] == "v2\n"  # HEAD
     conn.close()
-
-
-def test_byo_snapshots_ordered_by_a_synthesized_clock_are_reported(tmp_path, capsys):
-    """A path whose snapshots state no `created` loads, and says so.
-
-    With no `created` the clock is `synth.epoch(doc_id)` — a stable fake, but one that orders
-    snapshots by a hash of their dataset ids, so which one the file is SERVED at is not something
-    the corpus chose. This was a hard refusal before snapshots existed, and neither the load nor
-    `--dry-run` can see it any other way, so it gets the same one-line notice an unresolved
-    `changed_paths` gets rather than passing in silence.
-    """
-    settings = Settings(data_dir=tmp_path)
-    corpus = tmp_path / "c.jsonl"
-    corpus.write_text(
-        "\n".join(
-            json.dumps(r)
-            for r in [
-                _gh_file("gh-old-version", "src/a.py", content="v1\n"),
-                _gh_file("gh-new-version", "src/a.py", content="v2\n"),
-                # a path with ONE snapshot needs no clock and must not be reported
-                _gh_file("gh-solo", "src/b.py", content="only\n"),
-            ]
-        )
-    )
-    load(corpus, settings)
-    err = capsys.readouterr().err
-    assert "src/a.py" in err or "1 file path" in err
-    assert "created" in err
-    assert "src/b.py" not in err
 
 
 def test_byo_two_file_rows_at_one_instant_are_refused_naming_the_path(tmp_path):

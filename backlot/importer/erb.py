@@ -2556,14 +2556,11 @@ def import_structured(settings, gen_dir) -> dict:
     _populate_principals(records, P, settings)
     P.write_roster(roster_path, settings)
 
-    # validate=False: these records come from `to_byo`, i.e. from code the schemas describe, and
-    # `test_erb_to_byo_output_validates_against_the_byo_schemas` already holds it to them.
     byo.load_records(
         lambda: _convert_all(records, P, settings, counts, failures),
         settings,
         reset=True,
         roster=roster_path,
-        validate=False,
     )
     if failures:
         print(

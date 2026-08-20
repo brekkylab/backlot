@@ -860,17 +860,29 @@ def _message(
     parent_user_id: str | None = None,
 ) -> dict:
     text = row["content"]
+    seed = f"{row['channel']}:{row['ts']}"
     m = {
         "type": "message",
         "user": synth.slack_user_id(row["author_email"]),
         "text": text,
         "ts": row["ts"],
         "team": TEAM_ID,
+    }
+    if not row["subtype"]:
+        # `client_msg_id` is minted by the CLIENT that posted, and `blocks` is what that client
+        # composed, so neither belongs on a message Slack itself generated — measured: a
+        # channel_join carries only type/user/text/ts/subtype. `team` is left on both: it is
+        # absent from a channel_join too, but a bot_message is a real posted message rather than a
+        # system notice and there was none to measure, so dropping it everywhere would generalise
+        # past the evidence.
+        #
         # Seeded on (channel, ts), not ts alone: a ts is unique within its channel (see
         # store.ID_COLUMNS), so the same second in two channels produced one client_msg_id — a
         # value real Slack makes globally unique.
-        "client_msg_id": synth.gmail_id(f"{row['channel']}:{row['ts']}", salt="cmid"),
-    }
+        m["client_msg_id"] = synth.gmail_id(seed, salt="cmid")
+        blocks = synth.slack_blocks(text, seed)
+        if blocks:
+            m["blocks"] = blocks
     reactions = store.jcol(row, "reactions")
     if reactions:
         m["reactions"] = reactions

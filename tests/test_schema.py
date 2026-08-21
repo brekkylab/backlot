@@ -352,15 +352,40 @@ def test_schema_files_are_valid_json_schemas():
         assert schema["properties"]["source_type"]["const"] == src
 
 
+@pytest.mark.parametrize(
+    "bucket,ok",
+    [
+        ("eng-artifacts", True),
+        ("douro-core-payments", True),
+        ("logs.2026", True),
+        ("douro/core-payments", False),
+        ("Eng-Artifacts", False),
+        ("eng_artifacts", False),
+        ("-eng", False),
+        ("b", False),
+    ],
+)
+def test_an_s3_bucket_is_named_the_way_s3_names_one(bucket, ok):
+    """A bucket is the first half of a served object's identity and a host label in the
+    virtual-hosted URL S3 hands back, so a name S3 would refuse cannot be served either: a slash
+    splits the address, an uppercase letter or an underscore cannot appear in a host label, and a
+    one-character name is below the three S3 requires.
+    """
+    errors = _first_error({"source_type": "s3", "bucket": bucket, "key": "docs/readme.md"})
+    assert (errors == []) is ok
+
+
 def test_s3_schema_registered():
     from backlot.validation import record_errors
 
     assert (
-        _first_error({"source_type": "s3", "bucket": "b", "key": "k", "title": "t", "content": "c"})
+        _first_error(
+            {"source_type": "s3", "bucket": "bkt", "key": "k", "title": "t", "content": "c"}
+        )
         == []
     )
     # As written: the point is that the missing `key` is refused.
-    errs = record_errors({"source_type": "s3", "bucket": "b", "title": "t", "content": "c"})
+    errs = record_errors({"source_type": "s3", "bucket": "bkt", "title": "t", "content": "c"})
     assert errs and any("key" in e for e in errs)
 
 

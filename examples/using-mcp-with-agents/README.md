@@ -29,14 +29,19 @@ service (like the other `examples/` dirs) — run the one you want:
   override. Because the CRM API is polymorphic over `{object_type}`, the agent gets five tools that
   each work across every object type (list, read, search, batch-read, associations) rather than a set
   per type, so "find the account, then its notes" is two calls with the object type as an argument.
+- **`linear.py`** and **`fireflies.py`** via the **generic GraphQL→MCP bridge**
+  (`_graphql_bridge.py`, Python/FastMCP). Both sources are GraphQL-only, so the OpenAPI bridge
+  cannot serve them at all — `/openapi.json` describes one `POST /<source>/graphql` operation,
+  which would derive a single raw-document tool rather than a usable toolset. This bridge reads the
+  endpoint's own **introspection** instead and turns each root `Query` field into a typed tool. See
+  "How the GraphQL→MCP bridge connects" below.
 
-**Two sources have no script here, and cannot.** Linear's official MCP server is **remote-hosted**
-at `https://mcp.linear.app/mcp` with no URL override, so nothing local can substitute for it — and
-the OpenAPI→MCP bridge is no help either, because Linear is GraphQL-only: the mock's `/openapi.json`
-describes one `POST /linear/graphql` operation, which would derive a single raw-document tool rather
-than a usable toolset. Fireflies is GraphQL-only for the same reason and publishes no MCP server at
-all. Both are still reachable from an agent the ordinary way — hand it the GraphQL endpoint and a
-token (see `examples/using-official-sdk/`).
+Every source now has an MCP path. The two GraphQL ones use a bridge rather than a vendor server
+because **both vendors' official MCP servers are remote-hosted** — `https://mcp.linear.app/mcp` and
+Fireflies' equivalent, neither with a base-URL override — so nothing local can substitute for them,
+and the community servers hard-wire `api.linear.app` / `api.fireflies.ai` in source (details under
+"Why these need the bridge"). Both are of course still reachable the ordinary way too: hand an agent
+the GraphQL endpoint and a token (see `examples/using-official-sdk/`).
 
 Each service file builds its own MCP `StdioServerParameters` and calls `run_agent(...)`. Two shared
 helpers:
@@ -72,6 +77,8 @@ python -m pytest tests/test_mcp.py
 #   Slack:     admin search surfaces a restricted-channel message via the bridge, a user can't
 #   HubSpot:   admin reads an ACL-restricted CRM record via the bridge, a user token is blocked;
 #              the polymorphic search tool round-trips filterGroups and returns `total`
+#   Linear/Fireflies: same via the GraphQL bridge — admin reads an ACL-restricted issue/transcript
+#              and a user token cannot; a nested `IssueFilter` round-trips and `pageInfo` comes back
 
 # drive it with an LLM agent (needs an API key). --agent defaults to anthropic; add --agent openai.
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/atlassian.py
@@ -81,6 +88,8 @@ ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/s3.py
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/github.py   # via the OpenAPI→MCP bridge
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/slack.py    # via the OpenAPI→MCP bridge
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/hubspot.py  # via the OpenAPI→MCP bridge
+ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/linear.py    # via the GraphQL→MCP bridge
+ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/fireflies.py # via the GraphQL→MCP bridge
 ```
 
 **Auth is per-service.** Retrieval is ACL-scoped by the identity you pass:
@@ -196,6 +205,60 @@ Atlassian authenticates with HTTP Basic (`--username` + the mock token as the pa
 **S3 is the one source with no bridge** — it is SigV4-signed (a static `Authorization` header can't
 sign each request), so it is absent from `/_mock/openapi/*`; use the vendor `s3.py` example.
 
+## How the GraphQL→MCP bridge connects (`linear.py` / `fireflies.py`)
+
+Linear and Fireflies are **GraphQL-only**, served at `POST /<source>/graphql` with
+`include_in_schema=False` — so there is no OpenAPI operation for the bridge above to slice, and
+`GET /_mock/openapi/linear` is a 404 by construction. What a GraphQL endpoint *does* publish is its
+schema, over standard introspection, so that is what `_graphql_bridge.py` reads. Same split as the
+OpenAPI bridge — the app does the schema work, the bridge is transport:
+
+- **`backlot/graphql/mcp_tools.py`** turns the introspection result into one tool per root `Query`
+  field: 15 for Linear (`issues`, `issue`, `teams`, `comments`, `viewer`, the by-id relation
+  roots …), 4 for Fireflies (`transcripts`, `transcript`, `user`, `users`). It derives each tool's
+  argument JSON Schema *and* its GraphQL document, which is the one thing OpenAPI never has to
+  decide: a REST operation returns a fixed body, a GraphQL field returns whatever was asked for.
+- **the bridge** posts `tool.document` with the caller's `Authorization: Bearer <token>` and passes
+  the GraphQL envelope back untouched, so the mock's per-token ACL decides every result. One header
+  spelling serves both: Fireflies is the ordinary bearer path, and Linear accepts a bare API key or
+  a `Bearer` token on the same header exactly as the real API does.
+
+**Typed tools, not a `graphql(query:)` passthrough.** A passthrough is three lines and turns the
+exercise into "can the model write GraphQL against a schema it has not seen"; no other example here
+works that way.
+
+**How the selection set is chosen** (full rules in `mcp_tools`): leaf fields always; a Relay
+connection is transparent wherever it appears (`nodes { … } pageInfo { … }` — free at the root,
+costing a level below it, and `pageInfo` always present so a page an agent cannot advance never
+reads as a complete answer); object fields are followed while a depth budget lasts; a type already
+on the path is not re-entered; a field with a required argument is skipped. Input objects expand
+under that same path guard, so `IssueFilter` arrives with its real comparator keys —
+`{"filter": {"title": {"containsIgnoreCase": "latency"}}}` — rather than as an opaque blob.
+
+One rule is there purely for size: **a bare list of objects is not selected inside a repeated
+result**, because rows × their own list is a product with no page and no way to say it was cut. So
+`transcripts` returns each match's metadata and summary while `transcript(id:)` returns one
+meeting's utterances — the same split `examples/using-official-sdk/fireflies.py` writes by hand for
+its two queries, and the reason an agent searches and then reads. Connections are exempt, being
+bounded by their own page. And a many-row tool carries a **default page size**, because an unpaged
+call otherwise takes the server's default page — measured against a real agent, it narrows with a
+filter and never asks for a page size at all. The default is filled in only when the caller named
+none of its own and is not paging backward (Relay rejects `first` and `last` together), so
+`first: 3` and `last: 2` both still mean exactly what they say. Each tool's description names its
+paging arguments and the default.
+
+Depth is the one per-source knob, and both values are measured (see PR #77 for the figures).
+Fireflies uses the default **2**: `Analytics` has no leaf fields of its own, so anything shallower
+drops the sentiment split and per-speaker talk time entirely. Linear runs at **1**, because `Team` /
+`Project` / `Cycle` each carry dozens of configuration leaves that a second level would multiply
+across every issue; depth 1 still returns `state`, `assignee`, `team`, `project` and `labels`
+inline. Both launchers take `--depth` if you want to see the difference.
+
+**What this trades away**, stated plainly because it is the argument for the vendor servers above:
+the bridge exercises *our* tool surface, not the community tooling an agent meets in production.
+That is accepted here — for Fireflies especially, where no community server has meaningful adoption,
+there is no consensus tooling to be faithful to.
+
 ## Why these need the bridge (no base-URL-switchable vendor server)
 
 These services' vendor MCP servers **cannot** be pointed at a self-hosted mock — that is exactly why
@@ -209,3 +272,11 @@ it:
   **→ driven via the bridge (`slack.py`) instead.**
 - **Gmail / Google Drive** — official and community servers hard-wire `googleapis.com` and
   require real Google OAuth; no endpoint override. **→ driven via the bridge (`gmail.py`, `gdrive.py`).**
+- **Linear** — the official server is **remote-hosted** (`https://mcp.linear.app/mcp`), so there is
+  no local process to redirect. The community servers hard-wire `https://api.linear.app` and take
+  only a token; because they run as `npx` subprocesses, the in-process URL rewrite backlot uses for
+  the LlamaIndex Linear reader cannot reach them either.
+  **→ driven via the GraphQL bridge (`linear.py`).**
+- **Fireflies** — the official server is likewise remote-only, and the maintained community one pins
+  its vendor endpoint as a module constant with the API key its sole configurable; none has enough
+  adoption to be worth forking. **→ driven via the GraphQL bridge (`fireflies.py`).**

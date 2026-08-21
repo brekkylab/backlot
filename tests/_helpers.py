@@ -95,6 +95,28 @@ def gql(client, path: str, query: str, token: str | None = None, **variables):
     return client.post(path, json=body, headers=headers)
 
 
+def selected_fields(document: str, *path: str) -> set[str]:
+    """The field names ``document`` selects at ``path`` — for asserting on a generated selection
+    set (``backlot.graphql.mcp_tools``) by shape rather than by substring."""
+    from graphql import parse
+
+    node = parse(document).definitions[0]
+    for step in path:
+        node = next(s for s in node.selection_set.selections if s.name.value == step)
+    return {s.name.value for s in node.selection_set.selections}
+
+
+def selected_field_count(document: str) -> int:
+    """How many field nodes ``document`` selects, at every level."""
+    from graphql import parse
+
+    def walk(node) -> int:
+        selections = getattr(node, "selection_set", None)
+        return 0 if selections is None else sum(1 + walk(s) for s in selections.selections)
+
+    return walk(parse(document).definitions[0])
+
+
 def db_count(conn, source_type, **kw) -> int:
     """The stored row count a crawl's completeness assertion is checked against."""
     from backlot import store

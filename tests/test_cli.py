@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._helpers import complete
 from backlot import cli
 from backlot.config import get_settings
 from backlot.importer import byo, erb
@@ -76,12 +77,12 @@ def _fresh_settings():
 
 
 def _record() -> dict:
-    return {
-        "source_type": "slack",
-        "channel": "general",
-        "author_email": "ava@acme.com",
-        "content": "Serving from the CLI.",
-    }
+    return complete(
+        source_type="slack",
+        channel="general",
+        author_email="ava@acme.com",
+        content="Serving from the CLI.",
+    )
 
 
 def _spy(monkeypatch, module, name: str = "run") -> dict:

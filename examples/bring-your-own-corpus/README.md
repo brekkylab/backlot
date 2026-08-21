@@ -33,19 +33,21 @@ populated server to poke at.
 
 ## Record format
 
-Only `source_type` and `content` are required; `title` is required for every source **except
-Slack** (Slack messages have no title). One JSON object per line (JSONL) — for example:
+Every record states the facts its served document cannot exist without: `source_type`, `content`,
+the container it lives in, `author_email` (fireflies may spell it `host_email`) and `created` — plus
+whatever its own vendor always reports. `title` is required for every source **except** Slack, whose
+messages have none, and HubSpot, whose notes have no name. A child row states its own author and its
+own second. Run `backlot import <corpus> --dry-run` and it names every record that leaves one out.
 
 ```json
-{"source_type": "slack", "channel": "incidents", "author_email": "bob@acme.com", "content": "Anyone seeing 502s from the gateway?", "reactions": [{"name": "eyes", "count": 2}], "replies": [{"content": "Looking now.", "author_email": "ava@acme.com"}, {"content": "Rolled back — clearing up.", "author_email": "bob@acme.com"}]}
-{"source_type": "gmail", "mailbox": "ceo", "title": "Q1 board deck draft", "content": "Draft narrative for the Q1 board meeting.", "author_email": "ceo@acme.com", "to": "ava@acme.com", "cc": "cfo@acme.com", "readers": ["ceo@acme.com", "ava@acme.com"]}
-{"source_type": "github", "repo": "gateway", "subtype": "pull_request", "title": "Fix token-bucket refill off-by-one", "content": "Corrects the refill tick; adds a test.", "author_email": "bob@acme.com", "state": "closed", "merged_at": "2026-02-10T12:00:00Z", "reviews": [{"author_email": "ava@acme.com", "state": "APPROVED", "body": "LGTM"}], "changed_paths": ["gateway/limiter.py"], "comments": [{"content": "clamp against `burst`, not `tokens`", "author_email": "ava@acme.com", "path": "gateway/limiter.py", "line": 5}]}
-{"source_type": "jira", "project": "payments", "title": "SEV2: checkout latency spike", "content": "p95 checkout latency jumped to 2.1s.", "author_email": "bob@acme.com", "author_groups": ["payments"], "visibility": "group", "status": "In Progress", "issuetype": "Incident", "assignee": "ava@acme.com"}
-{"source_type": "google_drive", "folder": "marketing", "subtype": "spreadsheet", "title": "Q1 Revenue Model", "content": "month,revenue\nJan,120000\nFeb,135000", "author_email": "cfo@acme.com", "author_groups": ["finance"], "visibility": "group"}
-{"source_type": "confluence", "space": "handbook", "title": "On-call Runbook", "content": "Respond to gateway 502s: check dashboards, roll back, page on-call.", "author_email": "ava@acme.com", "author_groups": ["engineering"], "labels": ["oncall", "runbook"]}
-{"source_type": "notion", "teamspace": "engineering", "subtype": "database", "title": "Eng Tasks", "content": "Engineering task tracker.", "doc_id": "nt-tasks-db", "properties": {"Status": {"type": "select"}}}
-{"source_type": "notion", "teamspace": "engineering", "title": "Fix gateway 502s", "content": "Investigate token-bucket refill.", "parent": "nt-tasks-db", "properties": {"Status": "In Progress"}, "icon": "🐛"}
-{"source_type": "hubspot", "object_type": "contacts", "title": "Ava Stone", "content": "Ava Stone — VP Platform at Acme Health.", "properties": {"firstname": "Ava", "lastname": "Stone", "email": "ava@acme-health.com"}, "associations": [{"to": "hs-co-acme", "label": "Primary"}]}
+{"source_type": "slack", "channel": "incidents", "author_email": "bob@acme.com", "created": "2026-02-10T18:00:00Z", "content": "Anyone seeing 502s from the gateway?", "replies": [{"content": "Looking now.", "author_email": "ava@acme.com", "created": "2026-02-10T18:00:40Z"}]}
+{"source_type": "gmail", "mailbox": "ceo", "title": "Q1 board deck draft", "content": "Draft narrative for the Q1 board meeting.", "author_email": "ceo@acme.com", "created": "2026-01-20T16:00:00Z", "to": "ava@acme.com", "readers": ["ceo@acme.com", "ava@acme.com"]}
+{"source_type": "github", "repo": "gateway", "subtype": "pull_request", "title": "Fix token-bucket refill off-by-one", "content": "Corrects the refill tick; adds a test.", "author_email": "bob@acme.com", "created": "2026-02-09T14:00:00Z", "state": "closed", "merged_at": "2026-02-10T12:00:00Z", "changed_paths": ["gateway/limiter.py"]}
+{"source_type": "jira", "project": "payments", "title": "SEV2: checkout latency spike", "content": "p95 checkout latency jumped to 2.1s.", "author_email": "bob@acme.com", "created": "2026-02-08T20:00:00Z", "status": "In Progress", "issuetype": "Incident", "reporter": "bob@acme.com", "assignee": "ava@acme.com", "visibility": "group"}
+{"source_type": "google_drive", "folder": "finance", "subtype": "spreadsheet", "title": "Q1 Revenue Model", "content": "month,revenue\nJan,120000\nFeb,135000", "author_email": "cfo@acme.com", "created": "2026-01-10T08:00:00Z", "updated": "2026-02-01T08:00:00Z", "visibility": "group"}
+{"source_type": "confluence", "space": "handbook", "title": "On-call Runbook", "content": "Respond to gateway 502s: check dashboards, roll back, page on-call.", "author_email": "ava@acme.com", "created": "2025-09-10T11:00:00Z", "labels": ["oncall", "runbook"]}
+{"source_type": "notion", "teamspace": "engineering", "subtype": "database", "title": "Eng Tasks", "content": "Engineering task tracker.", "doc_id": "nt-tasks-db", "author_email": "ava@acme.com", "created": "2026-01-10T09:00:00Z", "updated": "2026-01-10T09:00:00Z", "properties": {"Status": {"type": "select"}}}
+{"source_type": "hubspot", "object_type": "notes", "content": "Security review scheduled; wants EU data residency confirmed.", "author_email": "rep@acme.com", "created": "2026-03-05T14:00:00Z", "properties": {"hs_note_body": "Security review scheduled."}, "associations": [{"to": "hs-co-acme"}]}
 ```
 
 See `sample_corpus.jsonl` for a fully-populated record of every source type.
@@ -65,20 +67,20 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   (a `@acme.com` corpus serves as org `acme`, so Slack `auth.test`, `/_mock/users`, and default
   emails all say `acme` — not a hardcoded default). Override with `BACKLOT_ORG_NAME` /
   `BACKLOT_ORG_DOMAIN`. The chosen values are persisted to `data/tokens.yaml`.
-- **Slack threads:** a slack record may carry a `replies` array. Each reply is a full message
-  (`content`, optional `author_email`/`author_name`/`subtype`/`reactions`/`files`/`edited`/
-  `created`), not just text. It becomes a thread — the record is the root, each reply a threaded
-  reply. Only the root appears in `conversations.history`; the full thread comes back from
-  `conversations.replies` (shared `thread_ts`, increasing `ts`, `reply_count` on the root). A
-  reply's time is its own `created` when given, else one second after the message before it —
-  and it must be after that message: a Slack `ts` is identity as well as clock, so a thread's
-  times are strictly increasing.
+- **Slack threads:** a slack record may carry a `replies` array. Each reply is a full message,
+  not just text: it states its own `content`, `author_email` and `created`, and may carry
+  `author_name`/`subtype`/`reactions`/`files`/`edited`. It becomes a thread — the record is the
+  root, each reply a threaded reply. Only the root appears in `conversations.history`; the full
+  thread comes back from `conversations.replies` (shared `thread_ts`, increasing `ts`,
+  `reply_count` on the root). A reply's `created` must be after the message before it: a Slack
+  `ts` is identity as well as clock, so two messages in one thread cannot share a second.
 - **Fireflies transcripts:** a fireflies record's child rows are `sentences`, not `replies`
   — a transcript should read like a transcript, so `replies` on a `fireflies` record is
-  rejected rather than ignored. Each sentence carries `text`, an optional `speaker_name`
-  (null for an unattributed utterance), an optional `author_email` resolving the speaker to
-  an identity, and optional `start_time`/`end_time` in **seconds** (`duration` on the record
-  is in **minutes** — Fireflies' own units). `content` and `sentences` are two views of the
+  rejected rather than ignored. Each sentence states its `text` and its
+  `start_time` in **seconds**, and may carry `speaker_name` (null for an unattributed utterance),
+  `author_email` resolving the speaker to an identity, and `end_time`. It states no author of its
+  own accord: the vendor's `Sentence` carries no email, and an unnamed speaker is what diarization
+  produces. `duration` on the record is in **minutes** — Fireflies' own units. `content` and `sentences` are two views of the
   same text: supply `sentences` and `content` is derived from them, or supply only `content`
   (a plain `Speaker: text` body) and the sentences are parsed back out of it. A line that
   names no speaker folds into the sentence above it. Either way the two round-trip exactly,

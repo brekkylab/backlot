@@ -15,6 +15,7 @@ import sqlite3
 import pytest
 
 from backlot import store, synth
+from tests._helpers import complete
 
 ALL_SOURCES = [
     "slack",
@@ -265,6 +266,23 @@ def test_grouping_cols_per_source():
     assert store.grouping_col("linear") == "team"
     # Fireflies groups meetings into channels, its own concept and a documented filter.
     assert store.grouping_col("fireflies") == "channel"
+
+
+@pytest.mark.parametrize(
+    "stated",
+    ["ava.chen@acme.com", "ava_chen", "ava-chen", "ava.chen"],
+)
+def test_a_mailbox_resolves_from_the_address_however_the_corpus_spelled_it(tmp_path, stated):
+    """The one container a client never names. Every other source takes its container from the
+    request path; `users/me/messages` has only the caller's address, so each spelling a corpus
+    uses for a mailbox -- the address, its local part, a slug of either -- has to lead back to it,
+    or the owner's own listing comes back empty."""
+    conn = store.connect_rw(tmp_path / "m.sqlite")
+    conn.execute("INSERT INTO gmail_mailboxes (mailbox, group_id) VALUES (?, NULL)", (stated,))
+    assert store.mailbox_for(conn, "ava.chen@acme.com") == stated
+    # A mailbox the corpus never stated keeps the name-derived spelling, so it scopes to nothing.
+    assert store.mailbox_for(conn, "no.one@acme.com") == "no_one"
+    conn.close()
 
 
 def test_comment_tables_only_where_supported():
@@ -1918,15 +1936,15 @@ def test_linear_entities_are_rebuilt_whole_so_an_append_is_resolvable(tmp_path):
     from backlot.config import Settings
 
     def issue(doc_id, project):
-        return {
-            "source_type": "linear",
-            "team": "engineering",
-            "doc_id": doc_id,
-            "title": doc_id,
-            "content": "c",
-            "author_email": "a@acme.com",
-            "project": project,
-        }
+        return complete(
+            source_type="linear",
+            team="engineering",
+            doc_id=doc_id,
+            title=doc_id,
+            content="c",
+            author_email="a@acme.com",
+            project=project,
+        )
 
     settings = Settings(data_dir=tmp_path)
     first = tmp_path / "a.jsonl"

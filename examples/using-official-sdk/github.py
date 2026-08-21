@@ -25,6 +25,9 @@ from github import Auth, Github  # noqa: E402
 
 CORPUS = [
     {
+        "state": "open",
+        "author_email": "bob@acme.com",
+        "created": "2026-02-09T09:00:00Z",
         "source_type": "github",
         "repo": "gateway",
         "title": "Rate limiter drops bursts under 50ms",
@@ -32,6 +35,9 @@ CORPUS = [
         "subtype": "issue",
     },
     {
+        "state": "open",
+        "author_email": "bob@acme.com",
+        "created": "2026-02-09T14:00:00Z",
         "source_type": "github",
         "repo": "gateway",
         "title": "Fix token-bucket refill off-by-one",
@@ -44,10 +50,15 @@ CORPUS = [
         "changed_paths": ["src/ratelimiter.py"],
         "comments": [
             # No `path` -> a conversation comment (GET /issues/{n}/comments)
-            {"content": "Can we add a metric for dropped bursts?", "author_email": "ava@acme.com"},
+            {
+                "created_ts": "2026-02-09T16:00:00Z",
+                "content": "Can we add a metric for dropped bursts?",
+                "author_email": "ava@acme.com",
+            },
             # `path` -> a line-anchored REVIEW comment (GET /pulls/{n}/comments). Real GitHub keeps
             # the two apart and counts them separately, and so does the mock.
             {
+                "created_ts": "2026-02-09T16:20:00Z",
                 "content": "This clamps against `tokens`, so the bucket can never refill.",
                 "author_email": "ava@acme.com",
                 "path": "src/ratelimiter.py",
@@ -56,6 +67,8 @@ CORPUS = [
         ],
     },
     {
+        "author_email": "ava@acme.com",
+        "created": "2026-01-15T09:00:00Z",
         "source_type": "github",
         "repo": "gateway",
         "subtype": "file",
@@ -64,6 +77,8 @@ CORPUS = [
         "content": "# gateway\n\nToken-bucket rate limiter for inbound requests.\n",
     },
     {
+        "author_email": "bob@acme.com",
+        "created": "2026-01-20T09:00:00Z",
         "source_type": "github",
         "repo": "gateway",
         "subtype": "file",
@@ -78,6 +93,8 @@ CORPUS = [
         "        self.tokens = min(self.tokens + elapsed * self.rate, self.tokens)\n",
     },
     {
+        "author_email": "bob@acme.com",
+        "created": "2026-01-20T09:05:00Z",
         "source_type": "github",
         "repo": "gateway",
         "subtype": "file",

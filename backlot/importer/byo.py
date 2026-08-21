@@ -7,16 +7,16 @@ Each line is one document:
       "source_type": "confluence",        # required: one of the served source types
                                           #   (slack|gmail|google_drive|github|jira|confluence|
                                           #    notion|s3|hubspot|linear|fireflies)
-      "title": "Onboarding guide",         # required (slack has no title)
+      "title": "Onboarding guide",         # required (slack has none; a hubspot note has none)
       "content": "Full text...",            # required
       "doc_id": "my-123",                  # optional (default: dsid_<sha256(src+title+content)>)
-      "space": "handbook",                 # the grouping unit, named per service: slack/fireflies
+      "space": "handbook",                 # required: the grouping unit, named per service --
                                              #   "channel", gmail "mailbox", google_drive "folder",
                                              #   github "repo", jira "project", confluence "space",
                                              #   notion "teamspace", s3 "bucket", hubspot
                                              #   "object_type", linear "team" (default: source_type)
       "group": "people",                   # optional ACL group owning that unit (default: slug(unit))
-      "author_email": "ava@acme.com",      # optional author/sender/owner
+      "author_email": "ava@acme.com",      # required author/sender/owner (fireflies: host_email)
       "author_groups": ["people","eng"],   # optional groups the author belongs to
       "visibility": "public",              # optional: public|group|private (default: public)
       "readers": ["ava@acme.com","eng"],    # optional explicit reader principals (overrides visibility)
@@ -26,18 +26,20 @@ Each line is one document:
       "labels": ["eng","runbook"],          # optional facets
       "issuelinks": [...],                  # optional per-source structured extras, each a
                                              #   declared field of the source that has it
-      "comments": [                         # optional: comments on this doc (jira/confluence/github/drive)
-        {"content": "LGTM", "author_email": "rev@acme.com"}
+      "comments": [                         # optional: comments on this doc; each states its own
+        {"content": "LGTM", "author_email": "rev@acme.com",   # author and its own second
+         "created_ts": "2026-03-01T10:00:00Z"}
       ],
-      "created": "2026-03-01T09:00:00Z",    # optional creation time (epoch seconds or ISO 8601)
-      "updated": 1740900000,                # optional modified time (drive/github/jira/confluence)
+      "created": "2026-03-01T09:00:00Z",    # required creation time (epoch seconds or ISO 8601)
+      "updated": 1740900000,                # modified time; required on drive and notion
       "author_name": "Ava Chen",            # optional display name -> the owner's served name
       "replies": [                          # slack only: threaded replies — full messages, not just text
         {"content": "on it", "author_email": "bob@acme.com",
-         "reactions": [{"name": "eyes", "count": 1}]}
+         "created": "2026-03-01T09:00:01Z", "reactions": [{"name": "eyes", "count": 1}]}
       ],
       "messages": [                         # gmail only: the thread's later messages
-        {"content": "On it.", "author_email": "ava@acme.com", "message_id": "<b@acme>"}
+        {"content": "On it.", "author_email": "ava@acme.com", "message_id": "<b@acme>",
+         "created": "2026-03-01T10:00:00Z"}
       ]
     }
 
@@ -270,72 +272,24 @@ def _epoch(v):
         return None
 
 
-def _thread_seconds(where, root_sec, root_written, replies):
-    """Every second in a slack thread — the root's and each reply's — resolved together,
-    before any of the rows are written. Returns ``(root_second, [reply seconds])``.
+def _thread_seconds(where, root_sec, replies):
+    """Every reply's second, checked against the message before it before any row is written.
 
-    Ordering is judged against clocks the corpus actually supplied. A root with no
-    `created` of its own holds a second hashed from its doc_id, which is not a fact
-    about the thread, and using it as the anchor made the import turn on that hash: for
-    a reply dated inside the synthesizer's own window the hash lands after the reply
-    date about half the time, so the same corpus loads or dies depending on the root's
-    doc_id, and the refusal quotes a second that appears nowhere in the corpus. When it
-    did load, the served thread had a root years before its own reply. Such a root is
-    re-grounded on the first reply that carries a clock instead.
-
-    A clockless reply still lands one second after the message before it, so a thread
-    that supplies no clocks at all resolves exactly where root+position always put it.
-    Re-grounding cannot change an existing corpus either: a reply could not carry
-    `created` at all until this branch added it, `replies.items` being closed.
+    A Slack ts is identity as well as a clock, so two messages in one thread cannot hold the same
+    second and a reply cannot precede the message before it.
     """
-    reps = replies or []
-    written = []
-    for i, rep in enumerate(reps, start=1):
-        v = rep.get("created")
-        sec = _epoch(v)
-        if sec is None and _time_given(v):
-            # A filled-in field this importer cannot read is refused rather than
-            # defaulted: taking the default silently reinstates the metronome the field
-            # exists to replace, and the second that lands is indistinguishable from
-            # what a corpus that never wrote a clock gets.
-            raise SystemExit(
-                f"{where}: reply {i}: created is not a time this importer can read "
-                f"(got {v!r}; write epoch seconds or ISO 8601)"
-            )
-        written.append(sec)
-
-    if not root_written:
-        first = next((i for i, s in enumerate(written) if s is not None), None)
-        if first is not None:
-            # One second for each clockless reply ahead of it, and one more for the root.
-            root_sec = written[first] - (first + 1)
-
     out = []
-    prev, defaulted = root_sec, False
-    for i, sec in enumerate(written, start=1):
-        if sec is None:
-            prev, defaulted = prev + 1, True
-            out.append(prev)
-            continue
+    prev = root_sec
+    for i, rep in enumerate(replies or [], start=1):
+        sec = _epoch_field(rep["created"], f"{where}: reply {i}", "created")
         if sec <= prev:
-            if defaulted:
-                # The second it collides with is one this importer chose, not one the
-                # author wrote, so say that rather than quoting it as a fact about the
-                # corpus. Two adjacent seconds cannot both hold a message: a Slack ts is
-                # identity as well as clock.
-                raise SystemExit(
-                    f"{where}: reply {i}: created must be after the message before it "
-                    f"(got {reps[i - 1].get('created')!r}), but reply {i - 1} carries no "
-                    f"created of its own and took the next free second, {prev}. Give "
-                    f"reply {i - 1} a created too, or move this one later."
-                )
             raise SystemExit(
                 f"{where}: reply {i}: created must be after the message before it "
-                f"(got {reps[i - 1].get('created')!r}, the previous message is at {prev})"
+                f"(got {rep['created']!r}, the previous message is at {prev})"
             )
-        prev, defaulted = sec, False
+        prev = sec
         out.append(sec)
-    return root_sec, out
+    return out
 
 
 def _service_columns(
@@ -1310,9 +1264,7 @@ class _Loader:
         ).fetchone()
         return row is not None and row["author_email"] == author_email and row["content"] == body
 
-    def __init__(
-        self, conn, org: str, org_domain: str, *, closed: bool = False, validate: bool = True
-    ):
+    def __init__(self, conn, org: str, org_domain: str, *, closed: bool = False):
         self.conn = conn
         self.org = org
         self.org_domain = org_domain
@@ -1320,7 +1272,6 @@ class _Loader:
         # declaring new people (see load_roster).
         self.closed = closed
         # Skipped only for records this repo generated itself — see load_records.
-        self.validate = validate
         self.containers = {}  # (source_type, name) -> group_id
         self.users = {}  # email -> display name
         self.groups = set()
@@ -1452,10 +1403,6 @@ class _Loader:
         # A pull's declared changeset, resolved after the whole corpus is read: the `file` document
         # a path names may be on a later line, or in a shard already loaded.
         self.gh_changesets = []  # (where, repo, paths)
-        # (repo, path) -> whether every snapshot of it left `created` to be synthesized. A path
-        # with several snapshots and no stated clock is served at whichever doc_id hashes latest,
-        # which is not something the corpus chose; reported once at the end (see _report_unclocked).
-        self.gh_file_clocks: dict[tuple[str, str], list[bool]] = {}
         # Linear's teams, held to the same 1:1 as jira's projects above: real Linear keeps team
         # keys workspace-unique because an identifier is DERIVED from its team's key, so a team
         # answering at two prefixes (or two teams answering at one) is a shape only the loader can
@@ -1593,23 +1540,24 @@ class _Loader:
         body stays the straight-line per-record mapping it reads as.
         """
         conn, org, org_domain = self.conn, self.org, self.org_domain
-        closed, validate, containers = self.closed, self.validate, self.containers
+        closed, containers = self.closed, self.containers
         users, groups, memberships = self.users, self.groups, self.memberships
         grants, counts, seen = self.grants, self.counts, self.seen
         fts_ids, hs_types, hs_links = self.fts_ids, self.hs_types, self.hs_links
         lin_links = self.lin_links
         # Schema pre-validation: source_type/content/title, enums, comment/reply shapes,
         # and unknown-key rejection all come from backlot/schemas/ (see backlot.validation).
-        errors = record_errors(rec) if validate else []
+        errors = record_errors(rec)
         if errors:
             raise SystemExit(f"{where}: " + "; ".join(errors))
         src = rec["source_type"]
-        # Not under `validate`: these are pairings no schema states well (see
+        # Beyond the schema: these are pairings no schema states well (see
         # _github_pairing_errors), and a record an importer in this repo generated is no likelier to
         # get a pull-only field onto an issue correctly than a hand-written one.
         if src == "github" and (bad := _github_pairing_errors(rec)):
             raise SystemExit(f"{where}: " + "; ".join(bad))
-        # Slack messages have no title; the other five carry a natural one.
+        # Slack messages have no title, and a hubspot note has no name -- the one source whose
+        # title is optional (see its schema).
         title = rec.get("title") or ""
 
         # Fireflies: `content` is DEFINED as the sentence concatenation, so the two can never be
@@ -1621,13 +1569,6 @@ class _Loader:
         sentences = None
         if src == "fireflies":
             given = rec.get("sentences")
-            if not given and not (rec.get("content") or "").strip():
-                # Stated here rather than as a schema `anyOf`, whose error ("is not valid under
-                # any of the given schemas") names neither field and so tells the author nothing.
-                raise SystemExit(
-                    f"{where}: a fireflies record needs 'sentences' or "
-                    f"'content' — one of the two IS the transcript"
-                )
             if given:
                 sentences = [
                     {
@@ -1665,7 +1606,7 @@ class _Loader:
         # would keep the earlier document and diverge.
         seen.add((src, doc_id))
         gcol = store.grouping_col(src)
-        container = str(rec.get(gcol) or src)  # channel / mailbox / folder / repo / project / space
+        container = str(rec[gcol])  # channel / mailbox / folder / repo / project / space
         # An explicit `"group": null` means the container owns NO ACL group — which is a real
         # state, not a missing value: a Gmail mailbox has no group scope (a thread is private to
         # its participants), so inferring one from the mailbox name would invent a grantable
@@ -1819,11 +1760,7 @@ class _Loader:
                 extras[k] = rec[k]
         subtype = rec.get("subtype")
         parent_id = rec.get("parent")
-        # created_ts must never be NULL (the server sorts/filters by it; a NULL would need a
-        # runtime null-check). Fall back to the same deterministic synth.epoch the server would have
-        # synthesized for a missing ts, so the served time is unchanged — just materialized now.
-        created_written = _epoch_field(rec.get("created"), where, "created")
-        created = synth.epoch(doc_id) if created_written is None else created_written
+        created = _epoch_field(rec["created"], where, "created")
         updated = _epoch_field(rec.get("updated"), where, "updated")
 
         replies = rec.get("replies") if src == "slack" else None
@@ -1832,11 +1769,9 @@ class _Loader:
         # taking it as an argument. A root with replies carries its OWN ts (Slack does too, so
         # `thread_ts == ts` is what marks a root); a standalone message carries NULL.
         slack_thread_ts = None
-        # Resolved before the root row is written, because a root whose own clock was
-        # synthesized may be re-grounded on the replies that do carry one.
-        created, reply_seconds = _thread_seconds(
-            where, created, created_written is not None, replies
-        )
+        # Resolved before the root row is written: a thread's seconds are checked against each
+        # other, so a reply out of order is refused before half of it has landed.
+        reply_seconds = _thread_seconds(where, created, replies)
         # gmail's own child-row array. `replies` stays Slack-only (a Slack reply is a *reply*,
         # with reactions and files); a Gmail thread is a sequence of full RFC822 messages, each
         # with its own sender, recipients and Message-ID, so it gets an array that reads like one
@@ -1904,7 +1839,7 @@ class _Loader:
             cols = _service_columns(
                 src, ex or {}, sub, par, did, gmail_thread, seq, org_domain, cts, uts, odisp
             )
-            cols.update(author_email=email or f"unknown@{org_domain}", content=body)
+            cols.update(author_email=email, content=body)
             if src not in store.TITLELESS:
                 cols["title"] = ttl
             if src == "s3" and cols.get("size") is None:
@@ -2027,9 +1962,6 @@ class _Loader:
                 # number.
                 cols["number"] = self._existing_file_number(
                     container, cols.get("path"), cols.get("ref"), created
-                )
-                self.gh_file_clocks.setdefault((container, cols.get("path")), []).append(
-                    created_written is None
                 )
                 file_row = True
             else:
@@ -2277,25 +2209,10 @@ class _Loader:
         # that is (repo, number), and the number may still be PROVISIONAL here: the deferred pass
         # rewrites the comment rows alongside the documents they hang off.
         parent_key = self.keys[(src, doc_id)] if rec_comments else None
-        prev_c_ts = created
         for j, c in enumerate(rec_comments, start=1):
             body = c.get("body") or c.get("content")
-            if not body:
-                raise SystemExit(f"{where}: each comment needs 'content'")
             register(c.get("author_email"), c.get("author_name"))
-            # A comment with no explicit time follows the PREVIOUS comment, not the doc's clock
-            # plus its position. The reason:
-            # in a thread that mixes dated and undated comments, `created + j` lands an undated one
-            # back at the document's creation time and any consumer ordering by createdAt (Linear's
-            # `Issue.comments` does) serves the thread inverted. Monotonic, so it cannot. For an
-            # all-undated thread this is exactly `created + j`, as before. Never a hash of the
-            # comment's own id, which would scatter one thread across two years.
-            c_ts = _epoch_field(c.get("created_ts"), f"{where}: comment {j}", "created_ts")
-            # `is None`, not truthiness: 1970-01-01T00:00:00Z parses to 0, and taking the default
-            # for it stores a time nobody wrote — the confusion `_epoch_field` exists to prevent.
-            if c_ts is None:
-                c_ts = prev_c_ts + 1
-            prev_c_ts = max(prev_c_ts, c_ts)
+            c_ts = _epoch_field(c["created_ts"], f"{where}: comment {j}", "created_ts")
             # The corpus's own comment id is a SEED, never stored. For github it seeds the
             # id the API reports, assigned here and probed for uniqueness — a comment's `url`
             # resolves through it, so two comments sharing one means one comment's url returns the
@@ -2334,9 +2251,7 @@ class _Loader:
                 )
 
         for i, rep in enumerate(replies or [], start=1):
-            if not rep.get("content"):
-                raise SystemExit(f"{where}: each reply needs 'content'")
-            rep_author = rep.get("author_email") or author
+            rep_author = rep["author_email"]
             register(rep_author, rep.get("author_name"))
             rep_id = rep.get("doc_id") or (
                 "dsid_"
@@ -2362,11 +2277,6 @@ class _Loader:
         # To/Cc, Message-ID, body — sharing the root's thread_id and ACL and carrying its position
         # in `thread_seq`, which is what `users.messages.list` / `users.threads.get` page over.
         for i, msg in enumerate(messages or [], start=1):
-            # The key is required, its value may be EMPTY: 2.3% of real thread messages are
-            # headers with no body (an auto-ack, a bare forward), and dropping those would drop
-            # messages from the middle of a thread and renumber the rest.
-            if "content" not in msg:
-                raise SystemExit(f"{where}: each gmail message needs 'content'")
             # No fallback to the ROOT's author, unlike a slack reply: a thread's messages have
             # different senders by definition, so attributing an unattributed one to whoever
             # opened the thread would invent a sender. It falls through to `unknown@<org_domain>`.
@@ -2672,9 +2582,6 @@ class _Loader:
                 ),
             )
 
-        # Outside the changeset block below: a corpus of files with no pulls has no changesets and
-        # is exactly where an unordered snapshot stack goes unnoticed.
-        self._report_unclocked()
         # A pull's declared changeset, against the `file` documents that now exist. Asked of the DB
         # rather than of this run's records, so a path whose file arrived in an earlier `--append`
         # resolves; memoized because a path repeats across the pulls that touched it.
@@ -2698,32 +2605,6 @@ class _Loader:
                     f"names it (`--dry-run` names them)",
                     file=sys.stderr,
                 )
-
-    def _report_unclocked(self) -> None:
-        """Name the file paths whose snapshots are ordered by a synthesized clock.
-
-        A path holding one snapshot needs no order, and a path whose rows state `created` was
-        ordered by the corpus. What is worth a line is the rest: several snapshots, no stated
-        clock, so `synth.epoch` of each dataset id decides which one the file is served at.
-        Reported rather than refused -- the corpus loads and every snapshot is addressable -- but
-        not in silence, because nothing downstream can tell that the order was not chosen.
-        """
-        bad = sorted(
-            p for p, clocks in self.gh_file_clocks.items() if len(clocks) > 1 and all(clocks)
-        )
-        if not bad:
-            return
-        noun = "path" if len(bad) == 1 else "paths"
-        print(
-            f"  github: {len(bad)} file {noun} hold several snapshots with no `created` of their "
-            f"own, so which one the file is served at follows a hash of the dataset ids rather "
-            f"than the corpus. State `created` (or a `ref`) on them:",
-            file=sys.stderr,
-        )
-        for repo, path in bad[:10]:
-            print(f"    {repo}: {path}", file=sys.stderr)
-        if len(bad) > 10:
-            print(f"    ... and {len(bad) - 10} more", file=sys.stderr)
 
     def _settle(self, src: str, final: list) -> None:
         """Move rows in a deferred source from their provisional key to the settled one.
@@ -3082,7 +2963,6 @@ def load_records(
     settings: Settings | None = None,
     reset: bool = True,
     roster: Path | None = None,
-    validate: bool = True,
     id_map: Path | None = None,
 ) -> dict:
     """Load already-parsed BYO records into the DB, leaving the previous one in place if it fails.
@@ -3102,7 +2982,7 @@ def load_records(
         settings.db_path.rename(salvage)
     try:
         result, manifest = _load_records(
-            records_factory, settings, reset, roster, validate, id_map is not None
+            records_factory, settings, reset, roster, id_map is not None
         )
     except BaseException:
         if salvage is not None:
@@ -3126,7 +3006,6 @@ def _load_records(
     settings: Settings,
     reset: bool,
     roster: Path | None,
-    validate: bool,
     want_id_map: bool = False,
 ) -> tuple[dict, str | None]:
     """The load itself. See :func:`load_records`, which is this plus the replace-safely dance.
@@ -3134,9 +3013,10 @@ def _load_records(
     ``records_factory`` returns a FRESH iterator of ``(where, record)`` pairs and may be called
     twice — the org has to be inferred from every author's address before the first grant is
     written, so a corpus is re-read rather than held in memory. ``where`` names the record in an
-    error message. ``validate=False`` skips the JSON Schema check, and is only for records an
-    importer in this repo generated itself; a corpus from OUTSIDE always validates, which is why
-    ``load`` does not expose the flag.
+    error message. Every record is validated against its schema, whichever importer produced it: a
+    generator in this repo is no likelier to satisfy the contract than a hand-written corpus, and a
+    bug there should name the record rather than surface as a constraint violation three layers
+    down.
     """
     conn = store.connect_rw(settings.db_path)
 
@@ -3185,7 +3065,7 @@ def _load_records(
             org_name = row[0]
     org = org_name
 
-    loader = _Loader(conn, org, org_domain, closed=closed, validate=validate)
+    loader = _Loader(conn, org, org_domain, closed=closed)
     if not reset:
         loader.seed_tracker_ids()
     source_docs = 0

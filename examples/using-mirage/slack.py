@@ -27,17 +27,30 @@ from _helpers import FUSE_HELP, lines, run_mirage
 
 CORPUS = [  # `created` keeps the throwaway channels' dates tight (one day) rather than synthesized
     {
+        "author_email": "ava@acme.com",
         "source_type": "slack",
         "channel": "eng",
         "content": "Deploy freeze starts Friday 5pm.",
         "created": "2024-08-01T09:00:00Z",
     },
     {
+        "author_email": "bob@acme.com",
         "source_type": "slack",
         "channel": "incidents",
         "content": "Anyone seeing 502s from the gateway?",
         "created": "2024-08-01T14:30:00Z",
-        "replies": [{"content": "Looking now."}, {"content": "Rolled back — clearing up."}],
+        "replies": [
+            {
+                "author_email": "ava@acme.com",
+                "created": "2026-02-10T18:00:40Z",
+                "content": "Looking now.",
+            },
+            {
+                "author_email": "bob@acme.com",
+                "created": "2026-02-10T18:06:00Z",
+                "content": "Rolled back — clearing up.",
+            },
+        ],
     },
 ]
 

@@ -16,7 +16,7 @@ import yaml
 from backlot import store, synth
 from backlot.config import Settings, get_settings
 from backlot.importer import byo, erb
-from tests._helpers import client_for, served_id
+from tests._helpers import complete, client_for, served_id
 from backlot.importer.erb import Principals, canonical, grants_for
 
 C = erb
@@ -347,6 +347,252 @@ def test_mint_does_not_clobber_directory_user(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "header,addr",
+    [
+        ("Jonas Weber <jonas_weber@redwood.com>", "jonas_weber@redwood.com"),
+        ("jonas_weber@redwood.com", "jonas_weber@redwood.com"),
+        ('"jonas_weber@redwood.com"', "jonas_weber@redwood.com"),
+        ("Jonas Weber", None),
+        ("", None),
+    ],
+)
+def test_addr_reads_a_bare_address_as_well_as_an_angle_bracketed_one(header, addr):
+    assert C._addr(header) == addr
+
+
+def test_gmail_thread_sender_is_the_bare_address_not_the_mailbox_owner():
+    """12% of bench thread messages carry `From: <address>` with no display name. Requiring angle
+    brackets left the address unread and fell back to whoever holds the mailbox."""
+    raw = {
+        "mailbox_owner": "Lauren Bishop",
+        "subject": "Post-cutover 502s",
+        "messages": [
+            "From: jonas_weber@redwood.com\nTo: lauren_bishop@redwood.com\n"
+            "Date: 2026-09-18T08:35:00-07:00\nSubject: Post-cutover 502s\n\nPutting this in inbox.",
+            "From: karthik_iyer@redwood.com\nTo: jonas_weber@redwood.com\n"
+            "Date: 2026-09-18T09:02:00-07:00\nSubject: Re: Post-cutover 502s\n\nEdge findings.",
+        ],
+    }
+    (rec,), _bundle = C._byo_gmail("gm-1", raw, Principals([], "redwood.com"))
+    assert rec["author_email"] == "jonas_weber@redwood.com"
+    assert rec["messages"][0]["author_email"] == "karthik_iyer@redwood.com"
+
+
+def test_gmail_thread_with_no_headers_takes_its_recipients_from_the_participants():
+    """A thread with no RFC822 headers states its recipients only through the participant lists."""
+    raw = {
+        "mailbox_owner": "Markus Klein",
+        "subject": "Vendor review",
+        "body": "Please review before Thursday.",
+        "participants_internal": ["Markus Klein", "Rachel Kim"],
+        "participants_external": ["Alyssa Chen <alyssa.chen@cascadefg.com>"],
+    }
+    P = Principals(
+        [
+            {"name": "Markus Klein", "email": "markus.klein@redwood.com", "dept_slug": "eng"},
+            {"name": "Rachel Kim", "email": "rachel.kim@redwood.com", "dept_slug": "eng"},
+        ],
+        "redwood.com",
+    )
+    (rec,), _bundle = C._byo_gmail("gm-2", raw, P)
+    assert rec["author_email"] == "markus.klein@redwood.com"
+    assert rec["to"] == "rachel.kim@redwood.com, alyssa.chen@cascadefg.com"
+
+
+@pytest.mark.parametrize(
+    "raw_state,merged_at,state,merged",
+    [
+        ("merged", "2026-02-10T12:00:00Z", "closed", "2026-02-10T12:00:00Z"),
+        ("closed", None, "closed", None),
+        ("open", None, "open", None),
+    ],
+)
+def test_github_state_is_one_the_api_can_return(raw_state, merged_at, state, merged):
+    """GitHub returns open or closed; a merge is `merged_at`. The bench writes "merged"."""
+    raw = {
+        "repo": "runtime",
+        "title": "Fix the refill tick",
+        "description": "Off by one.",
+        "pr_number": 1892,
+        "author": "Bob Ito",
+        "state": raw_state,
+        "created_at": "2026-02-09T09:00:00Z",
+    }
+    if merged_at:
+        raw["merged_at"] = merged_at
+    (rec,), _bundle = C._byo_github("gh-1", raw, Principals([], "redwood.com"))
+    assert rec["state"] == state
+    assert rec.get("merged_at") == merged
+
+
+def test_github_a_merged_pull_without_a_merge_time_still_reads_as_merged():
+    """Dropping "merged" without recording a merge time would make the pull indistinguishable
+    from one closed unmerged, so its last update stands in."""
+    raw = {
+        "repo": "runtime",
+        "title": "Fix the refill tick",
+        "description": "Off by one.",
+        "pr_number": 1892,
+        "author": "Bob Ito",
+        "state": "merged",
+        "created_at": "2026-02-09T09:00:00Z",
+        "updated_at": "2026-02-10T12:00:00Z",
+    }
+    (rec,), _bundle = C._byo_github("gh-2", raw, Principals([], "redwood.com"))
+    assert rec["state"] == "closed"
+    assert rec["merged_at"] == "2026-02-10T12:00:00Z"
+
+
+def test_a_named_but_unrostered_writer_gets_an_address_and_no_token():
+    P = Principals([], "redwood.com")
+    assert P.display_only_email("SRE Oncall") == "sre.oncall@redwood.com"
+    assert P.display_only_email("Ravi Kulkarni") == "ravi.kulkarni@redwood.com"
+    # display only: an address the corpus can attribute to, not an identity that can sign in
+    assert P.users == {}
+
+
+@pytest.mark.parametrize(
+    "label,company,email",
+    [
+        # the counterparty's own domain, with its name dropped from the local part
+        ("Customer", "BrightCart", "customer@brightcart.example"),
+        ("BrightCart (Customer)", "BrightCart", "customer@brightcart.example"),
+        # the ticket names no company, so the label does
+        ("Customer (NimbleDocs)", None, "customer@nimbledocs.example"),
+        ("LexaHealth (Customer)", None, "customer@lexahealth.example"),
+        # an address the label carries IS the counterparty's
+        ("Customer (NeonRetail, procurement@neonretail.com)", None, "procurement@neonretail.com"),
+        # the audience, not the author: the desk wrote it
+        ("Support (to customer)", "FinEdge", "support.to.customer@redwood.com"),
+        # not customer-side at all
+        ("Support", None, "support@redwood.com"),
+    ],
+)
+def test_a_customer_commenter_lands_on_the_counterpartys_domain(label, company, email):
+    """An external participant must not wear an internal address. The corpus writes the
+    counterparty into the label, so an exact-match test put 2,675 of them on the org's domain."""
+    P = Principals([], "redwood.com")
+    assert P.label_email(label, company) == email
+    assert P.users == {}  # display only: never a principal
+
+
+def test_a_customer_with_no_counterparty_named_falls_back_to_the_placeholder_domain():
+    P = Principals([], "redwood.com")
+    assert P.customer_email("Customer", None) == f"customer@{C.EXTERNAL_DOMAIN}"
+
+
+@pytest.mark.parametrize(
+    "label,email",
+    [
+        ("Support", "support@redwood.com"),
+        ("SRE", "sre@redwood.com"),
+        ("Design review", "unknown@redwood.com"),  # an activity, not somebody
+        ("Follow-ups", "unknown@redwood.com"),
+        (None, "unknown@redwood.com"),
+    ],
+)
+def test_a_label_that_names_no_person_resolves_by_what_it_names(label, email):
+    assert Principals([], "redwood.com").label_email(label) == email
+
+
+def test_a_jira_desk_comment_is_attributed_to_the_desk_and_a_customer_to_their_domain():
+    raw = {
+        "key": "SUP-1",
+        "project": "customer-support",
+        "summary": "Latency spike",
+        "description": "Body.",
+        "issue_type": "Support Request",
+        "status": "In Progress",
+        "reporter": "Aisha Patel",
+        "created_at": "2026-03-13",
+        "customer_company": "LexiHealth",
+        "comments": [
+            "2026-03-13 14:42 - Support: Performed initial triage.",
+            "2026-03-13 14:18 - LexiHealth (Customer): Provided the audit links.",
+        ],
+    }
+    (rec,), _bundle = C._byo_jira("jr-1", raw, Principals([], "redwood.com"))
+    assert [c["author_email"] for c in rec["comments"]] == [
+        "support@redwood.com",
+        "customer@lexihealth.example",
+    ]
+
+
+def test_a_document_whose_author_the_bench_never_names_says_so():
+    """The corpus is what the server answers from, so an unsigned document states that it is."""
+    raw = {"channel": "incidents", "messages": "", "first_message_ts": 1770000000}
+    (rec,), _bundle = C._byo_slack("sl-1", raw, Principals([], "redwood.com"))
+    assert rec["author_email"] == "unknown@redwood.com"
+
+
+def test_slack_replies_state_their_own_second():
+    """The bench's slack docs are one transcript with no per-message clock, so the second each reply
+    lands on is computed here rather than left for the loader: the corpus is what the server answers
+    from, and a time nobody wrote is a time nobody can check."""
+    raw = {
+        "channel": "incidents",
+        "participants": ["Ava Ng", "Bob Ito"],
+        "content_field_names": ["messages"],
+        "messages": "Ava Ng: 502s from the gateway?\nBob Ito: Looking now.\nAva Ng: Rolled back.",
+        "first_message_ts": 1770000000,
+    }
+    (rec,), _bundle = C._byo_slack("sl-2", raw, Principals([], "redwood.com"))
+    assert rec["created"] == 1770000000
+    assert [r["created"] for r in rec["replies"]] == [1770000001, 1770000002]
+
+
+def test_a_comment_states_the_minute_the_bench_wrote():
+    raw = {
+        "key": "SUP-2",
+        "project": "customer-support",
+        "summary": "Latency spike",
+        "description": "Body.",
+        "issue_type": "Support Request",
+        "status": "Open",
+        "reporter": "Aisha Patel",
+        "created_at": "2026-03-13",
+        "comments": [
+            "2026-03-13 14:05 - Aisha Patel (Support): Acknowledged.",
+            "2026-03-13 14:42 - Marcus Reed (Support): Triaged.",
+        ],
+    }
+    (rec,), _bundle = C._byo_jira("jr-2", raw, Principals([], "redwood.com"))
+    assert [c["created_ts"] for c in rec["comments"]] == [
+        C.to_epoch("2026-03-13T14:05"),
+        C.to_epoch("2026-03-13T14:42"),
+    ]
+
+
+def test_every_comment_states_a_time_even_when_the_bench_states_none():
+    raw = {
+        "key": "SUP-3",
+        "project": "customer-support",
+        "summary": "Latency spike",
+        "description": "Body.",
+        "issue_type": "Support Request",
+        "status": "Open",
+        "reporter": "Aisha Patel",
+        "created_at": "2026-03-13",
+        "comments": ["Aisha Patel: first", "Marcus Reed: second"],
+    }
+    (rec,), _bundle = C._byo_jira("jr-3", raw, Principals([], "redwood.com"))
+    base = C.to_epoch("2026-03-13")
+    assert [c["created_ts"] for c in rec["comments"]] == [base + 1, base + 2]
+
+
+def test_every_sentence_states_a_start_time():
+    raw = {
+        "meeting_title": "April all-hands",
+        "transcript": "[00:00] Ada Chief: welcome everyone.\n[00:35] Dana Rep: pipeline is up.",
+        "duration_minutes": 25,
+        "meeting_date": "2026-04-10",
+    }
+    (rec,), _bundle = C._byo_fireflies("ff-1", raw, Principals([], "redwood.com"))
+    assert rec["sentences"]
+    assert all(s["start_time"] is not None for s in rec["sentences"])
+
+
 def test_parse_gmail_thread():
     msgs = [
         "From: Vivek K <vivek_k@redwoodinference.com>\n"
@@ -381,12 +627,257 @@ def test_to_epoch_parses_bench_date_formats():
     assert C.to_epoch("not a date") is None
 
 
+@pytest.mark.parametrize(
+    "label,person,role",
+    [
+        ("Aisha Patel", "Aisha Patel", None),
+        ("Aisha Patel (Support)", "Aisha Patel", "Support"),
+        ("Support (Aisha Patel)", "Aisha Patel", "Support"),
+        ("(Dev Patel)", "Dev Patel", None),
+        ("Kira Thompson, Support", "Kira Thompson", "Support"),
+        ("(Kira Thompson, Support)", "Kira Thompson", "Support"),
+        ("Maya Singh (Accessibility) \u2014 2026-03-12", "Maya Singh", "Accessibility"),
+        ("| Aisha Patel", "Aisha Patel", None),
+        ("Support - Aisha Patel", "Aisha Patel", "Support"),
+        ("Support", None, "Support"),
+        ("Follow-ups", None, "Follow-ups"),
+        ("", None, None),
+    ],
+)
+def test_person_reference_reads_every_form_the_bench_writes(label, person, role):
+    assert C.person_reference(label) == (person, role)
+
+
+def test_person_reference_resolves_an_unambiguous_first_name_only():
+    first = {"jonas": "Jonas Meyer"}
+    assert C.person_reference("Jonas (ENG)", first_names=first) == ("Jonas Meyer", "ENG")
+    # 'Priya' names four employees, so it is absent from the index and stays a label.
+    assert C.person_reference("Priya", first_names=first) == (None, "Priya")
+
+
+def test_first_name_index_drops_a_first_name_two_employees_share():
+    P = Principals(
+        [
+            {"name": "Jonas Meyer", "email": "jonas@x.com", "dept_slug": "eng"},
+            {"name": "Priya Nair", "email": "priya.n@x.com", "dept_slug": "eng"},
+            {"name": "Priya Shah", "email": "priya.s@x.com", "dept_slug": "eng"},
+        ],
+        "x.com",
+    )
+    assert P.first_name_index() == {"jonas": "Jonas Meyer"}
+
+
+def test_parse_comment_lines_keeps_the_clock_out_of_the_author_and_the_body():
+    out = C.parse_comment_lines(
+        ["2026-03-13 14:05 - Aisha Patel (Support): Acknowledged ticket and requested logs."]
+    )
+    assert out == [
+        {
+            "date": "2026-03-13",
+            "time": "14:05",
+            "person": "Aisha Patel",
+            "role": "Support",
+            "body": "Acknowledged ticket and requested logs.",
+            "body_with_label": "Aisha Patel (Support): Acknowledged ticket and requested logs.",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "line,person,role",
+    [
+        ("2025-11-01 09:28 ET (Kira Thompson, Support): Acknowledged.", "Kira Thompson", "Support"),
+        ("[2026-03-13 09:22] Support (Aisha Patel): Triaged.", "Aisha Patel", "Support"),
+        ("2026-03-13T09:22 - SRE (Liam O'Connor): Disks healthy.", "Liam O'Connor", "SRE"),
+        ("SRE (Priya Singh): Raised a cardinality concern.", "Priya Singh", "SRE"),
+        ("Jonas Meyer (ENG): Implemented the buffer prototype.", "Jonas Meyer", "ENG"),
+        ("Follow-ups: chase the vendor.", None, "Follow-ups"),
+        # the other order: the stamp FOLLOWS the label, with a dash and no colon
+        ("IT (Jordan Liu) 2026-03-10 15:20 - Laptop received.", "Jordan Liu", "IT"),
+        ("Maya Patel (Reporter) 2026-03-10 15:05 - Filed.", "Maya Patel", "Reporter"),
+    ],
+)
+def test_parse_comment_lines_reads_every_stamp_the_bench_writes(line, person, role):
+    (out,) = C.parse_comment_lines([line])
+    assert (out["person"], out["role"]) == (person, role)
+
+
+@pytest.mark.parametrize(
+    "line,date,time,person,role,body",
+    [
+        # the separator is a colon and the stamp follows the label
+        (
+            "Sofia Patel (support) 2026-03-12 09:10: Error rate at 12%.",
+            "2026-03-12",
+            "09:10",
+            "Sofia Patel",
+            "support",
+            "Error rate at 12%.",
+        ),
+        # a clock with no date, colon separator: the label ran to the clock's colon and left
+        # "10: Thanks for reporting" as the body
+        (
+            "Support (Ethan Myers) 13:10: Thanks for reporting.",
+            None,
+            "13:10",
+            "Ethan Myers",
+            "Support",
+            "Thanks for reporting.",
+        ),
+        # a parenthesised stamp in the middle, the person after a dash
+        (
+            "Support (2026-03-01) - Maya Chen: Reported after IdP rotation.",
+            "2026-03-01",
+            None,
+            "Maya Chen",
+            "Support",
+            "Reported after IdP rotation.",
+        ),
+        # the line break is the separator: a first line that is a stamp and a name is a header
+        (
+            "2026-02-12 12:10 UTC \u2014 Benji Okafor\nFix plan:\n1) Rename the audit event.",
+            "2026-02-12",
+            "12:10",
+            "Benji Okafor",
+            None,
+            "Fix plan:\n1) Rename the audit event.",
+        ),
+    ],
+)
+def test_a_stamp_is_read_wherever_the_bench_puts_it(line, date, time, person, role, body):
+    """One rule for four shapes: the colon that separates a label from its body is the one NOT
+    flanked by digits, the label lives on the first line, and every stamp in it is the clock."""
+    (out,) = C.parse_comment_lines([line])
+    assert (out["date"], out["time"]) == (date, time)
+    assert (out["person"], out["role"]) == (person, role)
+    assert out["body"] == body
+
+
+@pytest.mark.parametrize(
+    "line,person,role,body",
+    [
+        # a dash ends the header, the way a colon does
+        (
+            "2026-03-10 09:25 \u2014 Customer (BrightWrite) \u2014 Submitted sample request IDs.",
+            None,
+            "Customer (BrightWrite)",
+            "Submitted sample request IDs.",
+        ),
+        (
+            "2026-03-10 10:05 \u2014 SRE (Marco Diaz) \u2014 Noted commit latency spikes.",
+            "Marco Diaz",
+            "SRE",
+            "Noted commit latency spikes.",
+        ),
+        # angle brackets close their own label
+        (
+            "2026-03-13T14:28Z - <Priya Kapoor (SRE)> NVMe compaction found.",
+            "Priya Kapoor",
+            "SRE",
+            "NVMe compaction found.",
+        ),
+        # so does a table row's second pipe
+        (
+            "| Priya Nair (oncall) | Flushed the identity-proxy cache.",
+            "Priya Nair",
+            "oncall",
+            "Flushed the identity-proxy cache.",
+        ),
+        # a dash inside a sentence is not a separator: the line states no author
+        (
+            "rolled back the pool change - see the logs for detail",
+            None,
+            None,
+            "rolled back the pool change - see the logs for detail",
+        ),
+        # the author IS the sentence's subject, so taking it out would leave the sentence without
+        # one -- the whole line is body
+        (
+            "2026-03-13 02:21 UTC - Customer (LexiDocs) reported increased 502s.",
+            None,
+            None,
+            "Customer (LexiDocs) reported increased 502s.",
+        ),
+    ],
+)
+def test_a_header_ends_at_whatever_delimiter_the_bench_used(line, person, role, body):
+    (out,) = C.parse_comment_lines([line])
+    assert (out["person"], out["role"]) == (person, role)
+    assert out["body"] == body
+
+
+def test_a_label_never_spans_a_line_break():
+    """Searching the whole comment for the separator let the label swallow the body's first line:
+    `… — Benji Okafor` + `Fix plan:` gave the label "Benji Okafor Fix plan" and a body at `1) …`."""
+    (out,) = C.parse_comment_lines(["A B\nFix plan:\n1) do it"])
+    assert out["body"].startswith("Fix plan:")
+
+
+def test_a_url_is_not_a_label_separator():
+    """`https:` is a colon a line that names nobody carries."""
+    (out,) = C.parse_comment_lines(["See https://redwood.example/runbook for the steps"])
+    assert (out["person"], out["role"]) == (None, None)
+    assert out["body"] == "See https://redwood.example/runbook for the steps"
+
+
+def test_a_stamp_where_a_name_would_go_is_read_as_the_clock():
+    """`Security (2026-03-12)` puts the date where the person goes. Read as an identity it became
+    part of an address -- `security.20260312@` -- and the date it states was lost with it."""
+    (out,) = C.parse_comment_lines(["Security (2026-03-12): patched the gateway."])
+    assert (out["date"], out["person"], out["role"]) == ("2026-03-12", None, "Security")
+    assert Principals([], "redwood.com").label_email(out["role"]) == "security@redwood.com"
+
+    # and the person is still found when the parenthetical holds one
+    (named,) = C.parse_comment_lines(["Support - Aisha Patel (2026-03-10): triaged."])
+    assert (named["date"], named["person"]) == ("2026-03-10", "Aisha Patel")
+
+
+def test_a_label_with_no_letter_in_it_names_nobody():
+    """A bare date left over from a stamp shape this parser does not know would otherwise become an
+    address that IS that date."""
+    P = Principals([], "redwood.com")
+    assert P.label_email("2026-03-07") == "unknown@redwood.com"
+    assert P.label_email("14:05") == "unknown@redwood.com"
+
+
+def test_a_stamp_after_its_label_is_still_a_stamp():
+    """`IT (Jordan Liu) 2026-03-10 15:20 - body` carries no colon, so reading it as `label: body`
+    took everything up to the clock's colon as the label and left the minutes at the head of the
+    body -- losing the date and the time with them."""
+    (out,) = C.parse_comment_lines(
+        ["IT (Jordan Liu) 2026-03-10 15:20 - Laptop received at front desk."]
+    )
+    assert (out["date"], out["time"]) == ("2026-03-10", "15:20")
+    assert out["person"] == "Jordan Liu"
+    assert out["body"] == "Laptop received at front desk."
+
+
+def test_parse_comment_lines_splits_a_blob_instead_of_iterating_its_characters():
+    blob = (
+        "2025-11-01 09:28 ET (Kira Thompson, Support): Requested the IAM policy.\n\n"
+        "2025-11-01 10:02 ET (Customer, Northpeak Health): Provided the excerpt."
+    )
+    out = C.parse_comment_lines(blob)
+    assert [c["person"] for c in out] == ["Kira Thompson", None]
+    assert out[1]["role"] == "Customer, Northpeak Health"
+    assert out[0]["body"] == "Requested the IAM policy."
+
+
+def test_parse_comment_lines_keeps_a_line_that_names_nobody_whole():
+    (out,) = C.parse_comment_lines(["rolled back the pool change"])
+    assert (out["person"], out["role"], out["body"]) == (None, None, "rolled back the pool change")
+
+
 def test_parse_jira_comments():
-    out = C.parse_jira_comments(
+    out = C.parse_comment_lines(
         ["2026-03-14 Jordan Kim: Filing request.", "2026-03-15 Priya Desai: On it."]
     )
-    assert out[0] == {"date": "2026-03-14", "name": "Jordan Kim", "body": "Filing request."}
-    assert out[1]["name"] == "Priya Desai"
+    assert (out[0]["date"], out[0]["person"], out[0]["body"]) == (
+        "2026-03-14",
+        "Jordan Kim",
+        "Filing request.",
+    )
+    assert out[1]["person"] == "Priya Desai"
 
 
 def test_parse_slack_transcript():
@@ -1435,7 +1926,7 @@ def test_linear_comment_shapes_are_all_parsed():
     """The shapes measured across all 165,243 bench comments. The date and the name are peeled
     off INDEPENDENTLY — an earlier whole-line-alternatives parse put the dash pattern first, and
     since it had no name group it swallowed the author of 60,282 comments into the body."""
-    parsed = erb.parse_linear_comments(
+    parsed = erb.parse_comment_lines(
         [
             "2025-02-18 - Maya Patel: Filed initial PRD.",  # dash + name: the most common
             "2025-02-18 - Created: initial hypothesis captured.",  # dash + a LABEL, not a person
@@ -1451,22 +1942,25 @@ def test_linear_comment_shapes_are_all_parsed():
         "2025-12-18",
         None,
     ]
-    assert [c["name"] for c in parsed] == [
+    # "Created" is one token, so it reads as a label rather than a name; the other four are
+    # name-shaped. Whether a name-shaped label is a PERSON is each source's own call to make.
+    assert [c["person"] for c in parsed] == [
         "Maya Patel",
-        "Created",
+        None,
         "Anjali Rao",
         "Naomi Feldman",
         "Implementation notes",
     ]
-    # `body` drops the prefix, `body_with_name` keeps it — the loader picks per comment, so an
+    assert parsed[1]["role"] == "Created"
+    # `body` drops the prefix, `body_with_label` keeps it — the loader picks per comment, so an
     # unresolvable label like "Created:" never gets deleted from the text.
     assert parsed[0]["body"] == "Filed initial PRD."
-    assert parsed[1]["body_with_name"] == "Created: initial hypothesis captured."
+    assert parsed[1]["body_with_label"] == "Created: initial hypothesis captured."
 
 
 def test_linear_comment_author_prefix_is_kept_when_the_name_is_not_a_person():
-    """ "Created:" and "Design review:" are labels, not attributions. If they don't resolve to
-    somebody, the body must keep them rather than silently losing the words."""
+    """ "Created:" and "Design review:" are labels, not attributions. The body keeps them rather
+    than silently losing the words, and the comment is attributed to nobody in particular."""
     conn = _conn()
     P = Principals(
         [
@@ -1495,8 +1989,9 @@ def test_linear_comment_author_prefix_is_kept_when_the_name_is_not_a_person():
     # resolved -> attributed, and the name is not repeated in the body
     assert rows[0]["author_email"] == "maya.patel@redwoodinference.com"
     assert rows[0]["body"] == "filed the PRD."
-    # unresolved -> unattributed, and the text is intact
-    assert rows[1]["author_email"] is None
+    # a label -> the corpus says so explicitly rather than leaving the loader to invent a sender,
+    # and the text is intact
+    assert rows[1]["author_email"] == "unknown@redwoodinference.com"
     assert rows[1]["body"] == "Created: initial hypothesis captured."
 
 
@@ -1533,16 +2028,18 @@ def test_linear_parent_issue_is_stored_for_resolution():
 
 
 def test_linear_comment_clock_prefix_is_not_read_as_an_author():
-    """`2025-02-18 09:15: rolled back` must not parse as author "09" with the body truncated to
-    "15: rolled back" — that both invents a person and loses text."""
-    parsed = erb.parse_linear_comments(["2025-02-18 09:15: rolled back"])
-    assert parsed[0]["name"] is None
-    assert parsed[0]["body"] == "09:15: rolled back"
+    """`2025-02-18 09:15: rolled back` states a stamp and then a body. Read as `label: body` the
+    author became "09" and the body was truncated to "15: rolled back" — inventing a person and
+    losing text. The stamp is the comment's clock, and what follows it is all body."""
+    (parsed,) = erb.parse_comment_lines(["2025-02-18 09:15: rolled back"])
+    assert (parsed["person"], parsed["role"]) == (None, None)
+    assert (parsed["date"], parsed["time"]) == ("2025-02-18", "09:15")
+    assert parsed["body"] == "rolled back"
 
 
 def test_linear_comment_string_instead_of_a_list_is_tolerated():
     """29 bench docs carry `comments` as a bare string."""
-    assert len(erb.parse_linear_comments("2025-02-18 - one note")) == 1
+    assert len(erb.parse_comment_lines("2025-02-18 - one note")) == 1
 
 
 def test_linear_comments_become_rows_with_real_dates():
@@ -1552,10 +2049,14 @@ def test_linear_comments_become_rows_with_real_dates():
     assert comments[1]["created_ts"] == erb.to_epoch("2025-02-20")
 
 
-def test_linear_comment_author_is_matched_never_minted():
-    """The `Name:` segment is far noisier than Jira's — 16,108 distinct strings, mostly labels
-    like "Design review" that `_person_like` would happily accept. A comment therefore matches
-    against the EXISTING roster and stays unattributed otherwise."""
+def test_linear_comment_author_is_never_minted_as_a_principal():
+    """The `Name:` segment is far noisier than Jira's — 16,108 distinct strings, and `_person_like`
+    accepts labels like "Design review" that name no person at all.
+
+    So a name the roster already holds becomes that principal; a name it does not becomes a
+    DISPLAY-ONLY address, which attributes the comment without minting an identity that could sign
+    in; and a label naming an activity is not a person at all.
+    """
     conn = _conn()
     P = Principals([], "redwoodinference.com")
     raw = {
@@ -1565,6 +2066,7 @@ def test_linear_comment_author_is_matched_never_minted():
         "comments": [
             "2025-02-20 Amaya Chen: known person, resolved from the issue's creator.",
             "2025-02-21 Design review: a label, not a person.",
+            "2025-02-22 Ravi Kulkarni: a person the roster does not hold.",
         ],
     }
     _load_one(conn, "linear", "dsid_c", raw, P)
@@ -1573,8 +2075,11 @@ def test_linear_comment_author_is_matched_never_minted():
         (served_id("linear", "dsid_c"),),
     ).fetchall()
     assert rows[0]["author_email"] == "amaya.chen@redwoodinference.com"
-    assert rows[1]["author_email"] is None
+    assert rows[1]["author_email"] == "unknown@redwoodinference.com"
     assert "design.review@redwoodinference.com" not in P.users
+    # named, unknown to the roster: attributed, but not an identity that can authenticate
+    assert rows[2]["author_email"] == "ravi.kulkarni@redwoodinference.com"
+    assert "ravi.kulkarni@redwoodinference.com" not in P.users
 
 
 def test_linear_undated_comment_stays_on_the_issues_clock():
@@ -1793,6 +2298,12 @@ def test_fireflies_speaker_resolution_tolerates_first_names_and_initials():
     assert erb._ff_resolve_speaker("Moderator - Ava", m) == "Ava Chen"  # role-prefixed
     assert erb._ff_resolve_speaker("Dana Ruiz", m) == "Dana Ruiz"  # role stripped from the decl
     assert erb._ff_resolve_speaker("Someone Else", m) is None
+    # `_ff_role_stripped` takes the HEAD of a declared attendee label; `person_reference` asks
+    # which SIDE names a person the directory could hold. On "Ari (Redwood AE)" those disagree --
+    # the parenthetical is the only side that reads as a full name -- so the two stay separate
+    # functions answering separate questions.
+    assert erb._ff_role_stripped("Ari (Redwood AE)") == "Ari"
+    assert erb.person_reference("Ari (Redwood AE)")[0] == "Redwood AE"
 
 
 def test_fireflies_anonymous_speakers_survive_when_nobody_is_recognized():
@@ -2430,14 +2941,14 @@ def test_byo_drive_subtypes_are_all_accepted_by_the_schema():
         }
         subtype, mime_type = erb._drive_type(raw, title)
         errs = record_errors(
-            {
-                "source_type": "google_drive",
-                "folder": "f",
-                "title": title,
-                "content": "x",
-                "subtype": subtype,
+            complete(
+                source_type="google_drive",
+                folder="f",
+                title=title,
+                content="x",
+                subtype=subtype,
                 **({"mime_type": mime_type} if mime_type else {}),
-            }
+            )
         )
         assert errs == [], f"{doc_type or title} -> subtype {subtype!r}: {errs}"
 

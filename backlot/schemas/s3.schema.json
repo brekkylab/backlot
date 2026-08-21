@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Human title (metadata; the key is the address)."
+      "description": "Human title (metadata; the key is the address).",
+      "minLength": 1
     },
     "key": {
       "type": "string",
@@ -28,7 +29,8 @@
     },
     "bucket": {
       "type": "string",
-      "description": "The bucket this object belongs to (default: the source_type)."
+      "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$",
+      "description": "The bucket this object belongs to, named the way S3 names one: 3-63 characters of lowercase letters, digits, dots and hyphens, beginning and ending with a letter or digit. It is the first half of a served object's identity and a host label in the virtual-hosted URL S3 hands back, so a slash, an uppercase letter or an underscore is refused -- none of them can be served, and a slash splits the address."
     },
     "group": {
       "type": [
@@ -106,10 +108,13 @@
     }
   },
   "required": [
-    "source_type",
+    "author_email",
+    "bucket",
     "content",
-    "title",
-    "key"
+    "created",
+    "key",
+    "source_type",
+    "title"
   ],
   "additionalProperties": false
 }

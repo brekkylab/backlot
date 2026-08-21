@@ -145,6 +145,34 @@ def grouping_col(source_type: str) -> str:
     return GROUPING[source_type][1]
 
 
+def mailbox_for(conn, email: str) -> str:
+    """The value the corpus spelled this address's Gmail mailbox as.
+
+    A mailbox is the one container a client never names: every other source takes its container
+    from the request path, while ``users/me/messages`` derives it from the caller's own address.
+    A corpus is free to state that mailbox as the address, as its local part, or as a slug of
+    either, so the address is resolved against the mailboxes the corpus DID state instead of
+    assuming one spelling. Falls back to the underscore slug — the spelling a name-derived
+    mailbox takes — so an address the corpus holds no mailbox for still scopes to nothing.
+    """
+    local = email.split("@")[0].lower()
+    candidates = [
+        email.lower(),
+        re.sub(r"[^a-z0-9]+", "_", local).strip("_"),
+        re.sub(r"[^a-z0-9]+", "-", local).strip("-"),
+        local,
+    ]
+    stated = {
+        row[0].lower(): row[0]
+        for row in conn.execute(
+            f"SELECT mailbox FROM gmail_mailboxes WHERE lower(mailbox) IN "
+            f"({','.join('?' * len(candidates))})",
+            candidates,
+        )
+    }
+    return next((stated[c] for c in candidates if c in stated), candidates[1])
+
+
 # source_type -> the column(s) a row is ADDRESSED by after import: its PRIMARY KEY, the key its
 # `<source>_acl` table and its FTS index carry, and what every cross-row reference points at.
 # There is no `doc_id` beside them — the dataset's own identifier seeds the value and is then
@@ -1685,6 +1713,12 @@ def gdrive_by_id(conn, file_id, visible_ids=None) -> sqlite3.Row | None:
     ).fetchone()
 
 
+# A Gmail thread is listed once, under its root. ``thread_id`` holds the ROOT'S OWN served id (see
+# the google router's ``_gmail_ids``), so a root is the row that is its own thread — or states no
+# thread at all, which a lone message does.
+_GMAIL_ROOT = " AND (thread_id IS NULL OR thread_id = id)"
+
+
 def count_documents(
     conn,
     source_type,
@@ -1693,11 +1727,13 @@ def count_documents(
     author_email=None,
     state=None,
     exclude_trashed=False,
+    roots_only=False,
 ) -> int:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
-    # exclude_trashed, which only gdrive_files has a column for. It has to track
-    # list_documents': a count that includes rows the listing drops makes nextPageToken lie.
+    # exclude_trashed, which only gdrive_files has a column for, and roots_only, which counts
+    # gmail THREADS rather than messages. It has to track list_documents': a count that includes
+    # rows the listing drops makes nextPageToken lie.
     tbl = table(source_type)
     sql = f"SELECT COUNT(*) FROM {tbl} WHERE 1=1"
     params: list = []
@@ -1707,6 +1743,8 @@ def count_documents(
         params.append(state)
     if exclude_trashed:
         sql += " AND COALESCE(trashed, 0) = 0"
+    if roots_only:
+        sql += _GMAIL_ROOT
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += clause
     params += cparams
@@ -2194,14 +2232,18 @@ def list_slack_channel_messages(conn, channel, visible_ids=None) -> list[sqlite3
 
 
 def list_gmail_in_range(
-    conn, mailbox, ts_lo, ts_hi, visible_ids=None, limit=100_000, offset=0
+    conn, mailbox, ts_lo, ts_hi, visible_ids=None, limit=100_000, offset=0, roots_only=False
 ) -> list[sqlite3.Row]:
     """Gmail messages whose ``created_ts`` is in ``[ts_lo, ts_hi)`` (either bound may be None for
     open-ended), newest first. The SQL date filter for a date-scoped listing (``ls /gmail/<label>/
     <date>``): without it the endpoint materialized the WHOLE mailbox (~100k rows) and filtered in
-    Python. gmail ``created_ts`` is fully populated, so this covers every message."""
+    Python. gmail ``created_ts`` is fully populated, so this covers every message.
+
+    ``roots_only`` narrows it to one row per thread, which is what ``threads.list`` lists."""
     sql = "SELECT * FROM gmail_messages WHERE 1=1"
     params: list = []
+    if roots_only:
+        sql += _GMAIL_ROOT
     if ts_lo is not None:
         sql += " AND created_ts >= ?"
         params.append(ts_lo)

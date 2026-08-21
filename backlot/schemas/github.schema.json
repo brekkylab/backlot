@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Document title (email subject / file name / issue title / page title)."
+      "description": "Document title (email subject / file name / issue title / page title).",
+      "minLength": 1
     },
     "doc_id": {
       "type": "string",
@@ -23,7 +24,8 @@
     },
     "repo": {
       "type": "string",
-      "description": "The repo this document belongs to (default: the source_type)."
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "description": "The repo this document belongs to, as the API's bare `name` -- `gateway`, not `acme/gateway`. The owner is a path segment of its own, supplied from the org this mock serves, and `full_name` is composed from the two; a value that carries the owner is served as `name` verbatim and appears in `full_name` twice. GitHub's own charset for a repository name is the constraint, so a slash or a space is refused."
     },
     "group": {
       "type": [
@@ -82,8 +84,11 @@
       "description": "subtype='file' only: which SNAPSHOT of `path` this row is — a commit sha, a branch, or any label the corpus chooses. A file is addressed by (repo, path), so several rows may state one path; `ref` is what tells two of them apart. Omitted, the row's `created` is the discriminator and the newest snapshot is the one served, so a corpus recording one edit per date needs no ref. State one when two snapshots share a `created`, or to name the change they came from."
     },
     "state": {
-      "type": "string",
-      "description": "open | closed."
+      "enum": [
+        "open",
+        "closed"
+      ],
+      "description": "The issue/pull state GitHub reports. A merge is `merged_at`, not a third state."
     },
     "labels": {
       "type": "array",
@@ -246,7 +251,11 @@
             ]
           }
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "required": [
+          "author_email",
+          "created_ts"
+        ]
       }
     },
     "number": {
@@ -256,8 +265,11 @@
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
+    "created",
+    "repo",
+    "source_type",
     "title"
   ],
   "allOf": [
@@ -275,6 +287,22 @@
       "then": {
         "required": [
           "path"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "subtype": {
+            "not": {
+              "const": "file"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "state"
         ]
       }
     }

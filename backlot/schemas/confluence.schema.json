@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Document title (email subject / file name / issue title / page title)."
+      "description": "Document title (email subject / file name / issue title / page title).",
+      "minLength": 1
     },
     "doc_id": {
       "type": "string",
@@ -161,13 +162,20 @@
             ]
           }
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "required": [
+          "author_email",
+          "created_ts"
+        ]
       }
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
+    "created",
+    "source_type",
+    "space",
     "title"
   ],
   "additionalProperties": false

@@ -133,9 +133,12 @@
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
-    "title"
+    "created",
+    "object_type",
+    "properties",
+    "source_type"
   ],
   "additionalProperties": false
 }

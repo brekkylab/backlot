@@ -38,6 +38,8 @@ from backlot import serve_or_connect
 
 CORPUS = [
     {
+        "author_email": "ava@acme.com",
+        "created": "2026-02-11T09:00:00Z",
         "source_type": "s3",
         "bucket": "payments",
         "key": "incidents/sev2.md",
@@ -45,6 +47,8 @@ CORPUS = [
         "content": "p95 checkout latency jumped to 2.1s after the payments migration; rolling back.",
     },
     {
+        "author_email": "ava@acme.com",
+        "created": "2025-12-05T09:00:00Z",
         "source_type": "s3",
         "bucket": "runbooks",
         "key": "oncall/checkout.md",

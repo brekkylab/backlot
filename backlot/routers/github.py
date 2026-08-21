@@ -250,12 +250,12 @@ def _issue_qual_match(row, quals: dict) -> bool:
             return False
         if v == "pr" and row["kind"] != "pull_request":
             return False
-        if v in ("open", "closed") and (row["state"] or "open") != v:
+        if v in ("open", "closed") and row["state"] != v:
             return False
         if v == "merged" and not row["merged_at"]:
             return False
     for v in quals.get("state", []):
-        if (row["state"] or "open") != v.lower():
+        if row["state"] != v.lower():
             return False
     for v in quals.get("label", []):
         if v.lower() not in [x.lower() for x in store.jcol(row, "labels")]:
@@ -1340,7 +1340,7 @@ def _shared_obj(conn, owner: str, repo: str, row, api_base: str, version: str) -
     number = _issue_number(row)
     iid = synth.jira_numeric_id(_seed(row))  # a stable large numeric db id (≠ number)
     is_pr = row["kind"] == "pull_request"
-    state = row["state"] or "open"
+    state = row["state"]
     assignees = [_gh_user(a, api_base) for a in store.jcol(row, "assignees")]
     issue_url = f"{api_base}/repos/{owner}/{repo}/issues/{number}"
     obj = {

@@ -292,11 +292,9 @@ def _user(email: str | None, display: str | None, info) -> dict | None:
     }
 
 
-def _state(name: str | None, team: str, info) -> dict:
-    """``WorkflowState`` is non-null on an issue, so a row with no recorded state still gets one —
-    "Todo", Linear's own bucket for "created but not begun". States are per-team in Linear, so
-    both the id and the back-reference carry the team."""
-    name = name or "Todo"
+def _state(name: str, team: str, info) -> dict:
+    """An issue's ``WorkflowState``. States are per-team in Linear, so both the id and the
+    back-reference carry the team."""
     created = synth.rfc3339(synth.epoch(f"linear-state:{team}:{name}"))
     return {
         "id": synth.linear_state_id(name, team),

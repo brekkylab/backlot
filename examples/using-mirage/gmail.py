@@ -41,6 +41,7 @@ MAILBOX_OWNER = f"{MAILBOX}@acme.com"
 
 CORPUS = [
     {
+        "created": "2026-01-20T16:00:00Z",
         "source_type": "gmail",
         "mailbox": MAILBOX,
         "title": "Q1 board deck draft",
@@ -48,6 +49,7 @@ CORPUS = [
         "author_email": MAILBOX_OWNER,
     },
     {
+        "created": "2026-01-20T18:30:00Z",
         "source_type": "gmail",
         "mailbox": MAILBOX,
         "title": "Re: Q1 board deck draft",

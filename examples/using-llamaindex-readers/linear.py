@@ -33,6 +33,7 @@ from backlot.integrations.llamaindex import patch_linear_at
 
 CORPUS = [
     {
+        "created": "2026-02-18T09:00:00Z",
         "source_type": "linear",
         "doc_id": "lin-kv",
         "team": "engineering",
@@ -51,12 +52,14 @@ CORPUS = [
         "assigneeName": "Diego Martinez",
         "comments": [
             {
+                "created_ts": "2026-02-18T10:00:00Z",
                 "content": "Residency bands cut peak memory 20%.",
                 "author_email": "diego.martinez@acme.com",
             }
         ],
     },
     {
+        "created": "2026-03-01T10:00:00Z",
         "source_type": "linear",
         "doc_id": "lin-batch",
         "team": "engineering",
@@ -74,6 +77,7 @@ CORPUS = [
     },
     # Unassigned on purpose: it is what the `assignee: {null: false}` filter below exists for.
     {
+        "created": "2026-02-10T18:10:00Z",
         "source_type": "linear",
         "doc_id": "lin-triage",
         "team": "engineering",

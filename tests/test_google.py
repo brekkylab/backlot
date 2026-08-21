@@ -15,6 +15,7 @@ from urllib.parse import quote
 import httpx
 import jwt
 import pytest
+import yaml
 
 from backlot import oauth, store
 from backlot.config import Settings
@@ -124,6 +125,49 @@ def _a_gmail_row(ro_conn):
     return ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
 
 
+@pytest.mark.parametrize("mailbox", ["ava", "ava@acme.com"])
+def test_a_message_with_no_recipient_serves_no_to_header(tmp_path, mailbox):
+    """Real Gmail returns the headers a message has. RFC 5322 allows one with no destination field
+    at all -- a Bcc-only send -- so inventing a To makes a case this mock could never reproduce.
+    `Delivered-To` keeps its default: a receiving MTA really does add it.
+
+    The mailbox is stated both ways a corpus states one -- a slug and the owner's address -- because
+    the address is what the CALLER is known by, and `users/me/messages` has nothing but that address
+    to find the mailbox with."""
+    from tests._helpers import build_corpus, client_for, complete, served_id
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            complete(
+                "gmail",
+                doc_id="gm-no-to",
+                mailbox=mailbox,
+                title="Bcc-only note",
+                content="For the archive.",
+                author_email="ava@acme.com",
+                created="2026-02-11T08:00:00Z",
+            )
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    ava = next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    # A second client over a different DB in this module, so the app is re-imported: the
+    # lifespan writes its connection onto module-level state (see `client_for`).
+    with client_for(settings, reload=True) as c:
+        admin = {"authorization": "Bearer admin-service-token"}
+        body = c.get(
+            f"/gmail/v1/users/me/messages/{served_id('gmail', 'gm-no-to')}", headers=admin
+        ).json()
+        owned = c.get(
+            "/gmail/v1/users/me/messages", headers={"authorization": f"Bearer {ava}"}
+        ).json()
+    headers = {h["name"]: h["value"] for h in body["payload"]["headers"]}
+    assert "To" not in headers
+    assert headers["Delivered-To"] == "ava@acme.com"
+    assert [m["id"] for m in owned["messages"]] == [served_id("gmail", "gm-no-to")]
+
+
 def test_gmail_messages_list_serves_hex_ids(client, admin_h):
     """The ids a client receives must look like Gmail's, not like the corpus's dsids: `dsid_…` is
     not hex, so real Gmail would call it an invalid id value.
@@ -197,6 +241,29 @@ def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
     # `thread_id` holds the ROOT'S OWN served id — no re-derivation on either side.
     assert m["threadId"] == row["thread_id"]
     assert m["id"] != m["threadId"]
+
+
+def test_gmail_threads_list_is_the_mailbox_searched_or_not(client, tokens):
+    """One listing, one scope. `threads.list` counted the threads the caller had WRITTEN in, while
+    `threads.list?q=` filtered the caller's MAILBOX — and passed the caller's address where a
+    mailbox name goes, so a search of one's own mail came back empty."""
+    h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+    plain = client.get("/gmail/v1/users/me/threads", headers=h).json()
+    searched = client.get("/gmail/v1/users/me/threads", headers=h, params={"q": "gateway"}).json()
+    thread = served_id("gmail", "gm-thread-root")
+    assert thread in [t["id"] for t in plain["threads"]]
+    assert [t["id"] for t in searched["threads"]] == [thread]
+    # A reply is not a thread of its own, and a thread several of whose messages match is listed once.
+    assert served_id("gmail", "gm-thread-reply") not in [t["id"] for t in plain["threads"]]
+    assert plain["resultSizeEstimate"] == len(plain["threads"])
+    # Two messages, one thread — so the two totals are two numbers, in the profile and on the label.
+    profile = client.get("/gmail/v1/users/me/profile", headers=h).json()
+    inbox = client.get("/gmail/v1/users/me/labels/INBOX", headers=h).json()
+    assert profile["messagesTotal"] > profile["threadsTotal"] == len(plain["threads"])
+    assert (inbox["messagesTotal"], inbox["threadsTotal"]) == (
+        profile["messagesTotal"],
+        profile["threadsTotal"],
+    )
 
 
 def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_conn):

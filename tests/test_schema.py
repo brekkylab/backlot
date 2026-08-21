@@ -84,6 +84,28 @@ def test_github_state_is_only_what_the_api_returns(state, ok):
 
 
 @pytest.mark.parametrize(
+    "repo,ok",
+    [
+        ("gateway", True),
+        ("redwood-sdk-go", True),
+        ("core_payments", True),
+        ("api.v2", True),
+        ("douro/core-payments", False),
+        ("has space", False),
+    ],
+)
+def test_a_github_repo_is_a_name_not_an_owner_qualified_path(repo, ok):
+    """`repo` is the API's bare `name`. The owner is a path segment of its own, which the router
+    supplies from the org it serves, and `full_name` is composed from the two. A value carrying the
+    owner is served as `name` verbatim and lands in `full_name` twice -- `douro/douro/core-payments`
+    -- taking `html_url` and every URL template with it, and `/repos/{owner}/{repo}` never finds the
+    row again. GitHub's own name charset is the check, so a space is refused for the same reason.
+    """
+    errors = _first_error({"source_type": "github", "repo": repo})
+    assert (errors == []) is ok
+
+
+@pytest.mark.parametrize(
     "source_type,container",
     sorted((src, store.grouping_col(src)) for src in store.SOURCE_TABLE),
 )
@@ -800,6 +822,25 @@ def test_every_record_the_docs_show_would_load():
     assert bad == {}
 
 
+def _module_constants(tree, names) -> dict:
+    """The module-level literal assignments among `names`, so a corpus is read with the values its
+    own example uses. Anything not a literal -- a call, an f-string, a value built at import --
+    stays absent and keeps its placeholder."""
+    import ast
+
+    out = {}
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        for target in stmt.targets:
+            if getattr(target, "id", None) in names:
+                try:
+                    out[target.id] = ast.literal_eval(stmt.value)
+                except (ValueError, SyntaxError):
+                    pass
+    return out
+
+
 def _inline_corpora():
     """Every inline `CORPUS` literal under examples/, as (path, records).
 
@@ -818,14 +859,15 @@ def _inline_corpora():
             if not any(getattr(t, "id", None) == "CORPUS" for t in node.targets):
                 continue
             names = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+            # The names an example interpolates are its own module constants -- a bucket, a repo, a
+            # mailbox owner's address -- so read them off the module. Standing one address-shaped
+            # string in for all of them satisfied `format: email` but not the constraints a
+            # container carries: it put an address in `repo`, where the charset refuses one, and a
+            # value no example writes is a value no example is checked on.
+            scope = dict.fromkeys(names, "placeholder@example.com") | _module_constants(tree, names)
             try:
-                # The names an example interpolates are its own module constants -- a bucket, a
-                # repo, a mailbox owner's address. Standing in an address-shaped string for all of
-                # them keeps `format: email` satisfied wherever one of them is an author.
                 corpus = eval(  # noqa: S307
-                    compile(ast.Expression(node.value), "<corpus>", "eval"),
-                    {},
-                    dict.fromkeys(names, "placeholder@example.com"),
+                    compile(ast.Expression(node.value), "<corpus>", "eval"), {}, scope
                 )
             except Exception:
                 continue

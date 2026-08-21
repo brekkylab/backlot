@@ -24,7 +24,8 @@
     },
     "repo": {
       "type": "string",
-      "description": "The repo this document belongs to (default: the source_type)."
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "description": "The repo this document belongs to, as the API's bare `name` -- `gateway`, not `acme/gateway`. The owner is a path segment of its own, supplied from the org this mock serves, and `full_name` is composed from the two; a value that carries the owner is served as `name` verbatim and appears in `full_name` twice. GitHub's own charset for a repository name is the constraint, so a slash or a space is refused."
     },
     "group": {
       "type": [

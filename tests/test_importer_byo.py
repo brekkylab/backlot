@@ -4889,7 +4889,7 @@ _ID_MAP_CORPUS = [
         **{
             "source_type": "github",
             "doc_id": "gh-stated",
-            "repo": "acme/app",
+            "repo": "app",
             "number": 7,
             "title": "stated",
             "content": "a",
@@ -4900,7 +4900,7 @@ _ID_MAP_CORPUS = [
         **{
             "source_type": "github",
             "doc_id": "gh-keyless",
-            "repo": "acme/app",
+            "repo": "app",
             "title": "keyless",
             "content": "b",
             "author_email": "a@x.com",
@@ -5010,7 +5010,7 @@ def test_every_document_lands_in_the_id_map_under_its_served_key(tmp_path):
             assert row[0] == 1, (src, did, key)
 
     # A stated id is served verbatim; the map must agree.
-    assert docs["github"]["gh-stated"] == {"repo": "acme/app", "number": 7}
+    assert docs["github"]["gh-stated"] == {"repo": "app", "number": 7}
     assert docs["s3"]["o1"] == {"bucket": "eng", "key": "docs/readme.md"}
 
 

@@ -245,7 +245,19 @@ params = StdioServerParameters(command=sys.executable, args=[
 ])
 ```
 
-Either way an agent then calls `session.list_tools()` and retrieves. Runnable agents for both LLM backends (Anthropic + OpenAI), one file per service, are in [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/).
+And for the two sources with no REST surface at all — Linear and Fireflies, which are GraphQL-only —
+a **GraphQL→MCP bridge** reads the endpoint's own introspection and turns each root `Query` field
+into a typed tool, arguments and selection set derived from the schema:
+
+```python
+# examples/using-mcp-with-agents/linear.py — GraphQL-only, so /openapi.json describes nothing
+params = StdioServerParameters(command=sys.executable, args=[
+    "examples/using-mcp-with-agents/_graphql_bridge.py",
+    "--source", "linear", "--base-url", mock.base_url, "--token", mock.token, "--depth", "1",
+])
+```
+
+Any of the three ways, an agent then calls `session.list_tools()` and retrieves. Runnable agents for both LLM backends (Anthropic + OpenAI), one file per service, are in [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/).
 
 ### LlamaIndex readers
 

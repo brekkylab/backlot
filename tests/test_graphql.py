@@ -13,11 +13,12 @@ import json
 import pytest
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
-from graphql import GraphQLError
+from graphql import GraphQLError, parse, validate
 from starlette.testclient import TestClient
 
 from backlot import auth, pagination, store
-from backlot.graphql import engine
+from backlot.graphql import engine, mcp_tools
+from tests._helpers import selected_fields
 
 SDL = """
 type Query {
@@ -393,3 +394,201 @@ def test_acl_filters_results_through_the_resolver_context(acme_client, tokens):
     # cf-comp is visibility=group on `people`; ava is engineering, hana is people.
     assert _titles(ava) == {"Engineering Handbook", "On-call Runbook"}
     assert "Compensation Bands 2026" in _titles(hana)
+
+
+# --- MCP tool derivation --------------------------------------------------------
+# `backlot.graphql.mcp_tools` turns an introspection result into one MCP tool per root Query
+# field — how the GraphQL-only sources get the typed toolset the REST sources get from
+# `/openapi.json`, which describes nothing here beyond "POST a document".
+#
+# A second throwaway schema, because these rules need shapes the SDL above has no reason to
+# carry: a Relay connection, a nested connection, a self-referential input, a field whose
+# argument is required, and object nesting deeper than the depth budget. That the derived
+# documents validate against a *vendor's* schema is asserted in the per-source files.
+
+MCP_SDL = """
+scalar DateTime
+
+enum Order { asc desc }
+
+input NameComparator { eq: String, contains: String }
+
+input GadgetFilter {
+  name: NameComparator
+  createdAt: DateTime
+  and: [GadgetFilter!]
+}
+
+type Query {
+  gadget(id: ID!): Gadget!
+  gadgets(first: Int, after: String, filter: GadgetFilter, order: Order): GadgetConnection!
+  "Loose notes, newest first."
+  notes(ids: [ID!], limit: Int): [Note]
+}
+
+type GadgetConnection { nodes: [Gadget!]!, pageInfo: PageInfo! }
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+type Gadget {
+  id: ID!
+  name: String!
+  createdAt: DateTime
+  owner: Owner
+  metrics: Metrics
+  parent: Gadget
+  notes: NoteConnection!
+  audit(token: String!): Audit
+}
+
+type Owner { id: ID!, email: String, team: Team }
+type Team { id: ID!, key: String, lead: Owner }
+type Metrics { latency: Latency }
+type Latency { p95: Float }
+type NoteConnection { nodes: [Note!]!, pageInfo: PageInfo! }
+type Note { id: ID!, body: String }
+type Audit { id: ID! }
+"""
+
+
+def _derive(depth: int = 2, sdl: str = MCP_SDL) -> dict[str, mcp_tools.Tool]:
+    payload = engine.Engine(sdl).execute(mcp_tools.INTROSPECTION_QUERY).payload
+    return {t.name: t for t in mcp_tools.derive_tools(payload, depth=depth)}
+
+
+@pytest.fixture(scope="module")
+def tools() -> dict[str, mcp_tools.Tool]:
+    return _derive()
+
+
+def test_one_tool_per_root_query_field(tools):
+    assert set(tools) == {"gadget", "gadgets", "notes"}
+
+
+def test_a_tool_asks_for_exactly_its_own_root_field(tools):
+    assert selected_fields(tools["gadgets"].document) == {"gadgets"}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        pytest.param(("gadgets",), id="root"),
+        pytest.param(("gadgets", "nodes", "notes"), id="nested"),
+    ],
+)
+def test_a_connection_is_transparent_wherever_it_appears(tools, path):
+    assert selected_fields(tools["gadgets"].document, *path) == {"nodes", "pageInfo"}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        pytest.param(("gadgets", "pageInfo"), id="root"),
+        pytest.param(("gadgets", "nodes", "notes", "pageInfo"), id="nested"),
+    ],
+)
+def test_page_info_survives_so_truncation_is_visible(tools, path):
+    """A nested page cannot be advanced — there is no argument to carry a cursor into it — so
+    `pageInfo` is the only thing standing between a partial answer and a wrong one."""
+    assert selected_fields(tools["gadgets"].document, *path) == {
+        "hasNextPage",
+        "hasPreviousPage",
+        "startCursor",
+        "endCursor",
+    }
+
+
+@pytest.mark.parametrize(
+    "field, why",
+    [
+        ("parent", "the type is already on the path"),
+        ("audit", "its argument is required, so the generator cannot fill it in"),
+    ],
+)
+def test_a_field_the_generator_cannot_fill_in_is_left_out(tools, field, why):
+    assert field not in selected_fields(tools["gadgets"].document, "gadgets", "nodes"), why
+
+
+@pytest.mark.parametrize(
+    "depth, path, expected",
+    [
+        # A leaf is always selected; an object is followed while the budget lasts.
+        (2, ("gadgets", "nodes"), {"id", "name", "createdAt", "owner", "metrics", "notes"}),
+        (2, ("gadgets", "nodes", "owner"), {"id", "email", "team"}),
+        # `Team.lead` is a third object level, one past a budget of 2.
+        (2, ("gadgets", "nodes", "owner", "team"), {"id", "key"}),
+        (2, ("gadgets", "nodes", "metrics", "latency"), {"p95"}),
+        # At budget 1 `Owner` keeps its leaves but loses `team` — and `metrics` goes with it,
+        # because `Metrics` is all objects, so it would select nothing and an empty selection
+        # set is not a legal document.
+        (1, ("gadgets", "nodes"), {"id", "name", "createdAt", "owner", "notes"}),
+        (1, ("gadgets", "nodes", "owner"), {"id", "email"}),
+        # A connection spends a level like any other object, and its nodes get what is left.
+        (1, ("gadgets", "nodes", "notes", "nodes"), {"id", "body"}),
+    ],
+)
+def test_the_depth_budget_bounds_the_selection(depth, path, expected):
+    assert selected_fields(_derive(depth)["gadgets"].document, *path) == expected
+
+
+def test_every_argument_becomes_a_variable(tools):
+    declared = parse(tools["gadgets"].document).definitions[0].variable_definitions
+    assert {v.variable.name.value for v in declared} == {"first", "after", "filter", "order"}
+
+
+def test_a_required_argument_is_required_in_the_input_schema(tools):
+    assert tools["gadget"].input_schema["required"] == ["id"]
+    assert "required" not in tools["gadgets"].input_schema
+
+
+def test_scalar_and_enum_arguments_map_to_json_schema(tools):
+    props = tools["gadgets"].input_schema["properties"]
+    assert props["first"]["type"] == "integer"
+    assert props["after"]["type"] == "string"
+    assert props["order"]["enum"] == ["asc", "desc"]
+
+
+def test_a_list_argument_is_an_array_of_its_item_type(tools):
+    assert tools["notes"].input_schema["properties"]["ids"] == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+
+
+def test_an_input_object_expands_under_the_same_path_guard(tools):
+    filt = tools["gadgets"].input_schema["properties"]["filter"]
+    assert filt["type"] == "object"
+    # nested input objects expand, so the comparator keys are visible rather than guessed
+    assert set(filt["properties"]["name"]["properties"]) == {"eq", "contains"}
+    assert filt["properties"]["createdAt"]["type"] == "string"  # a custom scalar is a string
+    assert "and" not in filt["properties"]  # [GadgetFilter!], already on the path
+
+
+def test_a_connection_is_recognised_by_shape_not_by_type_name():
+    """Carrying both `nodes` and `pageInfo` is the whole test, and the page type's name is read
+    off the field — nothing requires a schema to spell it `PageInfo`."""
+    tools = _derive(sdl=MCP_SDL.replace("PageInfo", "Cursorish"))
+    assert selected_fields(tools["gadgets"].document, "gadgets") == {"nodes", "pageInfo"}
+    assert "hasNextPage" in selected_fields(tools["gadgets"].document, "gadgets", "pageInfo")
+
+
+def test_a_tool_is_dropped_when_a_required_argument_cannot_be_described():
+    """`Opaque` has nothing describable in it, so there is no schema to offer for `bag` — and
+    emitting the tool anyway would send a document missing a required argument."""
+    sdl = MCP_SDL.replace("notes(ids: [ID!], limit: Int)", "notes(bag: Opaque!, limit: Int)")
+    assert "notes" not in _derive(sdl=sdl + "\ninput Opaque { self: Opaque }\n")
+
+
+def test_a_derived_document_validates_against_the_schema(tools):
+    schema = engine.Engine(MCP_SDL).schema
+    for tool in tools.values():
+        assert not validate(schema, parse(tool.document)), tool.name
+
+
+def test_a_tool_carries_its_fields_description(tools):
+    assert "Loose notes, newest first." in tools["notes"].description

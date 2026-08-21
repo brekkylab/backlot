@@ -21,6 +21,7 @@ copied setup is the lesser evil.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import subprocess
 
@@ -31,6 +32,7 @@ pytest.importorskip("mcp")
 
 from backlot import store, synth  # noqa: E402
 from backlot.acl import Acl  # noqa: E402
+from backlot.graphql import mcp_tools  # noqa: E402
 
 
 def _docker_available() -> bool:
@@ -374,6 +376,136 @@ def test_mcp_bridge_enforces_the_acl(
 
     assert reads(settings.admin_token), f"admin should read the {doc_source} document"
     assert not reads(user["token"]), f"{email} should be blocked from the {doc_source} document"
+
+
+# ------------------------------------------ Linear + Fireflies (GraphQL→MCP bridge)
+# The other two sources are GraphQL-only, so there is no OpenAPI operation to slice and the
+# bridge derives its tools from introspection instead (`backlot.graphql.mcp_tools`, unit-tested
+# in tests/test_graphql.py, with the per-vendor documents checked in test_linear.py /
+# test_fireflies.py). What is left to prove here is the same property the REST bridges prove:
+# the tool carries the caller's credential, so the mock's ACL decides what comes back.
+
+
+def _graphql_bridge_call(base, source, token, *, tool_name, args, ok_pred, depth) -> bool:
+    """Exercise the GraphQL→MCP bridge path WITHOUT touching ``examples/``.
+
+    Introspects the endpoint, derives its tools, and serves the one under test through an
+    in-memory FastMCP client. Like ``_bridge_call`` above, this **duplicates** the example
+    bridge's transport wiring rather than importing it; the logic worth testing is the
+    derivation, which lives in the app. Returns ``ok_pred`` over the tool's response text."""
+    import httpx
+    from fastmcp import Client, FastMCP
+    from fastmcp.tools import Tool
+    from fastmcp.tools.tool import ToolResult
+
+    endpoint = f"{base}/{source}/graphql"
+    headers = {"Authorization": f"Bearer {token}"}
+    intro = httpx.post(
+        endpoint, json={"query": mcp_tools.INTROSPECTION_QUERY}, headers=headers, timeout=30
+    ).json()
+    spec = next(t for t in mcp_tools.derive_tools(intro, depth=depth) if t.name == tool_name)
+
+    class _Passthrough(Tool):
+        document: str
+
+        async def run(self, arguments):
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.post(
+                    endpoint,
+                    json={"query": self.document, "variables": arguments},
+                    headers=headers,
+                )
+            body = r.json()
+            failed = bool(body.get("errors")) and body.get("data") is None
+            return ToolResult(content=json.dumps(body), is_error=failed)
+
+    server = FastMCP()
+    server.add_tool(
+        _Passthrough(
+            name=spec.name,
+            description=spec.description,
+            parameters=spec.input_schema,
+            document=spec.document,
+        )
+    )
+
+    async def _go():
+        async with Client(server) as c:
+            res = await c.call_tool(spec.name, args)
+            return ok_pred("".join(getattr(b, "text", "") for b in res.content))
+
+    try:
+        return asyncio.run(_go())
+    except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
+        return False
+
+
+@pytest.mark.parametrize(
+    "source, tool_name, depth",
+    [
+        # depth 1 for linear and the default 2 for fireflies, which is what the launchers pass.
+        pytest.param("linear", "issue", 1, id="linear"),
+        pytest.param("fireflies", "transcript", 2, id="fireflies"),
+    ],
+)
+def test_mcp_graphql_bridge_enforces_the_acl(live_server, source, tool_name, depth):
+    """A transcript or issue the admin reads through the derived tool is unreadable for a
+    scoped user — a field error for Linear's non-null `Issue!`, a null for Fireflies."""
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    row, email = _restricted_doc(settings, user["token"], source)
+    assert row is not None, f"no {source} document is ACL-restricted from {email} in SAMPLE"
+
+    def reads(token):
+        return _graphql_bridge_call(
+            base,
+            source,
+            token,
+            tool_name=tool_name,
+            args={"id": row["id"]},
+            ok_pred=lambda t: row["title"] in t,
+            depth=depth,
+        )
+
+    assert reads(settings.admin_token), f"admin should read the {source} document"
+    assert not reads(user["token"]), f"{email} should be blocked from the {source} document"
+
+
+def test_mcp_graphql_bridge_round_trips_a_nested_filter(live_server):
+    """The payoff of expanding input objects into the tool's JSON Schema: `IssueFilter` reaches
+    the endpoint as a variable and narrows the result, and `pageInfo` comes back so the caller
+    can tell whether more remains."""
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    row = next(
+        iter(
+            store.connect_ro(settings.db_path).execute(
+                "SELECT title FROM linear_issues ORDER BY id LIMIT 1"
+            )
+        )
+    )
+    word = max(row["title"].split(), key=len)
+
+    def ok(text):
+        body = json.loads(text)["data"]["issues"]
+        titles = [n["title"] for n in body["nodes"]]
+        # every row matched, not merely some rows returned — an ignored filter would pass that
+        return (
+            bool(titles)
+            and all(word.lower() in t.lower() for t in titles)
+            and "hasNextPage" in body["pageInfo"]
+        )
+
+    assert _graphql_bridge_call(
+        base,
+        "linear",
+        settings.admin_token,
+        tool_name="issues",
+        args={"filter": {"title": {"containsIgnoreCase": word}}, "first": 5},
+        ok_pred=ok,
+        depth=1,
+    )
 
 
 def test_mcp_hubspot_bridge_search_tool(live_server):

@@ -268,6 +268,23 @@ def test_grouping_cols_per_source():
     assert store.grouping_col("fireflies") == "channel"
 
 
+@pytest.mark.parametrize(
+    "stated",
+    ["ava.chen@acme.com", "ava_chen", "ava-chen", "ava.chen"],
+)
+def test_a_mailbox_resolves_from_the_address_however_the_corpus_spelled_it(tmp_path, stated):
+    """The one container a client never names. Every other source takes its container from the
+    request path; `users/me/messages` has only the caller's address, so each spelling a corpus
+    uses for a mailbox -- the address, its local part, a slug of either -- has to lead back to it,
+    or the owner's own listing comes back empty."""
+    conn = store.connect_rw(tmp_path / "m.sqlite")
+    conn.execute("INSERT INTO gmail_mailboxes (mailbox, group_id) VALUES (?, NULL)", (stated,))
+    assert store.mailbox_for(conn, "ava.chen@acme.com") == stated
+    # A mailbox the corpus never stated keeps the name-derived spelling, so it scopes to nothing.
+    assert store.mailbox_for(conn, "no.one@acme.com") == "no_one"
+    conn.close()
+
+
 def test_comment_tables_only_where_supported():
     # jira/confluence/github/notion expose comments; slack/gmail/drive/s3 do not
     assert store.comment_table("jira") == "jira_comments"

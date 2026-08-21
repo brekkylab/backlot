@@ -205,15 +205,19 @@ def _mailbox_email(caller: Caller, user_id: str) -> str | None:
     return user_id if "@" in user_id else None
 
 
-def _mailbox_slug(caller: Caller, user_id: str) -> str | None:
-    """Resolve the requested mailbox to its container slug (the ``gmail_messages.mailbox`` value
-    the importer derived from the owner's name). None = all mailboxes (admin ``me``). A concrete
-    address (``me`` for a user, or an explicit email) maps its local-part to the slug so the WHOLE
-    mailbox — received and sent — is scoped, not just messages that address happened to author."""
+def _mailbox_address(mailbox: str) -> str:
+    """A mailbox's own address, for the ``Delivered-To`` a receiving MTA would have added.
+    A corpus that states the mailbox AS an address already carries its domain."""
+    return mailbox if "@" in mailbox else f"{mailbox}@{get_settings().org_domain}"
+
+
+def _mailbox_container(conn, caller: Caller, user_id: str) -> str | None:
+    """Resolve the requested mailbox to the ``gmail_messages.mailbox`` value it is stored under.
+    None = all mailboxes (admin ``me``). A concrete address (``me`` for a user, or an explicit
+    email) resolves to the WHOLE mailbox — received and sent — rather than to the messages that
+    address happened to author; ``store.mailbox_for`` is what knows how the corpus spelled it."""
     email = caller.email if user_id == "me" else (user_id if "@" in user_id else None)
-    if not email:
-        return None
-    return re.sub(r"[^a-z0-9]+", "_", email.split("@")[0].lower()).strip("_")
+    return store.mailbox_for(conn, email) if email else None
 
 
 def _service_email(request: Request) -> str:
@@ -236,7 +240,7 @@ async def gmail_profile(user_id: str, request: Request):
     email = _mailbox_email(caller, user_id) or caller.email or _service_email(request)
     ids = auth.visible_ids(request, caller)
     total = store.count_documents(
-        conn, "gmail", container=_mailbox_slug(caller, user_id), visible_ids=ids
+        conn, "gmail", container=_mailbox_container(conn, caller, user_id), visible_ids=ids
     )
     return {"emailAddress": email, "messagesTotal": total, "threadsTotal": total, "historyId": "1"}
 
@@ -281,7 +285,7 @@ async def gmail_labels(user_id: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     total = store.count_documents(
-        conn, "gmail", container=_mailbox_slug(caller, user_id), visible_ids=ids
+        conn, "gmail", container=_mailbox_container(conn, caller, user_id), visible_ids=ids
     )
     labels = [_label_obj(lid, total if lid == "INBOX" else 0) for lid in _SYSTEM_LABELS]
     return {"labels": labels}
@@ -508,7 +512,7 @@ async def gmail_messages_list(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    mailbox = _mailbox_slug(caller, user_id)  # container slug (None = all mailboxes)
+    mailbox = _mailbox_container(conn, caller, user_id)  # None = all mailboxes
     limit = _int(request, "maxResults", get_settings().default_page_size)
     offset = decode_cursor(request.query_params.get("pageToken"))
     q = request.query_params.get("q", "") or ""
@@ -676,7 +680,7 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
     headers = [
         {
             "name": "Delivered-To",
-            "value": row["to_addr"] or f"{row['mailbox']}@{get_settings().org_domain}",
+            "value": row["to_addr"] or _mailbox_address(row["mailbox"]),
         },
         {"name": "MIME-Version", "value": "1.0"},
         {"name": "Subject", "value": row["title"]},

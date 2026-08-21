@@ -145,6 +145,34 @@ def grouping_col(source_type: str) -> str:
     return GROUPING[source_type][1]
 
 
+def mailbox_for(conn, email: str) -> str:
+    """The value the corpus spelled this address's Gmail mailbox as.
+
+    A mailbox is the one container a client never names: every other source takes its container
+    from the request path, while ``users/me/messages`` derives it from the caller's own address.
+    A corpus is free to state that mailbox as the address, as its local part, or as a slug of
+    either, so the address is resolved against the mailboxes the corpus DID state instead of
+    assuming one spelling. Falls back to the underscore slug — the spelling a name-derived
+    mailbox takes — so an address the corpus holds no mailbox for still scopes to nothing.
+    """
+    local = email.split("@")[0].lower()
+    candidates = [
+        email.lower(),
+        re.sub(r"[^a-z0-9]+", "_", local).strip("_"),
+        re.sub(r"[^a-z0-9]+", "-", local).strip("-"),
+        local,
+    ]
+    stated = {
+        row[0].lower(): row[0]
+        for row in conn.execute(
+            f"SELECT mailbox FROM gmail_mailboxes WHERE lower(mailbox) IN "
+            f"({','.join('?' * len(candidates))})",
+            candidates,
+        )
+    }
+    return next((stated[c] for c in candidates if c in stated), candidates[1])
+
+
 # source_type -> the column(s) a row is ADDRESSED by after import: its PRIMARY KEY, the key its
 # `<source>_acl` table and its FTS index carry, and what every cross-row reference points at.
 # There is no `doc_id` beside them — the dataset's own identifier seeds the value and is then

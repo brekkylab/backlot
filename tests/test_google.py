@@ -15,6 +15,7 @@ from urllib.parse import quote
 import httpx
 import jwt
 import pytest
+import yaml
 
 from backlot import oauth, store
 from backlot.config import Settings
@@ -124,10 +125,15 @@ def _a_gmail_row(ro_conn):
     return ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
 
 
-def test_a_message_with_no_recipient_serves_no_to_header(tmp_path):
+@pytest.mark.parametrize("mailbox", ["ava", "ava@acme.com"])
+def test_a_message_with_no_recipient_serves_no_to_header(tmp_path, mailbox):
     """Real Gmail returns the headers a message has. RFC 5322 allows one with no destination field
     at all -- a Bcc-only send -- so inventing a To makes a case this mock could never reproduce.
-    `Delivered-To` keeps its default: a receiving MTA really does add it."""
+    `Delivered-To` keeps its default: a receiving MTA really does add it.
+
+    The mailbox is stated both ways a corpus states one -- a slug and the owner's address -- because
+    the address is what the CALLER is known by, and `users/me/messages` has nothing but that address
+    to find the mailbox with."""
     from tests._helpers import build_corpus, client_for, complete, served_id
 
     settings = build_corpus(
@@ -136,7 +142,7 @@ def test_a_message_with_no_recipient_serves_no_to_header(tmp_path):
             complete(
                 "gmail",
                 doc_id="gm-no-to",
-                mailbox="ops",
+                mailbox=mailbox,
                 title="Bcc-only note",
                 content="For the archive.",
                 author_email="ava@acme.com",
@@ -144,6 +150,8 @@ def test_a_message_with_no_recipient_serves_no_to_header(tmp_path):
             )
         ],
     )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    ava = next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
     # A second client over a different DB in this module, so the app is re-imported: the
     # lifespan writes its connection onto module-level state (see `client_for`).
     with client_for(settings, reload=True) as c:
@@ -151,9 +159,13 @@ def test_a_message_with_no_recipient_serves_no_to_header(tmp_path):
         body = c.get(
             f"/gmail/v1/users/me/messages/{served_id('gmail', 'gm-no-to')}", headers=admin
         ).json()
-    names = [h["name"] for h in body["payload"]["headers"]]
-    assert "To" not in names
-    assert "Delivered-To" in names
+        owned = c.get(
+            "/gmail/v1/users/me/messages", headers={"authorization": f"Bearer {ava}"}
+        ).json()
+    headers = {h["name"]: h["value"] for h in body["payload"]["headers"]}
+    assert "To" not in headers
+    assert headers["Delivered-To"] == "ava@acme.com"
+    assert [m["id"] for m in owned["messages"]] == [served_id("gmail", "gm-no-to")]
 
 
 def test_gmail_messages_list_serves_hex_ids(client, admin_h):

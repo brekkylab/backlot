@@ -228,14 +228,68 @@ _STANDARD_OBJECT_TYPES = frozenset(
 )
 
 
-def _known_type(request: Request, object_type: str) -> bool:
-    """Whether this object type exists at all — a standard CRM object, or a custom one the corpus
-    defines. Deliberately independent of the caller's ACL and of whether any record is visible: a
-    type whose every record the caller cannot read still exists and still returns an empty page."""
-    return (
-        object_type in _STANDARD_OBJECT_TYPES
-        or store.get_container(auth.conn(request), "hubspot", object_type) is not None
+# A standard object answers to its singular as well as its plural: HubSpot resolves the path
+# segment through its object-type registry, so `/crm/v3/objects/deal` reaches the same records as
+# `/crm/v3/objects/deals`. Measured against api.hubapi.com on 2026-08-21: with a key that
+# authenticates but holds no CRM scopes, the type is resolved BEFORE the scope check, so a
+# recognized type — either spelling, and an objectTypeId like `0-3` — answers 403 MISSING_SCOPES
+# while an unrecognized word answers 400 `{"status": "error", "message": "Unable to infer object
+# type from: nonsuch"}`. Spelled out rather than pluralized by rule: `companies` is not `company`
+# plus an `s`, and a wrong guess would invent a type no portal has.
+_SINGULAR = {
+    "contact": "contacts",
+    "company": "companies",
+    "deal": "deals",
+    "ticket": "tickets",
+    "line_item": "line_items",
+    "product": "products",
+    "quote": "quotes",
+    "note": "notes",
+    "email": "emails",
+    "meeting": "meetings",
+    "call": "calls",
+    "task": "tasks",
+    "feedback_submission": "feedback_submissions",
+}
+_PLURAL = {plural: singular for singular, plural in _SINGULAR.items()}
+# An objectTypeId (`0-3`), which this mock does not model: HubSpot answers a malformed one with its
+# own message rather than the infer-from-a-word one.
+_TYPE_ID = re.compile(r"\d+-\d+")
+
+
+def _aliases(object_type: str) -> list[str]:
+    """Every spelling of this object type — what was asked for, then the standard object's other
+    spelling. Order matters: a corpus that states both keeps the one the caller named."""
+    other = _SINGULAR.get(object_type) or _PLURAL.get(object_type)
+    return [object_type] if other is None else [object_type, other]
+
+
+def _resolve_type(request: Request, object_type: str) -> str | None:
+    """The spelling this object type's records are STORED under, or None if HubSpot would not
+    recognize the type at all.
+
+    A corpus states an object type in whichever spelling it likes — ERB writes `notes`, a converted
+    dataset commonly writes `note` — and the records have to be reachable under the vendor's own
+    path either way. Independent of the caller's ACL and of whether any record is visible: a
+    standard type whose every record the caller cannot read still exists, and still returns an
+    empty page rather than an error."""
+    conn = auth.conn(request)
+    for name in _aliases(object_type):
+        if store.get_container(conn, "hubspot", name) is not None:
+            return name
+    canonical = _SINGULAR.get(object_type, object_type)
+    return canonical if canonical in _STANDARD_OBJECT_TYPES else None
+
+
+def _unknown_type(object_type: str) -> JSONResponse:
+    """The 400 HubSpot answers a path segment it cannot resolve to a type with — measured, envelope
+    included: `status` and `message`, and no `category`."""
+    message = (
+        f"Invalid object or event type id: {object_type}"
+        if _TYPE_ID.fullmatch(object_type)
+        else f"Unable to infer object type from: {object_type}"
     )
+    return JSONResponse(status_code=400, content={"status": "error", "message": message})
 
 
 def _resolve_cursor(request: Request, after: str | None):
@@ -458,8 +512,9 @@ async def list_objects(object_type: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
-    if not _known_type(request, object_type):
-        return _error(404, f"Unable to infer object type from: {object_type}", "OBJECT_NOT_FOUND")
+    stored = _resolve_type(request, object_type)
+    if stored is None:
+        return _unknown_type(object_type)
     qp = request.query_params
     limit = _clamp(qp.get("limit"), 10, _PAGE_MAX)
     after_doc, err = _resolve_cursor(request, qp.get("after"))
@@ -467,7 +522,7 @@ async def list_objects(object_type: str, request: Request):
         return err
     rows = store.list_hubspot_objects(
         auth.conn(request),
-        object_type,
+        stored,
         after_id=after_doc,
         visible_ids=auth.visible_ids(request, caller),
         limit=limit + 1,
@@ -489,7 +544,7 @@ async def get_object(object_type: str, record_id: str, request: Request):
     # `id` is the PRIMARY KEY, so the ACL clause can only narrow "found" to "not found", never
     # redirect to a different row (see store.hubspot_by_id).
     row = store.hubspot_by_id(auth.conn(request), record_id, auth.visible_ids(request, caller))
-    if row is None or row["object_type"] != object_type:
+    if row is None or row["object_type"] not in _aliases(object_type):
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")
     return _record(row, _keep(request.query_params.get("properties")))
 
@@ -501,8 +556,9 @@ async def search_objects(object_type: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
-    if not _known_type(request, object_type):
-        return _error(404, f"Unable to infer object type from: {object_type}", "OBJECT_NOT_FOUND")
+    stored = _resolve_type(request, object_type)
+    if stored is None:
+        return _unknown_type(object_type)
     body = await json_body(request)
     limit = _clamp(body.get("limit"), 10, _PAGE_MAX)
     visible = auth.visible_ids(request, caller)
@@ -529,7 +585,7 @@ async def search_objects(object_type: str, request: Request):
     while True:
         batch = store.list_hubspot_objects(
             conn,
-            object_type,
+            stored,
             after_id=cursor,
             visible_ids=visible,
             limit=2000,
@@ -560,8 +616,9 @@ async def batch_read(object_type: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
-    if not _known_type(request, object_type):
-        return _error(404, f"Unable to infer object type from: {object_type}", "OBJECT_NOT_FOUND")
+    stored = _resolve_type(request, object_type)
+    if stored is None:
+        return _unknown_type(object_type)
     body = await json_body(request)
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     keep = _keep(body.get("properties"))
@@ -571,7 +628,7 @@ async def batch_read(object_type: str, request: Request):
         # One ACL-scoped query, not a resolve followed by a get_document refetch of the same
         # row -- see get_object's comment for why the collapse is safe.
         row = store.hubspot_by_id(conn, rid, visible)
-        if row is None or row["object_type"] != object_type:
+        if row is None or row["object_type"] not in _aliases(object_type):
             errors.append(
                 {
                     "status": "error",
@@ -609,7 +666,7 @@ async def list_associations(
     # One ACL-scoped query, not a resolve followed by a get_document refetch of the same row --
     # see get_object's comment for why the collapse is safe.
     row = store.hubspot_by_id(conn, record_id, visible)
-    if row is None or row["object_type"] != object_type:
+    if row is None or row["object_type"] not in _aliases(object_type):
         return _error(404, "resource not found", "OBJECT_NOT_FOUND")
     limit = _clamp(request.query_params.get("limit"), _ASSOC_PAGE_MAX, _ASSOC_PAGE_MAX)
     after_to, err = _resolve_cursor(request, request.query_params.get("after"))

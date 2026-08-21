@@ -6,6 +6,8 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import pytest
+
 from backlot import store
 from tests._helpers import crawl_hubspot, db_count, tiny_corpus, served_id
 
@@ -69,22 +71,50 @@ def test_hubspot_read_one_record(client, admin_h):
     assert got["createdAt"].endswith("Z")
 
 
-def test_hubspot_unknown_object_type_is_404(client, admin_h):
+def test_hubspot_unknown_object_type_is_400(client, admin_h):
     """A typo'd object type must not read as "this type has no records" — that silently turns a
     client bug into an empty result. An object type the caller simply cannot see any rows of is a
-    different case and still returns an empty page."""
+    different case and still returns an empty page.
+
+    Measured against api.hubapi.com on 2026-08-21 (a key that authenticates but holds no CRM
+    scopes, so a recognized type answers 403 and only an unrecognized one gets this far): the
+    status is 400, the envelope carries `status` and `message` and no `category`, and a malformed
+    objectTypeId gets a message of its own."""
     r = client.get("/hubspot/crm/v3/objects/widgets", headers=admin_h)
-    assert r.status_code == 404
-    assert (
-        client.post("/hubspot/crm/v3/objects/widgets/search", headers=admin_h, json={}).status_code
-        == 404
-    )
-    assert (
+    assert r.status_code == 400
+    assert r.json() == {"status": "error", "message": "Unable to infer object type from: widgets"}
+    for r in (
+        client.post("/hubspot/crm/v3/objects/widgets/search", headers=admin_h, json={}),
         client.post(
             "/hubspot/crm/v3/objects/widgets/batch/read", headers=admin_h, json={"inputs": []}
-        ).status_code
-        == 404
-    )
+        ),
+    ):
+        assert r.status_code == 400
+        assert r.json()["message"] == "Unable to infer object type from: widgets"
+    r = client.get("/hubspot/crm/v3/objects/0-9999", headers=admin_h)
+    assert r.status_code == 400
+    assert r.json()["message"] == "Invalid object or event type id: 0-9999"
+
+
+@pytest.mark.parametrize("asked", ["companies", "company"])
+def test_hubspot_a_standard_type_answers_to_either_spelling(client, admin_h, asked):
+    """HubSpot resolves the path segment through its object-type registry, so `/objects/company`
+    reaches the same records as `/objects/companies` — measured: both answer 403 MISSING_SCOPES on
+    a scope-less key, where an unrecognized word answers 400. A corpus states one spelling or the
+    other, and neither may hide its records from the vendor's own path."""
+    listed = client.get(
+        f"/hubspot/crm/v3/objects/{asked}", headers=admin_h, params={"limit": 100}
+    ).json()["results"]
+    assert [r["id"] for r in listed] == [
+        r["id"]
+        for r in client.get(
+            "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"limit": 100}
+        ).json()["results"]
+    ]
+    # and a record of that type resolves under both spellings, while another type's does not
+    one = listed[0]["id"]
+    assert client.get(f"/hubspot/crm/v3/objects/{asked}/{one}", headers=admin_h).status_code == 200
+    assert client.get(f"/hubspot/crm/v3/objects/tickets/{one}", headers=admin_h).status_code == 404
 
 
 def test_hubspot_standard_type_with_no_records_is_an_empty_page(client, admin_h):

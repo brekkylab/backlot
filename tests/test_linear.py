@@ -326,9 +326,9 @@ def test_linear_mcp_tools_derive_from_the_served_introspection(client, admin_h):
     schema accepts, the selection has to stay bounded, and an issue's discussion has to be in it.
 
     `examples/using-mcp-with-agents/linear.py` drives the bridge at depth 1, and the ceiling below
-    is why: at depth 2 an issue selects 1,313 fields instead of 507, because `Issue.cycle.team` and
-    its siblings each drag in dozens of configuration leaves an agent never asks about. If a
-    schema addition pushes this over, check what the new fields cost before raising it.
+    is why: a second level pulls `Issue.cycle.team` and its siblings in with all their
+    configuration leaves. The ceiling is well clear at depth 1 and well under a depth-2 selection,
+    so if a schema addition pushes it over, check what the new fields cost before raising it.
     """
     intro = gql(client, mcp_tools.INTROSPECTION_QUERY, admin_h).json()
     schema = build_client_schema(intro["data"])

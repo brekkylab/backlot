@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Drive the mock's Linear GraphQL API as MCP tools via the GraphQL→MCP bridge. Self-contained.
 
-**Linear's official MCP server is remote-only.** It is vendor-hosted at
-`https://mcp.linear.app/mcp` with no base-URL override, so there is nothing local to point at a
-mock — the official route is closed here, not merely inconvenient. The community servers do not
-rescue it either: `tacticlaunch/mcp-linear` (the current one) and `jerhadf/linear-mcp-server` (the
-most-starred, untouched since 2025) both hard-wire `https://api.linear.app` in source and document
-only a token, and because they run as `npx` subprocesses the in-process URL rewrite backlot uses
-for the LlamaIndex Linear reader cannot reach them.
+**Linear's official MCP server is remote-only** — vendor-hosted at `https://mcp.linear.app/mcp`
+with no base-URL override, so there is nothing local to point at a mock. The community servers hard-
+wire `https://api.linear.app` in source and take only a token, and they run as `npx` subprocesses,
+out of reach of the in-process URL rewrite backlot uses for the LlamaIndex Linear reader.
 
 So the tools come from the mock's own schema instead: `_graphql_bridge.py` introspects
 `POST /linear/graphql` and serves each root `Query` field as a typed tool (`issues`, `issue`,
@@ -17,9 +14,9 @@ which is why `atlassian` / `notion` / `s3` use vendor servers where one can be r
 
 **Depth 1, deliberately.** The bridge generates each tool's selection set (rules in
 `backlot/graphql/mcp_tools.py`) and Linear is the schema where the default of 2 costs too much:
-`Team`, `Project` and `Cycle` each carry dozens of configuration leaves, so a second level takes
-an issue from 507 selected fields to 1,313 — for data no agent asks about. Depth 1 still returns
-`state`, `assignee`, `team`, `project` and `labels` inline. Pass `--depth 2` to see the difference.
+`Team`, `Project` and `Cycle` each carry dozens of configuration leaves that a second level would
+multiply across every issue. Depth 1 still returns `state`, `assignee`, `team`, `project` and
+`labels` inline. Pass `--depth 2` to see the difference.
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:

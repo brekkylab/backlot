@@ -52,11 +52,9 @@ except ImportError:
 def _introspect(endpoint: str, token: str) -> dict:
     """Ask the endpoint what it serves, the way any GraphQL client would.
 
-    Unlike ``_openapi_bridge.py``, whose spec fetch is unauthenticated, this request carries the
-    credential — so a mistyped ``--token`` fails HERE, before a single tool exists. Left to
-    propagate it would kill the subprocess and reach the MCP client as an opaque "Connection
-    closed", so exit with the mock's own error envelope instead: the 401 body says which of
-    "Invalid API key" / "Authentication required" it was.
+    This request carries the credential, so a bad ``--token`` fails here, before a single tool
+    exists. Left to propagate it kills the subprocess and reaches the MCP client as an opaque
+    "Connection closed", so exit with the endpoint's own error body instead.
     """
     request = urllib.request.Request(
         endpoint,

@@ -237,24 +237,23 @@ under that same path guard, so `IssueFilter` arrives with its real comparator ke
 
 One rule is there purely for size: **a bare list of objects is not selected inside a repeated
 result**, because rows × their own list is a product with no page and no way to say it was cut. So
-`transcripts` omits `Transcript.sentences` — with it, one default page of a 40-meeting corpus is
-1.1 MB (~276k tokens), and even `limit: 5` is ~55k; without it, 36 KB and 1.8k — while
-`transcript(id:)` still returns every utterance. That is the same split
-`examples/using-official-sdk/fireflies.py` writes by hand for its two queries. Connections are
-exempt, being bounded by their own page. Each tool's description also names its paging arguments,
-since omitting them means the server's default page rather than everything.
+`transcripts` returns each match's metadata and summary while `transcript(id:)` returns one
+meeting's utterances — the same split `examples/using-official-sdk/fireflies.py` writes by hand for
+its two queries, and the reason an agent searches and then reads. Connections are exempt, being
+bounded by their own page. Each tool's description also names its paging arguments, since omitting
+them means the server's default page rather than everything.
 
-Depth is the one per-source knob, and both values are measured. Fireflies uses the default **2**:
-`Analytics` has no leaf fields of its own, so anything shallower drops the sentiment split and
-per-speaker talk time entirely. Linear runs at **1**, because `Team` / `Project` / `Cycle` each
-carry dozens of configuration leaves and a second level takes one issue from 507 selected fields to
-1,313 — for data no agent asks about. Depth 1 still returns `state`, `assignee`, `team`, `project` and
-`labels` inline. Both launchers take `--depth` if you want to see the difference.
+Depth is the one per-source knob, and both values are measured (see PR #77 for the figures).
+Fireflies uses the default **2**: `Analytics` has no leaf fields of its own, so anything shallower
+drops the sentiment split and per-speaker talk time entirely. Linear runs at **1**, because `Team` /
+`Project` / `Cycle` each carry dozens of configuration leaves that a second level would multiply
+across every issue; depth 1 still returns `state`, `assignee`, `team`, `project` and `labels`
+inline. Both launchers take `--depth` if you want to see the difference.
 
 **What this trades away**, stated plainly because it is the argument for the vendor servers above:
 the bridge exercises *our* tool surface, not the community tooling an agent meets in production.
-That is accepted here — for Fireflies especially, where the most-adopted community server has 5
-stars, there is no consensus tooling to be faithful to.
+That is accepted here — for Fireflies especially, where no community server has meaningful adoption,
+there is no consensus tooling to be faithful to.
 
 ## Why these need the bridge (no base-URL-switchable vendor server)
 
@@ -270,13 +269,10 @@ it:
 - **Gmail / Google Drive** — official and community servers hard-wire `googleapis.com` and
   require real Google OAuth; no endpoint override. **→ driven via the bridge (`gmail.py`, `gdrive.py`).**
 - **Linear** — the official server is **remote-hosted** (`https://mcp.linear.app/mcp`), so there is
-  no local process to redirect. Of the community servers, `tacticlaunch/mcp-linear` (current) and
-  `jerhadf/linear-mcp-server` (most-starred, untouched since 2025) both hard-wire
-  `https://api.linear.app` and document only a token; because they run as `npx` subprocesses, the
-  in-process URL rewrite backlot uses for the LlamaIndex Linear reader cannot reach them either.
+  no local process to redirect. The community servers hard-wire `https://api.linear.app` and take
+  only a token; because they run as `npx` subprocesses, the in-process URL rewrite backlot uses for
+  the LlamaIndex Linear reader cannot reach them either.
   **→ driven via the GraphQL bridge (`linear.py`).**
-- **Fireflies** — the official server is likewise remote-only, and the community side is thinner
-  than anywhere else here: the most-adopted server has 5 stars, and `johntoups/mcp-fireflies`, the
-  only maintained one, pins `GRAPHQL_ENDPOINT = "https://api.fireflies.ai/graphql"` as a module
-  constant with the API key its sole configurable. **→ driven via the GraphQL bridge
-  (`fireflies.py`).**
+- **Fireflies** — the official server is likewise remote-only, and the maintained community one pins
+  its vendor endpoint as a module constant with the API key its sole configurable; none has enough
+  adoption to be worth forking. **→ driven via the GraphQL bridge (`fireflies.py`).**

@@ -31,18 +31,16 @@ choose. The rules, in full:
   ``id``/``body``/``createdAt`` and no key for the issue, so the root ``comments`` tool cannot
   stand in for ``Issue.comments``.
 * A **bare list of objects is not selected inside a repeated result** — rows times their own list
-  is a product with no page and no way to say it was cut, and it is the difference between a usable
-  answer and megabytes. ``transcripts`` therefore omits ``Transcript.sentences``: with it, one
-  default page of a 40-meeting corpus is 1.1 MB (~276k tokens) and even ``limit: 5`` is ~55k, and
-  without it they are 36 KB and 1.8k. ``transcript(id:)`` still selects the field in full — the
-  same cut ``examples/using-official-sdk/fireflies.py`` writes by hand for the same two queries. A
-  connection is exempt: its page is bounded and ``pageInfo`` says whether it was.
+  is a product with no page and no way to say it was cut. So ``transcripts`` omits
+  ``Transcript.sentences`` while ``transcript(id:)`` selects it in full, the same cut
+  ``examples/using-official-sdk/fireflies.py`` writes by hand for those two queries. A connection
+  is exempt: its page is bounded and ``pageInfo`` says whether it was.
 * An object field is followed while a **depth budget** remains, and each level spends one. The
   default is 2, which is what Fireflies needs to reach ``transcript.analytics.sentiments`` —
   ``Analytics`` has no leaf fields of its own, so a shallower selection drops the node whole. One
   depth does not suit both schemas, so the launchers choose: Linear runs at 1, because ``Team`` /
-  ``Project`` / ``Cycle`` each carry dozens of configuration leaves and a second level takes an
-  issue from 507 selected fields to 1,313 for data no agent asks about.
+  ``Project`` / ``Cycle`` each carry dozens of configuration leaves that a second level would
+  multiply across every row.
 * A type already on the current path is not re-entered, so ``Issue.parent`` (an ``Issue``) stops
   there rather than recursing.
 * A field with a required argument is skipped — the generator has no value to supply.
@@ -59,9 +57,8 @@ where a vendor accepts more than one spelling (Fireflies' ``DateTime`` takes ISO
 millis) the argument's own description carries it, and descriptions are copied through.
 
 Each tool's description states what the generator decided on the caller's behalf — the return type,
-the depth, and, for a field returning more than one row, its paging arguments. That last one is not
-decoration: omitting them means the server's default page, not "everything", and a vendor need not
-describe them (Linear's ``first`` carries no description at all).
+the depth, and, for a field returning more than one row, its paging arguments, since omitting those
+means the server's default page rather than everything.
 """
 
 from __future__ import annotations
@@ -187,9 +184,8 @@ def _description(field: Mapping[str, Any], types: dict[str, Any], depth: int) ->
     if named["kind"] == "OBJECT":
         returns += f", with its fields selected automatically to a depth of {depth}"
     parts = [own, f"{returns}."]
-    # Omitting the paging argument does not mean "everything" — it means the server's own default
-    # page, which on a real corpus is a large answer. The arguments are in the input schema, but a
-    # vendor need not describe them (Linear's `first` carries no description), so say it here.
+    # Omitting a paging argument means the server's own default page, not "everything". The
+    # arguments are in the input schema, but a vendor need not describe them, so say it here.
     paging = _paging_args(field, types)
     if paging:
         parts.append(
@@ -317,11 +313,9 @@ def _selection(
         if named["name"] in path or budget <= 0:
             continue
         repeated = _is_list(field["type"])
-        # Rows times their own list is a product with no page and no way to say it was cut, and it
-        # is the difference between a usable answer and megabytes: `Transcript.sentences` inlined
-        # into `transcripts` is ~30x the whole rest of the row. A connection is exempt — it is
-        # bounded by its own page and reports that through `pageInfo` — and the by-id tool for the
-        # same type still selects the field in full.
+        # Rows times their own list is a product with no page and no way to say it was cut. A
+        # connection is exempt (bounded by its own page, and it reports that through `pageInfo`),
+        # and the by-id tool for the same type still selects the field in full.
         if many and repeated and _connection(types[named["name"]]) is None:
             continue
         sub = _field_selection(

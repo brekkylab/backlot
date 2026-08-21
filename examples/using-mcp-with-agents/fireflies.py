@@ -2,12 +2,10 @@
 """Drive the mock's Fireflies GraphQL API as MCP tools via the GraphQL→MCP bridge. Self-contained.
 
 **Fireflies' official MCP server is remote-only** — vendor-hosted, no base-URL override — so, as
-with Linear, nothing local can stand in for it. The community alternative is thinner here than
-anywhere else in this directory: the most-adopted Fireflies MCP server has 5 stars, and
-`johntoups/mcp-fireflies`, the only maintained one, pins `GRAPHQL_ENDPOINT =
-"https://api.fireflies.ai/graphql"` as a module constant with `FIREFLIES_API_KEY` the sole
-configurable. There is no consensus server to be faithful to and none that can be redirected, so
-carrying a patched fork of one would buy nothing.
+with Linear, nothing local can stand in for it. The community side is thinner here than anywhere
+else in this directory: barely-adopted servers, and the maintained one pins its vendor endpoint as a
+module constant with the API key its sole configurable. There is no consensus server to be faithful
+to and none that can be redirected, so carrying a patched fork of one would buy nothing.
 
 The tools therefore come from the mock's own schema: `_graphql_bridge.py` introspects
 `POST /fireflies/graphql` and serves its four root fields as typed tools — `transcripts` (with
@@ -21,8 +19,7 @@ corpus computes — see `backlot/graphql/mcp_tools.py` for the rules.
 
 Note the division of labour between the two transcript tools, which the size rule there creates:
 `transcripts` returns the metadata and the summary of each match, and `transcript(id:)` returns one
-meeting's utterances. Inlining the utterances into the list instead makes one default page of a
-40-meeting corpus 1.1 MB, so the agent reads a transcript by asking for it — the same two-step
+meeting's utterances. So the agent searches, then reads the transcript it picked — the same two-step
 `examples/using-official-sdk/fireflies.py` performs by hand.
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent

@@ -607,9 +607,8 @@ def test_a_connection_survives_inside_a_repeated_result(tools):
     ],
 )
 def test_a_many_row_tools_description_names_its_paging_arguments(tools, tool_name, expected):
-    """Without a paging argument the server applies its own default page, which on a real corpus
-    is a large answer. The arguments are in the input schema, but a vendor need not describe them
-    — Linear's `first` carries no description at all — so the tool says it."""
+    """Without one the server applies its own default page rather than returning everything. The
+    arguments are in the input schema, but a vendor need not describe them, so the tool says it."""
     description = tools[tool_name].description
     for name in expected:
         assert f"`{name}`" in description

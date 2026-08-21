@@ -243,6 +243,29 @@ def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
     assert m["id"] != m["threadId"]
 
 
+def test_gmail_threads_list_is_the_mailbox_searched_or_not(client, tokens):
+    """One listing, one scope. `threads.list` counted the threads the caller had WRITTEN in, while
+    `threads.list?q=` filtered the caller's MAILBOX — and passed the caller's address where a
+    mailbox name goes, so a search of one's own mail came back empty."""
+    h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+    plain = client.get("/gmail/v1/users/me/threads", headers=h).json()
+    searched = client.get("/gmail/v1/users/me/threads", headers=h, params={"q": "gateway"}).json()
+    thread = served_id("gmail", "gm-thread-root")
+    assert thread in [t["id"] for t in plain["threads"]]
+    assert [t["id"] for t in searched["threads"]] == [thread]
+    # A reply is not a thread of its own, and a thread several of whose messages match is listed once.
+    assert served_id("gmail", "gm-thread-reply") not in [t["id"] for t in plain["threads"]]
+    assert plain["resultSizeEstimate"] == len(plain["threads"])
+    # Two messages, one thread — so the two totals are two numbers, in the profile and on the label.
+    profile = client.get("/gmail/v1/users/me/profile", headers=h).json()
+    inbox = client.get("/gmail/v1/users/me/labels/INBOX", headers=h).json()
+    assert profile["messagesTotal"] > profile["threadsTotal"] == len(plain["threads"])
+    assert (inbox["messagesTotal"], inbox["threadsTotal"]) == (
+        profile["messagesTotal"],
+        profile["threadsTotal"],
+    )
+
+
 def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_conn):
 
     row = ro_conn.execute(

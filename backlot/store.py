@@ -1713,6 +1713,12 @@ def gdrive_by_id(conn, file_id, visible_ids=None) -> sqlite3.Row | None:
     ).fetchone()
 
 
+# A Gmail thread is listed once, under its root. ``thread_id`` holds the ROOT'S OWN served id (see
+# the google router's ``_gmail_ids``), so a root is the row that is its own thread — or states no
+# thread at all, which a lone message does.
+_GMAIL_ROOT = " AND (thread_id IS NULL OR thread_id = id)"
+
+
 def count_documents(
     conn,
     source_type,
@@ -1721,11 +1727,13 @@ def count_documents(
     author_email=None,
     state=None,
     exclude_trashed=False,
+    roots_only=False,
 ) -> int:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
-    # exclude_trashed, which only gdrive_files has a column for. It has to track
-    # list_documents': a count that includes rows the listing drops makes nextPageToken lie.
+    # exclude_trashed, which only gdrive_files has a column for, and roots_only, which counts
+    # gmail THREADS rather than messages. It has to track list_documents': a count that includes
+    # rows the listing drops makes nextPageToken lie.
     tbl = table(source_type)
     sql = f"SELECT COUNT(*) FROM {tbl} WHERE 1=1"
     params: list = []
@@ -1735,6 +1743,8 @@ def count_documents(
         params.append(state)
     if exclude_trashed:
         sql += " AND COALESCE(trashed, 0) = 0"
+    if roots_only:
+        sql += _GMAIL_ROOT
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += clause
     params += cparams
@@ -2222,14 +2232,18 @@ def list_slack_channel_messages(conn, channel, visible_ids=None) -> list[sqlite3
 
 
 def list_gmail_in_range(
-    conn, mailbox, ts_lo, ts_hi, visible_ids=None, limit=100_000, offset=0
+    conn, mailbox, ts_lo, ts_hi, visible_ids=None, limit=100_000, offset=0, roots_only=False
 ) -> list[sqlite3.Row]:
     """Gmail messages whose ``created_ts`` is in ``[ts_lo, ts_hi)`` (either bound may be None for
     open-ended), newest first. The SQL date filter for a date-scoped listing (``ls /gmail/<label>/
     <date>``): without it the endpoint materialized the WHOLE mailbox (~100k rows) and filtered in
-    Python. gmail ``created_ts`` is fully populated, so this covers every message."""
+    Python. gmail ``created_ts`` is fully populated, so this covers every message.
+
+    ``roots_only`` narrows it to one row per thread, which is what ``threads.list`` lists."""
     sql = "SELECT * FROM gmail_messages WHERE 1=1"
     params: list = []
+    if roots_only:
+        sql += _GMAIL_ROOT
     if ts_lo is not None:
         sql += " AND created_ts >= ?"
         params.append(ts_lo)

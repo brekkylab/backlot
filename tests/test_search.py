@@ -246,6 +246,26 @@ def test_gmail_q_parse_and_match():
     assert free == "quarterly"
     assert ops["from"] == ["ceo@acme.com"] and ops["subject"] == ["board"]
     assert ops["has"] == ["attachment"]
+    # `in:` is an operator, not free text: unhandled, `in:anywhere` FTS-matched nothing and emptied
+    # the mailbox it was meant to widen.
+    free, ops = _parse_gmail_q("in:anywhere quarterly")
+    assert free == "quarterly" and ops["in"] == ["anywhere"]
+
+
+def test_gmail_folder_query_sees_the_label_a_message_is_served_under(db):
+    """A message the corpus gives no labels is served `labelIds: ["INBOX"]`, so `in:inbox` and
+    `label:inbox` have to find it — reading only the STATED labels answered "no such mail" about
+    every message in the mock. `in:anywhere` widens the search to spam and trash, which this mock
+    holds none of, so it restricts nothing."""
+    from backlot.routers.google import _gmail_query
+
+    total = len(_gmail_query(db, None, None, ""))
+    assert total > 0
+    assert len(_gmail_query(db, None, None, "in:anywhere")) == total
+    assert len(_gmail_query(db, None, None, "in:inbox")) == total
+    assert len(_gmail_query(db, None, None, "label:INBOX")) == total
+    # A label no message carries is empty, not everything — the filter is still a filter.
+    assert _gmail_query(db, None, None, "in:trash") == []
 
 
 def test_gmail_relative_date_parse():

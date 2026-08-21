@@ -235,11 +235,20 @@ on the path is not re-entered; a field with a required argument is skipped. Inpu
 under that same path guard, so `IssueFilter` arrives with its real comparator keys —
 `{"filter": {"title": {"containsIgnoreCase": "latency"}}}` — rather than as an opaque blob.
 
+One rule is there purely for size: **a bare list of objects is not selected inside a repeated
+result**, because rows × their own list is a product with no page and no way to say it was cut. So
+`transcripts` omits `Transcript.sentences` — with it, one default page of a 40-meeting corpus is
+1.1 MB (~276k tokens), and even `limit: 5` is ~55k; without it, 36 KB and 1.8k — while
+`transcript(id:)` still returns every utterance. That is the same split
+`examples/using-official-sdk/fireflies.py` writes by hand for its two queries. Connections are
+exempt, being bounded by their own page. Each tool's description also names its paging arguments,
+since omitting them means the server's default page rather than everything.
+
 Depth is the one per-source knob, and both values are measured. Fireflies uses the default **2**:
 `Analytics` has no leaf fields of its own, so anything shallower drops the sentiment split and
 per-speaker talk time entirely. Linear runs at **1**, because `Team` / `Project` / `Cycle` each
-carry dozens of configuration leaves and a second level takes one issue from 516 selected fields to
-1,446 — for data no agent asks about. Depth 1 still returns `state`, `assignee`, `team`, `project` and
+carry dozens of configuration leaves and a second level takes one issue from 507 selected fields to
+1,313 — for data no agent asks about. Depth 1 still returns `state`, `assignee`, `team`, `project` and
 `labels` inline. Both launchers take `--depth` if you want to see the difference.
 
 **What this trades away**, stated plainly because it is the argument for the vendor servers above:

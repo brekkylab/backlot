@@ -16,8 +16,14 @@ Fireflies' own `keyword` / `scope` / `fromDate` / `host_email` / `limit` / `skip
 exercises *our* tool surface rather than production tooling.
 
 The bridge's default depth of 2 is what this schema needs. `Analytics` has no leaf fields of its
-own, so a shallower selection would drop the node entirely and with it the sentiment split and the
-per-speaker talk time the corpus computes — see `backlot/graphql/mcp_tools.py` for the rules.
+own, so a shallower selection would drop the node entirely and with it the sentiment split the
+corpus computes — see `backlot/graphql/mcp_tools.py` for the rules.
+
+Note the division of labour between the two transcript tools, which the size rule there creates:
+`transcripts` returns the metadata and the summary of each match, and `transcript(id:)` returns one
+meeting's utterances. Inlining the utterances into the list instead makes one default page of a
+40-meeting corpus 1.1 MB, so the agent reads a transcript by asking for it — the same two-step
+`examples/using-official-sdk/fireflies.py` performs by hand.
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:

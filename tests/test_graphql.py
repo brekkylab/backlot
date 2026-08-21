@@ -442,11 +442,13 @@ type Gadget {
   owner: Owner
   metrics: Metrics
   parent: Gadget
+  tags: [Tag!]
   notes: NoteConnection!
   audit(token: String!): Audit
 }
 
-type Owner { id: ID!, email: String, team: Team }
+type Tag { id: ID!, label: String }
+type Owner { id: ID!, email: String, team: Team, badges: [Tag!] }
 type Team { id: ID!, key: String, lead: Owner }
 type Metrics { latency: Latency }
 type Latency { p95: Float }
@@ -569,6 +571,52 @@ def test_an_input_object_expands_under_the_same_path_guard(tools):
     assert "and" not in filt["properties"]  # [GadgetFilter!], already on the path
 
 
+def test_a_bare_list_of_objects_is_selected_for_a_single_result(tools):
+    """`gadget(id:)` returns one row, so its own lists are bounded by that one row."""
+    assert "tags" in selected_fields(tools["gadget"].document, "gadget")
+    assert selected_fields(tools["gadget"].document, "gadget", "tags") == {"id", "label"}
+
+
+@pytest.mark.parametrize(
+    "path, field",
+    [
+        pytest.param(("gadgets", "nodes"), "tags", id="directly"),
+        # through a single-valued object: `owner` is one, but it is one PER ROW
+        pytest.param(("gadgets", "nodes", "owner"), "badges", id="through-a-single-object"),
+    ],
+)
+def test_a_bare_list_of_objects_is_dropped_inside_a_repeated_result(tools, path, field):
+    """Rows x their own lists is a product with no page and no bound — the cut the hand-written
+    `examples/using-official-sdk/fireflies.py` makes too, selecting `sentences` only for a single
+    transcript. The by-id tool still serves the field in full."""
+    assert field not in selected_fields(tools["gadgets"].document, *path)
+
+
+def test_a_connection_survives_inside_a_repeated_result(tools):
+    """A connection is bounded by its own page and says so through `pageInfo`, so the size rule
+    above does not apply to it."""
+    assert "notes" in selected_fields(tools["gadgets"].document, "gadgets", "nodes")
+
+
+@pytest.mark.parametrize(
+    "tool_name, expected",
+    [
+        pytest.param("gadgets", ["after", "first"], id="relay"),
+        pytest.param("notes", ["limit"], id="offset"),
+        pytest.param("gadget", [], id="single-result-has-none"),
+    ],
+)
+def test_a_many_row_tools_description_names_its_paging_arguments(tools, tool_name, expected):
+    """Without a paging argument the server applies its own default page, which on a real corpus
+    is a large answer. The arguments are in the input schema, but a vendor need not describe them
+    — Linear's `first` carries no description at all — so the tool says it."""
+    description = tools[tool_name].description
+    for name in expected:
+        assert f"`{name}`" in description
+    if not expected:
+        assert "paging" not in description
+
+
 def test_a_connection_is_recognised_by_shape_not_by_type_name():
     """Carrying both `nodes` and `pageInfo` is the whole test, and the page type's name is read
     off the field — nothing requires a schema to spell it `PageInfo`."""
@@ -582,6 +630,63 @@ def test_a_tool_is_dropped_when_a_required_argument_cannot_be_described():
     emitting the tool anyway would send a document missing a required argument."""
     sdl = MCP_SDL.replace("notes(ids: [ID!], limit: Int)", "notes(bag: Opaque!, limit: Int)")
     assert "notes" not in _derive(sdl=sdl + "\ninput Opaque { self: Opaque }\n")
+
+
+@pytest.mark.parametrize(
+    "field, extra",
+    [
+        pytest.param("node: Node", "interface Node { id: ID! }", id="interface"),
+        pytest.param("thing: Thing", "union Thing = Note", id="union"),
+    ],
+)
+def test_a_tool_is_dropped_when_its_type_needs_a_selection_the_generator_cannot_write(field, extra):
+    """An interface or union needs a type condition per member. Nothing here writes one, so the
+    field cannot be served — and serving it anyway means a document with no selection set."""
+    sdl = MCP_SDL.replace("type Query {", "type Query {\n  " + field) + "\n" + extra + "\n"
+    assert {"node", "thing"}.isdisjoint(_derive(sdl=sdl))
+
+
+def test_an_argument_with_a_default_is_optional_in_the_document_too():
+    """A NON_NULL argument that carries a default is optional to the caller, so its variable is
+    declared nullable — GraphQL allows that at a defaulted argument, and `$x: T!` would validate
+    and then refuse the call at execution."""
+    sdl = MCP_SDL.replace(
+        "notes(ids: [ID!], limit: Int)", 'notes(cursor: String! = "x", limit: Int)'
+    )
+    tool = _derive(sdl=sdl)["notes"]
+    assert "required" not in tool.input_schema
+    declared = parse(tool.document).definitions[0].variable_definitions
+    assert {v.variable.name.value: v.type.kind for v in declared} == {
+        "cursor": "named_type",  # not `non_null_type`
+        "limit": "named_type",
+    }
+    result = engine.Engine(sdl).execute(tool.document, variables={"limit": 1})
+    assert result.request_error is False
+
+
+def test_an_unusable_connection_falls_back_to_the_plain_object_path():
+    """A connection whose page type has nothing selectable is not usable as one, so it is treated
+    as an ordinary object rather than emitting a `pageInfo` with no selection set."""
+    sdl = MCP_SDL.replace(
+        """type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}""",
+        "type PageInfo { deeper: Deeper }\ntype Deeper { deepest: Deepest }\ntype Deepest { x: Int }",
+    )
+    tools = _derive(sdl=sdl)
+    assert not validate(engine.Engine(sdl).schema, parse(tools["gadgets"].document))
+    assert "pageInfo" not in selected_fields(tools["gadgets"].document, "gadgets")
+
+
+def test_an_error_envelope_is_reported_rather_than_crashing():
+    """`{"errors": […], "data": null}` is what an endpoint sends when the credential is wrong.
+    Reading `__schema` off that null is a TypeError that says nothing about why."""
+    envelope = {"data": None, "errors": [{"message": "Invalid API key"}]}
+    with pytest.raises(ValueError, match="Invalid API key"):
+        mcp_tools.derive_tools(envelope)
 
 
 def test_a_derived_document_validates_against_the_schema(tools):

@@ -326,7 +326,7 @@ def test_linear_mcp_tools_derive_from_the_served_introspection(client, admin_h):
     schema accepts, the selection has to stay bounded, and an issue's discussion has to be in it.
 
     `examples/using-mcp-with-agents/linear.py` drives the bridge at depth 1, and the ceiling below
-    is why: at depth 2 an issue selects 1,446 fields instead of 516, because `Issue.cycle.team` and
+    is why: at depth 2 an issue selects 1,313 fields instead of 507, because `Issue.cycle.team` and
     its siblings each drag in dozens of configuration leaves an agent never asks about. If a
     schema addition pushes this over, check what the new fields cost before raising it.
     """

@@ -30,12 +30,19 @@ choose. The rules, in full:
   Following them is also what makes an issue's comments reachable at all: ``CommentFilter`` carries
   ``id``/``body``/``createdAt`` and no key for the issue, so the root ``comments`` tool cannot
   stand in for ``Issue.comments``.
+* A **bare list of objects is not selected inside a repeated result** — rows times their own list
+  is a product with no page and no way to say it was cut, and it is the difference between a usable
+  answer and megabytes. ``transcripts`` therefore omits ``Transcript.sentences``: with it, one
+  default page of a 40-meeting corpus is 1.1 MB (~276k tokens) and even ``limit: 5`` is ~55k, and
+  without it they are 36 KB and 1.8k. ``transcript(id:)`` still selects the field in full — the
+  same cut ``examples/using-official-sdk/fireflies.py`` writes by hand for the same two queries. A
+  connection is exempt: its page is bounded and ``pageInfo`` says whether it was.
 * An object field is followed while a **depth budget** remains, and each level spends one. The
   default is 2, which is what Fireflies needs to reach ``transcript.analytics.sentiments`` —
   ``Analytics`` has no leaf fields of its own, so a shallower selection drops the node whole. One
   depth does not suit both schemas, so the launchers choose: Linear runs at 1, because ``Team`` /
   ``Project`` / ``Cycle`` each carry dozens of configuration leaves and a second level takes an
-  issue from 516 selected fields to 1,446 for data no agent asks about.
+  issue from 507 selected fields to 1,313 for data no agent asks about.
 * A type already on the current path is not re-entered, so ``Issue.parent`` (an ``Issue``) stops
   there rather than recursing.
 * A field with a required argument is skipped — the generator has no value to supply.
@@ -50,6 +57,11 @@ guess at, and its self-referential ``and``/``or`` drop out by the guard rather t
 Custom scalars become strings, which is how GraphQL serializes them absent a stated alternative;
 where a vendor accepts more than one spelling (Fireflies' ``DateTime`` takes ISO 8601 or epoch
 millis) the argument's own description carries it, and descriptions are copied through.
+
+Each tool's description states what the generator decided on the caller's behalf — the return type,
+the depth, and, for a field returning more than one row, its paging arguments. That last one is not
+decoration: omitting them means the server's default page, not "everything", and a vendor need not
+describe them (Linear's ``first`` carries no description at all).
 """
 
 from __future__ import annotations
@@ -100,8 +112,14 @@ def derive_tools(introspection: Mapping[str, Any], *, depth: int = DEFAULT_DEPTH
     ``introspection`` is the endpoint's reply to :data:`INTROSPECTION_QUERY`, with or without its
     ``data`` envelope. Tools come back in schema order, which is the order the SDL declares.
     """
-    body = introspection.get("data", introspection)
-    schema = body["__schema"]
+    body = introspection.get("data") or introspection
+    schema = body.get("__schema") if isinstance(body, Mapping) else None
+    if schema is None:
+        # An endpoint answers a bad credential with `{"errors": [...], "data": null}`, and reading
+        # `__schema` off that null says nothing about why. Carry the endpoint's own message.
+        errors = introspection.get("errors") or []
+        detail = "; ".join(e.get("message", str(e)) for e in errors) or repr(introspection)[:200]
+        raise ValueError(f"introspection returned no schema: {detail}")
     types = {t["name"]: t for t in schema["types"]}
     root = types[schema["queryType"]["name"]]
 
@@ -120,11 +138,12 @@ def derive_tools(introspection: Mapping[str, Any], *, depth: int = DEFAULT_DEPTH
 
 def _tool(field: Mapping[str, Any], types: dict[str, Any], depth: int) -> Tool | None:
     named = _named(field["type"])
-    selection = _root_selection(named, types, depth)
-    # A field whose type yields no selectable field cannot be asked for at all: the document
-    # would carry an empty selection set, which does not parse. Nothing in either vendor's
-    # schema hits this; it is here so a schema that does loses one tool rather than every tool.
-    if selection is None and named["kind"] == "OBJECT":
+    selection = _root_selection(field["type"], types, depth)
+    # Anything that is not a leaf REQUIRES a selection set, so a field that produced none cannot
+    # be asked for at all — an interface or union (no type condition is written here) as much as an
+    # object with nothing selectable in it. Neither vendor's schema hits this; it is here so a
+    # schema that does loses one tool rather than serving one that fails on every call.
+    if selection is None and named["kind"] not in ("SCALAR", "ENUM"):
         return None
 
     args = field["args"]
@@ -154,27 +173,65 @@ def _tool(field: Mapping[str, Any], types: dict[str, Any], depth: int) -> Tool |
 
     return Tool(
         name=field["name"],
-        description=_description(field, depth),
+        description=_description(field, types, depth),
         input_schema=input_schema,
         document=_document(field["name"], [a for a in args if a["name"] in properties], selection),
     )
 
 
-def _description(field: Mapping[str, Any], depth: int) -> str:
-    """The field's own description, plus what the generated selection set did."""
+def _description(field: Mapping[str, Any], types: dict[str, Any], depth: int) -> str:
+    """The field's own description, then what the generator decided on the caller's behalf."""
     own = (field.get("description") or "").strip()
     returns = f"Returns `{_type_str(field['type'])}`"
     named = _named(field["type"])
     if named["kind"] == "OBJECT":
         returns += f", with its fields selected automatically to a depth of {depth}"
-    return f"{own}\n\n{returns}.".strip()
+    parts = [own, f"{returns}."]
+    # Omitting the paging argument does not mean "everything" — it means the server's own default
+    # page, which on a real corpus is a large answer. The arguments are in the input schema, but a
+    # vendor need not describe them (Linear's `first` carries no description), so say it here.
+    paging = _paging_args(field, types)
+    if paging:
+        parts.append(
+            "Paging: " + ", ".join(f"`{a}`" for a in paging) + ". Without one the server applies "
+            "its own default page size, so pass a small value first and widen if needed."
+        )
+    return "\n\n".join(p for p in parts if p)
+
+
+def _paging_args(field: Mapping[str, Any], types: dict[str, Any]) -> list[str]:
+    """The field's paging arguments, if it returns more than one row.
+
+    Matched by name against both conventions — Relay's ``first``/``after`` and the offset style's
+    ``limit``/``skip`` — because nothing in a GraphQL schema marks an argument as paging.
+    """
+    if not _returns_many(field["type"], types):
+        return []
+    names = {a["name"] for a in field["args"]}
+    return [
+        a for a in ("first", "last", "limit", "after", "before", "skip", "offset") if a in names
+    ]
+
+
+def _returns_many(ref: Mapping[str, Any], types: dict[str, Any]) -> bool:
+    """Whether one call yields more than one row — a list, or a connection standing in for one."""
+    if _is_list(ref):
+        return True
+    named = _named(ref)
+    return named["kind"] == "OBJECT" and _connection(types[named["name"]]) is not None
+
+
+def _is_list(ref: Mapping[str, Any]) -> bool:
+    if ref["kind"] == "NON_NULL":
+        ref = ref["ofType"]
+    return ref["kind"] == "LIST"
 
 
 def _document(name: str, args: list[Mapping[str, Any]], selection: str | None) -> str:
     """``query <name>($a: T, …) { <name>(a: $a, …) <selection> }``."""
     header = name
     if args:
-        header += "(" + ", ".join(f"${a['name']}: {_type_str(a['type'])}" for a in args) + ")"
+        header += "(" + ", ".join(f"${a['name']}: {_variable_type(a)}" for a in args) + ")"
     call = name
     if args:
         call += "(" + ", ".join(f"{a['name']}: ${a['name']}" for a in args) + ")"
@@ -185,17 +242,24 @@ def _document(name: str, args: list[Mapping[str, Any]], selection: str | None) -
 # --- selection sets --------------------------------------------------------------------
 
 
-def _root_selection(named: Mapping[str, Any], types: dict[str, Any], depth: int) -> str | None:
+def _root_selection(ref: Mapping[str, Any], types: dict[str, Any], depth: int) -> str | None:
     """The selection set for a root field's own type. The whole budget goes to the type itself:
     unwrapping a connection at the root is free, so ``issues`` reaches as deep into an ``Issue``
     as ``issue`` does."""
+    named = _named(ref)
     if named["kind"] != "OBJECT":
         return None  # a scalar or enum field takes no selection set
-    return _field_selection(named["name"], types, depth, frozenset(), 1)
+    return _field_selection(named["name"], types, depth, frozenset(), 1, many=_is_list(ref))
 
 
 def _field_selection(
-    type_name: str, types: dict[str, Any], budget: int, path: frozenset[str], indent: int
+    type_name: str,
+    types: dict[str, Any],
+    budget: int,
+    path: frozenset[str],
+    indent: int,
+    *,
+    many: bool,
 ) -> str | None:
     """One object type's selection set, with a connection expanded transparently.
 
@@ -205,19 +269,38 @@ def _field_selection(
     """
     connection = _connection(types[type_name])
     if connection is None:
-        return _selection(type_name, types, budget, path | {type_name}, indent)
+        return _plain_selection(type_name, types, budget, path, indent, many)
     node, page_type = connection
     if node in path:
         return None  # e.g. `Issue.children`, a connection back to an Issue already on the path
-    nodes = _selection(node, types, budget, path | {node}, indent + 1)
-    if nodes is None:
-        return None
-    page = _selection(page_type, types, 0, frozenset(), indent + 1)
+    nodes = _selection(node, types, budget, path | {node}, indent + 1, many=True)
+    page = _selection(page_type, types, 0, frozenset(), indent + 1, many=False)
+    if nodes is None or page is None:
+        # Nothing selectable in the nodes or in the page type, so it cannot be served AS a
+        # connection; fall back to the ordinary path, which decides field by field.
+        return _plain_selection(type_name, types, budget, path, indent, many)
     return _block([f"nodes {nodes}", f"pageInfo {page}"], indent)
 
 
+def _plain_selection(
+    type_name: str,
+    types: dict[str, Any],
+    budget: int,
+    path: frozenset[str],
+    indent: int,
+    many: bool,
+) -> str | None:
+    return _selection(type_name, types, budget, path | {type_name}, indent, many=many)
+
+
 def _selection(
-    type_name: str, types: dict[str, Any], budget: int, path: frozenset[str], indent: int = 1
+    type_name: str,
+    types: dict[str, Any],
+    budget: int,
+    path: frozenset[str],
+    indent: int = 1,
+    *,
+    many: bool,
 ) -> str | None:
     parts = []
     for field in types[type_name]["fields"]:
@@ -233,7 +316,17 @@ def _selection(
             continue
         if named["name"] in path or budget <= 0:
             continue
-        sub = _field_selection(named["name"], types, budget - 1, path, indent + 1)
+        repeated = _is_list(field["type"])
+        # Rows times their own list is a product with no page and no way to say it was cut, and it
+        # is the difference between a usable answer and megabytes: `Transcript.sentences` inlined
+        # into `transcripts` is ~30x the whole rest of the row. A connection is exempt — it is
+        # bounded by its own page and reports that through `pageInfo` — and the by-id tool for the
+        # same type still selects the field in full.
+        if many and repeated and _connection(types[named["name"]]) is None:
+            continue
+        sub = _field_selection(
+            named["name"], types, budget - 1, path, indent + 1, many=many or repeated
+        )
         if sub is not None:
             parts.append(f"{field['name']} {sub}")
     return _block(parts, indent) if parts else None
@@ -304,6 +397,20 @@ def _input_object(name: str, types: dict[str, Any], path: frozenset[str]) -> dic
 
 def _is_required(arg: Mapping[str, Any]) -> bool:
     return arg["type"]["kind"] == "NON_NULL" and arg.get("defaultValue") is None
+
+
+def _variable_type(arg: Mapping[str, Any]) -> str:
+    """How the argument is declared as a variable — nullable whenever it is optional to the caller.
+
+    A NON_NULL argument that carries a default is optional, and declaring its variable ``T!`` would
+    validate and then refuse the call at execution ("of required type 'T!' was not provided").
+    GraphQL permits a nullable variable at a defaulted argument for exactly this reason, and
+    omitting it is then what lets the server apply the default.
+    """
+    ref = arg["type"]
+    if not _is_required(arg) and ref["kind"] == "NON_NULL":
+        ref = ref["ofType"]
+    return _type_str(ref)
 
 
 def _named(ref: Mapping[str, Any]) -> Mapping[str, Any]:

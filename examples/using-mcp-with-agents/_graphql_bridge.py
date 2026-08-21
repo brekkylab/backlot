@@ -30,6 +30,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import urllib.error
 import urllib.request
 
 from backlot.graphql import mcp_tools
@@ -48,14 +50,27 @@ except ImportError:
 
 
 def _introspect(endpoint: str, token: str) -> dict:
-    """Ask the endpoint what it serves, the way any GraphQL client would."""
+    """Ask the endpoint what it serves, the way any GraphQL client would.
+
+    Unlike ``_openapi_bridge.py``, whose spec fetch is unauthenticated, this request carries the
+    credential — so a mistyped ``--token`` fails HERE, before a single tool exists. Left to
+    propagate it would kill the subprocess and reach the MCP client as an opaque "Connection
+    closed", so exit with the mock's own error envelope instead: the 401 body says which of
+    "Invalid API key" / "Authentication required" it was.
+    """
     request = urllib.request.Request(
         endpoint,
         data=json.dumps({"query": mcp_tools.INTROSPECTION_QUERY}).encode(),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
     )
-    with urllib.request.urlopen(request, timeout=30) as r:
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace").strip()
+        sys.exit(f"introspecting {endpoint} failed with HTTP {exc.code}: {body[:500]}")
+    except urllib.error.URLError as exc:
+        sys.exit(f"cannot reach {endpoint}: {exc.reason}")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -75,7 +90,10 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     endpoint = f"{args.base_url.rstrip('/')}/{args.source}/graphql"
-    tools = mcp_tools.derive_tools(_introspect(endpoint, args.token), depth=args.depth)
+    try:
+        tools = mcp_tools.derive_tools(_introspect(endpoint, args.token), depth=args.depth)
+    except ValueError as exc:  # a 200 carrying an error envelope rather than a schema
+        sys.exit(str(exc))
 
     import httpx
     from fastmcp import FastMCP

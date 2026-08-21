@@ -18,7 +18,7 @@ which is why `atlassian` / `notion` / `s3` use vendor servers where one can be r
 **Depth 1, deliberately.** The bridge generates each tool's selection set (rules in
 `backlot/graphql/mcp_tools.py`) and Linear is the schema where the default of 2 costs too much:
 `Team`, `Project` and `Cycle` each carry dozens of configuration leaves, so a second level takes
-an issue from 516 selected fields to 1,446 — for data no agent asks about. Depth 1 still returns
+an issue from 507 selected fields to 1,313 — for data no agent asks about. Depth 1 still returns
 `state`, `assignee`, `team`, `project` and `labels` inline. Pass `--depth 2` to see the difference.
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent

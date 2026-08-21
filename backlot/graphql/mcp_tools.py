@@ -56,9 +56,15 @@ Custom scalars become strings, which is how GraphQL serializes them absent a sta
 where a vendor accepts more than one spelling (Fireflies' ``DateTime`` takes ISO 8601 or epoch
 millis) the argument's own description carries it, and descriptions are copied through.
 
+A many-row tool also gets a **default page size** (:func:`with_page_default`, applied by the
+bridge): an unpaged call would otherwise take the server's default page, which is not "everything"
+but is far more than an agent needs, and an agent narrows with a filter rather than a page size. It
+cannot be a variable default in the document, because that would apply to a ``last``-only call too
+and Relay rejects ``first`` and ``last`` together — so it is filled in only when the caller named no
+size and no backward cursor.
+
 Each tool's description states what the generator decided on the caller's behalf — the return type,
-the depth, and, for a field returning more than one row, its paging arguments, since omitting those
-means the server's default page rather than everything.
+the depth, and, for a many-row field, its paging arguments and that default.
 """
 
 from __future__ import annotations
@@ -74,6 +80,16 @@ INTROSPECTION_QUERY = get_introspection_query(descriptions=True)
 
 #: How many object levels below a root field's own type the generated selection set reaches.
 DEFAULT_DEPTH = 2
+
+#: Rows a list-returning tool asks for when the caller names no page size of its own. Small on
+#: purpose: this is the exploratory first call, and the caller can widen it.
+DEFAULT_PAGE_SIZE = 10
+
+# Paging arguments, by the role each plays. Matched by name against both conventions, Relay's and
+# the offset style's, because nothing in a GraphQL schema marks an argument as paging.
+_PAGE_SIZE_ARGS = ("first", "limit")  # forward page size, in preference order
+_BACKWARD_ARGS = ("last", "before")  # a forward size would conflict with, or override, these
+_CURSOR_ARGS = ("after", "skip", "offset")
 
 # GraphQL's built-in scalars, plus the two names both vendors use for a loosely-typed object.
 # Anything else is a custom scalar and serializes as a string.
@@ -95,12 +111,48 @@ class Tool:
     ``document`` declares every argument as a GraphQL variable, so it is fixed per tool and the
     caller's arguments travel as ``variables``. A variable left unsupplied means the argument was
     not provided at all — which is what the resolvers see — so one document serves every call.
+
+    ``paging`` is the field's paging arguments by role, and is what :func:`with_page_default`
+    reads; it is empty for a tool that returns a single row.
     """
 
     name: str
     description: str
     input_schema: dict[str, Any]
     document: str
+    paging: Paging | None = None
+
+
+@dataclass(frozen=True)
+class Paging:
+    """A many-row field's paging arguments, split by the role each plays in the default."""
+
+    size: str | None  # the forward page size to fill in, when the field has one
+    backward: tuple[str, ...]  # naming any of these means a forward size must not be added
+    cursors: tuple[str, ...]
+
+    @property
+    def named(self) -> tuple[str, ...]:
+        """Every paging argument, for the tool description."""
+        return tuple(a for a in ((self.size,) if self.size else ()) + self.cursors + self.backward)
+
+
+def with_page_default(tool: Tool, arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """``arguments`` with a page size filled in, unless the caller did its own paging.
+
+    An unpaged list call otherwise gets the server's default page — which is not "everything", but
+    is far more than an agent needs, and the measured agent narrows with a filter rather than a page
+    size. This cannot be a variable default in the document: that would apply to a ``last``-only
+    call too, and Relay rejects ``first`` and ``last`` together. A caller that names any size, or
+    pages backward, is left exactly as it asked.
+    """
+    paging = tool.paging
+    if paging is None or paging.size is None:
+        return dict(arguments)
+    claimed = (paging.size, *paging.backward)
+    if any(name in arguments for name in claimed):
+        return dict(arguments)
+    return {**arguments, paging.size: DEFAULT_PAGE_SIZE}
 
 
 def derive_tools(introspection: Mapping[str, Any], *, depth: int = DEFAULT_DEPTH) -> list[Tool]:
@@ -168,45 +220,44 @@ def _tool(field: Mapping[str, Any], types: dict[str, Any], depth: int) -> Tool |
     if required:
         input_schema["required"] = required
 
+    paging = _paging(field, types)
     return Tool(
         name=field["name"],
-        description=_description(field, types, depth),
+        description=_description(field, depth, paging),
         input_schema=input_schema,
         document=_document(field["name"], [a for a in args if a["name"] in properties], selection),
+        paging=paging,
     )
 
 
-def _description(field: Mapping[str, Any], types: dict[str, Any], depth: int) -> str:
+def _description(field: Mapping[str, Any], depth: int, paging: Paging | None) -> str:
     """The field's own description, then what the generator decided on the caller's behalf."""
     own = (field.get("description") or "").strip()
     returns = f"Returns `{_type_str(field['type'])}`"
-    named = _named(field["type"])
-    if named["kind"] == "OBJECT":
+    if _named(field["type"])["kind"] == "OBJECT":
         returns += f", with its fields selected automatically to a depth of {depth}"
     parts = [own, f"{returns}."]
-    # Omitting a paging argument means the server's own default page, not "everything". The
-    # arguments are in the input schema, but a vendor need not describe them, so say it here.
-    paging = _paging_args(field, types)
+    # The arguments are in the input schema, but a vendor need not describe them, and the default
+    # is this bridge's rather than the server's — so both are said here.
     if paging:
-        parts.append(
-            "Paging: " + ", ".join(f"`{a}`" for a in paging) + ". Without one the server applies "
-            "its own default page size, so pass a small value first and widen if needed."
-        )
+        line = "Paging: " + ", ".join(f"`{a}`" for a in paging.named) + "."
+        if paging.size:
+            line += f" Defaults to `{paging.size}: {DEFAULT_PAGE_SIZE}`; raise it to see more."
+        parts.append(line)
     return "\n\n".join(p for p in parts if p)
 
 
-def _paging_args(field: Mapping[str, Any], types: dict[str, Any]) -> list[str]:
-    """The field's paging arguments, if it returns more than one row.
-
-    Matched by name against both conventions — Relay's ``first``/``after`` and the offset style's
-    ``limit``/``skip`` — because nothing in a GraphQL schema marks an argument as paging.
-    """
+def _paging(field: Mapping[str, Any], types: dict[str, Any]) -> Paging | None:
+    """The field's paging arguments by role, or ``None`` if it returns a single row."""
     if not _returns_many(field["type"], types):
-        return []
+        return None
     names = {a["name"] for a in field["args"]}
-    return [
-        a for a in ("first", "last", "limit", "after", "before", "skip", "offset") if a in names
-    ]
+    present = lambda group: tuple(a for a in group if a in names)  # noqa: E731
+    size = next((a for a in _PAGE_SIZE_ARGS if a in names), None)
+    backward, cursors = present(_BACKWARD_ARGS), present(_CURSOR_ARGS)
+    if size is None and not backward and not cursors:
+        return None  # a many-row field with no paging surface at all
+    return Paging(size=size, backward=backward, cursors=cursors)
 
 
 def _returns_many(ref: Mapping[str, Any], types: dict[str, Any]) -> bool:

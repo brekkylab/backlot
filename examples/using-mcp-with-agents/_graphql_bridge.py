@@ -33,6 +33,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from typing import Any
 
 from backlot.graphql import mcp_tools
 
@@ -103,10 +104,15 @@ def main() -> None:
     class _Field(Tool):
         """One root field. The document is fixed; the caller's arguments are the variables."""
 
-        document: str
+        spec: Any
 
         async def run(self, arguments: dict) -> ToolResult:
-            r = await client.post(endpoint, json={"query": self.document, "variables": arguments})
+            # `with_page_default` bounds an unpaged list call, and leaves a caller that paged for
+            # itself alone; the rule and its reason are in `mcp_tools`.
+            variables = mcp_tools.with_page_default(self.spec, arguments)
+            r = await client.post(
+                endpoint, json={"query": self.spec.document, "variables": variables}
+            )
             body = r.json()
             # The GraphQL envelope goes through untouched, on the same principle as
             # `_openapi_bridge.py`'s `validate_output=False`: the mock's response is the source of
@@ -124,7 +130,7 @@ def main() -> None:
                 name=tool.name,
                 description=tool.description,
                 parameters=tool.input_schema,
-                document=tool.document,
+                spec=tool,
             )
         )
     mcp.run(transport="stdio")

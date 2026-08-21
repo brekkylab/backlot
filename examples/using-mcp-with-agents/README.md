@@ -240,8 +240,12 @@ result**, because rows × their own list is a product with no page and no way to
 `transcripts` returns each match's metadata and summary while `transcript(id:)` returns one
 meeting's utterances — the same split `examples/using-official-sdk/fireflies.py` writes by hand for
 its two queries, and the reason an agent searches and then reads. Connections are exempt, being
-bounded by their own page. Each tool's description also names its paging arguments, since omitting
-them means the server's default page rather than everything.
+bounded by their own page. And a many-row tool carries a **default page size**, because an unpaged
+call otherwise takes the server's default page — measured against a real agent, it narrows with a
+filter and never asks for a page size at all. The default is filled in only when the caller named
+none of its own and is not paging backward (Relay rejects `first` and `last` together), so
+`first: 3` and `last: 2` both still mean exactly what they say. Each tool's description names its
+paging arguments and the default.
 
 Depth is the one per-source knob, and both values are measured (see PR #77 for the figures).
 Fireflies uses the default **2**: `Analytics` has no leaf fields of its own, so anything shallower

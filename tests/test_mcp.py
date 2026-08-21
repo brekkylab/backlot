@@ -412,7 +412,10 @@ def _graphql_bridge_call(base, source, token, *, tool_name, args, ok_pred, depth
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post(
                     endpoint,
-                    json={"query": self.document, "variables": arguments},
+                    json={
+                        "query": self.document,
+                        "variables": mcp_tools.with_page_default(spec, arguments),
+                    },
                     headers=headers,
                 )
             body = r.json()

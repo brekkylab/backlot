@@ -421,7 +421,7 @@ input GadgetFilter {
 
 type Query {
   gadget(id: ID!): Gadget!
-  gadgets(first: Int, after: String, filter: GadgetFilter, order: Order): GadgetConnection!
+  gadgets(first: Int, after: String, last: Int, before: String, filter: GadgetFilter, order: Order): GadgetConnection!
   "Loose notes, newest first."
   notes(ids: [ID!], limit: Int): [Note]
 }
@@ -540,7 +540,14 @@ def test_the_depth_budget_bounds_the_selection(depth, path, expected):
 
 def test_every_argument_becomes_a_variable(tools):
     declared = parse(tools["gadgets"].document).definitions[0].variable_definitions
-    assert {v.variable.name.value for v in declared} == {"first", "after", "filter", "order"}
+    assert {v.variable.name.value for v in declared} == {
+        "first",
+        "after",
+        "last",
+        "before",
+        "filter",
+        "order",
+    }
 
 
 def test_a_required_argument_is_required_in_the_input_schema(tools):
@@ -614,6 +621,48 @@ def test_a_many_row_tools_description_names_its_paging_arguments(tools, tool_nam
         assert f"`{name}`" in description
     if not expected:
         assert "paging" not in description
+
+
+@pytest.mark.parametrize(
+    "tool_name, arguments, expected",
+    [
+        # nothing about paging said, so bound it — this is the call an agent actually makes
+        pytest.param("gadgets", {}, {"first": 10}, id="relay-unpaged"),
+        pytest.param("notes", {}, {"limit": 10}, id="offset-unpaged"),
+        pytest.param(
+            "gadgets",
+            {"filter": {"name": {"eq": "x"}}},
+            {"filter": ..., "first": 10},
+            id="filtered",
+        ),
+        # the caller's own size wins, whichever direction it pages in
+        pytest.param("gadgets", {"first": 50}, {"first": 50}, id="own-size"),
+        pytest.param("gadgets", {"last": 5}, {"last": 5}, id="backward-size"),
+        # a forward cursor still gets a size, so page 2 is bounded like page 1
+        pytest.param("gadgets", {"after": "c"}, {"after": "c", "first": 10}, id="next-page"),
+        # `before` alone means "the page ending here"; adding `first` would override it
+        pytest.param("gadgets", {"before": "c"}, {"before": "c"}, id="backward-cursor"),
+        # a single-result tool has no page to bound
+        pytest.param("gadget", {"id": "g1"}, {"id": "g1"}, id="single-result"),
+    ],
+)
+def test_a_page_size_is_supplied_only_when_the_caller_named_none(
+    tools, tool_name, arguments, expected
+):
+    """An unpaged list call otherwise returns the server's default page, which the measured agent
+    never asks to narrow — it filters instead. The default cannot be a variable default in the
+    document, because that would also apply to a `last`-only call and Relay rejects `first` and
+    `last` together."""
+    got = mcp_tools.with_page_default(tools[tool_name], arguments)
+    assert set(got) == set(expected)
+    assert {k: v for k, v in got.items() if expected[k] is not ...} == {
+        k: v for k, v in expected.items() if v is not ...
+    }
+
+
+def test_the_page_default_is_stated_in_the_description(tools):
+    assert "10" in tools["gadgets"].description
+    assert "10" not in tools["gadget"].description
 
 
 def test_a_connection_is_recognised_by_shape_not_by_type_name():

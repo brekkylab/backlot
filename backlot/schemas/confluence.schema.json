@@ -29,6 +29,7 @@
     },
     "space": {
       "type": "string",
+      "minLength": 1,
       "description": "The space this document belongs to (default: the source_type)."
     },
     "group": {
@@ -92,6 +93,7 @@
         "number",
         "string"
       ],
+      "minLength": 1,
       "description": "Creation time (epoch seconds or ISO 8601). Default: synthesized from doc_id."
     },
     "updated": {
@@ -147,6 +149,7 @@
               "number",
               "string"
             ],
+            "minLength": 1,
             "description": "Optional creation time (epoch seconds or ISO string)."
           }
         },

@@ -1881,9 +1881,10 @@ def _byo_github(dsid, raw, P):
         author_email=(author_email or P.unattributed()),
         author_name=author,
         subtype=subtype,
-        # Open unless the bench says otherwise: GitHub reports a state on every issue and
-        # pull, and a file row carries none at all.
-        state=(None if subtype == "file" else _GH_STATE.get(raw_state, "open") or "open"),
+        # Open unless the bench says otherwise: GitHub reports a state on every issue and pull.
+        # The bench holds no file rows -- `subtype` above is issue-or-pull -- so the stateless
+        # case a file would take is the loader's business, not this converter's.
+        state=_GH_STATE.get(raw_state, "open"),
         merged_at=merged_at,
         labels=_names(raw.get("labels")),
         requested_reviewers=reviewers,
@@ -2259,8 +2260,8 @@ def _byo_fireflies(dsid, raw, P):
     # `content` is still omitted: it is DEFINED as the sentence concatenation, so emitting it would
     # double the artifact's largest field and could drift from the sentences it restates.
     sentences = parse_fireflies_transcript(_ff_transcript_text(raw), internal + external)
-    _ff_seconds = _ff_duration(raw.get("duration_minutes"))
-    synth.fireflies_fill_times(sentences, (_ff_seconds * 60) if _ff_seconds else None)
+    ff_minutes = _ff_duration(raw.get("duration_minutes"))
+    synth.fireflies_fill_times(sentences, (ff_minutes * 60) if ff_minutes else None)
     ordinals: dict[str, int] = {}
     for s in sentences:
         ordinals.setdefault(s["speaker_name"] or "", len(ordinals))
@@ -2281,7 +2282,7 @@ def _byo_fireflies(dsid, raw, P):
         )
         for s in sentences
     ]
-    duration = _ff_duration(raw.get("duration_minutes"))
+    duration = ff_minutes
     if duration is None:
         # The last thing said is the earliest the meeting can have ended -- a reading the transcript
         # carries, rather than a number invented for it.

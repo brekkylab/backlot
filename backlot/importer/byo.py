@@ -226,9 +226,14 @@ def _epoch_field(v, where, field):
     typo means the record loads with a time nobody wrote and no way to tell it apart from
     one that was left blank on purpose, which is the whole reason a reply's clock refuses.
     Fields whose absence stores NULL keep plain ``_epoch``: nothing is substituted there,
-    so nothing is disguised."""
+    so nothing is disguised.
+
+    An empty string is unreadable HERE, though ``_time_given`` calls it unwritten: a field whose
+    key the schema requires cannot be left blank by writing nothing into it, and the row it would
+    build has no second at all. Absence is still absence — an optional time simply left out, or
+    written as ``null``, stores NULL as it always did."""
     sec = _epoch(v)
-    if sec is None and _time_given(v):
+    if sec is None and v is not None:
         raise SystemExit(
             f"{where}: {field} is not a time this importer can read "
             f"(got {v!r}; write epoch seconds or ISO 8601)"
@@ -236,20 +241,11 @@ def _epoch_field(v, where, field):
     return sec
 
 
-def _message_second(stated, default: int) -> int:
-    """A child message's second: the one the corpus stated, else the caller's default.
-
-    A plain ``or`` reads the same until the stated second is 0 — 1970-01-01T00:00:00Z, which a
-    corpus can legitimately write — and then substitutes the default for a time the author
-    actually wrote."""
-    return default if stated is None else stated
-
-
 def _epoch(v):
     """Parse a BYO time (epoch seconds int/float, or ISO 8601 string) -> unix seconds.
 
-    Returns None for a missing/unparseable value, so the router falls back to the
-    deterministic synthesized timestamp."""
+    None for a value this cannot read, which the caller decides what to do about: a field whose
+    absence stores NULL takes it as absence, and ``_epoch_field`` refuses it."""
     if not _time_given(v):
         return None
     if isinstance(v, bool):
@@ -2277,15 +2273,13 @@ class _Loader:
         # To/Cc, Message-ID, body — sharing the root's thread_id and ACL and carrying its position
         # in `thread_seq`, which is what `users.messages.list` / `users.threads.get` page over.
         for i, msg in enumerate(messages or [], start=1):
-            # No fallback to the ROOT's author, unlike a slack reply: a thread's messages have
-            # different senders by definition, so attributing an unattributed one to whoever
-            # opened the thread would invent a sender. It falls through to `unknown@<org_domain>`.
+            # A message states its own sender, and no fallback to the ROOT's author stands behind
+            # it: a thread's messages have different senders by definition, so attributing one to
+            # whoever opened the thread would invent a sender.
             m_author = msg.get("author_email")
             register(m_author, msg.get("author_name"))
             msg_id = msg.get("doc_id") or f"{doc_id}::m{i}"
             seen.add((src, msg_id))
-            # Its own `created` when given, else the root's clock + an hour per position — the
-            # spread a real reply chain has, and never NULL.
             insert(
                 msg_id,
                 m_author,
@@ -2295,10 +2289,7 @@ class _Loader:
                 # `thread` is forced to the ROOT's thread: a child must never open a thread of
                 # its own, or `users.threads.get` would return a one-message thread.
                 ex={**msg, "thread": gmail_thread},
-                cts=_message_second(
-                    _epoch_field(msg.get("created"), f"{where}: message {i}", "created"),
-                    created + i * 3600,
-                ),
+                cts=_epoch_field(msg["created"], f"{where}: message {i}", "created"),
             )
 
         # Children are written under sequence ids (`::c{j}`, `::s{j}`, `thread_seq`), so a version

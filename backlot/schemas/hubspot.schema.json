@@ -28,6 +28,7 @@
     },
     "object_type": {
       "type": "string",
+      "minLength": 1,
       "description": "CRM object type, plural as in the API path (contacts, companies, deals, tickets, notes, emails, meetings, calls, tasks, or a custom object). Default: the source_type."
     },
     "group": {
@@ -121,6 +122,7 @@
         "number",
         "string"
       ],
+      "minLength": 1,
       "description": "createdate (epoch seconds or ISO 8601). Default: synthesized from doc_id."
     },
     "updated": {

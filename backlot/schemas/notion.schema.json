@@ -24,6 +24,7 @@
     },
     "teamspace": {
       "type": "string",
+      "minLength": 1,
       "description": "The teamspace this page/database belongs to (default: the source_type)."
     },
     "group": {
@@ -99,6 +100,7 @@
         "number",
         "string"
       ],
+      "minLength": 1,
       "description": "Creation time (epoch seconds or ISO 8601). Default: synthesized from doc_id."
     },
     "updated": {
@@ -107,6 +109,7 @@
         "number",
         "string"
       ],
+      "minLength": 1,
       "description": "last_edited_time (epoch seconds or ISO 8601). Default: created."
     },
     "comments": {
@@ -142,6 +145,7 @@
               "number",
               "string"
             ],
+            "minLength": 1,
             "description": "Optional creation time (epoch seconds or ISO string)."
           }
         },

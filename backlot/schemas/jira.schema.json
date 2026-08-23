@@ -24,6 +24,7 @@
     },
     "project": {
       "type": "string",
+      "minLength": 1,
       "description": "The project this document belongs to (default: the source_type)."
     },
     "group": {
@@ -70,10 +71,12 @@
     },
     "status": {
       "type": "string",
+      "minLength": 1,
       "description": "e.g. To Do, In Progress, Done."
     },
     "issuetype": {
       "type": "string",
+      "minLength": 1,
       "description": "e.g. Task, Bug, Story, Incident, Sub-task."
     },
     "priority": {
@@ -112,6 +115,7 @@
         "number",
         "string"
       ],
+      "minLength": 1,
       "description": "fields.created (epoch seconds or ISO 8601). Default: synthesized from doc_id."
     },
     "updated": {
@@ -188,6 +192,7 @@
               "number",
               "string"
             ],
+            "minLength": 1,
             "description": "Optional creation time (epoch seconds or ISO string)."
           }
         },

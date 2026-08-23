@@ -92,6 +92,9 @@ def test_github_state_is_only_what_the_api_returns(state, ok):
         ("api.v2", True),
         ("douro/core-payments", False),
         ("has space", False),
+        # "must not exceed 100 characters" is the other half of the sentence GitHub states
+        ("r" * 100, True),
+        ("r" * 101, False),
     ],
 )
 def test_a_github_repo_is_a_name_not_an_owner_qualified_path(repo, ok):
@@ -121,6 +124,11 @@ def test_a_record_must_state_its_container_author_and_time(source_type, containe
     assert container in joined
     assert "created" in joined
     assert "author_email" in joined or "host_email" in joined
+    # And the requirement does not stop at the key: `str(rec[container])` is taken verbatim now, so
+    # a corpus that states the container as "" gets a container whose name is the empty string,
+    # where the old `rec.get(col) or src` coerced it to the source name.
+    blank = record_errors(complete(source_type, **{container: "", "doc_id": "blank"}))
+    assert blank and container in blank[0], blank
 
 
 def test_a_fireflies_record_may_name_its_owner_as_host_email():
@@ -319,6 +327,23 @@ def test_comment_needs_content_or_body():
     assert any("comments/0" in e for e in errs)
 
 
+def test_an_either_or_child_row_names_both_fields():
+    """`anyOf` is the accurate statement of "state either of these" and the useless message at the
+    same time: jsonschema reports `is not valid under any of the given schemas`, which names neither
+    alternative and quotes the child row instead of the missing key -- the string #47 existed to
+    remove. The branches ARE the alternatives, so the message lists them."""
+    assert record_errors(
+        complete("linear", doc_id="ln-1", comments=[{"author_email": "a@b.com", "created_ts": 1}])
+    ) == ["ln-1 [comments/0]: 'content' or 'body' is a required property"]
+    assert record_errors(complete("fireflies", doc_id="ff-2", sentences=[{"start_time": 0}])) == [
+        "ff-2 [sentences/0]: 'text' or 'content' is a required property"
+    ]
+    # An `anyOf` that is a union of TYPES names no fields, and keeps jsonschema's own message.
+    assert record_errors(complete("linear", doc_id="ln-2", attachments=[7])) == [
+        "ln-2 [attachments/0]: 7 is not valid under any of the given schemas"
+    ]
+
+
 def test_replies_only_on_slack():
     assert any(
         "replies" in e
@@ -363,13 +388,20 @@ def test_schema_files_are_valid_json_schemas():
         ("eng_artifacts", False),
         ("-eng", False),
         ("b", False),
+        # "Bucket names must not contain two adjacent periods", and "must not be formatted as an
+        # IP address" -- both on the same AWS list as the three rules above, and both accepted by
+        # a charset-only pattern.
+        ("logs..2026", False),
+        ("192.168.1.1", False),
+        ("192.168.1.1.eng", True),
     ],
 )
 def test_an_s3_bucket_is_named_the_way_s3_names_one(bucket, ok):
-    """A bucket is the first half of a served object's identity and a host label in the
+    """A bucket is the first half of a served object's identity and the host label in the
     virtual-hosted URL S3 hands back, so a name S3 would refuse cannot be served either: a slash
-    splits the address, an uppercase letter or an underscore cannot appear in a host label, and a
-    one-character name is below the three S3 requires.
+    splits the address, an uppercase letter or an underscore cannot appear in a host label, a
+    one-character name is below the three S3 requires, and S3 refuses both adjacent periods and a
+    name shaped like an IP address. A dot itself S3 allows, so this does too.
     """
     errors = _first_error({"source_type": "s3", "bucket": bucket, "key": "docs/readme.md"})
     assert (errors == []) is ok
@@ -566,7 +598,7 @@ def test_fireflies_record_with_neither_sentences_nor_content_is_rejected(tmp_pat
     given schemas" and name neither field.
     """
     assert record_errors(complete("fireflies", _omit={"content"}, title="Empty")) == [
-        "Empty: 'content' is a required property"
+        "Empty: 'content' is a required property when sentences is absent"
     ]
 
     corpus = tmp_path / "c.jsonl"
@@ -1076,6 +1108,44 @@ def test_a_multi_value_predicate_is_bracketed_against_the_and():
     assert validation._when_clause(
         one, ["allOf", 0, "then", "required"], one["allOf"][0]["then"]
     ) == (' when a is "x"')
+
+
+def test_a_negated_predicate_still_names_its_condition():
+    """Both shapes a schema states an exclusion in. `{"not": {"const": …}}` predicates on a VALUE
+    being anything else; `{"not": {"required": […]}}` predicates on a field's ABSENCE, which is how
+    two fields say "one of us". Rendering neither left the rule reporting as a bare
+    `'state' is a required property` — the line #47 was written about — and left a record that
+    states neither of the two fields never learning that stating the other would do."""
+    value = {
+        "allOf": [
+            {
+                "if": {"properties": {"subtype": {"not": {"const": "file"}}}},
+                "then": {"required": ["state"]},
+            }
+        ]
+    }
+    assert (
+        validation._when_clause(value, ["allOf", 0, "then", "required"], value["allOf"][0]["then"])
+        == ' when subtype is not "file" (or absent)'
+    )
+    presence = {
+        "allOf": [
+            {"if": {"not": {"required": ["host_email"]}}, "then": {"required": ["author_email"]}}
+        ]
+    }
+    assert (
+        validation._when_clause(
+            presence, ["allOf", 0, "then", "required"], presence["allOf"][0]["then"]
+        )
+        == " when host_email is absent"
+    )
+    # and the rules the shipped schemas state in those shapes, end to end
+    assert record_errors(complete("github", doc_id="gh-1", subtype="issue", _omit={"state"})) == [
+        "gh-1: 'state' is a required property when subtype is not \"file\" (or absent)"
+    ]
+    assert record_errors(complete("fireflies", doc_id="ff-1", _omit={"author_email"})) == [
+        "ff-1: 'author_email' is a required property when host_email is absent"
+    ]
 
 
 def test_a_malformed_condition_reports_rather_than_raises():

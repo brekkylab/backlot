@@ -22,6 +22,7 @@
     },
     "mailbox": {
       "type": "string",
+      "minLength": 1,
       "description": "The mailbox this document belongs to (default: the source_type)."
     },
     "group": {
@@ -121,6 +122,7 @@
         "number",
         "string"
       ],
+      "minLength": 1,
       "description": "Sent/received time (epoch seconds or ISO 8601). Default: synthesized. Drives Date + internalDate."
     },
     "mailbox_owner": {
@@ -199,6 +201,7 @@
               "number",
               "string"
             ],
+            "minLength": 1,
             "description": "Sent time (default: the root's + an hour per position)."
           }
         },

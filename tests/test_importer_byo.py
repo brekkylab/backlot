@@ -633,6 +633,16 @@ def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
         with pytest.raises(SystemExit, match=f"{field} is not a time this importer can read"):
             load(corpus, Settings(data_dir=tmp_path))
 
+    # The empty string is the one unreadable value `_time_given` calls unwritten, which was right
+    # while a default stood behind it and wrong once the field became required: `None` reached the
+    # insert and died as `IntegrityError: NOT NULL constraint failed: slack_messages.created_ts`,
+    # naming a column where the message above names the field. `minLength: 1` refuses it in the
+    # contract now; this is the guard behind that, for a time field no schema constrains.
+    for field in ("created", "created_ts"):
+        with pytest.raises(SystemExit, match=f"{field} is not a time this importer can read"):
+            byo._epoch_field("", "a record", field)
+    assert byo._epoch_field(None, "a record", "updated") is None
+
 
 def test_byo_a_stated_epoch_zero_is_a_second_not_a_missing_value(tmp_path):
     """1970-01-01T00:00:00Z parses to 0, which is falsy. Every field whose ABSENCE takes a default

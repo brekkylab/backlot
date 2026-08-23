@@ -124,26 +124,41 @@ def _when_clause(schema: dict, schema_path, failing) -> str:
     for field, spec in (props if isinstance(props, dict) else {}).items():
         if not isinstance(spec, dict):
             continue
+        # A NEGATED predicate — `{"not": {"const": "file"}}` — is how a schema says "of everything
+        # except". Read through the negation rather than skipping it: unrendered, the rule reported
+        # with no condition at all, which is the bare `'state' is a required property` this
+        # function exists to replace.
+        negated = isinstance(spec.get("not"), dict)
+        if negated:
+            spec = spec["not"]
         if "const" in spec:
             allowed = [spec["const"]]
         elif isinstance(spec.get("enum"), list) and spec["enum"]:
             allowed = spec["enum"]
         else:
             continue
+        verb = "is not" if negated else "is"
         dumped = [json.dumps(v, ensure_ascii=False) for v in allowed]
         # Not `x or y`: the fields are joined by " and ", so a bare `or` between values reads as
         # `x or (y and z)` once a second field follows. A single value needs no bracketing.
         shown = dumped[0] if len(dumped) == 1 else "one of [" + ", ".join(dumped) + "]"
         req = cond.get("required")
         if isinstance(req, list) and field in req:
-            clauses.append(f"{field} is {shown}")
+            clauses.append(f"{field} {verb} {shown}")
         else:
             # `properties` constrains a field's value, it does not require the field. An `if` with
             # no sibling `required` therefore SUCCEEDS for a record that omits the field, so `then`
             # is in force there too -- and saying only `when subtype is "file"` sends the author
             # looking through a record for a field they never set. `unless` needs it for the mirror
             # reason: an absent field satisfies the predicate, so it does not lift the rule.
-            clauses.append(f"{field} is {shown} (or absent)")
+            clauses.append(f"{field} {verb} {shown} (or absent)")
+    # `{"not": {"required": [...]}}` predicates on a field's ABSENCE — how a schema says "one of
+    # these two, and here is the one to require when the other is missing". Left unrendered, a
+    # record that states neither was told only that the second is required and never learned that
+    # stating the first would do.
+    absent = cond.get("not")
+    if isinstance(absent, dict) and isinstance(absent.get("required"), list):
+        clauses += [f"{field} is absent" for field in absent["required"]]
     lead = " unless " if parts[branch] == "else" else " when "
     return lead + " and ".join(clauses) if clauses else ""
 
@@ -164,6 +179,31 @@ def _record_label(rec: dict) -> str:
             label = " ".join(value.split())
             return label if len(label) <= 60 else label[:59] + "…"
     return ""
+
+
+def _alternatives(err) -> str | None:
+    """The message for an ``anyOf`` whose every branch requires ONE field — a child row saying
+    "state either of these", which is how ``content``/``body`` and ``text``/``content`` are spelled.
+
+    jsonschema reports that failure as ``is not valid under any of the given schemas``: it names
+    neither field, and the record it quotes is the child row rather than the missing key. Since the
+    branches ARE the alternatives, the message can say which ones. None for any other ``anyOf`` —
+    a union of types, say — where the branches name no fields to list.
+    """
+    if err.validator != "anyOf" or not isinstance(err.validator_value, list):
+        return None
+    fields: list[str] = []
+    for branch in err.validator_value:
+        if not isinstance(branch, dict) or set(branch) != {"required"}:
+            return None
+        req = branch["required"]
+        if not isinstance(req, list) or len(req) != 1 or not isinstance(req[0], str):
+            return None
+        fields.append(req[0])
+    if len(fields) < 2:
+        return None
+    quoted = [f"'{f}'" for f in fields]
+    return f"{', '.join(quoted[:-1])} or {quoted[-1]} is a required property"
 
 
 def record_errors(rec: dict) -> list[str]:
@@ -195,8 +235,9 @@ def record_errors(rec: dict) -> list[str]:
             head = f"{label} [{loc}]" if loc else label
         else:
             head = f"<root> [{loc}]" if loc else "<root>"
+        message = _alternatives(err) or err.message
         msgs.append(
-            f"{head}: {err.message}{_when_clause(SERVICE_SCHEMAS[st], err.schema_path, err.schema)}"
+            f"{head}: {message}{_when_clause(SERVICE_SCHEMAS[st], err.schema_path, err.schema)}"
         )
     return msgs
 

@@ -96,6 +96,35 @@ def test_hubspot_unknown_object_type_is_400(client, admin_h):
     assert r.json()["message"] == "Invalid object or event type id: 0-9999"
 
 
+@pytest.mark.parametrize(
+    "asked,ok",
+    [
+        ("0-2", True),  # companies, the type this corpus holds
+        ("0-3", True),  # deals: a real type, so an empty page rather than an error
+        ("0-6", False),  # no standard object holds it
+        ("0-41", False),
+        ("2-12345", False),  # a custom object's id, which no corpus of this mock defines
+    ],
+)
+def test_hubspot_an_object_type_id_is_a_spelling_of_its_type(client, admin_h, asked, ok):
+    """`/crm/v3/objects/0-3` IS deals. Checked against api.hubapi.com on 2026-08-23 with a
+    scope-less key: each of the thirteen published ids answers 403 MISSING_SCOPES exactly as its
+    name does, while an id no standard object holds answers 400 `Invalid object or event type
+    id`."""
+    r = client.get(f"/hubspot/crm/v3/objects/{asked}", headers=admin_h, params={"limit": 100})
+    assert (r.status_code == 200) is ok, r.json()
+    if not ok:
+        assert r.json()["message"] == f"Invalid object or event type id: {asked}"
+        return
+    named = "companies" if asked == "0-2" else "deals"
+    assert [row["id"] for row in r.json()["results"]] == [
+        row["id"]
+        for row in client.get(
+            f"/hubspot/crm/v3/objects/{named}", headers=admin_h, params={"limit": 100}
+        ).json()["results"]
+    ]
+
+
 def test_hubspot_one_type_stated_both_ways_is_one_type(tmp_path):
     """A portal has ONE `deals` type, so no HubSpot response can show a record under
     `/objects/deal/{id}` that `/objects/deal` never lists. Resolving to the first spelling that

@@ -252,16 +252,48 @@ _SINGULAR = {
     "feedback_submission": "feedback_submissions",
 }
 _PLURAL = {plural: singular for singular, plural in _SINGULAR.items()}
-# An objectTypeId (`0-3`), which this mock does not model: HubSpot answers a malformed one with its
-# own message rather than the infer-from-a-word one.
+# The objectTypeId a standard object ALSO answers to: `/crm/v3/objects/0-3` is deals, and HubSpot
+# documents the whole table. Checked against api.hubapi.com on 2026-08-23 — each of these thirteen
+# answers 403 MISSING_SCOPES exactly as its name does, while an id no standard object holds (`0-6`,
+# `0-9`, `0-12`, `0-41`, `2-12345`) answers 400 `Invalid object or event type id: <id>`, which is
+# the message below. Custom objects are `2-<n>` and are not reachable by name at all any more; this
+# mock still addresses a corpus's custom type by the name the corpus gave it.
+_TYPE_IDS = {
+    "0-1": "contacts",
+    "0-2": "companies",
+    "0-3": "deals",
+    "0-5": "tickets",
+    "0-7": "products",
+    "0-8": "line_items",
+    "0-14": "quotes",
+    "0-19": "feedback_submissions",
+    "0-27": "tasks",
+    "0-46": "notes",
+    "0-47": "meetings",
+    "0-48": "calls",
+    "0-49": "emails",
+}
+# The shape of an objectTypeId, for telling "an id I do not know" apart from "not a type at all":
+# HubSpot answers those two with different messages.
 _TYPE_ID = re.compile(r"\d+-\d+")
+
+# Every spelling of a standard object -> the one this mock calls canonical (the API's plural).
+_CANONICAL = {name: name for name in _STANDARD_OBJECT_TYPES}
+_CANONICAL.update(_SINGULAR)
+_CANONICAL.update(_TYPE_IDS)
 
 
 def _aliases(object_type: str) -> list[str]:
-    """Every spelling of this object type — what was asked for, then the standard object's other
-    spelling. Order matters: a corpus that states both keeps the one the caller named."""
-    other = _SINGULAR.get(object_type) or _PLURAL.get(object_type)
-    return [object_type] if other is None else [object_type, other]
+    """Every spelling of this object type — plural, singular and objectTypeId — with the one the
+    caller asked for first, so a corpus that states two of them keeps the caller's own.
+
+    A type outside the standard set is its own only spelling: a custom object is whatever the corpus
+    called it."""
+    canonical = _CANONICAL.get(object_type)
+    if canonical is None:
+        return [object_type]
+    rest = [spelling for spelling in _CANONICAL if _CANONICAL[spelling] == canonical]
+    return [object_type] + [spelling for spelling in rest if spelling != object_type]
 
 
 def _resolve_type(request: Request, object_type: str) -> list[str] | None:
@@ -281,8 +313,8 @@ def _resolve_type(request: Request, object_type: str) -> list[str] | None:
     names = _aliases(object_type)
     if any(store.get_container(conn, "hubspot", name) is not None for name in names):
         return names
-    canonical = _SINGULAR.get(object_type, object_type)
-    return [canonical] if canonical in _STANDARD_OBJECT_TYPES else None
+    canonical = _CANONICAL.get(object_type)
+    return [canonical] if canonical else None
 
 
 def _unknown_type(object_type: str) -> JSONResponse:

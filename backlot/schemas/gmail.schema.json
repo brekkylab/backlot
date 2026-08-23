@@ -14,7 +14,7 @@
     },
     "title": {
       "type": "string",
-      "description": "The message's Subject. Required but MAY be empty: a message with no Subject header is legal and the API serves it as one, so the corpus states the absence rather than inventing a line."
+      "description": "The message's Subject. Required but MAY be empty, and empty means the message HAS no Subject: RFC 5322 makes the header optional, so a message that states \"\" is served with no `Subject` header at all -- the same treatment `to` gets -- rather than with an empty one, which is a response real Gmail would not give."
     },
     "doc_id": {
       "type": "string",

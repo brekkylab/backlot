@@ -727,7 +727,14 @@ def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
             "value": row["to_addr"] or _mailbox_address(row["mailbox"]),
         },
         {"name": "MIME-Version", "value": "1.0"},
-        {"name": "Subject", "value": row["title"]},
+    ]
+    # `Subject` sits with `To`, not with the mandatory headers: RFC 5322 §3.6 gives both 0..1, and
+    # this corpus format says an empty subject IS the absence of one ("a message with no Subject
+    # header is legal"). Emitting `Subject: ""` served a header real Gmail would have left out.
+    # Placed here rather than appended with the others so the header order stays as it was.
+    if row["title"]:
+        headers.append({"name": "Subject", "value": row["title"]})
+    headers += [
         {"name": "From", "value": f"{display} <{author}>"},
         {"name": "Date", "value": synth.rfc2822(ts)},
         {"name": "Message-ID", "value": msg_id},

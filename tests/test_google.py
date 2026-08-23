@@ -131,6 +131,10 @@ def test_a_message_with_no_recipient_serves_no_to_header(tmp_path, mailbox):
     at all -- a Bcc-only send -- so inventing a To makes a case this mock could never reproduce.
     `Delivered-To` keeps its default: a receiving MTA really does add it.
 
+    `Subject` is the same clause of the same section (3.6 gives `to` and `subject` both 0..1), and
+    this format says an empty subject IS the absence of one, so a stated `""` serves no header
+    either -- where it used to serve `Subject: ""`.
+
     The mailbox is stated both ways a corpus states one -- a slug and the owner's address -- because
     the address is what the CALLER is known by, and `users/me/messages` has nothing but that address
     to find the mailbox with."""
@@ -147,7 +151,16 @@ def test_a_message_with_no_recipient_serves_no_to_header(tmp_path, mailbox):
                 content="For the archive.",
                 author_email="ava@acme.com",
                 created="2026-02-11T08:00:00Z",
-            )
+            ),
+            complete(
+                "gmail",
+                doc_id="gm-no-subject",
+                mailbox=mailbox,
+                title="",
+                content="No subject on this one.",
+                author_email="ava@acme.com",
+                created="2026-02-11T09:00:00Z",
+            ),
         ],
     )
     tokens = yaml.safe_load(settings.tokens_path.read_text())
@@ -159,13 +172,21 @@ def test_a_message_with_no_recipient_serves_no_to_header(tmp_path, mailbox):
         body = c.get(
             f"/gmail/v1/users/me/messages/{served_id('gmail', 'gm-no-to')}", headers=admin
         ).json()
+        subjectless = c.get(
+            f"/gmail/v1/users/me/messages/{served_id('gmail', 'gm-no-subject')}", headers=admin
+        ).json()
         owned = c.get(
             "/gmail/v1/users/me/messages", headers={"authorization": f"Bearer {ava}"}
         ).json()
     headers = {h["name"]: h["value"] for h in body["payload"]["headers"]}
     assert "To" not in headers
+    assert headers["Subject"] == "Bcc-only note"
     assert headers["Delivered-To"] == "ava@acme.com"
-    assert [m["id"] for m in owned["messages"]] == [served_id("gmail", "gm-no-to")]
+    assert "Subject" not in {h["name"] for h in subjectless["payload"]["headers"]}
+    assert {m["id"] for m in owned["messages"]} == {
+        served_id("gmail", "gm-no-to"),
+        served_id("gmail", "gm-no-subject"),
+    }
 
 
 def test_gmail_messages_list_serves_hex_ids(client, admin_h):

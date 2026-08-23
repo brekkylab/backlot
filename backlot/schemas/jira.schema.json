@@ -134,7 +134,7 @@
     "reporter": {
       "type": "string",
       "format": "email",
-      "description": "Reporter email (emitted as fields.reporter). Default: the author."
+      "description": "Reporter email (emitted as fields.reporter). Default: the author. Optional, unlike `status` and `issuetype`: Atlassian's own words are that \"the reporter field is not required by default, and users can leave it empty\", and the REST API omits the field entirely for an issue whose reporter is anonymous (JRACLOUD-67358)."
     },
     "resolution": {
       "type": "string",
@@ -228,7 +228,6 @@
     "created",
     "issuetype",
     "project",
-    "reporter",
     "source_type",
     "status",
     "title"

@@ -96,6 +96,50 @@ def test_hubspot_unknown_object_type_is_400(client, admin_h):
     assert r.json()["message"] == "Invalid object or event type id: 0-9999"
 
 
+def test_hubspot_one_type_stated_both_ways_is_one_type(tmp_path):
+    """A portal has ONE `deals` type, so no HubSpot response can show a record under
+    `/objects/deal/{id}` that `/objects/deal` never lists. Resolving to the first spelling that
+    exists did exactly that to a corpus stating both: each list path served its own half while
+    get-one and batch read accepted either."""
+    from tests._helpers import client_for
+
+    records = [
+        {
+            "source_type": "hubspot",
+            "doc_id": "hs-singular",
+            "object_type": "deal",
+            "title": "Acme renewal",
+            "content": "Renewal.",
+            "author_email": "rep@acme.com",
+            "created": "2026-03-01T09:00:00Z",
+            "properties": {"dealname": "Acme renewal"},
+        },
+        {
+            "source_type": "hubspot",
+            "doc_id": "hs-plural",
+            "object_type": "deals",
+            "title": "Beta",
+            "content": "Beta.",
+            "author_email": "rep@acme.com",
+            "created": "2026-03-02T09:00:00Z",
+            "properties": {"dealname": "Beta"},
+        },
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    # A second client over a different DB in this module, so the app is re-imported: the lifespan
+    # writes its connection onto module-level state (see `client_for`).
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        both = {served_id("hubspot", "hs-singular"), served_id("hubspot", "hs-plural")}
+        for asked in ("deal", "deals"):
+            listed = c.get(f"/hubspot/crm/v3/objects/{asked}", headers=h, params={"limit": 100})
+            assert {r["id"] for r in listed.json()["results"]} == both, asked
+            searched = c.post(f"/hubspot/crm/v3/objects/{asked}/search", headers=h, json={})
+            assert searched.json()["total"] == 2, asked
+            for rid in both:
+                assert c.get(f"/hubspot/crm/v3/objects/{asked}/{rid}", headers=h).status_code == 200
+
+
 @pytest.mark.parametrize("asked", ["companies", "company"])
 def test_hubspot_a_standard_type_answers_to_either_spelling(client, admin_h, asked):
     """HubSpot resolves the path segment through its object-type registry, so `/objects/company`

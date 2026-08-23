@@ -264,21 +264,25 @@ def _aliases(object_type: str) -> list[str]:
     return [object_type] if other is None else [object_type, other]
 
 
-def _resolve_type(request: Request, object_type: str) -> str | None:
-    """The spelling this object type's records are STORED under, or None if HubSpot would not
+def _resolve_type(request: Request, object_type: str) -> list[str] | None:
+    """Every stored spelling this object type's records may sit under, or None if HubSpot would not
     recognize the type at all.
 
     A corpus states an object type in whichever spelling it likes — ERB writes `notes`, a converted
     dataset commonly writes `note` — and the records have to be reachable under the vendor's own
-    path either way. Independent of the caller's ACL and of whether any record is visible: a
-    standard type whose every record the caller cannot read still exists, and still returns an
-    empty page rather than an error."""
+    path either way. ALL the spellings, not the first one that exists: a portal has one `deals`
+    type, so a record `/objects/deal/{id}` serves cannot be one `/objects/deal` never lists, which
+    is what resolving to a single container did to a corpus that stated both.
+
+    Independent of the caller's ACL and of whether any record is visible: a standard type whose
+    every record the caller cannot read still exists, and still returns an empty page rather than
+    an error."""
     conn = auth.conn(request)
-    for name in _aliases(object_type):
-        if store.get_container(conn, "hubspot", name) is not None:
-            return name
+    names = _aliases(object_type)
+    if any(store.get_container(conn, "hubspot", name) is not None for name in names):
+        return names
     canonical = _SINGULAR.get(object_type, object_type)
-    return canonical if canonical in _STANDARD_OBJECT_TYPES else None
+    return [canonical] if canonical in _STANDARD_OBJECT_TYPES else None
 
 
 def _unknown_type(object_type: str) -> JSONResponse:
@@ -512,8 +516,8 @@ async def list_objects(object_type: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
-    stored = _resolve_type(request, object_type)
-    if stored is None:
+    spellings = _resolve_type(request, object_type)
+    if spellings is None:
         return _unknown_type(object_type)
     qp = request.query_params
     limit = _clamp(qp.get("limit"), 10, _PAGE_MAX)
@@ -522,7 +526,7 @@ async def list_objects(object_type: str, request: Request):
         return err
     rows = store.list_hubspot_objects(
         auth.conn(request),
-        stored,
+        spellings,
         after_id=after_doc,
         visible_ids=auth.visible_ids(request, caller),
         limit=limit + 1,
@@ -556,8 +560,8 @@ async def search_objects(object_type: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
-    stored = _resolve_type(request, object_type)
-    if stored is None:
+    spellings = _resolve_type(request, object_type)
+    if spellings is None:
         return _unknown_type(object_type)
     body = await json_body(request)
     limit = _clamp(body.get("limit"), 10, _PAGE_MAX)
@@ -585,7 +589,7 @@ async def search_objects(object_type: str, request: Request):
     while True:
         batch = store.list_hubspot_objects(
             conn,
-            stored,
+            spellings,
             after_id=cursor,
             visible_ids=visible,
             limit=2000,
@@ -616,8 +620,8 @@ async def batch_read(object_type: str, request: Request):
     caller = auth.resolve_bearer(request)
     if caller is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
-    stored = _resolve_type(request, object_type)
-    if stored is None:
+    spellings = _resolve_type(request, object_type)
+    if spellings is None:
         return _unknown_type(object_type)
     body = await json_body(request)
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)

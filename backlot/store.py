@@ -1152,12 +1152,19 @@ def list_hubspot_objects(
     rather than an OFFSET and needs no translation on the way in. ``archived`` splits the two views
     the API exposes.
 
+    ``object_type`` may be several spellings of ONE type — HubSpot answers a standard object under
+    its singular as well as its plural, and a corpus states whichever it likes, so the listing
+    covers every spelling rather than the one the caller happened to type.
+
     ``prefilter`` is a ``(sql_fragment, params)`` the caller has established as a *necessary*
     condition, so pushing it down can only remove rows that would have been rejected anyway.
     ``columns`` narrows the projection: search walks the whole object type to report an honest
     ``total``, and ``content`` (a note's body) dominates that scan if it is read needlessly."""
-    sql = f"SELECT {columns} FROM hubspot_objects WHERE object_type = ?"
-    params: list = [object_type]
+    types = [object_type] if isinstance(object_type, str) else list(object_type)
+    sql = (
+        f"SELECT {columns} FROM hubspot_objects WHERE object_type IN ({','.join('?' * len(types))})"
+    )
+    params: list = list(types)
     if prefilter:
         frag, fparams = prefilter
         sql += f" AND {frag}"

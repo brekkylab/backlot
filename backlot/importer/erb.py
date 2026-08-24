@@ -212,6 +212,15 @@ _NON_PERSON_WORDS = {
     "hr",
     "csm",
     "se",
+    # The rest of the bench's role acronyms. Each stands where a name would ("PM Priya Rao",
+    # "QA Lena Fischer"), and three capitalised tokens is a name as far as the test above can see.
+    # Only the ones the corpus actually writes: `tpm`, `dba` and `sdr` appear in none of its
+    # labels, and `ae` in eight -- not enough to spend a name like "Kim Ae Ri" on.
+    "qa",
+    "pm",
+    "noc",
+    "tl",
+    "cs",
 }
 
 
@@ -226,8 +235,16 @@ _ACTIVITY_WORDS = frozenset(
     grooming refinement alignment status summary recap readout onboarding training workshop spike
     research analysis testing rollout launch release migration cleanup hardening hotfix context
     background blocked blocker blockers risk risks outcome
-    created opened closed resolved filed reported merged deployed shipped scheduled""".split()
+    created opened closed resolved filed reported merged deployed shipped scheduled
+    steps items links critique implementation prototype todo mitigation checklist""".split()
 )
+# The second line is the bench's own section headings, counted off its comment labels: "Next
+# steps" (509 rows), "Prototype" (374), "Design critique" (262), "Action items" (165), "Links"
+# (160), "Implementation" (128), "TODO" (85), "Mitigation" (46), "QA checklist" (48). ERB is a
+# released corpus, so this list can be finished rather than merely extended -- but only for words
+# that name a THING. "Slack thread" would take `SRE Team (thread #support)` from the SRE desk to
+# nobody, and "hypothesis" would take "Aisha Patel Hypothesis" from Aisha Patel to nobody, which
+# is the attribution the label exists to carry.
 _CUSTOMER_WORD = re.compile(r"\b(customers?|client)\b", re.I)
 # "Support (to customer)" names the AUDIENCE, not the author: the desk wrote it.
 _CUSTOMER_AUDIENCE = re.compile(r"\bto (?:the )?(?:customers?|client)\b", re.I)
@@ -342,12 +359,46 @@ def person_reference(label, *, first_names=None) -> tuple[str | None, str | None
         hit = (first_names or {}).get(side.lower())
         if hit:
             return hit, other(i)
+    # The corpus also writes the desk and the person as one run of words, with no punctuation to
+    # split on: "Support Maya Chen", "Dev Patel Support", "by Marcus Li", "Rafael Mendes SRE
+    # Oncall". A desk word anywhere in a label disqualifies the whole of it, which is what leaves
+    # these unresolved, so scan the runs INSIDE it -- longest first, or a real four-token name
+    # would lose to its own two-token prefix. The counterparty rule applies here as it does to the
+    # comma: a name in a label that names the other side of the deal is their staff.
+    toks = s.split()
+    if len(toks) > 2 and not _names_counterparty(s):
+        for width in range(min(4, len(toks) - 1), 1, -1):
+            for start in range(len(toks) - width + 1):
+                run = " ".join(toks[start : start + width])
+                if _person_like(run):
+                    rest = " ".join(toks[:start] + toks[start + width :]).strip(" ,-–—")
+                    return run, (rest or None)
     # A label wrapped entirely in parentheses -- "(Customer, Northpeak Health)" -- is unwrapped,
     # since the brackets add nothing. Any other unresolved label is returned as written: half of
     # "Support (Aisha)" is still part of what the corpus said about this comment.
     if split is not None and not sides[0]:
         return None, (sides[1] or None)
     return None, s
+
+
+def _counterparty_owns(label: str | None, person: str | None, company: str | None) -> bool:
+    """Does the company this record names own the person written in its comment label?
+
+    A jira ticket states its ``customer_company`` separately, so the label can say whose person a
+    name is, and it says so by position -- the same asymmetry the comma reads. Ahead of the name the
+    company marks their staff ("LuminaHealth / Priya Shah"); behind it one of ours acted toward them
+    ("Lena Park (Support) -> StreamlineAI", "Liam O'Rourke (Support/TAM) - Shared plan with Acme
+    AI"). A name that IS the company is nobody at all ("Informed Acme AI").
+    """
+    if not (label and person and company):
+        return False
+    whole, who, firm = _slug(label), _slug(person), _slug(company)
+    if not firm or firm not in whole:
+        return False
+    if firm in who:
+        return True
+    at_firm, at_who = whole.find(firm), whole.find(who)
+    return at_who >= 0 and at_firm < at_who
 
 
 def _parse_named_email(s: str) -> tuple[str, str | None]:
@@ -1225,6 +1276,10 @@ def parse_comment_lines(comments, *, first_names=None) -> list[dict]:
                 "time": time,
                 "person": person,
                 "role": role,
+                # The label as the bench wrote it. `person` and `role` are the two sides this
+                # parser found in it and cannot be rejoined in their original order, which is what
+                # says whether a company named beside a person owns that person.
+                "label": label,
                 "body": body,
                 "body_with_label": f"{label}: {body}" if label else body,
             }
@@ -2022,18 +2077,25 @@ def _byo_jira(dsid, raw, P):
     parsed_comments = parse_comment_lines(raw.get("comments"), first_names=first_names)
     comment_ts = comment_seconds(parsed_comments, created)
     comments = []
+    company = raw.get("customer_company")
     for seq, c in enumerate(parsed_comments, start=1):
         # A name-shaped label that names an ACTIVITY ("Design review") is not a person, so its
         # passage keeps the label and the comment is attributed by what the label does name.
         named = c["person"] if c["person"] and not _names_an_activity(c["person"]) else None
+        # ...and a person the counterparty owns is not this org's, however well the name matches the
+        # directory: it holds a Priya Shah of its own. The WHOLE label goes on to `label_email`
+        # then, since the name alone carries nothing that would land it on their domain.
+        theirs = named and _counterparty_owns(c["label"], named, company)
         comments.append(
             _rec(
                 id=f"{dsid}::c{seq}",
-                content=(c["body"] if named else c["body_with_label"]),
+                content=(c["body"] if named and not theirs else c["body_with_label"]),
                 author_email=(
-                    P.resolve(named, role="author")
+                    P.label_email(c["label"], company)
+                    if theirs
+                    else P.resolve(named, role="author")
                     if named
-                    else P.label_email(c["person"] or c["role"], raw.get("customer_company"))
+                    else P.label_email(c["person"] or c["role"], company)
                 ),
                 created_ts=comment_ts[seq - 1],
             )

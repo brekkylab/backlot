@@ -660,9 +660,17 @@ def test_to_epoch_parses_bench_date_formats():
         ("Support", None, "Support"),
         ("Follow-ups", None, "Follow-ups"),
         ("", None, None),
-        # A name is capitalised; a lowercase token says the field caught the prose around it.
-        ("comment by Aisha Patel", None, "comment by Aisha Patel"),
+        # A name is capitalised; a lowercase token says the field caught the prose around it —
+        # and the name inside the prose is still the author of the comment it heads.
+        ("comment by Aisha Patel", "Aisha Patel", "comment by"),
         ("Root cause", None, "Root cause"),
+        # The desk and the person as one run of words, which is how the bench writes it when it
+        # has no punctuation to separate them.
+        ("Support Maya Chen", "Maya Chen", "Support"),
+        ("PM Priya Rao", "Priya Rao", "PM"),
+        ("Rafael Mendes SRE Oncall", "Rafael Mendes", "SRE Oncall"),
+        # A run scan prefers the longest name, or a four-token name loses to its own prefix.
+        ("Marco de la Vega", "Marco de la Vega", None),
         # ...except a particle, which is lowercase INSIDE a name.
         ("Daan van der Meer", "Daan van der Meer", None),
         ("Marco de la Vega", "Marco de la Vega", None),
@@ -698,6 +706,26 @@ def test_person_reference_reads_every_form_the_bench_writes(label, person, role)
     assert C.person_reference(label) == (person, role)
 
 
+@pytest.mark.parametrize(
+    "line,company,theirs",
+    [
+        # The company AHEAD of the name owns it -- their Priya Shah, not the directory's.
+        ("LuminaHealth / Priya Shah: body", "LuminaHealth", True),
+        # Behind the name, one of ours acted toward them and the comment is still theirs to answer.
+        ("Lena Park (Support) -> StreamlineAI: body", "StreamlineAI", False),
+        ("Liam O'Rourke (Support/TAM) — Shared plan with Acme AI: body", "Acme AI", False),
+        # A "name" that IS the company is nobody, wherever it sits.
+        ("Monica Patel (Support) — Informed Acme AI: body", "Acme AI", True),
+        # A company the label never names decides nothing.
+        ("Support Maya Chen: body", "LuminaHealth", False),
+        ("Customer Success - Aisha Patel: body", "Acme AI", False),
+    ],
+)
+def test_a_counterparty_named_before_the_person_owns_them(line, company, theirs):
+    c = C.parse_comment_lines([line])[0]
+    assert C._counterparty_owns(c["label"], c["person"], company) is theirs
+
+
 def test_person_reference_resolves_an_unambiguous_first_name_only():
     first = {"jonas": "Jonas Meyer"}
     assert C.person_reference("Jonas (ENG)", first_names=first) == ("Jonas Meyer", "ENG")
@@ -727,6 +755,7 @@ def test_parse_comment_lines_keeps_the_clock_out_of_the_author_and_the_body():
             "time": "14:05",
             "person": "Aisha Patel",
             "role": "Support",
+            "label": "Aisha Patel (Support)",
             "body": "Acknowledged ticket and requested logs.",
             "body_with_label": "Aisha Patel (Support): Acknowledged ticket and requested logs.",
         }

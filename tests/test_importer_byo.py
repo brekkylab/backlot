@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from backlot import store, synth
-from tests._helpers import served_id
+from tests._helpers import complete, served_id
 from backlot.acl import Acl
 from backlot.config import Settings, get_settings
 from backlot.routers.slack import _message
@@ -19,7 +19,13 @@ from backlot.importer import byo
 from backlot.importer.byo import load
 
 
-def _write(tmp_path, records, name="corpus.jsonl"):
+def _write(tmp_path, records, name="corpus.jsonl", *, raw=False):
+    """A corpus file. Each record is completed against its schema first, so a test states only the
+    fields it is about; ``raw=True`` writes them as given, for the tests about refusal itself."""
+    if not raw:
+        records = [
+            complete(**r) if isinstance(r, dict) and "source_type" in r else r for r in records
+        ]
     p = tmp_path / name
     p.write_text("\n".join(json.dumps(r) for r in records))
     return p
@@ -48,38 +54,44 @@ def test_load_records_builds_the_same_db_as_load_from_a_file(tmp_path):
     """The record-source seam has to be a pure refactor: the same records loaded from an
     in-memory factory and from a JSONL file must produce identical tables."""
     records = [
-        {
-            "source_type": "confluence",
-            "doc_id": "a",
-            "space": "handbook",
-            "group": "eng",
-            "title": "A",
-            "content": "alpha",
-            "author_email": "ava@acme.com",
-            "visibility": "public",
-            "comments": [{"content": "looks right", "author_email": "bob@acme.com"}],
-        },
-        {
-            "source_type": "slack",
-            "channel": "eng",
-            "group": "eng",
-            "content": "hello",
-            "author_email": "bob@acme.com",
-            "visibility": "public",
-            "replies": [{"content": "hi back", "author_email": "ava@acme.com"}],
-        },
-        {
-            "source_type": "linear",
-            "doc_id": "l1",
-            "team": "engineering",
-            "group": "eng",
-            "title": "Fix it",
-            "content": "broken",
-            "author_email": "ava@acme.com",
-            "identifier": "ENG-1",
-            "state": "Todo",
-            "visibility": "group",
-        },
+        complete(
+            **{
+                "source_type": "confluence",
+                "doc_id": "a",
+                "space": "handbook",
+                "group": "eng",
+                "title": "A",
+                "content": "alpha",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "comments": [{"content": "looks right", "author_email": "bob@acme.com"}],
+            }
+        ),
+        complete(
+            **{
+                "source_type": "slack",
+                "channel": "eng",
+                "group": "eng",
+                "content": "hello",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+                "replies": [{"content": "hi back", "author_email": "ava@acme.com"}],
+            }
+        ),
+        complete(
+            **{
+                "source_type": "linear",
+                "doc_id": "l1",
+                "team": "engineering",
+                "group": "eng",
+                "title": "Fix it",
+                "content": "broken",
+                "author_email": "ava@acme.com",
+                "identifier": "ENG-1",
+                "state": "Todo",
+                "visibility": "group",
+            }
+        ),
     ]
 
     (tmp_path / "file").mkdir(parents=True, exist_ok=True)
@@ -296,26 +308,68 @@ def _epoch(iso):
     return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
 
 
+def test_the_loader_invents_no_author_container_or_clock(tmp_path):
+    """Every value in the row is one the corpus wrote."""
+    settings = Settings(data_dir=tmp_path)
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "author_email": "bob@acme.com",
+                "created": "2026-02-10T18:00:00Z",
+                "content": "502s from the gateway?",
+            }
+        ],
+    )
+    byo.load(corpus, settings)
+    conn = sqlite3.connect(settings.db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM slack_messages").fetchone()
+    conn.close()
+    assert row["channel"] == "incidents"
+    assert row["author_email"] == "bob@acme.com"
+    assert row["created_ts"] == 1770746400
+
+
+def test_an_unvalidated_record_missing_a_required_field_names_the_record(tmp_path):
+    """The ERB path validates like any other, so a bug there surfaces as a message naming the
+    record rather than as a KeyError from inside the loader."""
+    settings = Settings(data_dir=tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        byo.load_records(
+            lambda: iter([(1, {"source_type": "slack", "channel": "eng", "content": "hi"})]),
+            settings,
+        )
+    assert "created" in str(exc.value)
+
+
 def test_byo_created_updated_times(tmp_path):
     load(
         _write(
             tmp_path,
             [
-                {
-                    "source_type": "jira",
-                    "title": "T",
-                    "content": "c",
-                    "doc_id": "j1",
-                    "created": "2026-03-01T09:00:00Z",
-                    "updated": 1740900000,
-                },
-                {
-                    "source_type": "google_drive",
-                    "title": "D",
-                    "content": "c",
-                    "doc_id": "d1",
-                    "created": "2026-01-15T00:00:00Z",
-                },
+                complete(
+                    **{
+                        "source_type": "jira",
+                        "title": "T",
+                        "content": "c",
+                        "doc_id": "j1",
+                        "created": "2026-03-01T09:00:00Z",
+                        "updated": 1740900000,
+                    }
+                ),
+                complete(
+                    **{
+                        "source_type": "jira",
+                        "project": "billing",
+                        "title": "D",
+                        "content": "c",
+                        "doc_id": "d1",
+                        "created": "2026-01-15T00:00:00Z",
+                    }
+                ),
             ],
         ),
         Settings(data_dir=tmp_path),
@@ -323,7 +377,7 @@ def test_byo_created_updated_times(tmp_path):
     conn = store.connect_ro(tmp_path / "mock.sqlite")
 
     # created accepts ISO, updated accepts epoch int — both land as epoch seconds
-    j = conn.execute("SELECT created_ts, updated_ts FROM jira_issues").fetchone()
+    j = conn.execute("SELECT created_ts, updated_ts FROM jira_issues WHERE title = 'T'").fetchone()
     assert j["created_ts"] == _epoch("2026-03-01T09:00:00Z")
     assert j["updated_ts"] == 1740900000
 
@@ -341,15 +395,14 @@ def test_byo_created_updated_times(tmp_path):
             "path": "/",
         }
     )
-    fields = _jira_issue(conn, req, conn.execute("SELECT * FROM jira_issues").fetchone())["fields"]
+    fields = _jira_issue(
+        conn, req, conn.execute("SELECT * FROM jira_issues WHERE title = 'T'").fetchone()
+    )["fields"]
     assert fields["created"].startswith("2026-03-01T09:00:00")
     assert fields["updated"].startswith("2025-03-02")  # 1740900000 -> 2025-03-02
 
-    # updated defaults to created + 1h when omitted (drive)
-    d = conn.execute(
-        "SELECT created_ts, updated_ts FROM gdrive_files WHERE id = ?",
-        (served_id("google_drive", "d1"),),
-    ).fetchone()
+    # `updated` is still optional, and an omitted one stays NULL rather than being invented
+    d = conn.execute("SELECT created_ts, updated_ts FROM jira_issues WHERE title = 'D'").fetchone()
     assert d["created_ts"] == _epoch("2026-01-15T00:00:00Z") and d["updated_ts"] is None
 
 
@@ -424,31 +477,40 @@ def test_byo_slack_rich_replies(tmp_path):
 
 
 def test_byo_slack_reply_carries_its_own_clock(tmp_path):
-    """A reply's `created` is honored when the corpus writes one — the treatment a
-    gmail message already gets — and an absent one lands a second after the message
-    before it, which is exactly where root+position always put it. Every reply of a
-    clockless thread therefore loads byte-identically to the old rule."""
+    """Every reply's `created` is served as written, however far apart the thread's messages are:
+    a quick ack a second later and the real answer three hours after it both land where the corpus
+    put them, and the ts they are served under increase with them."""
     load(
         _write(
             tmp_path,
             [
-                {
-                    "source_type": "slack",
-                    "content": "root",
-                    "channel": "incidents",
-                    "doc_id": "s-root",
-                    "author_email": "bob@a.com",
-                    "created": "2026-05-01T00:00:00Z",
-                    "replies": [
-                        {"content": "quick ack", "author_email": "ava@a.com"},
-                        {
-                            "content": "the real answer, hours later",
-                            "author_email": "ava@a.com",
-                            "created": "2026-05-01T03:00:00Z",
-                        },
-                        {"content": "thanks", "author_email": "bob@a.com"},
-                    ],
-                }
+                complete(
+                    **{
+                        "source_type": "slack",
+                        "content": "root",
+                        "channel": "incidents",
+                        "doc_id": "s-root",
+                        "author_email": "bob@a.com",
+                        "created": "2026-05-01T00:00:00Z",
+                        "replies": [
+                            {
+                                "content": "quick ack",
+                                "author_email": "ava@a.com",
+                                "created": "2026-05-01T00:00:01Z",
+                            },
+                            {
+                                "content": "the real answer, hours later",
+                                "author_email": "ava@a.com",
+                                "created": "2026-05-01T03:00:00Z",
+                            },
+                            {
+                                "content": "thanks",
+                                "author_email": "bob@a.com",
+                                "created": "2026-05-01T03:00:01Z",
+                            },
+                        ],
+                    }
+                )
             ],
         ),
         Settings(data_dir=tmp_path),
@@ -460,120 +522,12 @@ def test_byo_slack_reply_carries_its_own_clock(tmp_path):
     base = _epoch("2026-05-01T00:00:00Z")
     assert [r["created_ts"] for r in thread] == [
         base,
-        base + 1,  # clockless: one second after the root
-        base + 3 * 3600,  # its own clock
-        base + 3 * 3600 + 1,  # clockless: one second after the clocked reply
+        base + 1,
+        base + 3 * 3600,
+        base + 3 * 3600 + 1,
     ]
     ts = [r["ts"] for r in thread]
     assert ts == sorted(ts) and len(set(ts)) == 4
-
-
-def test_byo_slack_clockless_root_is_grounded_on_its_replies(tmp_path):
-    """A root with no `created` of its own holds a second hashed from its doc_id, which
-    is not a fact about the thread. Left as the ordering anchor it made the import turn
-    on that hash — the same corpus loading or dying depending on the root's doc_id — and
-    when it loaded it served a root years before its own reply. It is re-grounded on the
-    first reply that carries a clock, so every doc_id resolves the same way."""
-    ids = [f"s-root-{n}" for n in range(12)]
-    load(
-        _write(
-            tmp_path,
-            [
-                {
-                    "source_type": "slack",
-                    "content": "root",
-                    "channel": "incidents",
-                    "doc_id": did,
-                    "author_email": "bob@a.com",
-                    "replies": [
-                        {"content": "quick ack", "author_email": "ava@a.com"},
-                        {
-                            "content": "the real answer",
-                            "author_email": "ava@a.com",
-                            "created": "2024-06-01T00:00:00Z",
-                        },
-                    ],
-                }
-                for did in ids
-            ],
-        ),
-        Settings(data_dir=tmp_path),
-    )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
-    base = _epoch("2024-06-01T00:00:00Z")
-    threads: dict = {}
-    for r in conn.execute(
-        "SELECT thread_ts, created_ts FROM slack_messages ORDER BY thread_ts, thread_seq"
-    ):
-        threads.setdefault(r["thread_ts"], []).append(r["created_ts"])
-    assert len(threads) == len(ids)  # every doc_id, not just the ones whose hash sorts early
-    for secs in threads.values():
-        assert secs == [
-            base - 2,  # the root, one second ahead of the clockless reply
-            base - 1,  # clockless: one second before the clock it is grounded on
-            base,
-        ]
-
-
-def test_byo_slack_clockless_thread_ignores_the_regrounding(tmp_path):
-    """A thread that supplies no clock anywhere keeps the root's synthesized second and
-    lands every reply where root+position always put it — there is nothing to re-ground
-    on, and the whole point of the default is that such a corpus loads unchanged."""
-    load(
-        _write(
-            tmp_path,
-            [
-                {
-                    "source_type": "slack",
-                    "content": "root",
-                    "channel": "incidents",
-                    "doc_id": "s-mute",
-                    "author_email": "bob@a.com",
-                    "replies": [
-                        {"content": "one", "author_email": "ava@a.com"},
-                        {"content": "two", "author_email": "ava@a.com"},
-                    ],
-                }
-            ],
-        ),
-        Settings(data_dir=tmp_path),
-    )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
-    base = synth.epoch("s-mute")
-    assert [
-        r["created_ts"]
-        for r in conn.execute("SELECT created_ts FROM slack_messages ORDER BY thread_seq")
-    ] == [base, base + 1, base + 2]
-
-
-def test_byo_slack_reply_clock_refusal_owns_up_to_a_defaulted_second(tmp_path):
-    """When an explicit clock collides with a second this importer chose rather than one
-    the author wrote, the error says so. Two adjacent seconds cannot both hold a message
-    — a Slack ts is identity as well as clock — so the refusal stands, but quoting the
-    defaulted second as though the corpus had supplied it sent authors hunting for a
-    value that is nowhere in their file."""
-    corpus = _write(
-        tmp_path,
-        [
-            {
-                "source_type": "slack",
-                "content": "Anyone else seeing 502s?",
-                "channel": "incidents",
-                "author_email": "bob@a.com",
-                "created": "2026-02-10T18:00:00Z",
-                "replies": [
-                    {"content": "on it", "author_email": "ava@a.com"},
-                    {
-                        "content": "the real answer",
-                        "author_email": "ava@a.com",
-                        "created": "2026-02-10T18:00:01Z",
-                    },
-                ],
-            }
-        ],
-    )
-    with pytest.raises(SystemExit, match="reply 1 carries no created of its own"):
-        load(corpus, Settings(data_dir=tmp_path))
 
 
 def test_byo_slack_reply_clock_must_move_forward(tmp_path):
@@ -679,35 +633,15 @@ def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
         with pytest.raises(SystemExit, match=f"{field} is not a time this importer can read"):
             load(corpus, Settings(data_dir=tmp_path))
 
-
-def test_byo_absent_clocks_still_take_their_defaults(tmp_path):
-    """Refusing an unreadable time must not refuse an absent one. A record with no
-    `created` keeps `epoch(doc_id)`; `updated` left out stays NULL; an undated comment
-    follows the one before it."""
-    load(
-        _write(
-            tmp_path,
-            [
-                {
-                    "source_type": "confluence",
-                    "title": "T",
-                    "content": "c",
-                    "doc_id": "cf-bare",
-                    "space": "handbook",
-                    "author_email": "b@a.com",
-                    "visibility": "public",
-                    "comments": [{"content": "hi", "author_email": "a@a.com"}],
-                }
-            ],
-        ),
-        Settings(data_dir=tmp_path),
-    )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
-    row = conn.execute("SELECT created_ts, updated_ts FROM confluence_pages").fetchone()
-    assert row["created_ts"] == synth.epoch("cf-bare")
-    assert row["updated_ts"] is None
-    c = conn.execute("SELECT created_ts FROM confluence_comments").fetchone()
-    assert c["created_ts"] == synth.epoch("cf-bare") + 1
+    # The empty string is the one unreadable value `_time_given` calls unwritten, which was right
+    # while a default stood behind it and wrong once the field became required: `None` reached the
+    # insert and died as `IntegrityError: NOT NULL constraint failed: slack_messages.created_ts`,
+    # naming a column where the message above names the field. `minLength: 1` refuses it in the
+    # contract now; this is the guard behind that, for a time field no schema constrains.
+    for field in ("created", "created_ts"):
+        with pytest.raises(SystemExit, match=f"{field} is not a time this importer can read"):
+            byo._epoch_field("", "a record", field)
+    assert byo._epoch_field(None, "a record", "updated") is None
 
 
 def test_byo_a_stated_epoch_zero_is_a_second_not_a_missing_value(tmp_path):
@@ -946,7 +880,7 @@ def test_s3_byo_load(tmp_path):
         },
     ]
     corpus = tmp_path / "s3.jsonl"
-    corpus.write_text("\n".join(json.dumps(r) for r in records))
+    corpus.write_text("\n".join(json.dumps(complete(**r)) for r in records))
     settings = Settings(data_dir=tmp_path)
     res = load(corpus, settings)
     assert res["counts"]["s3"] == 3
@@ -970,17 +904,19 @@ def test_github_file_byo_load(tmp_path, monkeypatch):
     p = tmp_path / "c.jsonl"
     p.write_text(
         json.dumps(
-            {
-                "source_type": "github",
-                "subtype": "file",
-                "repo": "gateway",
-                "path": "src/rl/bucket.go",
-                "title": "bucket.go",
-                "content": "package rl\n",
-                "group": "eng",
-                "visibility": "group",
-                "author_email": "a@acme.com",
-            }
+            complete(
+                **{
+                    "source_type": "github",
+                    "subtype": "file",
+                    "repo": "gateway",
+                    "path": "src/rl/bucket.go",
+                    "title": "bucket.go",
+                    "content": "package rl\n",
+                    "group": "eng",
+                    "visibility": "group",
+                    "author_email": "a@acme.com",
+                }
+            )
         )
     )
     byo.load(p, s, reset=True)
@@ -1002,16 +938,15 @@ def test_github_file_byo_requires_path(tmp_path):
 
 def test_s3_byo_rejects_missing_key(tmp_path):
     corpus = tmp_path / "bad.jsonl"
-    corpus.write_text(
-        json.dumps({"source_type": "s3", "bucket": "b", "title": "t", "content": "c"})
-    )  # no key
+    # As written: the missing `key` is the refusal under test.
+    corpus.write_text(json.dumps(complete("s3", _omit={"key"}, bucket="b", title="t", content="c")))
     with pytest.raises(SystemExit):
         load(corpus, Settings(data_dir=tmp_path))
 
 
 def _corpus(tmp_path, name, lines):
     p = tmp_path / name
-    p.write_text("\n".join(json.dumps(x) for x in lines))
+    p.write_text("\n".join(json.dumps(complete(**x)) for x in lines))
     return p
 
 
@@ -1375,7 +1310,11 @@ def test_fireflies_byo_parses_sentences_out_of_a_plain_body(tmp_path):
 
 def test_fireflies_byo_content_and_sentences_always_round_trip(tmp_path):
     """The invariant that makes `content` a safe definition rather than a duplicate, checked for
-    both the supplied-sentences and the parsed-body path."""
+    both the supplied-sentences and the parsed-body path.
+
+    The stored sentence COUNT is part of it: a sentence the concatenation does not contain is a row
+    the API serves and full-text search cannot find.
+    """
     from backlot import synth
 
     corpus = _write(
@@ -1569,29 +1508,31 @@ def test_byo_gmail_thread_messages(tmp_path):
     corpus = _write(
         tmp_path,
         [
-            {
-                "source_type": "gmail",
-                "doc_id": "th-1",
-                "mailbox": "ava",
-                "title": "Retry storm",
-                "content": "Seeing 5xx.",
-                "author_email": "ava@a.com",
-                "to": "ops@a.com",
-                "message_id": "<a@a>",
-                "created": "2026-01-04T09:00:00Z",
-                "mailbox_owner": "Ava Chen",
-                "messages": [
-                    {
-                        "content": "On it.",
-                        "author_email": "bob@a.com",
-                        "to": "ava@a.com",
-                        "message_id": "<b@a>",
-                        "created": "2026-01-04T10:00:00Z",
-                    },
-                    # header-only auto-ack: a real thread contains these, so an empty body is allowed
-                    {"content": "", "author_email": "bot@a.com", "title": "Re: Retry storm"},
-                ],
-            },
+            complete(
+                **{
+                    "source_type": "gmail",
+                    "doc_id": "th-1",
+                    "mailbox": "ava",
+                    "title": "Retry storm",
+                    "content": "Seeing 5xx.",
+                    "author_email": "ava@a.com",
+                    "to": "ops@a.com",
+                    "message_id": "<a@a>",
+                    "created": "2026-01-04T09:00:00Z",
+                    "mailbox_owner": "Ava Chen",
+                    "messages": [
+                        {
+                            "content": "On it.",
+                            "author_email": "bob@a.com",
+                            "to": "ava@a.com",
+                            "message_id": "<b@a>",
+                            "created": "2026-01-04T10:00:00Z",
+                        },
+                        # header-only auto-ack: a real thread contains these, so an empty body is allowed
+                        {"content": "", "author_email": "bot@a.com", "title": "Re: Retry storm"},
+                    ],
+                }
+            ),
         ],
     )
     settings = Settings(data_dir=tmp_path)
@@ -1857,14 +1798,14 @@ def test_byo_one_provided_key_sets_the_prefix_for_its_keyless_siblings(tmp_path)
     from tests._helpers import build_corpus, client_for
 
     def issue(did):
-        return {
-            "source_type": "jira",
-            "doc_id": did,
-            "project": "payments",
-            "title": did,
-            "content": "c",
-            "author_email": "ava@acme.com",
-        }
+        return complete(
+            source_type="jira",
+            doc_id=did,
+            project="payments",
+            title=did,
+            content="c",
+            author_email="ava@acme.com",
+        )
 
     # 'j-aaa' sorts before 'j-zzz': the keyless row is the one the index reaches first.
     settings = build_corpus(tmp_path, [issue("j-aaa"), {**issue("j-zzz"), "key": "PAY-7"}])
@@ -2276,8 +2217,17 @@ def test_byo_jsonl_records_split_only_on_newline(tmp_path):
         "\n".join(
             json.dumps(r, ensure_ascii=False)
             for r in [
-                {"source_type": "confluence", "doc_id": "c1", "title": "t", "content": body},
-                {"source_type": "confluence", "doc_id": "c2", "title": "t2", "content": "second"},
+                complete(
+                    **{"source_type": "confluence", "doc_id": "c1", "title": "t", "content": body}
+                ),
+                complete(
+                    **{
+                        "source_type": "confluence",
+                        "doc_id": "c2",
+                        "title": "t2",
+                        "content": "second",
+                    }
+                ),
             ]
         ),
         encoding="utf-8",
@@ -2328,75 +2278,6 @@ def test_byo_gmail_messages_join_the_root_s_declared_thread(tmp_path):
             (served_id("gmail", "gm-1::m1"), 1),
         ]
         assert {r["thread_id"] for r in rows} == {served_id("gmail", "gm-deck")}
-    finally:
-        conn.close()
-
-
-def test_byo_comment_times_are_monotonic_across_a_mixed_thread(tmp_path):
-    """A thread that mixes dated and undated comments must stay in order. `created + position`
-    lands an undated comment back at the DOCUMENT's creation time, so a dated one written earlier
-    in the array sorts after it — and `Issue.comments` orders by createdAt, so the thread is served
-    inverted. This is the rule `erb.load_linear` already applied."""
-    corpus = _write(
-        tmp_path,
-        [
-            {
-                "source_type": "linear",
-                "doc_id": "ln-1",
-                "team": "engineering",
-                "title": "t",
-                "content": "c",
-                "author_email": "ava@a.com",
-                "created": "2026-02-08T09:00:00Z",
-                "comments": [
-                    {"content": "first, dated later", "created_ts": "2026-02-09T10:00:00Z"},
-                    {"content": "second, undated"},
-                    {"content": "third, dated later still", "created_ts": "2026-02-11T08:00:00Z"},
-                    {"content": "fourth, undated"},
-                ],
-            },
-        ],
-    )
-    settings = Settings(data_dir=tmp_path)
-    load(corpus, settings)
-    conn = store.connect_ro(settings.db_path)
-    try:
-        rows = store.doc_comments(conn, "linear", served_id("linear", "ln-1"))
-        times = [r["created_ts"] for r in rows]
-        assert times == sorted(times), f"comments out of order: {times}"
-        # the undated one follows its predecessor rather than jumping back to the doc's clock
-        assert times[1] == times[0] + 1 and times[3] == times[2] + 1
-    finally:
-        conn.close()
-
-
-def test_byo_all_undated_comments_keep_the_doc_clock_plus_position(tmp_path):
-    """The monotonic rule must not change the ordinary case."""
-    corpus = _write(
-        tmp_path,
-        [
-            {
-                "source_type": "jira",
-                "doc_id": "j-1",
-                "project": "PAY",
-                "title": "t",
-                "content": "c",
-                "author_email": "ava@a.com",
-                "created": 1_700_000_000,
-                "comments": [{"content": "one"}, {"content": "two"}, {"content": "three"}],
-            },
-        ],
-    )
-    settings = Settings(data_dir=tmp_path)
-    load(corpus, settings)
-    conn = store.connect_ro(settings.db_path)
-    try:
-        key = conn.execute("SELECT key FROM jira_issues").fetchone()[0]
-        assert [r["created_ts"] for r in store.doc_comments(conn, "jira", key)] == [
-            1_700_000_001,
-            1_700_000_002,
-            1_700_000_003,
-        ]
     finally:
         conn.close()
 
@@ -2472,7 +2353,7 @@ def _shard_artifact(tmp_path):
         d.mkdir(parents=True, exist_ok=True)
         p = d / "part-00000.jsonl.gz"
         with _io.TextIOWrapper(_gz.GzipFile(p, "wb", mtime=0), encoding="utf-8") as fh:
-            fh.write(_js.dumps(rec) + "\n")
+            fh.write(_js.dumps(complete(**rec)) + "\n")
         sources[src] = {
             "documents": 1,
             "records": 1,
@@ -2588,12 +2469,14 @@ def test_a_single_gzipped_corpus_file_loads(tmp_path):
     with io.TextIOWrapper(gzip.GzipFile(corpus, "wb", mtime=0), encoding="utf-8") as fh:
         fh.write(
             json.dumps(
-                {
-                    "source_type": "slack",
-                    "channel": "general",
-                    "author_email": "ava@acme.com",
-                    "content": "Gzipped.",
-                }
+                complete(
+                    **{
+                        "source_type": "slack",
+                        "channel": "general",
+                        "author_email": "ava@acme.com",
+                        "content": "Gzipped.",
+                    }
+                )
             )
             + "\n"
         )
@@ -2638,22 +2521,26 @@ def test_two_sources_may_share_a_doc_id(tmp_path):
         "\n".join(
             json.dumps(r)
             for r in [
-                {
-                    "source_type": "confluence",
-                    "space": "handbook",
-                    "doc_id": "shared-1",
-                    "title": "Sprint plan (page)",
-                    "content": "The confluence rendering.",
-                    "author_email": "ava@acme.com",
-                },
-                {
-                    "source_type": "google_drive",
-                    "folder": "users",
-                    "doc_id": "shared-1",
-                    "title": "Sprint plan (doc)",
-                    "content": "The drive document.",
-                    "author_email": "ava@acme.com",
-                },
+                complete(
+                    **{
+                        "source_type": "confluence",
+                        "space": "handbook",
+                        "doc_id": "shared-1",
+                        "title": "Sprint plan (page)",
+                        "content": "The confluence rendering.",
+                        "author_email": "ava@acme.com",
+                    }
+                ),
+                complete(
+                    **{
+                        "source_type": "google_drive",
+                        "folder": "users",
+                        "doc_id": "shared-1",
+                        "title": "Sprint plan (doc)",
+                        "content": "The drive document.",
+                        "author_email": "ava@acme.com",
+                    }
+                ),
             ]
         )
         + "\n"
@@ -2746,28 +2633,32 @@ def test_append_accumulates_source_documents(tmp_path):
     first = tmp_path / "a.jsonl"
     first.write_text(
         json.dumps(
-            {
-                "source_type": "confluence",
-                "space": "h",
-                "title": "A",
-                "content": "a",
-                "author_email": "ava@acme.com",
-            }
+            complete(
+                **{
+                    "source_type": "confluence",
+                    "space": "h",
+                    "title": "A",
+                    "content": "a",
+                    "author_email": "ava@acme.com",
+                }
+            )
         )
     )
     second = tmp_path / "b.jsonl"
     second.write_text(
         json.dumps(
-            {
-                "source_type": "confluence",
-                "space": "h",
-                # An append into a probed source states the id it wants: without
-                # one this row could not be told apart from a re-import of the first.
-                "content_id": 4242,
-                "title": "B",
-                "content": "b",
-                "author_email": "ava@acme.com",
-            }
+            complete(
+                **{
+                    "source_type": "confluence",
+                    "space": "h",
+                    # An append into a probed source states the id it wants: without
+                    # one this row could not be told apart from a re-import of the first.
+                    "content_id": 4242,
+                    "title": "B",
+                    "content": "b",
+                    "author_email": "ava@acme.com",
+                }
+            )
         )
     )
     load(first, settings)
@@ -3310,16 +3201,18 @@ def test_byo_a_tracker_id_claim_survives_append(tmp_path):
         p = tmp_path / name
         p.write_text(
             json.dumps(
-                {
-                    "source_type": "jira",
-                    "doc_id": doc_id,
-                    "project": "PAY",
-                    "title": doc_id,
-                    "content": "c",
-                    "author_email": "ava@acme.com",
-                    "key": "PAY-7",
-                    **extra,
-                }
+                complete(
+                    **{
+                        "source_type": "jira",
+                        "doc_id": doc_id,
+                        "project": "PAY",
+                        "title": doc_id,
+                        "content": "c",
+                        "author_email": "ava@acme.com",
+                        "key": "PAY-7",
+                        **extra,
+                    }
+                )
             )
             + "\n"
         )
@@ -3346,16 +3239,18 @@ def test_byo_a_tracker_id_claim_survives_append(tmp_path):
     for repo, doc in (("core", "g-a"), ("other", "g-b")):
         gh.write_text(
             json.dumps(
-                {
-                    "source_type": "github",
-                    "doc_id": doc,
-                    "repo": repo,
-                    "subtype": "issue",
-                    "title": doc,
-                    "content": "c",
-                    "author_email": "ava@acme.com",
-                    "number": 412,
-                }
+                complete(
+                    **{
+                        "source_type": "github",
+                        "doc_id": doc,
+                        "repo": repo,
+                        "subtype": "issue",
+                        "title": doc,
+                        "content": "c",
+                        "author_email": "ava@acme.com",
+                        "number": 412,
+                    }
+                )
             )
             + "\n"
         )
@@ -3424,15 +3319,15 @@ def test_byo_two_projects_cannot_share_a_provided_key_prefix(tmp_path):
     from tests._helpers import build_corpus
 
     def rec(did, project, key):
-        return {
-            "source_type": "jira",
-            "doc_id": did,
-            "project": project,
-            "title": did,
-            "content": "c",
-            "author_email": "ava@acme.com",
-            "key": key,
-        }
+        return complete(
+            source_type="jira",
+            doc_id=did,
+            project=project,
+            title=did,
+            content="c",
+            author_email="ava@acme.com",
+            key=key,
+        )
 
     # Two keys under one prefix in ONE project is the normal case and loads.
     with pytest.raises(SystemExit) as e:
@@ -3528,15 +3423,15 @@ def test_byo_a_mistyped_jira_key_is_refused(tmp_path, bad):
 
 
 def _linear_rec(did, team="payments-platform", identifier=None):
-    r = {
-        "source_type": "linear",
-        "doc_id": did,
-        "team": team,
-        "title": did,
-        "content": "c",
-        "author_email": "ava@acme.com",
-        "created": "2026-02-01T00:00:00Z",
-    }
+    r = complete(
+        "linear",
+        doc_id=did,
+        team=team,
+        title=did,
+        content="c",
+        author_email="ava@acme.com",
+        created="2026-02-01T00:00:00Z",
+    )
     if identifier:
         r["identifier"] = identifier
     return r
@@ -3544,7 +3439,7 @@ def _linear_rec(did, team="payments-platform", identifier=None):
 
 def _linear_shard(tmp_path, name, recs):
     p = tmp_path / name
-    p.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    p.write_text("".join(json.dumps(complete(**r)) + "\n" for r in recs))
     return p
 
 
@@ -3801,12 +3696,9 @@ def test_byo_a_slug_shaped_key_claims_only_its_leading_prefix(tmp_path):
     under it, and a sibling stating a real `ENG-…` was then refused for disagreeing with its own
     team. Read to the FIRST, the whole corpus loads unchanged.
 
-    Loaded BOTH ways, and that is half the test. `erb.import_structured` imports with
-    `validate=False`, so the schema pattern cannot stand in for the prefix rule on that path -- but
-    `erb.export_byo` writes the same slug into `corpus.jsonl`, which `byo.load` reads with
-    validation ON. A pattern that refuses the slug turns `backlot export` into an artifact
-    `backlot import` cannot read, and breaks the equivalence
-    `test_erb_to_byo_round_trip_builds_an_equivalent_database` asserts between the two paths."""
+    A pattern that refused the slug would turn `backlot export` into an artifact `backlot import`
+    cannot read, and break the equivalence `test_erb_to_byo_round_trip_builds_an_equivalent_database`
+    asserts between the two paths."""
     slug = "ENG-453210-kms-hsm-deployment-lifecycle-telemetry-orbiter"
     recs = [
         _linear_rec("ln-slug", team="engineering", identifier=slug),
@@ -3814,15 +3706,11 @@ def test_byo_a_slug_shaped_key_claims_only_its_leading_prefix(tmp_path):
         _linear_rec("ln-keyless", team="engineering"),
     ]
     dids = [r["doc_id"] for r in recs]
-    seen = []
-    for name, validate in (("validated", True), ("unvalidated", False)):
-        settings = Settings(data_dir=tmp_path / name)
-        byo.load_records(lambda: enumerate(recs, 1), settings, reset=True, validate=validate)
-        conn = store.connect_ro(settings.db_path)
-        assert store.linear_team_keys(conn) == {"engineering": "ENG"}
-        seen.append(_stored_identifiers(settings, dids))
-    assert seen[0] == seen[1], "validation changed what the corpus loaded as"
-    idents = seen[0]
+    settings = Settings(data_dir=tmp_path / "loaded")
+    byo.load_records(lambda: enumerate(recs, 1), settings, reset=True)
+    conn = store.connect_ro(settings.db_path)
+    assert store.linear_team_keys(conn) == {"engineering": "ENG"}
+    idents = _stored_identifiers(settings, dids)
     assert idents["ln-slug"] == slug  # the corpus's own spelling, untouched
     assert idents["ln-real"] == "ENG-7"
     assert idents["ln-keyless"] == synth.linear_identifier("ln-keyless", "ENG")
@@ -3856,15 +3744,15 @@ def test_byo_one_project_cannot_provide_two_key_prefixes(tmp_path):
     from tests._helpers import build_corpus
 
     def rec(did, key):
-        return {
-            "source_type": "jira",
-            "doc_id": did,
-            "project": "payments",
-            "title": did,
-            "content": "c",
-            "author_email": "ava@acme.com",
-            "key": key,
-        }
+        return complete(
+            source_type="jira",
+            doc_id=did,
+            project="payments",
+            title=did,
+            content="c",
+            author_email="ava@acme.com",
+            key=key,
+        )
 
     with pytest.raises(SystemExit) as e:
         build_corpus(tmp_path / "one", [rec("j-a", "BILL-2"), rec("j-b", "PAY-1")])
@@ -4003,14 +3891,16 @@ def test_byo_a_stated_id_already_held_by_an_earlier_import_is_refused(tmp_path):
         p = tmp_path / name
         p.write_text(
             json.dumps(
-                {
-                    "source_type": "confluence",
-                    "space": "eng",
-                    "title": name,
-                    "content": "c",
-                    "author_email": "a@acme.com",
-                    **extra,
-                }
+                complete(
+                    **{
+                        "source_type": "confluence",
+                        "space": "eng",
+                        "title": name,
+                        "content": "c",
+                        "author_email": "a@acme.com",
+                        **extra,
+                    }
+                )
             )
             + "\n"
         )
@@ -4084,15 +3974,15 @@ def test_byo_a_derived_number_no_longer_moves_across_append(tmp_path):
     from backlot.importer.byo import load
 
     def rec(did, **extra):
-        return {
-            "source_type": "github",
-            "doc_id": did,
-            "repo": "core",
-            "title": did,
-            "content": "c",
-            "author_email": "ava@acme.com",
+        return complete(
+            source_type="github",
+            doc_id=did,
+            repo="core",
+            title=did,
+            content="c",
+            author_email="ava@acme.com",
             **extra,
-        }
+        )
 
     settings = Settings(data_dir=tmp_path)
     shard1 = tmp_path / "s1.jsonl"
@@ -4137,14 +4027,16 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
     shard1 = tmp_path / "s1.jsonl"
     shard1.write_text(
         json.dumps(
-            {
-                "source_type": "github",
-                "doc_id": "a-victim",
-                "repo": "core",
-                "title": "v",
-                "content": "v",
-                "author_email": "ava@acme.com",
-            }
+            complete(
+                **{
+                    "source_type": "github",
+                    "doc_id": "a-victim",
+                    "repo": "core",
+                    "title": "v",
+                    "content": "v",
+                    "author_email": "ava@acme.com",
+                }
+            )
         )
     )
     settings = Settings(data_dir=tmp_path)
@@ -4157,15 +4049,17 @@ def test_byo_a_provider_appended_in_a_later_batch_does_not_abort_the_import(tmp_
     shard2 = tmp_path / "s2.jsonl"
     shard2.write_text(
         json.dumps(
-            {
-                "source_type": "github",
-                "doc_id": "z-provider",
-                "repo": "core",
-                "title": "p",
-                "content": "p",
-                "author_email": "ava@acme.com",
-                "number": stolen,
-            }
+            complete(
+                **{
+                    "source_type": "github",
+                    "doc_id": "z-provider",
+                    "repo": "core",
+                    "title": "p",
+                    "content": "p",
+                    "author_email": "ava@acme.com",
+                    "number": stolen,
+                }
+            )
         )
     )
     # An appended row claiming a number an existing row already serves is refused rather than
@@ -4198,14 +4092,16 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
     shard1 = tmp_path / "s1.jsonl"
     shard1.write_text(
         json.dumps(
-            {
-                "source_type": "jira",
-                "doc_id": "j-victim",
-                "project": "payments",
-                "title": "v",
-                "content": "v",
-                "author_email": "ava@acme.com",
-            }
+            complete(
+                **{
+                    "source_type": "jira",
+                    "doc_id": "j-victim",
+                    "project": "payments",
+                    "title": "v",
+                    "content": "v",
+                    "author_email": "ava@acme.com",
+                }
+            )
         )
     )
     settings = Settings(data_dir=tmp_path)
@@ -4220,15 +4116,17 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
     shard2 = tmp_path / "s2.jsonl"
     shard2.write_text(
         json.dumps(
-            {
-                "source_type": "jira",
-                "doc_id": "z-provider",
-                "project": "payments",
-                "title": "p",
-                "content": "p",
-                "author_email": "ava@acme.com",
-                "key": f"PAY-{stolen}",
-            }
+            complete(
+                **{
+                    "source_type": "jira",
+                    "doc_id": "z-provider",
+                    "project": "payments",
+                    "title": "p",
+                    "content": "p",
+                    "author_email": "ava@acme.com",
+                    "key": f"PAY-{stolen}",
+                }
+            )
         )
     )
     # Same trade as github's: with ONE `key` column there is no provided-vs-served distinction to
@@ -4354,8 +4252,15 @@ def test_byo_an_orphan_review_comment_anchor_is_reported(tmp_path, capsys):
 
 
 def _gh_file(doc_id, path, **extra):
-    return {
-        "source_type": "github",
+    """A github file row. Its clock is distinct per `doc_id` unless the caller states one: two
+    snapshots of a path are told apart by `created`, so a shared second is a different test."""
+    import hashlib
+
+    extra.setdefault(
+        "created",
+        1_770_000_000 + int(hashlib.sha256(doc_id.encode()).hexdigest()[:6], 16) % 5_000_000,
+    )
+    fields = {
         "doc_id": doc_id,
         "repo": "gw",
         "subtype": "file",
@@ -4365,6 +4270,7 @@ def _gh_file(doc_id, path, **extra):
         "author_email": "ava@acme.com",
         **extra,
     }
+    return complete("github", **fields)
 
 
 def test_byo_two_snapshots_of_one_file_both_load(tmp_path):
@@ -4396,35 +4302,6 @@ def test_byo_two_snapshots_of_one_file_both_load(tmp_path):
     assert len({r["number"] for r in rows}) == 2  # each snapshot is addressable in its own right
     assert store.get_repo_file(conn, "gw", "src/a.py")["content"] == "v2\n"  # HEAD
     conn.close()
-
-
-def test_byo_snapshots_ordered_by_a_synthesized_clock_are_reported(tmp_path, capsys):
-    """A path whose snapshots state no `created` loads, and says so.
-
-    With no `created` the clock is `synth.epoch(doc_id)` — a stable fake, but one that orders
-    snapshots by a hash of their dataset ids, so which one the file is SERVED at is not something
-    the corpus chose. This was a hard refusal before snapshots existed, and neither the load nor
-    `--dry-run` can see it any other way, so it gets the same one-line notice an unresolved
-    `changed_paths` gets rather than passing in silence.
-    """
-    settings = Settings(data_dir=tmp_path)
-    corpus = tmp_path / "c.jsonl"
-    corpus.write_text(
-        "\n".join(
-            json.dumps(r)
-            for r in [
-                _gh_file("gh-old-version", "src/a.py", content="v1\n"),
-                _gh_file("gh-new-version", "src/a.py", content="v2\n"),
-                # a path with ONE snapshot needs no clock and must not be reported
-                _gh_file("gh-solo", "src/b.py", content="only\n"),
-            ]
-        )
-    )
-    load(corpus, settings)
-    err = capsys.readouterr().err
-    assert "src/a.py" in err or "1 file path" in err
-    assert "created" in err
-    assert "src/b.py" not in err
 
 
 def test_byo_two_file_rows_at_one_instant_are_refused_naming_the_path(tmp_path):
@@ -4508,15 +4385,17 @@ def test_byo_a_ref_on_a_row_that_is_not_a_file_is_refused(tmp_path):
     corpus = tmp_path / "c.jsonl"
     corpus.write_text(
         json.dumps(
-            {
-                "source_type": "github",
-                "doc_id": "gh-i",
-                "repo": "gw",
-                "title": "Bug",
-                "content": "x",
-                "author_email": "ava@acme.com",
-                "ref": "pr-11",
-            }
+            complete(
+                **{
+                    "source_type": "github",
+                    "doc_id": "gh-i",
+                    "repo": "gw",
+                    "title": "Bug",
+                    "content": "x",
+                    "author_email": "ava@acme.com",
+                    "ref": "pr-11",
+                }
+            )
         )
     )
     with pytest.raises(SystemExit) as exc:
@@ -4574,15 +4453,17 @@ def test_byo_a_github_file_is_appendable_and_keeps_its_number(tmp_path):
         "\n".join(
             json.dumps(r)
             for r in [
-                {
-                    "source_type": "github",
-                    "doc_id": "gh-issue",
-                    "repo": "gw",
-                    "title": "Bug",
-                    "content": "x",
-                    "author_email": "ava@acme.com",
-                    "number": 7,
-                },
+                complete(
+                    **{
+                        "source_type": "github",
+                        "doc_id": "gh-issue",
+                        "repo": "gw",
+                        "title": "Bug",
+                        "content": "x",
+                        "author_email": "ava@acme.com",
+                        "number": 7,
+                    }
+                ),
                 _gh_file("gh-a", "src/a.py"),
             ]
         )
@@ -5014,80 +4895,98 @@ def test_a_changed_path_matching_no_file_is_reported_and_loaded(tmp_path, capsys
 
 
 _ID_MAP_CORPUS = [
-    {
-        "source_type": "github",
-        "doc_id": "gh-stated",
-        "repo": "acme/app",
-        "number": 7,
-        "title": "stated",
-        "content": "a",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "github",
-        "doc_id": "gh-keyless",
-        "repo": "acme/app",
-        "title": "keyless",
-        "content": "b",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "jira",
-        "doc_id": "j1",
-        "project": "payments",
-        "title": "t",
-        "content": "c",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "slack",
-        "doc_id": "s1",
-        "channel": "general",
-        "content": "hello",
-        "author_email": "a@x.com",
-        "created": "2024-01-02T03:04:05Z",
-    },
-    {
-        "source_type": "s3",
-        "doc_id": "o1",
-        "bucket": "eng",
-        "key": "docs/readme.md",
-        "title": "readme",
-        "content": "d",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "linear",
-        "doc_id": "l1",
-        "team": "engineering",
-        "title": "t",
-        "content": "e",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "google_drive",
-        "doc_id": "d1",
-        "folder": "Design",
-        "title": "spec",
-        "content": "f",
-        "author_email": "a@x.com",
-    },
-    {
-        "source_type": "confluence",
-        "doc_id": "c1",
-        "space": "ENG",
-        "title": "page",
-        "content": "g",
-        "author_email": "a@x.com",
-    },
+    complete(
+        **{
+            "source_type": "github",
+            "doc_id": "gh-stated",
+            "repo": "app",
+            "number": 7,
+            "title": "stated",
+            "content": "a",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "github",
+            "doc_id": "gh-keyless",
+            "repo": "app",
+            "title": "keyless",
+            "content": "b",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "jira",
+            "doc_id": "j1",
+            "project": "payments",
+            "title": "t",
+            "content": "c",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "slack",
+            "doc_id": "s1",
+            "channel": "general",
+            "content": "hello",
+            "author_email": "a@x.com",
+            "created": "2024-01-02T03:04:05Z",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "s3",
+            "doc_id": "o1",
+            "bucket": "eng",
+            "key": "docs/readme.md",
+            "title": "readme",
+            "content": "d",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "linear",
+            "doc_id": "l1",
+            "team": "engineering",
+            "title": "t",
+            "content": "e",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "google_drive",
+            "doc_id": "d1",
+            "folder": "Design",
+            "title": "spec",
+            "content": "f",
+            "author_email": "a@x.com",
+        }
+    ),
+    complete(
+        **{
+            "source_type": "confluence",
+            "doc_id": "c1",
+            "space": "ENG",
+            "title": "page",
+            "content": "g",
+            "author_email": "a@x.com",
+        }
+    ),
     # doc_id omitted on purpose: the manifest must key it by the DEFAULTED dataset id.
-    {
-        "source_type": "gmail",
-        "mailbox": "a@x.com",
-        "title": "mail",
-        "content": "h",
-        "author_email": "a@x.com",
-    },
+    complete(
+        **{
+            "source_type": "gmail",
+            "mailbox": "a@x.com",
+            "title": "mail",
+            "content": "h",
+            "author_email": "a@x.com",
+        }
+    ),
 ]
 
 
@@ -5121,7 +5020,7 @@ def test_every_document_lands_in_the_id_map_under_its_served_key(tmp_path):
             assert row[0] == 1, (src, did, key)
 
     # A stated id is served verbatim; the map must agree.
-    assert docs["github"]["gh-stated"] == {"repo": "acme/app", "number": 7}
+    assert docs["github"]["gh-stated"] == {"repo": "app", "number": 7}
     assert docs["s3"]["o1"] == {"bucket": "eng", "key": "docs/readme.md"}
 
 
@@ -5214,17 +5113,19 @@ def test_a_refused_load_leaves_no_id_map_behind(tmp_path):
     refusal exists to prevent, and tooling reading it would join through nothing."""
     settings = Settings(data_dir=tmp_path)
     dest = tmp_path / "ids.json"
+    # As written: `complete` has no values for a source type that does not exist, which is the
+    # refusal under test.
     bad = _ID_MAP_CORPUS + [{"source_type": "nope", "title": "t", "content": "c"}]
 
     with pytest.raises(SystemExit, match="source_type must be one of"):
-        load(_write(tmp_path, bad), settings, id_map=dest)
+        load(_write(tmp_path, bad, raw=True), settings, id_map=dest)
     assert not dest.exists()
 
     # One that was already there is not this check's to delete, so it keeps its contents until a
     # load actually succeeds and overwrites them.
     dest.write_text("stale\n")
     with pytest.raises(SystemExit, match="source_type must be one of"):
-        load(_write(tmp_path, bad, "again.jsonl"), settings, id_map=dest)
+        load(_write(tmp_path, bad, "again.jsonl", raw=True), settings, id_map=dest)
     assert dest.read_text() == "stale\n"
 
     load(_write(tmp_path, _ID_MAP_CORPUS, "good.jsonl"), settings, id_map=dest)

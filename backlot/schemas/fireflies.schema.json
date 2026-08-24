@@ -60,10 +60,9 @@
           "start_time": {
             "type": [
               "integer",
-              "number",
-              "null"
+              "number"
             ],
-            "description": "Seconds from the start of the meeting. Default: the running clock, so the sequence stays ordered."
+            "description": "Seconds from the start of the meeting. Required, and not null: the alternative is a speaking-rate estimate of when somebody spoke. The live API declares this `Float` and nullable, so this is a rule the mock imposes on a corpus rather than one Fireflies states — every sentence a real transcript serves carries a reading."
           },
           "end_time": {
             "type": [
@@ -74,7 +73,23 @@
             "description": "Seconds from the start of the meeting. Default: the next sentence's start, or a speaking-rate estimate for the last one."
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "text"
+            ]
+          },
+          {
+            "required": [
+              "content"
+            ]
+          }
+        ],
+        "description": "A transcript utterance. Its text is required: `content` IS the sentence concatenation, so a sentence carrying none becomes a stored row the transcript's own text does not contain, and the inverse the two are defined by no longer holds. `start_time` is required too — a rule this mock imposes rather than one the API states, whose `Sentence.start_time` is a nullable `Float`: every sentence a real transcript serves carries a reading, and the alternative here is a speaking-rate estimate of when somebody spoke.",
+        "required": [
+          "start_time"
+        ]
       }
     },
     "doc_id": {
@@ -83,7 +98,8 @@
     },
     "channel": {
       "type": "string",
-      "description": "The channel the meeting belongs to, e.g. \"sales-calls\" (default: the source_type)."
+      "minLength": 1,
+      "description": "The channel the meeting belongs to, e.g. \"sales-calls\"."
     },
     "group": {
       "type": "string",
@@ -289,12 +305,46 @@
         "number",
         "string"
       ],
-      "description": "When the meeting was recorded, served as `Transcript.date` (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+      "minLength": 1,
+      "description": "When the meeting was recorded, served as `Transcript.date` (epoch seconds or ISO 8601)."
     }
   },
   "required": [
+    "channel",
+    "created",
+    "duration",
     "source_type",
     "title"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "not": {
+          "required": [
+            "host_email"
+          ]
+        }
+      },
+      "then": {
+        "required": [
+          "author_email"
+        ]
+      }
+    },
+    {
+      "if": {
+        "not": {
+          "required": [
+            "sentences"
+          ]
+        }
+      },
+      "then": {
+        "required": [
+          "content"
+        ]
+      }
+    }
+  ]
 }

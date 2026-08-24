@@ -109,8 +109,15 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
 
 ## What the schemas enforce
 
-- **Strict** — `source_type` (const), required `content` (+ `title` for every source except
-  Slack), the `visibility` enum, per-service `subtype` enums (e.g. github `issue|pull_request`,
+- **Strict** — `source_type` (const); `content` (+ `title` for every source except Slack and
+  hubspot, whose notes have no name); the container each source groups by (`channel`, `mailbox`,
+  `folder`, `repo`, `project`, `space`, `teamspace`, `bucket`, `object_type`, `team`);
+  `author_email` (fireflies may spell it `host_email`); `created`; and per source whatever its
+  vendor always reports — jira's `status`, `issuetype` and `reporter`, linear's `state`, drive's
+  and notion's `updated`, hubspot's `properties`, a fireflies meeting's `duration`, a github
+  issue's or pull's `state`. A child row states its own `author_email` and its own second; a
+  fireflies sentence states its text and `start_time` (no author: the vendor's `Sentence` carries
+  no email, and an unnamed speaker is what diarization produces). Also the `visibility` enum, per-service `subtype` enums (e.g. github `issue|pull_request`,
   drive `document|spreadsheet|presentation|pdf`, confluence `page|blogpost`, notion
   `page|database`), the child-row object shapes (see *Child rows are named per source* above —
   each array is accepted only on the source it belongs to), and `additionalProperties: false` (an
@@ -121,10 +128,13 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   `issuelinks`, `reviews`, `changelog`, …), which the loader stores as JSON without a fixed shape.
   Each is a declared field of the source that has it: there is no free-form object, so a key no
   schema names is a validation error rather than a value read and dropped.
-- **Timestamps** — every source accepts `created` (epoch seconds or ISO 8601); drive/github/
-  jira/confluence also accept `updated`. Both are optional — when omitted the router synthesizes
-  a stable time from the `doc_id`. Slack `replies` are full messages (`reactions`/`files`/
-  `subtype`/`edited`, not just `content`); gmail accepts an explicit `to`.
+- **Timestamps** — `created` is required everywhere and takes epoch seconds or ISO 8601. So is a
+  child row's own second (`created_ts` on a comment, `created` on a slack reply or a gmail thread
+  message): a time nobody wrote is a time nobody can check, and the server sorts and filters on it.
+  `updated` is required only where the vendor always reports one (drive, notion) and optional
+  elsewhere, where an omitted one stays NULL rather than being invented. Slack `replies` are full
+  messages (`reactions`/`files`/`subtype`/`edited`, not just `content`); gmail's `to` is optional,
+  since RFC 5322 allows a message with no destination field and the API serves it that way.
 - **Ids the corpus owns** (all optional): github `number`, jira `key`, confluence `content_id`,
   hubspot `record_id`, fireflies `transcript_id` — the spelling a document cites, stored and
   served verbatim so that citation is a working lookup. Each is unique within its scope — a number

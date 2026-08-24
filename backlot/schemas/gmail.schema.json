@@ -14,7 +14,7 @@
     },
     "title": {
       "type": "string",
-      "description": "Document title (email subject / file name / issue title / page title)."
+      "description": "The message's Subject. Required but MAY be empty, and empty means the message HAS no Subject: RFC 5322 makes the header optional, so a message that states \"\" is served with no `Subject` header at all -- the same treatment `to` gets -- rather than with an empty one, which is a response real Gmail would not give."
     },
     "doc_id": {
       "type": "string",
@@ -22,7 +22,8 @@
     },
     "mailbox": {
       "type": "string",
-      "description": "The mailbox this document belongs to (default: the source_type)."
+      "minLength": 1,
+      "description": "The mailbox this document belongs to."
     },
     "group": {
       "type": [
@@ -121,7 +122,8 @@
         "number",
         "string"
       ],
-      "description": "Sent/received time (epoch seconds or ISO 8601). Default: synthesized. Drives Date + internalDate."
+      "minLength": 1,
+      "description": "Sent/received time (epoch seconds or ISO 8601). Drives Date + internalDate."
     },
     "mailbox_owner": {
       "type": "string",
@@ -140,7 +142,7 @@
           "author_email": {
             "type": "string",
             "format": "email",
-            "description": "Sender (default: the root's author)."
+            "description": "Sender."
           },
           "author_name": {
             "type": "string"
@@ -199,19 +201,25 @@
               "number",
               "string"
             ],
-            "description": "Sent time (default: the root's + an hour per position)."
+            "minLength": 1,
+            "description": "Sent time."
           }
         },
         "required": [
-          "content"
+          "author_email",
+          "content",
+          "created"
         ],
         "additionalProperties": false
       }
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
+    "created",
+    "mailbox",
+    "source_type",
     "title"
   ],
   "additionalProperties": false

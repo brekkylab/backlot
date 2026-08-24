@@ -6,6 +6,8 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import pytest
+
 from backlot import store
 from tests._helpers import crawl_hubspot, db_count, tiny_corpus, served_id
 
@@ -69,22 +71,135 @@ def test_hubspot_read_one_record(client, admin_h):
     assert got["createdAt"].endswith("Z")
 
 
-def test_hubspot_unknown_object_type_is_404(client, admin_h):
+def test_hubspot_unknown_object_type_is_400(client, admin_h):
     """A typo'd object type must not read as "this type has no records" — that silently turns a
     client bug into an empty result. An object type the caller simply cannot see any rows of is a
-    different case and still returns an empty page."""
+    different case and still returns an empty page.
+
+    Measured against api.hubapi.com on 2026-08-21 (a key that authenticates but holds no CRM
+    scopes, so a recognized type answers 403 and only an unrecognized one gets this far): the
+    status is 400, the envelope carries `status` and `message` and no `category`, and a malformed
+    objectTypeId gets a message of its own."""
     r = client.get("/hubspot/crm/v3/objects/widgets", headers=admin_h)
-    assert r.status_code == 404
-    assert (
-        client.post("/hubspot/crm/v3/objects/widgets/search", headers=admin_h, json={}).status_code
-        == 404
-    )
-    assert (
+    assert r.status_code == 400
+    assert r.json() == {"status": "error", "message": "Unable to infer object type from: widgets"}
+    for r in (
+        client.post("/hubspot/crm/v3/objects/widgets/search", headers=admin_h, json={}),
         client.post(
             "/hubspot/crm/v3/objects/widgets/batch/read", headers=admin_h, json={"inputs": []}
-        ).status_code
-        == 404
-    )
+        ),
+    ):
+        assert r.status_code == 400
+        assert r.json()["message"] == "Unable to infer object type from: widgets"
+    r = client.get("/hubspot/crm/v3/objects/0-9999", headers=admin_h)
+    assert r.status_code == 400
+    assert r.json()["message"] == "Invalid object or event type id: 0-9999"
+    # The other side of the same line: a standard type this corpus holds no records of is still a
+    # type, so it answers an empty page. These four were asked of api.hubapi.com on 2026-08-24 and
+    # answered 403 MISSING_SCOPES, the same as `deals` — resolved before the scope check — so a 400
+    # here would deny a type the vendor recognizes. `appointments` is plural-only: its singular is
+    # one of the four the API does NOT resolve.
+    for known in ("invoices", "orders", "subscriptions", "leads", "appointments", "lead"):
+        r = client.get(f"/hubspot/crm/v3/objects/{known}", headers=admin_h)
+        assert r.status_code == 200, (known, r.json())
+        assert r.json()["results"] == []
+    r = client.get("/hubspot/crm/v3/objects/appointment", headers=admin_h)
+    assert r.status_code == 400
+    assert r.json()["message"] == "Unable to infer object type from: appointment"
+
+
+@pytest.mark.parametrize(
+    "asked,ok",
+    [
+        ("0-2", True),  # companies, the type this corpus holds
+        ("0-3", True),  # deals: a real type, so an empty page rather than an error
+        ("0-6", False),  # no standard object holds it
+        ("0-41", False),
+        ("2-12345", False),  # a custom object's id, which no corpus of this mock defines
+    ],
+)
+def test_hubspot_an_object_type_id_is_a_spelling_of_its_type(client, admin_h, asked, ok):
+    """`/crm/v3/objects/0-3` IS deals. Checked against api.hubapi.com on 2026-08-23 with a
+    scope-less key: each of the thirteen published ids answers 403 MISSING_SCOPES exactly as its
+    name does, while an id no standard object holds answers 400 `Invalid object or event type
+    id`."""
+    r = client.get(f"/hubspot/crm/v3/objects/{asked}", headers=admin_h, params={"limit": 100})
+    assert (r.status_code == 200) is ok, r.json()
+    if not ok:
+        assert r.json()["message"] == f"Invalid object or event type id: {asked}"
+        return
+    named = "companies" if asked == "0-2" else "deals"
+    assert [row["id"] for row in r.json()["results"]] == [
+        row["id"]
+        for row in client.get(
+            f"/hubspot/crm/v3/objects/{named}", headers=admin_h, params={"limit": 100}
+        ).json()["results"]
+    ]
+
+
+def test_hubspot_one_type_stated_both_ways_is_one_type(tmp_path):
+    """A portal has ONE `deals` type, so no HubSpot response can show a record under
+    `/objects/deal/{id}` that `/objects/deal` never lists. Resolving to the first spelling that
+    exists did exactly that to a corpus stating both: each list path served its own half while
+    get-one and batch read accepted either."""
+    from tests._helpers import client_for
+
+    records = [
+        {
+            "source_type": "hubspot",
+            "doc_id": "hs-singular",
+            "object_type": "deal",
+            "title": "Acme renewal",
+            "content": "Renewal.",
+            "author_email": "rep@acme.com",
+            "created": "2026-03-01T09:00:00Z",
+            "properties": {"dealname": "Acme renewal"},
+        },
+        {
+            "source_type": "hubspot",
+            "doc_id": "hs-plural",
+            "object_type": "deals",
+            "title": "Beta",
+            "content": "Beta.",
+            "author_email": "rep@acme.com",
+            "created": "2026-03-02T09:00:00Z",
+            "properties": {"dealname": "Beta"},
+        },
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    # A second client over a different DB in this module, so the app is re-imported: the lifespan
+    # writes its connection onto module-level state (see `client_for`).
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        both = {served_id("hubspot", "hs-singular"), served_id("hubspot", "hs-plural")}
+        for asked in ("deal", "deals"):
+            listed = c.get(f"/hubspot/crm/v3/objects/{asked}", headers=h, params={"limit": 100})
+            assert {r["id"] for r in listed.json()["results"]} == both, asked
+            searched = c.post(f"/hubspot/crm/v3/objects/{asked}/search", headers=h, json={})
+            assert searched.json()["total"] == 2, asked
+            for rid in both:
+                assert c.get(f"/hubspot/crm/v3/objects/{asked}/{rid}", headers=h).status_code == 200
+
+
+@pytest.mark.parametrize("asked", ["companies", "company"])
+def test_hubspot_a_standard_type_answers_to_either_spelling(client, admin_h, asked):
+    """HubSpot resolves the path segment through its object-type registry, so `/objects/company`
+    reaches the same records as `/objects/companies` — measured: both answer 403 MISSING_SCOPES on
+    a scope-less key, where an unrecognized word answers 400. A corpus states one spelling or the
+    other, and neither may hide its records from the vendor's own path."""
+    listed = client.get(
+        f"/hubspot/crm/v3/objects/{asked}", headers=admin_h, params={"limit": 100}
+    ).json()["results"]
+    assert [r["id"] for r in listed] == [
+        r["id"]
+        for r in client.get(
+            "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"limit": 100}
+        ).json()["results"]
+    ]
+    # and a record of that type resolves under both spellings, while another type's does not
+    one = listed[0]["id"]
+    assert client.get(f"/hubspot/crm/v3/objects/{asked}/{one}", headers=admin_h).status_code == 200
+    assert client.get(f"/hubspot/crm/v3/objects/tickets/{one}", headers=admin_h).status_code == 404
 
 
 def test_hubspot_standard_type_with_no_records_is_an_empty_page(client, admin_h):

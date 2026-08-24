@@ -34,6 +34,8 @@ from _helpers import FUSE_HELP, lines, run_mirage
 BUCKET = "eng-artifacts"
 CORPUS = [
     {
+        "author_email": "ava@acme.com",
+        "created": "2026-02-11T09:00:00Z",
         "source_type": "s3",
         "bucket": BUCKET,
         "key": "runbooks/oncall.md",
@@ -42,6 +44,8 @@ CORPUS = [
         "content_type": "text/markdown",
     },
     {
+        "author_email": "ava@acme.com",
+        "created": "2025-12-05T09:00:00Z",
         "source_type": "s3",
         "bucket": BUCKET,
         "key": "design/architecture.md",

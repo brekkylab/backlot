@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Document title (email subject / file name / issue title / page title)."
+      "description": "Document title (email subject / file name / issue title / page title).",
+      "minLength": 1
     },
     "doc_id": {
       "type": "string",
@@ -28,7 +29,8 @@
     },
     "space": {
       "type": "string",
-      "description": "The space this document belongs to (default: the source_type)."
+      "minLength": 1,
+      "description": "The space this document belongs to."
     },
     "group": {
       "type": [
@@ -91,7 +93,8 @@
         "number",
         "string"
       ],
-      "description": "Creation time (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+      "minLength": 1,
+      "description": "Creation time (epoch seconds or ISO 8601)."
     },
     "updated": {
       "type": [
@@ -146,6 +149,7 @@
               "number",
               "string"
             ],
+            "minLength": 1,
             "description": "Optional creation time (epoch seconds or ISO string)."
           }
         },
@@ -161,13 +165,20 @@
             ]
           }
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "required": [
+          "author_email",
+          "created_ts"
+        ]
       }
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
+    "created",
+    "source_type",
+    "space",
     "title"
   ],
   "additionalProperties": false

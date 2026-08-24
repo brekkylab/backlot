@@ -26,7 +26,7 @@ from backlot.sigv4 import (
     parse_authorization,
     split_credential,
 )
-from tests._helpers import client_for
+from tests._helpers import complete, client_for
 
 
 # ------------------------------------------------------------------------ S3 (SigV4/404/416 edges)
@@ -192,7 +192,7 @@ def big_bucket_settings(tmp_path_factory):
     data_dir = tmp_path_factory.mktemp("s3_big")
     settings = Settings(data_dir=data_dir)
     corpus = data_dir / "_big_corpus.jsonl"
-    corpus.write_text("\n".join(json.dumps(r) for r in _s3_big_corpus()))
+    corpus.write_text("\n".join(json.dumps(complete(**r)) for r in _s3_big_corpus()))
     load(corpus, settings)
     return settings
 

@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Document title (email subject / file name / issue title / page title)."
+      "description": "Document title (email subject / file name / issue title / page title).",
+      "minLength": 1
     },
     "doc_id": {
       "type": "string",
@@ -23,7 +24,8 @@
     },
     "project": {
       "type": "string",
-      "description": "The project this document belongs to (default: the source_type)."
+      "minLength": 1,
+      "description": "The project this document belongs to."
     },
     "group": {
       "type": [
@@ -69,10 +71,12 @@
     },
     "status": {
       "type": "string",
+      "minLength": 1,
       "description": "e.g. To Do, In Progress, Done."
     },
     "issuetype": {
       "type": "string",
+      "minLength": 1,
       "description": "e.g. Task, Bug, Story, Incident, Sub-task."
     },
     "priority": {
@@ -111,7 +115,8 @@
         "number",
         "string"
       ],
-      "description": "fields.created (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+      "minLength": 1,
+      "description": "fields.created (epoch seconds or ISO 8601)."
     },
     "updated": {
       "type": [
@@ -129,7 +134,7 @@
     "reporter": {
       "type": "string",
       "format": "email",
-      "description": "Reporter email (emitted as fields.reporter). Default: the author."
+      "description": "Reporter email (emitted as fields.reporter). Default: the author. Optional, unlike `status` and `issuetype`: Atlassian's own words are that \"the reporter field is not required by default, and users can leave it empty\", and the REST API omits the field entirely for an issue whose reporter is anonymous (JRACLOUD-67358)."
     },
     "resolution": {
       "type": "string",
@@ -187,6 +192,7 @@
               "number",
               "string"
             ],
+            "minLength": 1,
             "description": "Optional creation time (epoch seconds or ISO string)."
           }
         },
@@ -202,7 +208,11 @@
             ]
           }
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "required": [
+          "author_email",
+          "created_ts"
+        ]
       }
     },
     "key": {
@@ -213,8 +223,13 @@
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
+    "created",
+    "issuetype",
+    "project",
+    "source_type",
+    "status",
     "title"
   ],
   "additionalProperties": false

@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Human title (metadata; the key is the address)."
+      "description": "Human title (metadata; the key is the address).",
+      "minLength": 1
     },
     "key": {
       "type": "string",
@@ -28,7 +29,8 @@
     },
     "bucket": {
       "type": "string",
-      "description": "The bucket this object belongs to (default: the source_type)."
+      "pattern": "^(?!(\\d{1,3}\\.){3}\\d{1,3}$)(?!.*\\.\\.)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$",
+      "description": "The bucket this object belongs to, named the way S3 names one: 3-63 characters of lowercase letters, digits, dots and hyphens, beginning and ending with a letter or digit, with no two adjacent periods and not formatted as an IP address. It is the first half of a served object's identity and the host label in the virtual-hosted URL S3 hands back, so a slash, an uppercase letter or an underscore is refused -- none of them can be served, and a slash splits the address. A dot is allowed because S3 allows it, at the cost of virtual-hosted-style HTTPS; the reserved prefixes and suffixes (`xn--`, `sthree-`, `-s3alias`, `--ol-s3`, ...) are not enforced."
     },
     "group": {
       "type": [
@@ -94,6 +96,7 @@
         "number",
         "string"
       ],
+      "minLength": 1,
       "description": "Creation time (epoch seconds or ISO 8601)."
     },
     "updated": {
@@ -106,10 +109,13 @@
     }
   },
   "required": [
-    "source_type",
+    "author_email",
+    "bucket",
     "content",
-    "title",
-    "key"
+    "created",
+    "key",
+    "source_type",
+    "title"
   ],
   "additionalProperties": false
 }

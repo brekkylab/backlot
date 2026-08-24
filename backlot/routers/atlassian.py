@@ -568,7 +568,7 @@ def _issue_key(request: Request, row) -> str:
 
 
 def _jira_ref(request: Request, row, site: str = "") -> dict:
-    status = row["status"] or "To Do"
+    status = row["status"]
     return {
         "id": str(synth.jira_numeric_id(row["key"])),
         "key": _issue_key(request, row),
@@ -577,7 +577,7 @@ def _jira_ref(request: Request, row, site: str = "") -> dict:
             "summary": row["title"],
             "status": {"name": status, "statusCategory": _status_category(status)},
             "priority": {"name": row["priority"] or "Medium"},
-            "issuetype": {"name": row["issuetype"] or "Task"},
+            "issuetype": {"name": row["issuetype"]},
         },
     }
 
@@ -619,7 +619,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
     reporter = _jira_actor(row["reporter_email"] or row["author_email"], site)
     creator = _jira_actor(row["author_email"], site)
     assignee = _jira_actor(row["assignee_email"], site) if row["assignee_email"] else None
-    status = row["status"] or "To Do"
+    status = row["status"]
     resolution = (
         None
         if not row["resolution"]

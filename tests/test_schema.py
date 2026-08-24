@@ -6,10 +6,19 @@ from datetime import datetime
 import pytest
 
 from backlot import store, validation
-from tests._helpers import served_id
+from tests._helpers import complete, served_id
 from backlot.config import Settings
 from backlot.validation import record_errors, validate_file
 from backlot.importer.byo import load
+
+
+def _unstated(rec: dict) -> list[str]:
+    """Facts this record leaves for the loader to invent, according to its own schema.
+
+    Derived from the schemas rather than from a list kept here: a second list of required fields is
+    a second contract, and the point of the schemas is that there is one.
+    """
+    return [e for e in record_errors(rec) if "is a required property" in e]
 
 
 def test_schema_per_service_matches_store():
@@ -23,11 +32,212 @@ def test_sample_corpus_is_valid(sample_corpus_path):
 
 
 def _first_error(rec):
-    return record_errors(rec)
+    """Validate a record that states only what its test is about; the rest is completed for it.
+
+    The tests ABOUT the contract call ``record_errors`` on a hand-built dict instead -- completing
+    the record is exactly what they must not do.
+    """
+    return record_errors(complete(**rec))
+
+
+def test_a_linear_comment_needs_a_body_like_every_other_sources():
+    errors = _first_error(
+        {
+            "source_type": "linear",
+            "team": "engineering",
+            "title": "Guardbands",
+            "content": "Body.",
+            "comments": [{}],
+        }
+    )
+    assert errors and "comments/0" in errors[0]
+
+
+def test_a_fireflies_sentence_needs_its_text():
+    """`content` IS the sentence concatenation, so a sentence with no text becomes a stored row the
+    transcript's own text does not contain — which breaks the inverse the two are defined by."""
+    errors = _first_error(
+        {
+            "source_type": "fireflies",
+            "channel": "all-hands",
+            "title": "April all-hands",
+            "sentences": [{"speaker_name": "A", "text": "hello"}, {}],
+        }
+    )
+    assert errors and "sentences/1" in errors[0]
+
+
+@pytest.mark.parametrize("state,ok", [("open", True), ("closed", True), ("merged", False)])
+def test_github_state_is_only_what_the_api_returns(state, ok):
+    """A merge is `merged_at`, not a third state."""
+    errors = _first_error(
+        {
+            "source_type": "github",
+            "repo": "gateway",
+            "title": "Fix the refill tick",
+            "content": "Off by one.",
+            "subtype": "pull_request",
+            "state": state,
+        }
+    )
+    assert (errors == []) is ok
+
+
+@pytest.mark.parametrize(
+    "repo,ok",
+    [
+        ("gateway", True),
+        ("redwood-sdk-go", True),
+        ("core_payments", True),
+        ("api.v2", True),
+        ("douro/core-payments", False),
+        ("has space", False),
+        # "must not exceed 100 characters" is the other half of the sentence GitHub states
+        ("r" * 100, True),
+        ("r" * 101, False),
+    ],
+)
+def test_a_github_repo_is_a_name_not_an_owner_qualified_path(repo, ok):
+    """`repo` is the API's bare `name`. The owner is a path segment of its own, which the router
+    supplies from the org it serves, and `full_name` is composed from the two. A value carrying the
+    owner is served as `name` verbatim and lands in `full_name` twice -- `douro/douro/core-payments`
+    -- taking `html_url` and every URL template with it, and `/repos/{owner}/{repo}` never finds the
+    row again. GitHub's own name charset is the check, so a space is refused for the same reason.
+    """
+    errors = _first_error({"source_type": "github", "repo": repo})
+    assert (errors == []) is ok
+
+
+@pytest.mark.parametrize(
+    "source_type,container",
+    sorted((src, store.grouping_col(src)) for src in store.SOURCE_TABLE),
+)
+def test_a_record_must_state_its_container_author_and_time(source_type, container):
+    """The three facts a served document cannot exist without, and which the loader used to invent:
+    who wrote it, where it lives, and when it happened."""
+    minimal = {"source_type": source_type, "content": "Body."}
+    if source_type != "slack":  # a slack message has no title, and unknown keys are rejected
+        minimal["title"] = "T"
+    if source_type == "fireflies":
+        minimal["duration"] = 30
+    joined = " ".join(record_errors(minimal))
+    assert container in joined
+    assert "created" in joined
+    assert "author_email" in joined or "host_email" in joined
+    # And the requirement does not stop at the key: `str(rec[container])` is taken verbatim now, so
+    # a corpus that states the container as "" gets a container whose name is the empty string,
+    # where the old `rec.get(col) or src` coerced it to the source name.
+    blank = record_errors(complete(source_type, **{container: "", "doc_id": "blank"}))
+    assert blank and container in blank[0], blank
+
+
+def test_a_fireflies_record_may_name_its_owner_as_host_email():
+    """`host_email` is the API's own name for it, so a corpus written against Fireflies needs no
+    renaming."""
+    assert (
+        record_errors(
+            {
+                "source_type": "fireflies",
+                "channel": "all-hands",
+                "title": "April all-hands",
+                "host_email": "ceo@acme.com",
+                "created": "2026-04-10T16:00:00Z",
+                "duration": 25.0,
+                "content": "Ada Chief: welcome everyone.",
+            }
+        )
+        == []
+    )
+
+
+def test_an_empty_title_is_not_a_title():
+    errors = record_errors(
+        {
+            "source_type": "confluence",
+            "space": "handbook",
+            "title": "",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "created": "2026-02-01T09:00:00Z",
+        }
+    )
+    assert errors and "title" in errors[0]
+
+
+def test_a_hubspot_note_needs_no_name():
+    """HubSpot serves no name on a note, and notes are most of a real portal."""
+    assert (
+        record_errors(
+            {
+                "source_type": "hubspot",
+                "object_type": "notes",
+                "content": "Security review scheduled.",
+                "author_email": "rep@acme.com",
+                "created": "2026-03-05T14:00:00Z",
+                "properties": {"hs_note_body": "Security review scheduled."},
+            }
+        )
+        == []
+    )
+
+
+def test_a_github_file_needs_no_state_but_a_pull_does():
+    common = {
+        "source_type": "github",
+        "repo": "gateway",
+        "title": "gateway/limiter.py",
+        "content": "class TokenBucket: ...",
+        "author_email": "bob@acme.com",
+        "created": "2026-01-20T09:00:00Z",
+    }
+    assert record_errors({**common, "subtype": "file", "path": "gateway/limiter.py"}) == []
+    errors = record_errors({**common, "subtype": "pull_request", "state": "open"})
+    assert errors == []
+    errors = record_errors({**common, "subtype": "pull_request"})
+    assert errors and "state" in errors[0]
+
+
+def test_a_child_row_states_its_author_and_its_time():
+    errors = record_errors(
+        {
+            "source_type": "jira",
+            "project": "payments",
+            "title": "SEV2",
+            "content": "Body.",
+            "author_email": "bob@acme.com",
+            "created": "2026-02-08T20:00:00Z",
+            "status": "In Progress",
+            "issuetype": "Incident",
+            "reporter": "bob@acme.com",
+            "comments": [{"content": "Rolled back."}],
+        }
+    )
+    joined = " ".join(errors)
+    assert "author_email" in joined and "created_ts" in joined
+
+
+def test_a_fireflies_sentence_still_needs_no_author():
+    """The vendor's `Sentence` carries no email at all, and an unnamed speaker is what diarization
+    produces — so the mock must not be stricter than the API it stands in for."""
+    assert (
+        record_errors(
+            {
+                "source_type": "fireflies",
+                "channel": "all-hands",
+                "title": "April all-hands",
+                "host_email": "ceo@acme.com",
+                "created": "2026-04-10T16:00:00Z",
+                "duration": 25.0,
+                "sentences": [{"text": "(crosstalk)", "start_time": 12}],
+            }
+        )
+        == []
+    )
 
 
 def test_unknown_source_type_rejected():
-    errs = _first_error({"source_type": "drive", "content": "x", "title": "t"})
+    # As written: `complete` has no values for a source type that does not exist.
+    errs = record_errors({"source_type": "drive", "content": "x", "title": "t"})
     assert errs and "source_type must be one of" in errs[0]
 
 
@@ -117,6 +327,23 @@ def test_comment_needs_content_or_body():
     assert any("comments/0" in e for e in errs)
 
 
+def test_an_either_or_child_row_names_both_fields():
+    """`anyOf` is the accurate statement of "state either of these" and the useless message at the
+    same time: jsonschema reports `is not valid under any of the given schemas`, which names neither
+    alternative and quotes the child row instead of the missing key -- the string #47 existed to
+    remove. The branches ARE the alternatives, so the message lists them."""
+    assert record_errors(
+        complete("linear", doc_id="ln-1", comments=[{"author_email": "a@b.com", "created_ts": 1}])
+    ) == ["ln-1 [comments/0]: 'content' or 'body' is a required property"]
+    assert record_errors(complete("fireflies", doc_id="ff-2", sentences=[{"start_time": 0}])) == [
+        "ff-2 [sentences/0]: 'text' or 'content' is a required property"
+    ]
+    # An `anyOf` that is a union of TYPES names no fields, and keeps jsonschema's own message.
+    assert record_errors(complete("linear", doc_id="ln-2", attachments=[7])) == [
+        "ln-2 [attachments/0]: 7 is not valid under any of the given schemas"
+    ]
+
+
 def test_replies_only_on_slack():
     assert any(
         "replies" in e
@@ -150,16 +377,47 @@ def test_schema_files_are_valid_json_schemas():
         assert schema["properties"]["source_type"]["const"] == src
 
 
+@pytest.mark.parametrize(
+    "bucket,ok",
+    [
+        ("eng-artifacts", True),
+        ("douro-core-payments", True),
+        ("logs.2026", True),
+        ("douro/core-payments", False),
+        ("Eng-Artifacts", False),
+        ("eng_artifacts", False),
+        ("-eng", False),
+        ("b", False),
+        # "Bucket names must not contain two adjacent periods", and "must not be formatted as an
+        # IP address" -- both on the same AWS list as the three rules above, and both accepted by
+        # a charset-only pattern.
+        ("logs..2026", False),
+        ("192.168.1.1", False),
+        ("192.168.1.1.eng", True),
+    ],
+)
+def test_an_s3_bucket_is_named_the_way_s3_names_one(bucket, ok):
+    """A bucket is the first half of a served object's identity and the host label in the
+    virtual-hosted URL S3 hands back, so a name S3 would refuse cannot be served either: a slash
+    splits the address, an uppercase letter or an underscore cannot appear in a host label, a
+    one-character name is below the three S3 requires, and S3 refuses both adjacent periods and a
+    name shaped like an IP address. A dot itself S3 allows, so this does too.
+    """
+    errors = _first_error({"source_type": "s3", "bucket": bucket, "key": "docs/readme.md"})
+    assert (errors == []) is ok
+
+
 def test_s3_schema_registered():
     from backlot.validation import record_errors
 
     assert (
-        record_errors(
-            {"source_type": "s3", "bucket": "b", "key": "k", "title": "t", "content": "c"}
+        _first_error(
+            {"source_type": "s3", "bucket": "bkt", "key": "k", "title": "t", "content": "c"}
         )
         == []
     )
-    errs = record_errors({"source_type": "s3", "bucket": "b", "title": "t", "content": "c"})
+    # As written: the point is that the missing `key` is refused.
+    errs = record_errors({"source_type": "s3", "bucket": "bkt", "title": "t", "content": "c"})
     assert errs and any("key" in e for e in errs)
 
 
@@ -170,7 +428,7 @@ def test_linear_record_accepts_linears_own_field_names():
     """A corpus written against the Linear API should need no renaming: `state` (not status),
     camelCase `branchName`/`dueDate`, `assignee` as an email."""
     assert (
-        record_errors(
+        _first_error(
             {
                 "source_type": "linear",
                 "title": "t",
@@ -197,9 +455,7 @@ def test_linear_record_accepts_linears_own_field_names():
 def test_linear_priority_accepts_a_label_or_the_numeric_scale():
     for value in (0, 4, "P0", "Urgent"):
         assert (
-            record_errors(
-                {"source_type": "linear", "title": "t", "content": "c", "priority": value}
-            )
+            _first_error({"source_type": "linear", "title": "t", "content": "c", "priority": value})
             == []
         )
 
@@ -225,6 +481,7 @@ def test_linear_byo_round_trip_serves_what_it_loaded(tmp_path):
         json.dumps(
             {
                 "source_type": "linear",
+                "created": "2026-02-18T09:00:00Z",
                 "doc_id": "byo-1",
                 "team": "platform",
                 "group": "platform",
@@ -242,7 +499,13 @@ def test_linear_byo_round_trip_serves_what_it_loaded(tmp_path):
                 "assignee": "bob@acme.com",
                 "assigneeName": "Bob Stone",
                 "completedAt": "2026-03-20T00:00:00Z",
-                "comments": [{"content": "Rolled out.", "author_email": "bob@acme.com"}],
+                "comments": [
+                    {
+                        "content": "Rolled out.",
+                        "author_email": "bob@acme.com",
+                        "created_ts": "2026-02-18T10:00:00Z",
+                    }
+                ],
             }
         )
         + "\n"
@@ -283,14 +546,14 @@ def test_linear_synthesized_identifier_is_resolvable(tmp_path):
     corpus = tmp_path / "c.jsonl"
     corpus.write_text(
         json.dumps(
-            {
-                "source_type": "linear",
-                "doc_id": "no-ident",
-                "team": "engineering",
-                "title": "No identifier given",
-                "content": "body",
-                "author_email": "ava@acme.com",
-            }
+            complete(
+                "linear",
+                doc_id="no-ident",
+                team="engineering",
+                title="No identifier given",
+                content="body",
+                author_email="ava@acme.com",
+            )
         )
         + "\n"
     )
@@ -316,7 +579,7 @@ def test_fireflies_schema_accepts_sentences_or_content(tmp_path):
     """Either view of the transcript is a complete record: `sentences` (the structured form) or
     `content` (a plain body the loader parses)."""
     assert (
-        record_errors(
+        _first_error(
             {
                 "source_type": "fireflies",
                 "title": "T",
@@ -325,17 +588,24 @@ def test_fireflies_schema_accepts_sentences_or_content(tmp_path):
         )
         == []
     )
-    assert record_errors({"source_type": "fireflies", "title": "T", "content": "A: hi"}) == []
+    assert _first_error({"source_type": "fireflies", "title": "T", "content": "A: hi"}) == []
 
 
 def test_fireflies_record_with_neither_sentences_nor_content_is_rejected(tmp_path):
-    """A schema `anyOf` would report "not valid under any of the given schemas", naming neither
-    field, so the loader states it instead."""
+    """One of the two IS the transcript, so a record carrying neither has nothing to serve.
+
+    Stated as a condition rather than an `anyOf`, which would report "not valid under any of the
+    given schemas" and name neither field.
+    """
+    assert record_errors(complete("fireflies", _omit={"content"}, title="Empty")) == [
+        "Empty: 'content' is a required property when sentences is absent"
+    ]
+
     corpus = tmp_path / "c.jsonl"
     corpus.write_text(json.dumps({"source_type": "fireflies", "title": "Empty"}) + "\n")
     with pytest.raises(SystemExit) as e:
         load(corpus, Settings(data_dir=tmp_path))
-    assert "'sentences' or 'content'" in str(e.value)
+    assert "'content' is a required property" in str(e.value)
 
 
 def test_fireflies_schema_rejects_the_slack_replies_array():
@@ -353,7 +623,7 @@ def test_fireflies_schema_rejects_the_slack_replies_array():
 
 
 def test_fireflies_schema_sentence_shape_is_checked():
-    ok = record_errors(
+    ok = _first_error(
         {
             "source_type": "fireflies",
             "title": "T",
@@ -372,7 +642,7 @@ def test_fireflies_schema_sentence_shape_is_checked():
     assert ok == []
     # a null speaker is legal (the API returns one when diarization produced no label)
     assert (
-        record_errors(
+        _first_error(
             {
                 "source_type": "fireflies",
                 "title": "T",
@@ -381,7 +651,7 @@ def test_fireflies_schema_sentence_shape_is_checked():
         )
         == []
     )
-    bad = record_errors(
+    bad = _first_error(
         {
             "source_type": "fireflies",
             "title": "T",
@@ -394,7 +664,7 @@ def test_fireflies_schema_sentence_shape_is_checked():
 def test_fireflies_schema_uses_the_apis_own_field_names():
     """A corpus written against the real Fireflies API should need no renaming."""
     assert (
-        record_errors(
+        _first_error(
             {
                 "source_type": "fireflies",
                 "title": "T",
@@ -437,7 +707,7 @@ def test_fireflies_schema_duration_is_minutes_not_seconds():
 
 def test_slack_participants_accepted():
     assert (
-        record_errors(
+        _first_error(
             {
                 "source_type": "slack",
                 "channel": "incidents",
@@ -453,7 +723,7 @@ def test_gmail_messages_array_is_the_thread_not_slack_replies():
     """A Gmail thread's later messages get their own array: `replies` stays Slack-only, since a
     reply (with reactions and files) is not what a further email in a thread is."""
     assert (
-        record_errors(
+        _first_error(
             {
                 "source_type": "gmail",
                 "mailbox": "ava",
@@ -478,14 +748,14 @@ def test_gmail_messages_array_is_the_thread_not_slack_replies():
     # the key is still required
     assert any(
         "messages/0" in e
-        for e in record_errors(
+        for e in _first_error(
             {"source_type": "gmail", "title": "t", "content": "c", "messages": [{"to": "x@a.com"}]}
         )
     )
     # and `messages` is gmail's alone
     assert any(
         "messages" in e
-        for e in record_errors(
+        for e in _first_error(
             {"source_type": "slack", "content": "c", "messages": [{"content": "x"}]}
         )
     )
@@ -495,14 +765,14 @@ def test_gmail_thread_content_may_be_empty_but_no_other_source():
     """A thread opened by a header-only message still carries its content in `messages`; every
     other source's `content` is the document itself, so it stays non-empty."""
     assert (
-        record_errors(
+        _first_error(
             {"source_type": "gmail", "title": "t", "content": "", "messages": [{"content": "body"}]}
         )
         == []
     )
     assert any(
         "content" in e
-        for e in record_errors({"source_type": "confluence", "title": "t", "content": ""})
+        for e in _first_error({"source_type": "confluence", "title": "t", "content": ""})
     )
 
 
@@ -512,14 +782,12 @@ def test_group_may_be_null_to_mean_no_group_owns_the_container():
         ("google_drive", {"folder": "scratch", "title": "t"}),
         ("slack", {"channel": "incidents"}),
     ):
-        assert record_errors({"source_type": src, "content": "c", "group": None, **extra}) == [], (
-            src
-        )
+        assert _first_error({"source_type": src, "content": "c", "group": None, **extra}) == [], src
 
 
 def test_readers_accept_typed_principal_ids():
     assert (
-        record_errors(
+        _first_error(
             {
                 "source_type": "jira",
                 "project": "PAY",
@@ -543,6 +811,142 @@ def test_readers_accept_typed_principal_ids():
 # Until the test below existed, the only property pinned here was "covers every source" — which
 # hello.jsonl also satisfies, so nothing distinguished the two and the README's "fills in every
 # field" was a claim rather than a fact (68 declared fields were unused when it was written).
+
+
+def test_the_sample_corpus_states_every_required_fact():
+    gaps = {
+        i: _unstated(rec) for i, rec in enumerate(_example_records(), start=1) if _unstated(rec)
+    }
+    assert gaps == {}
+
+
+def test_the_test_corpus_states_every_required_fact():
+    from tests.conftest import SAMPLE
+
+    assert [(i, _unstated(r)) for i, r in enumerate(SAMPLE) if _unstated(r)] == []
+
+
+def test_the_typescript_examples_corpus_would_load():
+    """The one example whose corpus is not Python, so the sweep above cannot see it. CI catches it
+    by running the example, which is a whole round trip away; this catches it here."""
+    import re
+
+    from tests.conftest import REPO_ROOT
+
+    path = REPO_ROOT / "examples/using-official-sdk/linear/index.ts"
+    text = path.read_text()
+    assert "const CORPUS = [" in text, f"{path.name}: no CORPUS literal -- fix this extractor"
+    body = text[text.index("const CORPUS = [") + len("const CORPUS = ") :]
+    depth = 0
+    end = None
+    for i, ch in enumerate(body):
+        depth += ch == "["
+        depth -= ch == "]"
+        if depth == 0 and ch == "]":
+            end = i + 1
+            break
+    assert end, f"{path.name}: unbalanced CORPUS literal"
+    # object-literal keys to JSON keys, then drop the trailing commas JSON does not allow
+    as_json = re.sub(r"(\n\s*|\{\s*|,\s*)([A-Za-z_][A-Za-z_0-9]*):", r'\1"\2":', body[:end])
+    records = json.loads(re.sub(r",(\s*[}\]])", r"\1", as_json))
+    assert records, f"{path.name}: parsed no records -- fix this extractor"
+    assert {r.get("doc_id"): record_errors(r) for r in records if record_errors(r)} == {}
+
+
+def test_every_record_the_docs_show_would_load():
+    """A README snippet is the first corpus anybody writes, so one that no longer validates teaches
+    a shape the importer refuses."""
+    from tests.conftest import REPO_ROOT
+
+    shown = {}
+    for rel in (
+        "README.md",
+        "examples/bring-your-own-corpus/README.md",
+        "backlot/schemas/README.md",
+    ):
+        for line in (REPO_ROOT / rel).read_text().split("\n"):
+            text = line.strip()
+            if text.startswith('{"source_type"') and text.endswith("}"):
+                shown.setdefault(rel, []).append(json.loads(text))
+    assert shown, "no record snippets found in the docs"
+
+    bad = {
+        f"{rel}: {rec.get('doc_id') or rec.get('title') or rec['source_type']}": errors
+        for rel, records in shown.items()
+        for rec in records
+        if (errors := record_errors(rec))
+    }
+    assert bad == {}
+
+
+def _module_constants(tree, names) -> dict:
+    """The module-level literal assignments among `names`, so a corpus is read with the values its
+    own example uses. Anything not a literal -- a call, an f-string, a value built at import --
+    stays absent and keeps its placeholder."""
+    import ast
+
+    out = {}
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        for target in stmt.targets:
+            if getattr(target, "id", None) in names:
+                try:
+                    out[target.id] = ast.literal_eval(stmt.value)
+                except (ValueError, SyntaxError):
+                    pass
+    return out
+
+
+def _inline_corpora():
+    """Every inline `CORPUS` literal under examples/, as (path, records).
+
+    Read with `ast` rather than imported: an example's module body spins up a server.
+    """
+    import ast
+
+    from tests.conftest import REPO_ROOT
+
+    out = []
+    for path in sorted((REPO_ROOT / "examples").rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(getattr(t, "id", None) == "CORPUS" for t in node.targets):
+                continue
+            names = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+            # The names an example interpolates are its own module constants -- a bucket, a repo, a
+            # mailbox owner's address -- so read them off the module. Standing one address-shaped
+            # string in for all of them satisfied `format: email` but not the constraints a
+            # container carries: it put an address in `repo`, where the charset refuses one, and a
+            # value no example writes is a value no example is checked on.
+            scope = dict.fromkeys(names, "placeholder@example.com") | _module_constants(tree, names)
+            try:
+                corpus = eval(  # noqa: S307
+                    compile(ast.Expression(node.value), "<corpus>", "eval"), {}, scope
+                )
+            except Exception:
+                continue
+            if isinstance(corpus, list):
+                out.append((path.relative_to(REPO_ROOT).as_posix(), corpus))
+    return out
+
+
+def test_every_example_corpus_states_every_required_fact():
+    gaps = {}
+    for name, corpus in _inline_corpora():
+        found = [_unstated(r) for r in corpus if isinstance(r, dict) and _unstated(r)]
+        if found:
+            gaps[name] = found
+    assert gaps == {}
+
+
+def test_every_example_corpus_validates():
+    for name, corpus in _inline_corpora():
+        for rec in corpus:
+            if isinstance(rec, dict):
+                assert record_errors(rec) == [], f"{name}: {rec.get('doc_id') or rec.get('title')}"
 
 
 def _example_corpus():
@@ -599,27 +1003,20 @@ def test_a_conditional_requirement_says_which_records_it_applies_to():
     subtype 'file' rows needed one — the condition sat in the schema for the reader to
     go and find."""
     errs = record_errors(
-        {
-            "source_type": "github",
-            "title": "settlement.py",
-            "content": "code",
-            "doc_id": "gh-1",
-            "subtype": "file",
-        }
+        complete(
+            "github",
+            _omit={"path"},
+            title="settlement.py",
+            content="code",
+            doc_id="gh-1",
+            subtype="file",
+        )
     )
     assert errs == ["gh-1: 'path' is a required property when subtype is \"file\""]
 
     # An issue is not a file, so the same schema asks nothing of it.
     assert (
-        record_errors(
-            {
-                "source_type": "github",
-                "title": "t",
-                "content": "c",
-                "doc_id": "gh-2",
-                "subtype": "issue",
-            }
-        )
+        record_errors(complete("github", title="t", content="c", doc_id="gh-2", subtype="issue"))
         == []
     )
 
@@ -628,16 +1025,15 @@ def test_a_validation_error_names_the_record_it_is_about():
     """A line number is not an identifier: a sharded artifact numbers every shard from
     one, and the id is what the author's own build wrote down and can grep for. Absent an
     id, the title serves; absent both, the root placeholder is all there is."""
-    by_id = record_errors(
-        {"source_type": "github", "title": "t", "content": "c", "doc_id": "d1", "subtype": "nope"}
-    )
+    by_id = record_errors(complete("github", title="t", content="c", doc_id="d1", subtype="nope"))
     assert by_id and by_id[0].startswith("d1 [subtype]: ")
 
     by_title = record_errors({"source_type": "linear", "title": "Cutover plan", "nope": 1})
     assert by_title and all(e.startswith("Cutover plan") for e in by_title)
 
     anonymous = record_errors({"source_type": "github", "content": "c"})
-    assert anonymous == ["<root>: 'title' is a required property"]
+    assert anonymous and all(e.startswith("<root>: ") for e in anonymous)
+    assert "<root>: 'title' is a required property" in anonymous
 
 
 def test_a_label_cannot_be_mistaken_for_the_field_path():
@@ -645,25 +1041,26 @@ def test_a_label_cannot_be_mistaken_for_the_field_path():
     `subtype` field is wrong read "subtype subtype: ...", naming the field twice and marking
     neither as the record — so the path is bracketed. The path's own spelling is untouched:
     the slash form is what the rest of this suite pins."""
-    assert record_errors(
-        {"source_type": "github", "title": "subtype", "content": "c", "subtype": 9}
-    ) == ["subtype [subtype]: 9 is not one of ['issue', 'pull_request', 'file']"]
+    assert record_errors(complete("github", title="subtype", content="c", subtype=9)) == [
+        "subtype [subtype]: 9 is not one of ['issue', 'pull_request', 'file']"
+    ]
 
     # A record-wide error has no path, so it gains no brackets either.
-    assert record_errors({"source_type": "github", "content": "c", "doc_id": "d"}) == [
+    assert record_errors(complete("github", _omit={"title"}, content="c", doc_id="d")) == [
         "d: 'title' is a required property"
     ]
 
     # A nameless record marks its path as a path, so an unbracketed head is always the record:
     # bare, `subtype: ` was both this and the labelled record-wide line just above it.
-    nameless = record_errors({"source_type": "github", "title": "", "content": "c", "subtype": 9})
-    assert nameless and all(e.startswith("<root> [subtype]: ") for e in nameless)
+    nameless = record_errors(complete("github", title="", content="c", subtype=9))
+    assert nameless and any(e.startswith("<root> [subtype]: ") for e in nameless)
+    assert all(e.startswith("<root> ") for e in nameless)
 
 
 def test_the_condition_clause_is_omitted_rather_than_guessed():
     """An unconditional rule gets no clause, and a condition shape the renderer does not
     recognise gets none either — a wrong "when" is worse than no "when"."""
-    plain = record_errors({"source_type": "github", "content": "c", "doc_id": "d"})
+    plain = record_errors(complete("github", _omit={"title"}, content="c", doc_id="d"))
     assert plain == ["d: 'title' is a required property"]
     assert (
         validation._when_clause(
@@ -711,6 +1108,44 @@ def test_a_multi_value_predicate_is_bracketed_against_the_and():
     assert validation._when_clause(
         one, ["allOf", 0, "then", "required"], one["allOf"][0]["then"]
     ) == (' when a is "x"')
+
+
+def test_a_negated_predicate_still_names_its_condition():
+    """Both shapes a schema states an exclusion in. `{"not": {"const": …}}` predicates on a VALUE
+    being anything else; `{"not": {"required": […]}}` predicates on a field's ABSENCE, which is how
+    two fields say "one of us". Rendering neither left the rule reporting as a bare
+    `'state' is a required property` — the line #47 was written about — and left a record that
+    states neither of the two fields never learning that stating the other would do."""
+    value = {
+        "allOf": [
+            {
+                "if": {"properties": {"subtype": {"not": {"const": "file"}}}},
+                "then": {"required": ["state"]},
+            }
+        ]
+    }
+    assert (
+        validation._when_clause(value, ["allOf", 0, "then", "required"], value["allOf"][0]["then"])
+        == ' when subtype is not "file" (or absent)'
+    )
+    presence = {
+        "allOf": [
+            {"if": {"not": {"required": ["host_email"]}}, "then": {"required": ["author_email"]}}
+        ]
+    }
+    assert (
+        validation._when_clause(
+            presence, ["allOf", 0, "then", "required"], presence["allOf"][0]["then"]
+        )
+        == " when host_email is absent"
+    )
+    # and the rules the shipped schemas state in those shapes, end to end
+    assert record_errors(complete("github", doc_id="gh-1", subtype="issue", _omit={"state"})) == [
+        "gh-1: 'state' is a required property when subtype is not \"file\" (or absent)"
+    ]
+    assert record_errors(complete("fireflies", doc_id="ff-1", _omit={"author_email"})) == [
+        "ff-1: 'author_email' is a required property when host_email is absent"
+    ]
 
 
 def test_a_malformed_condition_reports_rather_than_raises():
@@ -763,7 +1198,7 @@ def test_a_predicate_field_the_condition_does_not_require_says_so():
 
     # The real schema is the guarded form, so the headline diagnostic keeps its plain clause.
     assert record_errors(
-        {"source_type": "github", "subtype": "file", "title": "t", "content": "c", "doc_id": "gh-1"}
+        complete("github", _omit={"path"}, subtype="file", title="t", content="c", doc_id="gh-1")
     ) == ["gh-1: 'path' is a required property when subtype is \"file\""]
 
 

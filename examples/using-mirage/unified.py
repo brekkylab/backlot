@@ -33,12 +33,14 @@ from _helpers import FUSE_HELP, lines, run_mirage
 # One term — "Q1" — deliberately threads through all three sources.
 CORPUS = [
     {
+        "author_email": "cfo@acme.com",
         "source_type": "slack",
         "channel": "finance",
         "created": "2024-08-01T10:00:00Z",
         "content": "Q1 revenue landed 12% over plan — great work team.",
     },
     {
+        "created": "2026-01-20T16:00:00Z",
         "source_type": "gmail",
         "mailbox": "ceo",
         "title": "Q1 board deck draft",
@@ -46,6 +48,8 @@ CORPUS = [
         "author_email": "ceo@acme.com",
     },
     {
+        "updated": "2026-01-10T08:00:00Z",
+        "created": "2026-01-10T08:00:00Z",
         "source_type": "google_drive",
         "folder": "finance",
         "title": "Q1 Revenue Model",

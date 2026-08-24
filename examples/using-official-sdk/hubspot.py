@@ -32,6 +32,7 @@ from hubspot.crm.companies import PublicObjectSearchRequest  # noqa: E402
 # association is declared once; the loader materializes the reverse direction too.
 CORPUS = [
     {
+        "created": "2026-03-01T09:00:00Z",
         "source_type": "hubspot",
         "object_type": "companies",
         "doc_id": "hs-co-acme",
@@ -47,6 +48,7 @@ CORPUS = [
         },
     },
     {
+        "created": "2026-03-02T11:00:00Z",
         "source_type": "hubspot",
         "object_type": "contacts",
         "title": "Ava Stone",
@@ -61,6 +63,7 @@ CORPUS = [
         "associations": [{"to": "hs-co-acme", "label": "Primary"}],
     },
     {
+        "created": "2026-03-03T09:00:00Z",
         "source_type": "hubspot",
         "object_type": "deals",
         "title": "Acme Health — renewal",
@@ -74,9 +77,9 @@ CORPUS = [
         "associations": [{"to": "hs-co-acme"}],
     },
     {
+        "created": "2026-03-05T14:00:00Z",
         "source_type": "hubspot",
         "object_type": "notes",
-        "title": "",
         "content": "Security review scheduled; customer wants EU data residency confirmed.",
         "author_email": "rep@acme.com",
         "properties": {

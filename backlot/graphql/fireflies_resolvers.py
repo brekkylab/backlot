@@ -194,9 +194,12 @@ def _analytics_speakers(row, speakers: list) -> list[dict]:
     """`analytics.speakers` is Fireflies' AnalyticsSpeaker: talk-time statistics keyed by the same
     per-meeting speaker number the sentences carry. `speakers` is the roster those numbers come
     from, joined to the stored statistics by NAME — the only key the analytics JSON has, since
-    synth.fireflies_speaker_stats aggregates by it. Runs diarization never labelled are therefore
-    ONE statistics entry however many numbers they cover, served under one of them, while the
-    roster keeps every number."""
+    synth.fireflies_speaker_stats aggregates by it.
+
+    So this is one entry per LABEL where `Transcript.speakers` is one per number: numbers sharing a
+    label — several runs diarization left unlabelled, or one name it used for two of them — are ONE
+    statistics entry however many numbers they cover, served under one of those numbers, while the
+    roster keeps every number. Nothing in the stored analytics can separate them."""
     numbers = {s["speaker_name"]: s["speaker_id"] for s in speakers}
     out = []
     for sp in (store.jcol(row, "analytics") or {}).get("speakers") or []:

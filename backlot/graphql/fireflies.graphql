@@ -212,7 +212,11 @@ type SummarySection {
 
 type MeetingAnalytics {
   sentiments: Sentiments
-  "Per-speaker talk time and word counts, computed from the sentences."
+  """
+  Per-speaker talk time and word counts, computed from the sentences. One entry per LABEL, where
+  `Transcript.speakers` is one per number: the stored statistics are aggregated by name, so two
+  numbers sharing a label are one entry here, under one of the two.
+  """
   speakers: [AnalyticsSpeaker!]
   "Classifier buckets. Always null — see the header."
   categories: AnalyticsCategories

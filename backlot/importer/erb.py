@@ -341,7 +341,13 @@ def _user_token(email: str) -> str:
 
 
 def _slug(name: str) -> str:
-    parts = [re.sub(r"[^a-z0-9]+", "", p) for p in (name or "").lower().split()]
+    """A name -> the local part of its address. Accents are folded the way :func:`canonical` folds
+    them, not dropped: the bench writes one person both ways ("Marta Kovač", "Marta Kovac"), and
+    the two spellings share a canonical, so whichever is seen first names the address for both. A
+    dropped accent made that address depend on which spelling came first -- `marta.kova` from one,
+    `marta.kovac` from the other -- and only one of them is the address the corpus states."""
+    folded = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode()
+    parts = [re.sub(r"[^a-z0-9]+", "", p) for p in folded.lower().split()]
     parts = [p for p in parts if p]
     return ".".join(parts) or "user"
 

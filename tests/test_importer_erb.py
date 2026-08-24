@@ -322,6 +322,11 @@ def test_write_tokens_is_directory_only(tmp_path):
 
 def test_canonical_folds_accents():
     assert canonical("Tomáš Novák") == canonical("Tomas Novak") == "tomasnovak"
+    # The address folds the same way, or the two spellings share a canonical while disagreeing on
+    # the address it resolves to — and the winner would be whichever spelling the corpus states
+    # first. Dropping the accent instead of folding it also loses a letter: `kova`, not `kovac`.
+    assert C._slug("Marta Kovač") == C._slug("Marta Kovac") == "marta.kovac"
+    assert C._slug("Tomáš Novák") == "tomas.novak"  # the address the directory states for them
 
 
 def test_mint_does_not_clobber_directory_user(tmp_path):

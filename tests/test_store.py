@@ -2158,6 +2158,63 @@ def test_fireflies_sentences_come_back_in_spoken_order(db, keys):
         assert a["start_time"] < a["end_time"] <= b["start_time"]
 
 
+def test_fireflies_speakers_are_keyed_on_the_number_not_the_name(tmp_path):
+    """Fireflies numbers speakers WITHIN a meeting, so the roster is one entry per NUMBER. Keyed on
+    the name instead, two runs diarization never labelled collapse into one entry and
+    `Sentence.speaker_id` ends up naming a speaker the roster does not list.
+
+    Its own corpus, and one that states the numbers itself: the BYO loader assigns one ordinal per
+    NAME, so two unlabelled speakers exist only where the record distinguishes them."""
+    from tests._helpers import tiny_corpus
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "fireflies",
+                "doc_id": "ff-diarized",
+                "channel": "sales-calls",
+                "title": "Crosstalk",
+                "host_email": "ava@acme.com",
+                "visibility": "public",
+                "sentences": [
+                    {"speaker_name": None, "speaker_id": 0, "start_time": 0, "text": "(crosstalk)"},
+                    {"speaker_name": None, "speaker_id": 1, "start_time": 5, "text": "(inaudible)"},
+                    {"speaker_name": "Ava", "speaker_id": 2, "start_time": 10, "text": "Morning."},
+                    {"speaker_name": "Ava Chen", "speaker_id": 2, "start_time": 15, "text": "So."},
+                ],
+            },
+            {
+                "source_type": "fireflies",
+                "doc_id": "ff-plain",
+                "channel": "sales-calls",
+                "title": "Plain",
+                "host_email": "ava@acme.com",
+                "visibility": "public",
+                "content": "[00:00] Ava: just the one speaker.",
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    by_title = {r["title"]: r["id"] for r in store.list_fireflies_transcripts(conn, limit=50)}
+    rosters = store.fireflies_speakers(conn, by_title.values())
+    # every number the sentences carry, in number order, the unlabelled ones included -- and the
+    # number that carries two labels is served under the first the transcript uses
+    assert [(r["speaker_id"], r["speaker_name"]) for r in rosters[by_title["Crosstalk"]]] == [
+        (0, None),
+        (1, None),
+        (2, "Ava"),
+    ]
+    # batched over the page: one entry per id ASKED for, so a caller can index the result
+    assert set(rosters) == set(by_title.values())
+    assert [r["speaker_name"] for r in rosters[by_title["Plain"]]] == ["Ava"]
+    assert store.fireflies_speakers(conn, []) == {}
+    assert store.fireflies_speakers(conn, ["deadbeefdeadbeefdeadbeef"]) == {
+        "deadbeefdeadbeefdeadbeef": []
+    }
+    conn.close()
+
+
 def test_fireflies_counts_agree_with_the_pages(db):
     for kw, scope in [
         (None, None),

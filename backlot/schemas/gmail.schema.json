@@ -23,7 +23,7 @@
     "mailbox": {
       "type": "string",
       "minLength": 1,
-      "description": "The mailbox this document belongs to (default: the source_type)."
+      "description": "The mailbox this document belongs to."
     },
     "group": {
       "type": [
@@ -123,7 +123,7 @@
         "string"
       ],
       "minLength": 1,
-      "description": "Sent/received time (epoch seconds or ISO 8601). Default: synthesized. Drives Date + internalDate."
+      "description": "Sent/received time (epoch seconds or ISO 8601). Drives Date + internalDate."
     },
     "mailbox_owner": {
       "type": "string",
@@ -142,7 +142,7 @@
           "author_email": {
             "type": "string",
             "format": "email",
-            "description": "Sender (default: the root's author)."
+            "description": "Sender."
           },
           "author_name": {
             "type": "string"
@@ -202,7 +202,7 @@
               "string"
             ],
             "minLength": 1,
-            "description": "Sent time (default: the root's + an hour per position)."
+            "description": "Sent time."
           }
         },
         "required": [

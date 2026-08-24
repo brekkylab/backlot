@@ -25,7 +25,7 @@
     "team": {
       "type": "string",
       "minLength": 1,
-      "description": "The owning team, e.g. \"engineering\". Its short key (ENG) is the prefix its identifiers carry: derived from the name, unless the team's own issues spell a different one out, in which case that is the key on every surface — real Linear derives an identifier FROM its team's key, so the two can never disagree. Default: the source_type."
+      "description": "The owning team, e.g. \"engineering\". Its short key (ENG) is the prefix its identifiers carry: derived from the name, unless the team's own issues spell a different one out, in which case that is the key on every surface — real Linear derives an identifier FROM its team's key, so the two can never disagree."
     },
     "group": {
       "type": [
@@ -253,7 +253,7 @@
         "string"
       ],
       "minLength": 1,
-      "description": "createdAt (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+      "description": "createdAt (epoch seconds or ISO 8601)."
     },
     "updated": {
       "type": [

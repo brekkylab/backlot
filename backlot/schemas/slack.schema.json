@@ -20,7 +20,7 @@
     "channel": {
       "type": "string",
       "minLength": 1,
-      "description": "The channel this document belongs to (default: the source_type)."
+      "description": "The channel this document belongs to."
     },
     "group": {
       "type": [
@@ -86,7 +86,7 @@
         "string"
       ],
       "minLength": 1,
-      "description": "Creation time (epoch seconds or ISO 8601). Default: synthesized from doc_id. Sets the message ts. A thread reply times itself: its own `created` when it has one, else one second after the message before it."
+      "description": "Creation time (epoch seconds or ISO 8601). Sets the message ts."
     },
     "replies": {
       "type": "array",
@@ -116,7 +116,7 @@
               "string"
             ],
             "minLength": 1,
-            "description": "Reply time (default: one second after the previous message). Must be after the message before it: a Slack ts is identity as well as clock, so a thread's times are strictly increasing."
+            "description": "Reply time. Must be after the message before it: a Slack ts is identity as well as clock, so a thread's times are strictly increasing."
           },
           "title": {
             "type": "string"

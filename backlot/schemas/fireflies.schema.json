@@ -99,7 +99,7 @@
     "channel": {
       "type": "string",
       "minLength": 1,
-      "description": "The channel the meeting belongs to, e.g. \"sales-calls\" (default: the source_type)."
+      "description": "The channel the meeting belongs to, e.g. \"sales-calls\"."
     },
     "group": {
       "type": "string",
@@ -306,7 +306,7 @@
         "string"
       ],
       "minLength": 1,
-      "description": "When the meeting was recorded, served as `Transcript.date` (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+      "description": "When the meeting was recorded, served as `Transcript.date` (epoch seconds or ISO 8601)."
     }
   },
   "required": [

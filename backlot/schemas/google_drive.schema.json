@@ -25,7 +25,7 @@
     "folder": {
       "type": "string",
       "minLength": 1,
-      "description": "The folder this document belongs to (default: the source_type)."
+      "description": "The folder this document belongs to."
     },
     "group": {
       "type": [
@@ -106,7 +106,7 @@
         "string"
       ],
       "minLength": 1,
-      "description": "createdTime (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+      "description": "createdTime (epoch seconds or ISO 8601)."
     },
     "updated": {
       "type": [
@@ -115,7 +115,7 @@
         "string"
       ],
       "minLength": 1,
-      "description": "modifiedTime (epoch seconds or ISO 8601). Default: created + 1h."
+      "description": "modifiedTime (epoch seconds or ISO 8601)."
     },
     "trashed": {
       "type": "boolean",

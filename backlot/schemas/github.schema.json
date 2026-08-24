@@ -137,7 +137,7 @@
         "string"
       ],
       "minLength": 1,
-      "description": "created_at (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+      "description": "created_at (epoch seconds or ISO 8601)."
     },
     "updated": {
       "type": [

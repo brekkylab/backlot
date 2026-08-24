@@ -295,13 +295,22 @@ def test_gmail_relative_date_query_not_zeroed(db):
     assert len(_gmail_query(db, None, None, "older_than:3650000d")) == 0
 
 
-def test_github_issue_q_parse():
-    from backlot.routers.github import _parse_issue_q
+def test_github_search_q_parse():
+    """One parser, a qualifier vocabulary per endpoint: a key the endpoint does not honor stays
+    free text, so the FTS still gets a chance at it."""
+    from backlot.routers.github import _GH_CODE_QUALS, _GH_ISSUE_QUALS, _parse_q
 
-    free, quals = _parse_issue_q("repo:acme/gateway is:pr state:closed refill bug")
+    free, quals = _parse_q("repo:acme/gateway is:pr state:closed refill bug", _GH_ISSUE_QUALS)
     assert free == "refill bug"
     assert quals["repo"] == ["acme/gateway"] and quals["is"] == ["pr"]
     assert quals["state"] == ["closed"]
+
+    free, quals = _parse_q("repo:acme/core extension:py in:path INC-0E0C46", _GH_CODE_QUALS)
+    assert free == "INC-0E0C46"
+    assert quals == {"repo": ["acme/core"], "extension": ["py"], "in": ["path"]}
+
+    # `state:` says nothing about a file, so code search leaves it as text rather than swallowing it
+    assert _parse_q("state:closed thing", _GH_CODE_QUALS) == ("state:closed thing", {})
 
 
 def test_fts_notion_search(db):

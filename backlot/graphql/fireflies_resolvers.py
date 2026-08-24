@@ -26,6 +26,14 @@ from backlot import store, synth
 PAGE_DEFAULT = 25
 PAGE_MAX = 50
 
+# Slots this module keeps on the request context (backlot/routers/fireflies.py builds one dict per
+# request, so nothing here outlives the response or crosses a caller). The two lazily-bound fields
+# that query — the speaker numbers and a channel's roster — read through them, so a page of
+# transcripts costs one statement each rather than one per row.
+_PAGE_IDS = "_ff_page_ids"
+_SPEAKERS = "_ff_speakers"
+_CHANNEL_MEMBERS = "_ff_channel_members"
+
 
 def _ctx(info):
     return info.context
@@ -182,9 +190,14 @@ def _words_per_minute(word_count, duration_secs) -> float | None:
     return round(float(word_count) * 60.0 / float(duration_secs), 2)
 
 
-def _analytics_speakers(row, numbers: dict) -> list[dict]:
+def _analytics_speakers(row, speakers: list) -> list[dict]:
     """`analytics.speakers` is Fireflies' AnalyticsSpeaker: talk-time statistics keyed by the same
-    per-meeting speaker number the sentences carry. `numbers` maps name -> that number."""
+    per-meeting speaker number the sentences carry. `speakers` is the roster those numbers come
+    from, joined to the stored statistics by NAME — the only key the analytics JSON has, since
+    synth.fireflies_speaker_stats aggregates by it. Runs diarization never labelled are therefore
+    ONE statistics entry however many numbers they cover, served under one of them, while the
+    roster keeps every number."""
+    numbers = {s["speaker_name"]: s["speaker_id"] for s in speakers}
     out = []
     for sp in (store.jcol(row, "analytics") or {}).get("speakers") or []:
         name = sp.get("name")
@@ -338,7 +351,9 @@ def resolve_transcripts(
     to_ts = to_epoch_seconds(toDate)
     if date is not None:
         # `date` selects a DAY, not an instant: the real API returns every meeting sharing the
-        # calendar day of the value passed. Narrowed against any fromDate/toDate already given.
+        # calendar day of the value passed, and that day is UTC — a value anywhere in the day
+        # before or after returns nothing, whichever zone the caller is in. Narrowed against any
+        # fromDate/toDate already given.
         day = to_epoch_seconds(date)
         if day is None:
             return []
@@ -362,6 +377,9 @@ def resolve_transcripts(
         limit=clamp_limit(limit),
         offset=clamp_skip(skip),
     )
+    # The page's ids, for the batched speaker load. Accumulated rather than assigned: one document
+    # may select `transcripts` twice under aliases, and a second page must not drop the first's.
+    ctx.setdefault(_PAGE_IDS, []).extend(r["id"] for r in rows)
     return [_transcript(r, info) for r in rows]
 
 
@@ -384,37 +402,64 @@ def resolve_transcript_sentences(transcript, info, **_ignored):
     return [_sentence(r, i) for i, r in enumerate(rows)]
 
 
-def _speaker_numbers(info, transcript_id) -> dict:
-    return store.fireflies_speaker_numbers(_ctx(info)["conn"], transcript_id)
+def _speakers(info, transcript_id) -> list:
+    """This transcript's roster rows, read once per request and loaded for the whole page at once.
+
+    Two fields want them — `Transcript.speakers` and `analytics.speakers` — and both are resolved
+    per transcript, so the unmemoised read is one statement per row of the page and two when both
+    are selected. The page's ids are registered by resolve_transcripts, so the first field that
+    asks loads all of them in one statement; a `transcript(id:)` root registers none and loads the
+    one it has.
+    """
+    ctx = _ctx(info)
+    cache = ctx.setdefault(_SPEAKERS, {})
+    if transcript_id not in cache:
+        want = [i for i in ctx.get(_PAGE_IDS) or () if i not in cache]
+        if transcript_id not in want:
+            want.append(transcript_id)
+        cache.update(store.fireflies_speakers(ctx["conn"], want))
+    return cache[transcript_id]
 
 
 def resolve_transcript_speakers(transcript, info, **_ignored):
     """Fireflies' `Transcript.speakers` is identity only — name and the per-meeting number. Both
     live in fireflies_sentences, so this queries; selecting metadata alone never does."""
-    numbers = _speaker_numbers(info, transcript["_row"]["id"])
-    return [{"id": float(num), "name": name} for name, num in numbers.items()]
+    return [
+        {"id": float(s["speaker_id"]), "name": s["speaker_name"]}
+        for s in _speakers(info, transcript["_row"]["id"])
+    ]
 
 
 def resolve_analytics_speakers(analytics, info, **_ignored):
     """`analytics.speakers` carries the stored talk-time statistics, joined to the same speaker
     numbers `Transcript.speakers` reports."""
     row = analytics["_row"]
-    return _analytics_speakers(row, _speaker_numbers(info, row["id"]))
+    return _analytics_speakers(row, _speakers(info, row["id"]))
 
 
 def resolve_channel_members(channel, info, **_ignored):
-    """A channel's roster, from the ACL group the channel is grouped by. Bound rather than built
-    eagerly: `channels { id title }` is the common selection and must not query."""
+    """A channel's roster: everyone who took part in a meeting in the channel THIS CALLER can read.
+    Bound rather than built eagerly: `channels { id title }` is the common selection and must not
+    query.
+
+    Cached on the channel name for the request, because a page is usually one channel's meetings
+    and the roster is a property of the channel, not of the transcript it was reached through —
+    ``visible_ids`` is fixed for the request, so two transcripts in one channel have the same
+    answer."""
     ctx = _ctx(info)
-    return [
-        {
-            "user_id": synth.fireflies_user_id(r["email"]),
-            "email": r["email"],
-            "name": r["display_name"] or _display_name(r["email"]),
-        }
-        for r in store.fireflies_channel_members(ctx["conn"], channel["_channel"])
-        if r["email"]
-    ]
+    cache = ctx.setdefault(_CHANNEL_MEMBERS, {})
+    name = channel["_channel"]
+    if name not in cache:
+        cache[name] = [
+            {
+                "user_id": synth.fireflies_user_id(r["email"]),
+                "email": r["email"],
+                "name": r["display_name"] or _display_name(r["email"]),
+            }
+            for r in store.fireflies_channel_members(ctx["conn"], name, ctx.get("visible_ids"))
+            if r["email"]
+        ]
+    return cache[name]
 
 
 def resolve_user(_root, info, id=None):

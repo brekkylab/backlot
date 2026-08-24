@@ -43,7 +43,10 @@ type Query {
   list, not an error.
   """
   transcripts(
-    "Substring to match. What it matches against is decided by `scope`."
+    """
+    Substring to match, case-insensitively. What it matches against is decided by `scope`. Case
+    folding covers ASCII, so a cased non-ASCII letter has to be spelled as the text spells it.
+    """
     keyword: String
     "Which text `keyword` searches: title | sentences | all. Defaults to all."
     scope: String
@@ -61,9 +64,13 @@ type Query {
     participants: [String!]
     "One participant address — the singular form of `participants`."
     participant_email: String
-    "Substring to match against the title. Distinct from `keyword`, which can search sentences."
+    """
+    Substring to match against the title, case-insensitively — "tes" and "TEST" both find the
+    meeting titled "test". Distinct from `keyword`, which can search sentences, and folds case the
+    same way it does.
+    """
     title: String
-    "Meetings recorded on this DAY, as epoch millis anywhere within it."
+    "Meetings recorded on this day, UTC, as epoch millis anywhere within it."
     date: Float
     "The calling user's id, as returned by `user`."
     user_id: String
@@ -138,8 +145,9 @@ type Transcript {
   "Third-party app output. The wrapper is served, its outputs empty — see the header."
   apps_preview: Apps
   """
-  Who spoke, by name and per-meeting number. Talk-time is NOT here: it lives on
-  `analytics.speakers`, which is a different type in Fireflies — see AnalyticsSpeaker.
+  Who spoke, by name and per-meeting number — one entry per NUMBER, so two runs diarization gave
+  no label are two speakers. Talk-time is NOT here: it lives on `analytics.speakers`, which is a
+  different type in Fireflies — see AnalyticsSpeaker.
   """
   speakers: [Speaker!]
 }
@@ -326,6 +334,10 @@ type Channel {
   created_by: String
   "Null: the corpus carries no channel visibility flag."
   is_private: Boolean
+  """
+  Everyone who took part in a meeting in this channel — scoped, like `transcripts` itself, to the
+  meetings the CALLER may read. A meeting they were denied contributes nobody.
+  """
   members: [ChannelMember!]!
 }
 

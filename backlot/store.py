@@ -1785,8 +1785,17 @@ def _fireflies_where(
         )
         params.append(email.lower())
     if title:
-        # `transcripts(title:)` matches a SUBSTRING, which the live API demonstrates: "tes" returns
-        # the meeting titled "test". Distinct from `keyword`, which `scope` can point at sentences.
+        # `transcripts(title:)` matches a case-insensitive SUBSTRING, which the live API
+        # demonstrates: "tes" and "TEST" both return the meeting titled "test". Distinct from
+        # `keyword`, which `scope` can point at sentences.
+        #
+        # LIKE and nothing around it, the same expression list_gdrive_files_by_name documents:
+        # SQLite folds ASCII case here and SQLite's own `lower()` folds no more, so wrapping both
+        # sides in it is a measured no-op. A cased non-ASCII letter therefore matches
+        # case-sensitively; the SDL says so rather than leaving a client to find out. Folding it
+        # too would mean a Python callback per row, which is 40% on the content scan `keyword`
+        # runs, for one title in the 10,173-transcript bench corpus — and that one matches either
+        # way.
         sql += " AND title LIKE ? ESCAPE '\\'"
         params.append(f"%{_like_escape(title)}%")
     if from_ts is not None:
@@ -1857,40 +1866,62 @@ def fireflies_transcript_by_id(conn, transcript_id, visible_ids=None) -> sqlite3
     return conn.execute(sql + clause, [transcript_id] + cparams).fetchone()
 
 
-def fireflies_speaker_numbers(conn, transcript_id) -> dict[str, int]:
-    """A transcript's speakers as name -> the per-meeting number the sentences carry.
+def fireflies_speakers(conn, transcript_ids) -> dict[str, list[sqlite3.Row]]:
+    """The numbered speakers of each transcript, as ``{transcript_id: [row, ...]}`` in number
+    order — each row carrying ``speaker_id`` and ``speaker_name``.
 
     Fireflies numbers speakers WITHIN a meeting and reports that number on both `Sentence` and
-    `AnalyticsSpeaker`, so the roster has to come from the rows that already state it rather than
-    from a position in the analytics JSON, which carries no number of its own. DISTINCT over
-    idx_fireflies_sentences_doc, so it seeks the transcript rather than scanning the table.
+    `AnalyticsSpeaker`, so the roster comes from the rows that already state it rather than from a
+    position in the analytics JSON, which carries no number of its own.
 
-    A NULL name is a key like any other: diarization that produced no label still numbered the
-    speaker, and synth.fireflies_speaker_stats aggregates that run too, so dropping it here would
-    leave `analytics.speakers` with an entry no number could be found for."""
-    return {
-        r["speaker_name"]: r["speaker_id"]
-        for r in conn.execute(
-            "SELECT DISTINCT speaker_name, speaker_id FROM fireflies_sentences "
-            "WHERE transcript_id = ? AND speaker_id IS NOT NULL ORDER BY speaker_id",
-            (transcript_id,),
-        )
-    }
+    One entry per NUMBER, which is what Fireflies assigns: two runs diarization gave no label are
+    two speakers, and keying the roster on the name instead would collapse them into one and leave
+    `Sentence.speaker_id` naming a speaker the roster does not list. Where one number does carry
+    several labels, the first the transcript uses is served — with exactly one ``min()`` aggregate,
+    SQLite takes the bare ``speaker_name`` from the row that minimum came from.
+
+    Batched over a page of ids: `Transcript.speakers` and `analytics.speakers` are resolved per
+    transcript, so a per-transcript read is one statement per row of the page and two when both
+    fields are selected. Every requested id gets an entry, so a transcript whose sentences carry no
+    number reads as an empty roster rather than as a missing key.
+    """
+    ids = list(transcript_ids)
+    out: dict[str, list[sqlite3.Row]] = {t: [] for t in ids}
+    if not ids:
+        return out
+    marks = ", ".join("?" for _ in ids)
+    # Seeks each transcript over idx_fireflies_sentences_doc rather than scanning the table.
+    rows = conn.execute(
+        "SELECT transcript_id, speaker_id, speaker_name, MIN(seq) AS first_seq "
+        f"FROM fireflies_sentences WHERE transcript_id IN ({marks}) AND speaker_id IS NOT NULL "
+        "GROUP BY transcript_id, speaker_id ORDER BY transcript_id, speaker_id",
+        ids,
+    )
+    for r in rows:
+        out[r["transcript_id"]].append(r)
+    return out
 
 
-def fireflies_channel_members(conn, channel) -> list[sqlite3.Row]:
-    """A channel's roster: everyone who took part in a meeting in it.
+def fireflies_channel_members(conn, channel, visible_ids=None) -> list[sqlite3.Row]:
+    """A channel's roster: everyone who took part in a meeting in it the caller may read.
 
-    The same choice slack_channel_member_emails documents — membership is the per-channel signal
-    the corpus actually carries. Answering with the channel's ACL group instead would give every
-    channel sharing a group the same members, which the real API cannot produce."""
-    return conn.execute(
+    Membership is the per-channel signal the corpus actually carries — the same choice
+    slack_channel_member_emails documents. Answering with the channel's ACL group instead would
+    give every channel sharing a group the same members, which the real API cannot produce.
+
+    ACL'd from a different position than that function, though: a Slack channel's membership is
+    org-visible by construction, while a fireflies transcript is granted per document and
+    `transcripts` honours that. An aggregate over the channel's meetings therefore needs the same
+    clause, or the roster names the participants of meetings the caller was denied — and, by
+    carrying an address no visible meeting mentions, states that such a meeting exists."""
+    sql = (
         "SELECT DISTINCT je.value AS email, p.display_name AS display_name "
         "FROM fireflies_transcripts t, json_each(t.participants) je "
         "LEFT JOIN principals p ON lower(p.email) = lower(je.value) "
-        "WHERE t.channel = ? ORDER BY je.value",
-        (channel,),
-    ).fetchall()
+        "WHERE t.channel = ?"
+    )
+    clause, cparams = _acl_clause("fireflies", "t", visible_ids=visible_ids)
+    return conn.execute(sql + clause + " ORDER BY je.value", [channel] + cparams).fetchall()
 
 
 def fireflies_sentences(conn, transcript_id) -> list[sqlite3.Row]:

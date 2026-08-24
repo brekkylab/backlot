@@ -106,12 +106,15 @@ def test_fireflies_serves_the_documented_metadata_surface(client, admin_h):
     ch = t["channels"][0]
     assert ch["id"] == ch["title"]
     back = ff_gql(
-        client, '{ transcripts(channel_id: "%s", limit: 50) { id } }' % ch["id"], admin_h
+        client,
+        '{ transcripts(channel_id: "%s", limit: 50) { id participants } }' % ch["id"],
+        admin_h,
     ).json()["data"]["transcripts"]
     assert t["id"] in {x["id"] for x in back}
-    # the roster is who took part in the channel's meetings, not the channel's ACL group, so it
-    # covers this meeting's own participants and anyone else the channel's other meetings named
-    assert {m["email"] for m in ch["members"]} >= set(t["participants"])
+    # the roster is who took part in the channel's meetings, not the channel's ACL group — and
+    # EXACTLY them: a superset would also be what a roster aggregated without the ACL clause looks
+    # like (tests/test_acl.py pins that from the denied caller's side)
+    assert {m["email"] for m in ch["members"]} == {e for x in back for e in x["participants"]}
     assert ch["members"]
     assert all(m["user_id"] and m["name"] for m in ch["members"])
     # the channel's own history is not in the corpus
@@ -480,6 +483,49 @@ def test_fireflies_speaker_id_is_an_integer_scoped_to_the_meeting(tmp_path):
         assert [s["speaker_id"] for s in sents] == [0, 1]
         assert all(isinstance(s["speaker_id"], int) for s in sents)
         assert [s["index"] for s in sents] == [0, 1]
+
+
+def test_fireflies_a_page_costs_the_same_queries_as_one_transcript(tmp_path):
+    """The three fields that hit the DB are resolved PER TRANSCRIPT — the speaker roster (twice
+    over, since `analytics.speakers` reads the same numbers), and a channel's members. Read per
+    row, each is a statement per row of a 50-item page; read for the page, each is one.
+
+    Counted rather than described, because nothing else in the suite fails when it doubles."""
+    records = [
+        {
+            **FIREFLIES_CORPUS[0],
+            "doc_id": f"ff-page-{i}",
+            "title": f"Fidelity discovery call {i}",
+            "created": f"2026-04-{i + 2:02d}T15:00:00Z",
+        }
+        for i in range(5)
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        conn = client.app.state.conn
+
+        def queries(query) -> int:
+            statements: list[str] = []
+            conn.set_trace_callback(statements.append)
+            try:
+                got = _ff(client, settings, query)
+            finally:
+                conn.set_trace_callback(None)
+            assert "errors" not in got, got
+            assert len(got["data"]["transcripts"]) == 5
+            return len(statements)
+
+        assert queries("{ transcripts(limit: 5) { id title } }") == 1  # metadata never queries
+        assert queries("{ transcripts(limit: 5) { speakers { id name } } }") == 2
+        # the second speaker field reads the first one's rows rather than repeating the statement
+        assert (
+            queries(
+                "{ transcripts(limit: 5) { speakers { id } "
+                "analytics { speakers { speaker_id } } } }"
+            )
+            == 2
+        )
+        # the roster belongs to the CHANNEL, and these five meetings share one
+        assert queries("{ transcripts(limit: 5) { channels { id members { email } } } }") == 2
 
 
 def test_fireflies_stubbed_fields_are_null_not_invented(tmp_path):

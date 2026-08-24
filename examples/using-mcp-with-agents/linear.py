@@ -43,6 +43,7 @@ CORPUS = [
         "title": "Checkout p95 latency regression after the payments migration",
         "content": "p95 hit 2.1s once the payments migration shipped. Rolling back while we trace it.",
         "author_email": "amaya.chen@acme.com",
+        "created": "2026-04-06T09:15:00Z",
         "author_groups": ["engineering"],
         "visibility": "public",
         "identifier": "ENG-4912",
@@ -57,6 +58,7 @@ CORPUS = [
             {
                 "content": "Traces point at the new settlement call being serial, not batched.",
                 "author_email": "diego.martinez@acme.com",
+                "created_ts": "2026-04-06T11:40:00Z",
             },
         ],
     },
@@ -68,6 +70,7 @@ CORPUS = [
         "title": "Alert when checkout p95 crosses 800ms",
         "content": "No alert fired during the latency regression. Add one at 800ms for 5 minutes.",
         "author_email": "diego.martinez@acme.com",
+        "created": "2026-04-07T14:20:00Z",
         "author_groups": ["engineering"],
         "visibility": "public",
         "identifier": "ENG-4930",

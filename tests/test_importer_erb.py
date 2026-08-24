@@ -696,6 +696,8 @@ def test_to_epoch_parses_bench_date_formats():
         # A name that comes FIRST is read the other way round: what follows is that employee's own
         # function or what they did, not who they belong to.
         ("Owen Phillips, sent customer workaround", "Owen Phillips", "sent customer workaround"),
+        # ...but the label's OTHER side still binds it, whichever order the comma is in.
+        ("Customer - Ravi Menon, DataWeave", None, "Customer - Ravi Menon, DataWeave"),
         # An internal desk that merely has "Customer" in its name still staffs a real employee.
         ("Customer Success - Aisha Patel", "Aisha Patel", "Customer Success"),
         # A label of its own is empty, so the split leaves its colon at the head of the name.
@@ -704,6 +706,61 @@ def test_to_epoch_parses_bench_date_formats():
 )
 def test_person_reference_reads_every_form_the_bench_writes(label, person, role):
     assert C.person_reference(label) == (person, role)
+
+
+@pytest.mark.parametrize(
+    "line,person,role,body",
+    [
+        # The bracket closes the label, so these shapes carry no separator at all. 97 of them were
+        # becoming body with no author, the whole line included.
+        (
+            "[Support - Marisol Rivera 2026-03-13 09:42 UTC] We rolled canary back to 0%.",
+            "Marisol Rivera",
+            "Support",
+            "We rolled canary back to 0%.",
+        ),
+        # The stamp comes in a bracket of its own ahead of the label as often as inside it.
+        (
+            "[2026-03-12 10:15 UTC] [Support - Asha Patel] Acknowledged receipt.",
+            "Asha Patel",
+            "Support",
+            "Acknowledged receipt.",
+        ),
+        # ...and the name sits after the bracket just as often, closed by a colon. Reading the
+        # bracket alone as the label left "Asha Kapoor" at the head of the body.
+        (
+            "[Support - 2026-03-10] Asha Kapoor: Customer reports latency spikes.",
+            "Asha Kapoor",
+            "Support",
+            "Customer reports latency spikes.",
+        ),
+        # A heading after the bracket belongs to the passage, not to the author.
+        (
+            "[SRE - Liam Chen 2026-03-13 10:05 UTC] Initial triage: no config change.",
+            "Liam Chen",
+            "SRE",
+            "Initial triage: no config change.",
+        ),
+        # A body's own colon may not pull its first words into a label the bracket already closed.
+        (
+            "[SRE - Liam Chen 2026-03-13 18:45 UTC] Fixed: the eviction job completed.",
+            "Liam Chen",
+            "SRE",
+            "Fixed: the eviction job completed.",
+        ),
+    ],
+)
+def test_a_bracket_closes_a_comment_label(line, person, role, body):
+    c = C.parse_comment_lines([line])[0]
+    assert (c["person"], c["role"], c["body"]) == (person, role, body)
+
+
+def test_a_bracketed_link_is_not_a_label():
+    """`[text](url)` opens a link; the line states no label and keeps every word of its body."""
+    line = "[the runbook](https://wiki/x) was updated with the new steps."
+    c = C.parse_comment_lines([line])[0]
+    assert c["person"] is None
+    assert c["body"] == line
 
 
 @pytest.mark.parametrize(

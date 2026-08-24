@@ -255,6 +255,29 @@ def _names_an_activity(label: str | None) -> bool:
     return bool({t.lower().strip(".") for t in str(label or "").split()} & _ACTIVITY_WORDS)
 
 
+_COUNTERPARTY_SIDE = frozenset({"customer", "customers", "client", "clients"})
+
+
+def _is_counterparty_side(*parts: str | None) -> bool:
+    """Is this side of a label the counterparty MARKER, rather than a phrase that mentions them?
+
+    "Customer (Emily Zhao, Datawave)" and "Customer - Ravi Menon" hand the name to the customer;
+    "(Priya Shah, Support) — Updated customer" and "— Sent customer workaround" are our own employee
+    saying what they did for one. Both put the word on the side opposite the name, so the word alone
+    cannot tell them apart -- being the WHOLE of that side can.
+    """
+    for part in parts:
+        if not part:
+            continue
+        words = [t.lower().strip(".,:;()-") for t in str(part).split()]
+        words = [w for w in words if w.isalpha()]
+        # Each side on its own: "NoteWave (Customer, Maria Chen)" puts the company on one and the
+        # marker on the other, and together they would look like a phrase rather than a marker.
+        if words and set(words) <= _COUNTERPARTY_SIDE:
+            return True
+    return False
+
+
 def _names_counterparty(*parts: str | None) -> bool:
     """True when any of these pieces of one label names the other side of the deal.
 
@@ -337,13 +360,20 @@ def person_reference(label, *, first_names=None) -> tuple[str | None, str | None
     def other(i: int) -> str | None:
         return (sides[1 - i] or None) if len(sides) == 2 else None
 
+    # One rule across all three branches: a side that is nothing but the counterparty marker gives
+    # the name beside it away. "Customer - Ravi Menon" is their Ravi Menon; "Customer Success -
+    # Aisha Patel" is a desk of ours that merely has the word in its name.
     for i, side in enumerate(sides):
-        if _person_like(side):
+        if _person_like(side) and not _is_counterparty_side(other(i)):
             return side, other(i)
     for i, side in enumerate(sides):
         if "," in side:
             head, tail = (p.strip() for p in side.split(",", 1))
-            if _person_like(head):
+            # The OTHER side still binds a name that comes first: "Customer - Ravi Menon, DataWeave"
+            # names the customer's Ravi Menon. What follows the comma does not -- "Owen Phillips,
+            # sent customer workaround" is our own employee describing what they did, and reading
+            # that as the counterparty put 13 employees on a customer's domain.
+            if _person_like(head) and not _is_counterparty_side(other(i)):
                 return head, (tail or other(i))
             # The comma carries both orders, like the parenthetical and the dash: "Kira Thompson,
             # Support" names the person first and "(Launch day, Sean Gallagher)" names them second.
@@ -353,7 +383,7 @@ def person_reference(label, *, first_names=None) -> tuple[str | None, str | None
             # org's. A name that comes FIRST is not read that way -- what follows it is that
             # employee's own function or what they did ("Owen Phillips, sent customer workaround"),
             # and reading those as the counterparty put 13 employees on a customer's domain.
-            if _person_like(tail) and not _names_counterparty(head, other(i)):
+            if _person_like(tail) and not _is_counterparty_side(head, other(i)):
                 return tail, (head or other(i))
     for i, side in enumerate(sides):
         hit = (first_names or {}).get(side.lower())
@@ -1109,6 +1139,8 @@ _SEPARATOR_COLON = re.compile(r"(?<!\d):|:(?!\d)")
 _ANGLED_LABEL = re.compile(r"^[^<\n]{0,40}<(?P<label>[^>\n]{1,60})>")
 # A table row closes its label with a second pipe: `| Jared Bloom | Notified SRE and oncall`.
 _PIPED_LABEL = re.compile(r"^\s*\|(?P<label>[^|\n]{1,60})\|")
+# A bracket closes one the same way: `[Support - Asha Patel]`, `[2026-03-12 10:15 UTC]`.
+_BRACKET_LABEL = re.compile(r"^\s*\[(?P<label>[^\[\]\n]{1,80})\]\s*")
 # A dash that separates a label from its body, spaced so a hyphenated word cannot match.
 _SEPARATOR_DASH = re.compile(r"\s+[-\u2013\u2014]\s+")
 # What a label region may be: short enough to be a label once its stamp is gone, and never spanning
@@ -1142,6 +1174,33 @@ def _split_label(line: str) -> tuple[str, str] | None:
     whole comment instead let a head span a newline: `2026-02-12 12:10 UTC — Benji Okafor` followed
     by `Fix plan:` gave the label "Benji Okafor Fix plan" and a body starting at `1) …`.
     """
+    # A bracket closes the label by itself, so this shape carries no separator at all:
+    # `[Support - Marisol Rivera 2026-03-13 09:42 UTC] We rolled canary back…`. The bench also
+    # writes the stamp in a bracket of its own ahead of it (`[2026-03-12 10:15 UTC] [Support -
+    # Asha Patel] …`), so consume every leading bracket and read them as one region -- the stamp
+    # is peeled from it like any other.
+    rest, region = line, []
+    while (m := _BRACKET_LABEL.match(rest)) and len(" ".join(region)) <= _LABEL_MAX:
+        region.append(m.group("label"))
+        rest = rest[m.end() :]
+    if region and not rest.startswith("("):  # `[text](url)` opens a link, not a label
+        head = " ".join(region)
+        # The name sits after the bracket as often as inside it -- `[Support - 2026-03-10] Asha
+        # Kapoor: …` against `[Support - Marisol Rivera 2026-03-13 09:42 UTC] …` -- and only the
+        # second closes the label at the bracket. Reach past it for a colon exactly when the
+        # brackets name nobody, or a body's own colon would pull its first words into the label.
+        if not person_reference(_peel_stamps(head)[2])[0]:
+            after = rest.partition("\n")[0]
+            cm = _SEPARATOR_COLON.search(after)
+            if (
+                cm
+                and _label_shaped(after[: cm.start()])
+                and any(ch.isalpha() for ch in after[: cm.start()])
+            ):
+                head = f"{head} {after[: cm.start()]}"
+                rest = rest[cm.end() :]
+        if _label_shaped(head) and any(ch.isalpha() for ch in _peel_stamps(head)[2]):
+            return head, rest.lstrip(": \t").strip()
     first, _, remainder = line.partition("\n")
     for m in _SEPARATOR_COLON.finditer(first):
         head = first[: m.start()]

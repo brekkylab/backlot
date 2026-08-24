@@ -294,6 +294,18 @@ def test_write_tokens_is_directory_only(tmp_path):
     )
     p.resolve("Maya Chen", role="owner", group_hint="engineering")  # synthesized, non-directory
     p.resolve("Wei Chen", role="reviewer")  # synthesized, non-directory
+    # A Gmail header states a real address, which is the one path that writes `users` without going
+    # through `resolve` -- so it is the one that could hand out a token the roster never granted.
+    p.harvest_gmail_emails(
+        [
+            (
+                "gmail",
+                "dsid_1",
+                {"messages": ["From: Nadia Haddad <nadia.haddad@redwoodinference.com>"]},
+            )
+        ]
+    )
+    assert "nadia.haddad@redwoodinference.com" in p.users  # a principal: she authored something
     st = types.SimpleNamespace(
         tokens_path=tmp_path / "tokens.yaml",
         org_name="redwood",
@@ -305,6 +317,9 @@ def test_write_tokens_is_directory_only(tmp_path):
     emails = {u["email"] for u in d["users"]}
     assert emails == {"ava.chen@redwoodinference.com"}  # only the directory employee
     assert "maya.chen@redwoodinference.com" not in emails
+    assert (
+        "nadia.haddad@redwoodinference.com" not in emails
+    )  # stated by a header, not by the roster
 
 
 def test_canonical_folds_accents():
@@ -642,6 +657,22 @@ def test_to_epoch_parses_bench_date_formats():
         ("Support", None, "Support"),
         ("Follow-ups", None, "Follow-ups"),
         ("", None, None),
+        # A name is capitalised; a lowercase token says the field caught the prose around it.
+        ("comment by Aisha Patel", None, "comment by Aisha Patel"),
+        ("Root cause", None, "Root cause"),
+        # ...except a particle, which is lowercase INSIDE a name.
+        ("Daan van der Meer", "Daan van der Meer", None),
+        ("Marco de la Vega", "Marco de la Vega", None),
+        # Any alphabet's letters, not just Latin-1's. "Tomáš Novák" is one of the 167 employees.
+        ("Tomáš Novák", "Tomáš Novák", None),
+        ("Łukasz Dąbrowski", "Łukasz Dąbrowski", None),
+        # A desk or a vendor, in the title case that capitalisation alone cannot tell from a name.
+        ("Acme NetOps", None, "Acme NetOps"),
+        ("FinNova SRE", None, "FinNova SRE"),
+        ("Veridian Billing Contact", None, "Veridian Billing Contact"),
+        # ...which is also what lets the ROLE side of a reference be a role: "Runbook Owner" is two
+        # capitalised tokens, so only the desk words tell it apart from the name beside it.
+        ("Runbook Owner - Aisha Patel", "Aisha Patel", "Runbook Owner"),
     ],
 )
 def test_person_reference_reads_every_form_the_bench_writes(label, person, role):
@@ -1942,15 +1973,17 @@ def test_linear_comment_shapes_are_all_parsed():
         "2025-12-18",
         None,
     ]
-    # "Created" is one token, so it reads as a label rather than a name; the other four are
-    # name-shaped. Whether a name-shaped label is a PERSON is each source's own call to make.
+    # "Created" is one token and "Implementation notes" carries a lowercase one, so both read as
+    # labels rather than names; the other three are name-shaped. Whether a name-shaped label is a
+    # PERSON is each source's own call to make.
     assert [c["person"] for c in parsed] == [
         "Maya Patel",
         None,
         "Anjali Rao",
         "Naomi Feldman",
-        "Implementation notes",
+        None,
     ]
+    assert parsed[4]["role"] == "Implementation notes"
     assert parsed[1]["role"] == "Created"
     # `body` drops the prefix, `body_with_label` keeps it — the loader picks per comment, so an
     # unresolvable label like "Created:" never gets deleted from the text.

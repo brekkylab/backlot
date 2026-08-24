@@ -123,8 +123,19 @@ def canonical(name: str) -> str:
     return "".join(t for t in re.split(r"[^a-z0-9]+", s) if len(t) > 1)
 
 
-# A name token: starts with a letter (incl. accents), then letters/apostrophe/hyphen/dot only.
-_NAME_TOKEN = re.compile(r"^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’.\-]*$")
+# A name token: a letter run carrying only an apostrophe, hyphen or the dot of an initial
+# ("O'Brien", "Al-Masri", "Aisha K. Patel"). A letter is any alphabet's letter rather than Latin-1's,
+# because the bench writes "Tomáš Novák" and "Łukasz Dąbrowski" -- both employees of the directory.
+_LETTER = r"[^\W\d_]"
+_NAME_TOKEN = re.compile(rf"^{_LETTER}(?:{_LETTER}|['’.\-])*$")
+# A name is capitalised, which is how a person is told from the prose around them: the corpus
+# writes "comment by Aisha Patel" and "Priya Mehta on", and the lowercase word is the giveaway that
+# the sentence continued. These particles are the exception -- written lowercase INSIDE a name,
+# never first ("Daan van der Meer", "Marco de la Vega", "Omar ben Khalid").
+_NAME_PARTICLES = frozenset(
+    """van von der den de del della di da das dos du le la las los ter tot op ten
+    bin ben ibn al af av y e mac mc st""".split()
+)
 # Words that mark a value as a team/placeholder/prose fragment, not a person.
 _NON_PERSON_WORDS = {
     "team",
@@ -149,6 +160,58 @@ _NON_PERSON_WORDS = {
     "admin",
     "system",
     "service",
+    # A desk, a rota or a vendor, written in title case so capitalisation alone cannot tell it from
+    # a name: "Acme NetOps", "Acadia Health", "FinNova SRE", "Veridian Billing Contact". The bench
+    # names 743 of these, and a desk is not somebody who can hold a mailbox.
+    "ops",
+    "netops",
+    "devops",
+    "sre",
+    "eng",
+    "engineer",
+    "engineers",
+    "engineering",
+    "operations",
+    "operation",
+    "contact",
+    "liaison",
+    "rep",
+    "lead",
+    "leads",
+    "owner",
+    "reviewer",
+    "manager",
+    "health",
+    "security",
+    "billing",
+    "finance",
+    "legal",
+    "compliance",
+    "analytics",
+    "infra",
+    "infrastructure",
+    "platform",
+    "network",
+    "networks",
+    "networking",
+    "systems",
+    "solutions",
+    "labs",
+    "lab",
+    "desk",
+    "helpdesk",
+    "partners",
+    "holdings",
+    "inc",
+    "llc",
+    "corp",
+    "gmbh",
+    "soc",
+    "sme",
+    "it",
+    "hr",
+    "csm",
+    "se",
 }
 
 
@@ -178,8 +241,10 @@ def _names_an_activity(label: str | None) -> bool:
 def _person_like(name: str) -> bool:
     """A name worth minting as a real org user: a genuine 'First Last' (2–4 name tokens).
     Rejects transcript junk, aliases/emails in a name field, team/placeholder names
-    ('Customer Success Team'), and parenthetical/prose fragments ('(Aisha Bello, SRE) - Sign-off…'),
-    while accepting middle initials ('Aisha K. Patel') and accented/hyphenated names ('Tomás Rré')."""
+    ('Customer Success Team'), desks and vendors ('Acme NetOps'), prose that ran into the field
+    ('comment by Aisha Patel'), and parenthetical fragments ('(Aisha Bello, SRE) - Sign-off…'),
+    while accepting middle initials ('Aisha K. Patel'), any alphabet's letters ('Tomáš Novák') and
+    lowercase name particles ('Daan van der Meer')."""
     if not name or len(name) > 40:
         return False
     if any(ch in name for ch in "@()[]{},:;/\n\t0123456789"):
@@ -189,7 +254,12 @@ def _person_like(name: str) -> bool:
         return False
     if any(t.lower().strip(".") in _NON_PERSON_WORDS for t in toks):
         return False
-    return all(_NAME_TOKEN.match(t) for t in toks)
+    for i, t in enumerate(toks):
+        if not _NAME_TOKEN.match(t):
+            return False
+        if not t[:1].isupper() and not (i and t.lower().strip(".") in _NAME_PARTICLES):
+            return False
+    return True
 
 
 # The bench names a person in six interchangeable forms, and a role label sits on either side of

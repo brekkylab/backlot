@@ -9,8 +9,10 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+from graphql import build_client_schema, parse, validate
 
 from backlot import store
+from backlot.graphql import mcp_tools
 from tests._helpers import client_for, corpus_client, gql, served_id, tiny_corpus
 
 
@@ -320,6 +322,24 @@ def test_fireflies_introspection_describes_the_schema(client, admin_h):
     assert sentence["start_time"] == "Float" and sentence["end_time"] == "Float"
     assert sentence["speaker_id"] == "Int"
     assert sentence["ai_filters"] == "AIFilters"
+
+
+def test_fireflies_mcp_tools_derive_from_the_served_introspection(client, admin_h):
+    """The GraphQL→MCP bridge generates its documents from this endpoint's own introspection, so
+    each one has to be a document this schema accepts.
+
+    The default depth of 2 is what `analytics.sentiments` needs: `Analytics` carries no leaf
+    fields of its own, so a shallower selection would drop the whole node and with it the
+    sentiment split and per-speaker talk time the corpus actually computes.
+    """
+    intro = ff_gql(client, mcp_tools.INTROSPECTION_QUERY, admin_h).json()
+    schema = build_client_schema(intro["data"])
+    tools = {t.name: t for t in mcp_tools.derive_tools(intro)}
+
+    assert set(tools) == set(schema.query_type.fields)
+    for tool in tools.values():
+        assert not validate(schema, parse(tool.document)), tool.name
+    assert "positive_pct" in tools["transcripts"].document
 
 
 def test_fireflies_declares_no_mutations(client, admin_h):

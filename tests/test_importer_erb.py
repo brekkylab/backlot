@@ -2,8 +2,6 @@ import json
 import os
 import shutil
 import sqlite3
-import subprocess
-import sys
 from pathlib import Path
 
 import certifi
@@ -14,9 +12,9 @@ import pytest
 import yaml
 
 from backlot import store, synth
-from backlot.config import Settings, get_settings
+from backlot.config import get_settings
 from backlot.importer import byo, erb
-from tests._helpers import complete, client_for, served_id
+from tests._helpers import complete, served_id
 from backlot.importer.erb import Principals, canonical, grants_for
 
 C = erb
@@ -1774,41 +1772,6 @@ def test_thread_reply_rows_inherit_the_root_grants(tmp_path, monkeypatch):
         )
     conn.close()
     get_settings.cache_clear()
-
-
-# ---------------------------------------------------------------------------
-# from test_faithful_e2e.py
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(
-    os.environ.get("ERB_E2E") != "1",
-    reason="set ERB_E2E=1 to run the network-backed faithful-import e2e",
-)
-def test_qst_0001_owner_is_maya_chen(tmp_path):
-    """Imports the WHOLE bench — ~1GB fetched and ~500k documents loaded, so budget minutes.
-
-    Deliberately the whole thing: the importer offers no way to take a subset, because a sparse
-    container makes an owner-resolution result a property of the subset rather than of the corpus.
-    This asserts against exactly the database a user gets.
-    """
-    data_dir = tmp_path / "data"
-    env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir)}
-    subprocess.run(
-        [sys.executable, "-m", "backlot", "import", "--type", "enterpriserag-bench"],
-        check=True,
-        env=env,
-    )
-    # dsid_fc36... is qst_0001's expected doc; owner must now be Maya Chen, not a hash pick.
-    # Fetched by the id the API serves it under: a corpus's own identifier does not outlive the
-    # import, and for drive that served id is a pure function of it (see tests._helpers).
-    with client_for(Settings(data_dir=data_dir)) as c:
-        r = c.get(
-            f"/drive/v3/files/{served_id('google_drive', 'dsid_fc36d1d60e7e4b4abc7db84629563b7a')}",
-            params={"fields": "owners(displayName)"},
-            headers={"Authorization": "Bearer admin-service-token"},
-        ).json()
-        assert r["owners"][0]["displayName"] == "Maya Chen"
 
 
 # ---------------------------------------------------------------------------

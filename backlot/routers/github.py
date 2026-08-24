@@ -286,9 +286,26 @@ def _issue_qual_match(row, quals: dict) -> bool:
     return True
 
 
+def _search_paged(
+    request: Request, response: Response, q: str, page: int, per_page: int, total: int
+) -> None:
+    """Carry the RFC5988 `Link` real sends on a search onto ``response``.
+
+    A search envelope reports `total_count`, so the header is not the only way to learn there is
+    more — it is how a client that FOLLOWS links pages without composing a URL of its own, which is
+    what :func:`_paged` already gives every listing on this router. Set on the injected response
+    rather than by returning a ``JSONResponse``, so the handler keeps its ``response_model`` and the
+    operation keeps the typed schema the MCP bridge reads.
+    """
+    link = github_link_header(_base_url(request), {"q": q}, page, per_page, total)
+    if link:
+        response.headers["Link"] = link
+
+
 @router.get("/search/issues", response_model=GitHubIssueSearch)
 async def search_issues(
     request: Request,
+    response: Response,
     q: str = Query("", description="Issues/PRs search query"),
     page: int | None = Query(None, ge=1),
     per_page: int | None = Query(None, ge=1),
@@ -321,6 +338,7 @@ async def search_issues(
         _issue_obj(conn, owner, r["repo"], r, ab, _version(request))
         for r in matched[start : start + per_page]
     ]
+    _search_paged(request, response, q, page, per_page, len(matched))
     return {"total_count": len(matched), "incomplete_results": False, "items": items}
 
 
@@ -470,6 +488,7 @@ def _search_validation_failed(field: str) -> HTTPException:
 @router.get("/search/code", response_model=GitHubCodeSearch)
 async def search_code(
     request: Request,
+    response: Response,
     q: str = Query(
         "",
         description=(
@@ -546,6 +565,7 @@ async def search_code(
         if want_matches:
             hit["text_matches"] = _text_matches(row["content"], hit["url"], terms)
         items.append(hit)
+    _search_paged(request, response, q, page, per_page, len(matched))
     return {"total_count": len(matched), "incomplete_results": False, "items": items}
 
 

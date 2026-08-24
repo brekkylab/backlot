@@ -815,6 +815,45 @@ def test_github_code_search_refuses_a_query_less_search(gh_client, gh_admin_h):
     assert c.get("/github/search/code", headers=gh_admin_h, params={"q": " "}).status_code == 422
 
 
+def _link_rels(header: str) -> dict:
+    """The Link header's rel -> url map (RFC5988 `<url>; rel="name"`, comma-joined)."""
+    rels = {}
+    for part in header.split(", "):
+        url, _, rel = part.partition("; ")
+        rels[rel.removeprefix('rel="').rstrip('"')] = url.strip("<>")
+    return rels
+
+
+@pytest.mark.parametrize(
+    "path, q",
+    [("/github/search/code", "extension:md"), ("/github/search/issues", "repo:diffable is:pr")],
+)
+def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q):
+    """Real pages a search response with an RFC5988 `Link`, exactly as it pages a listing, and
+    sends none at all when the results fit on one page.
+
+    A search envelope reports `total_count`, so the header is not the only way to learn there is
+    more — it is how a client that FOLLOWS links pages without composing a URL of its own, which is
+    what every listing on this router already gives it.
+    """
+    c, _ = gh_client
+    first = c.get(path, headers=gh_admin_h, params={"q": q, "per_page": 2, "page": 1})
+    total = first.json()["total_count"]
+    assert total > 2, "the fixture has to span more than one page for this to mean anything"
+    assert set(_link_rels(first.headers["Link"])) == {"next", "last"}
+
+    # following `next` lands on the same query's second page -- the round-trip the encoding is for
+    nxt = _link_rels(first.headers["Link"])["next"]
+    second = c.get(nxt.split("testserver", 1)[1], headers=gh_admin_h)
+    assert second.json()["total_count"] == total
+    ids = lambda r: {i["url"] for i in r.json()["items"]}  # noqa: E731
+    assert ids(second) and not ids(second) & ids(first)
+    assert {"prev", "first"} <= set(_link_rels(second.headers["Link"]))
+
+    # one page of results carries no Link at all, as real sends none
+    assert "Link" not in c.get(path, headers=gh_admin_h, params={"q": q, "per_page": 100}).headers
+
+
 def test_github_code_search_paginates(gh_client, gh_admin_h):
     c, _ = gh_client
 

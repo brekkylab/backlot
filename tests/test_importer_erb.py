@@ -676,6 +676,22 @@ def test_to_epoch_parses_bench_date_formats():
         # ...which is also what lets the ROLE side of a reference be a role: "Runbook Owner" is two
         # capitalised tokens, so only the desk words tell it apart from the name beside it.
         ("Runbook Owner - Aisha Patel", "Aisha Patel", "Runbook Owner"),
+        # The comma carries both orders, like the parenthetical and the dash already do.
+        ("Launch day, Sean Gallagher", "Sean Gallagher", "Launch day"),
+        ("(Launch day, Sean Gallagher)", "Sean Gallagher", "Launch day"),
+        ("Root cause, Action items", None, "Root cause, Action items"),
+        # ...but a person named beside the counterparty is the counterparty's, so the label goes
+        # back whole and lands on their domain — even though the directory holds an Emily Zhao.
+        # The marker sits on whichever side the corpus put it, ahead of the name either way.
+        ("Customer (FinEdge, Emily Zhao)", None, "Customer (FinEdge, Emily Zhao)"),
+        ("NoteWave (Customer, Maria Chen)", None, "NoteWave (Customer, Maria Chen)"),
+        # A name that comes FIRST is read the other way round: what follows is that employee's own
+        # function or what they did, not who they belong to.
+        ("Owen Phillips, sent customer workaround", "Owen Phillips", "sent customer workaround"),
+        # An internal desk that merely has "Customer" in its name still staffs a real employee.
+        ("Customer Success - Aisha Patel", "Aisha Patel", "Customer Success"),
+        # A label of its own is empty, so the split leaves its colon at the head of the name.
+        (": Priya Shah - Eng feedback", "Priya Shah", "Eng feedback"),
     ],
 )
 def test_person_reference_reads_every_form_the_bench_writes(label, person, role):

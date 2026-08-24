@@ -238,6 +238,16 @@ def _names_an_activity(label: str | None) -> bool:
     return bool({t.lower().strip(".") for t in str(label or "").split()} & _ACTIVITY_WORDS)
 
 
+def _names_counterparty(*parts: str | None) -> bool:
+    """True when any of these pieces of one label names the other side of the deal.
+
+    A person named beside the counterparty is the counterparty's -- "NoteWave (Customer, Maria
+    Chen)" is their staff, not this org's, however well the name matches the directory. "Support (to
+    customer)" names the AUDIENCE instead, and the desk is still the author."""
+    s = " ".join(p for p in parts if p)
+    return bool(_CUSTOMER_WORD.search(s)) and not _CUSTOMER_AUDIENCE.search(s)
+
+
 def _person_like(name: str) -> bool:
     """A name worth minting as a real org user: a genuine 'First Last' (2–4 name tokens).
     Rejects transcript junk, aliases/emails in a name field, team/placeholder names
@@ -266,7 +276,10 @@ def _person_like(name: str) -> bool:
 # the name. One recognizer serves every call site that reads such a reference -- jira and linear
 # comments, fireflies speakers, slack speakers -- because the notation is one notation.
 _TRAILING_DATE = re.compile(r"\s*[-\u2013\u2014]?\s*\d{4}-\d{2}-\d{2}\s*$")
-_LEADING_NOISE = re.compile(r"^[|\-\u2013\u2014\s]+")
+# The punctuation a split leaves at the head of a label: the `|` of a table row, a dash, and the
+# colon of a comment whose label is itself empty (": Priya Shah - Eng feedback: body"), which
+# otherwise stays inside the first side and disqualifies the name sitting in it.
+_LEADING_NOISE = re.compile(r"^[|:\-\u2013\u2014\s]+")
 # A SPACED dash, which is how the corpus joins a desk to the person staffing it
 # ("Support - Aisha Patel"). Unspaced hyphens are part of a word ("Follow-ups") and are left alone.
 _SPACED_DASH = re.compile(r"\s+[-\u2013\u2014]\s+")
@@ -315,6 +328,16 @@ def person_reference(label, *, first_names=None) -> tuple[str | None, str | None
             head, tail = (p.strip() for p in side.split(",", 1))
             if _person_like(head):
                 return head, (tail or other(i))
+            # The comma carries both orders, like the parenthetical and the dash: "Kira Thompson,
+            # Support" names the person first and "(Launch day, Sean Gallagher)" names them second.
+            # Only the second order asks about the counterparty, and it asks about everything ahead
+            # of the name: "NoteWave (Customer, Maria Chen)" and "Customer (FinEdge, Emily Zhao)"
+            # put the marker on different sides, and either way the name is their staff, not this
+            # org's. A name that comes FIRST is not read that way -- what follows it is that
+            # employee's own function or what they did ("Owen Phillips, sent customer workaround"),
+            # and reading those as the counterparty put 13 employees on a customer's domain.
+            if _person_like(tail) and not _names_counterparty(head, other(i)):
+                return tail, (head or other(i))
     for i, side in enumerate(sides):
         hit = (first_names or {}).get(side.lower())
         if hit:

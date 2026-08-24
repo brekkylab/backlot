@@ -139,16 +139,22 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
 
     Measured against the live API: a token that is merely unknown answers the same as a malformed
     one, so "malformed" is not a category this has to recognise — what matters is only whether a
-    non-empty credential was presented at all.
+    credential was presented at all, and Slack recognises exactly three ways to present one:
+    an `Authorization: Bearer <t>` header, a `token` query param, or a `token` form field.
 
         no header, no `token` param      -> not_authed
         `Authorization: Bearer ` (empty) -> not_authed
         `token=` (empty)                 -> not_authed
-        a non-Bearer scheme (e.g. Basic) -> not_authed
+        any other header scheme          -> not_authed
         any non-empty token that fails   -> invalid_auth
 
-    ``auth.slack_token`` already returns None for every case in the first group: it parses only
-    the bearer/token schemes, and an empty query or form value is falsy.
+    "any other header scheme" is the whole of the rest, not just the obvious `Basic`: the scheme is
+    case-SENSITIVE live, so `bearer` and `BEARER` land here too, as does GitHub's legacy `token <t>`
+    form. `auth.slack_bearer_token` is what draws that line, and is deliberately not the shared
+    `auth.bearer_token` — see its docstring for why the two cannot be one parser.
+
+    ``auth.slack_token`` returns None for every case in the first group: an unrecognised scheme
+    parses to nothing, and an empty query or form value is falsy.
     """
     token = auth.slack_token(request)
     caller = auth.acl(request).resolve(token)

@@ -64,11 +64,13 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
 # to observe and so was measured directly (see test_slack_auth_errors_distinguish_...).
 
 
-# Measured 2026-08-20 against slack.com, which answers both of these without an account:
+# Measured against slack.com, which answers all of these without an account:
 #   curl -H "Authorization: Bearer xoxb-not-a-real-token" .../conversations.list -> invalid_auth
 #   curl                                                  .../conversations.list -> not_authed
 # A merely UNKNOWN token answers the same as a malformed one, so the only thing that decides it is
-# whether a non-empty credential was presented.
+# whether a credential was presented — and Slack recognises exactly three ways to present one: an
+# `Authorization: Bearer` header, a `token` query param, or a `token` form field. Every row is a
+# live answer, including the ones that read as though they should go the other way.
 @pytest.mark.parametrize(
     "kwargs, error",
     [
@@ -79,6 +81,24 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
         ({"headers": {"Authorization": "Bearer xoxb-not-a-real-token"}}, "invalid_auth"),
         ({"headers": {"Authorization": "Bearer xoxb"}}, "invalid_auth"),
         ({"data": {"token": "bogus-token"}}, "invalid_auth"),
+        # The scheme is case-SENSITIVE, which RFC 7235 does not require and Slack does anyway, so
+        # any other casing is a credential that was never presented rather than a bad one.
+        ({"headers": {"Authorization": "bearer xoxb-not-a-real-token"}}, "not_authed"),
+        ({"headers": {"Authorization": "BEARER xoxb-not-a-real-token"}}, "not_authed"),
+        ({"headers": {"Authorization": "BeArEr xoxb-not-a-real-token"}}, "not_authed"),
+        # GitHub's legacy `token <t>` header is not a Slack scheme at all, in either casing.
+        ({"headers": {"Authorization": "token xoxb-not-a-real-token"}}, "not_authed"),
+        ({"headers": {"Authorization": "Token xoxb-not-a-real-token"}}, "not_authed"),
+        # A tab does not separate scheme from token, but repeated spaces do, and either end of the
+        # header value may carry slack.
+        ({"headers": {"Authorization": "Bearer\txoxb-not-a-real-token"}}, "not_authed"),
+        ({"headers": {"Authorization": "Bearerxoxb-not-a-real-token"}}, "not_authed"),
+        ({"headers": {"Authorization": "Bearer  xoxb-not-a-real-token"}}, "invalid_auth"),
+        ({"headers": {"Authorization": "Bearer xoxb-not-a-real-token "}}, "invalid_auth"),
+        # The param and form names are case-sensitive too.
+        ({"params": {"token": "bogus-token"}}, "invalid_auth"),
+        ({"params": {"TOKEN": "bogus-token"}}, "not_authed"),
+        ({"data": {"TOKEN": "bogus-token"}}, "not_authed"),
     ],
 )
 def test_slack_auth_errors_distinguish_a_missing_token_from_an_unusable_one(client, kwargs, error):
@@ -87,6 +107,31 @@ def test_slack_auth_errors_distinguish_a_missing_token_from_an_unusable_one(clie
     it down the wrong branch."""
     r = client.post("/slack/api/conversations.list", **kwargs)
     assert r.json() == {"ok": False, "error": error}
+
+
+@pytest.mark.parametrize("scheme", ["bearer", "BEARER", "BeArEr", "token", "Token"])
+def test_slack_refuses_a_valid_token_under_an_unrecognised_scheme(client, tokens_yaml, scheme):
+    """The error label is the visible half of the scheme split; this is the half that costs a
+    deployment.
+
+    A VALID token under any of these schemes must not authenticate, because live Slack answers
+    `not_authed` to all five. The permissive `auth.bearer_token` accepts every one of them — for
+    GitHub, which really does take `token <t>`, and per RFC 7235, which really does make the scheme
+    case-insensitive — so Slack needs its own parser rather than that one. Sharing it would let six
+    spellings work here and none of them work against Slack."""
+    r = client.post(
+        "/slack/api/auth.test",
+        headers={"Authorization": f"{scheme} {tokens_yaml['admin_token']}"},
+    )
+    assert r.json() == {"ok": False, "error": "not_authed"}
+
+    # ...while the one spelling Slack does recognise still authenticates, so this is a narrowing and
+    # not a blanket refusal.
+    ok = client.post(
+        "/slack/api/auth.test",
+        headers={"Authorization": f"Bearer {tokens_yaml['admin_token']}"},
+    ).json()
+    assert ok["ok"] is True
 
 
 def test_slack_auth_error_split_is_uniform_across_methods(client):
@@ -217,8 +262,10 @@ def test_slack_channel_object_carries_slacks_documented_field_set(client, admin_
     # and it carries what only .info does
     assert info["last_read"]
 
-    # Documented on the conversation object reference rather than the method page, and sent on
-    # every live response — a single-workspace channel shared with nobody.
+    # Where these are documented differs by method, so the two pages are transcribed separately:
+    # the `.info` page's own example response carries all six, while the `.list` page's example
+    # carries none of them and only the conversation object reference describes them. Sent on every
+    # live response either way — a single-workspace channel shared with nobody.
     for ch in (listed, info):
         assert ch["context_team_id"] == "T0000MOCK"
         assert ch["shared_team_ids"] == ["T0000MOCK"]

@@ -29,7 +29,7 @@
     "object_type": {
       "type": "string",
       "minLength": 1,
-      "description": "CRM object type, plural as in the API path (contacts, companies, deals, tickets, notes, emails, meetings, calls, tasks, or a custom object). Default: the source_type."
+      "description": "CRM object type, plural as in the API path (contacts, companies, deals, tickets, notes, emails, meetings, calls, tasks, invoices, orders, subscriptions, leads and the rest of HubSpot's standard set, or a custom object of your own). Stated in whichever spelling you like: a standard type is reachable under its plural, its singular and its objectTypeId whichever one you write here. Default: the source_type."
     },
     "group": {
       "type": [

@@ -224,6 +224,36 @@ _STANDARD_OBJECT_TYPES = frozenset(
         "calls",
         "tasks",
         "feedback_submissions",
+        # Standard objects beyond the CRM's original set -- commerce, sales and marketing types a
+        # portal answers for whether or not it holds any records. Each was asked of
+        # api.hubapi.com on 2026-08-24 with a scope-less key and answered 403 MISSING_SCOPES,
+        # the same as `deals`; `audit_logs`, `objects` and `tickets_pipelines` answered 400 and are
+        # therefore absent. This matters to a corpus that holds none of them: a type HubSpot
+        # resolves has to answer with an empty page, and answering 400 told the caller that a real
+        # type does not exist.
+        "orders",
+        "carts",
+        "subscriptions",
+        "commerce_payments",
+        "payments",
+        "invoices",
+        "quote_templates",
+        "discounts",
+        "fees",
+        "taxes",
+        "deal_splits",
+        "leads",
+        "appointments",
+        "courses",
+        "listings",
+        "services",
+        "users",
+        "goal_targets",
+        "marketing_events",
+        "campaigns",
+        "communications",
+        "postal_mail",
+        "partner_clients",
     }
 )
 
@@ -250,14 +280,45 @@ _SINGULAR = {
     "call": "calls",
     "task": "tasks",
     "feedback_submission": "feedback_submissions",
+    # Measured the same way and on the same day as the plurals above. Only these singulars
+    # resolve: `appointment`, `course`, `listing` and `payment` answer 400 while their plurals
+    # answer 403, so the singular is not a spelling every standard type answers to.
+    "order": "orders",
+    "cart": "carts",
+    "subscription": "subscriptions",
+    "commerce_payment": "commerce_payments",
+    "invoice": "invoices",
+    "quote_template": "quote_templates",
+    "discount": "discounts",
+    "fee": "fees",
+    "tax": "taxes",
+    "deal_split": "deal_splits",
+    "lead": "leads",
+    "service": "services",
+    "user": "users",
+    "goal_target": "goal_targets",
+    "marketing_event": "marketing_events",
+    "campaign": "campaigns",
+    "communication": "communications",
+    "partner_client": "partner_clients",
 }
 _PLURAL = {plural: singular for singular, plural in _SINGULAR.items()}
-# The objectTypeId a standard object ALSO answers to: `/crm/v3/objects/0-3` is deals, and HubSpot
-# documents the whole table. Checked against api.hubapi.com on 2026-08-23 — each of these thirteen
-# answers 403 MISSING_SCOPES exactly as its name does, while an id no standard object holds (`0-6`,
-# `0-9`, `0-12`, `0-41`, `2-12345`) answers 400 `Invalid object or event type id: <id>`, which is
-# the message below. Custom objects are `2-<n>` and are not reachable by name at all any more; this
-# mock still addresses a corpus's custom type by the name the corpus gave it.
+# The objectTypeId a standard object ALSO answers to: `/crm/v3/objects/0-3` is deals. These are the
+# thirteen pairings HubSpot publishes, each checked against api.hubapi.com on 2026-08-23 — every
+# one answers 403 MISSING_SCOPES exactly as its name does, while `0-6`, `0-9`, `0-12`, `0-41` and
+# `2-12345` answer 400 `Invalid object or event type id: <id>`, which is the message below.
+#
+# `0-<n>` is a much wider space than these thirteen: swept on 2026-08-24, every id from `0-1` to
+# `0-165` resolves apart from eleven gaps, and nothing above `0-165` does -- so most of the space is
+# internal types with no published name. Only the pairings above are mapped, because a name this
+# mock cannot verify is a name it would be inventing; an unmapped id stays a 400 rather than
+# resolving to a guess.
+#
+# A custom object is a `2-<n>`, and its records are addressed here by the name the corpus gave it.
+# HubSpot's own alias for one is `p_<name>` (or the fully qualified `p<portalId>_<name>`), but both
+# forms answer 400 `Unable to infer object type from: <name>` on a portal that does not hold that
+# custom object, so this key cannot show what an EXISTING custom object answers to. Reaching one by
+# `p_<name>` is therefore unimplemented rather than decided against.
 _TYPE_IDS = {
     "0-1": "contacts",
     "0-2": "companies",

@@ -94,6 +94,18 @@ def test_hubspot_unknown_object_type_is_400(client, admin_h):
     r = client.get("/hubspot/crm/v3/objects/0-9999", headers=admin_h)
     assert r.status_code == 400
     assert r.json()["message"] == "Invalid object or event type id: 0-9999"
+    # The other side of the same line: a standard type this corpus holds no records of is still a
+    # type, so it answers an empty page. These four were asked of api.hubapi.com on 2026-08-24 and
+    # answered 403 MISSING_SCOPES, the same as `deals` — resolved before the scope check — so a 400
+    # here would deny a type the vendor recognizes. `appointments` is plural-only: its singular is
+    # one of the four the API does NOT resolve.
+    for known in ("invoices", "orders", "subscriptions", "leads", "appointments", "lead"):
+        r = client.get(f"/hubspot/crm/v3/objects/{known}", headers=admin_h)
+        assert r.status_code == 200, (known, r.json())
+        assert r.json()["results"] == []
+    r = client.get("/hubspot/crm/v3/objects/appointment", headers=admin_h)
+    assert r.status_code == 400
+    assert r.json()["message"] == "Unable to infer object type from: appointment"
 
 
 @pytest.mark.parametrize(

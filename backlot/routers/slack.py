@@ -168,7 +168,7 @@ def _channel_core(request: Request, conn, name: str) -> dict:
 
     What each adds is deliberately not here, because the real API does not agree between the two:
     `num_members` is a `.list` field that `.info` returns only for `include_num_members=true`, and
-    `last_read` is `.info`-only (and member-only). Building one object for both made this mock the
+    `last_read` is `.info`-only (and the caller's). Building one object for both made this mock the
     only place a client could rely on them matching.
     """
     is_private = not store.container_has_public(conn, "slack", name)
@@ -218,18 +218,38 @@ def _listed_channel(request: Request, conn, name: str) -> dict:
     return {**_channel_core(request, conn, name), "num_members": _member_count(request, conn, name)}
 
 
+# Slack's zero timestamp, its "nothing here yet" value for a ts-shaped field. Reasoned from the
+# convention rather than measured: reading the live `last_read` of a channel nobody has opened needs
+# a real token, which this environment has none of.
+ZERO_TS = "0000000000.000000"
+
+
+def _last_read(conn, name: str, caller: Caller, visible_ids) -> str:
+    """The caller's `last_read` for a channel — always a ts, never absent.
+
+    A service token gets the zero ts rather than the channel's newest message: it is not a person
+    and has read nothing, the same reasoning `_subscribed` applies to a thread it cannot have
+    followed. Otherwise this mock models no unread state, so a channel the caller can read reads as
+    caught up."""
+    if not (caller.email or ""):
+        return ZERO_TS
+    return store.slack_latest_ts(conn, name, visible_ids) or ZERO_TS
+
+
 def _info_channel(
-    request: Request, conn, name: str, *, include_num_members: bool, visible_ids
+    request: Request, conn, name: str, *, include_num_members: bool, visible_ids, caller: Caller
 ) -> dict:
     """conversations.info's channel. `num_members` is opt-in here (the vendor's own parameter), and
-    `last_read` is member-only — this mock's caller is always a member of what it can see, and
-    models no unread state, so the whole channel reads as caught up."""
+    `last_read` is the caller's.
+
+    Being the caller's, its VALUE varies by who asks — that is what the field means. Its PRESENCE
+    must not: a key that appears only when the caller can read the channel gives `.info` two shapes,
+    and on a private channel `conversations.list` does not show this caller, the missing key is a
+    straight answer to "can you read this?". A caller with nothing to have read gets `ZERO_TS`."""
     ch = _channel_core(request, conn, name)
     if include_num_members:
         ch["num_members"] = _member_count(request, conn, name)
-    latest = store.slack_latest_ts(conn, name, visible_ids)
-    if latest is not None:
-        ch["last_read"] = latest
+    ch["last_read"] = _last_read(conn, name, caller, visible_ids)
     return ch
 
 
@@ -373,6 +393,7 @@ async def conversations_info(request: Request):
         name,
         include_num_members=want_members,
         visible_ids=auth.visible_ids(request, caller),
+        caller=caller,
     )
     return {"ok": True, "channel": ch}
 

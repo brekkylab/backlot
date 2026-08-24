@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from backlot import store, synth
+from backlot.routers import slack
 from tests._helpers import corpus_client, crawl_slack, db_count, tiny_corpus
 
 
@@ -203,12 +204,13 @@ def test_slack_conversations_list_defaults_to_public_channels(client, admin_h):
 # Transcribed from Slack's documented example response for conversations.list:
 # https://docs.slack.dev/reference/methods/conversations.list
 #
-# A FLOOR, not the exact shape. Measured against the live API, a channel object carries 29 keys —
-# the five extra ones (context_team_id, shared_team_ids, pending_connected_team_ids,
-# parent_conversation, properties) are documented on the conversation object reference rather than
-# on the method page, and .list and .info do not agree with each other either (num_members is
-# .list-only, last_read is .info-only). Both gaps are issue #74; until then this pins that nothing
-# documented goes missing, which is what regressed.
+# A FLOOR, not the exact shape, and transcribed from the .list page alone — which is why the five
+# extra keys a live channel object carries (context_team_id, shared_team_ids,
+# pending_connected_team_ids, parent_conversation, properties) are not in it: that page's example
+# response omits all five. They are served, and pinned below against both methods.
+#
+# .list and .info do not agree with each other either — num_members is .list-only and last_read is
+# .info-only — so this set is asserted against each with that one difference applied.
 _DOCUMENTED_CHANNEL_KEYS = frozenset(
     {
         "id",
@@ -252,15 +254,14 @@ def test_slack_channel_object_carries_slacks_documented_field_set(client, admin_
     ).json()["channels"][0]
     assert _DOCUMENTED_CHANNEL_KEYS <= set(listed)
 
-    # .info answers the same core, minus the two fields that are not part of a plain info response:
-    # num_members is opt-in there, and the documented set is transcribed from the .list page.
+    # .info answers the same core minus num_members, which is opt-in there.
     info = client.post(
         "/slack/api/conversations.info", headers=admin_h, data={"channel": listed["id"]}
     ).json()["channel"]
     assert _DOCUMENTED_CHANNEL_KEYS - {"num_members"} <= set(info)
     assert "num_members" not in info
-    # and it carries what only .info does
-    assert info["last_read"]
+    # and it carries what only .info does — for a service token, the zero ts (see _last_read)
+    assert info["last_read"] == slack.ZERO_TS
 
     # Where these are documented differs by method, so the two pages are transcribed separately:
     # the `.info` page's own example response carries all six, while the `.list` page's example
@@ -282,6 +283,55 @@ def test_slack_channel_object_carries_slacks_documented_field_set(client, admin_
     # nesting is part of the shape too
     assert set(listed["topic"]) == {"value", "creator", "last_set"}
     assert set(listed["purpose"]) == {"value", "creator", "last_set"}
+
+
+def test_slack_info_answers_one_shape_whoever_asks(client, admin_h, tokens):
+    """`last_read` is the caller's, so its value varies — its presence must not.
+
+    Gating the key on what the caller can read gave `.info` two shapes, which defeats the point of
+    pinning the object exactly, and made the key readable as an ACL oracle: on `people-confidential`
+    — which `conversations.list` does not show these callers — a present `last_read` said "you can
+    read this" and an absent one said "you cannot". A caller with nothing to have read gets the zero
+    ts instead, so the shape is invariant and the answer is not there to be read off."""
+    everything = client.get(
+        "/slack/api/conversations.list", headers=admin_h, params={"limit": 200}
+    ).json()["channels"]
+    private = next(c for c in everything if c["name"] == "people-confidential")
+    assert private["is_private"] is True
+
+    shapes, values = set(), {}
+    for who in ("admin", "ava@acme.com", "bob@acme.com"):
+        h = admin_h if who == "admin" else {"Authorization": f"Bearer {tokens[who]}"}
+        # the channel is hidden from these callers by .list, and .info still answers it
+        hidden = client.get(
+            "/slack/api/conversations.list", headers=h, params={"limit": 200}
+        ).json()["channels"]
+        assert (who == "admin") == any(c["name"] == "people-confidential" for c in hidden)
+
+        ch = client.post(
+            "/slack/api/conversations.info", headers=h, data={"channel": private["id"]}
+        ).json()["channel"]
+        shapes.add(frozenset(ch))
+        values[who] = ch["last_read"]
+
+    assert len(shapes) == 1, "conversations.info must answer one key set whoever asks"
+    assert all("last_read" in shape for shape in shapes)
+    # nobody who cannot read it gets a real ts, and the service token reads nothing either
+    assert values == dict.fromkeys(values, slack.ZERO_TS)
+
+    # ...while a channel the caller CAN read still answers a real ts, so this is not a blanket zero
+    readable = client.get(
+        "/slack/api/conversations.list",
+        headers={"Authorization": f"Bearer {tokens['ava@acme.com']}"},
+        params={"limit": 1},
+    ).json()["channels"][0]
+    seen = client.post(
+        "/slack/api/conversations.info",
+        headers={"Authorization": f"Bearer {tokens['ava@acme.com']}"},
+        data={"channel": readable["id"]},
+    ).json()["channel"]
+    assert seen["last_read"] != slack.ZERO_TS
+    assert float(seen["last_read"]) > 0
 
 
 def test_slack_conversations_list_rejects_an_unknown_type(client, admin_h):

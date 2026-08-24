@@ -704,6 +704,8 @@ def test_github_code_search_returns_only_a_paths_head_snapshot(gh_client, gh_adm
         ("in:file helper", [("codebase", "src/pkg/utils.py")]),
         ("in:path helper", []),
         ("in:path svc", [("history-repo", "svc/other.py"), ("history-repo", "svc/rate.py")]),
+        # quoting groups a term; the quotes are not part of what is matched
+        ('in:path "svc/other"', [("history-repo", "svc/other.py")]),
         (
             "repo:codebase in:path src",
             [("codebase", "src/main.py"), ("codebase", "src/pkg/utils.py")],
@@ -790,6 +792,11 @@ def test_github_code_search_text_matches_only_under_the_media_type(gh_client, gh
     # a term repeated in the query is one occurrence in the file, so it is one match
     twice = c.get("/github/search/code", headers=h, params={"q": "helper helper"}).json()
     assert twice["items"][0]["text_matches"][0]["matches"] == [m]
+
+    # a quoted phrase is ONE term spanning the space, not two terms carrying a stray quote
+    quoted = c.get("/github/search/code", headers=h, params={"q": '"def helper"'}).json()
+    (phrase,) = quoted["items"][0]["text_matches"][0]["matches"]
+    assert phrase == {"text": "def helper", "indices": [0, 10]}
 
     # a hit matched on its PATH still carries the fragment real sends, with no match inside it
     only_path = c.get("/github/search/code", headers=h, params={"q": "in:path svc/other"}).json()

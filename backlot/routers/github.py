@@ -377,9 +377,33 @@ def _code_extension_match(path: str, value: str) -> bool:
     return path.lower().endswith("." + value.lower().lstrip("."))
 
 
+# A quoted run, or a bare run of non-space. Same quoting `_GH_OP` already honours on a qualifier's
+# value, applied to what is left over as free text.
+_GH_TERM = re.compile(r'"([^"]*)"|(\S+)')
+
+
+def _code_terms(free: str) -> list[str]:
+    """The free text as the terms a PATH and a `text_matches` fragment are searched for.
+
+    Quotes group a term rather than being part of it: `"svc/other"` is how a caller spells one
+    term containing a space, and hunting the path for a literal `"` finds nothing — so a quoted
+    query answered zero where its bare form answered a file. FTS never saw the problem, since
+    :func:`store._fts_match` tokenizes on word characters and drops the quotes on its own.
+
+    Deduplicated, because a term the query repeats is still one occurrence of it in the file and
+    reporting the same span twice would have a client highlight it twice.
+    """
+    terms = ((quoted or bare) for quoted, bare in _GH_TERM.findall(free))
+    return list(dict.fromkeys(t for t in terms if t))
+
+
 def _code_in_targets(quals: dict) -> set[str]:
     """Where `in:` says the free text has to match. Real searches the content AND the path when the
-    qualifier is absent, and takes a comma-joined list (`in:file,path`)."""
+    qualifier is absent, and takes a comma-joined list (`in:file,path`).
+
+    A value naming neither falls back to both rather than to nothing: `in:` is a NARROWING, and one
+    the endpoint cannot honour is better answered too widely than with a silent zero.
+    """
     named = {v.strip().lower() for val in quals.get("in", []) for v in val.split(",")}
     return (named & {"file", "path"}) or {"file", "path"}
 
@@ -417,8 +441,7 @@ def _text_matches(content: str, object_url: str, terms: list[str]) -> list[dict]
     on its path, read off api.github.com rather than assumed. The fragment spans whole lines, so a
     code hit arrives readable.
 
-    `terms` is deduplicated by the caller: a term the query repeats is still one occurrence of it
-    in the file, and reporting the same span twice would have a client highlight it twice.
+    `terms` comes from :func:`_code_terms` — quoting grouped, duplicates dropped.
     """
     lowered = content.lower()
     found = [i for t in terms if (i := lowered.find(t.lower())) >= 0]
@@ -529,6 +552,7 @@ async def search_code(
         return {"total_count": 0, "incomplete_results": False, "items": []}
     one = next(iter(repos)) if repos and len(repos) == 1 else None
     targets = _code_in_targets(quals)
+    terms = _code_terms(free)
 
     # Keyed by the address a file HAS, so the content search and the path search union rather than
     # double-count a file both of them found. Insertion order is the result order: FTS relevance
@@ -538,7 +562,7 @@ async def search_code(
         for r in store.search_repo_files(conn, free, ids, repo=one):
             rows.setdefault((r["repo"], r["path"]), r)
     if free and "path" in targets:
-        for r in store.search_repo_files(conn, None, ids, repo=one, path_like=free.split()):
+        for r in store.search_repo_files(conn, None, ids, repo=one, path_like=terms):
             rows.setdefault((r["repo"], r["path"]), r)
     if not free:  # qualifier-only, which real also serves
         for r in store.search_repo_files(conn, None, ids, repo=one):
@@ -558,7 +582,6 @@ async def search_code(
     start = (page - 1) * per_page
     ab = _api_base(request)
     want_matches = _github_media(request, "text-match")
-    terms = list(dict.fromkeys(free.split()))
     items = []
     for row in matched[start : start + per_page]:
         hit = _code_hit(conn, org, row, ab)

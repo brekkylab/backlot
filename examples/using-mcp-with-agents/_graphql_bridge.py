@@ -54,8 +54,10 @@ def _introspect(endpoint: str, token: str) -> dict:
     """Ask the endpoint what it serves, the way any GraphQL client would.
 
     This request carries the credential, so a bad ``--token`` fails here, before a single tool
-    exists. Left to propagate it kills the subprocess and reaches the MCP client as an opaque
-    "Connection closed", so exit with the endpoint's own error body instead.
+    exists. The MCP client sees ``Connection closed`` either way — a stdio server that exits
+    before the handshake cannot surface as anything else — so what matters is that the reason
+    reaches whoever is holding the terminal: exit with the endpoint's own error body rather than
+    a traceback about a urllib call.
     """
     request = urllib.request.Request(
         endpoint,

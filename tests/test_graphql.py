@@ -445,6 +445,7 @@ type Gadget {
   tags: [Tag!]
   notes: NoteConnection!
   audit(token: String!): Audit
+  checksum(algorithm: String!): String
 }
 
 type Tag { id: ID!, label: String }
@@ -510,6 +511,7 @@ def test_page_info_survives_so_truncation_is_visible(tools, path):
     [
         ("parent", "the type is already on the path"),
         ("audit", "its argument is required, so the generator cannot fill it in"),
+        ("checksum", "a required argument is unfillable on a leaf field too"),
     ],
 )
 def test_a_field_the_generator_cannot_fill_in_is_left_out(tools, field, why):
@@ -712,21 +714,44 @@ def test_an_argument_with_a_default_is_optional_in_the_document_too():
     assert result.request_error is False
 
 
-def test_an_unusable_connection_falls_back_to_the_plain_object_path():
-    """A connection whose page type has nothing selectable is not usable as one, so it is treated
-    as an ordinary object rather than emitting a `pageInfo` with no selection set."""
-    sdl = MCP_SDL.replace(
-        """type PageInfo {
+_PAGE_INFO = """type PageInfo {
   hasNextPage: Boolean!
   hasPreviousPage: Boolean!
   startCursor: String
   endCursor: String
-}""",
-        "type PageInfo { deeper: Deeper }\ntype Deeper { deepest: Deepest }\ntype Deepest { x: Int }",
-    )
+}"""
+_GADGET_CONNECTION = "type GadgetConnection { nodes: [Gadget!]!, pageInfo: PageInfo! }"
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        pytest.param(
+            _PAGE_INFO,
+            "type PageInfo { deeper: Deeper }\ntype Deeper { deepest: Deepest }\ntype Deepest { x: Int }",
+            id="the-page-type-selects-nothing",
+        ),
+        pytest.param(
+            _GADGET_CONNECTION,
+            "type GadgetConnection { nodes: [String!]!, pageInfo: PageInfo! }",
+            id="nodes-is-a-scalar",
+        ),
+        pytest.param(
+            _GADGET_CONNECTION,
+            "type GadgetConnection { nodes: [Gadget!]!, pageInfo: String }",
+            id="page-info-is-a-scalar",
+        ),
+    ],
+)
+def test_a_connection_shape_that_cannot_be_served_falls_back_to_the_plain_path(old, new):
+    """Carrying `nodes` and `pageInfo` by name is not enough to be served as a connection: the
+    page type may select nothing, and either name may point at a scalar, which holds no selection
+    at all. Each of those is an ordinary object field instead — the tool loses its expansion, and
+    the derivation keeps every tool it had."""
+    sdl = MCP_SDL.replace(old, new)
     tools = _derive(sdl=sdl)
+    assert set(tools) == {"gadget", "gadgets", "notes"}
     assert not validate(engine.Engine(sdl).schema, parse(tools["gadgets"].document))
-    assert "pageInfo" not in selected_fields(tools["gadgets"].document, "gadgets")
 
 
 def test_an_error_envelope_is_reported_rather_than_crashing():

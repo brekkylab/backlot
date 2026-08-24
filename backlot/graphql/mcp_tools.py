@@ -265,7 +265,7 @@ def _returns_many(ref: Mapping[str, Any], types: dict[str, Any]) -> bool:
     if _is_list(ref):
         return True
     named = _named(ref)
-    return named["kind"] == "OBJECT" and _connection(types[named["name"]]) is not None
+    return named["kind"] == "OBJECT" and _connection(named["name"], types) is not None
 
 
 def _is_list(ref: Mapping[str, Any]) -> bool:
@@ -314,7 +314,7 @@ def _field_selection(
     the generator has no cursor to pass and nothing to pass it to — so ``hasNextPage`` is the
     only thing that keeps a truncated answer from reading as a complete one.
     """
-    connection = _connection(types[type_name])
+    connection = _connection(type_name, types)
     if connection is None:
         return _plain_selection(type_name, types, budget, path, indent, many)
     node, page_type = connection
@@ -351,6 +351,11 @@ def _selection(
 ) -> str | None:
     parts = []
     for field in types[type_name]["fields"]:
+        # An argument with no value to supply makes the field unaskable whatever it returns, so
+        # this comes before the leaf shortcut: a scalar selected without one is a document the
+        # schema rejects on every call.
+        if any(_is_required(arg) for arg in field["args"]):
+            continue
         named = _named(field["type"])
         if named["kind"] in ("SCALAR", "ENUM"):
             parts.append(field["name"])
@@ -359,15 +364,13 @@ def _selection(
         # caller would have to author; unions appear only on stub fields in either schema.
         if named["kind"] != "OBJECT":
             continue
-        if any(_is_required(arg) for arg in field["args"]):
-            continue
         if named["name"] in path or budget <= 0:
             continue
         repeated = _is_list(field["type"])
         # Rows times their own list is a product with no page and no way to say it was cut. A
         # connection is exempt (bounded by its own page, and it reports that through `pageInfo`),
         # and the by-id tool for the same type still selects the field in full.
-        if many and repeated and _connection(types[named["name"]]) is None:
+        if many and repeated and _connection(named["name"], types) is None:
             continue
         sub = _field_selection(
             named["name"], types, budget - 1, path, indent + 1, many=many or repeated
@@ -382,16 +385,22 @@ def _block(parts: list[str], indent: int) -> str:
     return "{\n" + "".join(f"{pad}  {p}\n" for p in parts) + pad + "}"
 
 
-def _connection(type_: Mapping[str, Any]) -> tuple[str, str] | None:
+def _connection(type_name: str, types: dict[str, Any]) -> tuple[str, str] | None:
     """A Relay connection's ``(node type, page-info type)``, or ``None`` if it is not one.
 
-    Carrying both ``nodes`` and ``pageInfo`` is the whole test, and both type names are read off
-    those fields: a schema is free to call its page type something other than ``PageInfo``.
+    Carrying both ``nodes`` and ``pageInfo`` is most of the test, and both type names are read off
+    those fields: a schema is free to call its page type something other than ``PageInfo``. Each
+    must also name a type that holds a selection, because serving the connection means selecting
+    through both — a scalar there is not a connection, and treating it as one would take the whole
+    derivation down instead of costing it one tool.
     """
-    fields = {f["name"]: f for f in (type_.get("fields") or ())}
+    fields = {f["name"]: f for f in (types[type_name].get("fields") or ())}
     if not {"nodes", "pageInfo"} <= set(fields):
         return None
-    return _named(fields["nodes"]["type"])["name"], _named(fields["pageInfo"]["type"])["name"]
+    node, page = (_named(fields[f]["type"]) for f in ("nodes", "pageInfo"))
+    if not {node["kind"], page["kind"]} <= {"OBJECT", "INTERFACE"}:
+        return None
+    return node["name"], page["name"]
 
 
 # --- arguments -------------------------------------------------------------------------

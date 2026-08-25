@@ -78,13 +78,44 @@ def basic_password(request: Request) -> tuple[str | None, str | None]:
     return None, None
 
 
+def slack_bearer_token(request: Request) -> str | None:
+    """Parse the ``Authorization`` header the way Slack does, which is stricter than
+    :func:`bearer_token`: the scheme must be exactly ``Bearer``, separated from the token by one or
+    more SPACES.
+
+    Measured against slack.com (a bogus token is enough — the presented/absent split needs no
+    account). ``invalid_auth`` means the header counted as a credential, ``not_authed`` means it
+    did not::
+
+        Bearer <t>      invalid_auth      bearer <t>      not_authed
+        Bearer  <t>     invalid_auth      BEARER <t>      not_authed
+        ' Bearer <t>'   invalid_auth      token <t>       not_authed
+        Bearer <t>' '   invalid_auth      Bearer<TAB><t>  not_authed
+                                          Bearer<t>       not_authed
+
+    A tab is not a space to Slack, so the generic whitespace split in :func:`bearer_token` is
+    wrong here, and so is its case-insensitive scheme match. That function stays permissive because
+    GitHub really does accept ``token <t>`` and RFC 7235 really does make the scheme
+    case-insensitive; Slack implements neither. Sharing it would let this mock authenticate six
+    spellings live Slack refuses outright, so a client sending ``Authorization: token <xoxb>``
+    would pass every test here and reach nothing in production.
+    """
+    hdr = (_authorization(request) or "").strip()
+    if not hdr.startswith("Bearer "):
+        return None
+    return hdr[len("Bearer ") :].strip() or None
+
+
 def slack_token(request: Request) -> str | None:
     """Slack accepts the token as a bearer header, query param, or form field. The official
     slack-go SDK (and Slack's own clients) post it as the ``token`` form field, so fall back to
-    the form stashed on ``request.state._form`` by the slack-form middleware."""
+    the form stashed on ``request.state._form`` by the slack-form middleware.
+
+    Both names are case-sensitive too: ``?TOKEN=`` and a ``TOKEN`` form field are ``not_authed``
+    live, which the exact-key lookups below already answer."""
     form = getattr(request.state, "_form", None)
     form_field = form.get("token") if form else None
-    return bearer_token(request) or request.query_params.get("token") or form_field
+    return slack_bearer_token(request) or request.query_params.get("token") or form_field
 
 
 def resolve_bearer(request: Request) -> Caller | None:

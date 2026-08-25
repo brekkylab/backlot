@@ -69,8 +69,13 @@ class SlackSearch(_SlackOk):
     messages: dict = {}
 
 
-_P_LIST = [qp("limit", "integer"), qp("cursor")]
+_P_LIST = [qp("limit", "integer"), qp("cursor"), qp("types")]
 _P_CHANNEL = [qp("channel", required=True)]
+_P_INFO = [qp("channel", required=True), qp("include_num_members", "boolean")]
+
+# The one workspace this mock emulates. Every conversation is in it, shared with nobody, so the
+# sharing ids below are all this team or empty.
+TEAM_ID = "T0000MOCK"
 _P_HISTORY = [
     qp("channel", required=True),
     qp("limit", "integer"),
@@ -134,16 +139,22 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
 
     Measured against the live API: a token that is merely unknown answers the same as a malformed
     one, so "malformed" is not a category this has to recognise — what matters is only whether a
-    non-empty credential was presented at all.
+    credential was presented at all, and Slack recognises exactly three ways to present one:
+    an `Authorization: Bearer <t>` header, a `token` query param, or a `token` form field.
 
         no header, no `token` param      -> not_authed
         `Authorization: Bearer ` (empty) -> not_authed
         `token=` (empty)                 -> not_authed
-        a non-Bearer scheme (e.g. Basic) -> not_authed
+        any other header scheme          -> not_authed
         any non-empty token that fails   -> invalid_auth
 
-    ``auth.slack_token`` already returns None for every case in the first group: it parses only
-    the bearer/token schemes, and an empty query or form value is falsy.
+    "any other header scheme" is the whole of the rest, not just the obvious `Basic`: the scheme is
+    case-SENSITIVE live, so `bearer` and `BEARER` land here too, as does GitHub's legacy `token <t>`
+    form. `auth.slack_bearer_token` is what draws that line, and is deliberately not the shared
+    `auth.bearer_token` — see its docstring for why the two cannot be one parser.
+
+    ``auth.slack_token`` returns None for every case in the first group: an unrecognised scheme
+    parses to nothing, and an empty query or form value is falsy.
     """
     token = auth.slack_token(request)
     caller = auth.acl(request).resolve(token)
@@ -152,10 +163,15 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
     return None, _err("invalid_auth" if token else "not_authed")
 
 
-def _full_channel(request: Request, conn, name: str) -> dict:
-    """A full conversation object (shared by conversations.list and .info)."""
+def _channel_core(request: Request, conn, name: str) -> dict:
+    """The conversation object as BOTH conversations.list and .info answer it.
+
+    What each adds is deliberately not here, because the real API does not agree between the two:
+    `num_members` is a `.list` field that `.info` returns only for `include_num_members=true`, and
+    `last_read` is `.info`-only (and the caller's). Building one object for both made this mock the
+    only place a client could rely on them matching.
+    """
     is_private = not store.container_has_public(conn, "slack", name)
-    num = _member_count(request, conn, name)
     created = _channel_created(request, conn, name)
     return {
         "id": synth.slack_channel_id(name),
@@ -177,6 +193,12 @@ def _full_channel(request: Request, conn, name: str) -> dict:
         # validating the object against a generated model sees a shape real Slack never returns.
         "is_pending_ext_shared": False,
         "pending_shared": [],
+        # Single-workspace, nothing shared or nested: the ids are this team and the rest empty.
+        # Absent here, a client generated from the vendor schema has no field to bind them to.
+        "context_team_id": TEAM_ID,
+        "shared_team_ids": [TEAM_ID],
+        "pending_connected_team_ids": [],
+        "parent_conversation": None,
         "unlinked": 0,
         "created": created,
         "updated": created * 1000,
@@ -184,8 +206,51 @@ def _full_channel(request: Request, conn, name: str) -> dict:
         "topic": {"value": f"#{name}", "creator": "USERVICE0", "last_set": created},
         "purpose": {"value": f"Channel for {name}", "creator": "USERVICE0", "last_set": created},
         "previous_names": [],
-        "num_members": num,
+        # Contextual channel configuration — tabs, a channel canvas, posting restrictions. The key
+        # is always present in a real response, but no corpus states any of it, so it is served
+        # empty rather than furnished with settings this workspace does not have.
+        "properties": {},
     }
+
+
+def _listed_channel(request: Request, conn, name: str) -> dict:
+    """conversations.list's channel: the core plus its member count."""
+    return {**_channel_core(request, conn, name), "num_members": _member_count(request, conn, name)}
+
+
+# Slack's zero timestamp, its "nothing here yet" value for a ts-shaped field. Reasoned from the
+# convention rather than measured: reading the live `last_read` of a channel nobody has opened needs
+# a real token, which this environment has none of.
+ZERO_TS = "0000000000.000000"
+
+
+def _last_read(conn, name: str, caller: Caller, visible_ids) -> str:
+    """The caller's `last_read` for a channel — always a ts, never absent.
+
+    A service token gets the zero ts rather than the channel's newest message: it is not a person
+    and has read nothing, the same reasoning `_subscribed` applies to a thread it cannot have
+    followed. Otherwise this mock models no unread state, so a channel the caller can read reads as
+    caught up."""
+    if not (caller.email or ""):
+        return ZERO_TS
+    return store.slack_latest_ts(conn, name, visible_ids) or ZERO_TS
+
+
+def _info_channel(
+    request: Request, conn, name: str, *, include_num_members: bool, visible_ids, caller: Caller
+) -> dict:
+    """conversations.info's channel. `num_members` is opt-in here (the vendor's own parameter), and
+    `last_read` is the caller's.
+
+    Being the caller's, its VALUE varies by who asks — that is what the field means. Its PRESENCE
+    must not: a key that appears only when the caller can read the channel gives `.info` two shapes,
+    and on a private channel `conversations.list` does not show this caller, the missing key is a
+    straight answer to "can you read this?". A caller with nothing to have read gets `ZERO_TS`."""
+    ch = _channel_core(request, conn, name)
+    if include_num_members:
+        ch["num_members"] = _member_count(request, conn, name)
+    ch["last_read"] = _last_read(conn, name, caller, visible_ids)
+    return ch
 
 
 def _channel_names(conn) -> list[str]:
@@ -200,7 +265,7 @@ def _user_obj(conn, email: str) -> dict:
     is_bot = not u and email.split("@")[0].endswith("bot")  # display-only "*bot" speakers
     return {
         "id": synth.slack_user_id(email),
-        "team_id": "T0000MOCK",
+        "team_id": TEAM_ID,
         "name": email.split("@")[0].replace(".", ""),
         "real_name": display,
         "deleted": False,
@@ -264,7 +329,7 @@ async def auth_test(request: Request):
         "team": get_settings().org_name,
         "user": who,
         "user_id": "USERVICE0",
-        "team_id": "T0000MOCK",
+        "team_id": TEAM_ID,
     }
 
 
@@ -302,7 +367,7 @@ async def conversations_list(request: Request):
             ]
 
     limit = _int(request, "limit", get_settings().default_page_size)
-    page = [_full_channel(request, conn, n) for n in names[offset : offset + limit]]
+    page = [_listed_channel(request, conn, n) for n in names[offset : offset + limit]]
     cursor = next_cursor(offset, len(page), len(names))
     return {"ok": True, "channels": page, "response_metadata": {"next_cursor": cursor}}
 
@@ -311,7 +376,7 @@ async def conversations_list(request: Request):
     "/conversations.info",
     methods=["GET", "POST"],
     response_model=SlackConversationInfo,
-    openapi_extra={"parameters": _P_CHANNEL},
+    openapi_extra={"parameters": _P_INFO},
 )
 async def conversations_info(request: Request):
     conn = auth.conn(request)
@@ -321,7 +386,16 @@ async def conversations_info(request: Request):
     name = _channel_name(conn, _param(request, "channel") or "")
     if name is None:
         return _err("channel_not_found")
-    return {"ok": True, "channel": _full_channel(request, conn, name)}
+    want_members = _param(request, "include_num_members") in ("1", "true", "True")
+    ch = _info_channel(
+        request,
+        conn,
+        name,
+        include_num_members=want_members,
+        visible_ids=auth.visible_ids(request, caller),
+        caller=caller,
+    )
+    return {"ok": True, "channel": ch}
 
 
 @router.api_route(
@@ -399,16 +473,26 @@ async def conversations_history(request: Request):
                 latest_reply=latest,
                 reply_users=ruids,
                 reply_users_count=len(ru),
+                subscribed=_subscribed(caller, r["author_email"], ru),
             )
         )
     cursor = next_cursor(offset, len(rows), total)
-    return {
+    body = {
         "ok": True,
         "messages": messages,
         "has_more": bool(cursor),
         "pin_count": 0,
-        "response_metadata": {"next_cursor": cursor},
+        # Channel actions (the workflow/action bar) are not something a corpus expresses, but the
+        # real API sends both keys on every call rather than omitting them.
+        "channel_actions_ts": None,
+        "channel_actions_count": 0,
     }
+    # Omitted entirely on a last page, which is what the live API does here — NOT served with an
+    # empty cursor. conversations.list is the other way round (it carries `{"next_cursor": ""}`
+    # even with nothing more), so the two are not a shared convention to factor out.
+    if cursor:
+        body["response_metadata"] = {"next_cursor": cursor}
+    return body
 
 
 @router.api_route(
@@ -468,6 +552,9 @@ async def conversations_replies(request: Request):
             reply_users=(ruids if x["thread_seq"] == 0 else None),
             reply_users_count=(len(ru) if x["thread_seq"] == 0 else 0),
             parent_user_id=(parent_uid if x["thread_seq"] > 0 else None),
+            subscribed=(
+                _subscribed(caller, root["author_email"], ru) if x["thread_seq"] == 0 else False
+            ),
         )
         for x in rows
     ]
@@ -739,7 +826,7 @@ def _search_match(conn, row) -> dict:
     ts = row["ts"]
     m = {
         "type": "message",
-        "team": "T0000MOCK",
+        "team": TEAM_ID,
         "channel": {
             "id": cid,
             "name": ch,
@@ -800,6 +887,18 @@ def _member_count(request: Request, conn, name: str) -> int:
     return store.count_slack_channel_members(conn, name)
 
 
+def _subscribed(caller: Caller, root_author: str | None, reply_authors) -> bool:
+    """Whether the CALLER follows this thread — Slack subscribes you to one you started or replied
+    in. An admin/service token is not a person and follows nothing, the same reasoning that makes
+    fireflies' `mine` empty for one."""
+    email = (caller.email or "").lower()
+    if not email:
+        return False
+    if (root_author or "").lower() == email:
+        return True
+    return any((e or "").lower() == email for e in reply_authors or ())
+
+
 def _message(
     row,
     reply_count: int = 0,
@@ -807,19 +906,32 @@ def _message(
     reply_users: list[str] | None = None,
     reply_users_count: int = 0,
     parent_user_id: str | None = None,
+    subscribed: bool = False,
 ) -> dict:
     text = row["content"]
+    seed = f"{row['channel']}:{row['ts']}"
     m = {
         "type": "message",
         "user": synth.slack_user_id(row["author_email"]),
         "text": text,
         "ts": row["ts"],
-        "team": "T0000MOCK",
+        "team": TEAM_ID,
+    }
+    if not row["subtype"]:
+        # `client_msg_id` is minted by the CLIENT that posted, and `blocks` is what that client
+        # composed, so neither belongs on a message Slack itself generated — measured: a
+        # channel_join carries only type/user/text/ts/subtype. `team` is left on both: it is
+        # absent from a channel_join too, but a bot_message is a real posted message rather than a
+        # system notice and there was none to measure, so dropping it everywhere would generalise
+        # past the evidence.
+        #
         # Seeded on (channel, ts), not ts alone: a ts is unique within its channel (see
         # store.ID_COLUMNS), so the same second in two channels produced one client_msg_id — a
         # value real Slack makes globally unique.
-        "client_msg_id": synth.gmail_id(f"{row['channel']}:{row['ts']}", salt="cmid"),
-    }
+        m["client_msg_id"] = synth.slack_client_msg_id(seed)
+        blocks = synth.slack_blocks(text, seed)
+        if blocks:
+            m["blocks"] = blocks
     reactions = store.jcol(row, "reactions")
     if reactions:
         m["reactions"] = reactions
@@ -840,7 +952,15 @@ def _message(
                     "reply_users_count": reply_users_count or len(reply_users or []),
                     "reply_users": reply_users or [],
                     "latest_reply": latest_reply,
-                    "subscribed": False,
+                    # Per-CALLER state, which is why it is passed in rather than decided here:
+                    # Slack subscribes you to a thread you started or replied in. Measured only in
+                    # the affirmative -- the one token available authored both the root and the
+                    # replies and was answered `true` -- so the negative case rests on Slack's own
+                    # description of when it notifies you, not on an observation.
+                    "subscribed": subscribed,
+                    # A thread property rather than a per-caller one, and nothing in a corpus locks
+                    # a thread.
+                    "is_locked": False,
                 }
             )
         elif row["thread_seq"] > 0 and parent_user_id:  # a reply

@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from backlot import store, synth
+from backlot.routers import slack
 from tests._helpers import corpus_client, crawl_slack, db_count, tiny_corpus
 
 
@@ -64,11 +65,13 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
 # to observe and so was measured directly (see test_slack_auth_errors_distinguish_...).
 
 
-# Measured 2026-08-20 against slack.com, which answers both of these without an account:
+# Measured against slack.com, which answers all of these without an account:
 #   curl -H "Authorization: Bearer xoxb-not-a-real-token" .../conversations.list -> invalid_auth
 #   curl                                                  .../conversations.list -> not_authed
 # A merely UNKNOWN token answers the same as a malformed one, so the only thing that decides it is
-# whether a non-empty credential was presented.
+# whether a credential was presented — and Slack recognises exactly three ways to present one: an
+# `Authorization: Bearer` header, a `token` query param, or a `token` form field. Every row is a
+# live answer, including the ones that read as though they should go the other way.
 @pytest.mark.parametrize(
     "kwargs, error",
     [
@@ -79,6 +82,24 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
         ({"headers": {"Authorization": "Bearer xoxb-not-a-real-token"}}, "invalid_auth"),
         ({"headers": {"Authorization": "Bearer xoxb"}}, "invalid_auth"),
         ({"data": {"token": "bogus-token"}}, "invalid_auth"),
+        # The scheme is case-SENSITIVE, which RFC 7235 does not require and Slack does anyway, so
+        # any other casing is a credential that was never presented rather than a bad one.
+        ({"headers": {"Authorization": "bearer xoxb-not-a-real-token"}}, "not_authed"),
+        ({"headers": {"Authorization": "BEARER xoxb-not-a-real-token"}}, "not_authed"),
+        ({"headers": {"Authorization": "BeArEr xoxb-not-a-real-token"}}, "not_authed"),
+        # GitHub's legacy `token <t>` header is not a Slack scheme at all, in either casing.
+        ({"headers": {"Authorization": "token xoxb-not-a-real-token"}}, "not_authed"),
+        ({"headers": {"Authorization": "Token xoxb-not-a-real-token"}}, "not_authed"),
+        # A tab does not separate scheme from token, but repeated spaces do, and either end of the
+        # header value may carry slack.
+        ({"headers": {"Authorization": "Bearer\txoxb-not-a-real-token"}}, "not_authed"),
+        ({"headers": {"Authorization": "Bearerxoxb-not-a-real-token"}}, "not_authed"),
+        ({"headers": {"Authorization": "Bearer  xoxb-not-a-real-token"}}, "invalid_auth"),
+        ({"headers": {"Authorization": "Bearer xoxb-not-a-real-token "}}, "invalid_auth"),
+        # The param and form names are case-sensitive too.
+        ({"params": {"token": "bogus-token"}}, "invalid_auth"),
+        ({"params": {"TOKEN": "bogus-token"}}, "not_authed"),
+        ({"data": {"TOKEN": "bogus-token"}}, "not_authed"),
     ],
 )
 def test_slack_auth_errors_distinguish_a_missing_token_from_an_unusable_one(client, kwargs, error):
@@ -87,6 +108,31 @@ def test_slack_auth_errors_distinguish_a_missing_token_from_an_unusable_one(clie
     it down the wrong branch."""
     r = client.post("/slack/api/conversations.list", **kwargs)
     assert r.json() == {"ok": False, "error": error}
+
+
+@pytest.mark.parametrize("scheme", ["bearer", "BEARER", "BeArEr", "token", "Token"])
+def test_slack_refuses_a_valid_token_under_an_unrecognised_scheme(client, tokens_yaml, scheme):
+    """The error label is the visible half of the scheme split; this is the half that costs a
+    deployment.
+
+    A VALID token under any of these schemes must not authenticate, because live Slack answers
+    `not_authed` to all five. The permissive `auth.bearer_token` accepts every one of them — for
+    GitHub, which really does take `token <t>`, and per RFC 7235, which really does make the scheme
+    case-insensitive — so Slack needs its own parser rather than that one. Sharing it would let six
+    spellings work here and none of them work against Slack."""
+    r = client.post(
+        "/slack/api/auth.test",
+        headers={"Authorization": f"{scheme} {tokens_yaml['admin_token']}"},
+    )
+    assert r.json() == {"ok": False, "error": "not_authed"}
+
+    # ...while the one spelling Slack does recognise still authenticates, so this is a narrowing and
+    # not a blanket refusal.
+    ok = client.post(
+        "/slack/api/auth.test",
+        headers={"Authorization": f"Bearer {tokens_yaml['admin_token']}"},
+    ).json()
+    assert ok["ok"] is True
 
 
 def test_slack_auth_error_split_is_uniform_across_methods(client):
@@ -158,12 +204,13 @@ def test_slack_conversations_list_defaults_to_public_channels(client, admin_h):
 # Transcribed from Slack's documented example response for conversations.list:
 # https://docs.slack.dev/reference/methods/conversations.list
 #
-# A FLOOR, not the exact shape. Measured against the live API, a channel object carries 29 keys —
-# the five extra ones (context_team_id, shared_team_ids, pending_connected_team_ids,
-# parent_conversation, properties) are documented on the conversation object reference rather than
-# on the method page, and .list and .info do not agree with each other either (num_members is
-# .list-only, last_read is .info-only). Both gaps are issue #74; until then this pins that nothing
-# documented goes missing, which is what regressed.
+# A FLOOR, not the exact shape, and transcribed from the .list page alone — which is why the five
+# extra keys a live channel object carries (context_team_id, shared_team_ids,
+# pending_connected_team_ids, parent_conversation, properties) are not in it: that page's example
+# response omits all five. They are served, and pinned below against both methods.
+#
+# .list and .info do not agree with each other either — num_members is .list-only and last_read is
+# .info-only — so this set is asserted against each with that one difference applied.
 _DOCUMENTED_CHANNEL_KEYS = frozenset(
     {
         "id",
@@ -207,12 +254,27 @@ def test_slack_channel_object_carries_slacks_documented_field_set(client, admin_
     ).json()["channels"][0]
     assert _DOCUMENTED_CHANNEL_KEYS <= set(listed)
 
-    # .info builds its channel from the same helper, so it must not drop what .list answers. The
-    # two are NOT the same object in real Slack, which is #74 — this only pins the documented floor.
+    # .info answers the same core minus num_members, which is opt-in there.
     info = client.post(
         "/slack/api/conversations.info", headers=admin_h, data={"channel": listed["id"]}
     ).json()["channel"]
-    assert _DOCUMENTED_CHANNEL_KEYS <= set(info)
+    assert _DOCUMENTED_CHANNEL_KEYS - {"num_members"} <= set(info)
+    assert "num_members" not in info
+    # and it carries what only .info does — for a service token, the zero ts (see _last_read)
+    assert info["last_read"] == slack.ZERO_TS
+
+    # Where these are documented differs by method, so the two pages are transcribed separately:
+    # the `.info` page's own example response carries all six, while the `.list` page's example
+    # carries none of them and only the conversation object reference describes them. Sent on every
+    # live response either way — a single-workspace channel shared with nobody.
+    for ch in (listed, info):
+        assert ch["context_team_id"] == "T0000MOCK"
+        assert ch["shared_team_ids"] == ["T0000MOCK"]
+        assert ch["pending_connected_team_ids"] == []
+        assert ch["parent_conversation"] is None
+        # contextual channel configuration, which no corpus states — present but empty, never
+        # furnished with settings this workspace does not have
+        assert ch["properties"] == {}
 
     # the shared-channel family is answered in full, and consistently
     assert listed["pending_shared"] == [] and listed["is_pending_ext_shared"] is False
@@ -221,6 +283,55 @@ def test_slack_channel_object_carries_slacks_documented_field_set(client, admin_
     # nesting is part of the shape too
     assert set(listed["topic"]) == {"value", "creator", "last_set"}
     assert set(listed["purpose"]) == {"value", "creator", "last_set"}
+
+
+def test_slack_info_answers_one_shape_whoever_asks(client, admin_h, tokens):
+    """`last_read` is the caller's, so its value varies — its presence must not.
+
+    Gating the key on what the caller can read gave `.info` two shapes, which defeats the point of
+    pinning the object exactly, and made the key readable as an ACL oracle: on `people-confidential`
+    — which `conversations.list` does not show these callers — a present `last_read` said "you can
+    read this" and an absent one said "you cannot". A caller with nothing to have read gets the zero
+    ts instead, so the shape is invariant and the answer is not there to be read off."""
+    everything = client.get(
+        "/slack/api/conversations.list", headers=admin_h, params={"limit": 200}
+    ).json()["channels"]
+    private = next(c for c in everything if c["name"] == "people-confidential")
+    assert private["is_private"] is True
+
+    shapes, values = set(), {}
+    for who in ("admin", "ava@acme.com", "bob@acme.com"):
+        h = admin_h if who == "admin" else {"Authorization": f"Bearer {tokens[who]}"}
+        # the channel is hidden from these callers by .list, and .info still answers it
+        hidden = client.get(
+            "/slack/api/conversations.list", headers=h, params={"limit": 200}
+        ).json()["channels"]
+        assert (who == "admin") == any(c["name"] == "people-confidential" for c in hidden)
+
+        ch = client.post(
+            "/slack/api/conversations.info", headers=h, data={"channel": private["id"]}
+        ).json()["channel"]
+        shapes.add(frozenset(ch))
+        values[who] = ch["last_read"]
+
+    assert len(shapes) == 1, "conversations.info must answer one key set whoever asks"
+    assert all("last_read" in shape for shape in shapes)
+    # nobody who cannot read it gets a real ts, and the service token reads nothing either
+    assert values == dict.fromkeys(values, slack.ZERO_TS)
+
+    # ...while a channel the caller CAN read still answers a real ts, so this is not a blanket zero
+    readable = client.get(
+        "/slack/api/conversations.list",
+        headers={"Authorization": f"Bearer {tokens['ava@acme.com']}"},
+        params={"limit": 1},
+    ).json()["channels"][0]
+    seen = client.post(
+        "/slack/api/conversations.info",
+        headers={"Authorization": f"Bearer {tokens['ava@acme.com']}"},
+        data={"channel": readable["id"]},
+    ).json()["channel"]
+    assert seen["last_read"] != slack.ZERO_TS
+    assert float(seen["last_read"]) > 0
 
 
 def test_slack_conversations_list_rejects_an_unknown_type(client, admin_h):
@@ -341,8 +452,15 @@ def test_slack_num_members_agrees_with_the_member_list(client, admin_h):
             params={"channel": c["id"], "limit": 1000},
         ).json()["members"]
         assert c["num_members"] == len(listed), c["name"]
-        info = client.get(
+        # .info counts only when asked — the vendor's own include_num_members
+        plain = client.get(
             "/slack/api/conversations.info", headers=admin_h, params={"channel": c["id"]}
+        ).json()["channel"]
+        assert "num_members" not in plain, c["name"]
+        info = client.get(
+            "/slack/api/conversations.info",
+            headers=admin_h,
+            params={"channel": c["id"], "include_num_members": "true"},
         ).json()["channel"]
         assert info["num_members"] == len(listed), c["name"]
 
@@ -389,6 +507,239 @@ def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
 # --- Slack: enrichment did not change the responses ---------------------------------------
 
 
+# Transcribed from live conversations.history responses, one per shape Slack builds. The mock
+# derives `blocks` from the same text a real client typed, so these are the payloads to match.
+_LIVE_BLOCKS = {
+    "test": [
+        {
+            "type": "rich_text",
+            "elements": [
+                {"type": "rich_text_section", "elements": [{"type": "text", "text": "test"}]}
+            ],
+        }
+    ],
+    "```code fence```": [
+        {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_preformatted",
+                    "elements": [{"type": "text", "text": "code fence"}],
+                    "border": 0,
+                }
+            ],
+        }
+    ],
+    "\u2022 bullet 1\n\u2022 bullet 2": [
+        {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_list",
+                    "style": "bullet",
+                    "indent": 0,
+                    "border": 0,
+                    "elements": [
+                        {
+                            "type": "rich_text_section",
+                            "elements": [{"type": "text", "text": "bullet 1"}],
+                        },
+                        {
+                            "type": "rich_text_section",
+                            "elements": [{"type": "text", "text": "bullet 2"}],
+                        },
+                    ],
+                }
+            ],
+        }
+    ],
+    "`inline` *bold*": [
+        {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_section",
+                    "elements": [
+                        {"type": "text", "text": "inline", "style": {"code": True}},
+                        {"type": "text", "text": " "},
+                        {"type": "text", "text": "bold", "style": {"bold": True}},
+                    ],
+                }
+            ],
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize("text", list(_LIVE_BLOCKS))
+def test_slack_blocks_match_what_live_slack_builds_from_the_same_text(text):
+    """`text` keeps the original markup in a real response, so `blocks` is a second rendering of
+    the same string — which is why it can be derived rather than stored."""
+    from backlot import synth
+
+    got = synth.slack_blocks(text, "chan:1.0")
+    assert got is not None
+    # block_id is seeded, so compare everything else
+    assert [{k: v for k, v in b.items() if k != "block_id"} for b in got] == _LIVE_BLOCKS[text]
+    assert len(got[0]["block_id"]) == 5
+
+
+def test_slack_blocks_are_absent_where_slack_does_not_build_them(client, admin_h):
+    """A message Slack itself generated carries neither `blocks` nor `client_msg_id` — measured on
+    channel_join, which answers only type/user/text/ts/subtype."""
+    from backlot import synth
+
+    assert synth.slack_blocks("", "s") is None
+    assert synth.slack_blocks("   ", "s") is None
+    # the block_id is stable for a given message and differs between messages
+    assert synth.slack_block_id("a:1") == synth.slack_block_id("a:1")
+    assert synth.slack_block_id("a:1") != synth.slack_block_id("a:2")
+
+
+def test_slack_history_messages_carry_blocks(client, admin_h):
+    """Every human-typed message the live API returns carries `blocks`; a client that renders rich
+    text, or validates against a generated model, sees a shape real Slack never returns without."""
+    cid = _a_channel_id(client, admin_h)
+    msgs = client.get(
+        "/slack/api/conversations.history", headers=admin_h, params={"channel": cid, "limit": 5}
+    ).json()["messages"]
+    assert msgs
+    for m in msgs:
+        assert m["blocks"][0]["type"] == "rich_text"
+        assert m["blocks"][0]["block_id"]
+        # the text field still carries the original string, blocks being the second rendering
+        assert m["text"]
+        assert "client_msg_id" in m
+
+
+def _incident_root(client, headers):
+    """The `incidents` thread root, as whoever `headers` authenticates."""
+    chans = client.get(
+        "/slack/api/conversations.list", headers=headers, params={"limit": 100}
+    ).json()["channels"]
+    cid = next(c["id"] for c in chans if c["name"] == "incidents")
+    msgs = client.get(
+        "/slack/api/conversations.history", headers=headers, params={"channel": cid, "limit": 50}
+    ).json()["messages"]
+    return cid, next(m for m in msgs if m.get("reply_count"))
+
+
+# The fixture thread: bob started it, ava and bob replied. Slack subscribes you to a thread you
+# started or replied in, so who is asking decides the answer — measured only in the affirmative
+# (the one live token authored both root and replies and was answered `true`), so the negative
+# rests on Slack's description of when it notifies you rather than on an observation.
+@pytest.mark.parametrize(
+    "email, expected",
+    [
+        ("bob@acme.com", True),  # started the thread
+        ("ava@acme.com", True),  # replied in it
+        ("hana@acme.com", False),  # neither
+    ],
+)
+def test_slack_subscribed_is_the_callers_own_thread_state(client, tokens, email, expected):
+    _cid, root = _incident_root(client, {"Authorization": f"Bearer {tokens[email]}"})
+    assert root["subscribed"] is expected, email
+
+
+def test_slack_a_service_token_subscribes_to_nothing(client, admin_h):
+    """An admin/service token is not a person, so it follows no thread — the same reasoning that
+    makes fireflies' `mine` empty for one."""
+    _cid, root = _incident_root(client, admin_h)
+    assert root["subscribed"] is False
+    # a thread property rather than a per-caller one, and nothing in a corpus locks a thread
+    assert root["is_locked"] is False
+
+
+def test_slack_thread_root_carries_what_live_slack_adds_for_replies(client, admin_h):
+    """Measured: in one live conversations.history response a root with replies answered 15 keys
+    where a plain message answered 7 — the thread fields are ADDED, never a substitution."""
+    cid, root = _incident_root(client, admin_h)
+    plain = [
+        m
+        for m in client.get(
+            "/slack/api/conversations.history",
+            headers=admin_h,
+            params={"channel": cid, "limit": 50},
+        ).json()["messages"]
+        if not m.get("reply_count")
+    ]
+    added = {
+        "thread_ts",
+        "reply_count",
+        "reply_users",
+        "reply_users_count",
+        "latest_reply",
+        "subscribed",
+        "is_locked",
+    }
+    assert added <= set(root)
+    if plain:
+        # the root is a superset of a plain message, which is what the live response showed
+        assert set(plain[0]) <= set(root)
+        assert added & set(plain[0]) == set()
+
+
+def test_slack_history_envelope_carries_the_channel_action_counters(client, admin_h):
+    """Live Slack sends both keys on every conversations.history call rather than omitting them,
+    so a client projecting the envelope sees them. Neither is on the method page."""
+    cid = _a_channel_id(client, admin_h)
+    j = client.get("/slack/api/conversations.history", headers=admin_h, params={"channel": cid})
+    body = j.json()
+    assert body["ok"] is True
+    assert body["channel_actions_ts"] is None and body["channel_actions_count"] == 0
+    assert body["pin_count"] == 0
+
+
+def test_slack_history_omits_response_metadata_on_a_last_page(client, admin_h):
+    """Measured: a live conversations.history with `has_more: false` carries no `response_metadata`
+    at all — not the key with an empty cursor. A client that subscripts it to decide whether to
+    keep paging must terminate on the key's ABSENCE, so serving it always hid that bug.
+
+    conversations.list is the other way round: it carries `{"next_cursor": ""}` with nothing more,
+    so the two are not one convention."""
+    cid = _a_channel_id(client, admin_h)
+    last = client.get(
+        "/slack/api/conversations.history", headers=admin_h, params={"channel": cid, "limit": 100}
+    ).json()
+    assert last["has_more"] is False
+    assert "response_metadata" not in last
+
+    # a page that IS followed by another still names the cursor
+    first = client.get(
+        "/slack/api/conversations.history", headers=admin_h, params={"channel": cid, "limit": 1}
+    ).json()
+    if first["has_more"]:
+        assert first["response_metadata"]["next_cursor"]
+
+    # conversations.list keeps the key even when exhausted, which is what live Slack does
+    lst = client.get("/slack/api/conversations.list", headers=admin_h, params={"limit": 100}).json()
+    assert lst["response_metadata"]["next_cursor"] == ""
+
+
+def test_slack_client_msg_id_is_a_v4_uuid(client, admin_h):
+    """Measured: every live value is canonical 8-4-4-4-12 with a v4's version nibble and variant
+    bits, because the posting client generates it. A 16-hex token satisfied anything that only
+    read the field and failed anything that validated it."""
+    import re
+    import uuid
+
+    cid = _a_channel_id(client, admin_h)
+    msgs = client.get(
+        "/slack/api/conversations.history", headers=admin_h, params={"channel": cid, "limit": 20}
+    ).json()["messages"]
+    assert msgs
+    seen = set()
+    for m in msgs:
+        got = m["client_msg_id"]
+        assert re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", got
+        ), got
+        assert uuid.UUID(got).version == 4
+        seen.add(got)
+    # globally unique, which is what the (channel, ts) seed buys
+    assert len(seen) == len(msgs)
+
+
 def test_slack_responses_unchanged_by_enrichment(client, admin_h):
     lst = client.get("/slack/api/conversations.list", headers=admin_h).json()
     assert lst["ok"] and "channels" in lst and "response_metadata" in lst
@@ -424,7 +775,7 @@ def test_slack_api_test_has_typed_response_schema(client):
 
 
 def test_slack_reply_users_and_num_members(tmp_path):
-    from backlot.routers.slack import _message, _full_channel
+    from backlot.routers.slack import _message, _listed_channel
 
     s = tiny_corpus(
         tmp_path,
@@ -464,8 +815,51 @@ def test_slack_reply_users_and_num_members(tmp_path):
     import types
 
     req = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
-    ch = _full_channel(req, conn, "inc")
+    ch = _listed_channel(req, conn, "inc")
     assert ch["num_members"] > 0 and ch["creator"] == "USERVICE0"
+
+
+def test_slack_a_system_message_carries_no_client_composed_fields(tmp_path):
+    """`client_msg_id` is minted by the posting client and `blocks` is what that client composed,
+    so a message Slack itself generated has neither — measured on channel_join, which answers only
+    type/user/text/ts/subtype. Reachable from a BYO corpus, which is what states a subtype: the ERB
+    importer writes none."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "doc_id": "sys",
+                "channel": "inc",
+                "subtype": "channel_join",
+                "content": "<@U123> has joined the channel",
+                "author_email": "bob@x.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "slack",
+                "doc_id": "human",
+                "channel": "inc",
+                "content": "shipped it",
+                "author_email": "ava@x.com",
+                "visibility": "public",
+            },
+        ],
+    )
+    from backlot.routers.slack import _message
+
+    conn = store.connect_ro(s.db_path)
+    rows = {r["content"]: r for r in conn.execute("SELECT * FROM slack_messages")}
+
+    sys_msg = _message(rows["<@U123> has joined the channel"])
+    assert sys_msg["subtype"] == "channel_join"
+    assert "client_msg_id" not in sys_msg and "blocks" not in sys_msg
+    # `team` stays on both: it is absent from a live channel_join too, but a bot_message is a real
+    # posted message and none was available to measure, so it is not dropped on the strength of one
+    assert sys_msg["team"]
+
+    human = _message(rows["shipped it"])
+    assert human["client_msg_id"] and human["blocks"][0]["type"] == "rich_text"
 
 
 def test_thread_ts_and_latest_reply_follow_a_replys_own_clock(tmp_path):

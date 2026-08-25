@@ -1,5 +1,7 @@
 # Backlot
 
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R)
+
 **Bring your own enterprise. Serve it like the real thing.**
 
 Backlot serves enterprise SaaS APIs — Slack, Gmail, Drive, GitHub, Jira, Notion, S3, and

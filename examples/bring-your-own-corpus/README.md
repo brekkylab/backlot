@@ -74,6 +74,11 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   thread comes back from `conversations.replies` (shared `thread_ts`, increasing `ts`,
   `reply_count` on the root). A reply's `created` must be after the message before it: a Slack
   `ts` is identity as well as clock, so two messages in one thread cannot share a second.
+- **Slack membership:** a channel's members are the people who have spoken in it, and posting in a
+  channel is being in it — so every speaker must be able to read the channel they spoke in.
+  `visibility: private` grants the thread's speakers, root and repliers alike; explicit `readers`
+  that leave a speaker out is refused at import rather than served as a workspace where the same
+  person is listed by `conversations.members` and told `channel_not_found` by `conversations.info`.
 - **Fireflies transcripts:** a fireflies record's child rows are `sentences`, not `replies`
   — a transcript should read like a transcript, so `replies` on a `fireflies` record is
   rejected rather than ignored. Each sentence states its `text` and its

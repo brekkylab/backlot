@@ -2827,6 +2827,52 @@ def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]
     ]
 
 
+def slack_membership_violations(conn) -> list[tuple[str, str]]:
+    """``(channel, email)`` for every speaker who cannot read the private channel they spoke in.
+
+    Speaking in a channel means being in it, and a member of a private channel can read it — so a
+    speaker outside that channel's grantees is two facts that cannot both hold: the same person is
+    served by :func:`slack_channel_member_emails` and told `channel_not_found` by
+    conversations.info. The corpus has no way to say "left the channel", which is the one state
+    real Slack reaches this from, so within this model it is a corpus that cannot be true.
+
+    Only PRIVATE channels can produce it — a public channel's org grant covers every principal —
+    and only speakers who are principals: a display-only speaker has no identity to authenticate
+    with, so there is nobody for the two answers to disagree about.
+    """
+    out: list[tuple[str, str]] = []
+    for row in list_containers(conn, "slack"):
+        channel = row["name"]
+        # The org grant admits every principal, so no speaker can fall outside it — and asking for
+        # it is a LIMIT 1 that a public channel satisfies on its first row, where reading the
+        # grantees below scans that channel's whole slice of the ACL table (6.8s against 20ms on a
+        # 5.6M-message corpus, where every channel is public).
+        if container_has_public(conn, "slack", channel):
+            continue
+        grants = conn.execute(
+            "SELECT DISTINCT principal_type, principal_id FROM slack_acl WHERE channel = ?",
+            (channel,),
+        ).fetchall()
+        # No grant at all is `"readers": []`, admin-only — a document withheld from the ACL model
+        # rather than a room with a membership to contradict.
+        if not grants:
+            continue
+        allowed: set[str] = set()
+        for ptype, pid in grants:
+            allowed.add(pid)
+            if ptype == "group":
+                allowed.update(r[0] for r in group_members(conn, pid))
+        for (email,) in conn.execute(
+            "SELECT DISTINCT m.author_email FROM slack_messages m "
+            "JOIN principals p ON p.id = m.author_email AND p.type = 'user' "
+            "WHERE m.channel = ? ORDER BY m.author_email",
+            (channel,),
+        ):
+            if email not in allowed:
+                out.append((channel, email))
+    return out
+
+
 def slack_channel_has_author(conn, channel, email) -> bool:
     """Whether ``email`` is one of a channel's members — the same set
     :func:`slack_channel_member_emails` pages, asked about one person. It is what the conversation

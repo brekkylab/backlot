@@ -71,7 +71,8 @@ CI runs `pytest -q` on every push to `main` and every pull request (see
 2. Keep changes focused; one logical change per PR.
 3. Add or update tests — a bug fix should come with a test that fails without it.
 4. Make sure `pytest` passes locally before opening the PR.
-5. Write a clear description of *what* changed and *why*.
+5. Fill in the pull request template: what changed, the measurement that says it is right, and
+   the test output — describing the finished state rather than the rounds of work behind it.
 
 ## Adding or changing API behavior
 
@@ -92,8 +93,13 @@ The whole point of this project is **fidelity to the real APIs**, so:
 
 ## Reporting bugs & requesting features
 
-Open an issue at https://github.com/brekkylab/backlot/issues. For a bug, include
-the endpoint, the request you made, what you got, and what a real API would have returned.
+Open an issue at https://github.com/brekkylab/backlot/issues. The **fidelity gap** template
+is the one most issues here want: the endpoint, the request you made, what Backlot served, what
+the real API served, and how you measured the difference.
+
+## Code of Conduct
+
+Taking part in this project means following our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

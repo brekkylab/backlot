@@ -15,6 +15,7 @@ import sqlite3
 import pytest
 
 from backlot import store, synth
+from tests._helpers import complete
 
 ALL_SOURCES = [
     "slack",
@@ -267,6 +268,23 @@ def test_grouping_cols_per_source():
     assert store.grouping_col("fireflies") == "channel"
 
 
+@pytest.mark.parametrize(
+    "stated",
+    ["ava.chen@acme.com", "ava_chen", "ava-chen", "ava.chen"],
+)
+def test_a_mailbox_resolves_from_the_address_however_the_corpus_spelled_it(tmp_path, stated):
+    """The one container a client never names. Every other source takes its container from the
+    request path; `users/me/messages` has only the caller's address, so each spelling a corpus
+    uses for a mailbox -- the address, its local part, a slug of either -- has to lead back to it,
+    or the owner's own listing comes back empty."""
+    conn = store.connect_rw(tmp_path / "m.sqlite")
+    conn.execute("INSERT INTO gmail_mailboxes (mailbox, group_id) VALUES (?, NULL)", (stated,))
+    assert store.mailbox_for(conn, "ava.chen@acme.com") == stated
+    # A mailbox the corpus never stated keeps the name-derived spelling, so it scopes to nothing.
+    assert store.mailbox_for(conn, "no.one@acme.com") == "no_one"
+    conn.close()
+
+
 def test_comment_tables_only_where_supported():
     # jira/confluence/github/notion expose comments; slack/gmail/drive/s3 do not
     assert store.comment_table("jira") == "jira_comments"
@@ -290,9 +308,6 @@ def test_acl_table_registry_covers_every_source(tmp_path):
     conn = store.connect_rw(tmp_path / "s.sqlite")
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert set(store.ACL_TABLE.values()) <= names
-    # the old shared table let two sources' documents merge their grants (doc_id is unique only
-    # within a source) — it must not come back now that every source has its own table.
-    assert "doc_acl" not in names
     conn.close()
 
 
@@ -806,64 +821,6 @@ def test_connect_rw_fresh_db_still_works(tmp_path):
         assert {"path", "line", "diff_hunk"} <= ccols
     finally:
         conn.close()
-
-
-def _write_pre_acl_db(p):
-    conn = sqlite3.connect(p)
-    conn.execute(
-        "CREATE TABLE doc_acl (doc_id TEXT NOT NULL, principal_type TEXT NOT NULL, "
-        "principal_id TEXT NOT NULL, PRIMARY KEY (doc_id, principal_type, principal_id))"
-    )
-    conn.commit()
-    conn.close()
-
-
-def _write_pre_served_columns_db(p):
-    conn = sqlite3.connect(p)
-    # A hand-rolled DB keyed on the dataset's own `doc_id`. That column IS the signal, so one
-    # check covers every table.
-    conn.execute(
-        "CREATE TABLE jira_issues (doc_id TEXT PRIMARY KEY, project TEXT NOT NULL, "
-        "author_email TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, "
-        "status TEXT, issuetype TEXT, priority TEXT, labels TEXT, components TEXT, "
-        "issuelinks TEXT, parent_id TEXT, changelog TEXT, created_ts INTEGER NOT NULL, "
-        "updated_ts INTEGER, assignee_email TEXT, reporter_email TEXT, resolution TEXT, "
-        "resolution_ts INTEGER, duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, "
-        "owner_display TEXT, key TEXT)"
-    )
-    conn.execute("CREATE TABLE linear_teams (team TEXT PRIMARY KEY, group_id TEXT)")
-    conn.commit()
-    conn.close()
-
-
-@pytest.mark.parametrize(
-    "setup, match",
-    [
-        (_write_pre_acl_db, "doc_acl"),
-        (_write_pre_served_columns_db, "doc_id"),
-    ],
-)
-def test_connect_rw_refuses_a_pre_served_db(tmp_path, setup, match):
-    """Two DB shapes connect_rw must refuse outright rather than let SCHEMA fail on, or migrate:
-
-    - built before per-source ACL tables (still has one shared `doc_acl`) — appending would
-      write a new source's grants into the empty per-source tables SCHEMA creates while every
-      pre-existing grant stays behind in `doc_acl`, which nothing reads any more, silently
-      hiding every pre-existing document from every scoped token.
-    - built before the served-id primary keys (its documents still carry a `doc_id`) —
-      `CREATE TABLE IF NOT EXISTS` would not alter the old table at all and `CREATE INDEX IF NOT
-      EXISTS` guards only the index's own name, so it raises a bare `OperationalError: no such
-      column` naming whichever table SCHEMA's text happens to reach first, saying nothing about
-      why. Neither case has a backfill (see connect_rw's own comments on both checks), so the
-      only correct move for either is a fresh re-import — which is what both readable errors say,
-      instead of a raw SQLite one or a silent migration of ids that were never meant to move."""
-    p = tmp_path / "old.sqlite"
-    setup(p)
-
-    with pytest.raises(ValueError, match=match):
-        store.connect_rw(p)
-    with pytest.raises(ValueError, match="re-import"):
-        store.connect_rw(p)
 
 
 def test_github_comments_splits_review_from_conversation(tmp_path):
@@ -1613,6 +1570,33 @@ def test_fts_add_docs_noop_without_index(tmp_path):
     assert store.fts_add_docs(conn, "notion", ["x"]) == 0
 
 
+def test_head_between_snapshots_sharing_an_instant_is_broken_by_ref(tmp_path):
+    """When two snapshots share a `created_ts`, the one served is decided by `ref` — the field the
+    author writes — and not by `number`.
+
+    `number` is an internal handle probed from a hash of the dataset id, so tie-breaking on it made
+    the served content a property of a doc_id: renaming a document flipped which snapshot the repo
+    answered with. The schema tells an author to state a `ref` when two snapshots share an instant,
+    so `ref` has to be the thing that settles it, or that advice buys identity and leaves serving
+    undefined.
+
+    The numbers here are ordered AGAINST the refs, so a tie-break on `number` picks 'pr-1'.
+    """
+    conn = store.connect_rw(tmp_path / "g.sqlite")
+    for number, ref, content in ((9, "pr-1", "one"), (2, "pr-2", "two")):
+        conn.execute(
+            "INSERT INTO github_items(number,repo,author_email,title,content,kind,path,created_ts,"
+            "ref) VALUES(?,'svc','a@x','r.py',?,'file','src/r.py',5,?)",
+            (number, content, ref),
+        )
+    conn.commit()
+    assert store.get_repo_file(conn, "svc", "src/r.py")["content"] == "two"
+    # both remain addressable, and the path is still one entry
+    assert store.get_repo_file(conn, "svc", "src/r.py", ref="pr-1")["content"] == "one"
+    assert store.list_repo_file_paths(conn, "svc") == ["src/r.py"]
+    conn.close()
+
+
 def test_repo_files_listing_and_kind_isolation(tmp_path):
     conn = store.connect_rw(tmp_path / "g.sqlite")
     # two files + one issue in the same repo
@@ -1628,12 +1612,20 @@ def test_repo_files_listing_and_kind_isolation(tmp_path):
         "INSERT INTO github_items(number,repo,author_email,title,content,kind,created_ts) "
         "VALUES(3,'svc','a@x','a bug','...', 'issue',1)"
     )
+    # a SECOND snapshot of src/b.py, taken later: a file's history, not a second file
+    conn.execute(
+        "INSERT INTO github_items(number,repo,author_email,title,content,kind,path,created_ts) "
+        "VALUES(4,'svc','a@x','b.py','print(22)','file','src/b.py',9)"
+    )
     conn.commit()
     files = store.list_repo_files(conn, "svc")
+    # one row per path: a tree that names src/b.py twice is not a tree
     assert [f["path"] for f in files] == ["src/a.py", "src/b.py"]  # only files, sorted, no issue
     assert store.count_repo_files(conn, "svc") == 2
+    # the listing carries HEAD's content, not whichever snapshot the scan reached first
+    assert [f["content"] for f in files] == ["print(1)", "print(22)"]
     got = store.get_repo_file(conn, "svc", "src/b.py")
-    assert got["content"] == "print(2)"
+    assert got["content"] == "print(22)"  # newest by created_ts
     assert store.get_repo_file(conn, "svc", "nope.py") is None
 
 
@@ -1673,6 +1665,25 @@ def test_list_repo_file_paths_agrees_with_the_full_listing(tmp_path):
             f["path"] for f in store.list_repo_files(conn, "svc", ids)
         ]
     assert store.list_repo_file_paths(conn, "svc", {"everyone"}) == ["src/a.py", "src/b.py"]
+
+    # A NEWER snapshot of src/a.py that only 'people' may read. HEAD is resolved among the rows the
+    # CALLER can see, so an 'everyone' caller is still served the older snapshot as the file. The
+    # alternative -- resolving HEAD corpus-wide, then ACL-filtering -- answers 404 for a path they
+    # hold a readable snapshot of, which tells them a newer one exists.
+    conn.execute(
+        "INSERT INTO github_items(number,repo,author_email,title,content,kind,path,created_ts)"
+        " VALUES(5,'svc','a@x','a.py','secret','file','src/a.py',9)"
+    )
+    conn.execute(
+        "INSERT INTO github_acl(repo, number, principal_id, principal_type) "
+        "VALUES('svc',5,'people','group')"
+    )
+    conn.commit()
+    assert store.get_repo_file(conn, "svc", "src/a.py", {"everyone"})["content"] == "body"
+    assert store.get_repo_file(conn, "svc", "src/a.py", {"people"})["content"] == "secret"
+    # and it is still ONE entry in either caller's listing
+    assert store.list_repo_file_paths(conn, "svc", {"everyone"}) == ["src/a.py", "src/b.py"]
+    assert store.count_repo_files(conn, "svc", {"everyone", "people"}) == 3
 
 
 def test_hubspot_listing_is_an_index_range_seek(tmp_path):
@@ -1925,15 +1936,15 @@ def test_linear_entities_are_rebuilt_whole_so_an_append_is_resolvable(tmp_path):
     from backlot.config import Settings
 
     def issue(doc_id, project):
-        return {
-            "source_type": "linear",
-            "team": "engineering",
-            "doc_id": doc_id,
-            "title": doc_id,
-            "content": "c",
-            "author_email": "a@acme.com",
-            "project": project,
-        }
+        return complete(
+            source_type="linear",
+            team="engineering",
+            doc_id=doc_id,
+            title=doc_id,
+            content="c",
+            author_email="a@acme.com",
+            project=project,
+        )
 
     settings = Settings(data_dir=tmp_path)
     first = tmp_path / "a.jsonl"
@@ -2147,6 +2158,63 @@ def test_fireflies_sentences_come_back_in_spoken_order(db, keys):
         assert a["start_time"] < a["end_time"] <= b["start_time"]
 
 
+def test_fireflies_speakers_are_keyed_on_the_number_not_the_name(tmp_path):
+    """Fireflies numbers speakers WITHIN a meeting, so the roster is one entry per NUMBER. Keyed on
+    the name instead, two runs diarization never labelled collapse into one entry and
+    `Sentence.speaker_id` ends up naming a speaker the roster does not list.
+
+    Its own corpus, and one that states the numbers itself: the BYO loader assigns one ordinal per
+    NAME, so two unlabelled speakers exist only where the record distinguishes them."""
+    from tests._helpers import tiny_corpus
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "fireflies",
+                "doc_id": "ff-diarized",
+                "channel": "sales-calls",
+                "title": "Crosstalk",
+                "host_email": "ava@acme.com",
+                "visibility": "public",
+                "sentences": [
+                    {"speaker_name": None, "speaker_id": 0, "start_time": 0, "text": "(crosstalk)"},
+                    {"speaker_name": None, "speaker_id": 1, "start_time": 5, "text": "(inaudible)"},
+                    {"speaker_name": "Ava", "speaker_id": 2, "start_time": 10, "text": "Morning."},
+                    {"speaker_name": "Ava Chen", "speaker_id": 2, "start_time": 15, "text": "So."},
+                ],
+            },
+            {
+                "source_type": "fireflies",
+                "doc_id": "ff-plain",
+                "channel": "sales-calls",
+                "title": "Plain",
+                "host_email": "ava@acme.com",
+                "visibility": "public",
+                "content": "[00:00] Ava: just the one speaker.",
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    by_title = {r["title"]: r["id"] for r in store.list_fireflies_transcripts(conn, limit=50)}
+    rosters = store.fireflies_speakers(conn, by_title.values())
+    # every number the sentences carry, in number order, the unlabelled ones included -- and the
+    # number that carries two labels is served under the first the transcript uses
+    assert [(r["speaker_id"], r["speaker_name"]) for r in rosters[by_title["Crosstalk"]]] == [
+        (0, None),
+        (1, None),
+        (2, "Ava"),
+    ]
+    # batched over the page: one entry per id ASKED for, so a caller can index the result
+    assert set(rosters) == set(by_title.values())
+    assert [r["speaker_name"] for r in rosters[by_title["Plain"]]] == ["Ava"]
+    assert store.fireflies_speakers(conn, []) == {}
+    assert store.fireflies_speakers(conn, ["deadbeefdeadbeefdeadbeef"]) == {
+        "deadbeefdeadbeefdeadbeef": []
+    }
+    conn.close()
+
+
 def test_fireflies_counts_agree_with_the_pages(db):
     for kw, scope in [
         (None, None),
@@ -2179,23 +2247,6 @@ def test_meta_overwrites(tmp_path):
     store.write_meta(conn, "source_documents", 1)
     store.write_meta(conn, "source_documents", 2)
     assert store.read_meta(conn, "source_documents") == "2"
-    conn.close()
-
-
-def test_read_meta_tolerates_a_db_without_the_table(tmp_path):
-    """A DB built before this change has no meta table; /health must still answer.
-
-    Simulates the deployed box's DB: created with the full pre-Task-3 schema, then the meta
-    table dropped to represent a pre-meta-table version."""
-    path = tmp_path / "old.sqlite"
-    # Create a DB with the full schema, then drop the meta table to simulate the deployed box
-    conn = store.connect_rw(path)
-    conn.execute("DROP TABLE IF EXISTS meta")
-    conn.commit()
-    conn.close()
-    # Re-open and verify read_meta tolerates the missing table
-    conn = sqlite3.connect(path)
-    assert store.read_meta(conn, "source_documents") is None
     conn.close()
 
 

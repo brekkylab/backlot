@@ -13,17 +13,14 @@
       "minLength": 1,
       "description": "The retrieval payload served verbatim as the body."
     },
-    "title": {
-      "type": "string",
-      "description": "Document title (email subject / file name / issue title / page title)."
-    },
     "doc_id": {
       "type": "string",
       "description": "Stable id (default: dsid_<sha256(source_type+title+content)>)."
     },
     "channel": {
       "type": "string",
-      "description": "The channel this document belongs to (default: the source_type)."
+      "minLength": 1,
+      "description": "The channel this document belongs to."
     },
     "group": {
       "type": [
@@ -63,10 +60,6 @@
       },
       "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
     },
-    "meta": {
-      "type": "object",
-      "description": "Free-form per-source structured extras merged into the record."
-    },
     "subtype": {
       "type": "string",
       "description": "Slack message subtype (e.g. bot_message, channel_join)."
@@ -92,7 +85,8 @@
         "number",
         "string"
       ],
-      "description": "Creation time (epoch seconds or ISO 8601). Default: synthesized from doc_id. Sets the message ts. A thread reply times itself: its own `created` when it has one, else one second after the message before it."
+      "minLength": 1,
+      "description": "Creation time (epoch seconds or ISO 8601). Sets the message ts."
     },
     "replies": {
       "type": "array",
@@ -121,7 +115,8 @@
               "number",
               "string"
             ],
-            "description": "Reply time (default: one second after the previous message). Must be after the message before it: a Slack ts is identity as well as clock, so a thread's times are strictly increasing."
+            "minLength": 1,
+            "description": "Reply time. Must be after the message before it: a Slack ts is identity as well as clock, so a thread's times are strictly increasing."
           },
           "title": {
             "type": "string"
@@ -147,7 +142,9 @@
           }
         },
         "required": [
-          "content"
+          "author_email",
+          "content",
+          "created"
         ],
         "additionalProperties": false
       },
@@ -162,8 +159,11 @@
     }
   },
   "required": [
-    "source_type",
-    "content"
+    "author_email",
+    "channel",
+    "content",
+    "created",
+    "source_type"
   ],
   "additionalProperties": false
 }

@@ -242,13 +242,15 @@ def _labels_predicate(spec: dict, *, every: bool) -> tuple[str, list]:
 # field name on IssueFilter -> how it compiles.
 #   ("col", column, kwargs)    a comparator straight onto a column
 #   ("nested", {sub: spec})    an object filter whose sub-fields map onto columns
-def compile_issue_filter(conn, flt: dict | None) -> tuple[str, list] | None:
+def compile_issue_filter(
+    conn, flt: dict | None, team_keys: dict | None = None
+) -> tuple[str, list] | None:
     """``IssueFilter`` -> ``(sql_fragment, params)``, or None when there is nothing to filter."""
-    sql, params = _issue_filter(conn, flt or {})
+    sql, params = _issue_filter(conn, flt or {}, team_keys)
     return (sql, params) if sql else None
 
 
-def _issue_filter(conn, flt: dict) -> tuple[str, list]:
+def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, list]:
     parts: list[str] = []
     params: list = []
 
@@ -261,7 +263,10 @@ def _issue_filter(conn, flt: dict) -> tuple[str, list]:
         if spec is None:
             continue
         if key in ("and", "or"):
-            subs = [_issue_filter(conn, s) for s in spec]
+            # `team_keys` rides down the recursion: without it a `team.key` nested under and/or
+            # compiled against the name-derived key while the same filter at top level compiled
+            # against the corpus's, so the two spellings of one query disagreed.
+            subs = [_issue_filter(conn, s, team_keys) for s in spec]
             frags = [f for f, _ in subs if f]
             for _, p in subs:
                 params.extend(p)
@@ -331,7 +336,14 @@ def _issue_filter(conn, flt: dict) -> tuple[str, list]:
                     spec,
                     {
                         "name": ("col", "team"),
-                        "key": ("derived", "team", synth.linear_team_key),
+                        # The key a team's own identifiers carry, read off `linear_teams`
+                        # (see `store.linear_team_keys`); name-derived for a team with no
+                        # row there.
+                        "key": (
+                            "derived",
+                            "team",
+                            lambda name: (team_keys or {}).get(name) or synth.linear_team_key(name),
+                        ),
                         "id": ("derived", "team", synth.linear_team_id),
                     },
                 )

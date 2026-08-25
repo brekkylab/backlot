@@ -18,13 +18,25 @@ from backlot import serve_or_connect
 
 CORPUS = [
     {
+        "updated": "2026-02-01T09:00:00Z",
+        "author_email": "ava@acme.com",
+        "created": "2026-02-01T09:00:00Z",
         "source_type": "notion",
         "teamspace": "engineering",
         "title": "On-call Runbook",
         "content": "# On-call\n\nCheck dashboards, roll back, page on-call.",
-        "comments": [{"content": "add the rate-limiter rollback step"}],
+        "comments": [
+            {
+                "author_email": "bob@acme.com",
+                "created_ts": "2026-02-10T18:25:00Z",
+                "content": "add the rate-limiter rollback step",
+            }
+        ],
     },
     {
+        "updated": "2026-01-10T09:00:00Z",
+        "author_email": "ava@acme.com",
+        "created": "2026-01-10T09:00:00Z",
         "source_type": "notion",
         "teamspace": "engineering",
         "subtype": "database",
@@ -33,6 +45,9 @@ CORPUS = [
         "properties": {"Status": {"type": "select"}, "Priority": {"type": "select"}},
     },
     {
+        "updated": "2026-02-02T10:00:00Z",
+        "author_email": "bob@acme.com",
+        "created": "2026-02-02T10:00:00Z",
         "source_type": "notion",
         "teamspace": "engineering",
         "title": "Fix gateway 502s",

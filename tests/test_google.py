@@ -15,6 +15,7 @@ from urllib.parse import quote
 import httpx
 import jwt
 import pytest
+import yaml
 
 from backlot import oauth, store
 from backlot.config import Settings
@@ -124,6 +125,70 @@ def _a_gmail_row(ro_conn):
     return ro_conn.execute("SELECT * FROM gmail_messages LIMIT 1").fetchone()
 
 
+@pytest.mark.parametrize("mailbox", ["ava", "ava@acme.com"])
+def test_a_message_with_no_recipient_serves_no_to_header(tmp_path, mailbox):
+    """Real Gmail returns the headers a message has. RFC 5322 allows one with no destination field
+    at all -- a Bcc-only send -- so inventing a To makes a case this mock could never reproduce.
+    `Delivered-To` keeps its default: a receiving MTA really does add it.
+
+    `Subject` is the same clause of the same section (3.6 gives `to` and `subject` both 0..1), and
+    this format says an empty subject IS the absence of one, so a stated `""` serves no header
+    either -- where it used to serve `Subject: ""`.
+
+    The mailbox is stated both ways a corpus states one -- a slug and the owner's address -- because
+    the address is what the CALLER is known by, and `users/me/messages` has nothing but that address
+    to find the mailbox with."""
+    from tests._helpers import build_corpus, client_for, complete, served_id
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            complete(
+                "gmail",
+                doc_id="gm-no-to",
+                mailbox=mailbox,
+                title="Bcc-only note",
+                content="For the archive.",
+                author_email="ava@acme.com",
+                created="2026-02-11T08:00:00Z",
+            ),
+            complete(
+                "gmail",
+                doc_id="gm-no-subject",
+                mailbox=mailbox,
+                title="",
+                content="No subject on this one.",
+                author_email="ava@acme.com",
+                created="2026-02-11T09:00:00Z",
+            ),
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text())
+    ava = next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+    # A second client over a different DB in this module, so the app is re-imported: the
+    # lifespan writes its connection onto module-level state (see `client_for`).
+    with client_for(settings, reload=True) as c:
+        admin = {"authorization": "Bearer admin-service-token"}
+        body = c.get(
+            f"/gmail/v1/users/me/messages/{served_id('gmail', 'gm-no-to')}", headers=admin
+        ).json()
+        subjectless = c.get(
+            f"/gmail/v1/users/me/messages/{served_id('gmail', 'gm-no-subject')}", headers=admin
+        ).json()
+        owned = c.get(
+            "/gmail/v1/users/me/messages", headers={"authorization": f"Bearer {ava}"}
+        ).json()
+    headers = {h["name"]: h["value"] for h in body["payload"]["headers"]}
+    assert "To" not in headers
+    assert headers["Subject"] == "Bcc-only note"
+    assert headers["Delivered-To"] == "ava@acme.com"
+    assert "Subject" not in {h["name"] for h in subjectless["payload"]["headers"]}
+    assert {m["id"] for m in owned["messages"]} == {
+        served_id("gmail", "gm-no-to"),
+        served_id("gmail", "gm-no-subject"),
+    }
+
+
 def test_gmail_messages_list_serves_hex_ids(client, admin_h):
     """The ids a client receives must look like Gmail's, not like the corpus's dsids: `dsid_…` is
     not hex, so real Gmail would call it an invalid id value.
@@ -197,6 +262,29 @@ def test_gmail_reply_reports_its_roots_thread_id(client, admin_h, ro_conn):
     # `thread_id` holds the ROOT'S OWN served id — no re-derivation on either side.
     assert m["threadId"] == row["thread_id"]
     assert m["id"] != m["threadId"]
+
+
+def test_gmail_threads_list_is_the_mailbox_searched_or_not(client, tokens):
+    """One listing, one scope. `threads.list` counted the threads the caller had WRITTEN in, while
+    `threads.list?q=` filtered the caller's MAILBOX — and passed the caller's address where a
+    mailbox name goes, so a search of one's own mail came back empty."""
+    h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+    plain = client.get("/gmail/v1/users/me/threads", headers=h).json()
+    searched = client.get("/gmail/v1/users/me/threads", headers=h, params={"q": "gateway"}).json()
+    thread = served_id("gmail", "gm-thread-root")
+    assert thread in [t["id"] for t in plain["threads"]]
+    assert [t["id"] for t in searched["threads"]] == [thread]
+    # A reply is not a thread of its own, and a thread several of whose messages match is listed once.
+    assert served_id("gmail", "gm-thread-reply") not in [t["id"] for t in plain["threads"]]
+    assert plain["resultSizeEstimate"] == len(plain["threads"])
+    # Two messages, one thread — so the two totals are two numbers, in the profile and on the label.
+    profile = client.get("/gmail/v1/users/me/profile", headers=h).json()
+    inbox = client.get("/gmail/v1/users/me/labels/INBOX", headers=h).json()
+    assert profile["messagesTotal"] > profile["threadsTotal"] == len(plain["threads"])
+    assert (inbox["messagesTotal"], inbox["threadsTotal"]) == (
+        profile["messagesTotal"],
+        profile["threadsTotal"],
+    )
 
 
 def test_gmail_attachment_resolves_under_a_hex_message_id(client, admin_h, ro_conn):
@@ -2091,7 +2179,7 @@ def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
                 "content": "%PDF-1.7",
                 "author_email": "a@x.com",
                 "subtype": "pdf",
-                "meta": {"mime_type": "application/pdf"},
+                "mime_type": "application/pdf",
             },
         ],
     )
@@ -2137,10 +2225,24 @@ def test_gmail_raw_and_headers(tmp_path):
 
     decoded = base64.urlsafe_b64decode(raw["raw"]).decode()
     assert "Subject: Hi" in decoded and "MIME-Version: 1.0" in decoded
-    # Bcc must NOT appear in a fetched message's headers (stripped in transit)
-    full = _gmail_message(row, "full")
-    names = {h["name"] for h in full["payload"]["headers"]}
-    assert "Bcc" not in names and "MIME-Version" in names
+    # Bcc survives only on the SENDER's own copy, which is where real Gmail keeps it: a recipient's
+    # copy has it stripped in transit, so a reader who is not the author must not learn who was
+    # blind-copied.
+    mine = _gmail_message(row, "full", "ceo@x.com")
+    hdrs = {h["name"]: h["value"] for h in mine["payload"]["headers"]}
+    assert hdrs["Bcc"] == "secret@x.com" and "MIME-Version" in hdrs
+
+    theirs = _gmail_message(row, "full", "someone.else@x.com")
+    assert "Bcc" not in {h["name"] for h in theirs["payload"]["headers"]}
+    # and an admin/service caller (no email) is not the sender either
+    assert "Bcc" not in {h["name"] for h in _gmail_message(row, "full")["payload"]["headers"]}
+
+    # the raw RFC822 form follows the same rule -- it is the same message, serialized
+    assert (
+        "Bcc: secret@x.com"
+        in base64.urlsafe_b64decode(_gmail_message(row, "raw", "ceo@x.com")["raw"]).decode()
+    )
+    assert "secret@x.com" not in decoded  # `decoded` above was fetched with no caller
 
     # The declared Content-Type (multipart/alternative here, no attachments) must be backed by a
     # genuinely boundary-delimited body -- not just plain text under a multipart header (invalid

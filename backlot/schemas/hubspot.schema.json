@@ -28,7 +28,8 @@
     },
     "object_type": {
       "type": "string",
-      "description": "CRM object type, plural as in the API path (contacts, companies, deals, tickets, notes, emails, meetings, calls, tasks, or a custom object). Default: the source_type."
+      "minLength": 1,
+      "description": "CRM object type, plural as in the API path (contacts, companies, deals, tickets, notes, emails, meetings, calls, tasks, invoices, orders, subscriptions, leads and the rest of HubSpot's standard set, or a custom object of your own). Stated in whichever spelling you like: a standard type is reachable under its plural, its singular and its objectTypeId whichever one you write here."
     },
     "group": {
       "type": [
@@ -67,10 +68,6 @@
         "type": "string"
       },
       "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
-    },
-    "meta": {
-      "type": "object",
-      "description": "Free-form per-source structured extras merged into the record."
     },
     "properties": {
       "type": "object",
@@ -125,7 +122,8 @@
         "number",
         "string"
       ],
-      "description": "createdate (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+      "minLength": 1,
+      "description": "createdate (epoch seconds or ISO 8601)."
     },
     "updated": {
       "type": [
@@ -137,9 +135,12 @@
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
-    "title"
+    "created",
+    "object_type",
+    "properties",
+    "source_type"
   ],
   "additionalProperties": false
 }

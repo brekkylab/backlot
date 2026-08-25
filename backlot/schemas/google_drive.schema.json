@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Document title (email subject / file name / issue title / page title)."
+      "description": "Document title (email subject / file name / issue title / page title).",
+      "minLength": 1
     },
     "doc_id": {
       "type": "string",
@@ -23,7 +24,8 @@
     },
     "folder": {
       "type": "string",
-      "description": "The folder this document belongs to (default: the source_type)."
+      "minLength": 1,
+      "description": "The folder this document belongs to."
     },
     "group": {
       "type": [
@@ -62,10 +64,6 @@
         "type": "string"
       },
       "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
-    },
-    "meta": {
-      "type": "object",
-      "description": "Free-form per-source structured extras merged into the record."
     },
     "subtype": {
       "enum": [
@@ -107,7 +105,8 @@
         "number",
         "string"
       ],
-      "description": "createdTime (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+      "minLength": 1,
+      "description": "createdTime (epoch seconds or ISO 8601)."
     },
     "updated": {
       "type": [
@@ -115,24 +114,22 @@
         "number",
         "string"
       ],
-      "description": "modifiedTime (epoch seconds or ISO 8601). Default: created + 1h."
+      "minLength": 1,
+      "description": "modifiedTime (epoch seconds or ISO 8601)."
     },
     "trashed": {
       "type": "boolean",
       "description": "Whether the file is trashed (files.list excludes trashed by default)."
-    },
-    "collaborators": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Collaborator principals (emails) — served as the file's non-owner permissions."
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
-    "title"
+    "created",
+    "folder",
+    "source_type",
+    "title",
+    "updated"
   ],
   "additionalProperties": false
 }

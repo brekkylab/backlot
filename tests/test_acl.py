@@ -388,6 +388,92 @@ def test_fireflies_sentences_of_a_denied_meeting_are_unreachable(sample_settings
         assert not any("stays in the room" in s for s in said)
 
 
+def test_fireflies_channel_members_name_only_readable_meetings(tmp_path):
+    """`channels { members }` aggregates participants ACROSS a channel's meetings, which makes it a
+    second path to a transcript the caller was denied: its participants, and — since an address no
+    visible meeting mentions can only have come from a hidden one — the fact that it exists.
+
+    Its own corpus, because the leak needs a channel holding a readable meeting AND a hidden one,
+    and SAMPLE's hidden transcript is the only one in its channel (see this section's header)."""
+    from tests._helpers import build_corpus
+
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "fireflies",
+                "doc_id": "ff-open",
+                "channel": "all-hands",
+                "group": "people",
+                "title": "Weekly sync",
+                "host_email": "ava@acme.com",
+                "visibility": "public",
+                "created": "2026-04-10T16:00:00Z",
+                "sentences": [
+                    {
+                        "speaker_name": "Ava Chen",
+                        "author_email": "ava@acme.com",
+                        "start_time": 0,
+                        "text": "Numbers first.",
+                    },
+                    {
+                        "speaker_name": "Bob Ray",
+                        "author_email": "bob@acme.com",
+                        "start_time": 10,
+                        "text": "Design shipped.",
+                    },
+                ],
+            },
+            {
+                "source_type": "fireflies",
+                "doc_id": "ff-board",
+                "channel": "all-hands",  # the SAME channel, and readable by hana alone
+                "group": "people",
+                "title": "Board pre-read",
+                "host_email": "hana@acme.com",
+                "readers": ["hana@acme.com"],
+                "created": "2026-04-15T09:00:00Z",
+                "sentences": [
+                    {
+                        "speaker_name": "Hana Ito",
+                        "author_email": "hana@acme.com",
+                        "start_time": 0,
+                        "text": "This one stays in the room.",
+                    },
+                    {
+                        "speaker_name": "Secret Investor",
+                        "author_email": "secret.investor@acme.com",
+                        "start_time": 12,
+                        "text": "Noted.",
+                    },
+                ],
+            },
+        ],
+    )
+    toks = {u["email"]: u["token"] for u in yaml.safe_load(s.tokens_path.read_text())["users"]}
+    q = "{ transcripts(limit: 50) { title participants channels { members { email } } } }"
+    with client_for(s) as client:
+        ava = _ff_gql(client, q, toks["ava@acme.com"])["data"]["transcripts"]
+        assert [t["title"] for t in ava] == ["Weekly sync"]  # the board meeting is hidden
+        # so the channel's roster is her own meeting's participants and nobody else: neither of
+        # the two addresses that appear only in the meeting she was denied
+        assert {m["email"] for m in ava[0]["channels"][0]["members"]} == set(ava[0]["participants"])
+        assert {m["email"] for m in ava[0]["channels"][0]["members"]} == {
+            "ava@acme.com",
+            "bob@acme.com",
+        }
+        # the caller who may read both meetings gets the union, which is what makes the roster an
+        # aggregate rather than one meeting's participant list
+        hana = _ff_gql(client, q, toks["hana@acme.com"])["data"]["transcripts"]
+        assert len(hana) == 2
+        assert {m["email"] for t in hana for m in t["channels"][0]["members"]} == {
+            "ava@acme.com",
+            "bob@acme.com",
+            "hana@acme.com",
+            "secret.investor@acme.com",
+        }
+
+
 def test_fireflies_mine_is_scoped_to_the_calling_user(sample_settings, tokens):
     """`mine` means the caller's OWN meetings. The caller's address is the only identity the
     server can vouch for, so it must never widen to everyone's."""
@@ -512,11 +598,10 @@ def test_a_shared_doc_id_does_not_share_visibility(tmp_path):
     assert ("org", "acme") in conf
     conn.close()
 
-    # The leak was user-facing at the ROUTER layer, not just the store — assert it there too, with
-    # a real HTTP request carrying a non-admin bearer token. ava is a member of the org the public
-    # confluence grant names, but holds no grant of her own on the drive file: in the pre-fix world
-    # a shared doc_acl table would OR the two sources' rows together for "shared-1" and let any org
-    # member (ava included) through on the strength of the confluence grant alone.
+    # Asserted at the ROUTER layer too, with a real HTTP request carrying a non-admin bearer token:
+    # ava is a member of the org the public confluence grant names but holds no grant of her own on
+    # the drive file, and a scoping that read the two sources' grants together would let her
+    # through on the strength of the confluence one alone.
     toks = yaml.safe_load(s.tokens_path.read_text())
     ava_token = next(u["token"] for u in toks["users"] if u["email"] == "ava@acme.com")
     hana_token = next(u["token"] for u in toks["users"] if u["email"] == "hana@acme.com")

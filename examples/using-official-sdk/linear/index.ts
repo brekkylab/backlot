@@ -51,8 +51,9 @@ const CORPUS = [
     created: "2025-02-18T00:00:00Z", updated: "2025-03-04T00:00:00Z",
     comments: [
       { content: "Baseline traces captured; peak 98.2 GB on the quantized variant.",
-        author_email: "amaya.chen@acme.com" },
-      { content: "Residency bands cut peak memory 20%.", author_email: "diego.martinez@acme.com" },
+        author_email: "amaya.chen@acme.com", created_ts: "2025-02-19T09:00:00Z" },
+      { content: "Residency bands cut peak memory 20%.", author_email: "diego.martinez@acme.com",
+        created_ts: "2025-02-25T14:00:00Z" },
     ],
   },
   {
@@ -70,6 +71,7 @@ const CORPUS = [
     content: "Compact variants for the inline model picker.",
     author_email: "maya.chen@acme.com", author_groups: ["design"], visibility: "public",
     identifier: "DES-128743", state: "In Review", priority: "P2", labels: ["composer"],
+    created: "2025-03-05T00:00:00Z",
   },
 ];
 

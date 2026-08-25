@@ -15,12 +15,16 @@ from backlot import serve_or_connect
 
 CORPUS = [
     {
+        "author_email": "ava@acme.com",
+        "created": "2025-06-01T09:00:00Z",
         "source_type": "confluence",
         "space": "handbook",
         "title": "Engineering Handbook",
         "content": "How we build software: coding standards, review process, on-call.",
     },
     {
+        "author_email": "ava@acme.com",
+        "created": "2025-09-10T11:00:00Z",
         "source_type": "confluence",
         "space": "handbook",
         "title": "On-call Runbook",

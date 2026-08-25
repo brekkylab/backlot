@@ -7,36 +7,39 @@ Each line is one document:
       "source_type": "confluence",        # required: one of the served source types
                                           #   (slack|gmail|google_drive|github|jira|confluence|
                                           #    notion|s3|hubspot|linear|fireflies)
-      "title": "Onboarding guide",         # required except for slack (messages have no title)
+      "title": "Onboarding guide",         # required (slack has none; a hubspot note has none)
       "content": "Full text...",            # required
       "doc_id": "my-123",                  # optional (default: dsid_<sha256(src+title+content)>)
-      "space": "handbook",                 # the grouping unit, named per service: slack/fireflies
+      "space": "handbook",                 # required: the grouping unit, named per service --
                                              #   "channel", gmail "mailbox", google_drive "folder",
                                              #   github "repo", jira "project", confluence "space",
                                              #   notion "teamspace", s3 "bucket", hubspot
                                              #   "object_type", linear "team" (default: source_type)
       "group": "people",                   # optional ACL group owning that unit (default: slug(unit))
-      "author_email": "ava@acme.com",      # optional author/sender/owner
+      "author_email": "ava@acme.com",      # required author/sender/owner (fireflies: host_email)
       "author_groups": ["people","eng"],   # optional groups the author belongs to
       "visibility": "public",              # optional: public|group|private (default: public)
       "readers": ["ava@acme.com","eng"],    # optional explicit reader principals (overrides visibility)
       "subtype": "page",                    # optional: drive document|spreadsheet|presentation;
                                              #   github issue|pull_request; confluence page|blogpost
       "parent": "doc-id-of-parent",         # optional: hierarchy (confluence child page, jira subtask)
-      "labels": ["eng","runbook"],          # optional facets -> meta.labels
-      "meta": {"issuelinks": [...]},        # optional per-source structured extras (merged into meta JSON)
-      "comments": [                         # optional: comments on this doc (jira/confluence/github/drive)
-        {"content": "LGTM", "author_email": "rev@acme.com"}
+      "labels": ["eng","runbook"],          # optional facets
+      "issuelinks": [...],                  # optional per-source structured extras, each a
+                                             #   declared field of the source that has it
+      "comments": [                         # optional: comments on this doc; each states its own
+        {"content": "LGTM", "author_email": "rev@acme.com",   # author and its own second
+         "created_ts": "2026-03-01T10:00:00Z"}
       ],
-      "created": "2026-03-01T09:00:00Z",    # optional creation time (epoch seconds or ISO 8601)
-      "updated": 1740900000,                # optional modified time (drive/github/jira/confluence)
+      "created": "2026-03-01T09:00:00Z",    # required creation time (epoch seconds or ISO 8601)
+      "updated": 1740900000,                # modified time; required on drive and notion
       "author_name": "Ava Chen",            # optional display name -> the owner's served name
       "replies": [                          # slack only: threaded replies — full messages, not just text
         {"content": "on it", "author_email": "bob@acme.com",
-         "reactions": [{"name": "eyes", "count": 1}]}
+         "created": "2026-03-01T09:00:01Z", "reactions": [{"name": "eyes", "count": 1}]}
       ],
       "messages": [                         # gmail only: the thread's later messages
-        {"content": "On it.", "author_email": "ava@acme.com", "message_id": "<b@acme>"}
+        {"content": "On it.", "author_email": "ava@acme.com", "message_id": "<b@acme>",
+         "created": "2026-03-01T10:00:00Z"}
       ]
     }
 
@@ -107,8 +110,6 @@ def _states_own_id(src: str, rec: dict) -> bool:
     if src == "s3":
         return True
     if src == "fireflies":
-        # The schema's own spelling only: `meta.transcript_id` is ordinary meta content, stripped
-        # before extras are seeded, exactly as `meta.number` is for github.
         return bool(rec.get("transcript_id"))
     return False
 
@@ -171,6 +172,21 @@ def _principal(pid: str) -> tuple[str, str]:
     return ("user", pid) if "@" in pid else ("group", pid)
 
 
+def _linear_prefix(identifier) -> str:
+    """The team key a linear identifier carries: everything before its FIRST hyphen.
+
+    Not the last, which is where a jira key splits. A real Linear team key holds no hyphen (it is a
+    short run of alphanumerics), so the first one is the only correct place to cut -- and the bench's
+    own corpus is what proves it matters rather than a hypothetical: 43 of its 35,308 linear
+    documents state a slug-shaped `key` (`ENG-453210-kms-hsm-deployment-lifecycle-telemetry-orbiter`),
+    which `importer.erb`'s `_byo_linear` passes through verbatim as the identifier. Cut at the LAST
+    hyphen, each of those renamed `engineering` to a 50-character pseudo-key, stamped every keyless
+    issue in the team under it, and then refused any sibling stating a real `ENG-…` for disagreeing
+    with the team's own key. Cut at the first, all 43 claim `ENG` and the corpus loads unchanged.
+    """
+    return str(identifier).split("-", 1)[0]
+
+
 def _time_given(v) -> bool:
     """Whether the corpus wrote a time in this field at all, as opposed to leaving it
     out. Told apart from an unreadable one, which ``_epoch`` also answers None for: a
@@ -210,9 +226,14 @@ def _epoch_field(v, where, field):
     typo means the record loads with a time nobody wrote and no way to tell it apart from
     one that was left blank on purpose, which is the whole reason a reply's clock refuses.
     Fields whose absence stores NULL keep plain ``_epoch``: nothing is substituted there,
-    so nothing is disguised."""
+    so nothing is disguised.
+
+    An empty string is unreadable HERE, though ``_time_given`` calls it unwritten: a field whose
+    key the schema requires cannot be left blank by writing nothing into it, and the row it would
+    build has no second at all. Absence is still absence — an optional time simply left out, or
+    written as ``null``, stores NULL as it always did."""
     sec = _epoch(v)
-    if sec is None and _time_given(v):
+    if sec is None and v is not None:
         raise SystemExit(
             f"{where}: {field} is not a time this importer can read "
             f"(got {v!r}; write epoch seconds or ISO 8601)"
@@ -220,20 +241,11 @@ def _epoch_field(v, where, field):
     return sec
 
 
-def _message_second(stated, default: int) -> int:
-    """A child message's second: the one the corpus stated, else the caller's default.
-
-    A plain ``or`` reads the same until the stated second is 0 — 1970-01-01T00:00:00Z, which a
-    corpus can legitimately write — and then substitutes the default for a time the author
-    actually wrote."""
-    return default if stated is None else stated
-
-
 def _epoch(v):
     """Parse a BYO time (epoch seconds int/float, or ISO 8601 string) -> unix seconds.
 
-    Returns None for a missing/unparseable value, so the router falls back to the
-    deterministic synthesized timestamp."""
+    None for a value this cannot read, which the caller decides what to do about: a field whose
+    absence stores NULL takes it as absence, and ``_epoch_field`` refuses it."""
     if not _time_given(v):
         return None
     if isinstance(v, bool):
@@ -256,72 +268,24 @@ def _epoch(v):
         return None
 
 
-def _thread_seconds(where, root_sec, root_written, replies):
-    """Every second in a slack thread — the root's and each reply's — resolved together,
-    before any of the rows are written. Returns ``(root_second, [reply seconds])``.
+def _thread_seconds(where, root_sec, replies):
+    """Every reply's second, checked against the message before it before any row is written.
 
-    Ordering is judged against clocks the corpus actually supplied. A root with no
-    `created` of its own holds a second hashed from its doc_id, which is not a fact
-    about the thread, and using it as the anchor made the import turn on that hash: for
-    a reply dated inside the synthesizer's own window the hash lands after the reply
-    date about half the time, so the same corpus loads or dies depending on the root's
-    doc_id, and the refusal quotes a second that appears nowhere in the corpus. When it
-    did load, the served thread had a root years before its own reply. Such a root is
-    re-grounded on the first reply that carries a clock instead.
-
-    A clockless reply still lands one second after the message before it, so a thread
-    that supplies no clocks at all resolves exactly where root+position always put it.
-    Re-grounding cannot change an existing corpus either: a reply could not carry
-    `created` at all until this branch added it, `replies.items` being closed.
+    A Slack ts is identity as well as a clock, so two messages in one thread cannot hold the same
+    second and a reply cannot precede the message before it.
     """
-    reps = replies or []
-    written = []
-    for i, rep in enumerate(reps, start=1):
-        v = rep.get("created")
-        sec = _epoch(v)
-        if sec is None and _time_given(v):
-            # A filled-in field this importer cannot read is refused rather than
-            # defaulted: taking the default silently reinstates the metronome the field
-            # exists to replace, and the second that lands is indistinguishable from
-            # what a corpus that never wrote a clock gets.
-            raise SystemExit(
-                f"{where}: reply {i}: created is not a time this importer can read "
-                f"(got {v!r}; write epoch seconds or ISO 8601)"
-            )
-        written.append(sec)
-
-    if not root_written:
-        first = next((i for i, s in enumerate(written) if s is not None), None)
-        if first is not None:
-            # One second for each clockless reply ahead of it, and one more for the root.
-            root_sec = written[first] - (first + 1)
-
     out = []
-    prev, defaulted = root_sec, False
-    for i, sec in enumerate(written, start=1):
-        if sec is None:
-            prev, defaulted = prev + 1, True
-            out.append(prev)
-            continue
+    prev = root_sec
+    for i, rep in enumerate(replies or [], start=1):
+        sec = _epoch_field(rep["created"], f"{where}: reply {i}", "created")
         if sec <= prev:
-            if defaulted:
-                # The second it collides with is one this importer chose, not one the
-                # author wrote, so say that rather than quoting it as a fact about the
-                # corpus. Two adjacent seconds cannot both hold a message: a Slack ts is
-                # identity as well as clock.
-                raise SystemExit(
-                    f"{where}: reply {i}: created must be after the message before it "
-                    f"(got {reps[i - 1].get('created')!r}), but reply {i - 1} carries no "
-                    f"created of its own and took the next free second, {prev}. Give "
-                    f"reply {i - 1} a created too, or move this one later."
-                )
             raise SystemExit(
                 f"{where}: reply {i}: created must be after the message before it "
-                f"(got {reps[i - 1].get('created')!r}, the previous message is at {prev})"
+                f"(got {rep['created']!r}, the previous message is at {prev})"
             )
-        prev, defaulted = sec, False
+        prev = sec
         out.append(sec)
-    return root_sec, out
+    return out
 
 
 def _service_columns(
@@ -337,7 +301,7 @@ def _service_columns(
     updated=None,
     owner_display=None,
 ) -> dict:
-    """Map generic BYO fields (+ meta) to the target service table's own columns.
+    """Map generic BYO fields to the target service table's own columns.
 
     ``seed`` is the incoming record's own dataset identifier. It is an INPUT: several sources
     derive a served id from it here, and it is never itself stored. ``parent_id`` and
@@ -395,13 +359,13 @@ def _service_columns(
             "created_ts": created,
             "updated_ts": updated,
             "trashed": (1 if ex.get("trashed") else None),
-            "collaborators": _j(ex.get("collaborators")),
             "owner_display": owner_display,
         }
     if src == "github":
         return {
             "kind": subtype or "issue",
             "path": ex.get("path"),
+            "ref": ex.get("ref"),
             "number": ex.get("number"),
             "state": ex.get("state"),
             "labels": _j(ex.get("labels")),
@@ -439,10 +403,6 @@ def _service_columns(
             "resolution_ts": _epoch(ex.get("resolutiondate")),
             "duedate": ex.get("duedate"),
             "fix_versions": _j(ex.get("fix_versions")),
-            # `severity` is a separate axis from `priority` (how bad vs. when to fix) and
-            # `squad` is the owning team, which need not be the project's ACL group.
-            "severity": ex.get("severity"),
-            "squad": ex.get("squad"),
             "key": ex.get("key"),
             "owner_display": owner_display,
         }
@@ -459,14 +419,6 @@ def _service_columns(
             "version_number": ex.get("version_number"),
             "version_message": ex.get("version_message"),
             "minor_edit": (1 if ex.get("minor_edit") else None),
-            # Confluence's own confidentiality label, free text and stored verbatim rather
-            # than forced into an enum: real corpora write "restricted (customer-sensitive)" and
-            # "restricted (finance/customer-sensitive)" alongside plain "internal". It is a
-            # served label only — ACL still comes from `visibility`/`readers`, so a corpus that
-            # wants a restricted page group-scoped says so there too.
-            "reviewers": _j(ex.get("reviewers")),
-            "confidentiality": ex.get("confidentiality"),
-            "owner_team": ex.get("owner_team"),
             "owner_display": owner_display,
         }
     if src == "notion":
@@ -835,6 +787,11 @@ def _github_pairing_errors(rec: dict) -> list[str]:
     subtype = rec.get("subtype")
     is_pull = subtype == "pull_request"
     msgs = []
+    if rec.get("ref") is not None and subtype != "file":
+        # `ref` says WHICH SNAPSHOT of a path this row is, so it means nothing off a file. Every
+        # reader of the column is scoped to kind='file', so an unchecked one would be stored and
+        # serve nothing -- the same silent no-op `changed_paths` is checked for below.
+        msgs.append(f"ref is for subtype='file' only (this is {subtype or 'issue'!r})")
     if rec.get("changed_paths") is not None:
         if not is_pull:
             msgs.append(
@@ -1158,37 +1115,72 @@ class _Loader:
                 f"already in means re-importing from scratch. (a fresh import needs no {label}.)"
             )
 
-    def _claim_jira_prefix(self, provided_key, container: str, where: str) -> None:
-        """A jira key's prefix is its PROJECT's key, held 1:1 in both directions as real Jira does.
-        Distinct from the full-key claim: PAY-1 and PAY-2 are different keys, but in different
-        projects they still fight over which project *is* PAY."""
-        prefix = str(provided_key).rsplit("-", 1)[0]
-        holder = self.jira_prefix_holders.get(prefix)
+    # How a prefix refusal is worded, per source: what the container is called, the field the corpus
+    # stated it in, and that field's plural.
+    _PREFIX_NOUNS = {
+        "jira": ("project", "key", "keys"),
+        "linear": ("team", "identifier", "identifiers"),
+    }
+
+    def _claim_prefix(self, src: str, provided, container: str, where: str) -> None:
+        """A provided id's prefix is its CONTAINER's key, held 1:1 in both directions as both real
+        services are: a project/team has one key, and a key names one project/team.
+
+        Distinct from the full-id claim: PAY-1 and PAY-2 are different keys, but in different
+        projects they still fight over which project *is* PAY. And for linear it is the whole
+        reason a provided identifier is worth reading at all -- an identifier is DERIVED from its
+        team's key there, so `identifier: "ENG-7"` beside `team { key: "PP" }` is the issue object
+        contradicting itself. Claiming the prefix here is what puts the team on ENG instead, on
+        every surface that serves a key.
+
+        Jira and linear keep separate maps: they are separate namespaces, and a refusal names the
+        one it came from."""
+        kind, label, plural = self._PREFIX_NOUNS[src]
+        prefixes, holders = (
+            (self.jira_prefixes, self.jira_prefix_holders)
+            if src == "jira"
+            else (self.linear_prefixes, self.linear_prefix_holders)
+        )
+        # Where the prefix ends differs by service: see `_linear_prefix`. Jira keeps the last-hyphen
+        # cut it has always used -- `importer.erb`'s jira mapping drops the bench's `key` rather than
+        # passing it through, so no slug has ever reached this claim from that side.
+        prefix = _linear_prefix(provided) if src == "linear" else str(provided).rsplit("-", 1)[0]
+        holder = holders.get(prefix)
         if holder is not None and holder != container:
             raise SystemExit(
-                f"{where}: key {provided_key!r} carries project key {prefix!r}, "
-                f"which project {holder!r} already holds"
+                f"{where}: {label} {provided!r} carries {kind} key {prefix!r}, "
+                f"which {kind} {holder!r} already holds"
             )
-        held = self.jira_prefixes.get(container)
+        held = prefixes.get(container)
         if held is not None and held != prefix:
             raise SystemExit(
-                f"{where}: key {provided_key!r} would name project {container!r} "
-                f"{prefix!r}, but its keys already name it {held!r}"
+                f"{where}: {label} {provided!r} would name {kind} {container!r} "
+                f"{prefix!r}, but its {plural} already name it {held!r}"
             )
-        self.jira_prefix_holders[prefix] = container
-        self.jira_prefixes[container] = prefix
+        holders[prefix] = container
+        prefixes[container] = prefix
 
-    def _existing_file_number(self, repo: str, path):
-        """The number a github `file` row already holds in this repo, or None for a new file.
+    def _existing_file_number(self, repo: str, path, ref, created_ts):
+        """The number this SNAPSHOT of a github file already holds in this repo, or None if the
+        repo does not hold it yet.
 
         A file is addressed by (repo, path) -- its number exists only so the row is addressable
         under the primary key -- so this is the lookup that recognises a re-imported file, in
-        place of the stated id the other github rows are recognised by."""
+        place of the stated id the other github rows are recognised by. It matches on the
+        snapshot, `(repo, path, COALESCE(ref, created_ts))`, and not on the path alone: several
+        rows may stand for one path (see store's `idx_github_file_snapshot`), and keying on the
+        path made the SECOND of them adopt the first's number, which the corpus-wide identity
+        check then refused as two documents sharing one served id.
+
+        `COALESCE`, not `ref = ?`: a NULL never compares equal in SQL, so a row that omits `ref`
+        would match nothing and every re-import of it would draw a fresh number and land twice.
+        """
         if not path:
             return None
         row = self.conn.execute(
-            "SELECT number FROM github_items WHERE repo = ? AND path = ? AND kind = 'file'",
-            (repo, path),
+            "SELECT number FROM github_items WHERE repo = ? AND path = ? AND kind = 'file'"
+            " AND COALESCE(ref, created_ts) = ?",
+            (repo, path, ref if ref is not None else created_ts),
         ).fetchone()
         return row["number"] if row else None
 
@@ -1268,9 +1260,7 @@ class _Loader:
         ).fetchone()
         return row is not None and row["author_email"] == author_email and row["content"] == body
 
-    def __init__(
-        self, conn, org: str, org_domain: str, *, closed: bool = False, validate: bool = True
-    ):
+    def __init__(self, conn, org: str, org_domain: str, *, closed: bool = False):
         self.conn = conn
         self.org = org
         self.org_domain = org_domain
@@ -1278,7 +1268,6 @@ class _Loader:
         # declaring new people (see load_roster).
         self.closed = closed
         # Skipped only for records this repo generated itself — see load_records.
-        self.validate = validate
         self.containers = {}  # (source_type, name) -> group_id
         self.users = {}  # email -> display name
         self.groups = set()
@@ -1410,6 +1399,29 @@ class _Loader:
         # A pull's declared changeset, resolved after the whole corpus is read: the `file` document
         # a path names may be on a later line, or in a shard already loaded.
         self.gh_changesets = []  # (where, repo, paths)
+        # Linear's teams, held to the same 1:1 as jira's projects above: real Linear keeps team
+        # keys workspace-unique because an identifier is DERIVED from its team's key, so a team
+        # answering at two prefixes (or two teams answering at one) is a shape only the loader can
+        # see. Separate maps rather than jira's: the two are different namespaces, and a refusal
+        # has to name teams rather than projects.
+        #
+        # A container is here only once something SETTLES its key -- a provided identifier this
+        # run, or the `served_key` a previous run stored (see seed_tracker_ids). A team with a
+        # purely derived key is deliberately absent, so `.get(name) or synth.linear_team_key(name)`
+        # is the one reading of "this team's key" everywhere.
+        self.linear_prefixes = {}  # container -> prefix
+        self.linear_prefix_holders = {}  # prefix -> container
+        # The identifiers this run MATERIALIZED: dataset id -> (container, the prefix it was
+        # stamped under, the value written). A container whose provided prefix only shows up half
+        # way down the file has its keyless rows re-stamped from this once every record has been
+        # seen -- see restamp_linear_identifiers.
+        self._linear_stamped = {}
+        # The identifiers this run's corpus STATED. A materialized value has to give one of these
+        # up: a keyless row stamped before the record that states its spelling arrived took it
+        # first, and the corpus's own issue then answered "Entity not found" at the id its
+        # documents cite. Which of the two moves is not a tie -- what the corpus wrote is the id it
+        # asked for, and what this mock derived is a hash it can re-derive elsewhere.
+        self._linear_provided = set()
 
     def seed_tracker_ids(self) -> None:
         """Re-read the ids already in the DB, so a claim holds ACROSS runs too.
@@ -1457,13 +1469,17 @@ class _Loader:
             self._preexisting[src] = {
                 tuple(r) for r in self.conn.execute(f"SELECT {cols} FROM {store.table(src)}")
             }
-        # Same claim, per team, for synthesized linear identifiers.
-        for team, identifier in self.conn.execute(
-            "SELECT team, identifier FROM linear_issues WHERE identifier IS NOT NULL"
+        # Same claim, per team key, for synthesized linear identifiers. Bucketed by the
+        # identifier's OWN prefix rather than by its team's derived key: a team served under a
+        # corpus-provided prefix holds identifiers the derived key never names, and filing those
+        # under the derivation left the probe walking a set that did not contain them -- handing a
+        # new issue a spelling an existing one already answers at. The prefix IS the bucket
+        # `_assign_linear_identifier` probes, which is also why two teams that reduce to one key
+        # correctly share one.
+        for (identifier,) in self.conn.execute(
+            "SELECT identifier FROM linear_issues WHERE identifier IS NOT NULL"
         ):
-            self._linear_identifiers.setdefault(synth.linear_team_key(str(team)), set()).add(
-                identifier
-            )
+            self._linear_identifiers.setdefault(_linear_prefix(identifier), set()).add(identifier)
         # Every row carries a key, stated or derived, and for a claim the difference is immaterial:
         # both mean the value is taken. The `dataset id` side of `tracker_ids` is unknowable for a
         # row from an earlier run, so it is recorded as None; the check that reads it only needs to
@@ -1488,6 +1504,30 @@ class _Loader:
                     prefix = str(row["v"]).rsplit("-", 1)[0]
                     self.jira_prefixes[str(row["c"])] = prefix
                     self.jira_prefix_holders[prefix] = str(row["c"])
+        # Linear teams: the key a team answers at is settled by its FIRST import and read back
+        # from `linear_teams.served_key`, not re-derived from the identifiers. That column is
+        # exactly what the previous run decided (`write_containers` writes it), where an identifier
+        # cannot say whether its prefix was the corpus's or this mock's -- both spellings share the
+        # one column, and the value a probe walked away from its derived spelling is recomputable
+        # from neither.
+        #
+        # `linear_prefixes` is seeded for every team, DERIVED keys included, and that is what makes
+        # an --append's rows agree with the ones already stored: a team whose first import wrote
+        # only keyless issues answers at `PP-…`, and without the seed a later shard providing
+        # `ENG-3` would rename the team to ENG and leave every stored row carrying a prefix that is
+        # no longer its key. Seeded, that shard is refused instead.
+        #
+        # `linear_prefix_holders` takes only the keys a corpus SPELLED OUT. Two containers are
+        # allowed to derive one key (see `synth.linear_team_key`), so holding a derived key against
+        # the workspace would refuse a provided prefix that a fresh import of the same corpus
+        # accepts — the append and the fresh load would disagree about the same file.
+        for team, served_key in self.conn.execute(
+            f"SELECT {store.grouping_col('linear')} AS team, served_key FROM linear_teams"
+        ):
+            team, served_key = str(team), str(served_key)
+            self.linear_prefixes[team] = served_key
+            if served_key != synth.linear_team_key(team):
+                self.linear_prefix_holders[served_key] = team
 
     def add(self, rec: dict, where: str = "record") -> None:
         """Insert one BYO record's row(s). ``where`` names the record in an error message.
@@ -1496,23 +1536,24 @@ class _Loader:
         body stays the straight-line per-record mapping it reads as.
         """
         conn, org, org_domain = self.conn, self.org, self.org_domain
-        closed, validate, containers = self.closed, self.validate, self.containers
+        closed, containers = self.closed, self.containers
         users, groups, memberships = self.users, self.groups, self.memberships
         grants, counts, seen = self.grants, self.counts, self.seen
         fts_ids, hs_types, hs_links = self.fts_ids, self.hs_types, self.hs_links
         lin_links = self.lin_links
         # Schema pre-validation: source_type/content/title, enums, comment/reply shapes,
         # and unknown-key rejection all come from backlot/schemas/ (see backlot.validation).
-        errors = record_errors(rec) if validate else []
+        errors = record_errors(rec)
         if errors:
             raise SystemExit(f"{where}: " + "; ".join(errors))
         src = rec["source_type"]
-        # Not under `validate`: these are pairings no schema states well (see
+        # Beyond the schema: these are pairings no schema states well (see
         # _github_pairing_errors), and a record an importer in this repo generated is no likelier to
         # get a pull-only field onto an issue correctly than a hand-written one.
         if src == "github" and (bad := _github_pairing_errors(rec)):
             raise SystemExit(f"{where}: " + "; ".join(bad))
-        # Slack messages have no title; the other five carry a natural one.
+        # Slack messages have no title, and a hubspot note has no name -- the one source whose
+        # title is optional (see its schema).
         title = rec.get("title") or ""
 
         # Fireflies: `content` is DEFINED as the sentence concatenation, so the two can never be
@@ -1524,13 +1565,6 @@ class _Loader:
         sentences = None
         if src == "fireflies":
             given = rec.get("sentences")
-            if not given and not (rec.get("content") or "").strip():
-                # Stated here rather than as a schema `anyOf`, whose error ("is not valid under
-                # any of the given schemas") names neither field and so tells the author nothing.
-                raise SystemExit(
-                    f"{where}: a fireflies record needs 'sentences' or "
-                    f"'content' — one of the two IS the transcript"
-                )
             if given:
                 sentences = [
                     {
@@ -1568,7 +1602,7 @@ class _Loader:
         # would keep the earlier document and diverge.
         seen.add((src, doc_id))
         gcol = store.grouping_col(src)
-        container = str(rec.get(gcol) or src)  # channel / mailbox / folder / repo / project / space
+        container = str(rec[gcol])  # channel / mailbox / folder / repo / project / space
         # An explicit `"group": null` means the container owns NO ACL group — which is a real
         # state, not a missing value: a Gmail mailbox has no group scope (a thread is private to
         # its participants), so inferring one from the mailbox name would invent a grantable
@@ -1622,17 +1656,9 @@ class _Loader:
         else:
             grant_types = [("org", org)]
 
-        # structured extras: rec.meta merged with convenience top-level keys
-        extras = dict(rec.get("meta") or {})
-        # A tracker id is read from the field the schema declares it in, and from nowhere
-        # else. `meta` is documented free-form, so seeding `extras` from it let
-        # `meta: {"number": 3}` claim issue 3 in a repository just as a top-level `number`
-        # would — a spelling no schema describes, that shadows a real issue, and that the
-        # uniqueness check below would then refuse an import over. Both ids are ordinary
-        # `meta` content again: carried through, never promoted to the served column. Read from
-        # DEFERRED_ID so a source that gains a stateable id is covered by declaring it there.
-        for reserved in (*DEFERRED_ID.values(), "transcript_id"):
-            extras.pop(reserved, None)
+        # Every per-source field is read from the top level, and each name below is one the schema
+        # declares -- so an unknown key is a validation error rather than a value read and dropped.
+        extras: dict = {}
         for k in (
             "labels",
             "reactions",
@@ -1670,20 +1696,15 @@ class _Loader:
             "requested_reviewers",
             "changed_paths",
             "number",
+            "ref",
             "content_id",
             "record_id",
-            # A transcript's own id and a jira issue's history: both declared by their schema, both
-            # read off `extras` — so without them here the schema's spelling was dropped on the
-            # floor and only the `meta` one worked. For `transcript_id` that also meant the served
-            # id came from a spelling no schema describes, which is what the loop above exists to
-            # prevent.
             "transcript_id",
             "changelog",
             "resolution",
             "resolutiondate",
             "duedate",
             "fix_versions",
-            "versions",
             "assignee",
             "reporter",
             "minor_edit",
@@ -1697,14 +1718,7 @@ class _Loader:
             "size",
             "path",
             "archived",
-            # confluence confidentiality/ownership, drive collaborators, jira severity/squad,
-            # slack participants — the per-service people-and-scope fields
-            "reviewers",
-            "confidentiality",
-            "owner_team",
-            "collaborators",
-            "severity",
-            "squad",
+            # slack participants — the per-service people-and-scope field
             "participants",
             # Linear (its own field names: `state` not status, camelCase timestamps)
             "identifier",
@@ -1742,11 +1756,7 @@ class _Loader:
                 extras[k] = rec[k]
         subtype = rec.get("subtype")
         parent_id = rec.get("parent")
-        # created_ts must never be NULL (the server sorts/filters by it; a NULL would need a
-        # runtime null-check). Fall back to the same deterministic synth.epoch the server would have
-        # synthesized for a missing ts, so the served time is unchanged — just materialized now.
-        created_written = _epoch_field(rec.get("created"), where, "created")
-        created = synth.epoch(doc_id) if created_written is None else created_written
+        created = _epoch_field(rec["created"], where, "created")
         updated = _epoch_field(rec.get("updated"), where, "updated")
 
         replies = rec.get("replies") if src == "slack" else None
@@ -1755,11 +1765,9 @@ class _Loader:
         # taking it as an argument. A root with replies carries its OWN ts (Slack does too, so
         # `thread_ts == ts` is what marks a root); a standalone message carries NULL.
         slack_thread_ts = None
-        # Resolved before the root row is written, because a root whose own clock was
-        # synthesized may be re-grounded on the replies that do carry one.
-        created, reply_seconds = _thread_seconds(
-            where, created, created_written is not None, replies
-        )
+        # Resolved before the root row is written: a thread's seconds are checked against each
+        # other, so a reply out of order is refused before half of it has landed.
+        reply_seconds = _thread_seconds(where, created, replies)
         # gmail's own child-row array. `replies` stays Slack-only (a Slack reply is a *reply*,
         # with reactions and files); a Gmail thread is a sequence of full RFC822 messages, each
         # with its own sender, recipients and Message-ID, so it gets an array that reads like one
@@ -1827,7 +1835,9 @@ class _Loader:
             cols = _service_columns(
                 src, ex or {}, sub, par, did, gmail_thread, seq, org_domain, cts, uts, odisp
             )
-            cols.update(author_email=email or f"unknown@{org_domain}", title=ttl, content=body)
+            cols.update(author_email=email, content=body)
+            if src not in store.TITLELESS:
+                cols["title"] = ttl
             if src == "s3" and cols.get("size") is None:
                 cols["size"] = len((body or "").encode("utf-8"))
             cols[gcol] = container
@@ -1857,7 +1867,27 @@ class _Loader:
             # the same value twice by construction -- and the ones the corpus STATES must not have
             # it, since there the record, not the dataset id, says which document this is.
             repeat = self.keys.get((src, did))
-            if src == "linear" and not cols.get("identifier"):
+            if src == "linear" and cols.get("identifier"):
+                # A provided identifier is a claim on its team's KEY, not just on its own spelling:
+                # real Linear derives an identifier from its team's key, so one issue spelling out
+                # `ENG-7` is the corpus saying this team is ENG -- and its keyless siblings, its
+                # `team { key }`, `team(id: "ENG")` and every filter on a team key all have to
+                # agree with it. Refused here when they cannot (see `_claim_prefix`).
+                self._claim_prefix("linear", cols["identifier"], container, where)
+                # A repeat that now STATES its identifier is no longer a materialized row: the
+                # upsert below writes the corpus's spelling over the stamped one, so leaving it
+                # listed would have the re-stamp pass move an identifier the corpus wrote.
+                self._linear_stamped.pop(did, None)
+                # Taken, so a keyless sibling's probe never lands on it. Identifiers are not
+                # required to be unique corpus-wide (5,055 repeat in one real corpus), so a
+                # provided one that repeats another provided one is left alone; what this stops is
+                # a SYNTHESIZED value shadowing a spelling the corpus wrote, which would leave the
+                # corpus's own issue unreachable at the id its documents cite.
+                self._linear_identifiers.setdefault(_linear_prefix(cols["identifier"]), set()).add(
+                    str(cols["identifier"])
+                )
+                self._linear_provided.add(str(cols["identifier"]))
+            elif src == "linear":
                 # MATERIALIZE the identifier the server would otherwise synthesize per request.
                 # An id that is served has to be resolvable, and every lookup reads a stored
                 # column — so a serve-time-only identifier came back "Entity not found" from
@@ -1869,9 +1899,16 @@ class _Loader:
                 # and two issues sharing `ENG-2686` leaves one of them unreachable at the only
                 # human-facing id it advertises, since `issue(id:)` answers the first. The same
                 # probe shape as confluence's and hubspot's, and for the same reason.
-                cols["identifier"] = self._assign_linear_identifier(
-                    did, synth.linear_team_key(container)
-                )
+                #
+                # Under the team's key so far, which is PROVISIONAL: a provided identifier further
+                # down the file, or in a later shard of the same load, moves the team onto a prefix
+                # this row has not seen yet. `restamp_linear_identifiers` settles the container at
+                # the end of the load, where every one of its rows is visible; the value written
+                # here is what a container that never needs settling keeps, so the common case pays
+                # no second pass.
+                key = self.linear_prefixes.get(container) or synth.linear_team_key(container)
+                cols["identifier"] = self._assign_linear_identifier(did, key)
+                self._linear_stamped[did] = (container, key, cols["identifier"])
             if src in ("gmail", "google_drive", "notion", "linear"):
                 cols["id"] = store.id_seed(src)(did)
             elif src == "slack":
@@ -1916,7 +1953,12 @@ class _Loader:
                 # full, so an --append needs no `number` from the corpus -- and a corpus sharded
                 # so a pull's files arrive after the pull (which this importer's own changeset
                 # report tells authors to do) was otherwise unloadable past the first shard.
-                cols["number"] = self._existing_file_number(container, cols.get("path"))
+                # Keyed on the SNAPSHOT: `ref` when the corpus states one, else this row's own
+                # clock. Two rows at one path are that file's history, and each keeps its own
+                # number.
+                cols["number"] = self._existing_file_number(
+                    container, cols.get("path"), cols.get("ref"), created
+                )
                 file_row = True
             else:
                 file_row = False
@@ -1961,7 +2003,7 @@ class _Loader:
                         )
                     self.tracker_ids[claim] = did
                     if src == "jira":
-                        self._claim_jira_prefix(provided, container, where)
+                        self._claim_prefix("jira", provided, container, where)
                 elif repeat is not None:
                     cols[col] = repeat[-1]  # the same document, named twice
                 else:
@@ -1972,6 +2014,30 @@ class _Loader:
             key = tuple(cols[c] for c in store.id_columns(src))
             claimed_by = self._claimed.get((src, key))
             if claimed_by is not None and claimed_by != did:
+                if file_row:
+                    # A file's own message, because the generic one's advice cannot be followed
+                    # here: `number` is ignored for a file row, so handing this row a different one
+                    # changes nothing, and the number in `key` is an internal provisional that
+                    # names nothing the author wrote. What separates two rows at one path is the
+                    # snapshot they stand for.
+                    # A stated `ref` WINS over `created` in the snapshot key, so telling an author
+                    # with two same-`ref` rows to change a `created` sends them back to this same
+                    # error. The remedy has to name the field that actually decides.
+                    fix = (
+                        "give one of them a different `ref`  (`ref` is what identifies the "
+                        "snapshot once stated, so changing `created` alone will not separate them)"
+                        if cols.get("ref")
+                        else "give one of them its own `created`, or state a `ref` on each"
+                    )
+                    raise SystemExit(
+                        f"{where}: this file row is (repo, path) = "
+                        f"({container!r}, {cols.get('path')!r}) at the same snapshot as "
+                        f"{claimed_by!r} in this corpus. Several rows MAY state one path -- they "
+                        f"are that file's history -- but two of them cannot stand for the same "
+                        f"moment, since neither would be the one the file is served at. A file's "
+                        f"`number` is ignored, so a different number will not separate them: "
+                        f"{fix}."
+                    )
                 raise SystemExit(
                     f"{where}: this row resolves to {store.id_columns(src)} = {key}, which "
                     f"{claimed_by!r} in this corpus already resolves to. Two documents cannot "
@@ -2015,6 +2081,24 @@ class _Loader:
             # `keys` answers "what did the record called `did` resolve to", which is what a
             # cross-reference needs and which can only have one answer. `_pending` is per ROW, so
             # the deferred pass reaches every row even when two records shared a dataset id.
+            #
+            # Two records sharing a dataset id are ONE document, and the sources whose identity is
+            # synthesized enforce that by reusing the first row's key (`repeat`, above) — so they
+            # arrive here twice with the same value, which is fine. Where the corpus STATES the id
+            # the record decides, and two records can leave two rows under one dataset id. Nothing
+            # then says which of them the id means: `resolve` below reads this dict for a linear
+            # parent, a hubspot association or a slack reply's target, and would bind to whichever
+            # row was written last. Refused rather than resolved arbitrarily.
+            prior = self.keys.get((src, did))
+            if prior is not None and prior != key:
+                raise SystemExit(
+                    f"{where}: this record and an earlier one both call themselves "
+                    f"{did!r}, but they resolve to different rows -- "
+                    f"{store.id_columns(src)} = {prior} and {key}. Two records sharing a dataset "
+                    "id are the same document, and a link that names it could only mean one of "
+                    "these. Give them different dataset ids, or (if they are the same document) "
+                    "the same served id."
+                )
             self.keys[(src, did)] = key
             if provisional:
                 self._pending.setdefault(src, []).append((key, did))
@@ -2121,25 +2205,10 @@ class _Loader:
         # that is (repo, number), and the number may still be PROVISIONAL here: the deferred pass
         # rewrites the comment rows alongside the documents they hang off.
         parent_key = self.keys[(src, doc_id)] if rec_comments else None
-        prev_c_ts = created
         for j, c in enumerate(rec_comments, start=1):
             body = c.get("body") or c.get("content")
-            if not body:
-                raise SystemExit(f"{where}: each comment needs 'content'")
             register(c.get("author_email"), c.get("author_name"))
-            # A comment with no explicit time follows the PREVIOUS comment, not the doc's clock
-            # plus its position. The reason:
-            # in a thread that mixes dated and undated comments, `created + j` lands an undated one
-            # back at the document's creation time and any consumer ordering by createdAt (Linear's
-            # `Issue.comments` does) serves the thread inverted. Monotonic, so it cannot. For an
-            # all-undated thread this is exactly `created + j`, as before. Never a hash of the
-            # comment's own id, which would scatter one thread across two years.
-            c_ts = _epoch_field(c.get("created_ts"), f"{where}: comment {j}", "created_ts")
-            # `is None`, not truthiness: 1970-01-01T00:00:00Z parses to 0, and taking the default
-            # for it stores a time nobody wrote — the confusion `_epoch_field` exists to prevent.
-            if c_ts is None:
-                c_ts = prev_c_ts + 1
-            prev_c_ts = max(prev_c_ts, c_ts)
+            c_ts = _epoch_field(c["created_ts"], f"{where}: comment {j}", "created_ts")
             # The corpus's own comment id is a SEED, never stored. For github it seeds the
             # id the API reports, assigned here and probed for uniqueness — a comment's `url`
             # resolves through it, so two comments sharing one means one comment's url returns the
@@ -2178,9 +2247,7 @@ class _Loader:
                 )
 
         for i, rep in enumerate(replies or [], start=1):
-            if not rep.get("content"):
-                raise SystemExit(f"{where}: each reply needs 'content'")
-            rep_author = rep.get("author_email") or author
+            rep_author = rep["author_email"]
             register(rep_author, rep.get("author_name"))
             rep_id = rep.get("doc_id") or (
                 "dsid_"
@@ -2206,20 +2273,13 @@ class _Loader:
         # To/Cc, Message-ID, body — sharing the root's thread_id and ACL and carrying its position
         # in `thread_seq`, which is what `users.messages.list` / `users.threads.get` page over.
         for i, msg in enumerate(messages or [], start=1):
-            # The key is required, its value may be EMPTY: 2.3% of real thread messages are
-            # headers with no body (an auto-ack, a bare forward), and dropping those would drop
-            # messages from the middle of a thread and renumber the rest.
-            if "content" not in msg:
-                raise SystemExit(f"{where}: each gmail message needs 'content'")
-            # No fallback to the ROOT's author, unlike a slack reply: a thread's messages have
-            # different senders by definition, so attributing an unattributed one to whoever
-            # opened the thread would invent a sender. It falls through to `unknown@<org_domain>`.
+            # A message states its own sender, and no fallback to the ROOT's author stands behind
+            # it: a thread's messages have different senders by definition, so attributing one to
+            # whoever opened the thread would invent a sender.
             m_author = msg.get("author_email")
             register(m_author, msg.get("author_name"))
             msg_id = msg.get("doc_id") or f"{doc_id}::m{i}"
             seen.add((src, msg_id))
-            # Its own `created` when given, else the root's clock + an hour per position — the
-            # spread a real reply chain has, and never NULL.
             insert(
                 msg_id,
                 m_author,
@@ -2229,10 +2289,7 @@ class _Loader:
                 # `thread` is forced to the ROOT's thread: a child must never open a thread of
                 # its own, or `users.threads.get` would return a one-message thread.
                 ex={**msg, "thread": gmail_thread},
-                cts=_message_second(
-                    _epoch_field(msg.get("created"), f"{where}: message {i}", "created"),
-                    created + i * 3600,
-                ),
+                cts=_epoch_field(msg["created"], f"{where}: message {i}", "created"),
             )
 
         # Children are written under sequence ids (`::c{j}`, `::s{j}`, `thread_seq`), so a version
@@ -2283,6 +2340,75 @@ class _Loader:
                     conn.execute(f"DELETE FROM {store.acl_table(src)} WHERE {where_key}", k)
                 store.fts_add_docs(conn, src, stale)  # delete-then-reinsert: the row is gone
 
+    def _linear_team_key(self, container: str) -> str:
+        """The key this team's identifiers are prefixed with: the one its own corpus spelled out
+        (this run or a stored earlier one), else the derivation from its name."""
+        return self.linear_prefixes.get(container) or synth.linear_team_key(container)
+
+    def restamp_linear_identifiers(self) -> None:
+        """Re-stamp the identifiers this run materialized under the key their team ENDED UP with.
+
+        A keyless issue is stamped the moment its record lands, and the team's key is only what the
+        corpus has spelled out SO FAR at that point: a provided `PP-3` further down the file moves
+        the team onto PP and leaves every row stamped before it under the name-derived `ENG`, so one
+        team serves two prefixes at once. This pass runs once every record has been read, which is
+        the first moment a container's key is a fact rather than a guess.
+
+        Every materialized row of an affected container is reassigned, not only the ones carrying
+        the superseded prefix, and in dataset-id order rather than arrival order. Stamping in the
+        record loop can only use the prefix known so far, so the two halves of a container would
+        otherwise be numbered under different rules and the identifier a keyless row ends up with
+        would depend on which side of the provided line it sat on. Reassigned over the whole
+        container at once, it is a function of the row set alone.
+
+        The pass also settles the other way a stamp can go wrong, which needs no re-keying at all:
+        a keyless row can be stamped with a spelling a LATER record states outright, and the probe
+        that placed it had no way to know. The stamped row gives it up here, so the issue the corpus
+        wrote `ENG-8774` for is the one `issue(id: "ENG-8774")` answers with.
+
+        A PROVIDED identifier is the corpus's own spelling and never moves. Neither does anything an
+        earlier run wrote: `seed_tracker_ids` reads that run's decision back off
+        `linear_teams.served_key`, so a team whose stored rows are `ENG-…` is already on ENG before
+        this run's first record, and an identifier that disagrees with it is refused rather than
+        re-stamped (see `_claim_prefix`)."""
+        stale = {
+            container
+            for container, key, _ in self._linear_stamped.values()
+            if key != self._linear_team_key(container)
+        }
+        # Two reasons a stamped identifier moves. Its team's key changed, in which case the
+        # container's WHOLE set is reassigned (see above); or the corpus itself states that exact
+        # spelling somewhere, in which case only this row moves and the provided one stays put.
+        movable = sorted(
+            (did, container, key, identifier)
+            for did, (container, key, identifier) in self._linear_stamped.items()
+            if container in stale or identifier in self._linear_provided
+        )
+        if not movable:
+            return  # every container was stamped under the key it ended up with, and none clashed
+        # Freed FIRST, all of them, so a row can take a spelling another moving row is vacating:
+        # numbers are per prefix and a container's whole set moves at once, so without this the
+        # probe would walk around values nothing will hold by the time the pass returns. A spelling
+        # the corpus PROVIDED is not freed — that is the row that keeps it, and the walk has to see
+        # it as taken.
+        for _, _, key, identifier in movable:
+            if identifier not in self._linear_provided:
+                self._linear_identifiers.get(key, set()).discard(identifier)
+        for did, container, _, _ in movable:
+            key = self._linear_team_key(container)
+            identifier = self._assign_linear_identifier(did, key)
+            self._linear_stamped[did] = (container, key, identifier)
+            # By the row's own primary key, taken from `keys` rather than re-derived: it is what
+            # the row actually landed under, including for two records that shared a dataset id.
+            written = self.keys.get(("linear", did))
+            if written is None:
+                continue  # the row was never written
+            self.conn.execute(
+                f"UPDATE {store.table('linear')} SET identifier = ? "
+                f"WHERE {store.id_column('linear')} = ?",
+                (identifier, written[-1]),
+            )
+
     def write_containers(self) -> None:
         """The per-service grouping rows (``slack_channels``, ``linear_teams``, ``gdrive_folders``,
         …). Deferred to the end of a load rather than written per record: a container's owning
@@ -2297,7 +2423,13 @@ class _Loader:
         It must still fail LOUDLY if one happens, which is why the upsert below is keyed explicitly
         on ``team`` rather than being a blanket ``INSERT OR REPLACE`` -- that would resolve a
         ``served_id`` collision by silently deleting the other team's row. ``served_key`` needs no
-        such guard; it is not unique to begin with (see ``linear_team_by_served_key``)."""
+        such guard; it is not unique to begin with (see ``linear_team_by_served_key``).
+
+        ``served_key`` is the team's SETTLED key, not the derivation: a team whose issues spell a
+        prefix out is served under that prefix everywhere, and this column is where every serving
+        surface reads it from (``store.linear_team_keys``). It is also what the next
+        ``--append`` seeds its prefix maps from, which is the only record of what this run decided
+        -- an identifier cannot say whether its prefix was the corpus's or this mock's."""
         for (src, name), group_id in self.containers.items():
             gtable, gcol = store.GROUPING[src]
             if src == "linear":
@@ -2306,7 +2438,7 @@ class _Loader:
                     f"VALUES (?,?,?,?) ON CONFLICT({gcol}) DO UPDATE SET "
                     "group_id=excluded.group_id, served_id=excluded.served_id, "
                     "served_key=excluded.served_key",
-                    (name, group_id, synth.linear_team_id(name), synth.linear_team_key(name)),
+                    (name, group_id, synth.linear_team_id(name), self._linear_team_key(name)),
                 )
             elif src == "jira":
                 # The project's own key -- the prefix its issue keys carry. `resolve_jira_keys`
@@ -2728,8 +2860,79 @@ class _Loader:
                 )
 
 
+def _check_id_map_destination(path: Path) -> None:
+    """Fail on a destination the manifest cannot be written to, BEFORE the load starts.
+
+    A typo in an output path should cost nothing, not a full import — and the write itself happens
+    after the load commits (see :func:`load_records`), where raising would leave a corpus loaded and
+    the command dead. So the path is opened for append here, which reports the directory or the
+    permission that a later write would have hit.
+
+    Opening for append is also the only way to learn that an EXISTING file cannot be written, which
+    probing the parent directory would miss. The cost is that it creates the file when there was
+    none, so a load that fails afterwards would leave a 0-byte manifest behind — the empty file the
+    ``--dry-run`` refusal exists to prevent. Hence the unlink: one this call created is removed
+    again, and the real write in :func:`load_records` creates it. A file that was already there is
+    left alone, stale contents and all, because it is not this function's to delete.
+    """
+    existed = path.exists()
+    try:
+        with path.open("a"):
+            pass
+    except OSError as e:
+        raise SystemExit(f"--id-map {path}: {e.strerror}")
+    if not existed:
+        path.unlink(missing_ok=True)
+
+
+def _id_map_manifest(loader, conn) -> str:
+    """Build the ``--id-map`` manifest: what this run served each dataset id under.
+
+    A dataset id is a seed, never stored, so once the import ends nothing in the DB can say which
+    record produced which row. Corpus-side tooling that checks documents by id (an ACL audit, a
+    pass that rewrites prose to cite served ids) needs that join, and this file carries it.
+
+    ``documents`` comes from ``loader.keys``, the run's own record of what it wrote each document
+    under, settled through the deferred passes — never re-derived, so it cannot disagree with the
+    row. It covers THIS run only: an ``--append`` emits the appended documents, and a sharded
+    corpus concatenates one manifest per shard. ``containers`` is the current DB state instead
+    (container ids are pure functions of their names, identical across runs): read back from the
+    tables where the import stored them (linear, jira), or spelled by the same ``synth`` call the
+    router serves them with (slack, drive, confluence). Space/project NUMERIC ids are serve-time
+    spellings of the routers and are deliberately absent.
+    """
+    documents: dict[str, dict] = {}
+    for (src, did), written in sorted(loader.keys.items()):
+        key = loader._settled(src, written)
+        documents.setdefault(src, {})[did] = dict(zip(store.id_columns(src), key))
+    containers: dict[str, dict] = {}
+    for team, sid, skey in conn.execute("SELECT team, served_id, served_key FROM linear_teams"):
+        containers.setdefault("linear", {})[team] = {"id": sid, "key": skey}
+    for project, key in conn.execute("SELECT project, key FROM jira_projects"):
+        containers.setdefault("jira", {})[project] = {"key": key}
+    for (channel,) in conn.execute("SELECT channel FROM slack_channels"):
+        containers.setdefault("slack", {})[channel] = {"id": synth.slack_channel_id(channel)}
+    for (folder,) in conn.execute("SELECT folder FROM gdrive_folders"):
+        containers.setdefault("google_drive", {})[folder] = {"id": synth.drive_folder_id(folder)}
+    for (space,) in conn.execute("SELECT space FROM confluence_spaces"):
+        containers.setdefault("confluence", {})[space] = {"key": synth.confluence_space_key(space)}
+    return (
+        json.dumps(
+            {"format": "backlot-id-map/1", "documents": documents, "containers": containers},
+            ensure_ascii=False,
+            indent=1,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
 def load(
-    path: Path, settings: Settings | None = None, reset: bool = True, roster: Path | None = None
+    path: Path,
+    settings: Settings | None = None,
+    reset: bool = True,
+    roster: Path | None = None,
+    id_map: Path | None = None,
 ) -> dict:
     """Load a BYO-JSONL corpus — a file, a ``.jsonl.gz``, or a sharded directory — into the DB."""
 
@@ -2743,7 +2946,7 @@ def load(
             except json.JSONDecodeError as e:
                 raise SystemExit(f"line {lineno}: invalid JSON: {e}")
 
-    return load_records(_from_file, settings, reset, roster)
+    return load_records(_from_file, settings, reset, roster, id_map=id_map)
 
 
 def load_records(
@@ -2751,7 +2954,7 @@ def load_records(
     settings: Settings | None = None,
     reset: bool = True,
     roster: Path | None = None,
-    validate: bool = True,
+    id_map: Path | None = None,
 ) -> dict:
     """Load already-parsed BYO records into the DB, leaving the previous one in place if it fails.
 
@@ -2761,13 +2964,17 @@ def load_records(
     rather than a copy. An --append is already all-or-nothing (one commit for the whole import).
     """
     settings = settings or get_settings()
+    if id_map is not None:
+        _check_id_map_destination(Path(id_map))
     salvage = None
     if reset and settings.db_path.exists():
         salvage = settings.db_path.with_name(settings.db_path.name + ".replaced")
         salvage.unlink(missing_ok=True)
         settings.db_path.rename(salvage)
     try:
-        result = _load_records(records_factory, settings, reset, roster, validate)
+        result, manifest = _load_records(
+            records_factory, settings, reset, roster, id_map is not None
+        )
     except BaseException:
         if salvage is not None:
             settings.db_path.unlink(missing_ok=True)
@@ -2775,6 +2982,13 @@ def load_records(
         raise
     if salvage is not None:
         salvage.unlink(missing_ok=True)
+    # OUTSIDE the salvage-protected region on purpose. The manifest is written after the load is
+    # committed and its tokens.yaml is on disk, so a destination that fails at the last moment
+    # cannot roll the DB back to a corpus the tokens no longer describe — and cannot throw away a
+    # completed import over an output path. Under --append there is no salvage to restore at all,
+    # so a raise in there left the rows in place and the command dead, and a re-run appended twice.
+    if manifest is not None:
+        Path(id_map).write_text(manifest)
     return result
 
 
@@ -2783,16 +2997,17 @@ def _load_records(
     settings: Settings,
     reset: bool,
     roster: Path | None,
-    validate: bool,
-) -> dict:
+    want_id_map: bool = False,
+) -> tuple[dict, str | None]:
     """The load itself. See :func:`load_records`, which is this plus the replace-safely dance.
 
     ``records_factory`` returns a FRESH iterator of ``(where, record)`` pairs and may be called
     twice — the org has to be inferred from every author's address before the first grant is
     written, so a corpus is re-read rather than held in memory. ``where`` names the record in an
-    error message. ``validate=False`` skips the JSON Schema check, and is only for records an
-    importer in this repo generated itself; a corpus from OUTSIDE always validates, which is why
-    ``load`` does not expose the flag.
+    error message. Every record is validated against its schema, whichever importer produced it: a
+    generator in this repo is no likelier to satisfy the contract than a hand-written corpus, and a
+    bug there should name the record rather than surface as a constraint violation three layers
+    down.
     """
     conn = store.connect_rw(settings.db_path)
 
@@ -2841,13 +3056,19 @@ def _load_records(
             org_name = row[0]
     org = org_name
 
-    loader = _Loader(conn, org, org_domain, closed=closed, validate=validate)
+    loader = _Loader(conn, org, org_domain, closed=closed)
     if not reset:
         loader.seed_tracker_ids()
     source_docs = 0
     for lineno, rec in records_factory():
         source_docs += 1
         loader.add(rec, f"line {lineno}")
+    # First, and before `resolve_cross_references` in particular: a linear team's key is settled by
+    # the identifiers its own issues provided, and the rows stamped under a superseded prefix are
+    # re-numbered here (see restamp_linear_identifiers). A linear `parent` names its target by
+    # IDENTIFIER and is resolved against the stored column, so re-stamping after that resolution
+    # would leave those links pointing at spellings no row answers to any more.
+    loader.restamp_linear_identifiers()
     # Order matters. The two deferred passes settle every provisional key FIRST, so that
     # everything downstream — the jira parent links, the cross-reference targets, the ACL grants
     # and the FTS ids, all of which name a document by the dataset id it came in under — resolves
@@ -2963,6 +3184,9 @@ def _load_records(
     # it — see the docstring). On append the prior value already reflects earlier loads.
     prior = 0 if reset else int(store.read_meta(conn, "source_documents") or 0)
     store.write_meta(conn, "source_documents", prior + source_docs)
+    # Built while the loader and the connection are still alive; WRITTEN by `load_records`, once
+    # the load can no longer be rolled back.
+    manifest = _id_map_manifest(loader, conn) if want_id_map else None
     conn.close()
     return {
         "counts": counts,
@@ -2971,11 +3195,16 @@ def _load_records(
         "org": org_name,
         "org_domain": org_domain,
         "total": sum(counts.values()),
-    }
+    }, manifest
 
 
 def run(
-    corpus: Path, *, append: bool = False, dry_run: bool = False, roster: Path | None = None
+    corpus: Path,
+    *,
+    append: bool = False,
+    dry_run: bool = False,
+    roster: Path | None = None,
+    id_map: Path | None = None,
 ) -> int:
     """Load ``corpus`` into the mock DB (or, with ``dry_run``, only validate it).
 
@@ -2984,6 +3213,13 @@ def run(
     arguments, so there is no second place for a default to drift.
     """
     corpus = Path(corpus)
+
+    if dry_run and id_map is not None:
+        # The map records ids an import ASSIGNED; a validation pass assigns none, so an empty or
+        # stale file would be worse than the refusal. A command line never gets this far -- `cli`
+        # rejects the pair as the parameter conflict it is, with usage and an exit 2 -- so this is
+        # the guard for a caller that reaches `run` directly.
+        raise SystemExit("--id-map records the ids an import assigns; --dry-run assigns none")
 
     if dry_run:
         # A sharded artifact is checked against its manifest first: a truncated download is a
@@ -3052,8 +3288,10 @@ def run(
     if roster is None and corpus.is_dir() and (corpus / "roster.yaml").exists():
         roster = corpus / "roster.yaml"
         print(f"using the artifact's own roster: {roster}", file=sys.stderr)
-    res = load(corpus, settings, reset=not append, roster=roster)
+    res = load(corpus, settings, reset=not append, roster=roster, id_map=id_map)
     print(f"Loaded {res['total']} documents into {settings.db_path}")
+    if id_map is not None:
+        print(f"Id map written to {id_map}")
     for src, n in sorted(res["counts"].items()):
         print(f"  {src:14s} {n}")
     print(f"Principals: {res['users']} users, {res['groups']} groups")

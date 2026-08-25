@@ -386,6 +386,11 @@ def test_jira_status_category_and_fields(tmp_path):
     assert f["status"]["statusCategory"]["key"] == "indeterminate"
     assert f["assignee"]["emailAddress"] == "a@x.com"
     assert f["reporter"]["emailAddress"] == "b@x.com"
+    # `reporter` is optional, as it is in Jira -- "not required by default, and users can leave it
+    # empty" -- and an issue stating none reports its author, which is what makes the field
+    # optional rather than missing.
+    d = _jira_issue(conn, bare_request(), _jira_row(conn, "D"))["fields"]
+    assert d["reporter"]["emailAddress"] == "ava@acme.com"
     assert f["resolution"]["name"] == "Done" and f["resolutiondate"].startswith("2026-03-01")
     assert f["duedate"] == "2026-04-01" and f["fixVersions"][0]["name"] == "1.2.0"
     # richer actor object

@@ -14,10 +14,11 @@ and is then discarded, so there is no ``doc_id`` column anywhere and no map from
 PRIMARY KEY is that served id — see :data:`ID_COLUMNS`, which also names it, since the column is
 spelled the way its vendor spells it (``number``, ``key``, ``ts``, otherwise ``id``).
 
-Every doc table carries the same three core columns (``author_email, title, content``) after its
-identifier and its grouping column, which is what keeps listing / ACL / pagination uniform via the
-``GROUPING`` registry. Every listing takes ``visible_ids``: ``None`` = admin, otherwise results
-are filtered to docs whose ACL grants intersect it. JSON columns are TEXT — read with :func:`jcol`.
+Every doc table carries ``author_email`` and ``content`` after its identifier and its grouping
+column, plus ``title`` on the ten sources whose documents have one (see ``TITLELESS``), which is
+what keeps listing / ACL / pagination uniform via the ``GROUPING`` registry. Every listing takes
+``visible_ids``: ``None`` = admin, otherwise results are filtered to docs whose ACL grants intersect
+it. JSON columns are TEXT — read with :func:`jcol`.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from backlot import synth
@@ -142,6 +143,34 @@ def grouping_table(source_type: str) -> str:
 
 def grouping_col(source_type: str) -> str:
     return GROUPING[source_type][1]
+
+
+def mailbox_for(conn, email: str) -> str:
+    """The value the corpus spelled this address's Gmail mailbox as.
+
+    A mailbox is the one container a client never names: every other source takes its container
+    from the request path, while ``users/me/messages`` derives it from the caller's own address.
+    A corpus is free to state that mailbox as the address, as its local part, or as a slug of
+    either, so the address is resolved against the mailboxes the corpus DID state instead of
+    assuming one spelling. Falls back to the underscore slug — the spelling a name-derived
+    mailbox takes — so an address the corpus holds no mailbox for still scopes to nothing.
+    """
+    local = email.split("@")[0].lower()
+    candidates = [
+        email.lower(),
+        re.sub(r"[^a-z0-9]+", "_", local).strip("_"),
+        re.sub(r"[^a-z0-9]+", "-", local).strip("-"),
+        local,
+    ]
+    stated = {
+        row[0].lower(): row[0]
+        for row in conn.execute(
+            f"SELECT mailbox FROM gmail_mailboxes WHERE lower(mailbox) IN "
+            f"({','.join('?' * len(candidates))})",
+            candidates,
+        )
+    }
+    return next((stated[c] for c in candidates if c in stated), candidates[1])
 
 
 # source_type -> the column(s) a row is ADDRESSED by after import: its PRIMARY KEY, the key its
@@ -276,7 +305,7 @@ SCHEMA = """
 -- standalone message carries NULL.
 CREATE TABLE IF NOT EXISTS slack_messages (
     channel TEXT NOT NULL, ts TEXT NOT NULL, author_email TEXT NOT NULL,
-    title TEXT NOT NULL, content TEXT NOT NULL,
+    content TEXT NOT NULL,
     thread_ts TEXT, thread_seq INTEGER NOT NULL DEFAULT 0, subtype TEXT,
     reactions TEXT, files TEXT, edited TEXT, created_ts INTEGER NOT NULL, participants TEXT,
     PRIMARY KEY (channel, ts)
@@ -333,7 +362,7 @@ CREATE TABLE IF NOT EXISTS gdrive_files (
     id TEXT PRIMARY KEY, folder TEXT NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, mime_type TEXT, parents TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
-    trashed INTEGER, collaborators TEXT, owner_display TEXT
+    trashed INTEGER, owner_display TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_gdrive_folder ON gdrive_files(folder);
 DROP INDEX IF EXISTS idx_gdrive_served;
@@ -369,7 +398,7 @@ CREATE TABLE IF NOT EXISTS github_items (
     merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, reactions TEXT,
     created_ts INTEGER NOT NULL, updated_ts INTEGER,
     closed_ts INTEGER, closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT,
-    owner_display TEXT, path TEXT, changed_paths TEXT,
+    owner_display TEXT, path TEXT, changed_paths TEXT, ref TEXT,
     PRIMARY KEY (repo, number)
 );
 -- No `idx_github_repo`: the PRIMARY KEY leads with `repo`, so a per-repo scan already seeks.
@@ -377,6 +406,20 @@ DROP INDEX IF EXISTS idx_github_repo;
 -- A file is addressed by (repo, path) even though it is keyed by (repo, number) — this is the
 -- index that lookup rides, and it is what makes the number a purely internal handle for a file.
 CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path);
+-- Several rows MAY state one (repo, path): they are that file's snapshots, and each is a document
+-- in its own right with its own ACL. What must be unique is (repo, path, snapshot) — otherwise two
+-- documents are the same file at the same moment and no order makes one of them the served one.
+--
+-- COALESCE, not a plain (repo, path, ref): SQLite treats NULLs in a UNIQUE index as DISTINCT, so a
+-- three-column index over a nullable `ref` enforces nothing for exactly the rows that omit it —
+-- which is every row in a corpus that does not use refs. `created_ts` is the fallback because it is
+-- NOT NULL on every row and is stable across re-imports (the importer fills it from the corpus, or
+-- from synth.epoch of the dataset id), so it makes the key total without asking a corpus for a
+-- field it may have no use for. The cost is that with `ref` omitted a file's identity is
+-- time-dependent: re-importing the same content under a NEW `created` adds a snapshot rather than
+-- replacing one, which is the same "no update path" the stated ids already have.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_github_file_snapshot
+    ON github_items(repo, path, COALESCE(ref, created_ts)) WHERE kind = 'file';
 -- Superseded: the assignment pass reads (repo, number, kind), which the PRIMARY KEY's own index
 -- covers apart from `kind`. Dropped EXPLICITLY, since `IF NOT EXISTS` matches only on name.
 DROP INDEX IF EXISTS idx_github_doc_number;
@@ -406,7 +449,7 @@ CREATE TABLE IF NOT EXISTS jira_issues (
     status TEXT, issuetype TEXT, priority TEXT, labels TEXT, components TEXT,
     issuelinks TEXT, parent_id TEXT, changelog TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     assignee_email TEXT, reporter_email TEXT, resolution TEXT, resolution_ts INTEGER,
-    duedate TEXT, fix_versions TEXT, severity TEXT, squad TEXT, owner_display TEXT
+    duedate TEXT, fix_versions TEXT, owner_display TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_jira_project ON jira_issues(project);
 CREATE INDEX IF NOT EXISTS idx_jira_parent ON jira_issues(parent_id);
@@ -435,7 +478,7 @@ CREATE TABLE IF NOT EXISTS confluence_pages (
     title TEXT NOT NULL, content TEXT NOT NULL,
     subtype TEXT, parent_id INT, labels TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER,
     version_number INTEGER, version_message TEXT, minor_edit INTEGER,
-    reviewers TEXT, confidentiality TEXT, owner_team TEXT, owner_display TEXT,
+    owner_display TEXT,
     PRIMARY KEY (id)
 );
 CREATE INDEX IF NOT EXISTS idx_confluence_space ON confluence_pages(space);
@@ -826,61 +869,8 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # live server is reading rides through the reader's lock instead of a spurious "locked".
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
-    refuse_pre_served_db(conn, path)
     conn.executescript(SCHEMA)
     return conn
-
-
-def refuse_pre_served_db(conn: sqlite3.Connection, path) -> None:
-    """Raise unless this DB is keyed the way :data:`ID_COLUMNS` says, naming what is wrong with it.
-
-    Two shapes, neither migratable, and the reason is the same for both: a served id is assigned at
-    import from the WHOLE corpus, so it cannot be backfilled onto rows stored under the dataset's
-    own identifiers. Run by every opener — a writer before it appends, a reader before it serves —
-    because the alternatives are worse than a refusal. Appending produced grants nothing reads;
-    SERVING produced a boot that looks healthy and then answers `no such column` on a listing and
-    a false 404 on a fetch, with the one sentence the operator needs ("re-import the corpus")
-    nowhere in it.
-    """
-    # A DB built before this branch has one shared `doc_acl` table, keyed corpus-wide by `doc_id`
-    # rather than a table per source. An append onto it would write the new source's grants into
-    # the per-source tables SCHEMA creates below while every pre-existing grant stays behind in
-    # `doc_acl`, which nothing reads -- every document from before the append silently
-    # becomes invisible to every scoped token. There is deliberately no backfill here: `doc_acl`
-    # has no source column, so it cannot say which source a colliding `doc_id`'s grant belonged
-    # to, and copying its rows into the per-source tables blind would silently re-create exactly
-    # the cross-source union this branch was written to remove (see the `ACL_TABLE` comment
-    # above). The only correct move is a fresh re-import.
-    if conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'doc_acl'"
-    ).fetchone():
-        raise ValueError(
-            f"{path} predates per-source ACL tables (it still has a `doc_acl` table) -- "
-            "re-import this corpus from scratch instead of appending to it; the old grants "
-            "cannot be safely migrated"
-        )
-    # Same shape as the doc_acl check above: a DB keyed on the dataset's own `doc_id` cannot be
-    # migrated, because the served ids were never stored on those rows and the assignment that
-    # would produce them depends on the whole corpus (a probed source's id is a function of every
-    # other row's), not on any one row that could be rewritten in place. Refused, not healed.
-    #
-    # `CREATE TABLE IF NOT EXISTS` would not alter the old table at all, and `CREATE INDEX IF NOT
-    # EXISTS` guards only the INDEX's NAME -- so without this check the failure surfaces as a bare
-    # `no such column: id` naming whichever table comes first in SCHEMA's text, explaining nothing.
-    stale = sorted(
-        t
-        for (t,) in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-        )
-        if any(c["name"] == "doc_id" for c in conn.execute(f"PRAGMA table_info({t})"))
-    )
-    if stale:
-        raise ValueError(
-            f"{path} predates the served-id primary keys (it still has a `doc_id` column on "
-            f"{', '.join(stale)}) -- re-import this corpus from scratch instead of appending to "
-            "it; a row's served id is assigned at import from the whole corpus, so it cannot be "
-            "backfilled onto rows that were stored under the dataset's own identifiers"
-        )
 
 
 def write_meta(conn: sqlite3.Connection, key: str, value) -> None:
@@ -894,17 +884,8 @@ def write_meta(conn: sqlite3.Connection, key: str, value) -> None:
 
 
 def read_meta(conn: sqlite3.Connection, key: str) -> str | None:
-    """A build-time fact, or None when absent — including on a DB built before the meta table
-    existed. Only a missing-table error is swallowed; other OperationalErrors (e.g. database
-    locked) must surface, not masquerade as absent metadata."""
-    try:
-        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    except sqlite3.OperationalError as e:
-        # Only "no such table" means the meta table doesn't exist. A different OperationalError
-        # (e.g. "database is locked") must surface, not masquerade as metadata absence.
-        if "no such table" not in str(e).lower():
-            raise
-        return None
+    """A build-time fact, or None when this import did not write that key."""
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row[0] if row else None
 
 
@@ -921,7 +902,6 @@ def connect_ro(
     """
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    refuse_pre_served_db(conn, path)
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
     if cache_mb:
@@ -1172,12 +1152,19 @@ def list_hubspot_objects(
     rather than an OFFSET and needs no translation on the way in. ``archived`` splits the two views
     the API exposes.
 
+    ``object_type`` may be several spellings of ONE type — HubSpot answers a standard object under
+    its singular as well as its plural, and a corpus states whichever it likes, so the listing
+    covers every spelling rather than the one the caller happened to type.
+
     ``prefilter`` is a ``(sql_fragment, params)`` the caller has established as a *necessary*
     condition, so pushing it down can only remove rows that would have been rejected anyway.
     ``columns`` narrows the projection: search walks the whole object type to report an honest
     ``total``, and ``content`` (a note's body) dominates that scan if it is read needlessly."""
-    sql = f"SELECT {columns} FROM hubspot_objects WHERE object_type = ?"
-    params: list = [object_type]
+    types = [object_type] if isinstance(object_type, str) else list(object_type)
+    sql = (
+        f"SELECT {columns} FROM hubspot_objects WHERE object_type IN ({','.join('?' * len(types))})"
+    )
+    params: list = list(types)
     if prefilter:
         frag, fparams = prefilter
         sql += f" AND {frag}"
@@ -1733,6 +1720,12 @@ def gdrive_by_id(conn, file_id, visible_ids=None) -> sqlite3.Row | None:
     ).fetchone()
 
 
+# A Gmail thread is listed once, under its root. ``thread_id`` holds the ROOT'S OWN served id (see
+# the google router's ``_gmail_ids``), so a root is the row that is its own thread — or states no
+# thread at all, which a lone message does.
+_GMAIL_ROOT = " AND (thread_id IS NULL OR thread_id = id)"
+
+
 def count_documents(
     conn,
     source_type,
@@ -1741,11 +1734,13 @@ def count_documents(
     author_email=None,
     state=None,
     exclude_trashed=False,
+    roots_only=False,
 ) -> int:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
-    # exclude_trashed, which only gdrive_files has a column for. It has to track
-    # list_documents': a count that includes rows the listing drops makes nextPageToken lie.
+    # exclude_trashed, which only gdrive_files has a column for, and roots_only, which counts
+    # gmail THREADS rather than messages. It has to track list_documents': a count that includes
+    # rows the listing drops makes nextPageToken lie.
     tbl = table(source_type)
     sql = f"SELECT COUNT(*) FROM {tbl} WHERE 1=1"
     params: list = []
@@ -1755,6 +1750,8 @@ def count_documents(
         params.append(state)
     if exclude_trashed:
         sql += " AND COALESCE(trashed, 0) = 0"
+    if roots_only:
+        sql += _GMAIL_ROOT
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += clause
     params += cparams
@@ -1802,6 +1799,7 @@ def _fireflies_where(
     host_email=None,
     organizers=None,
     participants=None,
+    title=None,
     from_ts=None,
     to_ts=None,
     keyword=None,
@@ -1831,6 +1829,20 @@ def _fireflies_where(
             "WHERE lower(json_each.value) = ?)"
         )
         params.append(email.lower())
+    if title:
+        # `transcripts(title:)` matches a case-insensitive SUBSTRING, which the live API
+        # demonstrates: "tes" and "TEST" both return the meeting titled "test". Distinct from
+        # `keyword`, which `scope` can point at sentences.
+        #
+        # LIKE and nothing around it, the same expression list_gdrive_files_by_name documents:
+        # SQLite folds ASCII case here and SQLite's own `lower()` folds no more, so wrapping both
+        # sides in it is a measured no-op. A cased non-ASCII letter therefore matches
+        # case-sensitively; the SDL says so rather than leaving a client to find out. Folding it
+        # too would mean a Python callback per row, which is 40% on the content scan `keyword`
+        # runs, for one title in the 10,173-transcript bench corpus — and that one matches either
+        # way.
+        sql += " AND title LIKE ? ESCAPE '\\'"
+        params.append(f"%{_like_escape(title)}%")
     if from_ts is not None:
         sql += " AND created_ts >= ?"
         params.append(from_ts)
@@ -1852,6 +1864,7 @@ def list_fireflies_transcripts(
     host_email=None,
     organizers=None,
     participants=None,
+    title=None,
     from_ts=None,
     to_ts=None,
     keyword=None,
@@ -1871,6 +1884,7 @@ def list_fireflies_transcripts(
         host_email=host_email,
         organizers=organizers,
         participants=participants,
+        title=title,
         from_ts=from_ts,
         to_ts=to_ts,
         keyword=keyword,
@@ -1895,6 +1909,64 @@ def fireflies_transcript_by_id(conn, transcript_id, visible_ids=None) -> sqlite3
     sql = "SELECT * FROM fireflies_transcripts WHERE id = ?"
     clause, cparams = _acl_clause("fireflies", visible_ids=visible_ids)
     return conn.execute(sql + clause, [transcript_id] + cparams).fetchone()
+
+
+def fireflies_speakers(conn, transcript_ids) -> dict[str, list[sqlite3.Row]]:
+    """The numbered speakers of each transcript, as ``{transcript_id: [row, ...]}`` in number
+    order — each row carrying ``speaker_id`` and ``speaker_name``.
+
+    Fireflies numbers speakers WITHIN a meeting and reports that number on both `Sentence` and
+    `AnalyticsSpeaker`, so the roster comes from the rows that already state it rather than from a
+    position in the analytics JSON, which carries no number of its own.
+
+    One entry per NUMBER, which is what Fireflies assigns: two runs diarization gave no label are
+    two speakers, and keying the roster on the name instead would collapse them into one and leave
+    `Sentence.speaker_id` naming a speaker the roster does not list. Where one number does carry
+    several labels, the first the transcript uses is served — with exactly one ``min()`` aggregate,
+    SQLite takes the bare ``speaker_name`` from the row that minimum came from.
+
+    Batched over a page of ids: `Transcript.speakers` and `analytics.speakers` are resolved per
+    transcript, so a per-transcript read is one statement per row of the page and two when both
+    fields are selected. Every requested id gets an entry, so a transcript whose sentences carry no
+    number reads as an empty roster rather than as a missing key.
+    """
+    ids = list(transcript_ids)
+    out: dict[str, list[sqlite3.Row]] = {t: [] for t in ids}
+    if not ids:
+        return out
+    marks = ", ".join("?" for _ in ids)
+    # Seeks each transcript over idx_fireflies_sentences_doc rather than scanning the table.
+    rows = conn.execute(
+        "SELECT transcript_id, speaker_id, speaker_name, MIN(seq) AS first_seq "
+        f"FROM fireflies_sentences WHERE transcript_id IN ({marks}) AND speaker_id IS NOT NULL "
+        "GROUP BY transcript_id, speaker_id ORDER BY transcript_id, speaker_id",
+        ids,
+    )
+    for r in rows:
+        out[r["transcript_id"]].append(r)
+    return out
+
+
+def fireflies_channel_members(conn, channel, visible_ids=None) -> list[sqlite3.Row]:
+    """A channel's roster: everyone who took part in a meeting in it the caller may read.
+
+    Membership is the per-channel signal the corpus actually carries — the same choice
+    slack_channel_member_emails documents. Answering with the channel's ACL group instead would
+    give every channel sharing a group the same members, which the real API cannot produce.
+
+    ACL'd from a different position than that function, though: a Slack channel's membership is
+    org-visible by construction, while a fireflies transcript is granted per document and
+    `transcripts` honours that. An aggregate over the channel's meetings therefore needs the same
+    clause, or the roster names the participants of meetings the caller was denied — and, by
+    carrying an address no visible meeting mentions, states that such a meeting exists."""
+    sql = (
+        "SELECT DISTINCT je.value AS email, p.display_name AS display_name "
+        "FROM fireflies_transcripts t, json_each(t.participants) je "
+        "LEFT JOIN principals p ON lower(p.email) = lower(je.value) "
+        "WHERE t.channel = ?"
+    )
+    clause, cparams = _acl_clause("fireflies", "t", visible_ids=visible_ids)
+    return conn.execute(sql + clause + " ORDER BY je.value", [channel] + cparams).fetchall()
 
 
 def fireflies_sentences(conn, transcript_id) -> list[sqlite3.Row]:
@@ -1958,6 +2030,24 @@ def _fts_table(source_type: str) -> str:
         raise ValueError(f"unknown source_type {source_type!r}")
 
 
+# Sources with no `title` column. The FTS index keeps a `title` column for every source so its shape
+# and the queries over it stay uniform; for these it is fed a constant.
+TITLELESS = frozenset({"slack"})
+
+
+def title_expr(source_type: str, alias: str = "") -> str:
+    """SQL for a source's title, `''` where the table has no such column — for the LIKE fallback,
+    whose one statement covers every source."""
+    if source_type in TITLELESS:
+        return "''"
+    return f"{alias}.title" if alias else "title"
+
+
+def _fts_text_columns(source_type: str) -> tuple[str, ...]:
+    """The text columns a source's index holds — `content`, and `title` where the table has one."""
+    return ("content",) if source_type in TITLELESS else ("title", "content")
+
+
 def build_fts(conn) -> bool:
     """(Re)build every source's FTS index. No-op (False) without FTS5 — search then uses the LIKE
     fallback.
@@ -1981,14 +2071,12 @@ def build_fts(conn) -> bool:
         # comes back an integer and matches its INTEGER column rather than the string '7'.
         key = ", ".join(id_columns(src))
         decl = ", ".join(f"{c} UNINDEXED" for c in id_columns(src))
+        cols = ", ".join(_fts_text_columns(src))
         conn.execute(f"DROP TABLE IF EXISTS {fts}")
         conn.execute(
-            f"CREATE VIRTUAL TABLE {fts} USING fts5("
-            f"{decl}, title, content, tokenize='porter unicode61')"
+            f"CREATE VIRTUAL TABLE {fts} USING fts5({decl}, {cols}, tokenize='porter unicode61')"
         )
-        conn.execute(
-            f"INSERT INTO {fts}({key}, title, content) SELECT {key}, title, content FROM {tbl}"
-        )
+        conn.execute(f"INSERT INTO {fts}({key}, {cols}) SELECT {key}, {cols} FROM {tbl}")
         conn.commit()
     return True
 
@@ -2016,9 +2104,10 @@ def fts_add_docs(conn, source_type: str, doc_keys: list) -> int:
         values = ",".join("(" + ",".join("?" for _ in cols) + ")" for _ in chunk)
         flat = [v for row in chunk for v in row]
         conn.execute(f"DELETE FROM {fts} WHERE ({key}) IN (VALUES {values})", flat)
+        cols = ", ".join(_fts_text_columns(source_type))
         conn.execute(
-            f"INSERT INTO {fts}({key}, title, content) "
-            f"SELECT {key}, title, content FROM {tbl} WHERE ({key}) IN (VALUES {values})",
+            f"INSERT INTO {fts}({key}, {cols}) "
+            f"SELECT {key}, {cols} FROM {tbl} WHERE ({key}) IN (VALUES {values})",
             flat,
         )
         n += len(chunk)
@@ -2100,7 +2189,7 @@ def search_documents(
         elif lit and re.search(r"\w[^\w\s]\w", lit):
             order_sql = (
                 "(instr(lower(t.content), lower(?)) > 0 "
-                f"OR instr(lower(t.title), lower(?)) > 0) DESC, {fts}.rank"
+                f"OR instr(lower({title_expr(source_type, 't')}), lower(?)) > 0) DESC, {fts}.rank"
             )
             order_p = [lit, lit]
         sql = (
@@ -2110,11 +2199,12 @@ def search_documents(
         )
         return conn.execute(sql, [m, *cont_p, *cparams, *order_p, limit, offset]).fetchall()
     like = f"%{query}%"
-    sql = f"SELECT * FROM {tbl} WHERE (title LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
+    ttl = title_expr(source_type)
+    sql = f"SELECT * FROM {tbl} WHERE ({ttl} LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
     params: list = [like, like, *cont_p]
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += (
-        clause + " ORDER BY (CASE WHEN title LIKE ? THEN 0 ELSE 1 END), "
+        clause + f" ORDER BY (CASE WHEN {ttl} LIKE ? THEN 0 ELSE 1 END), "
         f"{_order_by(source_type)} LIMIT ? OFFSET ?"
     )
     params += cparams + [like, limit, offset]
@@ -2148,7 +2238,8 @@ def count_search(
     like = f"%{query}%"
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql = (
-        f"SELECT COUNT(*) FROM (SELECT 1 FROM {tbl} WHERE (title LIKE ? OR content LIKE ?)"
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM {tbl} WHERE "
+        f"({title_expr(source_type)} LIKE ? OR content LIKE ?)"
         f"{cont_sql.format(a=tbl)}{clause} LIMIT ?)"
     )
     return conn.execute(sql, [like, like, *cont_p, *cparams, cap]).fetchone()[0]
@@ -2223,14 +2314,18 @@ def list_slack_channel_messages(conn, channel, visible_ids=None) -> list[sqlite3
 
 
 def list_gmail_in_range(
-    conn, mailbox, ts_lo, ts_hi, visible_ids=None, limit=100_000, offset=0
+    conn, mailbox, ts_lo, ts_hi, visible_ids=None, limit=100_000, offset=0, roots_only=False
 ) -> list[sqlite3.Row]:
     """Gmail messages whose ``created_ts`` is in ``[ts_lo, ts_hi)`` (either bound may be None for
     open-ended), newest first. The SQL date filter for a date-scoped listing (``ls /gmail/<label>/
     <date>``): without it the endpoint materialized the WHOLE mailbox (~100k rows) and filtered in
-    Python. gmail ``created_ts`` is fully populated, so this covers every message."""
+    Python. gmail ``created_ts`` is fully populated, so this covers every message.
+
+    ``roots_only`` narrows it to one row per thread, which is what ``threads.list`` lists."""
     sql = "SELECT * FROM gmail_messages WHERE 1=1"
     params: list = []
+    if roots_only:
+        sql += _GMAIL_ROOT
     if ts_lo is not None:
         sql += " AND created_ts >= ?"
         params.append(ts_lo)
@@ -2291,6 +2386,22 @@ def slack_channels_for_principals(conn, principals) -> set[str]:
         principals,
     )
     return {r[0] for r in rows}
+
+
+def slack_latest_ts(conn, channel, visible_ids=None) -> str | None:
+    """The ts of the newest message in a channel — what conversations.info reports as the caller's
+    ``last_read``, this mock modelling no unread state of its own.
+
+    Ordered by ``created_ts`` rather than ``MAX(ts)`` for the reason slack_latest_reply_ts gives:
+    ts is TEXT, so a max over it is lexicographic and picks the wrong row when a channel straddles
+    a digit-count change in the epoch second."""
+    sql = "SELECT ts FROM slack_messages WHERE channel = ?"
+    params: list = [channel]
+    clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
+    row = conn.execute(
+        sql + clause + " ORDER BY created_ts DESC, ts DESC LIMIT 1", params + cparams
+    ).fetchone()
+    return row[0] if row else None
 
 
 def slack_latest_reply_ts(conn, channel, thread_ts, visible_ids=None) -> str | None:
@@ -2398,14 +2509,49 @@ def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
     return conn.execute(f"SELECT * FROM jira_issues WHERE key = ?{clause}", [key, *cp]).fetchone()
 
 
-def list_repo_files(conn, repo, visible_ids=None, limit=10_000, offset=0) -> list[sqlite3.Row]:
-    clause, cp = _acl_clause("github", visible_ids=visible_ids)
-    sql = (
-        "SELECT * FROM github_items WHERE repo = ? AND kind = 'file'"
-        + clause
-        + " ORDER BY path LIMIT ? OFFSET ?"
+def _file_head_clause(visible_ids=None, tbl: str = "t") -> tuple[str, list]:
+    """SQL restricting `tbl` to the HEAD of its `(repo, path)` — no snapshot the caller can also
+    see is newer.
+
+    A github file is ADDRESSED by `(repo, path)` but STORED one row per snapshot (see the
+    `idx_github_file_snapshot` comment), so every read of a file has to choose one. HEAD is the
+    newest `created_ts`, and `ref` breaks a tie.
+
+    `ref` and not `number`: two snapshots may share an instant, which is precisely when the schema
+    tells an author to state a `ref`, and `number` is an internal handle probed from a hash of the
+    dataset id. Tie-breaking on it made the served content a property of a doc_id — renaming a
+    document flipped which snapshot the repo answered with — so stating a `ref` bought identity and
+    left serving undefined. Ordering on `ref` gives that advice something to settle. The snapshot
+    index makes `(created_ts, ref)` total for a path: they cannot both be equal.
+
+    Resolved among the rows the CALLER can see, not corpus-wide. A snapshot hidden from them is
+    not the file they are served — otherwise a path whose newest snapshot is restricted answers
+    404 for a caller who can read an older one, which reveals that a newer one exists.
+
+    """
+    inner, ip = _acl_clause("github", tbl="x", visible_ids=visible_ids)
+    return (
+        f" AND NOT EXISTS (SELECT 1 FROM github_items x WHERE x.repo = {tbl}.repo"
+        f" AND x.path = {tbl}.path AND x.kind = 'file'{inner}"
+        f" AND (x.created_ts > {tbl}.created_ts"
+        # COALESCE so a stated ref still orders against an unstated one rather than dropping out of
+        # the comparison, as any NULL operand would.
+        f" OR (x.created_ts = {tbl}.created_ts"
+        f" AND COALESCE(x.ref, '') > COALESCE({tbl}.ref, ''))))",
+        ip,
     )
-    return conn.execute(sql, [repo, *cp, limit, offset]).fetchall()
+
+
+def list_repo_files(conn, repo, visible_ids=None, limit=10_000, offset=0) -> list[sqlite3.Row]:
+    clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
+    head, hp = _file_head_clause(visible_ids)
+    sql = (
+        "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file'"
+        + clause
+        + head
+        + " ORDER BY t.path LIMIT ? OFFSET ?"
+    )
+    return conn.execute(sql, [repo, *cp, *hp, limit, offset]).fetchall()
 
 
 def list_repo_file_paths(conn, repo, visible_ids=None, limit=10_000, offset=0) -> list[str]:
@@ -2416,13 +2562,15 @@ def list_repo_file_paths(conn, repo, visible_ids=None, limit=10_000, offset=0) -
     content along to do it. On a 3000-file repo that is ~4 MB of content read per pull, and a
     ``/pulls`` page synthesizes a changeset per row.
     """
-    clause, cp = _acl_clause("github", visible_ids=visible_ids)
+    clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
+    head, hp = _file_head_clause(visible_ids)
     sql = (
-        "SELECT path FROM github_items WHERE repo = ? AND kind = 'file'"
+        "SELECT t.path FROM github_items t WHERE t.repo = ? AND t.kind = 'file'"
         + clause
-        + " ORDER BY path LIMIT ? OFFSET ?"
+        + head
+        + " ORDER BY t.path LIMIT ? OFFSET ?"
     )
-    return [r[0] for r in conn.execute(sql, [repo, *cp, limit, offset])]
+    return [r[0] for r in conn.execute(sql, [repo, *cp, *hp, limit, offset])]
 
 
 def get_github_comment(conn, comment_id: int) -> sqlite3.Row | None:
@@ -2489,18 +2637,61 @@ def github_comments(conn, repo, number, *, anchored: bool | None = None) -> list
 
 
 def count_repo_files(conn, repo, visible_ids=None) -> int:
-    clause, cp = _acl_clause("github", visible_ids=visible_ids)
+    clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
+    head, hp = _file_head_clause(visible_ids)
     return conn.execute(
-        "SELECT COUNT(*) FROM github_items WHERE repo = ? AND kind = 'file'" + clause, [repo, *cp]
+        "SELECT COUNT(*) FROM github_items t WHERE t.repo = ? AND t.kind = 'file'" + clause + head,
+        [repo, *cp, *hp],
     ).fetchone()[0]
 
 
-def get_repo_file(conn, repo, path, visible_ids=None) -> sqlite3.Row | None:
+def get_repo_file(conn, repo, path, visible_ids=None, ref=None) -> sqlite3.Row | None:
+    """One file at `(repo, path)` — HEAD, or the snapshot `ref` names.
+
+    `ref` matches the column a corpus states, and falls back to HEAD when no snapshot answers to
+    it. The fallback is deliberate: a ref is also a git ref, and this mock keeps no branch list, so
+    `?ref=main` from a real client has to resolve to the current file rather than 404 (the
+    no-history tolerance `routers.github.get_tree` documents). A ref a corpus DID name is knowable,
+    so it wins.
+    """
+    clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
+    if ref is not None:
+        named = conn.execute(
+            "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file' AND t.path = ?"
+            " AND t.ref = ?" + clause,
+            [repo, path, ref, *cp],
+        ).fetchone()
+        if named is not None:
+            return named
+    head, hp = _file_head_clause(visible_ids)
+    return conn.execute(
+        "SELECT t.* FROM github_items t WHERE t.repo = ? AND t.kind = 'file' AND t.path = ?"
+        + clause
+        + head,
+        [repo, path, *cp, *hp],
+    ).fetchone()
+
+
+def iter_repo_file_snapshots(conn, repo, visible_ids=None) -> Iterator[sqlite3.Row]:
+    """EVERY file row in the repo, superseded snapshots included — the one read that does not
+    collapse to HEAD.
+
+    For content-addressed lookup: a blob sha is `sha1(content)`, so each snapshot has its own and
+    stays fetchable after a newer one supersedes it. SQLite cannot compute the digest, so the
+    caller has to scan candidates, and scanning :func:`list_repo_files` would 404 every blob but
+    HEAD's.
+
+    A cursor rather than a list, and uncapped where its siblings take a `limit`. Both follow from
+    what the caller does: it compares a digest and stops at the first match, so streaming means the
+    common fetch reads a few rows instead of materialising a repo's every file (`SELECT *` here is
+    content included — the ~4 MB `list_repo_file_paths` exists to avoid). A cap would instead make
+    a blob past it a false 404, which is the bug this replaced.
+    """
     clause, cp = _acl_clause("github", visible_ids=visible_ids)
     return conn.execute(
-        "SELECT * FROM github_items WHERE repo = ? AND kind = 'file' AND path = ?" + clause,
-        [repo, path, *cp],
-    ).fetchone()
+        "SELECT * FROM github_items WHERE repo = ? AND kind = 'file'" + clause + " ORDER BY path",
+        [repo, *cp],
+    )
 
 
 # --- grouping units (channels/mailboxes/folders/repos/projects/spaces) & principals ---
@@ -2544,17 +2735,41 @@ def linear_team_by_served_id(conn, served_id) -> str | None:
     return row["team"] if row else None
 
 
+def linear_team_keys(conn) -> dict[str, str]:
+    """team -> the key its issues' identifiers are prefixed with, for every linear team.
+
+    One scan of a table with one row per team, so callers that need the key of more than one team
+    (the ``teams`` filter, the compiled issue filter, a page of issues each selecting
+    ``team { key }``) read it once instead of per row. A team's key is
+    :func:`synth.linear_team_key` of its name UNLESS its own issues spell a different prefix out,
+    in which case the importer stored that -- which is exactly why this reads the column rather
+    than deriving."""
+    return {
+        r["team"]: r["served_key"]
+        for r in conn.execute("SELECT team, served_key FROM linear_teams")
+    }
+
+
 def linear_team_by_served_key(conn, served_key) -> str | None:
     """Resolve a team KEY (`synth.linear_team_key`, e.g. "ENG") to its container name.
 
     The key is NOT injective -- two containers can reduce to the same one -- so `served_key`
-    carries no UNIQUE index. The tie is broken by team NAME, keeping the first team a key is seen
-    on: `ORDER BY team LIMIT 1` -- change
-    either without the other and a key silently resolves to a different team."""
-    row = conn.execute(
-        "SELECT team FROM linear_teams WHERE served_key = ? ORDER BY team LIMIT 1", (served_key,)
-    ).fetchone()
-    return row["team"] if row else None
+    carries no UNIQUE index. A key the corpus SPELLED OUT wins the tie: it is a fact about that
+    team, where a colliding one is only the shape another team's name happens to shorten to, and
+    `team(id: "ENG")` answering with the latter left the team the corpus called ENG unreachable at
+    its own key. Told apart by re-deriving: a served key that is not its team's derived key is one
+    the importer was told (see `byo._Loader._claim_linear_prefix`). Among equals the tie goes to
+    team NAME order, keeping the first team a key is seen on -- change either half of that without
+    the other and a key silently resolves to a different team."""
+    rows = conn.execute(
+        "SELECT team FROM linear_teams WHERE served_key = ? ORDER BY team", (str(served_key),)
+    ).fetchall()
+    if not rows:
+        return None
+    for row in rows:
+        if synth.linear_team_key(row["team"]) != str(served_key):
+            return row["team"]
+    return rows[0]["team"]
 
 
 def list_users(conn) -> list[sqlite3.Row]:

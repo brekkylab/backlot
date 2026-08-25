@@ -26,6 +26,14 @@ from backlot import store, synth
 PAGE_DEFAULT = 25
 PAGE_MAX = 50
 
+# Slots this module keeps on the request context (backlot/routers/fireflies.py builds one dict per
+# request, so nothing here outlives the response or crosses a caller). The two lazily-bound fields
+# that query — the speaker numbers and a channel's roster — read through them, so a page of
+# transcripts costs one statement each rather than one per row.
+_PAGE_IDS = "_ff_page_ids"
+_SPEAKERS = "_ff_speakers"
+_CHANNEL_MEMBERS = "_ff_channel_members"
+
 
 def _ctx(info):
     return info.context
@@ -108,10 +116,15 @@ def _user(email: str | None, display: str | None = None) -> dict | None:
         "name": display or _display_name(email),
         "num_transcripts": None,
         "recent_meeting": None,
+        "recent_transcript": None,
         # account/billing state this mock does not model — see the SDL header
         "minutes_consumed": None,
         "is_admin": None,
         "integrations": None,
+        "is_calendar_in_sync": None,
+        # The mock's ACL groups are a permission mechanism, not Fireflies user-groups, so they are
+        # not served under this name. Fireflies serves the empty list, not null.
+        "user_groups": [],
     }
 
 
@@ -126,7 +139,17 @@ def _sentence(row, index: int) -> dict:
         "raw_text": row["body"],
         "start_time": row["start_time"],
         "end_time": row["end_time"],
-        "ai_filters": None,
+        # Fireflies returns the object even when nothing classified: `text_cleanup` carries the
+        # cleaned text, and the classifier flags are null.
+        "ai_filters": {
+            "text_cleanup": row["body"],
+            "task": None,
+            "pricing": None,
+            "metric": None,
+            "question": None,
+            "date_and_time": None,
+            "sentiment": None,
+        },
     }
 
 
@@ -153,20 +176,76 @@ def _summary(row) -> dict:
         "bullet_gist": None,
         "gist": None,
         "transcript_chapters": None,
+        "notes": None,
+        "short_overview": None,
+        "extended_sections": None,
     }
 
 
-def _speakers(row) -> list[dict]:
-    return (store.jcol(row, "analytics") or {}).get("speakers") or []
+def _words_per_minute(word_count, duration_secs) -> float | None:
+    """Words per minute over this speaker's own talk time. Null rather than a division error when
+    the corpus gives a speaker no measurable time."""
+    if word_count is None or not duration_secs:
+        return None
+    return round(float(word_count) * 60.0 / float(duration_secs), 2)
+
+
+def _analytics_speakers(row, speakers: list) -> list[dict]:
+    """`analytics.speakers` is Fireflies' AnalyticsSpeaker: talk-time statistics keyed by the same
+    per-meeting speaker number the sentences carry. `speakers` is the roster those numbers come
+    from, joined to the stored statistics by NAME — the only key the analytics JSON has, since
+    synth.fireflies_speaker_stats aggregates by it.
+
+    So this is one entry per LABEL where `Transcript.speakers` is one per number: numbers sharing a
+    label — several runs diarization left unlabelled, or one name it used for two of them — are ONE
+    statistics entry however many numbers they cover, served under one of those numbers, while the
+    roster keeps every number. Nothing in the stored analytics can separate them."""
+    numbers = {s["speaker_name"]: s["speaker_id"] for s in speakers}
+    out = []
+    for sp in (store.jcol(row, "analytics") or {}).get("speakers") or []:
+        name = sp.get("name")
+        duration = sp.get("duration")
+        out.append(
+            {
+                "speaker_id": numbers.get(name),
+                "name": name,
+                "duration": duration,
+                "word_count": sp.get("word_count"),
+                "longest_monologue": sp.get("longest_monologue"),
+                "monologues_count": sp.get("monologues_count"),
+                "filler_words": sp.get("filler_words"),
+                "questions": sp.get("questions"),
+                "duration_pct": sp.get("duration_pct"),
+                "words_per_minute": _words_per_minute(sp.get("word_count"), duration),
+            }
+        )
+    return out
 
 
 def _analytics(row) -> dict:
     a = store.jcol(row, "analytics") or {}
     return {
+        "_row": row,
         "sentiments": a.get("sentiments"),
-        "speakers": a.get("speakers") or [],
+        # bound explicitly (see RESOLVERS): the speaker numbers live in fireflies_sentences
         # classifier buckets — see the SDL header
         "categories": a.get("categories"),
+    }
+
+
+def _channel(name: str) -> dict:
+    """One Channel. `id` IS the channel name rather than a minted opaque id, because
+    `transcripts(channel_id:)` selects on the name — a client must be able to feed `channels { id }`
+    straight back in."""
+    return {
+        "_channel": name,
+        "id": name,
+        "title": name,
+        # the corpus states which channel a meeting is in, not the channel's own history
+        "created_at": None,
+        "updated_at": None,
+        "created_by": None,
+        "is_private": None,
     }
 
 
@@ -192,11 +271,18 @@ def _transcript(row, info) -> dict:
             for e in (store.jcol(row, "participants", []) or [])
             if isinstance(e, str) and "@external." not in e
         ],
+        # workspace membership and link-sharing state — see the SDL header. Fireflies serves the
+        # empty list for both, not null.
+        "workspace_users": [],
+        "shared_with": [],
+        # The corpus is finished recordings, so no meeting is ever mid-transcription.
+        "is_live": False,
+        "privacy": "link",
         "meeting_link": row["meeting_link"],
         "calendar_id": row["calendar_id"],
         "cal_id": row["calendar_id"],
         "calendar_type": row["calendar_type"],
-        "channels": [row["channel"]] if row["channel"] else [],
+        "channels": [_channel(row["channel"])] if row["channel"] else [],
         "transcript_url": row["transcript_url"],
         "audio_url": row["audio_url"],
         "video_url": row["video_url"],
@@ -210,8 +296,8 @@ def _transcript(row, info) -> dict:
             "silent_meeting": False,
             "summary_status": "processed",
         },
-        "apps_preview": None,
-        "speakers": _speakers(row),
+        # Fireflies serves the wrapper with an empty `outputs`, not null — see the SDL header.
+        "apps_preview": {"outputs": []},
     }
 
 
@@ -227,7 +313,11 @@ def resolve_transcripts(
     toDate=None,
     host_email=None,
     organizers=None,
+    organizer_email=None,
     participants=None,
+    participant_email=None,
+    title=None,
+    date=None,
     user_id=None,
     mine=None,
     channel_id=None,
@@ -255,20 +345,44 @@ def resolve_transcripts(
     if len({h.lower() for h in hosts}) > 1:
         return []
 
+    # The singular forms are aliases of the plural filters, so they combine the same way:
+    # `organizers` is any-of, `participants` is all-of.
+    organizers = [*(organizers or []), *([organizer_email] if organizer_email else [])]
+    participants = [*(participants or []), *([participant_email] if participant_email else [])]
+
+    from_ts = to_epoch_seconds(fromDate)
+    to_ts = to_epoch_seconds(toDate)
+    if date is not None:
+        # `date` selects a DAY, not an instant: the real API returns every meeting sharing the
+        # calendar day of the value passed, and that day is UTC — a value anywhere in the day
+        # before or after returns nothing, whichever zone the caller is in. Narrowed against any
+        # fromDate/toDate already given.
+        day = to_epoch_seconds(date)
+        if day is None:
+            return []
+        start = day - (day % 86400)
+        from_ts = start if from_ts is None else max(from_ts, start)
+        end = start + 86399
+        to_ts = end if to_ts is None else min(to_ts, end)
+
     rows = store.list_fireflies_transcripts(
         ctx["conn"],
         channel=channel_id,
         host_email=hosts[0] if hosts else None,
         organizers=organizers or None,
         participants=participants or None,
-        from_ts=to_epoch_seconds(fromDate),
-        to_ts=to_epoch_seconds(toDate),
+        title=title,
+        from_ts=from_ts,
+        to_ts=to_ts,
         keyword=keyword,
         scope=scope,
         visible_ids=ctx.get("visible_ids"),
         limit=clamp_limit(limit),
         offset=clamp_skip(skip),
     )
+    # The page's ids, for the batched speaker load. Accumulated rather than assigned: one document
+    # may select `transcripts` twice under aliases, and a second page must not drop the first's.
+    ctx.setdefault(_PAGE_IDS, []).extend(r["id"] for r in rows)
     return [_transcript(r, info) for r in rows]
 
 
@@ -289,6 +403,66 @@ def resolve_transcript_sentences(transcript, info, **_ignored):
     row = transcript["_row"]
     rows = store.fireflies_sentences(_ctx(info)["conn"], row["id"])
     return [_sentence(r, i) for i, r in enumerate(rows)]
+
+
+def _speakers(info, transcript_id) -> list:
+    """This transcript's roster rows, read once per request and loaded for the whole page at once.
+
+    Two fields want them — `Transcript.speakers` and `analytics.speakers` — and both are resolved
+    per transcript, so the unmemoised read is one statement per row of the page and two when both
+    are selected. The page's ids are registered by resolve_transcripts, so the first field that
+    asks loads all of them in one statement; a `transcript(id:)` root registers none and loads the
+    one it has.
+    """
+    ctx = _ctx(info)
+    cache = ctx.setdefault(_SPEAKERS, {})
+    if transcript_id not in cache:
+        want = [i for i in ctx.get(_PAGE_IDS) or () if i not in cache]
+        if transcript_id not in want:
+            want.append(transcript_id)
+        cache.update(store.fireflies_speakers(ctx["conn"], want))
+    return cache[transcript_id]
+
+
+def resolve_transcript_speakers(transcript, info, **_ignored):
+    """Fireflies' `Transcript.speakers` is identity only — name and the per-meeting number. Both
+    live in fireflies_sentences, so this queries; selecting metadata alone never does."""
+    return [
+        {"id": float(s["speaker_id"]), "name": s["speaker_name"]}
+        for s in _speakers(info, transcript["_row"]["id"])
+    ]
+
+
+def resolve_analytics_speakers(analytics, info, **_ignored):
+    """`analytics.speakers` carries the stored talk-time statistics, joined to the same speaker
+    numbers `Transcript.speakers` reports."""
+    row = analytics["_row"]
+    return _analytics_speakers(row, _speakers(info, row["id"]))
+
+
+def resolve_channel_members(channel, info, **_ignored):
+    """A channel's roster: everyone who took part in a meeting in the channel THIS CALLER can read.
+    Bound rather than built eagerly: `channels { id title }` is the common selection and must not
+    query.
+
+    Cached on the channel name for the request, because a page is usually one channel's meetings
+    and the roster is a property of the channel, not of the transcript it was reached through —
+    ``visible_ids`` is fixed for the request, so two transcripts in one channel have the same
+    answer."""
+    ctx = _ctx(info)
+    cache = ctx.setdefault(_CHANNEL_MEMBERS, {})
+    name = channel["_channel"]
+    if name not in cache:
+        cache[name] = [
+            {
+                "user_id": synth.fireflies_user_id(r["email"]),
+                "email": r["email"],
+                "name": r["display_name"] or _display_name(r["email"]),
+            }
+            for r in store.fireflies_channel_members(ctx["conn"], name, ctx.get("visible_ids"))
+            if r["email"]
+        ]
+    return cache[name]
 
 
 def resolve_user(_root, info, id=None):
@@ -335,7 +509,12 @@ RESOLVERS = {
         "user": resolve_user,
         "users": resolve_users,
     },
-    "Transcript": {"sentences": resolve_transcript_sentences},
+    "Transcript": {
+        "sentences": resolve_transcript_sentences,
+        "speakers": resolve_transcript_speakers,
+    },
+    "MeetingAnalytics": {"speakers": resolve_analytics_speakers},
+    "Channel": {"members": resolve_channel_members},
 }
 
 

@@ -28,6 +28,27 @@ def _ctx(info):
     return info.context
 
 
+def _team_keys(info) -> dict[str, str]:
+    """team -> its served key, read once per request (the shape ``_team_counts`` uses).
+
+    Read from ``linear_teams``, never derived: a team whose own issues spell a prefix out is served
+    under that prefix, and deriving from the name unconditionally served `identifier: "ENG-7"`
+    under `team { key: "PP" }` — the object contradicting itself, since real Linear derives an
+    identifier FROM its team's key."""
+    ctx = _ctx(info)
+    keys = ctx.get("_team_keys")
+    if keys is None:
+        keys = store.linear_team_keys(ctx["conn"])
+        ctx["_team_keys"] = keys
+    return keys
+
+
+def _team_key(container: str, info) -> str:
+    """One team's served key. Falls back to the derivation for a container with no row of its own
+    in ``linear_teams`` — nothing an import produces, but a resolver must not raise on it."""
+    return _team_keys(info).get(container) or synth.linear_team_key(container)
+
+
 def _org(info) -> str:
     """The workspace slug, which is what a Linear URL is keyed on."""
     return _ctx(info).get("org") or "org"
@@ -171,12 +192,12 @@ def _match_fields(spec: dict | None, fields: dict) -> bool:
     return True
 
 
-def _match_team(container: str, spec) -> bool:
+def _match_team(container: str, spec, info) -> bool:
     return _match_fields(
         spec,
         {
             "name": container,
-            "key": synth.linear_team_key(container),
+            "key": _team_key(container, info),
             "id": synth.linear_team_id(container),
         },
     )
@@ -271,11 +292,9 @@ def _user(email: str | None, display: str | None, info) -> dict | None:
     }
 
 
-def _state(name: str | None, team: str, info) -> dict:
-    """``WorkflowState`` is non-null on an issue, so a row with no recorded state still gets one —
-    "Todo", Linear's own bucket for "created but not begun". States are per-team in Linear, so
-    both the id and the back-reference carry the team."""
-    name = name or "Todo"
+def _state(name: str, team: str, info) -> dict:
+    """An issue's ``WorkflowState``. States are per-team in Linear, so both the id and the
+    back-reference carry the team."""
     created = synth.rfc3339(synth.epoch(f"linear-state:{team}:{name}"))
     return {
         "id": synth.linear_state_id(name, team),
@@ -518,7 +537,7 @@ def _team(container: str, info) -> dict:
     """A ``Team``. 42 of its fields are non-null in the SDK's fragment; the ones the mock cannot
     know take Linear's own product defaults (cycles off, 2-week duration, estimate scale
     ``notUsed``) rather than zero values that would read as configured."""
-    key = synth.linear_team_key(container)
+    key = _team_key(container, info)
     created = synth.rfc3339(synth.epoch("linear-team:" + container))
     return {
         "id": synth.linear_team_id(container),
@@ -778,7 +797,7 @@ def _issue_page(
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
-    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter))
+    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
     if offset is None:
         # `last:` with no `before:` is the only shape that needs a total, so the COUNT is paid
         # here and not on every page.
@@ -878,7 +897,7 @@ def resolve_teams(
         if ctx["visible_ids"] is None
         or store.linear_team_has_visible(ctx["conn"], r["name"], ctx["visible_ids"])
     ]
-    names = [n for n in names if _match_team(n, filter)]
+    names = [n for n in names if _match_team(n, filter, info)]
     offset = _from_end(offset, limit, floor, len(names))
     page = names[offset : offset + limit]
     return _connection([_team(n, info) for n in page], offset, offset + limit < len(names))
@@ -1094,7 +1113,7 @@ def resolve_issue_children(
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
     issue_id = issue["_row"]["id"]
-    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter))
+    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
     if offset is None:
         offset = _from_end(
             None,

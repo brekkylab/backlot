@@ -26,6 +26,9 @@ from llama_index.readers.github import (  # noqa: E402
 
 CORPUS = [
     {
+        "state": "open",
+        "author_email": "bob@acme.com",
+        "created": "2026-02-09T09:00:00Z",
         "source_type": "github",
         "repo": "gateway",
         "title": "Rate limiter drops bursts under 50ms",
@@ -33,6 +36,9 @@ CORPUS = [
         "subtype": "issue",
     },
     {
+        "state": "open",
+        "author_email": "bob@acme.com",
+        "created": "2026-02-09T14:00:00Z",
         "source_type": "github",
         "repo": "gateway",
         "title": "Fix token-bucket refill off-by-one",

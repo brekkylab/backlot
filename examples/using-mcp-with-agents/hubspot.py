@@ -28,6 +28,8 @@ from backlot import serve_or_connect
 
 CORPUS = [
     {
+        "author_email": "rep@acme.com",
+        "created": "2026-03-01T09:00:00Z",
         "source_type": "hubspot",
         "object_type": "companies",
         "doc_id": "hs-co-acme",
@@ -41,9 +43,10 @@ CORPUS = [
         },
     },
     {
+        "author_email": "rep@acme.com",
+        "created": "2026-03-05T14:00:00Z",
         "source_type": "hubspot",
         "object_type": "notes",
-        "title": "",
         "content": "Security review scheduled; customer blocked on confirming EU data residency.",
         "properties": {
             "hs_note_body": "Security review scheduled; customer blocked on confirming "
@@ -52,9 +55,10 @@ CORPUS = [
         "associations": [{"to": "hs-co-acme"}],
     },
     {
+        "author_email": "rep@acme.com",
+        "created": "2026-03-06T10:00:00Z",
         "source_type": "hubspot",
         "object_type": "notes",
-        "title": "",
         "content": "Pricing pushback: wants per-query rather than reserved capacity.",
         "properties": {
             "hs_note_body": "Pricing pushback: wants per-query rather than reserved capacity."
@@ -62,6 +66,8 @@ CORPUS = [
         "associations": [{"to": "hs-co-acme"}],
     },
     {
+        "author_email": "rep@acme.com",
+        "created": "2026-03-07T09:00:00Z",
         "source_type": "hubspot",
         "object_type": "deals",
         "title": "Acme Health — renewal",

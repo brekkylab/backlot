@@ -13,9 +13,19 @@ import json
 from urllib.parse import urlparse
 
 import pytest
+from graphql import build_client_schema, parse, validate
 
 from backlot import synth
-from tests._helpers import build_corpus, client_for, corpus_client, db_count, served_id
+from backlot.graphql import mcp_tools
+from tests._helpers import (
+    build_corpus,
+    client_for,
+    corpus_client,
+    db_count,
+    selected_field_count,
+    selected_fields,
+    served_id,
+)
 
 
 # --- Linear (GraphQL) -------------------------------------------------------------
@@ -308,6 +318,32 @@ def test_linear_introspection_reports_the_served_schema(client, admin_h):
     assert data["__schema"]["mutationType"] is None
     names = {f["name"] for f in data["__type"]["fields"]}
     assert {"identifier", "branchName", "estimate", "dueDate", "state", "labels"} <= names
+
+
+def test_linear_mcp_tools_derive_from_the_served_introspection(client, admin_h):
+    """The GraphQL→MCP bridge ships no hand-written queries: it reads this endpoint's own
+    introspection and generates one document per root field. Every one has to be a document this
+    schema accepts, the selection has to stay bounded, and an issue's discussion has to be in it.
+
+    `examples/using-mcp-with-agents/linear.py` drives the bridge at depth 1, and the ceiling below
+    is why: a second level pulls `Issue.cycle.team` and its siblings in with all their
+    configuration leaves. The ceiling is well clear at depth 1 and well under a depth-2 selection,
+    so if a schema addition pushes it over, check what the new fields cost before raising it.
+    """
+    intro = gql(client, mcp_tools.INTROSPECTION_QUERY, admin_h).json()
+    schema = build_client_schema(intro["data"])
+    tools = mcp_tools.derive_tools(intro, depth=1)
+
+    assert {t.name for t in tools} == set(schema.query_type.fields)
+    for tool in tools:
+        assert not validate(schema, parse(tool.document)), tool.name
+
+    issues = next(t for t in tools if t.name == "issues")
+    assert selected_field_count(issues.document) < 600
+    # `Issue.comments` is the one nested connection that has to survive: `CommentFilter` carries
+    # id/body/createdAt and no key for the issue, so the root `comments` tool cannot stand in for
+    # it and an issue's discussion would be unreachable through the whole toolset.
+    assert "comments" in selected_fields(issues.document, "issues", "nodes")
 
 
 def test_linear_malformed_document_is_a_400_with_a_graphql_envelope(client, admin_h):
@@ -1060,3 +1096,161 @@ def test_linear_team_uuid_wins_a_raw_name_collision(tmp_path):
             "team"
         ]
         assert got["name"] == "widgets"
+
+
+def test_a_provided_prefix_is_the_teams_key_on_every_surface(tmp_path):
+    """A corpus that writes `ENG-7` into a team the name-derivation would call `PP`
+    must be served one spelling: real Linear derives an identifier FROM its team's
+    key, so `identifier: "ENG-7"` under `team { key: "PP" }` is the object
+    contradicting itself. The key holds on the issue's team object, on `team(id:)`
+    lookup, on the teams listing filter, and on the compiled issue filter — and the
+    keyless sibling's identifier carries it too."""
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "linear",
+                "doc_id": "ln-a",
+                "team": "payments-platform",
+                "title": "provides the prefix",
+                "content": "x",
+                "identifier": "ENG-7",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "created": "2026-02-01T00:00:00Z",
+            },
+            {
+                "source_type": "linear",
+                "doc_id": "ln-b",
+                "team": "payments-platform",
+                "title": "keyless sibling",
+                "content": "y",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "created": "2026-02-02T00:00:00Z",
+            },
+        ],
+    )
+    with client_for(settings) as c:
+        h = {"Authorization": settings.admin_token}
+        issue = gql(c, '{ issue(id: "ENG-7") { identifier team { key name } } }', h).json()["data"][
+            "issue"
+        ]
+        assert issue["identifier"] == "ENG-7"
+        assert issue["team"] == {"key": "ENG", "name": "payments-platform"}
+        team = gql(c, '{ team(id: "ENG") { key name } }', h).json()["data"]["team"]
+        assert team == {"key": "ENG", "name": "payments-platform"}
+        both = gql(
+            c,
+            '{ issues(first: 10, filter: {team: {key: {eq: "ENG"}}}) { nodes { identifier } } }',
+            h,
+        ).json()["data"]["issues"]["nodes"]
+        idents = sorted(n["identifier"] for n in both)
+        assert len(idents) == 2 and all(i.startswith("ENG-") for i in idents)
+        teams = gql(
+            c,
+            '{ teams(first: 10, filter: {key: {eq: "ENG"}}) { nodes { name } } }',
+            h,
+        ).json()["data"]["teams"]["nodes"]
+        assert [t["name"] for t in teams] == ["payments-platform"]
+
+
+def _linear_doc(did, team, title, identifier=None, day="01"):
+    d = {
+        "source_type": "linear",
+        "doc_id": did,
+        "team": team,
+        "title": title,
+        "content": "x",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "created": f"2026-02-{day}T00:00:00Z",
+    }
+    if identifier:
+        d["identifier"] = identifier
+    return d
+
+
+def test_a_teams_key_survives_being_nested_under_and_or(tmp_path):
+    """`team.key` compiles by expanding the filter's value over the team column's distinct
+    names, and the expansion needs the corpus-provided keys to do it. Those were passed to
+    the top-level compile only, so one query written two ways disagreed: the flat filter
+    found the team at its own key while the same filter under `and` found nothing there and
+    everything at the name-derived one it had stopped answering to."""
+    settings = build_corpus(
+        tmp_path,
+        [
+            _linear_doc("ln-a", "payments-platform", "states it", identifier="ENG-7"),
+            _linear_doc("ln-b", "payments-platform", "keyless sibling", day="02"),
+        ],
+    )
+    with client_for(settings) as c:
+        h = {"Authorization": settings.admin_token}
+
+        def idents(flt):
+            q = f"{{ issues(first: 10, filter: {flt}) {{ nodes {{ identifier }} }} }}"
+            return sorted(n["identifier"] for n in gql(c, q, h).json()["data"]["issues"]["nodes"])
+
+        flat = idents('{team: {key: {eq: "ENG"}}}')
+        assert len(flat) == 2
+        assert idents('{and: [{team: {key: {eq: "ENG"}}}]}') == flat
+        assert idents('{or: [{team: {key: {eq: "ENG"}}}]}') == flat
+        assert idents('{team: {and: [{key: {eq: "ENG"}}]}}') == flat
+        # and the retired name-derived key answers nowhere, in either spelling
+        assert idents('{team: {key: {eq: "PP"}}}') == []
+        assert idents('{and: [{team: {key: {eq: "PP"}}}]}') == []
+
+
+def test_a_stated_key_beats_one_another_team_only_derives_from_its_name(tmp_path):
+    """`payments-platform` states ENG; `engineering` merely shortens to it. Both then serve
+    `key: "ENG"` — a collision `linear_team_key` has always allowed — but `team(id: "ENG")`
+    can return one, and returning the team that never wrote ENG down anywhere made the
+    corpus's own spelling unreachable. What a corpus states outranks what this mock derives,
+    the same order the issue and jira indexes resolve a tie in."""
+    settings = build_corpus(
+        tmp_path,
+        [
+            _linear_doc("ln-a", "payments-platform", "states ENG", identifier="ENG-7"),
+            _linear_doc("ln-b", "engineering", "derives ENG", day="02"),
+        ],
+    )
+    with client_for(settings) as c:
+        h = {"Authorization": settings.admin_token}
+        assert gql(c, '{ team(id: "ENG") { key name } }', h).json()["data"]["team"] == {
+            "key": "ENG",
+            "name": "payments-platform",
+        }
+        # the other team is not lost — its UUID and its own name still address it exactly
+        eng_id = synth.linear_team_id("engineering")
+        by_uuid = gql(c, f'{{ team(id: "{eng_id}") {{ name }} }}', h).json()["data"]["team"]
+        assert by_uuid == {"name": "engineering"}
+        by_name = gql(c, '{ team(id: "engineering") { name } }', h).json()["data"]["team"]
+        assert by_name == {"name": "engineering"}
+
+
+def test_a_stated_identifier_outranks_another_teams_derived_one(tmp_path):
+    """Two teams reduced to one key can derive the same identifier, and `issue(id:)` resolves
+    a repeat to the first row by doc_id. When one of the two WROTE that identifier down, doc_id
+    order is the wrong tie-break: the document that asked for the id answered "not found" at
+    it. Provided claims its spelling first; a derived one takes what is left."""
+    stated = "ENG-8774"
+    settings = build_corpus(
+        tmp_path,
+        [
+            # sorts first by doc_id, and derives exactly the identifier the other one states
+            _linear_doc(
+                next(
+                    d
+                    for d in (f"aa-{i}" for i in range(200_000))
+                    if synth.linear_identifier(d, "ENG") == stated
+                ),
+                "engineering",
+                "derives it",
+            ),
+            _linear_doc("zz-states-it", "engineering", "states it", identifier=stated, day="02"),
+        ],
+    )
+    with client_for(settings) as c:
+        h = {"Authorization": settings.admin_token}
+        got = gql(c, f'{{ issue(id: "{stated}") {{ identifier title }} }}', h).json()["data"]
+        assert got["issue"]["title"] == "states it"

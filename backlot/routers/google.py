@@ -205,15 +205,19 @@ def _mailbox_email(caller: Caller, user_id: str) -> str | None:
     return user_id if "@" in user_id else None
 
 
-def _mailbox_slug(caller: Caller, user_id: str) -> str | None:
-    """Resolve the requested mailbox to its container slug (the ``gmail_messages.mailbox`` value
-    the importer derived from the owner's name). None = all mailboxes (admin ``me``). A concrete
-    address (``me`` for a user, or an explicit email) maps its local-part to the slug so the WHOLE
-    mailbox — received and sent — is scoped, not just messages that address happened to author."""
+def _mailbox_address(mailbox: str) -> str:
+    """A mailbox's own address, for the ``Delivered-To`` a receiving MTA would have added.
+    A corpus that states the mailbox AS an address already carries its domain."""
+    return mailbox if "@" in mailbox else f"{mailbox}@{get_settings().org_domain}"
+
+
+def _mailbox_container(conn, caller: Caller, user_id: str) -> str | None:
+    """Resolve the requested mailbox to the ``gmail_messages.mailbox`` value it is stored under.
+    None = all mailboxes (admin ``me``). A concrete address (``me`` for a user, or an explicit
+    email) resolves to the WHOLE mailbox — received and sent — rather than to the messages that
+    address happened to author; ``store.mailbox_for`` is what knows how the corpus spelled it."""
     email = caller.email if user_id == "me" else (user_id if "@" in user_id else None)
-    if not email:
-        return None
-    return re.sub(r"[^a-z0-9]+", "_", email.split("@")[0].lower()).strip("_")
+    return store.mailbox_for(conn, email) if email else None
 
 
 def _service_email(request: Request) -> str:
@@ -227,6 +231,17 @@ def _service_email(request: Request) -> str:
     return f"service@{get_settings().org_domain}"
 
 
+def _mailbox_totals(conn, caller: Caller, user_id: str, ids) -> tuple[int, int]:
+    """``(messages, threads)`` in the requested mailbox. Two counts, because they are two numbers:
+    a thread of five messages is one thread, and reporting the message count as both made every
+    threaded mailbox claim more threads than it holds."""
+    mailbox = _mailbox_container(conn, caller, user_id)
+    return (
+        store.count_documents(conn, "gmail", container=mailbox, visible_ids=ids),
+        store.count_documents(conn, "gmail", container=mailbox, visible_ids=ids, roots_only=True),
+    )
+
+
 @router.get("/gmail/v1/users/{user_id}/profile")
 async def gmail_profile(user_id: str, request: Request):
     conn = auth.conn(request)
@@ -235,11 +250,18 @@ async def gmail_profile(user_id: str, request: Request):
     # otherwise the admin/service identity — never echo the raw ``me`` path segment.
     email = _mailbox_email(caller, user_id) or caller.email or _service_email(request)
     ids = auth.visible_ids(request, caller)
-    total = store.count_documents(
-        conn, "gmail", container=_mailbox_slug(caller, user_id), visible_ids=ids
-    )
-    return {"emailAddress": email, "messagesTotal": total, "threadsTotal": total, "historyId": "1"}
+    messages, threads = _mailbox_totals(conn, caller, user_id, ids)
+    return {
+        "emailAddress": email,
+        "messagesTotal": messages,
+        "threadsTotal": threads,
+        "historyId": "1",
+    }
 
+
+# The label a message carries when the corpus states none — the one `messages.get` reports, so a
+# query for it has to agree with the message it comes back with.
+_GMAIL_DEFAULT_LABEL = "INBOX"
 
 # The system labels Gmail always exposes (users.labels.list).
 _SYSTEM_LABELS = [
@@ -260,7 +282,7 @@ _SYSTEM_LABELS = [
 ]
 
 
-def _label_obj(lid: str, total: int = 0) -> dict:
+def _label_obj(lid: str, messages: int = 0, threads: int = 0) -> dict:
     hide = lid in ("SPAM", "TRASH", "CHAT")
     return {
         "id": lid,
@@ -268,9 +290,9 @@ def _label_obj(lid: str, total: int = 0) -> dict:
         "type": "system",
         "messageListVisibility": "hide" if hide else "show",
         "labelListVisibility": "labelHide" if lid.startswith("CATEGORY_") else "labelShow",
-        "messagesTotal": total,
+        "messagesTotal": messages,
         "messagesUnread": 0,
-        "threadsTotal": total,
+        "threadsTotal": threads,
         "threadsUnread": 0,
     }
 
@@ -280,10 +302,11 @@ async def gmail_labels(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    total = store.count_documents(
-        conn, "gmail", container=_mailbox_slug(caller, user_id), visible_ids=ids
-    )
-    labels = [_label_obj(lid, total if lid == "INBOX" else 0) for lid in _SYSTEM_LABELS]
+    messages, threads = _mailbox_totals(conn, caller, user_id, ids)
+    labels = [
+        _label_obj(lid, *((messages, threads) if lid == _GMAIL_DEFAULT_LABEL else (0, 0)))
+        for lid in _SYSTEM_LABELS
+    ]
     return {"labels": labels}
 
 
@@ -294,10 +317,10 @@ async def gmail_label_get(user_id: str, label_id: str, request: Request):
     if label_id not in _SYSTEM_LABELS:
         raise gerr.not_found_entity()
     ids = auth.visible_ids(request, caller)
-    total = store.count_documents(
-        conn, "gmail", author_email=_mailbox_email(caller, user_id), visible_ids=ids
+    messages, threads = _mailbox_totals(conn, caller, user_id, ids)
+    return _label_obj(
+        label_id, *((messages, threads) if label_id == _GMAIL_DEFAULT_LABEL else (0, 0))
     )
-    return _label_obj(label_id, total if label_id == "INBOX" else 0)
 
 
 _GMAIL_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
@@ -309,6 +332,7 @@ _GMAIL_KEYS = {
     "after",
     "before",
     "label",
+    "in",
     "has",
     "newer_than",
     "older_than",
@@ -317,7 +341,7 @@ _GMAIL_KEYS = {
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
     """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/subject:/
-    after:/before:/newer_than:/older_than:/label:/has: — the rest is free text matched
+    after:/before:/newer_than:/older_than:/label:/in:/has: — the rest is free text matched
     full-text."""
     ops: dict[str, list[str]] = {}
 
@@ -389,8 +413,13 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("subject", []):
         if v.lower() not in (row["title"] or "").lower():
             return False
-    for v in ops.get("label", []):
-        if v.lower() not in [x.lower() for x in store.jcol(row, "label_ids")]:
+    # `in:` and `label:` ask the same question of a message — Gmail's folders ARE labels — and both
+    # have to see the label a message is served under rather than only a stated one. `in:anywhere`
+    # is the exception: it widens the search to spam and trash, which this mock holds none of, so
+    # it restricts nothing.
+    labels = [x.lower() for x in store.jcol(row, "label_ids")] or [_GMAIL_DEFAULT_LABEL.lower()]
+    for v in ops.get("label", []) + [x for x in ops.get("in", []) if x.lower() != "anywhere"]:
+        if v.lower() not in labels:
             return False
     if any(v.lower() == "attachment" for v in ops.get("has", [])) and not store.jcol(
         row, "attachments"
@@ -489,6 +518,18 @@ def _gmail_doc(conn, ids, served_id: str):
     return store.gmail_by_id(conn, served_id, visible_ids=ids)
 
 
+def _by_thread(rows) -> list:
+    """One row per thread, first occurrence kept — so a thread listing reports a thread once,
+    whichever of its messages the search matched, in the order the match set arrived."""
+    seen, out = set(), []
+    for row in rows:
+        thread = _gmail_ids(row)[1]
+        if thread not in seen:
+            seen.add(thread)
+            out.append(row)
+    return out
+
+
 def _gmail_ids(row) -> tuple[str, str]:
     """``(id, threadId)`` for a row. A message that is its own thread root reports the same value
     twice, as real Gmail does.
@@ -508,7 +549,7 @@ async def gmail_messages_list(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    mailbox = _mailbox_slug(caller, user_id)  # container slug (None = all mailboxes)
+    mailbox = _mailbox_container(conn, caller, user_id)  # None = all mailboxes
     limit = _int(request, "maxResults", get_settings().default_page_size)
     offset = decode_cursor(request.query_params.get("pageToken"))
     q = request.query_params.get("q", "") or ""
@@ -542,7 +583,7 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     row = _gmail_doc(conn, ids, msg_id)
     if row is None:
         raise gerr.not_found_entity()
-    return _gmail_message(row, request.query_params.get("format", "full"))
+    return _gmail_message(row, request.query_params.get("format", "full"), caller.email)
 
 
 @router.get(
@@ -578,24 +619,31 @@ async def gmail_threads_list(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    mailbox = _mailbox_email(caller, user_id)
+    # The MAILBOX's threads, like messages.list and like real Gmail — not the threads the caller
+    # happens to have written in. Scoping by author served a mailbox owner none of the mail they
+    # received, and `q` was already scoping by container, so the two halves of this one listing
+    # disagreed about what a thread list is.
+    mailbox = _mailbox_container(conn, caller, user_id)
     limit = _int(request, "maxResults", get_settings().default_page_size)
     offset = decode_cursor(request.query_params.get("pageToken"))
     q = request.query_params.get("q", "") or ""
     if q.strip():
-        matched = _gmail_query(conn, mailbox, ids, q)
+        # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a
+        # reply, and lists it once even when several of its messages match.
+        matched = _by_thread(_gmail_query(conn, mailbox, ids, q))
         total = len(matched)
         rows = matched[offset : offset + limit]
     else:
-        total = store.count_documents(conn, "gmail", author_email=mailbox, visible_ids=ids)
-        rows = store.list_documents(
-            conn, "gmail", author_email=mailbox, visible_ids=ids, limit=limit, offset=offset
+        total = store.count_documents(
+            conn, "gmail", container=mailbox, visible_ids=ids, roots_only=True
         )
-    # a thread is keyed by its root; reply rows (thread_seq>0) aren't separate threads
+        # newest-first by internalDate, the order messages.list already serves and the order a
+        # capped crawl of a mailbox has to be stable under.
+        rows = store.list_gmail_in_range(
+            conn, mailbox, None, None, ids, limit=limit, offset=offset, roots_only=True
+        )
     threads = [
-        {"id": _gmail_ids(r)[1], "snippet": r["content"][:200], "historyId": "1"}
-        for r in rows
-        if (r["thread_seq"] or 0) == 0
+        {"id": _gmail_ids(r)[1], "snippet": r["content"][:200], "historyId": "1"} for r in rows
     ]
     body = {"threads": threads, "resultSizeEstimate": total}
     token = next_page_token(offset, len(rows), total)
@@ -625,7 +673,7 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
         "id": thread_id.lower(),
         "snippet": msgs[0]["content"][:200],
         "historyId": "1",
-        "messages": [_gmail_message(m, fmt) for m in msgs],
+        "messages": [_gmail_message(m, fmt, caller.email) for m in msgs],
     }
 
 
@@ -662,30 +710,48 @@ def _gmail_ts(row) -> int:
     return synth.epoch(row["thread_id"] or row["id"]) + (row["thread_seq"] or 0) * 3600
 
 
-def _gmail_message(row, fmt: str) -> dict:
+def _gmail_message(row, fmt: str, caller_email: str | None = None) -> dict:
+    """One message in the API's shape.
+
+    `caller_email` decides Bcc. Real Gmail keeps the Bcc header only on the sender's own copy — a
+    recipient's is stripped in transit — so a reader who is not the author must not learn who was
+    blind-copied. An admin/service caller has no email and is not the sender either.
+    """
     ts = _gmail_ts(row)
     author = row["author_email"]
     display = author.split("@")[0].replace(".", " ").title()
     msg_id = row["message_id"] or f"<{row['id']}@{get_settings().org_domain}>"
-    # a fetched (received) message carries transport/MIME headers but NOT Bcc (stripped in transit)
     headers = [
         {
             "name": "Delivered-To",
-            "value": row["to_addr"] or f"{row['mailbox']}@{get_settings().org_domain}",
+            "value": row["to_addr"] or _mailbox_address(row["mailbox"]),
         },
         {"name": "MIME-Version", "value": "1.0"},
-        {"name": "Subject", "value": row["title"]},
+    ]
+    # `Subject` sits with `To`, not with the mandatory headers: RFC 5322 §3.6 gives both 0..1, and
+    # this corpus format says an empty subject IS the absence of one ("a message with no Subject
+    # header is legal"). Emitting `Subject: ""` served a header real Gmail would have left out.
+    # Placed here rather than appended with the others so the header order stays as it was.
+    if row["title"]:
+        headers.append({"name": "Subject", "value": row["title"]})
+    headers += [
         {"name": "From", "value": f"{display} <{author}>"},
-        {"name": "To", "value": row["to_addr"] or f"{row['mailbox']}@{get_settings().org_domain}"},
         {"name": "Date", "value": synth.rfc2822(ts)},
         {"name": "Message-ID", "value": msg_id},
     ]
-    for hname, col in (
+    optional = [
+        # `To` among them: RFC 5322 allows a message with no destination field, and real Gmail
+        # returns the headers the message has. `Delivered-To` above keeps its default, since a
+        # receiving MTA really does add one.
+        ("To", "to_addr"),
         ("Cc", "cc"),
         ("Reply-To", "reply_to"),
         ("In-Reply-To", "in_reply_to"),
         ("References", "refs"),
-    ):
+    ]
+    if caller_email and caller_email == author:
+        optional.insert(1, ("Bcc", "bcc"))
+    for hname, col in optional:
         if row[col]:
             headers.append({"name": hname, "value": row[col]})
     attachments = store.jcol(row, "attachments")
@@ -696,7 +762,7 @@ def _gmail_message(row, fmt: str) -> dict:
     msg = {
         "id": _gmail_ids(row)[0],
         "threadId": _gmail_ids(row)[1],
-        "labelIds": store.jcol(row, "label_ids") or ["INBOX"],
+        "labelIds": store.jcol(row, "label_ids") or [_GMAIL_DEFAULT_LABEL],
         "snippet": row["content"][:200],
         "historyId": "1",
         "internalDate": str(ts * 1000),

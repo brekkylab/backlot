@@ -8,9 +8,11 @@ documents, or load a public dataset.
 You describe each document the way its own service would, and a per-source JSON Schema says what
 that record may carry. `title` and `content` are served verbatim; so is every other field you set —
 authors, timestamps, threads, comments, labels, states, ACLs — so no part of a response *has* to be
-synthesized. What you leave out is filled in **deterministically**, each value hashed from the
-stable key it belongs to (a document's `doc_id`, a container's name, an author's address), so ids
-never move between calls or pages.
+synthesized. The facts a document cannot exist without are **required**, not invented: its author,
+the container it lives in, and its clock. What the corpus does not own are the **served ids**, and
+those are derived **deterministically** — each hashed from the stable key it belongs to (the
+record's own identity, a container's name, an author's address) — so an id never moves between
+calls or pages.
 
 ## Bring your own corpus
 
@@ -26,12 +28,13 @@ backlot import artifact-dir/               # a sharded corpus + its manifest, di
 ```
 
 ```json
-{"source_type": "slack", "channel": "incidents", "author_email": "bob@acme.com", "content": "Anyone seeing 502s from the gateway?", "replies": [{"content": "Looking now.", "author_email": "ava@acme.com"}]}
-{"source_type": "gmail", "mailbox": "ceo", "title": "Q1 board deck draft", "content": "Draft narrative for the Q1 board meeting.", "author_email": "ceo@acme.com", "to": "ava@acme.com", "readers": ["ceo@acme.com", "ava@acme.com"]}
+{"source_type": "slack", "channel": "incidents", "author_email": "bob@acme.com", "created": "2026-02-10T18:00:00Z", "content": "Anyone seeing 502s from the gateway?", "replies": [{"content": "Looking now.", "author_email": "ava@acme.com", "created": "2026-02-10T18:00:40Z"}]}
+{"source_type": "gmail", "mailbox": "ceo", "title": "Q1 board deck draft", "content": "Draft narrative for the Q1 board meeting.", "author_email": "ceo@acme.com", "created": "2026-01-20T16:00:00Z", "to": "ava@acme.com", "readers": ["ceo@acme.com", "ava@acme.com"]}
 ```
 
-Only `source_type` and `content` are required (`title` too, for every source except Slack). Where
-to look next:
+A record states the facts the served document cannot exist without — who wrote it, where it
+lives, when it happened — plus whatever its own vendor always reports. Nothing is filled in behind
+your back: `backlot import --dry-run` names every record that leaves one out. Where to look next:
 
 | To learn | Read |
 |---|---|

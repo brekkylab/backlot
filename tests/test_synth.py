@@ -1,5 +1,8 @@
 import hashlib
+import re
 from urllib.parse import urlparse
+
+import pytest
 
 from backlot import synth
 
@@ -103,6 +106,51 @@ def test_jira_project_key_unique_for_colliding_names():
     b = synth.jira_project_key("eng-sre/runbooks")
     assert a != b
     assert synth.jira_project_key("eng-serving-runtime") == a  # deterministic
+
+
+@pytest.mark.parametrize(
+    "container",
+    [
+        "payments",
+        "customer-support",
+        "3d-printing",
+        "1234-5678",
+        "platform-infra-reliability-and-cost-ops",
+        "a-b-c-d-e-f-g-h-i-j-k-l",
+        "a",
+        "!!!",
+    ],
+    ids=[
+        "short",
+        "two-words",
+        "leading-digit",
+        "all-digit-initials",
+        "six-words",
+        "twelve-words",
+        "single-character",
+        "no-word-characters",
+    ],
+)
+def test_jira_project_key_is_a_shape_real_jira_can_issue(container):
+    """`CreateProjectDetails.key` states the whole rule: a project key starts with an uppercase
+    letter, continues in uppercase alphanumerics, and is at most 10 characters. `jira.schema.json`
+    enforces exactly that on a corpus-PROVIDED key, so a DERIVED one has to satisfy it too or the
+    mock refuses as input the key it just served -- which it did, for any project name past four
+    words and for one whose first word starts with a digit."""
+    key = synth.jira_project_key(container)
+    assert re.fullmatch(r"[A-Z][A-Z0-9]{1,9}", key), key
+    assert len(key) <= synth.JIRA_PROJECT_KEY_MAX
+
+
+def test_jira_project_key_leaves_an_already_valid_key_alone():
+    """The cap moves only keys that were already invalid, and that is a property rather than a
+    coincidence: a key satisfying the real rule is at most 10 characters and letter-led, so its
+    readable half is at most 4 and starts with a letter, and both the trim and the digit-strip are
+    no-ops. Pinned over the container names the bench actually carries, which is what makes the
+    change safe to land without re-deriving anyone's stored keys."""
+    for container in ("customer-support", "internal-support", "payments", "engineering"):
+        key = synth.jira_project_key(container)
+        assert key == synth._key(container, "PROJ") + synth._digest(container)[:6].upper()
 
 
 def test_jira_key_number_matches_jira_keys_suffix():

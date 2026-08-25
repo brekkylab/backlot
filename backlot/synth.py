@@ -75,6 +75,142 @@ def slack_channel_id(channel_name: str) -> str:
     return "C" + h[:10].upper()
 
 
+_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+# Slack's own inline markup, in the order it has to be tried: a run inside backticks is code and
+# nothing inside it is re-read as bold/italic.
+_SLACK_INLINE = (
+    ("code", re.compile(r"`([^`\n]+)`")),
+    ("bold", re.compile(r"(?<!\w)\*([^*\n]+)\*(?!\w)")),
+    ("italic", re.compile(r"(?<!\w)_([^_\n]+)_(?!\w)")),
+    ("strike", re.compile(r"(?<!\w)~([^~\n]+)~(?!\w)")),
+)
+_BULLET = re.compile(r"^\s*[-*\u2022]\s+(.*)$")
+_FENCE = re.compile(r"```(.*?)```", re.S)
+
+
+def slack_block_id(seed: str) -> str:
+    """The 5-character ``block_id`` on a rich_text block. Measured shape: base64 alphabet (a `+`
+    was observed), so it is drawn from that rather than from hex."""
+    n = hnum(seed, salt="blkid", length=16)
+    out = []
+    for _ in range(5):
+        out.append(_B64[n % 64])
+        n //= 64
+    return "".join(out)
+
+
+def _slack_inline(text: str) -> list[dict]:
+    """One rich_text_section's elements. A styled run is its OWN text element and the whitespace
+    between two of them is another with no style — which is what the live API returns, rather than
+    one element carrying the markup characters."""
+    if not text:
+        return []
+    for style, pat in _SLACK_INLINE:
+        m = pat.search(text)
+        if m:
+            out = []
+            out += _slack_inline(text[: m.start()])
+            out.append({"type": "text", "text": m.group(1), "style": {style: True}})
+            out += _slack_inline(text[m.end() :])
+            return out
+    return [{"type": "text", "text": text}]
+
+
+def _slack_section(text: str) -> dict:
+    return {"type": "rich_text_section", "elements": _slack_inline(text)}
+
+
+def _slack_prose_elements(text: str) -> list[dict]:
+    """Split prose into list blocks and sections. Consecutive bullet lines become ONE
+    rich_text_list, which is how Slack stores them; everything else stays a section."""
+    out: list[dict] = []
+    run: list[str] = []
+    plain: list[str] = []
+
+    def flush_plain():
+        if plain:
+            body = "\n".join(plain).strip("\n")
+            if body.strip():
+                out.append(_slack_section(body))
+            plain.clear()
+
+    def flush_run():
+        if run:
+            out.append(
+                {
+                    "type": "rich_text_list",
+                    "style": "bullet",
+                    "indent": 0,
+                    "border": 0,
+                    "elements": [_slack_section(item) for item in run],
+                }
+            )
+            run.clear()
+
+    for line in text.split("\n"):
+        m = _BULLET.match(line)
+        if m:
+            flush_plain()
+            run.append(m.group(1))
+        else:
+            flush_run()
+            plain.append(line)
+    flush_run()
+    flush_plain()
+    return out
+
+
+def slack_blocks(text: str, seed: str) -> list[dict] | None:
+    """A message's ``blocks``: the one rich_text block Slack builds from what was typed.
+
+    Derived rather than stored, because ``text`` keeps the original markup in a real response too —
+    the block is a second rendering of the same string, not a different message. Four shapes are
+    produced, each measured against the live API:
+
+    * a fenced run -> ``rich_text_preformatted`` (with ``border``, which the live payload carries)
+    * consecutive bullet lines -> ``rich_text_list``
+    * `code` / *bold* / _italic_ / ~strike~ -> one text element per run, carrying ``style``
+    * anything else -> a plain ``rich_text_section``
+
+    Slack's own ``<@U…>`` / ``<#C…>`` / ``<http…|label>`` encodings are NOT parsed into mention,
+    channel and link elements: no corpus writes them (measured at 0% across the ERB slack corpus),
+    so that branch would be code that never runs. Emoji are left inside their text run for the same
+    reason the encodings are — the element shape was never observed.
+
+    Returns None for a message with no text, which has no block to build.
+    """
+    if not text or not text.strip():
+        return None
+    elements: list[dict] = []
+    pos = 0
+    for m in _FENCE.finditer(text):
+        elements += _slack_prose_elements(text[pos : m.start()])
+        body = m.group(1).strip("\n")
+        elements.append(
+            {
+                "type": "rich_text_preformatted",
+                "elements": [{"type": "text", "text": body}],
+                "border": 0,
+            }
+        )
+        pos = m.end()
+    elements += _slack_prose_elements(text[pos:])
+    if not elements:
+        return None
+    return [{"type": "rich_text", "block_id": slack_block_id(seed), "elements": elements}]
+
+
+def slack_client_msg_id(seed: str) -> str:
+    """Slack's ``client_msg_id``: a v4 UUID, not an opaque token.
+
+    Measured — every live value is 36 characters in canonical 8-4-4-4-12 form with the version
+    nibble and variant bits of a v4 (`c0524382-348d-4a0e-824a-a58e96ed76c3`), which is what the
+    posting client generates. A 16-hex token passed anything that only reads the field, and failed
+    anything that validates it as a UUID."""
+    return _uuid_from("slack-cmid:" + seed)
+
+
 def slack_user_id(email: str) -> str:
     h = _digest("user:" + email)
     return "U" + h[:10].upper()
@@ -94,9 +230,10 @@ def slack_fmt_ts(epoch_sec: int, key: str) -> str:
 
 
 def gmail_id(seed: str, salt: str = "msg") -> str:
-    """An opaque 16-hex token. Used for attachment ids and Slack's ``client_msg_id``, where the
-    value is never parsed — so it deliberately spans the full 64-bit range. A *message* id is
-    parsed by Gmail and must not; use ``gmail_message_id``."""
+    """An opaque 16-hex token, used for attachment ids — the value is never parsed, so it
+    deliberately spans the full 64-bit range. A *message* id is parsed by Gmail and must not; use
+    ``gmail_message_id``. Slack's ``client_msg_id`` was minted here once and is not: it is a v4
+    UUID (see ``slack_client_msg_id``)."""
     return hnum(seed, salt=salt, length=16).__format__("016x")
 
 
@@ -288,11 +425,29 @@ def _key(container: str, fallback: str) -> str:
     return fallback
 
 
+# Real Jira Cloud's cap on a project key. `CreateProjectDetails.key` states the whole rule: "Project
+# keys must be unique and start with an uppercase letter followed by one or more uppercase
+# alphanumeric characters. The maximum length is 10 characters." -- which is the pattern
+# `jira.schema.json` enforces on a corpus-provided key, so a key this module DERIVES has to satisfy
+# it too or the mock serves one it would refuse as input.
+JIRA_PROJECT_KEY_MAX = 10
+
+
 def jira_project_key(container: str) -> str:
     """A project key meant to be unique per container: the readable word-initials prefix (see
     :func:`_key`) plus a short hash of the full name, so two SYNTHESIZED keys practically never
     collide with each other (the router's reverse key->project lookup + the derived issue keys
-    stay unambiguous). Deterministic, valid Jira shape (uppercase letter start, uppercase alnum).
+    stay unambiguous). Deterministic, and a shape real Jira can issue: uppercase letter start,
+    uppercase alphanumeric, at most :data:`JIRA_PROJECT_KEY_MAX` characters.
+
+    The readable half is what gives, because the digest is what keeps keys distinct: it is trimmed
+    to whatever the cap leaves after the 6-hex suffix, and leading digits are dropped so the key
+    starts with a letter (`3d-printing` reduced to `3P`, which no Jira accepts). A container whose
+    initials are ALL digits keeps the `PROJ` fallback rather than starting with the digest.
+
+    Only an already-invalid key moves. A key that satisfies the real rule is at most 10 characters
+    and letter-led, so its readable half is at most 4 and starts with a letter -- both the trim and
+    the strip are then no-ops and the key is byte-identical.
 
     NOT guaranteed unique against a corpus-PROVIDED prefix, though: a project with no provided
     keys of its own is never checked against `importer.byo`'s 1:1 prefix<->project enforcement
@@ -300,7 +455,9 @@ def jira_project_key(container: str) -> str:
     equal another project's provided prefix — or, symmetrically, another KEYLESS project's own
     digest, at the identical ~1/16.7M order (6 hex digits). See the residual documented on
     `store.py`'s `idx_jira_served` schema comment and `importer.byo`'s `resolve_jira_numbers`."""
-    return _key(container, "PROJ") + _digest(container)[:6].upper()
+    digest = _digest(container)[:6].upper()
+    readable = _key(container, "PROJ").lstrip("0123456789")[: JIRA_PROJECT_KEY_MAX - len(digest)]
+    return (readable or "PROJ") + digest
 
 
 def confluence_space_key(container: str) -> str:
@@ -495,8 +652,14 @@ def linear_team_key(container: str) -> str:
     NO hash suffix, unlike :func:`jira_project_key` / :func:`confluence_space_key`: the readable
     form reproduces the corpus's own prefixes exactly (``engineering`` -> ``ENG``,
     ``product-management`` -> ``PM``), so a served identifier matches the key written in the issue
-    text and in every source that cites it. Two containers CAN collide on one key — the app index
-    resolves that to the first team by name, and the team UUID always addresses it exactly."""
+    text and in every source that cites it. Two containers CAN collide on one key — a lookup
+    breaks that tie by team name order (see :func:`backlot.store.linear_team_by_served_key`), and
+    the team UUID always addresses one exactly.
+
+    The DERIVATION, not the last word: a team whose own issues spell a different prefix out is
+    served under that prefix instead, and the importer stores it as the team's ``served_key`` (see
+    ``byo._Loader._claim_linear_prefix``). Read a served key from ``linear_teams``, not from here,
+    anywhere a corpus-provided one can reach."""
     return _key(container, "TEAM")
 
 

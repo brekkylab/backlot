@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Page or database title."
+      "description": "Page or database title.",
+      "minLength": 1
     },
     "doc_id": {
       "type": "string",
@@ -23,7 +24,8 @@
     },
     "teamspace": {
       "type": "string",
-      "description": "The teamspace this page/database belongs to (default: the source_type)."
+      "minLength": 1,
+      "description": "The teamspace this page/database belongs to."
     },
     "group": {
       "type": [
@@ -63,10 +65,6 @@
       },
       "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
     },
-    "meta": {
-      "type": "object",
-      "description": "Free-form per-source structured extras merged into the record."
-    },
     "subtype": {
       "enum": [
         "page",
@@ -102,7 +100,8 @@
         "number",
         "string"
       ],
-      "description": "Creation time (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+      "minLength": 1,
+      "description": "Creation time (epoch seconds or ISO 8601)."
     },
     "updated": {
       "type": [
@@ -110,7 +109,8 @@
         "number",
         "string"
       ],
-      "description": "last_edited_time (epoch seconds or ISO 8601). Default: created."
+      "minLength": 1,
+      "description": "last_edited_time (epoch seconds or ISO 8601)."
     },
     "comments": {
       "type": "array",
@@ -145,6 +145,7 @@
               "number",
               "string"
             ],
+            "minLength": 1,
             "description": "Optional creation time (epoch seconds or ISO string)."
           }
         },
@@ -160,14 +161,22 @@
             ]
           }
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "required": [
+          "author_email",
+          "created_ts"
+        ]
       }
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
-    "title"
+    "created",
+    "source_type",
+    "teamspace",
+    "title",
+    "updated"
   ],
   "additionalProperties": false
 }

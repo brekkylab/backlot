@@ -26,6 +26,8 @@ from backlot import serve_or_connect
 
 CORPUS = [
     {
+        "author_email": "ava@acme.com",
+        "created": "2026-02-11T09:00:00Z",
         "source_type": "s3",
         "bucket": "eng-artifacts",
         "key": "runbooks/oncall.md",
@@ -34,6 +36,8 @@ CORPUS = [
         "content_type": "text/markdown",
     },
     {
+        "author_email": "ava@acme.com",
+        "created": "2025-12-05T09:00:00Z",
         "source_type": "s3",
         "bucket": "eng-artifacts",
         "key": "design/architecture.md",

@@ -92,7 +92,9 @@ _TZ = {
     "PT": -8,
 }
 _ADDR = re.compile(r"<([^>@\s]+@[^>\s]+)>")
-_JIRA = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<name>[^:]+?):\s*(?P<body>.*)$", re.DOTALL)
+_BARE_ADDR = re.compile(r"^[^<>@\s,]+@[^<>@\s,]+$")
+# The same shape found INSIDE a label: "Customer (NimbleDocs, ops@nimbledocs.com)".
+_BARE_ADDR_IN_TEXT = re.compile(r"([^<>@\s,()]+@[^<>@\s,()]+)")
 # Slack speaker: 1–3 name-ish words / handles ("Alex", "ops-bot", "Maria L", "IT Help"), an
 # optional "(Team)"/"(Role)" label some docs append ("Elena (CFO)", "Asha (FinanceOps)"), then
 # ": ". The parenthetical is dropped so only the bare name resolves against the directory.
@@ -121,8 +123,19 @@ def canonical(name: str) -> str:
     return "".join(t for t in re.split(r"[^a-z0-9]+", s) if len(t) > 1)
 
 
-# A name token: starts with a letter (incl. accents), then letters/apostrophe/hyphen/dot only.
-_NAME_TOKEN = re.compile(r"^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’.\-]*$")
+# A name token: a letter run carrying only an apostrophe, hyphen or the dot of an initial
+# ("O'Brien", "Al-Masri", "Aisha K. Patel"). A letter is any alphabet's letter rather than Latin-1's,
+# because the bench writes "Tomáš Novák" and "Łukasz Dąbrowski" -- both employees of the directory.
+_LETTER = r"[^\W\d_]"
+_NAME_TOKEN = re.compile(rf"^{_LETTER}(?:{_LETTER}|['’.\-])*$")
+# A name is capitalised, which is how a person is told from the prose around them: the corpus
+# writes "comment by Aisha Patel" and "Priya Mehta on", and the lowercase word is the giveaway that
+# the sentence continued. These particles are the exception -- written lowercase INSIDE a name,
+# never first ("Daan van der Meer", "Marco de la Vega", "Omar ben Khalid").
+_NAME_PARTICLES = frozenset(
+    """van von der den de del della di da das dos du le la las los ter tot op ten
+    bin ben ibn al af av y e mac mc st""".split()
+)
 # Words that mark a value as a team/placeholder/prose fragment, not a person.
 _NON_PERSON_WORDS = {
     "team",
@@ -147,14 +160,141 @@ _NON_PERSON_WORDS = {
     "admin",
     "system",
     "service",
+    # A desk, a rota or a vendor, written in title case so capitalisation alone cannot tell it from
+    # a name: "Acme NetOps", "Acadia Health", "FinNova SRE", "Veridian Billing Contact". The bench
+    # names 743 of these, and a desk is not somebody who can hold a mailbox.
+    "ops",
+    "netops",
+    "devops",
+    "sre",
+    "eng",
+    "engineer",
+    "engineers",
+    "engineering",
+    "operations",
+    "operation",
+    "contact",
+    "liaison",
+    "rep",
+    "lead",
+    "leads",
+    "owner",
+    "reviewer",
+    "manager",
+    "health",
+    "security",
+    "billing",
+    "finance",
+    "legal",
+    "compliance",
+    "analytics",
+    "infra",
+    "infrastructure",
+    "platform",
+    "network",
+    "networks",
+    "networking",
+    "systems",
+    "solutions",
+    "labs",
+    "lab",
+    "desk",
+    "helpdesk",
+    "partners",
+    "holdings",
+    "inc",
+    "llc",
+    "corp",
+    "gmbh",
+    "soc",
+    "sme",
+    "it",
+    "hr",
+    "csm",
+    "se",
+    # The rest of the bench's role acronyms. Each stands where a name would ("PM Priya Rao",
+    # "QA Lena Fischer"), and three capitalised tokens is a name as far as the test above can see.
+    # Only the ones the corpus actually writes: `tpm`, `dba` and `sdr` appear in none of its
+    # labels, and `ae` in eight -- not enough to spend a name like "Kim Ae Ri" on.
+    "qa",
+    "pm",
+    "noc",
+    "tl",
+    "cs",
 }
+
+
+# Words that make a label an ACTIVITY rather than somebody: "Design review", "PM review",
+# "Kickoff notes". `_person_like` accepts every one of them -- two capitalised tokens is all it
+# asks -- so 19,450 linear comments would otherwise be attributed to a meeting. A label carrying
+# one of these words is a passage heading, and the passage keeps it.
+_ACTIVITY_WORDS = frozenset(
+    """review reviews planning notes note feedback sync standup retro retrospective demo kickoff
+    meeting discussion session update updates check checkin followup follow follow-ups followups
+    triage decision decisions escalation handoff walkthrough audit signoff call debrief postmortem
+    grooming refinement alignment status summary recap readout onboarding training workshop spike
+    research analysis testing rollout launch release migration cleanup hardening hotfix context
+    background blocked blocker blockers risk risks outcome
+    created opened closed resolved filed reported merged deployed shipped scheduled
+    steps items links critique implementation prototype todo mitigation checklist""".split()
+)
+# The second line is the bench's own section headings, counted off its comment labels: "Next
+# steps" (509 rows), "Prototype" (374), "Design critique" (262), "Action items" (165), "Links"
+# (160), "Implementation" (128), "TODO" (85), "Mitigation" (46), "QA checklist" (48). ERB is a
+# released corpus, so this list can be finished rather than merely extended -- but only for words
+# that name a THING. "Slack thread" would take `SRE Team (thread #support)` from the SRE desk to
+# nobody, and "hypothesis" would take "Aisha Patel Hypothesis" from Aisha Patel to nobody, which
+# is the attribution the label exists to carry.
+_CUSTOMER_WORD = re.compile(r"\b(customers?|client)\b", re.I)
+# "Support (to customer)" names the AUDIENCE, not the author: the desk wrote it.
+_CUSTOMER_AUDIENCE = re.compile(r"\bto (?:the )?(?:customers?|client)\b", re.I)
+
+
+def _names_an_activity(label: str | None) -> bool:
+    """True when a label names something that happened rather than somebody who acted."""
+    return bool({t.lower().strip(".") for t in str(label or "").split()} & _ACTIVITY_WORDS)
+
+
+_COUNTERPARTY_SIDE = frozenset({"customer", "customers", "client", "clients"})
+
+
+def _is_counterparty_side(*parts: str | None) -> bool:
+    """Is this side of a label the counterparty MARKER, rather than a phrase that mentions them?
+
+    "Customer (Emily Zhao, Datawave)" and "Customer - Ravi Menon" hand the name to the customer;
+    "(Priya Shah, Support) — Updated customer" and "— Sent customer workaround" are our own employee
+    saying what they did for one. Both put the word on the side opposite the name, so the word alone
+    cannot tell them apart -- being the WHOLE of that side can.
+    """
+    for part in parts:
+        if not part:
+            continue
+        words = [t.lower().strip(".,:;()-") for t in str(part).split()]
+        words = [w for w in words if w.isalpha()]
+        # Each side on its own: "NoteWave (Customer, Maria Chen)" puts the company on one and the
+        # marker on the other, and together they would look like a phrase rather than a marker.
+        if words and set(words) <= _COUNTERPARTY_SIDE:
+            return True
+    return False
+
+
+def _names_counterparty(*parts: str | None) -> bool:
+    """True when any of these pieces of one label names the other side of the deal.
+
+    A person named beside the counterparty is the counterparty's -- "NoteWave (Customer, Maria
+    Chen)" is their staff, not this org's, however well the name matches the directory. "Support (to
+    customer)" names the AUDIENCE instead, and the desk is still the author."""
+    s = " ".join(p for p in parts if p)
+    return bool(_CUSTOMER_WORD.search(s)) and not _CUSTOMER_AUDIENCE.search(s)
 
 
 def _person_like(name: str) -> bool:
     """A name worth minting as a real org user: a genuine 'First Last' (2–4 name tokens).
     Rejects transcript junk, aliases/emails in a name field, team/placeholder names
-    ('Customer Success Team'), and parenthetical/prose fragments ('(Aisha Bello, SRE) - Sign-off…'),
-    while accepting middle initials ('Aisha K. Patel') and accented/hyphenated names ('Tomás Rré')."""
+    ('Customer Success Team'), desks and vendors ('Acme NetOps'), prose that ran into the field
+    ('comment by Aisha Patel'), and parenthetical fragments ('(Aisha Bello, SRE) - Sign-off…'),
+    while accepting middle initials ('Aisha K. Patel'), any alphabet's letters ('Tomáš Novák') and
+    lowercase name particles ('Daan van der Meer')."""
     if not name or len(name) > 40:
         return False
     if any(ch in name for ch in "@()[]{},:;/\n\t0123456789"):
@@ -164,7 +304,131 @@ def _person_like(name: str) -> bool:
         return False
     if any(t.lower().strip(".") in _NON_PERSON_WORDS for t in toks):
         return False
-    return all(_NAME_TOKEN.match(t) for t in toks)
+    for i, t in enumerate(toks):
+        if not _NAME_TOKEN.match(t):
+            return False
+        if not t[:1].isupper() and not (i and t.lower().strip(".") in _NAME_PARTICLES):
+            return False
+    return True
+
+
+# The bench names a person in six interchangeable forms, and a role label sits on either side of
+# the name. One recognizer serves every call site that reads such a reference -- jira and linear
+# comments, fireflies speakers, slack speakers -- because the notation is one notation.
+_TRAILING_DATE = re.compile(r"\s*[-\u2013\u2014]?\s*\d{4}-\d{2}-\d{2}\s*$")
+# The punctuation a split leaves at the head of a label: the `|` of a table row, a dash, and the
+# colon of a comment whose label is itself empty (": Priya Shah - Eng feedback: body"), which
+# otherwise stays inside the first side and disqualifies the name sitting in it.
+_LEADING_NOISE = re.compile(r"^[|:\-\u2013\u2014\s]+")
+# A SPACED dash, which is how the corpus joins a desk to the person staffing it
+# ("Support - Aisha Patel"). Unspaced hyphens are part of a word ("Follow-ups") and are left alone.
+_SPACED_DASH = re.compile(r"\s+[-\u2013\u2014]\s+")
+
+
+def _one_parenthetical(s: str) -> tuple[str, str] | None:
+    """``'Role (Name) tail'`` -> ``('Role tail', 'Name')``; None when there is no single
+    parenthetical to split on."""
+    m = re.fullmatch(r"([^()]*)\(([^()]*)\)([^()]*)", s)
+    if not m:
+        return None
+    return f"{m.group(1)} {m.group(3)}".strip(" ,-\u2013\u2014\t"), m.group(2).strip()
+
+
+def person_reference(label, *, first_names=None) -> tuple[str | None, str | None]:
+    """A bench person reference -> ``(person display name, role label)``.
+
+    Reads ``Name``, ``Name (Role)``, ``Role (Name)``, ``(Name)``, ``Name, Role``,
+    ``(Name, Role)``, ``Role - Name``, any of those trailed by a date, and the leading ``|`` a
+    table-shaped comment carries. Which side holds the person is decided by :func:`_person_like`,
+    not by position, because the corpus writes both orders.
+
+    ``(None, label)`` says no side names a person the directory could hold: a desk ("Support",
+    "QA") or a section heading ("Follow-ups"). The caller decides what that means for its source,
+    which is why the label is returned rather than dropped.
+
+    ``first_names`` resolves a bare first name -- transcripts and comment threads label people that
+    way -- and is deliberately a caller-supplied index of UNAMBIGUOUS names only.
+    """
+    s = _TRAILING_DATE.sub("", _LEADING_NOISE.sub("", str(label or "").strip())).strip()
+    if not s:
+        return None, None
+    split = _one_parenthetical(s)
+    sides = [s] if split is None else [split[0], split[1]]
+    if split is None and _SPACED_DASH.search(s):
+        sides = [p.strip() for p in _SPACED_DASH.split(s, 1)]
+
+    def other(i: int) -> str | None:
+        return (sides[1 - i] or None) if len(sides) == 2 else None
+
+    # One rule across all three branches: a side that is nothing but the counterparty marker gives
+    # the name beside it away. "Customer - Ravi Menon" is their Ravi Menon; "Customer Success -
+    # Aisha Patel" is a desk of ours that merely has the word in its name.
+    for i, side in enumerate(sides):
+        if _person_like(side) and not _is_counterparty_side(other(i)):
+            return side, other(i)
+    for i, side in enumerate(sides):
+        if "," in side:
+            head, tail = (p.strip() for p in side.split(",", 1))
+            # The OTHER side still binds a name that comes first: "Customer - Ravi Menon, DataWeave"
+            # names the customer's Ravi Menon. What follows the comma does not -- "Owen Phillips,
+            # sent customer workaround" is our own employee describing what they did, and reading
+            # that as the counterparty put 13 employees on a customer's domain.
+            if _person_like(head) and not _is_counterparty_side(other(i)):
+                return head, (tail or other(i))
+            # The comma carries both orders, like the parenthetical and the dash: "Kira Thompson,
+            # Support" names the person first and "(Launch day, Sean Gallagher)" names them second.
+            # Only the second order asks about the counterparty, and it asks about everything ahead
+            # of the name: "NoteWave (Customer, Maria Chen)" and "Customer (FinEdge, Emily Zhao)"
+            # put the marker on different sides, and either way the name is their staff, not this
+            # org's. A name that comes FIRST is not read that way -- what follows it is that
+            # employee's own function or what they did ("Owen Phillips, sent customer workaround"),
+            # and reading those as the counterparty put 13 employees on a customer's domain.
+            if _person_like(tail) and not _is_counterparty_side(head, other(i)):
+                return tail, (head or other(i))
+    for i, side in enumerate(sides):
+        hit = (first_names or {}).get(side.lower())
+        if hit:
+            return hit, other(i)
+    # The corpus also writes the desk and the person as one run of words, with no punctuation to
+    # split on: "Support Maya Chen", "Dev Patel Support", "by Marcus Li", "Rafael Mendes SRE
+    # Oncall". A desk word anywhere in a label disqualifies the whole of it, which is what leaves
+    # these unresolved, so scan the runs INSIDE it -- longest first, or a real four-token name
+    # would lose to its own two-token prefix. The counterparty rule applies here as it does to the
+    # comma: a name in a label that names the other side of the deal is their staff.
+    toks = s.split()
+    if len(toks) > 2 and not _names_counterparty(s):
+        for width in range(min(4, len(toks) - 1), 1, -1):
+            for start in range(len(toks) - width + 1):
+                run = " ".join(toks[start : start + width])
+                if _person_like(run):
+                    rest = " ".join(toks[:start] + toks[start + width :]).strip(" ,-–—")
+                    return run, (rest or None)
+    # A label wrapped entirely in parentheses -- "(Customer, Northpeak Health)" -- is unwrapped,
+    # since the brackets add nothing. Any other unresolved label is returned as written: half of
+    # "Support (Aisha)" is still part of what the corpus said about this comment.
+    if split is not None and not sides[0]:
+        return None, (sides[1] or None)
+    return None, s
+
+
+def _counterparty_owns(label: str | None, person: str | None, company: str | None) -> bool:
+    """Does the company this record names own the person written in its comment label?
+
+    A jira ticket states its ``customer_company`` separately, so the label can say whose person a
+    name is, and it says so by position -- the same asymmetry the comma reads. Ahead of the name the
+    company marks their staff ("LuminaHealth / Priya Shah"); behind it one of ours acted toward them
+    ("Lena Park (Support) -> StreamlineAI", "Liam O'Rourke (Support/TAM) - Shared plan with Acme
+    AI"). A name that IS the company is nobody at all ("Informed Acme AI").
+    """
+    if not (label and person and company):
+        return False
+    whole, who, firm = _slug(label), _slug(person), _slug(company)
+    if not firm or firm not in whole:
+        return False
+    if firm in who:
+        return True
+    at_firm, at_who = whole.find(firm), whole.find(who)
+    return at_who >= 0 and at_firm < at_who
 
 
 def _parse_named_email(s: str) -> tuple[str, str | None]:
@@ -181,16 +445,31 @@ def _user_token(email: str) -> str:
 
 
 def _slug(name: str) -> str:
-    parts = [re.sub(r"[^a-z0-9]+", "", p) for p in (name or "").lower().split()]
+    """A name -> the local part of its address. Accents are folded the way :func:`canonical` folds
+    them, not dropped: the bench writes one person both ways ("Marta Kovač", "Marta Kovac"), and
+    the two spellings share a canonical, so whichever is seen first names the address for both. A
+    dropped accent made that address depend on which spelling came first -- `marta.kova` from one,
+    `marta.kovac` from the other -- and only one of them is the address the corpus states."""
+    folded = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode()
+    parts = [re.sub(r"[^a-z0-9]+", "", p) for p in folded.lower().split()]
     parts = [p for p in parts if p]
     return ".".join(parts) or "user"
 
 
 def _addr(header: str | None) -> str | None:
+    """The address a header names: ``Name <a@b>`` or a bare ``a@b``.
+
+    The bare form is 12% of the bench's thread messages -- their ``From`` is the address with no
+    display name. Requiring angle brackets left that address unread in ``from_name`` while the
+    sender fell back to the mailbox owner, so the message was served from the wrong person.
+    """
     if not header:
         return None
     m = _ADDR.search(header)
-    return m.group(1).lower() if m else None
+    if m:
+        return m.group(1).lower()
+    bare = header.strip().strip('"')
+    return bare.lower() if _BARE_ADDR.match(bare) else None
 
 
 def _name(header: str | None) -> str:
@@ -334,6 +613,79 @@ class Principals:
     def display_email(self, name: str) -> tuple[str | None, str]:
         c = canonical(name or "")
         return self._by_canon.get(c), (name or "")
+
+    def display_only_email(self, name: str) -> str:
+        """An address for somebody the corpus NAMES but the roster does not hold -- a generated
+        person, a desk ("Support"), a rota ("SRE Oncall").
+
+        NOT entered in ``users``, so it gets no bearer token: the corpus can say who wrote a row
+        without the mock claiming that identity can sign in. This is the treatment a Slack first
+        name already gets (see ``resolve``'s ``SLACK_ROLE`` branch).
+        """
+        return f"{_slug(name)}@{self.org_domain}"
+
+    def customer_email(self, label: str, company: str | None) -> str:
+        """A customer-side commenter -> an address on the counterparty's domain when the document
+        names one, else the placeholder external domain. Never a principal: the counterparty is not
+        part of this org."""
+        # An address the label already carries is the counterparty's own, and beats anything derived
+        # from the words around it -- "Customer (NimbleDocs, ops@nimbledocs.com)" IS that address.
+        stated = _ADDR.search(label or "") or _BARE_ADDR_IN_TEXT.search(label or "")
+        if stated:
+            return stated.group(1).lower()
+        # Otherwise the counterparty's domain, with its own name dropped from the local part since
+        # the domain already carries it: "LexiHealth (Customer)" on a LexiHealth ticket is
+        # customer@lexihealth.example.
+        named = company or (_CUSTOMER_WORD.sub("", label or "").strip(" ()-,") or None)
+        domain = f"{_slug(named).replace('.', '')}.example" if named else EXTERNAL_DOMAIN
+        company_tokens = set(_slug(named or "").split("."))
+        local = ".".join(t for t in _slug(label).split(".") if t not in company_tokens)
+        return f"{local or 'customer'}@{domain}"
+
+    def unattributed(self) -> str:
+        """The address for a row the bench never attributes.
+
+        Stated by the importer rather than left for the loader to invent: the corpus is what the
+        server answers from, so a row nobody signed has to say that it is unsigned.
+        """
+        return f"unknown@{self.org_domain}"
+
+    def label_email(self, label: str | None, company: str | None = None) -> str:
+        """The address a comment label that names no person resolves to."""
+        key = (label or "").strip().lower()
+        # A label with no letter in it names nobody -- a bare date left over from a stamp this
+        # parser did not recognise would otherwise become an address that IS that date.
+        if not key or not any(ch.isalpha() for ch in key) or _names_an_activity(label):
+            return self.unattributed()
+        # Word-boundary, not an exact match: the corpus writes the counterparty into the label
+        # ("BrightCart (Customer)", "Customer (NimbleDocs)", "Support (to customer)"), and an exact
+        # test put 2,675 of those commenters on the ORG's domain — an external participant wearing
+        # an internal address.
+        if not _CUSTOMER_AUDIENCE.search(key) and (
+            _CUSTOMER_WORD.search(key) or (company and _slug(company) in _slug(key))
+        ):
+            return self.customer_email(label, company)
+        return self.display_only_email(label)
+
+    def local_part_index(self) -> dict[str, str]:
+        """Email local part -> the address, for a ``From`` carrying only ``marissa_cole``."""
+        return {e.split("@", 1)[0].lower(): e for e in self.users}
+
+    def first_name_index(self) -> dict[str, str]:
+        """Lowercase first name -> the one DIRECTORY person who owns it.
+
+        A first name two employees share is left out: "Priya" names four people, and picking one
+        invents attribution. Built from the directory alone, so the index is the same whichever
+        documents have been read so far.
+        """
+        by_first: dict[str, set[str]] = {}
+        for u in self.users.values():
+            if not u.get("directory"):
+                continue
+            first = (u["name"].split() or [""])[0].lower()
+            if first:
+                by_first.setdefault(first, set()).add(u["name"])
+        return {k: next(iter(v)) for k, v in by_first.items() if len(v) == 1}
 
     def install(self, conn, settings) -> None:
         conn.execute(
@@ -757,19 +1109,240 @@ def _gmail_attachments(raw: dict) -> list[dict]:
     return out
 
 
-def parse_jira_comments(comments: list[str]) -> list[dict]:
-    """Jira ``comments`` is a list of ``YYYY-MM-DD Name: text``."""
+_CLOCK = r"\d{1,2}:\d{2}(?::\d{2})?"
+# The timezone abbreviations the bench appends to a comment stamp. Matched and discarded: a comment
+# stamp's own precision is the minute, and `_TZ` already carries the offsets for the gmail Date
+# headers that state a full timestamp.
+_TZ_ABBR = r"(?:UTC|GMT|Z|E[SD]T|C[SD]T|M[SD]T|P[SD]T|ET|CT|MT|PT)"
+# A stamp at the HEAD of a line, for a line that carries no label at all.
+_STAMP = re.compile(
+    rf"^(?:\[?(?P<date>\d{{4}}-\d{{2}}-\d{{2}})\]?[T ]?\s*)?"
+    rf"(?:(?P<time>{_CLOCK})\]?\s*)?"
+    rf"(?:{_TZ_ABBR}\s*)?"
+    rf"(?:[-\u2013\u2014]\s*)?"
+)
+
+
+# A stamp anywhere in a comment's label region: a date, a clock, or both, bracketed or parenthesised
+# or bare, with an optional zone. The bench writes it before the label, after it, and inside it, and
+# every one of those spellings is the comment's clock rather than part of somebody's name.
+_STAMP_ANYWHERE = re.compile(
+    rf"[\[(]?\s*(?:(?P<date>\d{{4}}-\d{{2}}-\d{{2}})(?:[T ]\s*(?P<time>{_CLOCK}))?"
+    rf"|(?P<time2>{_CLOCK}))\s*(?:{_TZ_ABBR})?\s*[\])]?"
+)
+# The colon that separates a label from its body is one NOT flanked by digits: the colon inside
+# "09:15" belongs to a clock, and reading it as the separator made "Support (Ethan Myers) 13" the
+# label and left "10: Thanks for reporting" as the body.
+_SEPARATOR_COLON = re.compile(r"(?<!\d):|:(?!\d)")
+# A label in angle brackets, which close it: `2026-03-13T14:13Z - <Aisha Khan> Customer ClarityAI
+# reports …` has no other separator between the name and the body.
+_ANGLED_LABEL = re.compile(r"^[^<\n]{0,40}<(?P<label>[^>\n]{1,60})>")
+# A table row closes its label with a second pipe: `| Jared Bloom | Notified SRE and oncall`.
+_PIPED_LABEL = re.compile(r"^\s*\|(?P<label>[^|\n]{1,60})\|")
+# A bracket closes one the same way: `[Support - Asha Patel]`, `[2026-03-12 10:15 UTC]`.
+_BRACKET_LABEL = re.compile(r"^\s*\[(?P<label>[^\[\]\n]{1,80})\]\s*")
+# A dash that separates a label from its body, spaced so a hyphenated word cannot match.
+_SEPARATOR_DASH = re.compile(r"\s+[-\u2013\u2014]\s+")
+# What a label region may be: short enough to be a label once its stamp is gone, and never spanning
+# a URL, whose "https:" would otherwise look like a separator on a line that names nobody.
+_LABEL_MAX = 80
+
+
+def _label_shaped(head: str) -> bool:
+    """Could this be a label region? Measured AFTER its stamp, which is not part of the label: the
+    raw head of `2026-03-12 16:45 UTC — BlackFjord Security (external comment via support@…)` is
+    over the cap while the label itself is well under it."""
+    if "//" in head or "http" in head.lower():
+        return False
+    return len(_peel_stamps(head)[2]) <= _LABEL_MAX
+
+
+# The one shape whose separator is a dash rather than a colon:
+# "IT (Jordan Liu) 2026-03-10 15:20 - Laptop received at front desk".
+_LABEL_THEN_STAMP = re.compile(
+    rf"^(?P<label>[^\n]*?)\s+(?:\d{{4}}-\d{{2}}-\d{{2}})"
+    rf"(?:[T ]\s*{_CLOCK})?(?:\s*{_TZ_ABBR})?\s*[-\u2013\u2014]\s+(?P<body>.*)$",
+    re.DOTALL,
+)
+
+
+def _split_label(line: str) -> tuple[str, str] | None:
+    """``(label region, body)``, or None when the line states no label.
+
+    A label lives on the comment's FIRST line and is separated from the body by a colon — or, when
+    the first line holds nothing but a stamp and a name, by the line break itself. Searching the
+    whole comment instead let a head span a newline: `2026-02-12 12:10 UTC — Benji Okafor` followed
+    by `Fix plan:` gave the label "Benji Okafor Fix plan" and a body starting at `1) …`.
+    """
+    # A bracket closes the label by itself, so this shape carries no separator at all:
+    # `[Support - Marisol Rivera 2026-03-13 09:42 UTC] We rolled canary back…`. The bench also
+    # writes the stamp in a bracket of its own ahead of it (`[2026-03-12 10:15 UTC] [Support -
+    # Asha Patel] …`), so consume every leading bracket and read them as one region -- the stamp
+    # is peeled from it like any other.
+    rest, region = line, []
+    while (m := _BRACKET_LABEL.match(rest)) and len(" ".join(region)) <= _LABEL_MAX:
+        region.append(m.group("label"))
+        rest = rest[m.end() :]
+    if region and not rest.startswith("("):  # `[text](url)` opens a link, not a label
+        head = " ".join(region)
+        # The name sits after the bracket as often as inside it -- `[Support - 2026-03-10] Asha
+        # Kapoor: …` against `[Support - Marisol Rivera 2026-03-13 09:42 UTC] …` -- and only the
+        # second closes the label at the bracket. Reach past it for a colon exactly when the
+        # brackets name nobody, or a body's own colon would pull its first words into the label.
+        if not person_reference(_peel_stamps(head)[2])[0]:
+            after = rest.partition("\n")[0]
+            cm = _SEPARATOR_COLON.search(after)
+            if (
+                cm
+                and _label_shaped(after[: cm.start()])
+                and any(ch.isalpha() for ch in after[: cm.start()])
+            ):
+                head = f"{head} {after[: cm.start()]}"
+                rest = rest[cm.end() :]
+        if _label_shaped(head) and any(ch.isalpha() for ch in _peel_stamps(head)[2]):
+            return head, rest.lstrip(": \t").strip()
+    first, _, remainder = line.partition("\n")
+    for m in _SEPARATOR_COLON.finditer(first):
+        head = first[: m.start()]
+        if not _label_shaped(head):
+            break
+        if any(ch.isalpha() for ch in _peel_stamps(head)[2]):
+            return head, line[m.end() :].strip()
+        # Only a stamp so far -- keep looking for the colon that ends the real label.
+    # A dash separates them just as often: `2026-03-10 09:25 — Customer (BrightWrite) — Submitted
+    # sample request IDs`. Tried after the colon, since a label may contain a dash but a stamp
+    # followed by one is where the label starts.
+    for m in _SEPARATOR_DASH.finditer(first):
+        head = first[: m.start()]
+        if not _label_shaped(head):
+            break
+        stamp_date, stamp_time, label = _peel_stamps(head)
+        if not (stamp_date or stamp_time):
+            # No stamp before this dash, so it is a dash inside a sentence rather than the one
+            # that ends a header. Only a line that opens with a stamp states a label this way.
+            break
+        if any(ch.isalpha() for ch in label):
+            return head, line[m.end() :].strip()
+        # Only the stamp so far -- the next dash is the one that ends the label.
+    # `<Aisha Khan>` closes its own label, with the body running straight on from the bracket.
+    piped = _PIPED_LABEL.match(first)
+    if piped:
+        return piped.group("label"), line[piped.end() :].strip()
+    angled = _ANGLED_LABEL.match(first)
+    if angled:
+        # Everything up to the closing bracket, stamp included: `_peel_stamps` reads the clock.
+        return first[: angled.end()], line[angled.end() :].strip()
+    if not remainder:
+        return None
+    # The line break is the separator: a first line that is a stamp and a name is a header.
+    if any(ch.isalpha() for ch in _peel_stamps(first)[2]) and _label_shaped(first):
+        return first, remainder.strip()
+    return None
+
+
+def _peel_stamps(head: str) -> tuple[str | None, str | None, str]:
+    """``(date, time, what is left)``. Every stamp in the label region is removed from it."""
+    date = time = None
+    rest = head
+    while True:
+        m = _STAMP_ANYWHERE.search(rest)
+        if not m:
+            break
+        date = date or m.group("date")
+        time = time or m.group("time") or m.group("time2")
+        rest = (rest[: m.start()] + " " + rest[m.end() :]).strip(" ,-–—\t")
+    # An emptied parenthetical is what a peeled "(2026-03-01)" leaves behind. Only that is removed:
+    # stripping parentheses off the ends would unbalance "Aisha Patel (Support)" and with it the
+    # reading that tells the person from the role.
+    rest = re.sub(r"\(\s*\)", "", rest)
+    # Angle brackets are pure delimiters around a name -- `<Aisha Khan>` is Aisha Khan -- unlike
+    # parentheses, which carry a role beside one.
+    return date, time, re.sub(r"\s{2,}", " ", rest).strip(" ,-–—<>\t")
+
+
+def comment_seconds(parsed: list[dict], doc_created: int) -> list[int]:
+    """A second for every comment, in the order the bench wrote them.
+
+    A stated stamp is used EXACTLY as stated -- never nudged to stay ahead of the comment before it,
+    which would serve a second nobody wrote. An unstamped comment follows the comment before it, not
+    the document's clock plus a position: in a thread mixing the two that puts an unstamped comment
+    back at the document's creation, and a consumer ordering by createdAt -- Linear's
+    ``Issue.comments`` does -- then serves the thread inverted.
+    """
+    out: list[int] = []
+    prev = doc_created
+    for c in parsed:
+        sec = to_epoch(f"{c['date']}T{c['time'] or '00:00'}") if c["date"] else None
+        if sec is None:
+            sec = prev + 1
+        prev = max(prev, sec)
+        out.append(sec)
+    return out
+
+
+def parse_comment_lines(comments, *, first_names=None) -> list[dict]:
+    """Bench comment strings -> ``{date, time, person, role, body, body_with_label}`` each.
+
+    Serves jira and linear alike: the two sources write the same line format, and reading it in two
+    places is what let them diverge.
+
+    ``comments`` is a list of lines OR one blank-line-separated blob. 42 jira docs and 29 linear
+    docs carry the blob, and iterating a ``str`` yields characters -- so every comment in those
+    docs used to be discarded one character at a time.
+
+    Both bodies are returned because only the caller knows what an unresolved ``role`` means for
+    its source: a desk that should become an address, or a section heading ("Follow-ups:") whose
+    removal would delete text.
+    """
+    if isinstance(comments, str):
+        comments = [part for part in re.split(r"\n\s*\n", comments) if part.strip()]
     out = []
     for c in comments or []:
-        m = _JIRA.match(str(c).strip())
-        if m:
-            out.append(
-                {
-                    "date": m.group("date"),
-                    "name": m.group("name").strip(),
-                    "body": m.group("body").strip(),
-                }
-            )
+        line = _unescape(str(c)).strip()
+        if not line:
+            continue
+        split = _split_label(line)
+        if not split:
+            # A line with no separator colon states no label. `Role (Name) 2026-03-10 15:20 - body`
+            # is the one shape whose separator is a dash instead, so it is tried before giving up.
+            dashed = _LABEL_THEN_STAMP.match(line)
+            if not dashed:
+                # No label at all. A stamp at the head of it is still the comment's clock, so it is
+                # read and the rest is the body: "2025-02-18 09:15: rolled back" is a body that
+                # opens with a time, not an author called "09".
+                lead = _STAMP.match(line)
+                out.append(
+                    {
+                        "date": lead.group("date"),
+                        "time": lead.group("time"),
+                        "person": None,
+                        "role": None,
+                        "body": line[lead.end() :].strip(" :-–—") or line,
+                        "body_with_label": line,
+                    }
+                )
+                continue
+            # Everything before the body, stamp included: `_peel_stamps` is what reads the clock.
+            head, body = line[: dashed.start("body")], dashed.group("body").strip()
+        else:
+            head, body = split
+
+        date, time, label = _peel_stamps(head)
+        person, role = person_reference(label, first_names=first_names)
+        out.append(
+            {
+                "date": date,
+                "time": time,
+                "person": person,
+                "role": role,
+                # The label as the bench wrote it. `person` and `role` are the two sides this
+                # parser found in it and cannot be rejoined in their original order, which is what
+                # says whether a company named beside a person owns that person.
+                "label": label,
+                "body": body,
+                "body_with_label": f"{label}: {body}" if label else body,
+            }
+        )
     return out
 
 
@@ -1099,48 +1672,6 @@ def _linear_date(value) -> str | None:
 # Hence two independent steps, NOT a list of whole-line alternatives: peel the date (with its
 # optional dash), then try to peel a `Name:` off the remainder. Ordered whole-line patterns
 # silently swallow the author into the body whenever an earlier one lacks a name group.
-_LINEAR_C_DATE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s*(?:[-–—]\s*)?(?P<rest>.*)$", re.DOTALL)
-# The name must START WITH A LETTER. Without that, "2025-02-18 09:15: rolled back" parses as
-# author "09" with the body truncated to "15: rolled back" — inventing a person and losing text.
-_LINEAR_C_NAME = re.compile(
-    r"^\(?(?P<name>[A-Za-zÀ-ÿ][^:\n()]{0,39}?)\)?:\s*(?P<body>.*)$", re.DOTALL
-)
-
-
-def parse_linear_comments(comments) -> list[dict]:
-    """Bench comment strings -> ``{date, name, body, body_with_name}``.
-
-    Both bodies, because only the caller knows whether the ``Name:`` prefix is a person or a LABEL
-    ("Created:", "Design review with PM and Accessibility:") whose removal would delete text.
-    :func:`_byo_linear` takes ``body`` when the name resolves to somebody and ``body_with_name``
-    when it does not.
-    """
-    if isinstance(comments, str):  # 29 docs carry a single string instead of a list
-        comments = [comments]
-    out = []
-    for c in comments or []:
-        s = str(c).strip()
-        if not s:
-            continue
-        m = _LINEAR_C_DATE.match(s)
-        date, rest = (m.group("date"), m.group("rest")) if m else (None, s)
-        n = _LINEAR_C_NAME.match(rest)
-        if n:
-            out.append(
-                {
-                    "date": date,
-                    "name": n.group("name").strip(),
-                    "body": n.group("body").strip(),
-                    "body_with_name": rest.strip(),
-                }
-            )
-        else:
-            out.append(
-                {"date": date, "name": None, "body": rest.strip(), "body_with_name": rest.strip()}
-            )
-    return out
-
-
 # ---------------------------------------------------------------- fireflies
 # One meeting transcript per file. Four properties of the real data drive the mapping:
 #   * the transcript is ONE FLAT TEXT BLOB, so the per-sentence rows the API serves are PARSED
@@ -1489,13 +2020,10 @@ def _byo_confluence(dsid, raw, P):
         space=space,
         title=title,
         content=content,
-        author_email=author_email,
+        author_email=(author_email or P.unattributed()),
         author_name=author,
         subtype="page",
         labels=_names(raw.get("labels")),
-        reviewers=reviewers,
-        confidentiality=raw.get("confidentiality"),
-        owner_team=raw.get("owner_team"),
         created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
         updated=to_epoch(raw.get("last_updated")),
     )
@@ -1518,24 +2046,32 @@ def _byo_drive(dsid, raw, P):
     # Workspace subtype or a binary's mime, and re-deriving it on load would need `_ATT_MIME` and the
     # title's extension inside `byo.py`. So the converted record carries the resolved pair.
     subtype, mime_type = _drive_type(raw, title)
+    created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
     rec = _rec(
         source_type="google_drive",
         doc_id=dsid,
         folder=(raw.get("drive_area") or group or "drive"),
         title=title,
         content=content,
-        author_email=owner_email,
+        author_email=(owner_email or P.unattributed()),
         author_name=owner,
         subtype=subtype,
         mime_type=mime_type,
-        collaborators=collabs,
-        created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
-        updated=to_epoch(raw.get("last_modified")),
+        created=created,
+        # A file the bench never dates was never edited, so its creation time IS its modified time.
+        # Stated rather than left out: `modifiedTime` is a field Drive always serves.
+        updated=(to_epoch(raw.get("last_modified")) or created),
     )
     # A doc with no team owns no group, and `"group": null` is how BYO says so — inferring one from
     # the folder name would invent a grantable principal the direct import does not have.
     rec["group"] = group
     return [rec], {"owner": owner_email, "people": collabs, "group": group, "confidentiality": None}
+
+
+# GitHub's `state` is open or closed; a merge is `merged_at`, not a third state. The bench writes
+# "merged", so the fact moves to the field that carries it -- dropping it instead would make a
+# merged pull indistinguishable from one closed unmerged.
+_GH_STATE = {"merged": "closed", "closed": "closed", "open": "open"}
 
 
 def _byo_github(dsid, raw, P):
@@ -1544,16 +2080,25 @@ def _byo_github(dsid, raw, P):
     author_email = P.resolve(author, role="author", group_hint=raw.get("repo")) if author else None
     reviewers = _resolved(P, raw.get("reviewers"), role="reviewer")
     repo = raw.get("repo") or "repo"
+    subtype = "pull_request" if raw.get("pr_number") else "issue"
+    raw_state = str(raw.get("state") or "").lower()
+    # A merged pull with no merge time recorded: its last update is the closest second the bench
+    # states, and a merged pull carrying no `merged_at` reads as never merged.
+    merged_at = (raw.get("merged_at") or raw.get("updated_at")) if raw_state == "merged" else None
     rec = _rec(
         source_type="github",
         doc_id=dsid,
         repo=repo,
         title=title,
         content=content,
-        author_email=author_email,
+        author_email=(author_email or P.unattributed()),
         author_name=author,
-        subtype=("pull_request" if raw.get("pr_number") else "issue"),
-        state=raw.get("state"),
+        subtype=subtype,
+        # Open unless the bench says otherwise: GitHub reports a state on every issue and pull.
+        # The bench holds no file rows -- `subtype` above is issue-or-pull -- so the stateless
+        # case a file would take is the loader's business, not this converter's.
+        state=_GH_STATE.get(raw_state, "open"),
+        merged_at=merged_at,
         labels=_names(raw.get("labels")),
         requested_reviewers=reviewers,
         created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
@@ -1576,35 +2121,63 @@ def _byo_jira(dsid, raw, P):
     reporter_email = P.resolve(reporter, role="reporter", group_hint=group) if reporter else None
     assignee_email = P.resolve(assignee, role="assignee", group_hint=group) if assignee else None
     project = raw.get("project") or "JIRA"
-    comments = [
-        _rec(
-            id=f"{dsid}::c{seq}",
-            content=c["body"],
-            author_email=P.resolve(c["name"], role="author"),
-            created_ts=to_epoch(c["date"]),
+    # The directory's unambiguous first names, widened by the people THIS ticket names -- so a bare
+    # "Diego" resolves inside a ticket whose reporter is a Diego and stays a label anywhere else.
+    first_names = {
+        **P.first_name_index(),
+        **{
+            str(n).split()[0].lower(): str(n)
+            for n in (reporter, assignee)
+            if n and len(str(n).split()) > 1
+        },
+    }
+
+    created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
+    parsed_comments = parse_comment_lines(raw.get("comments"), first_names=first_names)
+    comment_ts = comment_seconds(parsed_comments, created)
+    comments = []
+    company = raw.get("customer_company")
+    for seq, c in enumerate(parsed_comments, start=1):
+        # A name-shaped label that names an ACTIVITY ("Design review") is not a person, so its
+        # passage keeps the label and the comment is attributed by what the label does name.
+        named = c["person"] if c["person"] and not _names_an_activity(c["person"]) else None
+        # ...and a person the counterparty owns is not this org's, however well the name matches the
+        # directory: it holds a Priya Shah of its own. The WHOLE label goes on to `label_email`
+        # then, since the name alone carries nothing that would land it on their domain.
+        theirs = named and _counterparty_owns(c["label"], named, company)
+        comments.append(
+            _rec(
+                id=f"{dsid}::c{seq}",
+                content=(c["body"] if named and not theirs else c["body_with_label"]),
+                author_email=(
+                    P.label_email(c["label"], company)
+                    if theirs
+                    else P.resolve(named, role="author")
+                    if named
+                    else P.label_email(c["person"] or c["role"], company)
+                ),
+                created_ts=comment_ts[seq - 1],
+            )
         )
-        for seq, c in enumerate(parse_jira_comments(raw.get("comments", [])), start=1)
-    ]
     rec = _rec(
         source_type="jira",
         doc_id=dsid,
         project=project,
         title=title,
         content=content,
-        author_email=reporter_email,
+        author_email=(reporter_email or P.unattributed()),
         author_name=reporter,
-        status=raw.get("status"),
-        issuetype=raw.get("issue_type"),
+        # Jira's own defaults for an issue whose bench doc names neither.
+        status=(raw.get("status") or "To Do"),
+        issuetype=(raw.get("issue_type") or "Task"),
         priority=raw.get("priority"),
         labels=_names(raw.get("labels")),
         components=_names(raw.get("components")),
         assignee=assignee_email,
-        reporter=reporter_email,
-        severity=raw.get("severity"),
-        squad=raw.get("squad"),
+        reporter=(reporter_email or P.unattributed()),
         duedate=raw.get("due_date"),
         comments=(comments or None),
-        created=(to_epoch(raw.get("created_at")) or synth.epoch(dsid)),
+        created=created,
         updated=to_epoch(raw.get("updated_at")),
     )
     rec["group"] = group
@@ -1625,9 +2198,20 @@ def _byo_gmail(dsid, raw, P):
     mailbox = _slug_mailbox(owner_name) or "inbox"
     owner_email = P.resolve(owner_name, role="mailbox_owner") if owner_name else None
     internal = _resolved(P, raw.get("participants_internal"), role="participant_internal")
+    external = _resolved(P, raw.get("participants_external"), role="participant_external")
     root = msgs[0] if msgs else {}
     attachments = _gmail_attachments(raw)
     root_ts = to_epoch(root.get("date")) or to_epoch(raw.get("first_email_at")) or synth.epoch(dsid)
+    locals_by_part = P.local_part_index()
+
+    def sender(msg: dict) -> str | None:
+        """A message's own sender: its address, or the address hiding in a `From` that carries only
+        a local part. Never the mailbox owner -- a thread's messages have different senders by
+        definition, so substituting the owner attributes a message to whoever holds the mailbox."""
+        return msg.get("from_email") or locals_by_part.get(
+            (msg.get("from_name") or "").strip().lower()
+        )
+
     # The thread's later messages, each a full message with its own sender/recipients/Message-ID.
     # A date-less one carries the hour-per-position time the loader gives it, since the artifact has
     # to be explicit about a value it computed rather than read.
@@ -1635,7 +2219,7 @@ def _byo_gmail(dsid, raw, P):
         _rec(
             doc_id=f"{dsid}::m{seq}",
             content=m.get("body", ""),
-            author_email=m.get("from_email"),
+            author_email=(sender(m) or P.unattributed()),
             title=(m.get("subject") or title),
             to=m.get("to"),
             cc=m.get("cc"),
@@ -1644,16 +2228,26 @@ def _byo_gmail(dsid, raw, P):
         )
         for seq, m in enumerate(msgs[1:], start=1)
     ]
+    # A thread with no RFC822 headers states its recipients only through the participant lists, so
+    # they are composed here rather than left for the server to invent a To header from the mailbox
+    # name. A thread that names nobody but its sender keeps no To at all, which is a real state:
+    # RFC 5322 allows a message with no destination field, and so does the Gmail API.
+    root_sender = sender(root) or owner_email
+    to_addr = root.get("to")
+    if not to_addr:
+        recipients = [a for a in (*internal, *external) if a and a != root_sender]
+        to_addr = ", ".join(dict.fromkeys(recipients)) or None
+
     rec = _rec(
         source_type="gmail",
         doc_id=dsid,
         mailbox=mailbox,
         title=(title or root.get("subject") or ""),
         content=(root.get("body") or (content if not msgs else "")),
-        author_email=(root.get("from_email") or owner_email),
+        author_email=(sender(root) or owner_email or P.unattributed()),
         mailbox_owner=owner_name,
         thread=dsid,
-        to=root.get("to"),
+        to=to_addr,
         cc=root.get("cc"),
         message_id=root.get("message_id"),
         attachments=(attachments or None),
@@ -1676,11 +2270,15 @@ def _byo_slack(dsid, raw, P):
     root_ts = (
         _SLACK_TS_REMAP.get(dsid) or to_epoch(raw.get("first_message_ts")) or synth.epoch(dsid)
     )
+    # One second per turn. The bench's slack docs are a single transcript with no per-message clock,
+    # so this is the second the loader used to assign; stating it here makes the corpus answerable
+    # for the times it serves instead of leaving them to be recomputed.
     replies = [
         _rec(
             doc_id=f"{dsid}::m{seq}",
             content=text,
-            author_email=P.resolve(spk, role="slack_participant"),
+            author_email=(P.resolve(spk, role="slack_participant") or P.unattributed()),
+            created=root_ts + seq,
         )
         for seq, (spk, text) in enumerate(turns[1:], start=1)
     ]
@@ -1689,7 +2287,7 @@ def _byo_slack(dsid, raw, P):
         doc_id=dsid,
         channel=channel,
         content=(turns[0][1] if turns else content),
-        author_email=root_author,
+        author_email=(root_author or P.unattributed()),
         participants=participants,
         replies=(replies or None),
         # The remapped value, NOT the source `first_message_ts`: the remap is rank-based over
@@ -1703,6 +2301,8 @@ def _byo_slack(dsid, raw, P):
 
 
 def _byo_hubspot(dsid, raw, P):
+    # HubSpot notes have no name, and 82% of the bench's records are notes. An empty string is
+    # not a title -- the key is left out, which its schema allows for this source alone.
     title, content = _title_content(raw)
     object_type = group = "companies"
     owner = raw.get("owner", "")
@@ -1724,9 +2324,8 @@ def _byo_hubspot(dsid, raw, P):
             source_type="hubspot",
             doc_id=note_id,
             object_type="notes",
-            title="",
             content=body,
-            author_email=owner_email,
+            author_email=(owner_email or P.unattributed()),
             properties={"hs_note_body": body, "hs_timestamp": synth.rfc3339(created + i)},
             created=created + i,
         )
@@ -1737,9 +2336,9 @@ def _byo_hubspot(dsid, raw, P):
         source_type="hubspot",
         doc_id=dsid,
         object_type=object_type,
-        title=title,
+        title=(title or None),
         content=content,
-        author_email=owner_email,
+        author_email=(owner_email or P.unattributed()),
         author_name=owner,
         properties=props,
         associations=(links or None),
@@ -1769,23 +2368,39 @@ def _byo_linear(dsid, raw, P):
     identifier = str(raw.get("key") or "").strip() or synth.linear_identifier(
         dsid, synth.linear_team_key(team)
     )
-    state = raw.get("status")
+    # `WorkflowState` is non-null on a Linear issue; "Todo" is its bucket for one not begun.
+    state = raw.get("status") or "Todo"
     created = to_epoch(raw.get("created_at")) or synth.epoch(dsid)
     updated = to_epoch(raw.get("updated_at"))
     state_type = synth.linear_state_type(state)
     ended = updated or created
 
-    comments, prev_ts = [], created
-    for seq, c in enumerate(parse_linear_comments(raw.get("comments")), start=1):
-        author = P.display_email(c["name"])[0] if c["name"] else None
-        ts = to_epoch(c["date"]) or (prev_ts + 1)
-        prev_ts = max(prev_ts, ts)
+    first_names = {
+        **P.first_name_index(),
+        **{
+            str(n).split()[0].lower(): str(n)
+            for n in (raw.get("assignee"), raw.get("author"), raw.get("creator"))
+            if n and len(str(n).split()) > 1
+        },
+    }
+    parsed_comments = parse_comment_lines(raw.get("comments"), first_names=first_names)
+    comment_ts = comment_seconds(parsed_comments, created)
+    comments = []
+    for seq, c in enumerate(parsed_comments, start=1):
+        # A name the roster already holds becomes that principal. A name it does not -- 130,434
+        # comments across 12,169 distinct names, because the bench generates far more people than
+        # the directory lists -- becomes a DISPLAY-ONLY address instead: the attribution the bench
+        # wrote is kept without minting a principal that could sign in. A label naming an activity
+        # ("Design review") is not a person at all, so its passage keeps the label and the comment
+        # is unattributed.
+        named = c["person"] if c["person"] and not _names_an_activity(c["person"]) else None
+        author = (P.display_email(named)[0] or P.display_only_email(named)) if named else None
         comments.append(
             _rec(
                 id=f"{dsid}::c{seq}",
-                content=(c["body"] if author else c["body_with_name"]),
-                author_email=author,
-                created_ts=ts,
+                content=(c["body"] if named else c["body_with_label"]),
+                author_email=(author or P.label_email(c["role"])),
+                created_ts=comment_ts[seq - 1],
             )
         )
     # A relation names its target by doc_id in BYO, so the bench's issue KEY is resolved here —
@@ -1807,7 +2422,7 @@ def _byo_linear(dsid, raw, P):
         team=team,
         title=title,
         content=content,
-        author_email=creator_email,
+        author_email=(creator_email or P.unattributed()),
         author_name=creator,
         identifier=identifier,
         state=state,
@@ -1858,13 +2473,15 @@ def _byo_fireflies(dsid, raw, P):
         e for e in (P.resolve(n, role="participant_external") for n in external) if e
     ]
 
-    # Parsed HERE (the parse needs attendee fields the record does not carry) but deliberately NOT
-    # timed here: `synth.fireflies_fill_times` REWRITES start_time, spreading a run of sentences that
-    # share one clock reading across its window, so feeding its output back in would change the run
-    # structure and produce a different timeline. The record carries the readings as transcribed.
-    # `content` is omitted for the same reason — it is DEFINED as the sentence concatenation, so
-    # emitting it would double the artifact's largest field and could drift.
+    # Parsed here, then timed here: every sentence the API serves carries a `start_time`, so the
+    # corpus states one. `synth.fireflies_fill_times` spreads a run of sentences sharing one clock
+    # reading across its window, which is the same rule the server would apply -- applying it once,
+    # at conversion, is what makes the reading a fact of the corpus rather than of the loader.
+    # `content` is still omitted: it is DEFINED as the sentence concatenation, so emitting it would
+    # double the artifact's largest field and could drift from the sentences it restates.
     sentences = parse_fireflies_transcript(_ff_transcript_text(raw), internal + external)
+    ff_minutes = _ff_duration(raw.get("duration_minutes"))
+    synth.fireflies_fill_times(sentences, (ff_minutes * 60) if ff_minutes else None)
     ordinals: dict[str, int] = {}
     for s in sentences:
         ordinals.setdefault(s["speaker_name"] or "", len(ordinals))
@@ -1885,14 +2502,19 @@ def _byo_fireflies(dsid, raw, P):
         )
         for s in sentences
     ]
-    duration = _ff_duration(raw.get("duration_minutes"))
+    duration = ff_minutes
+    if duration is None:
+        # The last thing said is the earliest the meeting can have ended -- a reading the transcript
+        # carries, rather than a number invented for it.
+        last = max((snt.get("start_time") or 0) for snt in sentences) if sentences else 0
+        duration = round(last / 60, 2)
 
     rec = _rec(
         source_type="fireflies",
         doc_id=dsid,
         channel=channel,
         title=title,
-        host_email=host_email,
+        host_email=(host_email or P.unattributed()),
         host_name=(owner_display or None),
         calendar_id=raw.get("meeting_id"),
         calendar_type="google_calendar",
@@ -2273,14 +2895,11 @@ def import_structured(settings, gen_dir) -> dict:
     _populate_principals(records, P, settings)
     P.write_roster(roster_path, settings)
 
-    # validate=False: these records come from `to_byo`, i.e. from code the schemas describe, and
-    # `test_erb_to_byo_output_validates_against_the_byo_schemas` already holds it to them.
     byo.load_records(
         lambda: _convert_all(records, P, settings, counts, failures),
         settings,
         reset=True,
         roster=roster_path,
-        validate=False,
     )
     if failures:
         print(

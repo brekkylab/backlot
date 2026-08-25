@@ -15,7 +15,8 @@
     },
     "title": {
       "type": "string",
-      "description": "Document title (email subject / file name / issue title / page title)."
+      "description": "Document title (email subject / file name / issue title / page title).",
+      "minLength": 1
     },
     "doc_id": {
       "type": "string",
@@ -28,7 +29,8 @@
     },
     "space": {
       "type": "string",
-      "description": "The space this document belongs to (default: the source_type)."
+      "minLength": 1,
+      "description": "The space this document belongs to."
     },
     "group": {
       "type": [
@@ -68,10 +70,6 @@
       },
       "description": "Explicit reader principals. `user:<email>` / `group:<id>` / `org:<name>` state the type; unprefixed, an address is a user and anything else a group. Overrides visibility — and an EMPTY array means nobody may read the document (admin-only), not everybody."
     },
-    "meta": {
-      "type": "object",
-      "description": "Free-form per-source structured extras merged into the record."
-    },
     "subtype": {
       "enum": [
         "page",
@@ -95,7 +93,8 @@
         "number",
         "string"
       ],
-      "description": "Creation time (epoch seconds or ISO 8601). Default: synthesized from doc_id."
+      "minLength": 1,
+      "description": "Creation time (epoch seconds or ISO 8601)."
     },
     "updated": {
       "type": [
@@ -150,6 +149,7 @@
               "number",
               "string"
             ],
+            "minLength": 1,
             "description": "Optional creation time (epoch seconds or ISO string)."
           }
         },
@@ -165,28 +165,20 @@
             ]
           }
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "required": [
+          "author_email",
+          "created_ts"
+        ]
       }
-    },
-    "confidentiality": {
-      "type": "string",
-      "description": "Confluence confidentiality label (free text: `internal`, `restricted`, `restricted (customer-sensitive)`). Served as a label; ACL still comes from `visibility`/`readers`."
-    },
-    "owner_team": {
-      "type": "string",
-      "description": "The team that owns the page (`version.by` team label)."
-    },
-    "reviewers": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Reviewer principals (emails) named on the page."
     }
   },
   "required": [
-    "source_type",
+    "author_email",
     "content",
+    "created",
+    "source_type",
+    "space",
     "title"
   ],
   "additionalProperties": false

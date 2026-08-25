@@ -32,6 +32,7 @@ from _common.google_creds import google_oauth_user
 
 CORPUS = [
     {
+        "created": "2026-01-20T16:00:00Z",
         "source_type": "gmail",
         "mailbox": "ceo",
         "title": "Q1 board deck draft",

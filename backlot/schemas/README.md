@@ -109,31 +109,44 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
 
 ## What the schemas enforce
 
-- **Strict** — `source_type` (const), required `content` (+ `title` for every source except
-  Slack), the `visibility` enum, per-service `subtype` enums (e.g. github `issue|pull_request`,
+- **Strict** — `source_type` (const); `content` (+ `title` for every source except Slack and
+  hubspot, whose notes have no name); the container each source groups by (`channel`, `mailbox`,
+  `folder`, `repo`, `project`, `space`, `teamspace`, `bucket`, `object_type`, `team`);
+  `author_email` (fireflies may spell it `host_email`); `created`; and per source whatever its
+  vendor always reports — jira's `status`, `issuetype` and `reporter`, linear's `state`, drive's
+  and notion's `updated`, hubspot's `properties`, a fireflies meeting's `duration`, a github
+  issue's or pull's `state`. A child row states its own `author_email` and its own second; a
+  fireflies sentence states its text and `start_time` (no author: the vendor's `Sentence` carries
+  no email, and an unnamed speaker is what diarization produces). Also the `visibility` enum, per-service `subtype` enums (e.g. github `issue|pull_request`,
   drive `document|spreadsheet|presentation|pdf`, confluence `page|blogpost`, notion
   `page|database`), the child-row object shapes (see *Child rows are named per source* above —
   each array is accepted only on the source it belongs to), and `additionalProperties: false` (an
   unknown top-level key is almost always a typo). Gmail's `content` and its `messages[].content`
   are the one exception to non-empty content: a thread opened or continued by a header-only message
   (auto-ack, bare forward) is real, and dropping it would renumber the rest of the thread.
-- **Permissive** — the free-form `meta` object and the loosely typed per-service extras
-  (`reactions`, `attachments`, `issuelinks`, `reviews`, `changelog`, …), which the loader stores
-  as JSON without a fixed shape.
-- **Timestamps** — every source accepts `created` (epoch seconds or ISO 8601); drive/github/
-  jira/confluence also accept `updated`. Both are optional — when omitted the router synthesizes
-  a stable time from the `doc_id`. Slack `replies` are full messages (`reactions`/`files`/
-  `subtype`/`edited`, not just `content`); gmail accepts an explicit `to`.
+- **Permissive** — the loosely typed per-service extras (`reactions`, `attachments`,
+  `issuelinks`, `reviews`, `changelog`, …), which the loader stores as JSON without a fixed shape.
+  Each is a declared field of the source that has it: there is no free-form object, so a key no
+  schema names is a validation error rather than a value read and dropped.
+- **Timestamps** — `created` is required everywhere and takes epoch seconds or ISO 8601. So is a
+  child row's own second (`created_ts` on a comment, `created` on a slack reply or a gmail thread
+  message): a time nobody wrote is a time nobody can check, and the server sorts and filters on it.
+  `updated` is required only where the vendor always reports one (drive, notion) and optional
+  elsewhere, where an omitted one stays NULL rather than being invented. Slack `replies` are full
+  messages (`reactions`/`files`/`subtype`/`edited`, not just `content`); gmail's `to` is optional,
+  since RFC 5322 allows a message with no destination field and the API serves it that way.
 - **Ids the corpus owns** (all optional): github `number`, jira `key`, confluence `content_id`,
   hubspot `record_id`, fireflies `transcript_id` — the spelling a document cites, stored and
-  served verbatim so that citation is a working lookup. Read from these fields only; the same
-  name inside `meta` stays ordinary `meta` content. Each is unique within its scope — a number
+  served verbatim so that citation is a working lookup. Each is unique within its scope — a number
   within its repository, everything else within the instance — and a second record claiming one
   stops the import, whether that record is in this corpus or was loaded by an earlier one. Omit
   them and the id is derived, under the prefix this project's provided keys carry, so a corpus
   need only write the ids its documents actually cite. A jira key is shaped
   `^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$`, enforced because the prefix is a fact about the whole
-  project.
+  project. The mirror case stops the import too: two records sharing a `doc_id` are one document,
+  so stating ids that put them on two rows is refused, since a link naming that `doc_id` could
+  only mean one of them. Sharing a `doc_id` while stating no id is not that — those settle onto
+  one row, which is what a repeated document in a corpus means.
 - **`--append` into a source that already holds documents** requires the id above for github,
   jira, confluence and hubspot: their ids are assigned against the whole corpus, so without one
   a record cannot be told apart from a row already imported. There is no update path — an id an
@@ -141,6 +154,12 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   fireflies `transcript_id`. Re-import from scratch to change a document that is already in.
   (slack is the one source with nothing to state: a re-imported message is recognised by its
   channel, second, author and text.)
+- **`--id-map out.json`** writes what the import served each record under: per source, the
+  record's dataset id (`doc_id`, or its documented default) mapped to the row's full served key,
+  plus the container ids a client needs to address them (slack channel ids, drive folder ids,
+  linear team id/key, jira project keys, confluence space keys). A dataset id is a seed the DB
+  never stores, so this file is what corpus-side tooling joins on to check documents by id.
+  It covers one run — a sharded corpus loaded with `--append` gets one manifest per shard.
 - **Per-service fidelity fields** (all optional; see each schema):
   gmail `html`; drive `trashed`; github `closed_at`/`closed_by`/`merged_by`/`milestone`/
   `requested_reviewers`/`changed_paths` (+ comment `reactions`, and `path`/`line`/`diff_hunk` to make
@@ -153,12 +172,10 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   computed from `content`), `subtype` (storage-class label, default `STANDARD`). These map to the
   fields the real vendor APIs return; everything else on each response is synthesized
   deterministically from the `doc_id`.
-- **Per-service people and scope** (all optional): confluence `confidentiality` (free text — a
-  served label; ACL still comes from `visibility`/`readers`), `owner_team`, `reviewers`; drive
-  `collaborators`; jira `severity` (a separate axis from `priority` — how bad, not when to fix)
-  and `squad`; slack `participants` (thread-level, so root-only); gmail `mailbox_owner`. Plus
-  `author_name` on every source whose table stores an owner display name, since a name is not
-  recoverable from an address ("Tomás Rré" does not survive `<slug>@<domain>`).
+- **Per-service people and scope** (all optional): slack `participants` (thread-level, so
+  root-only); gmail `mailbox_owner`. Plus `author_name` on every source whose table stores an owner
+  display name, since a name is not recoverable from an address ("Tomás Rré" does not survive
+  `<slug>@<domain>`).
 - **Principals** — a `readers` entry may state its type: `user:<email>` / `group:<id>` /
   `org:<name>`. Unprefixed, an address is a user and anything else a group, as before. The typed
   form exists because the shorthand cannot name the org principal, so "org-readable *and* owned by

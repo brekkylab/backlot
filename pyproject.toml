@@ -119,6 +119,7 @@ backlot = "backlot.cli:main"
 Homepage = "https://github.com/brekkylab/backlot"
 Repository = "https://github.com/brekkylab/backlot"
 Issues = "https://github.com/brekkylab/backlot/issues"
+Changelog = "https://github.com/brekkylab/backlot/releases"
 
 [tool.ruff]
 line-length = 100

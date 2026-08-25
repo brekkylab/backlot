@@ -72,6 +72,14 @@ with backlot.mock_server() as m:                       # no arguments: the bundl
 See [CONTRIBUTING.md](CONTRIBUTING.md). Fidelity to the real APIs is the point, so a divergence is
 a bug — measure against the real service, and bring a test that fails without your fix.
 
+## Trademarks
+
+Backlot is an independent project, **not affiliated with, endorsed by, or sponsored by** any of the
+vendors whose APIs it imitates. Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon
+S3, HubSpot, Linear and Fireflies are trademarks of their respective owners, named here only to
+identify the read APIs Backlot serves a compatible subset of. Backlot ships no vendor logo, wordmark
+or brand asset.
+
 ## License
 
 [MIT](LICENSE)

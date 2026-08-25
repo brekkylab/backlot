@@ -335,15 +335,11 @@ def test_slack_info_answers_one_shape_whoever_asks(client, admin_h, tokens):
 
 
 @pytest.mark.parametrize(
-    "method, error",
-    [
-        ("conversations.info", "channel_not_found"),
-        ("conversations.members", "channel_not_found"),
-        ("conversations.history", "not_in_channel"),
-    ],
+    "method",
+    ["conversations.info", "conversations.members", "conversations.history"],
 )
 def test_slack_by_id_methods_refuse_a_channel_the_caller_cannot_see(
-    client, admin_h, tokens, method, error
+    client, admin_h, tokens, method
 ):
     """`conversations.list` scopes by ACL; the methods that resolve a channel by id did not, so an
     id was enough for any authenticated principal to confirm a private room, read its name, topic,
@@ -352,14 +348,21 @@ def test_slack_by_id_methods_refuse_a_channel_the_caller_cannot_see(
     `ok:true` with an empty `messages`, which reads as "this channel exists and you may read it; it
     happens to be empty" — the opposite of what the mock knows.
 
-    The error is the vendor's own for this case and differs by method: `conversations.info`
-    documents `channel_not_found`, `conversations.history` documents `not_in_channel` ("The token
-    used does not have access to the proper channel")."""
+    All three answer `channel_not_found`, the same answer an id that names nothing gets (measured
+    live: a well-formed id for no channel is `channel_not_found` on all three), so a hidden channel
+    is not distinguishable from one that was never there. NOT the `not_in_channel` that
+    `conversations.history` also documents — that is the case where the token can SEE the channel
+    and has not joined it, which is a public channel here and never refused; `conversations.info`
+    and `.members` do not document it at all."""
     private = _private_channel(client, admin_h)
     for email in ("ava@acme.com", "bob@acme.com"):
         h = {"Authorization": f"Bearer {tokens[email]}"}
         j = client.get(f"/slack/api/{method}", headers=h, params={"channel": private["id"]}).json()
-        assert j == {"ok": False, "error": error}, email
+        assert j == {"ok": False, "error": "channel_not_found"}, email
+    # ...the same answer as an id that names nothing at all, so the two cannot be told apart
+    for h in ({"Authorization": f"Bearer {tokens['ava@acme.com']}"}, admin_h):
+        made_up = client.get(f"/slack/api/{method}", headers=h, params={"channel": "C0000000000"})
+        assert made_up.json() == {"ok": False, "error": "channel_not_found"}
 
     # The test is visibility, NOT membership: the one person who may read it is answered in full...
     hana = {"Authorization": f"Bearer {tokens['hana@acme.com']}"}

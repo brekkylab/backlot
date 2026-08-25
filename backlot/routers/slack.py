@@ -415,14 +415,14 @@ async def conversations_history(request: Request):
     if not channel_id:
         return _err("channel_not_found")
     name = _channel_name(conn, channel_id)
-    if name is None:
-        return _err("channel_not_found")
     ids = auth.visible_ids(request, caller)
-    # `not_in_channel` is what the vendor documents for a token without access to the channel, and
-    # the ACL filter below cannot say it: an empty page reads as "you may read this channel; it
-    # happens to be empty", which is the opposite of the answer.
-    if not _channel_visibility(request, conn, ids)(name):
-        return _err("not_in_channel")
+    # A channel this caller cannot see is `channel_not_found`, exactly as in conversations.info —
+    # NOT the `not_in_channel` the same page also documents, which is the other case: a channel the
+    # token can see and has not joined, which a public channel here never is (its org grant admits
+    # every principal). The ACL filter below cannot answer either one: an empty page reads as "you
+    # may read this channel; it happens to be empty", which is the opposite of what is true.
+    if name is None or not _channel_visibility(request, conn, ids)(name):
+        return _err("channel_not_found")
 
     # Cap the page at a Slack-realistic size: the real API recommends limit<=200 and often returns
     # fewer than requested. A client that asks for 1000 (korotovsky) would make the client resolve

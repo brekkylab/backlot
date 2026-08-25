@@ -448,11 +448,15 @@ def test_slack_members_are_the_channels_own_speakers(client, admin_h, tokens, ro
     skipped membership for a public channel. Real Slack's membership differs per channel, and a
     workspace where every channel holds everybody is not a shape it produces.
 
-    Membership is now the channel's own participants, which is what the corpus actually knows — and
-    `is_member` is the caller's own place in that same set. It was the constant `True`, so every
-    channel a caller could see claimed them as a member, including public ones they have never
-    posted in; a client that stats a channel and then walks its members got two answers to one
-    question."""
+    A public channel's membership is its own participants, which is what the corpus knows about a
+    room everyone may read — and `is_member` is the caller's own place in that same set. It was the
+    constant `True`, so every channel a caller could see claimed them as a member, including public
+    ones they have never posted in; a client that stats a channel and then walks its members got two
+    answers to one question.
+
+    The invariant asserted at the end — `is_member` iff the caller is in `conversations.members` —
+    holds for a private channel too, where both are its readers rather than its speakers (see
+    test_slack_a_private_channels_members_are_its_readers)."""
     chans = client.get(
         "/slack/api/conversations.list", headers=admin_h, params=_EVERY_CHANNEL
     ).json()["channels"]
@@ -1238,3 +1242,71 @@ def test_slack_chronology_is_numeric_not_lexicographic(tmp_path):
     latest = store.slack_latest_reply_ts(conn, "inc", root["ts"])
     assert latest == thread[-1]["ts"] and thread[-1]["created_ts"] == 10
     assert _message(root, reply_count=2, latest_reply=latest)["latest_reply"] == latest
+
+
+# Placed after every `client`-fixture test in this module: it opens a SECOND app over a different DB
+# via `corpus_client`, which overwrites the module-scoped fixture's shared `app.state` (see
+# `tests._helpers.client_for`'s docstring).
+
+
+def test_slack_a_private_channels_members_are_its_readers(tmp_path):
+    """Slack lists a private channel ONLY to the people in it, so there "may read it" and "is in
+    it" are one fact: `is_private: true` beside `is_member: false`, with a full history behind it,
+    is not a shape a client can be written against. A public channel is the other way round —
+    everyone may read it and membership is who has posted, which the test above covers.
+
+    A reader who has never posted is the ordinary case rather than a corner: on a 19,693-document
+    corpus, 22 of its 27 private channels have at least one, and `num_members` under-reported by
+    the same margin."""
+    from backlot.acl import Acl
+
+    records = [
+        {
+            "source_type": "slack",
+            "channel": "board-comp",
+            "content": "the comp band lands at 240k",
+            "author_email": "ava@acme.com",
+            "readers": ["user:ava@acme.com", "user:bo@acme.com"],  # bo reads, never posts
+        },
+        {
+            "source_type": "slack",
+            "channel": "general",
+            "content": "morning all",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+        },
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        token = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
+        bo = {"Authorization": f"Bearer {token.email_to_token()['bo@acme.com']}"}
+        listed = {
+            c["name"]: c
+            for c in client.get(
+                "/slack/api/conversations.list", headers=bo, params=_EVERY_CHANNEL
+            ).json()["channels"]
+        }
+        assert set(listed) == {"board-comp", "general"}
+
+        private, public = listed["board-comp"], listed["general"]
+        assert private["is_private"] is True and private["is_member"] is True
+        # ...while the public channel bo has never posted in is one bo is not in
+        assert public["is_private"] is False and public["is_member"] is False
+
+        for channel in (private, public):
+            members = client.get(
+                "/slack/api/conversations.members",
+                headers=bo,
+                params={"channel": channel["id"], "limit": 100},
+            ).json()["members"]
+            # num_members counts whatever that channel's membership is, so stat-then-walk agrees
+            assert channel["num_members"] == len(members), channel["name"]
+            # ...and is_member is the caller's own place in exactly that list
+            assert channel["is_member"] is (synth.slack_user_id("bo@acme.com") in members)
+
+        assert client.get(
+            "/slack/api/conversations.members", headers=bo, params={"channel": private["id"]}
+        ).json()["members"] == [synth.slack_user_id(e) for e in ("ava@acme.com", "bo@acme.com")]
+        # the membership is not a courtesy: bo really does read the channel
+        assert client.get(
+            "/slack/api/conversations.history", headers=bo, params={"channel": private["id"]}
+        ).json()["messages"], "a member of a private channel reads it"

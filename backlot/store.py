@@ -2810,13 +2810,50 @@ def group_members(conn, group_id) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def slack_private_channel_members(conn, channel) -> list[str] | None:
+    """The user principals who may read a private channel — its membership — in email order.
+    ``None`` for a public channel, which has no such list.
+
+    A private channel and a public one derive membership from different facts, because Slack shows
+    them differently. Slack lists a private channel to its members ONLY, so being able to read one
+    IS being in it: the grants ARE the membership, and a group grant is expanded to the people in
+    it because the membership a client walks is a list of people. A public channel is shown to
+    everyone in the org, so its org grant says nothing about who is in it — see
+    :func:`slack_channel_member_emails` for what answers there.
+
+    An empty list is a private channel nobody may read (``"readers": []``, or a grant to a group
+    with no members): it has no membership rather than a membership of everyone.
+    """
+    if container_has_public(conn, "slack", channel):
+        return None
+    members: set[str] = set()
+    for ptype, pid in conn.execute(
+        "SELECT DISTINCT principal_type, principal_id FROM slack_acl WHERE channel = ?",
+        (channel,),
+    ):
+        if ptype == "user":
+            members.add(pid)
+        elif ptype == "group":
+            members.update(r["id"] for r in group_members(conn, pid))
+    return sorted(members)
+
+
 def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]:
     """One page of a channel's members, in email order.
 
-    Membership is the set of people who have spoken in the channel — the only per-channel signal
-    the corpus carries. Answering with the whole roster instead would give every public channel the
-    same members, which real Slack cannot produce. Index-only on idx_slack_channel_author, so a
-    page costs a seek rather than a scan of the channel."""
+    A private channel's members are the people who may read it
+    (:func:`slack_private_channel_members`). A public channel's are the people who have spoken in
+    it — everyone in the org may read a public channel, and real Slack lists public channels to
+    people who are not in them, so readership cannot be the membership there. Speaking is the only
+    other per-channel signal a corpus carries, and answering with the whole roster instead would
+    give every public channel the same members, which real Slack cannot produce.
+
+    The public path is index-only on idx_slack_channel_author, so a page costs a seek rather than a
+    scan of the channel; the private path pages a set small enough to hold (a channel's grantees).
+    """
+    members = slack_private_channel_members(conn, channel)
+    if members is not None:
+        return members[offset : offset + limit]
     return [
         r[0]
         for r in conn.execute(
@@ -2843,25 +2880,11 @@ def slack_membership_violations(conn) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for row in list_containers(conn, "slack"):
         channel = row["name"]
-        # The org grant admits every principal, so no speaker can fall outside it — and asking for
-        # it is a LIMIT 1 that a public channel satisfies on its first row, where reading the
-        # grantees below scans that channel's whole slice of the ACL table (6.8s against 20ms on a
-        # 5.6M-message corpus, where every channel is public).
-        if container_has_public(conn, "slack", channel):
+        # `None` is a public channel, whose org grant admits every principal, and an empty list is
+        # a channel nobody may read — neither has a membership a speaker can fall outside of.
+        allowed = slack_private_channel_members(conn, channel)
+        if not allowed:
             continue
-        grants = conn.execute(
-            "SELECT DISTINCT principal_type, principal_id FROM slack_acl WHERE channel = ?",
-            (channel,),
-        ).fetchall()
-        # No grant at all is `"readers": []`, admin-only — a document withheld from the ACL model
-        # rather than a room with a membership to contradict.
-        if not grants:
-            continue
-        allowed: set[str] = set()
-        for ptype, pid in grants:
-            allowed.add(pid)
-            if ptype == "group":
-                allowed.update(r[0] for r in group_members(conn, pid))
         for (email,) in conn.execute(
             "SELECT DISTINCT m.author_email FROM slack_messages m "
             "JOIN principals p ON p.id = m.author_email AND p.type = 'user' "
@@ -2874,11 +2897,10 @@ def slack_membership_violations(conn) -> list[tuple[str, str]]:
 
 
 def slack_channel_has_author(conn, channel, email) -> bool:
-    """Whether ``email`` is one of a channel's members — the same set
-    :func:`slack_channel_member_emails` pages, asked about one person. It is what the conversation
-    object's ``is_member`` reports, so a client that stats a channel and then walks its members
-    cannot get two answers. Index-only on idx_slack_channel_author with equality on both columns,
-    so it is a seek rather than the DISTINCT scan that counting the members is."""
+    """Whether ``email`` has spoken in a channel — which is being a member of a PUBLIC one, the
+    same set :func:`slack_channel_member_emails` pages there, asked about one person. Index-only on
+    idx_slack_channel_author with equality on both columns, so it is a seek rather than the DISTINCT
+    scan that counting the members is."""
     return (
         conn.execute(
             "SELECT 1 FROM slack_messages WHERE channel = ? AND author_email = ? LIMIT 1",
@@ -2891,16 +2913,34 @@ def slack_channel_has_author(conn, channel, email) -> bool:
 def slack_channel_member_counts(conn) -> dict[str, int]:
     """Every channel's member count in one pass. Per-channel COUNT(DISTINCT) is ~1.9s on the
     biggest channel measured, and conversations.list shapes every channel in the page, so counting
-    them one at a time would be minutes per request; this is 12.2s once."""
-    return {
+    them one at a time would be minutes per request; this is 12.2s once.
+
+    Counted from whatever membership that channel has, so `num_members` and walking
+    :func:`slack_channel_member_emails` cannot disagree — the speakers for a public channel, the
+    grantees for a private one. Every channel is keyed, including one with no messages at all,
+    which the GROUP BY alone cannot reach.
+    """
+    counts = {
         r[0]: r[1]
         for r in conn.execute(
             "SELECT channel, COUNT(DISTINCT author_email) FROM slack_messages GROUP BY channel"
         )
     }
+    return {
+        channel: (len(members) if members is not None else counts.get(channel, 0))
+        for channel, members in (
+            (row["name"], slack_private_channel_members(conn, row["name"]))
+            for row in list_containers(conn, "slack")
+        )
+    }
 
 
 def count_slack_channel_members(conn, channel) -> int:
+    """One channel's member count — :func:`slack_channel_member_counts` for a single channel, for
+    the window before that cache is warm."""
+    members = slack_private_channel_members(conn, channel)
+    if members is not None:
+        return len(members)
     return conn.execute(
         "SELECT COUNT(DISTINCT author_email) FROM slack_messages WHERE channel = ?", (channel,)
     ).fetchone()[0]

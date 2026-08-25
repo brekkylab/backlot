@@ -69,7 +69,21 @@ class SlackSearch(_SlackOk):
     messages: dict = {}
 
 
-_P_LIST = [qp("limit", "integer"), qp("cursor"), qp("types")]
+_P_PAGED = [qp("limit", "integer"), qp("cursor")]
+# `types` decides what comes back, and its default excludes every private channel — so the spec
+# says so rather than leaving a generated client to find out. `users.list` takes no such argument,
+# which is why the two lists are not one.
+_P_CONVERSATIONS_LIST = _P_PAGED + [
+    qp(
+        "types",
+        description=(
+            "Comma-separated conversation types to return: public_channel, private_channel, im, "
+            "mpim. Defaults to public_channel alone, so private channels are only returned when "
+            "asked for by name. An unrecognised value is rejected with `invalid_types`. This "
+            "corpus models channels only, so `im`/`mpim` select nothing."
+        ),
+    )
+]
 _P_CHANNEL = [qp("channel", required=True)]
 _P_INFO = [qp("channel", required=True), qp("include_num_members", "boolean")]
 
@@ -200,7 +214,7 @@ def _channel_core(request: Request, conn, name: str, caller: Caller) -> dict:
         "is_im": False,
         "is_mpim": False,
         "is_private": is_private,
-        "is_member": _is_member(conn, name, caller),
+        "is_member": _is_member(conn, name, caller, is_private=is_private),
         "is_archived": False,
         "is_general": name in ("general", "announcements"),
         "is_shared": False,
@@ -358,7 +372,7 @@ async def auth_test(request: Request):
     "/conversations.list",
     methods=["GET", "POST"],
     response_model=SlackConversationsList,
-    openapi_extra={"parameters": _P_LIST},
+    openapi_extra={"parameters": _P_CONVERSATIONS_LIST},
 )
 async def conversations_list(request: Request):
     conn = auth.conn(request)
@@ -634,7 +648,7 @@ async def conversations_members(request: Request):
     "/users.list",
     methods=["GET", "POST"],
     response_model=SlackUsersList,
-    openapi_extra={"parameters": _P_LIST},
+    openapi_extra={"parameters": _P_PAGED},
 )
 async def users_list(request: Request):
     conn = auth.conn(request)
@@ -960,17 +974,28 @@ def _is_private(request: Request, conn, name: str) -> bool:
     return not store.container_has_public(conn, "slack", name)
 
 
-def _is_member(conn, name: str, caller: Caller) -> bool:
+def _is_member(conn, name: str, caller: Caller, *, is_private: bool) -> bool:
     """Whether the CALLER is in the channel — the conversation object's own definition of
     `is_member`, and the same membership conversations.members pages, so a client that stats a
     channel and then walks its members cannot get two answers to one question.
 
-    Seeing a channel is not being in it: real Slack lists the public channels a user is not in, and
-    answers `is_member: false` for them. A service token is not a person and has spoken nowhere, so
-    it is a member of nothing — the reasoning `_subscribed` and `_last_read` apply to a thread and
-    a read cursor.
+    The two kinds of channel answer it from different facts, because Slack shows them differently.
+    A PUBLIC channel is shown to everybody, so seeing it is not being in it: real Slack lists the
+    public channels a user is not in and answers `is_member: false` for them, and membership is who
+    has posted. A PRIVATE channel is listed to its members only, so there the two are one fact —
+    being shown it IS being in it, and every path here gates on `_channel_visibility` before it
+    builds a channel object. `is_private: true` beside `is_member: false` and a full history is not
+    a shape a client can be written against.
+
+    A service token is not a person: it bypasses the ACL rather than belonging to anything, so it
+    is a member of nothing — the reasoning `_subscribed` and `_last_read` apply to a thread and a
+    read cursor.
     """
-    return bool(caller.email) and store.slack_channel_has_author(conn, name, caller.email)
+    if not caller.email:
+        return False
+    if is_private:
+        return True
+    return store.slack_channel_has_author(conn, name, caller.email)
 
 
 def _member_count(request: Request, conn, name: str) -> int:

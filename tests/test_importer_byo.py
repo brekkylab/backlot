@@ -614,7 +614,9 @@ def test_byo_a_speaker_outside_a_private_channels_readers_is_refused(tmp_path):
     )
     load(named, Settings(data_dir=tmp_path))
     conn = store.connect_ro(Settings(data_dir=tmp_path).db_path)
-    assert store.slack_channel_member_emails(conn, "exec-only") == ["dee@a.com"]
+    # Both readers are members of the private channel, the one who has never posted included —
+    # Slack shows a private channel only to the people in it, so its readers ARE its membership.
+    assert store.slack_channel_member_emails(conn, "exec-only") == ["dee@a.com", "eve@a.com"]
     assert store.slack_membership_violations(conn) == []
     conn.close()
 

@@ -4,8 +4,6 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "backlot"
-# The git tag is the version: setuptools-scm reads it at build time, so nothing here has to be
-# edited to cut a release and no build ever has to write to the working tree.
 dynamic = ["version"]
 description = "A read-only mock of enterprise SaaS knowledge APIs, served over your own corpus with per-document ACLs"
 readme = "README.md"
@@ -141,10 +139,7 @@ filterwarnings = [
 ]
 
 [tool.setuptools_scm]
-# Reached only when there is no git metadata to read — a build from an unpacked source tarball
-# rather than a clone. Deliberately a version no tag will ever produce, so an artifact built
-# that way cannot be mistaken for a release.
-fallback_version = "0.0.0"
+fallback_version = "0.0.0.dev0"
 
 [tool.setuptools.packages.find]
 include = ["backlot*"]

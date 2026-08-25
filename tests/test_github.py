@@ -629,13 +629,255 @@ def test_github_file_excluded_from_issues_and_pulls(gh_client, gh_admin_h, gh_or
     assert pulls == []
 
 
-def test_github_file_excluded_from_search_issues(gh_client, gh_admin_h):
+def test_github_a_file_body_is_searchable_as_code_and_not_as_an_issue(
+    gh_client, gh_admin_h, gh_org
+):
+    """A string only a file's body holds is reachable through `/search/code` and absent from
+    `/search/issues`.
+
+    The two endpoints share one FTS index and split it by `kind`: real GitHub's issue search does
+    not return files, so filtering them out there is right. Until code search existed that filter
+    left a file's body indexed and UNREACHABLE — the only route to it was to already know its path.
+    """
     c, _ = gh_client
-    # 'helper' only appears in a file's content (src/pkg/utils.py); it must not surface
-    # as an issue/PR search hit even though the FTS index covers file content too.
-    body = c.get("/github/search/issues", headers=gh_admin_h, params={"q": "helper"}).json()
-    assert body["total_count"] == 0
-    assert body["items"] == []
+    # 'helper' appears only in codebase/src/pkg/utils.py's content
+    issues = c.get("/github/search/issues", headers=gh_admin_h, params={"q": "helper"}).json()
+    assert issues["total_count"] == 0
+    assert issues["items"] == []
+
+    body = c.get("/github/search/code", headers=gh_admin_h, params={"q": "helper"}).json()
+    assert body["total_count"] == 1
+    assert body["incomplete_results"] is False
+    item = body["items"][0]
+    assert (item["repository"]["name"], item["path"]) == ("codebase", "src/pkg/utils.py")
+    assert item["name"] == "utils.py"
+    assert item["sha"] == hashlib.sha1(b"def helper():\n    return 2\n").hexdigest()
+    assert item["score"] == 1.0  # real reports a flat 1.0; the ORDER carries the relevance
+    assert item["repository"]["full_name"] == f"{gh_org}/codebase"
+    assert item["html_url"] == f"https://github.com/{gh_org}/codebase/blob/main/src/pkg/utils.py"
+    # the links the item carries are ones this mock serves
+    for url in (item["url"], item["git_url"]):
+        assert c.get(url.split("testserver", 1)[1], headers=gh_admin_h).status_code == 200
+
+    # the owner-qualified `repo:` a real client sends, and a foreign owner
+    def total(q):
+        return c.get("/github/search/code", headers=gh_admin_h, params={"q": q}).json()[
+            "total_count"
+        ]
+
+    assert total(f"repo:{gh_org}/codebase helper") == 1
+    assert total("repo:other-org/codebase helper") == 0
+
+
+def test_github_code_search_returns_only_a_paths_head_snapshot(gh_client, gh_admin_h):
+    """Real code search indexes the DEFAULT BRANCH, so a path is one result however many snapshots
+    the corpus holds — and a string surviving only in a superseded snapshot is not findable.
+    """
+    c, _ = gh_client
+
+    def paths(q):
+        body = c.get("/github/search/code", headers=gh_admin_h, params={"q": q}).json()
+        return [(i["repository"]["name"], i["path"]) for i in body["items"]]
+
+    # svc/rate.py is stored three times; 'LIMIT' matches all three rows and is ONE result
+    assert paths("repo:history-repo LIMIT") == [("history-repo", "svc/rate.py")]
+    # 'second' is HEAD's README body; 'first' only the superseded pr-1 snapshot's
+    assert paths("second") == [("history-repo", "README.md")]
+    assert paths("first") == []
+
+    # the item's own url fetches the bytes that were searched
+    item = c.get(
+        "/github/search/code", headers=gh_admin_h, params={"q": "repo:history-repo LIMIT"}
+    ).json()["items"][0]
+    raw = c.get(
+        item["url"].split("testserver", 1)[1],
+        headers={**gh_admin_h, "Accept": "application/vnd.github.raw"},
+    )
+    assert raw.text == "LIMIT = 3\n"
+
+
+@pytest.mark.parametrize(
+    "q, expected",
+    [
+        # free text with no `in:` searches the content AND the path, as real does
+        ("helper", [("codebase", "src/pkg/utils.py")]),
+        ("in:file helper", [("codebase", "src/pkg/utils.py")]),
+        ("in:path helper", []),
+        ("in:path svc", [("history-repo", "svc/other.py"), ("history-repo", "svc/rate.py")]),
+        # quoting groups a term; the quotes are not part of what is matched
+        ('in:path "svc/other"', [("history-repo", "svc/other.py")]),
+        (
+            "repo:codebase in:path src",
+            [("codebase", "src/main.py"), ("codebase", "src/pkg/utils.py")],
+        ),
+        ("filename:utils", [("codebase", "src/pkg/utils.py")]),
+        ("filename:utils.py", [("codebase", "src/pkg/utils.py")]),
+        ("path:src/pkg", [("codebase", "src/pkg/utils.py")]),
+        # `path:/` is real's spelling for the ROOT, not for "any path"
+        (
+            "path:/",
+            [
+                ("codebase", "README.md"),
+                ("diffable", "README.md"),
+                ("diffable", "app.py"),
+                ("history-repo", "README.md"),
+            ],
+        ),
+        (
+            "path:pkg",
+            [
+                ("codebase", "src/pkg/utils.py"),
+                ("diffable", "pkg/conf.toml"),
+                ("diffable", "pkg/core.py"),
+                ("diffable", "pkg/no_newline.cfg"),
+            ],
+        ),
+        ("extension:toml", [("diffable", "pkg/conf.toml")]),
+        ("extension:.toml", [("diffable", "pkg/conf.toml")]),
+        ("repo:no-such-repo helper", []),
+        # a path fragment is a LITERAL: SQL LIKE's own wildcards are not a search syntax, so `_`
+        # finds the one path holding an underscore rather than standing in for any character
+        ("in:path %", []),
+        ("in:path _", [("diffable", "pkg/no_newline.cfg")]),
+        ("in:path no_newline", [("diffable", "pkg/no_newline.cfg")]),
+    ],
+)
+def test_github_code_search_qualifiers(gh_client, gh_admin_h, q, expected):
+    c, _ = gh_client
+    body = c.get("/github/search/code", headers=gh_admin_h, params={"q": q}).json()
+    assert sorted((i["repository"]["name"], i["path"]) for i in body["items"]) == sorted(expected)
+    assert body["total_count"] == len(expected)
+
+
+def test_github_code_search_is_acl_scoped(gh_client, gh_admin_h, gh_user_tokens):
+    """A restricted file's body is not searchable by a caller who cannot read the file.
+
+    The same corpus test_github_file_acl_scoped uses: codebase/config/secret.yaml is people-only.
+    Search is the widest door onto a body, so it has to be the same door.
+    """
+    c, _ = gh_client
+    member_h = {"Authorization": f"Bearer {gh_user_tokens['hana@acme.com']}"}  # in 'people'
+    nonmember_h = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}  # not in 'people'
+
+    def paths(headers, q="shh"):
+        body = c.get("/github/search/code", headers=headers, params={"q": q}).json()
+        return [i["path"] for i in body["items"]]
+
+    assert paths(gh_admin_h) == ["config/secret.yaml"]
+    assert paths(member_h) == ["config/secret.yaml"]
+    assert paths(nonmember_h) == []
+    # a qualifier-only listing is the same door, not a way around it
+    assert paths(nonmember_h, "extension:yaml") == []
+    assert paths(member_h, "extension:yaml") == ["config/secret.yaml"]
+
+
+def test_github_code_search_text_matches_only_under_the_media_type(gh_client, gh_admin_h):
+    """`text_matches` is what makes a hit useful rather than merely located, and real serves it only
+    when `Accept` asks for it."""
+    c, _ = gh_client
+    plain = c.get("/github/search/code", headers=gh_admin_h, params={"q": "helper"}).json()
+    assert "text_matches" not in plain["items"][0]
+
+    h = {**gh_admin_h, "Accept": "application/vnd.github.text-match+json"}
+    item = c.get("/github/search/code", headers=h, params={"q": "helper"}).json()["items"][0]
+    (tm,) = item["text_matches"]
+    assert tm["object_type"] == "FileContent"
+    assert tm["property"] == "content"
+    assert tm["object_url"] == item["url"]
+    assert "def helper():" in tm["fragment"]
+    (m,) = tm["matches"]
+    start, end = m["indices"]
+    assert tm["fragment"][start:end] == m["text"] == "helper"
+
+    # a term repeated in the query is one occurrence in the file, so it is one match
+    twice = c.get("/github/search/code", headers=h, params={"q": "helper helper"}).json()
+    assert twice["items"][0]["text_matches"][0]["matches"] == [m]
+
+    # a quoted phrase is ONE term spanning the space, not two terms carrying a stray quote
+    quoted = c.get("/github/search/code", headers=h, params={"q": '"def helper"'}).json()
+    (phrase,) = quoted["items"][0]["text_matches"][0]["matches"]
+    assert phrase == {"text": "def helper", "indices": [0, 10]}
+
+    # a hit matched on its PATH still carries the fragment real sends, with no match inside it
+    only_path = c.get("/github/search/code", headers=h, params={"q": "in:path svc/other"}).json()
+    (tm,) = only_path["items"][0]["text_matches"]
+    assert tm["fragment"] == "OTHER = 0\n"
+    assert tm["matches"] == []
+
+
+def test_github_code_search_refuses_a_query_less_search(gh_client, gh_admin_h):
+    """Real answers a `q`-less code search 422 in its own envelope, not FastAPI's `{"detail": …}`.
+
+    Unlike `/search/issues`, which this mock lets serve an empty `q` as a listing.
+    """
+    c, _ = gh_client
+    r = c.get("/github/search/code", headers=gh_admin_h)
+    assert r.status_code == 422
+    assert r.json() == {
+        "message": "Validation Failed",
+        "documentation_url": "https://docs.github.com/v3/search",
+        "errors": [{"resource": "Search", "field": "q", "code": "missing"}],
+        "status": "422",
+    }
+    assert c.get("/github/search/code", headers=gh_admin_h, params={"q": " "}).status_code == 422
+
+
+def _link_rels(header: str) -> dict:
+    """The Link header's rel -> url map (RFC5988 `<url>; rel="name"`, comma-joined)."""
+    rels = {}
+    for part in header.split(", "):
+        url, _, rel = part.partition("; ")
+        rels[rel.removeprefix('rel="').rstrip('"')] = url.strip("<>")
+    return rels
+
+
+@pytest.mark.parametrize(
+    "path, q",
+    [("/github/search/code", "extension:md"), ("/github/search/issues", "repo:diffable is:pr")],
+)
+def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q):
+    """Real pages a search response with an RFC5988 `Link`, exactly as it pages a listing, and
+    sends none at all when the results fit on one page.
+
+    A search envelope reports `total_count`, so the header is not the only way to learn there is
+    more — it is how a client that FOLLOWS links pages without composing a URL of its own, which is
+    what every listing on this router already gives it.
+    """
+    c, _ = gh_client
+    first = c.get(path, headers=gh_admin_h, params={"q": q, "per_page": 2, "page": 1})
+    total = first.json()["total_count"]
+    assert total > 2, "the fixture has to span more than one page for this to mean anything"
+    assert set(_link_rels(first.headers["Link"])) == {"next", "last"}
+
+    # following `next` lands on the same query's second page -- the round-trip the encoding is for
+    nxt = _link_rels(first.headers["Link"])["next"]
+    second = c.get(nxt.split("testserver", 1)[1], headers=gh_admin_h)
+    assert second.json()["total_count"] == total
+    ids = lambda r: {i["url"] for i in r.json()["items"]}  # noqa: E731
+    assert ids(second) and not ids(second) & ids(first)
+    assert {"prev", "first"} <= set(_link_rels(second.headers["Link"]))
+
+    # one page of results carries no Link at all, as real sends none
+    assert "Link" not in c.get(path, headers=gh_admin_h, params={"q": q, "per_page": 100}).headers
+
+
+def test_github_code_search_paginates(gh_client, gh_admin_h):
+    c, _ = gh_client
+
+    def page(n):
+        body = c.get(
+            "/github/search/code",
+            headers=gh_admin_h,
+            params={"q": "extension:md", "page": n, "per_page": 2},
+        ).json()
+        return body["total_count"], [(i["repository"]["name"], i["path"]) for i in body["items"]]
+
+    total, first = page(1)
+    # three README.md (codebase, diffable, history-repo) + unicode-repo/docs/unicode.md
+    assert total == 4
+    _, second = page(2)
+    assert len(first) == 2 and len(second) == 2
+    assert not set(first) & set(second)
 
 
 def test_github_a_files_snapshots_are_one_tree_entry_served_at_head(gh_client, gh_admin_h, gh_org):
@@ -1892,8 +2134,9 @@ def test_github_responses_unchanged_by_enrichment(client, admin_h):
         assert key in item, f"missing {key} (fidelity regression)"
 
 
-def test_github_issue_search_has_typed_response_schema(client):
-    op = client.get("/openapi.json").json()["paths"]["/github/search/issues"]["get"]
+@pytest.mark.parametrize("path", ["/github/search/issues", "/github/search/code"])
+def test_github_search_has_typed_response_schema(client, path):
+    op = client.get("/openapi.json").json()["paths"][path]["get"]
     schema = op["responses"]["200"]["content"]["application/json"]["schema"]
     assert schema != {}
     assert "$ref" in schema or schema.get("type") in ("object", "array")

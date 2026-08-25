@@ -2139,6 +2139,32 @@ def _fts_match(query: str, phrase: bool = False) -> str:
     )
 
 
+def _fts_relevance_order(source_type: str, query, tbl: str = "t") -> tuple[str, list]:
+    """Relevance ordering for an FTS query — bm25 rank, behind a literal-substring tier when the
+    query joins word characters with punctuation.
+
+    Boost docs containing the query as a literal substring, but ONLY for such a query (upload.csv,
+    DOCS-210, a/b): that's exactly when the tokenizer splits one literal into pieces and the exact
+    match sinks under coincidental "upload csv"/"upload-csv" hits. This surfaces it first whether
+    the client quoted the query (mirage's grep push-down) or not (the MCP slack/gmail search sends
+    bare terms). Plain multi-word queries ("the meeting") gain nothing from it and would pay a full
+    instr scan over tens of thousands of matches, so the punctuation test gates them out. instr
+    runs only over the already-matched rows, so it is cheap.
+
+    Shared by :func:`search_documents` and :func:`search_repo_files`: the tier is a property of
+    FTS5 tokenization, not of either caller's endpoint, so both orders have to agree on it.
+    """
+    fts = _fts_table(source_type)
+    lit = (query or "").strip()
+    if lit and re.search(r"\w[^\w\s]\w", lit):
+        return (
+            f"(instr(lower({tbl}.content), lower(?)) > 0 "
+            f"OR instr(lower({title_expr(source_type, tbl)}), lower(?)) > 0) DESC, {fts}.rank",
+            [lit, lit],
+        )
+    return f"{fts}.rank", []
+
+
 def search_documents(
     conn,
     query,
@@ -2166,32 +2192,15 @@ def search_documents(
         clause, cparams = _acl_clause(source_type, "t", visible_ids)
         fts = _fts_table(source_type)
         on = _fts_join(source_type, "t")
-        # For a phrase search, tier the results: docs literally containing the query string first
-        # (bm25 next as the tiebreak). FTS tokenization drops punctuation, so "upload.csv" and
-        # "upload csv" tokenize identically and bm25 can't tell them apart — the one doc that
-        # actually contains "upload.csv" would otherwise sink beneath hundreds of "upload csv"
-        # mentions. instr runs only over the (already phrase-narrowed) matches, so it's cheap.
-        order_sql, order_p = f"{fts}.rank", []
-        lit = (query or "").strip()
+        # A recency order wins outright: sort=timestamp asks for the doc's own clock, and the
+        # literal-substring tier _fts_relevance_order applies would reorder by relevance under it.
         if order_by in ("recency", "recency_asc"):
             # Slack sort=timestamp: order matches by the message's own ts, not relevance. NULL
             # created_ts (a synthesized ts) sorts last on desc / first on asc — an acceptable edge.
             direction = "ASC" if order_by == "recency_asc" else "DESC"
-            order_sql = f"t.created_ts {direction}, {fts}.rank"
-        # Boost docs containing the query as a literal substring, but ONLY when the query has
-        # punctuation joining word chars (upload.csv, DOCS-210, a/b): that's exactly when the
-        # tokenizer splits one literal into pieces and the exact match sinks under coincidental
-        # "upload csv"/"upload-csv" hits. This surfaces it first whether the client quoted the query
-        # (mirage's grep push-down) or not (the MCP slack/gmail search sends bare terms). Plain
-        # multi-word queries ("the meeting") gain nothing from it and would pay a full instr scan
-        # over tens of thousands of matches, so the punctuation test gates them out. Only for
-        # relevance ordering — sort=timestamp is a pure recency order.
-        elif lit and re.search(r"\w[^\w\s]\w", lit):
-            order_sql = (
-                "(instr(lower(t.content), lower(?)) > 0 "
-                f"OR instr(lower({title_expr(source_type, 't')}), lower(?)) > 0) DESC, {fts}.rank"
-            )
-            order_p = [lit, lit]
+            order_sql, order_p = f"t.created_ts {direction}, {fts}.rank", []
+        else:
+            order_sql, order_p = _fts_relevance_order(source_type, query, "t")
         sql = (
             f"SELECT t.* FROM {fts} JOIN {tbl} t ON {on} "
             f"WHERE {fts} MATCH ?{cont_sql.format(a='t')}{clause} "
@@ -2672,6 +2681,66 @@ def get_repo_file(conn, repo, path, visible_ids=None, ref=None) -> sqlite3.Row |
     ).fetchone()
 
 
+def search_repo_files(
+    conn, query=None, visible_ids=None, repo=None, path_like=None, limit=10_000, offset=0
+) -> list[sqlite3.Row]:
+    """HEAD-snapshot `kind='file'` rows — corpus-wide or in one repo, narrowed by an FTS match over
+    title+content (`query`) and by paths containing every string in `path_like`.
+
+    Neither existing read answers this and neither should be bent into it: :func:`search_documents`
+    spans every kind and every snapshot (it is what `/search/issues` filters files back OUT of),
+    and :func:`list_repo_files` is one repo with no text filter. Code search is the inverse of both
+    — files only, HEAD only, across repos.
+
+    `path_like` is a substring test rather than a second FTS clause because `path` is not in the
+    index (see :func:`_fts_text_columns`), and because a caller matching a path is matching a
+    fragment of one, not a stemmed word. It ANDs with `query` where both are given.
+
+    Ordered by relevance under `query` (see :func:`_fts_relevance_order`) and by `(repo, path)`
+    without one, so a listing is stable and a search leads with its best hit.
+    """
+    clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
+    head, hp = _file_head_clause(visible_ids)
+    narrow, np = "", []
+    if repo is not None:
+        narrow, np = " AND t.repo = ?", [repo]
+    for frag in path_like or ():
+        # ESCAPE, because a path fragment is a LITERAL: `_` is common in filenames and is also
+        # LIKE's single-character wildcard, so `mod_7` would otherwise answer with `mod-7` too.
+        narrow += " AND lower(t.path) LIKE ? ESCAPE '\\'"
+        np.append(f"%{_like_escape(frag.lower())}%")
+    if query is not None and _has_fts(conn, "github"):
+        m = _fts_match(query)
+        if not m:
+            return []
+        fts = _fts_table("github")
+        order_sql, order_p = _fts_relevance_order("github", query, "t")
+        sql = (
+            f"SELECT t.* FROM {fts} JOIN github_items t ON {_fts_join('github', 't')}"
+            f" WHERE {fts} MATCH ? AND t.kind = 'file'{narrow}{clause}{head}"
+            f" ORDER BY {order_sql} LIMIT ? OFFSET ?"
+        )
+        return conn.execute(sql, [m, *np, *cp, *hp, *order_p, limit, offset]).fetchall()
+    text, tp = "", []
+    if query is not None:  # no FTS5: the same LIKE fallback search_documents uses
+        # Escaped like the path fragment above, and for the same reason: a wildcard the CALLER
+        # typed is text they are searching for. Without it `100%` matches every file in the repo.
+        needle = f"%{_like_escape(query)}%"
+        text, tp = (
+            " AND (t.title LIKE ? ESCAPE '\\' OR t.content LIKE ? ESCAPE '\\')",
+            [needle, needle],
+        )
+    sql = (
+        "SELECT t.* FROM github_items t WHERE t.kind = 'file'"
+        + text
+        + narrow
+        + clause
+        + head
+        + " ORDER BY t.repo, t.path LIMIT ? OFFSET ?"
+    )
+    return conn.execute(sql, [*tp, *np, *cp, *hp, limit, offset]).fetchall()
+
+
 def iter_repo_file_snapshots(conn, repo, visible_ids=None) -> Iterator[sqlite3.Row]:
     """EVERY file row in the repo, superseded snapshots included — the one read that does not
     collapse to HEAD.
@@ -2810,13 +2879,50 @@ def group_members(conn, group_id) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def slack_private_channel_members(conn, channel) -> list[str] | None:
+    """The user principals who may read a private channel — its membership — in email order.
+    ``None`` for a public channel, which has no such list.
+
+    A private channel and a public one derive membership from different facts, because Slack shows
+    them differently. Slack lists a private channel to its members ONLY, so being able to read one
+    IS being in it: the grants ARE the membership, and a group grant is expanded to the people in
+    it because the membership a client walks is a list of people. A public channel is shown to
+    everyone in the org, so its org grant says nothing about who is in it — see
+    :func:`slack_channel_member_emails` for what answers there.
+
+    An empty list is a private channel nobody may read (``"readers": []``, or a grant to a group
+    with no members): it has no membership rather than a membership of everyone.
+    """
+    if container_has_public(conn, "slack", channel):
+        return None
+    members: set[str] = set()
+    for ptype, pid in conn.execute(
+        "SELECT DISTINCT principal_type, principal_id FROM slack_acl WHERE channel = ?",
+        (channel,),
+    ):
+        if ptype == "user":
+            members.add(pid)
+        elif ptype == "group":
+            members.update(r["id"] for r in group_members(conn, pid))
+    return sorted(members)
+
+
 def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]:
     """One page of a channel's members, in email order.
 
-    Membership is the set of people who have spoken in the channel — the only per-channel signal
-    the corpus carries. Answering with the whole roster instead would give every public channel the
-    same members, which real Slack cannot produce. Index-only on idx_slack_channel_author, so a
-    page costs a seek rather than a scan of the channel."""
+    A private channel's members are the people who may read it
+    (:func:`slack_private_channel_members`). A public channel's are the people who have spoken in
+    it — everyone in the org may read a public channel, and real Slack lists public channels to
+    people who are not in them, so readership cannot be the membership there. Speaking is the only
+    other per-channel signal a corpus carries, and answering with the whole roster instead would
+    give every public channel the same members, which real Slack cannot produce.
+
+    The public path is index-only on idx_slack_channel_author, so a page costs a seek rather than a
+    scan of the channel; the private path pages a set small enough to hold (a channel's grantees).
+    """
+    members = slack_private_channel_members(conn, channel)
+    if members is not None:
+        return members[offset : offset + limit]
     return [
         r[0]
         for r in conn.execute(
@@ -2827,19 +2933,83 @@ def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]
     ]
 
 
+def slack_membership_violations(conn) -> list[tuple[str, str]]:
+    """``(channel, email)`` for every speaker who cannot read the private channel they spoke in.
+
+    Speaking in a channel means being in it, and a member of a private channel can read it — so a
+    speaker outside that channel's grantees is two facts that cannot both hold: the same person is
+    served by :func:`slack_channel_member_emails` and told `channel_not_found` by
+    conversations.info. The corpus has no way to say "left the channel", which is the one state
+    real Slack reaches this from, so within this model it is a corpus that cannot be true.
+
+    Only PRIVATE channels can produce it — a public channel's org grant covers every principal —
+    and only speakers who are principals: a display-only speaker has no identity to authenticate
+    with, so there is nobody for the two answers to disagree about.
+    """
+    out: list[tuple[str, str]] = []
+    for row in list_containers(conn, "slack"):
+        channel = row["name"]
+        # `None` is a public channel, whose org grant admits every principal, and an empty list is
+        # a channel nobody may read — neither has a membership a speaker can fall outside of.
+        allowed = slack_private_channel_members(conn, channel)
+        if not allowed:
+            continue
+        for (email,) in conn.execute(
+            "SELECT DISTINCT m.author_email FROM slack_messages m "
+            "JOIN principals p ON p.id = m.author_email AND p.type = 'user' "
+            "WHERE m.channel = ? ORDER BY m.author_email",
+            (channel,),
+        ):
+            if email not in allowed:
+                out.append((channel, email))
+    return out
+
+
+def slack_channel_has_author(conn, channel, email) -> bool:
+    """Whether ``email`` has spoken in a channel — which is being a member of a PUBLIC one, the
+    same set :func:`slack_channel_member_emails` pages there, asked about one person. Index-only on
+    idx_slack_channel_author with equality on both columns, so it is a seek rather than the DISTINCT
+    scan that counting the members is."""
+    return (
+        conn.execute(
+            "SELECT 1 FROM slack_messages WHERE channel = ? AND author_email = ? LIMIT 1",
+            (channel, email),
+        ).fetchone()
+        is not None
+    )
+
+
 def slack_channel_member_counts(conn) -> dict[str, int]:
     """Every channel's member count in one pass. Per-channel COUNT(DISTINCT) is ~1.9s on the
     biggest channel measured, and conversations.list shapes every channel in the page, so counting
-    them one at a time would be minutes per request; this is 12.2s once."""
-    return {
+    them one at a time would be minutes per request; this is 12.2s once.
+
+    Counted from whatever membership that channel has, so `num_members` and walking
+    :func:`slack_channel_member_emails` cannot disagree — the speakers for a public channel, the
+    grantees for a private one. Every channel is keyed, including one with no messages at all,
+    which the GROUP BY alone cannot reach.
+    """
+    counts = {
         r[0]: r[1]
         for r in conn.execute(
             "SELECT channel, COUNT(DISTINCT author_email) FROM slack_messages GROUP BY channel"
         )
     }
+    return {
+        channel: (len(members) if members is not None else counts.get(channel, 0))
+        for channel, members in (
+            (row["name"], slack_private_channel_members(conn, row["name"]))
+            for row in list_containers(conn, "slack")
+        )
+    }
 
 
 def count_slack_channel_members(conn, channel) -> int:
+    """One channel's member count — :func:`slack_channel_member_counts` for a single channel, for
+    the window before that cache is warm."""
+    members = slack_private_channel_members(conn, channel)
+    if members is not None:
+        return len(members)
     return conn.execute(
         "SELECT COUNT(DISTINCT author_email) FROM slack_messages WHERE channel = ?", (channel,)
     ).fetchone()[0]

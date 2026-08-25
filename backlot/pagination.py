@@ -8,6 +8,7 @@ offset and the vendor's token/header representation.
 from __future__ import annotations
 
 import base64
+from urllib.parse import quote
 
 
 # --- opaque offset cursor (Slack next_cursor, Gmail/Drive pageToken, Jira token) ---
@@ -84,13 +85,24 @@ def clamp_page(
 def github_link_header(
     url_no_query: str, params: dict, page: int, per_page: int, total: int
 ) -> str | None:
-    """Build a Link header with rel=next/prev/first/last. ``params`` are extra query args."""
+    """Build a Link header with rel=next/prev/first/last. ``params`` are extra query args.
+
+    Returns ``None`` for a single page, which is what real sends there: no header at all, rather
+    than one whose every rel points back at the page the caller is already holding.
+
+    Values are percent-encoded because a param value is arbitrary text — a search `q` carries
+    spaces and colons — and a URI cannot hold them raw. A client that follows the link has to
+    arrive at the query it was paging, not at a truncated one.
+    """
     last_page = max(1, (total + per_page - 1) // per_page)
     if last_page <= 1:
         return None
 
     def link(p: int) -> str:
-        q = "&".join(f"{k}={v}" for k, v in {**params, "per_page": per_page, "page": p}.items())
+        q = "&".join(
+            f"{k}={quote(str(v), safe='')}"
+            for k, v in {**params, "per_page": per_page, "page": p}.items()
+        )
         return f"<{url_no_query}?{q}>"
 
     parts = []

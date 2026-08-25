@@ -59,10 +59,12 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
 # application error as HTTP 200 with {"ok": false, "error": …}, which the mock already does — these
 # are about the cases where it answered something real Slack never would.
 #
-# NOTE: most expectations here come from Slack's published reference rather than from probing the
-# live API — there are no Slack credentials in this environment, and each one cites the documented
-# behaviour it encodes. The exception is the not_authed/invalid_auth split, which needs no account
-# to observe and so was measured directly (see test_slack_auth_errors_distinguish_...).
+# NOTE: each expectation says where it comes from, because they do not all come from the same
+# place. Some are transcribed from Slack's published reference (the channel object's field set, the
+# documented `types` default). Others are MEASURED against slack.com: the not_authed/invalid_auth
+# split, which needs no account at all, and — with a workspace user token — the error a by-id method
+# answers for a private channel that token is not in, for an id that names nothing, and for a
+# required argument that never arrived. A test that pins a measured answer says so.
 
 
 # Measured against slack.com, which answers all of these without an account:
@@ -163,32 +165,44 @@ def _a_channel_id(client, admin_h):
     ][0]["id"]
 
 
+# SAMPLE's Slack channels, by the only distinction `types` draws between them.
+_PUBLIC_CHANNELS = {"eng-announcements", "incidents"}
+_PRIVATE_CHANNELS = {"people-confidential"}
+_EVERY_CHANNEL = {"types": "public_channel,private_channel", "limit": 100}
+
+
 @pytest.mark.parametrize(
-    "types, expect_channels",
+    "types, expected",
     [
-        ("public_channel", True),
-        ("private_channel", True),
-        ("public_channel,private_channel", True),
-        ("im", False),
-        ("mpim", False),
-        ("im,mpim", False),
+        ("public_channel", _PUBLIC_CHANNELS),
+        ("private_channel", _PRIVATE_CHANNELS),
+        ("public_channel,private_channel", _PUBLIC_CHANNELS | _PRIVATE_CHANNELS),
+        ("im,public_channel", _PUBLIC_CHANNELS),
+        ("im", set()),
+        ("mpim", set()),
+        ("im,mpim", set()),
     ],
 )
-def test_slack_conversations_list_honours_types(client, admin_h, types, expect_channels):
-    """`types` was ignored, so `im` returned every public channel and a client presenting
-    `channels/` and `dms/` separately got each channel under both. This corpus has no DMs, so `im`
-    must come back empty — which is exactly what real Slack answers for a DM-less workspace, making
-    "no DMs here" indistinguishable from production instead of indistinguishable from a bug."""
+def test_slack_conversations_list_honours_types(client, admin_h, types, expected):
+    """`types` was parsed, and an unknown value rejected — then the parsed set was read as a
+    boolean gate, so `public_channel` and `private_channel` never separated: either one returned
+    every channel, and a client presenting `channels/` and `dms/` separately got each channel under
+    both. This corpus has no DMs, so `im` must come back empty — which is exactly what real Slack
+    answers for a DM-less workspace, making "no DMs here" indistinguishable from production instead
+    of indistinguishable from a bug."""
     j = client.get(
         "/slack/api/conversations.list", headers=admin_h, params={"types": types, "limit": 5}
     ).json()
     assert j["ok"] is True
-    assert bool(j["channels"]) is expect_channels, j["channels"][:1]
+    assert {c["name"] for c in j["channels"]} == expected
     assert all(c["is_im"] is False and c["is_mpim"] is False for c in j["channels"])
+    # the field the filter selects on, so a channel in the wrong bucket fails here too
+    assert all(c["is_private"] is (c["name"] in _PRIVATE_CHANNELS) for c in j["channels"])
 
 
 def test_slack_conversations_list_defaults_to_public_channels(client, admin_h):
-    """Slack's documented default when `types` is omitted is `public_channel`."""
+    """Slack's documented default when `types` is omitted is `public_channel`, which `_slack_types`
+    returned and the handler then ignored — so an omitted filter listed private channels."""
     omitted = client.get(
         "/slack/api/conversations.list", headers=admin_h, params={"limit": 5}
     ).json()
@@ -198,7 +212,7 @@ def test_slack_conversations_list_defaults_to_public_channels(client, admin_h):
         params={"limit": 5, "types": "public_channel"},
     ).json()
     assert omitted["channels"] == explicit["channels"]
-    assert omitted["channels"]
+    assert {c["name"] for c in omitted["channels"]} == _PUBLIC_CHANNELS
 
 
 # Transcribed from Slack's documented example response for conversations.list:
@@ -285,29 +299,29 @@ def test_slack_channel_object_carries_slacks_documented_field_set(client, admin_
     assert set(listed["purpose"]) == {"value", "creator", "last_set"}
 
 
+def _private_channel(client, admin_h) -> dict:
+    """SAMPLE's one private channel, as the service token sees it."""
+    everything = client.get(
+        "/slack/api/conversations.list", headers=admin_h, params=_EVERY_CHANNEL
+    ).json()["channels"]
+    private = next(c for c in everything if c["name"] == "people-confidential")
+    assert private["is_private"] is True
+    return private
+
+
 def test_slack_info_answers_one_shape_whoever_asks(client, admin_h, tokens):
     """`last_read` is the caller's, so its value varies — its presence must not.
 
     Gating the key on what the caller can read gave `.info` two shapes, which defeats the point of
-    pinning the object exactly, and made the key readable as an ACL oracle: on `people-confidential`
-    — which `conversations.list` does not show these callers — a present `last_read` said "you can
-    read this" and an absent one said "you cannot". A caller with nothing to have read gets the zero
-    ts instead, so the shape is invariant and the answer is not there to be read off."""
-    everything = client.get(
-        "/slack/api/conversations.list", headers=admin_h, params={"limit": 200}
-    ).json()["channels"]
-    private = next(c for c in everything if c["name"] == "people-confidential")
-    assert private["is_private"] is True
+    pinning the object exactly, and made the key readable as an ACL oracle. A caller with nothing to
+    have read gets the zero ts instead, so the shape is invariant and the answer is not there to be
+    read off. A caller who may not see the channel at all is answered `channel_not_found` and so has
+    no object to read anything off — the test below."""
+    private = _private_channel(client, admin_h)
 
     shapes, values = set(), {}
-    for who in ("admin", "ava@acme.com", "bob@acme.com"):
+    for who in ("admin", "hana@acme.com"):
         h = admin_h if who == "admin" else {"Authorization": f"Bearer {tokens[who]}"}
-        # the channel is hidden from these callers by .list, and .info still answers it
-        hidden = client.get(
-            "/slack/api/conversations.list", headers=h, params={"limit": 200}
-        ).json()["channels"]
-        assert (who == "admin") == any(c["name"] == "people-confidential" for c in hidden)
-
         ch = client.post(
             "/slack/api/conversations.info", headers=h, data={"channel": private["id"]}
         ).json()["channel"]
@@ -316,22 +330,68 @@ def test_slack_info_answers_one_shape_whoever_asks(client, admin_h, tokens):
 
     assert len(shapes) == 1, "conversations.info must answer one key set whoever asks"
     assert all("last_read" in shape for shape in shapes)
-    # nobody who cannot read it gets a real ts, and the service token reads nothing either
-    assert values == dict.fromkeys(values, slack.ZERO_TS)
+    # the service token is not a person and has read nothing, while the one person who can read the
+    # channel is caught up on it — so this is neither a blanket zero nor a blanket ts
+    assert values["admin"] == slack.ZERO_TS
+    assert float(values["hana@acme.com"]) > 0
 
-    # ...while a channel the caller CAN read still answers a real ts, so this is not a blanket zero
-    readable = client.get(
-        "/slack/api/conversations.list",
-        headers={"Authorization": f"Bearer {tokens['ava@acme.com']}"},
-        params={"limit": 1},
-    ).json()["channels"][0]
-    seen = client.post(
-        "/slack/api/conversations.info",
-        headers={"Authorization": f"Bearer {tokens['ava@acme.com']}"},
-        data={"channel": readable["id"]},
-    ).json()["channel"]
-    assert seen["last_read"] != slack.ZERO_TS
-    assert float(seen["last_read"]) > 0
+
+@pytest.mark.parametrize(
+    "method, extra, when_visible",
+    [
+        ("conversations.info", {}, None),
+        ("conversations.members", {}, None),
+        ("conversations.history", {}, None),
+        # replies takes a ts, and the channel is answered before it: for a channel the caller CAN
+        # see, a ts that names nothing is `thread_not_found` — which is why it is the third value
+        # here rather than an `ok`.
+        ("conversations.replies", {"ts": "1700000000.000100"}, "thread_not_found"),
+    ],
+)
+def test_slack_by_id_methods_refuse_a_channel_the_caller_cannot_see(
+    client, admin_h, tokens, method, extra, when_visible
+):
+    """`conversations.list` scopes by ACL; the methods that resolve a channel by id did not, so an
+    id was enough for any authenticated principal to confirm a private room, read its name, topic,
+    purpose and creation time, and enumerate who is in it — `conversations.members` being a
+    projection of the very messages the ACL is withholding. `conversations.history` answered
+    `ok:true` with an empty `messages`, which reads as "this channel exists and you may read it; it
+    happens to be empty" — the opposite of what the mock knows.
+
+    All four answer `channel_not_found`, the same answer an id that names nothing gets, so a hidden
+    channel is not distinguishable from one that was never there. Measured against slack.com with a
+    workspace token, on a private channel that token is not in beside a well-formed id for no
+    channel at all — every one of the eight answers is `channel_not_found`. NOT the `not_in_channel`
+    that `conversations.history` also documents: that is the case where the token can SEE the
+    channel and has not joined it, which is a public channel here and never refused, and the other
+    three methods do not document the error at all."""
+    private = _private_channel(client, admin_h)
+    hidden_and_made_up = ({"channel": private["id"]}, {"channel": "C0000000000"})
+    for email in ("ava@acme.com", "bob@acme.com"):
+        h = {"Authorization": f"Bearer {tokens[email]}"}
+        for params in hidden_and_made_up:
+            j = client.get(f"/slack/api/{method}", headers=h, params={**params, **extra}).json()
+            assert j == {"ok": False, "error": "channel_not_found"}, (email, params)
+
+    def answer(headers, channel):
+        j = client.get(
+            f"/slack/api/{method}", headers=headers, params={"channel": channel, **extra}
+        ).json()
+        return j.get("error") if not j["ok"] else None
+
+    # The test is visibility, NOT membership: the one person who may read it is answered on the
+    # channel's own terms...
+    hana = {"Authorization": f"Bearer {tokens['hana@acme.com']}"}
+    assert answer(hana, private["id"]) == when_visible
+    # ...and so is a public channel the caller can see but has never posted in (bob has only ever
+    # spoken in #incidents), which real Slack answers rather than refusing.
+    bob = {"Authorization": f"Bearer {tokens['bob@acme.com']}"}
+    public = client.get(
+        "/slack/api/conversations.list", headers=bob, params={"types": "public_channel"}
+    ).json()["channels"]
+    quiet = next(c for c in public if c["name"] == "eng-announcements")
+    assert quiet["is_member"] is False
+    assert answer(bob, quiet["id"]) == when_visible
 
 
 def test_slack_conversations_list_rejects_an_unknown_type(client, admin_h):
@@ -383,14 +443,22 @@ def test_slack_history_rejects_an_invalid_cursor(client, admin_h):
     assert j == {"ok": False, "error": "invalid_cursor"}
 
 
-def test_slack_members_are_the_channels_own_speakers(client, admin_h, ro_conn):
+def test_slack_members_are_the_channels_own_speakers(client, admin_h, tokens, ro_conn):
     """Every public channel reported the same membership — the entire roster — because the handler
     skipped membership for a public channel. Real Slack's membership differs per channel, and a
     workspace where every channel holds everybody is not a shape it produces.
 
-    Membership is now the channel's own participants, which is what the corpus actually knows."""
+    A public channel's membership is its own participants, which is what the corpus knows about a
+    room everyone may read — and `is_member` is the caller's own place in that same set. It was the
+    constant `True`, so every channel a caller could see claimed them as a member, including public
+    ones they have never posted in; a client that stats a channel and then walks its members got two
+    answers to one question.
+
+    The invariant asserted at the end — `is_member` iff the caller is in `conversations.members` —
+    holds for a private channel too, where both are its readers rather than its speakers (see
+    test_slack_a_private_channels_members_are_its_readers)."""
     chans = client.get(
-        "/slack/api/conversations.list", headers=admin_h, params={"limit": 100}
+        "/slack/api/conversations.list", headers=admin_h, params=_EVERY_CHANNEL
     ).json()["channels"]
     seen = {}
     for c in chans[:4]:
@@ -411,6 +479,19 @@ def test_slack_members_are_the_channels_own_speakers(client, admin_h, ro_conn):
     assert len(set(map(frozenset, seen.values()))) > 1, (
         "different channels must not all report identical membership"
     )
+
+    for email in ("ava@acme.com", "bob@acme.com", "hana@acme.com"):
+        uid = synth.slack_user_id(email)
+        listed = client.get(
+            "/slack/api/conversations.list",
+            headers={"Authorization": f"Bearer {tokens[email]}"},
+            params=_EVERY_CHANNEL,
+        ).json()["channels"]
+        assert listed
+        for c in listed:
+            assert c["is_member"] is (uid in seen[c["name"]]), (email, c["name"])
+    # ...and the service token, which is nobody, is a member of nothing
+    assert all(c["is_member"] is False for c in chans)
 
 
 def test_slack_members_paginate(client, admin_h):
@@ -465,11 +546,60 @@ def test_slack_num_members_agrees_with_the_member_list(client, admin_h):
         assert info["num_members"] == len(listed), c["name"]
 
 
-def test_slack_members_channel_not_found(client, admin_h):
-    j = client.get(
-        "/slack/api/conversations.members", headers=admin_h, params={"channel": "C_NOPE"}
-    ).json()
-    assert j == {"ok": False, "error": "channel_not_found"}
+_OWN_CHANNEL = "<the caller's own channel>"  # stands for an id only the test body can look up
+
+
+@pytest.mark.parametrize(
+    "method, params, error",
+    [
+        # An ABSENT required argument — the request is malformed, and no channel was ever named.
+        ("conversations.info", {}, "invalid_arguments"),
+        ("conversations.members", {}, "invalid_arguments"),
+        ("conversations.history", {}, "invalid_arguments"),
+        ("conversations.replies", {}, "invalid_arguments"),
+        ("conversations.replies", {"channel": "C_NOPE"}, "invalid_arguments"),  # ts absent
+        # PRESENT and empty, or present and naming nothing — the argument arrived, so what is
+        # missing is the channel.
+        ("conversations.info", {"channel": ""}, "channel_not_found"),
+        ("conversations.members", {"channel": ""}, "channel_not_found"),
+        ("conversations.history", {"channel": ""}, "channel_not_found"),
+        ("conversations.info", {"channel": "C_NOPE"}, "channel_not_found"),
+        ("conversations.members", {"channel": "C_NOPE"}, "channel_not_found"),
+        ("conversations.history", {"channel": "C_NOPE"}, "channel_not_found"),
+        ("conversations.replies", {"channel": "C_NOPE", "ts": "1.0"}, "channel_not_found"),
+        # ...and a ts that arrived empty is answered by the thread, the channel being readable.
+        ("conversations.replies", {"channel": _OWN_CHANNEL, "ts": ""}, "thread_not_found"),
+        # The search family draws the line in the same place, and has its OWN name for the blank
+        # half: `no_query`, the vendor's spelling for a query that arrived with nothing in it.
+        ("search.messages", {}, "invalid_arguments"),
+        ("search.all", {}, "invalid_arguments"),
+        ("search.files", {}, "invalid_arguments"),
+        ("search.messages", {"query": ""}, "no_query"),
+        ("search.all", {"query": ""}, "no_query"),
+        ("search.files", {"query": ""}, "no_query"),
+        ("search.messages", {"query": "   "}, "no_query"),  # whitespace is not a query either
+        # users.info is the exception, and is left one: live it answers `user_not_found` to all of
+        # them, absent argument included. Pinned so the rule above is not "tidied" onto it.
+        ("users.info", {}, "user_not_found"),
+        ("users.info", {"user": ""}, "user_not_found"),
+    ],
+)
+def test_slack_an_absent_argument_is_not_a_thing_that_was_not_found(
+    client, admin_h, method, params, error
+):
+    """Slack separates "you did not pass the argument" from "what you passed names nothing", and
+    the mock had only the second — so a client that omitted `channel` was told the thing it never
+    named does not exist. The two send it down different branches: `channel_not_found` is about the
+    workspace, `invalid_arguments` about the request it just built.
+
+    Every row measured against slack.com with a workspace token, users.info's included — the rule
+    is the vendor's, not a symmetry imposed on it. Auth is settled first (a bad token is
+    `invalid_auth` with or without the arguments), which is why this table is all authenticated."""
+    params = {
+        k: (_a_channel_id(client, admin_h) if v == _OWN_CHANNEL else v) for k, v in params.items()
+    }
+    j = client.get(f"/slack/api/{method}", headers=admin_h, params=params).json()
+    assert j == {"ok": False, "error": error}
 
 
 def test_slack_search_all(client, admin_h):
@@ -814,9 +944,82 @@ def test_slack_reply_users_and_num_members(tmp_path):
     # conversations.list channel object reports a real member count (was hardcoded 0)
     import types
 
+    from backlot.acl import Caller
+
     req = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
-    ch = _listed_channel(req, conn, "inc")
+    ch = _listed_channel(req, conn, "inc", Caller(email="ava@x.com", is_admin=False))
     assert ch["num_members"] > 0 and ch["creator"] == "USERVICE0"
+    # is_member is the CALLER's own membership (was a constant True): ava replied in #inc, and
+    # nobody at all speaks for a service token
+    assert ch["is_member"] is True
+    absent = _listed_channel(req, conn, "inc", Caller(email="dee@x.com", is_admin=False))
+    assert absent["is_member"] is False
+    assert (
+        _listed_channel(req, conn, "inc", Caller(email=None, is_admin=True))["is_member"] is False
+    )
+
+
+def test_slack_channel_predicates_answer_the_same_warm_or_cold(tmp_path):
+    """`_is_private` and `_channel_visibility` each read the warm channel_acl cache with a query
+    behind them for the window before it lands, and conversations.list routes both `types` and ACL
+    scoping through them. Two implementations of one predicate that disagreed would be a listing
+    that changes shape when the background warm-up finishes, so they are pinned against each other:
+    the cached `request` here holds what `main.lifespan` builds."""
+    import types
+
+    from backlot.acl import Acl, Caller
+    from backlot.routers.slack import _channel_visibility, _is_private
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "open",
+                "content": "morning all",
+                "author_email": "ava@x.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "slack",
+                "channel": "open",
+                "content": "morning",
+                "author_email": "bo@x.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "slack",
+                "channel": "closed",
+                "content": "the comp band lands at 240k",
+                "author_email": "ava@x.com",
+                "readers": ["user:ava@x.com"],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    acl = Acl.load(s.tokens_path, s.admin_token, s.org_name)
+    grants: dict[str, set] = {}
+    for ch, pid in conn.execute("SELECT DISTINCT channel, principal_id FROM slack_acl"):
+        grants.setdefault(ch, set()).add(pid)
+
+    def request(channel_acl):
+        state = types.SimpleNamespace(acl=acl, conn=conn)
+        if channel_acl is not None:
+            state.channel_acl = channel_acl
+        return types.SimpleNamespace(app=types.SimpleNamespace(state=state))
+
+    warm = request({k: frozenset(v) for k, v in grants.items()})
+    cold = request(None)  # the warm-up has not landed yet, so every consumer queries
+    for req in (warm, cold):
+        assert _is_private(req, conn, "open") is False
+        assert _is_private(req, conn, "closed") is True
+        for email, sees_closed in (("ava@x.com", True), ("bo@x.com", False)):
+            ids = acl.visible_ids(conn, Caller(email=email, is_admin=False))
+            visible = _channel_visibility(req, conn, ids)
+            assert visible("open") is True, email
+            assert visible("closed") is sees_closed, email
+        # an admin/service token is scoped by nothing at all
+        assert all(_channel_visibility(req, conn, None)(n) for n in ("open", "closed"))
 
 
 def test_slack_a_system_message_carries_no_client_composed_fields(tmp_path):
@@ -1039,3 +1242,71 @@ def test_slack_chronology_is_numeric_not_lexicographic(tmp_path):
     latest = store.slack_latest_reply_ts(conn, "inc", root["ts"])
     assert latest == thread[-1]["ts"] and thread[-1]["created_ts"] == 10
     assert _message(root, reply_count=2, latest_reply=latest)["latest_reply"] == latest
+
+
+# Placed after every `client`-fixture test in this module: it opens a SECOND app over a different DB
+# via `corpus_client`, which overwrites the module-scoped fixture's shared `app.state` (see
+# `tests._helpers.client_for`'s docstring).
+
+
+def test_slack_a_private_channels_members_are_its_readers(tmp_path):
+    """Slack lists a private channel ONLY to the people in it, so there "may read it" and "is in
+    it" are one fact: `is_private: true` beside `is_member: false`, with a full history behind it,
+    is not a shape a client can be written against. A public channel is the other way round —
+    everyone may read it and membership is who has posted, which the test above covers.
+
+    A reader who has never posted is the ordinary case rather than a corner: on a 19,693-document
+    corpus, 22 of its 27 private channels have at least one, and `num_members` under-reported by
+    the same margin."""
+    from backlot.acl import Acl
+
+    records = [
+        {
+            "source_type": "slack",
+            "channel": "board-comp",
+            "content": "the comp band lands at 240k",
+            "author_email": "ava@acme.com",
+            "readers": ["user:ava@acme.com", "user:bo@acme.com"],  # bo reads, never posts
+        },
+        {
+            "source_type": "slack",
+            "channel": "general",
+            "content": "morning all",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+        },
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        token = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
+        bo = {"Authorization": f"Bearer {token.email_to_token()['bo@acme.com']}"}
+        listed = {
+            c["name"]: c
+            for c in client.get(
+                "/slack/api/conversations.list", headers=bo, params=_EVERY_CHANNEL
+            ).json()["channels"]
+        }
+        assert set(listed) == {"board-comp", "general"}
+
+        private, public = listed["board-comp"], listed["general"]
+        assert private["is_private"] is True and private["is_member"] is True
+        # ...while the public channel bo has never posted in is one bo is not in
+        assert public["is_private"] is False and public["is_member"] is False
+
+        for channel in (private, public):
+            members = client.get(
+                "/slack/api/conversations.members",
+                headers=bo,
+                params={"channel": channel["id"], "limit": 100},
+            ).json()["members"]
+            # num_members counts whatever that channel's membership is, so stat-then-walk agrees
+            assert channel["num_members"] == len(members), channel["name"]
+            # ...and is_member is the caller's own place in exactly that list
+            assert channel["is_member"] is (synth.slack_user_id("bo@acme.com") in members)
+
+        assert client.get(
+            "/slack/api/conversations.members", headers=bo, params={"channel": private["id"]}
+        ).json()["members"] == [synth.slack_user_id(e) for e in ("ava@acme.com", "bo@acme.com")]
+        # the membership is not a courtesy: bo really does read the channel
+        assert client.get(
+            "/slack/api/conversations.history", headers=bo, params={"channel": private["id"]}
+        ).json()["messages"], "a member of a private channel reads it"

@@ -324,7 +324,9 @@ def crawl_slack(client, headers):
     total, cursor = 0, None
     channels = []
     while True:
-        data = {"limit": 8}
+        # Both channel types, because Slack's own default is `public_channel` alone — a crawler
+        # that omits `types` reaches no private channel, on the mock or on the real API.
+        data = {"limit": 8, "types": "public_channel,private_channel"}
         if cursor:
             data["cursor"] = cursor
         j = client.post("/slack/api/conversations.list", headers=headers, data=data).json()

@@ -51,7 +51,7 @@
         "group",
         "private"
       ],
-      "description": "public = org-wide, group = the container's group, private = author only."
+      "description": "public = org-wide, group = the container's group, private = the thread's speakers (its author and everyone who replies), who are its members by having posted in it."
     },
     "readers": {
       "type": "array",

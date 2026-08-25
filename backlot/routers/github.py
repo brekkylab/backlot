@@ -202,6 +202,22 @@ class GitHubIssueSearch(_Loose):
     items: list[GitHubIssue]
 
 
+class GitHubCodeHit(_Loose):
+    name: str
+    path: str
+    sha: str
+    url: str
+    git_url: str
+    html_url: str
+    repository: dict
+
+
+class GitHubCodeSearch(_Loose):
+    total_count: int
+    incomplete_results: bool
+    items: list[GitHubCodeHit]
+
+
 def _base_url(request: Request) -> str:
     host = request.headers.get("host", "localhost")
     return f"{request.url.scheme}://{host}{request.url.path}"
@@ -223,18 +239,21 @@ def _paged(
 
 
 _GH_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
-# search qualifiers we honor; everything else stays as free text
-_GH_QUAL_KEYS = {"repo", "is", "state", "type", "label", "author", "in", "org", "user"}
+# The qualifiers each search endpoint honors. They differ because the resources do: an issue has a
+# state and an author, a file has a path and an extension. A key absent from the set stays as free
+# text, which is also what real does with a qualifier it does not know.
+_GH_ISSUE_QUALS = {"repo", "is", "state", "type", "label", "author", "in", "org", "user"}
+_GH_CODE_QUALS = {"repo", "path", "filename", "extension", "in"}
 
 
-def _parse_issue_q(q: str) -> tuple[str, dict]:
-    """Split a GitHub issues-search `q` into (free_text, qualifiers). Honors
-    repo:/is:/state:/type:/label:/author: — the rest is free text matched full-text."""
+def _parse_q(q: str, keys: set[str]) -> tuple[str, dict]:
+    """Split a GitHub search `q` into (free_text, qualifiers), honoring the keys in `keys`.
+    Everything else is free text, matched full-text."""
     quals: dict[str, list[str]] = {}
 
     def _take(m):
         key = m.group(1).lower()
-        if key in _GH_QUAL_KEYS:
+        if key in keys:
             quals.setdefault(key, []).append(m.group(2).strip('"'))
             return " "
         return m.group(0)
@@ -267,9 +286,26 @@ def _issue_qual_match(row, quals: dict) -> bool:
     return True
 
 
+def _search_paged(
+    request: Request, response: Response, q: str, page: int, per_page: int, total: int
+) -> None:
+    """Carry the RFC5988 `Link` real sends on a search onto ``response``.
+
+    A search envelope reports `total_count`, so the header is not the only way to learn there is
+    more — it is how a client that FOLLOWS links pages without composing a URL of its own, which is
+    what :func:`_paged` already gives every listing on this router. Set on the injected response
+    rather than by returning a ``JSONResponse``, so the handler keeps its ``response_model`` and the
+    operation keeps the typed schema the MCP bridge reads.
+    """
+    link = github_link_header(_base_url(request), {"q": q}, page, per_page, total)
+    if link:
+        response.headers["Link"] = link
+
+
 @router.get("/search/issues", response_model=GitHubIssueSearch)
 async def search_issues(
     request: Request,
+    response: Response,
     q: str = Query("", description="Issues/PRs search query"),
     page: int | None = Query(None, ge=1),
     per_page: int | None = Query(None, ge=1),
@@ -279,7 +315,7 @@ async def search_issues(
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    free, quals = _parse_issue_q(q)
+    free, quals = _parse_q(q, _GH_ISSUE_QUALS)
     container = None  # a repo: qualifier narrows to one repo
     for v in quals.get("repo", []):
         name = v.split("/")[-1]
@@ -302,6 +338,257 @@ async def search_issues(
         _issue_obj(conn, owner, r["repo"], r, ab, _version(request))
         for r in matched[start : start + per_page]
     ]
+    _search_paged(request, response, q, page, per_page, len(matched))
+    return {"total_count": len(matched), "incomplete_results": False, "items": items}
+
+
+# --- code search ----------------------------------------------------------------
+
+
+def _code_path_match(path: str, value: str) -> bool:
+    """`path:` — the value's segments as a contiguous run of WHOLE segments of `path`, anchored at
+    the root when the value is (`path:/src`).
+
+    Whole segments rather than a substring: `path:pkg` names a directory, and answering it with
+    `mypkg/x.py` is the kind of hit that makes a result set untrustworthy. The run may reach the
+    filename, so `path:src/pkg/utils.py` matches the one file it spells out.
+
+    A bare `path:/` names the root itself and selects the files directly in it, which is real's own
+    reading — matching everything there would make the qualifier a no-op at its most specific.
+    """
+    want = [s.lower() for s in value.split("/") if s]
+    parts = [s.lower() for s in path.split("/")]
+    if not want:
+        return len(parts) == 1 if value.startswith("/") else True
+    starts = [0] if value.startswith("/") else range(len(parts) - len(want) + 1)
+    return any(parts[i : i + len(want)] == want for i in starts)
+
+
+def _code_filename_match(path: str, value: str) -> bool:
+    """`filename:` — the file's name, with or without its extension, so `filename:utils` and
+    `filename:utils.py` both find `src/pkg/utils.py`."""
+    name = path.rsplit("/", 1)[-1].lower()
+    return value.lower() in (name, name.rsplit(".", 1)[0])
+
+
+def _code_extension_match(path: str, value: str) -> bool:
+    """`extension:` — the path's last extension. A leading dot is accepted; real's own docs spell
+    the qualifier both ways."""
+    return path.lower().endswith("." + value.lower().lstrip("."))
+
+
+# A quoted run, or a bare run of non-space. Same quoting `_GH_OP` already honours on a qualifier's
+# value, applied to what is left over as free text.
+_GH_TERM = re.compile(r'"([^"]*)"|(\S+)')
+
+
+def _code_terms(free: str) -> list[str]:
+    """The free text as the terms a PATH and a `text_matches` fragment are searched for.
+
+    Quotes group a term rather than being part of it: `"svc/other"` is how a caller spells one
+    term containing a space, and hunting the path for a literal `"` finds nothing — so a quoted
+    query answered zero where its bare form answered a file. FTS never saw the problem, since
+    :func:`store._fts_match` tokenizes on word characters and drops the quotes on its own.
+
+    Deduplicated, because a term the query repeats is still one occurrence of it in the file and
+    reporting the same span twice would have a client highlight it twice.
+    """
+    terms = ((quoted or bare) for quoted, bare in _GH_TERM.findall(free))
+    return list(dict.fromkeys(t for t in terms if t))
+
+
+def _code_in_targets(quals: dict) -> set[str]:
+    """Where `in:` says the free text has to match. Real searches the content AND the path when the
+    qualifier is absent, and takes a comma-joined list (`in:file,path`).
+
+    A value naming neither falls back to both rather than to nothing: `in:` is a NARROWING, and one
+    the endpoint cannot honour is better answered too widely than with a silent zero.
+    """
+    named = {v.strip().lower() for val in quals.get("in", []) for v in val.split(",")}
+    return (named & {"file", "path"}) or {"file", "path"}
+
+
+def _code_repos(conn, quals: dict, org: str) -> set[str] | None:
+    """The repos a `repo:` qualifier names, or ``None`` when it names none. Several of them OR, as
+    on real.
+
+    An EMPTY set is a restriction nothing satisfies, and that is the point: a `repo:` naming a repo
+    this mock does not serve — or one under another owner, which `_validate_path_owner` 404s
+    everywhere else — has to match nothing rather than quietly widening back to the whole corpus and
+    answering with files from a repo the caller did not ask about.
+    """
+    if "repo" not in quals:
+        return None
+    names = set()
+    for v in quals["repo"]:
+        owner, _, name = v.rpartition("/")
+        if owner and owner.lower() != org.lower():
+            continue
+        if store.get_container(conn, "github", name) is not None:
+            names.add(name)
+    return names
+
+
+# Real's fragment is a couple of hundred characters of the file around the match.
+_TEXT_MATCH_CHARS = 200
+
+
+def _text_matches(content: str, object_url: str, terms: list[str]) -> list[dict]:
+    """Real's `text_matches`: one fragment of the file's content, with the indices of each search
+    term inside it (`indices` are into the FRAGMENT, not the file).
+
+    `property` is always `content` and `matches` may be EMPTY — real's own answer for a hit matched
+    on its path, read off api.github.com rather than assumed. The fragment spans whole lines, so a
+    code hit arrives readable.
+
+    `terms` comes from :func:`_code_terms` — quoting grouped, duplicates dropped.
+    """
+    lowered = content.lower()
+    found = [i for t in terms if (i := lowered.find(t.lower())) >= 0]
+    start = content.rfind("\n", 0, max(0, min(found, default=0) - 60)) + 1
+    end = content.find("\n", start + _TEXT_MATCH_CHARS)
+    fragment = content[start : end + 1 if end >= 0 else len(content)]
+    low = fragment.lower()
+    matches = []
+    for t in terms:
+        at = low.find(t.lower())
+        while at >= 0:
+            matches.append({"text": fragment[at : at + len(t)], "indices": [at, at + len(t)]})
+            at = low.find(t.lower(), at + 1)
+    matches.sort(key=lambda m: m["indices"])
+    return [
+        {
+            "object_url": object_url,
+            "object_type": "FileContent",
+            "property": "content",
+            "fragment": fragment,
+            "matches": matches,
+        }
+    ]
+
+
+def _code_hit(conn, owner: str, row, api_base: str) -> dict:
+    """One `/search/code` result — real's field set, which carries no body and no `_links`: a hit
+    LOCATES a file, and `url` is where its content is then fetched from.
+
+    Real's `url`/`git_url` name `/repositories/{id}/…` and pin `?ref=` to the commit it indexed.
+    This mock serves no `/repositories/{id}` route, so the links take the `/repos/{owner}/{repo}/…`
+    form it does serve — a link the caller can follow beats one that matches real's spelling and
+    404s, which is the rule :func:`_repo_obj` states for its url templates. The snapshot pin is
+    kept, as the HEAD row's own `ref`, so following `url` returns the bytes that were searched.
+    """
+    repo, path, content = row["repo"], row["path"], row["content"]
+    sha = _blob_sha(content)
+    ref = row["ref"]
+    rev = quote(ref, safe="") if ref else "main"
+    return {
+        "name": path.rsplit("/", 1)[-1],
+        "path": path,
+        "sha": sha,
+        "url": f"{api_base}/repos/{owner}/{repo}/contents/{path}" + (f"?ref={rev}" if ref else ""),
+        "git_url": f"{api_base}/repos/{owner}/{repo}/git/blobs/{sha}",
+        "html_url": f"https://github.com/{owner}/{repo}/blob/{rev}/{path}",
+        "repository": _repo_obj(conn, owner, repo, api_base),
+        # Real reports a flat 1.0 for every hit: its index exposes no per-hit score and the ORDER
+        # carries the relevance. A bm25 value here would be a number real never sends.
+        "score": 1.0,
+    }
+
+
+def _search_validation_failed(field: str) -> HTTPException:
+    """Real's 422 for a search missing a required parameter, in its own envelope — here `errors` is
+    the usual array, unlike the version 400's string (see :func:`_unsupported_version_error`)."""
+    exc = HTTPException(status_code=422, detail="Validation Failed")
+    exc.github_body = {
+        "message": "Validation Failed",
+        "documentation_url": "https://docs.github.com/v3/search",
+        "errors": [{"resource": "Search", "field": field, "code": "missing"}],
+        "status": "422",
+    }
+    return exc
+
+
+@router.get("/search/code", response_model=GitHubCodeSearch)
+async def search_code(
+    request: Request,
+    response: Response,
+    q: str = Query(
+        "",
+        description=(
+            "Required. Free text matched against a file's body and its path, plus "
+            "repo:/path:/filename:/extension:/in:file/in:path qualifiers."
+        ),
+    ),
+    page: int | None = Query(None, ge=1),
+    per_page: int | None = Query(None, ge=1),
+):
+    """Code search (GitHub `GET /search/code`): free text over a file's body and its path, plus
+    repo:/path:/filename:/extension:/in: qualifiers, ACL-scoped to the caller.
+
+    ONE RESULT PER (repo, path) — the HEAD snapshot's. Real code search indexes the DEFAULT BRANCH
+    only, while this mock stores a row per snapshot of a path (see ``store._file_head_clause``), so
+    without that restriction a path would answer once per revision it was ever recorded at and one
+    repo's history would crowd the rest of the corpus out of the result set. The cost is deliberate,
+    and it is real's cost too: a string surviving only in a SUPERSEDED snapshot is not findable
+    here. It stays reachable by path at `/contents/{path}?ref=` and by digest at `/git/blobs/{sha}`.
+
+    `Accept: application/vnd.github.text-match+json` adds `text_matches` — the part that makes a hit
+    useful rather than merely located.
+
+    A blank `q` is real's 422 rather than a listing: a code search with no term is a client bug
+    better reported than answered with a corpus dump. (`/search/issues` above answers a blank `q`
+    as a listing instead — a tolerance this mock keeps there, not a rule this endpoint follows.)
+    """
+    caller = _require(request)
+    if not q.strip():
+        raise _search_validation_failed("q")
+    conn = auth.conn(request)
+    ids = auth.visible_ids(request, caller)
+    free, quals = _parse_q(q, _GH_CODE_QUALS)
+    org = _org(request)
+    repos = _code_repos(conn, quals, org)
+    # A `repo:` that resolved to nothing: no row can satisfy it, so there is nothing to read.
+    if repos is not None and not repos:
+        return {"total_count": 0, "incomplete_results": False, "items": []}
+    one = next(iter(repos)) if repos and len(repos) == 1 else None
+    targets = _code_in_targets(quals)
+    terms = _code_terms(free)
+
+    # Keyed by the address a file HAS, so the content search and the path search union rather than
+    # double-count a file both of them found. Insertion order is the result order: FTS relevance
+    # first, then the paths that matched on their name alone.
+    rows: dict = {}
+    if free and "file" in targets:
+        for r in store.search_repo_files(conn, free, ids, repo=one):
+            rows.setdefault((r["repo"], r["path"]), r)
+    if free and "path" in targets:
+        for r in store.search_repo_files(conn, None, ids, repo=one, path_like=terms):
+            rows.setdefault((r["repo"], r["path"]), r)
+    if not free:  # qualifier-only, which real also serves
+        for r in store.search_repo_files(conn, None, ids, repo=one):
+            rows.setdefault((r["repo"], r["path"]), r)
+
+    matched = [
+        r
+        for r in rows.values()
+        if (repos is None or r["repo"] in repos)
+        and all(_code_path_match(r["path"], v) for v in quals.get("path", []))
+        and all(_code_filename_match(r["path"], v) for v in quals.get("filename", []))
+        and all(_code_extension_match(r["path"], v) for v in quals.get("extension", []))
+    ]
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
+    ab = _api_base(request)
+    want_matches = _github_media(request, "text-match")
+    items = []
+    for row in matched[start : start + per_page]:
+        hit = _code_hit(conn, org, row, ab)
+        if want_matches:
+            hit["text_matches"] = _text_matches(row["content"], hit["url"], terms)
+        items.append(hit)
+    _search_paged(request, response, q, page, per_page, len(matched))
     return {"total_count": len(matched), "incomplete_results": False, "items": items}
 
 

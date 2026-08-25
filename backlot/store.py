@@ -2139,6 +2139,32 @@ def _fts_match(query: str, phrase: bool = False) -> str:
     )
 
 
+def _fts_relevance_order(source_type: str, query, tbl: str = "t") -> tuple[str, list]:
+    """Relevance ordering for an FTS query — bm25 rank, behind a literal-substring tier when the
+    query joins word characters with punctuation.
+
+    Boost docs containing the query as a literal substring, but ONLY for such a query (upload.csv,
+    DOCS-210, a/b): that's exactly when the tokenizer splits one literal into pieces and the exact
+    match sinks under coincidental "upload csv"/"upload-csv" hits. This surfaces it first whether
+    the client quoted the query (mirage's grep push-down) or not (the MCP slack/gmail search sends
+    bare terms). Plain multi-word queries ("the meeting") gain nothing from it and would pay a full
+    instr scan over tens of thousands of matches, so the punctuation test gates them out. instr
+    runs only over the already-matched rows, so it is cheap.
+
+    Shared by :func:`search_documents` and :func:`search_repo_files`: the tier is a property of
+    FTS5 tokenization, not of either caller's endpoint, so both orders have to agree on it.
+    """
+    fts = _fts_table(source_type)
+    lit = (query or "").strip()
+    if lit and re.search(r"\w[^\w\s]\w", lit):
+        return (
+            f"(instr(lower({tbl}.content), lower(?)) > 0 "
+            f"OR instr(lower({title_expr(source_type, tbl)}), lower(?)) > 0) DESC, {fts}.rank",
+            [lit, lit],
+        )
+    return f"{fts}.rank", []
+
+
 def search_documents(
     conn,
     query,
@@ -2166,32 +2192,15 @@ def search_documents(
         clause, cparams = _acl_clause(source_type, "t", visible_ids)
         fts = _fts_table(source_type)
         on = _fts_join(source_type, "t")
-        # For a phrase search, tier the results: docs literally containing the query string first
-        # (bm25 next as the tiebreak). FTS tokenization drops punctuation, so "upload.csv" and
-        # "upload csv" tokenize identically and bm25 can't tell them apart — the one doc that
-        # actually contains "upload.csv" would otherwise sink beneath hundreds of "upload csv"
-        # mentions. instr runs only over the (already phrase-narrowed) matches, so it's cheap.
-        order_sql, order_p = f"{fts}.rank", []
-        lit = (query or "").strip()
+        # A recency order wins outright: sort=timestamp asks for the doc's own clock, and the
+        # literal-substring tier _fts_relevance_order applies would reorder by relevance under it.
         if order_by in ("recency", "recency_asc"):
             # Slack sort=timestamp: order matches by the message's own ts, not relevance. NULL
             # created_ts (a synthesized ts) sorts last on desc / first on asc — an acceptable edge.
             direction = "ASC" if order_by == "recency_asc" else "DESC"
-            order_sql = f"t.created_ts {direction}, {fts}.rank"
-        # Boost docs containing the query as a literal substring, but ONLY when the query has
-        # punctuation joining word chars (upload.csv, DOCS-210, a/b): that's exactly when the
-        # tokenizer splits one literal into pieces and the exact match sinks under coincidental
-        # "upload csv"/"upload-csv" hits. This surfaces it first whether the client quoted the query
-        # (mirage's grep push-down) or not (the MCP slack/gmail search sends bare terms). Plain
-        # multi-word queries ("the meeting") gain nothing from it and would pay a full instr scan
-        # over tens of thousands of matches, so the punctuation test gates them out. Only for
-        # relevance ordering — sort=timestamp is a pure recency order.
-        elif lit and re.search(r"\w[^\w\s]\w", lit):
-            order_sql = (
-                "(instr(lower(t.content), lower(?)) > 0 "
-                f"OR instr(lower({title_expr(source_type, 't')}), lower(?)) > 0) DESC, {fts}.rank"
-            )
-            order_p = [lit, lit]
+            order_sql, order_p = f"t.created_ts {direction}, {fts}.rank", []
+        else:
+            order_sql, order_p = _fts_relevance_order(source_type, query, "t")
         sql = (
             f"SELECT t.* FROM {fts} JOIN {tbl} t ON {on} "
             f"WHERE {fts} MATCH ?{cont_sql.format(a='t')}{clause} "
@@ -2670,6 +2679,66 @@ def get_repo_file(conn, repo, path, visible_ids=None, ref=None) -> sqlite3.Row |
         + head,
         [repo, path, *cp, *hp],
     ).fetchone()
+
+
+def search_repo_files(
+    conn, query=None, visible_ids=None, repo=None, path_like=None, limit=10_000, offset=0
+) -> list[sqlite3.Row]:
+    """HEAD-snapshot `kind='file'` rows — corpus-wide or in one repo, narrowed by an FTS match over
+    title+content (`query`) and by paths containing every string in `path_like`.
+
+    Neither existing read answers this and neither should be bent into it: :func:`search_documents`
+    spans every kind and every snapshot (it is what `/search/issues` filters files back OUT of),
+    and :func:`list_repo_files` is one repo with no text filter. Code search is the inverse of both
+    — files only, HEAD only, across repos.
+
+    `path_like` is a substring test rather than a second FTS clause because `path` is not in the
+    index (see :func:`_fts_text_columns`), and because a caller matching a path is matching a
+    fragment of one, not a stemmed word. It ANDs with `query` where both are given.
+
+    Ordered by relevance under `query` (see :func:`_fts_relevance_order`) and by `(repo, path)`
+    without one, so a listing is stable and a search leads with its best hit.
+    """
+    clause, cp = _acl_clause("github", tbl="t", visible_ids=visible_ids)
+    head, hp = _file_head_clause(visible_ids)
+    narrow, np = "", []
+    if repo is not None:
+        narrow, np = " AND t.repo = ?", [repo]
+    for frag in path_like or ():
+        # ESCAPE, because a path fragment is a LITERAL: `_` is common in filenames and is also
+        # LIKE's single-character wildcard, so `mod_7` would otherwise answer with `mod-7` too.
+        narrow += " AND lower(t.path) LIKE ? ESCAPE '\\'"
+        np.append(f"%{_like_escape(frag.lower())}%")
+    if query is not None and _has_fts(conn, "github"):
+        m = _fts_match(query)
+        if not m:
+            return []
+        fts = _fts_table("github")
+        order_sql, order_p = _fts_relevance_order("github", query, "t")
+        sql = (
+            f"SELECT t.* FROM {fts} JOIN github_items t ON {_fts_join('github', 't')}"
+            f" WHERE {fts} MATCH ? AND t.kind = 'file'{narrow}{clause}{head}"
+            f" ORDER BY {order_sql} LIMIT ? OFFSET ?"
+        )
+        return conn.execute(sql, [m, *np, *cp, *hp, *order_p, limit, offset]).fetchall()
+    text, tp = "", []
+    if query is not None:  # no FTS5: the same LIKE fallback search_documents uses
+        # Escaped like the path fragment above, and for the same reason: a wildcard the CALLER
+        # typed is text they are searching for. Without it `100%` matches every file in the repo.
+        needle = f"%{_like_escape(query)}%"
+        text, tp = (
+            " AND (t.title LIKE ? ESCAPE '\\' OR t.content LIKE ? ESCAPE '\\')",
+            [needle, needle],
+        )
+    sql = (
+        "SELECT t.* FROM github_items t WHERE t.kind = 'file'"
+        + text
+        + narrow
+        + clause
+        + head
+        + " ORDER BY t.repo, t.path LIMIT ? OFFSET ?"
+    )
+    return conn.execute(sql, [*tp, *np, *cp, *hp, limit, offset]).fetchall()
 
 
 def iter_repo_file_snapshots(conn, repo, visible_ids=None) -> Iterator[sqlite3.Row]:

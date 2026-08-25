@@ -565,17 +565,32 @@ _OWN_CHANNEL = "<the caller's own channel>"  # stands for an id only the test bo
         ("conversations.replies", {"channel": "C_NOPE", "ts": "1.0"}, "channel_not_found"),
         # ...and a ts that arrived empty is answered by the thread, the channel being readable.
         ("conversations.replies", {"channel": _OWN_CHANNEL, "ts": ""}, "thread_not_found"),
+        # The search family draws the line in the same place, and has its OWN name for the blank
+        # half: `no_query`, the vendor's spelling for a query that arrived with nothing in it.
+        ("search.messages", {}, "invalid_arguments"),
+        ("search.all", {}, "invalid_arguments"),
+        ("search.files", {}, "invalid_arguments"),
+        ("search.messages", {"query": ""}, "no_query"),
+        ("search.all", {"query": ""}, "no_query"),
+        ("search.files", {"query": ""}, "no_query"),
+        ("search.messages", {"query": "   "}, "no_query"),  # whitespace is not a query either
+        # users.info is the exception, and is left one: live it answers `user_not_found` to all of
+        # them, absent argument included. Pinned so the rule above is not "tidied" onto it.
+        ("users.info", {}, "user_not_found"),
+        ("users.info", {"user": ""}, "user_not_found"),
     ],
 )
-def test_slack_a_missing_argument_is_not_a_missing_channel(client, admin_h, method, params, error):
+def test_slack_an_absent_argument_is_not_a_thing_that_was_not_found(
+    client, admin_h, method, params, error
+):
     """Slack separates "you did not pass the argument" from "what you passed names nothing", and
     the mock had only the second — so a client that omitted `channel` was told the thing it never
     named does not exist. The two send it down different branches: `channel_not_found` is about the
     workspace, `invalid_arguments` about the request it just built.
 
-    Every row measured against slack.com with a workspace token. Auth is settled first — a bad
-    token is `invalid_auth` with or without the arguments — which is why this table is all
-    authenticated."""
+    Every row measured against slack.com with a workspace token, users.info's included — the rule
+    is the vendor's, not a symmetry imposed on it. Auth is settled first (a bad token is
+    `invalid_auth` with or without the arguments), which is why this table is all authenticated."""
     params = {
         k: (_a_channel_id(client, admin_h) if v == _OWN_CHANNEL else v) for k, v in params.items()
     }

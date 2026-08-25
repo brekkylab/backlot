@@ -736,9 +736,13 @@ def _messages_block(request: Request):
     caller, err = _caller_or_error(request)
     if err is not None:
         return err, None
+    if err := _missing_argument(request, "query"):
+        return err, None
     query = _param(request, "query") or ""
+    # A query that arrived with nothing in it has its own error, measured live on all three search
+    # methods: blank or whitespace-only is `no_query`, where absent is `invalid_arguments` above.
     if not query.strip():
-        return _err("missing_query"), None
+        return _err("no_query"), None
     terms, container, phrase = _parse_slack_query(query)
     ids = auth.visible_ids(request, caller)  # results are scoped to the caller's ACL
     count = _int(request, "count", 20)
@@ -808,9 +812,11 @@ async def search_files(request: Request):
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
+    if err := _missing_argument(request, "query"):
+        return err
     query = _param(request, "query") or ""
     if not query.strip():
-        return _err("missing_query")
+        return _err("no_query")
     count = _int(request, "count", 20)
     empty = {
         "total": 0,

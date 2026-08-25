@@ -350,7 +350,10 @@ def crawl_slack(client, headers):
                         data={"channel": ch["id"], "ts": m["ts"]},
                     ).json()
                     total += len(r["messages"]) - 1  # thread includes the root we already counted
-            ccur = h["response_metadata"]["next_cursor"]
+            # Terminates on the ABSENCE of response_metadata, not on an empty cursor inside it:
+            # conversations.history omits the key entirely on a last page, so a client that
+            # subscripts it unconditionally raises against real Slack.
+            ccur = (h.get("response_metadata") or {}).get("next_cursor")
             if not ccur:
                 break
     return total

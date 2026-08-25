@@ -3,8 +3,6 @@ name: Release
 on:
   release:
     types: [published]
-  # The dry run. Builds exactly what a release would and stops before the upload, so the path can
-  # be exercised on a branch with no tag to cut and no release to undo.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -21,8 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # setuptools-scm reads the version out of git metadata, and a shallow clone carries no
-          # tags — without this every release would build a 0.0.1.devN guess instead of the tag.
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
@@ -39,8 +35,6 @@ jobs:
 
   publish:
     needs: build
-    # A dry run stops here. workflow_dispatch can still publish, but only when asked outright —
-    # the escape hatch for a release whose upload failed after the tag was already cut.
     if: ${{ github.event_name == 'release' || inputs.dry_run == false }}
     runs-on: ubuntu-latest
     steps:

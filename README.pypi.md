@@ -31,4 +31,12 @@ leak?" is a test rather than an audit.
 official SDKs, MCP servers, LlamaIndex readers and mirage are on GitHub:
 [github.com/brekkylab/backlot](https://github.com/brekkylab/backlot).**
 
+## Trademarks
+
+Backlot is an independent project, **not affiliated with, endorsed by, or sponsored by** any of the
+vendors whose APIs it imitates. Slack, Gmail, Google Drive, Google Docs, Google Sheets, Google
+Slides, GitHub, Jira, Confluence, Notion, Amazon S3, HubSpot, Linear and Fireflies are trademarks of
+their respective owners, named here only to identify the APIs Backlot serves a compatible subset of.
+Backlot ships no vendor logo, wordmark or brand asset.
+
 [MIT](https://github.com/brekkylab/backlot/blob/main/LICENSE)

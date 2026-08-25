@@ -2708,7 +2708,7 @@ def search_repo_files(
         # ESCAPE, because a path fragment is a LITERAL: `_` is common in filenames and is also
         # LIKE's single-character wildcard, so `mod_7` would otherwise answer with `mod-7` too.
         narrow += " AND lower(t.path) LIKE ? ESCAPE '\\'"
-        np.append("%" + re.sub(r"([\\%_])", r"\\\1", frag.lower()) + "%")
+        np.append(f"%{_like_escape(frag.lower())}%")
     if query is not None and _has_fts(conn, "github"):
         m = _fts_match(query)
         if not m:
@@ -2723,7 +2723,13 @@ def search_repo_files(
         return conn.execute(sql, [m, *np, *cp, *hp, *order_p, limit, offset]).fetchall()
     text, tp = "", []
     if query is not None:  # no FTS5: the same LIKE fallback search_documents uses
-        text, tp = " AND (t.title LIKE ? OR t.content LIKE ?)", [f"%{query}%", f"%{query}%"]
+        # Escaped like the path fragment above, and for the same reason: a wildcard the CALLER
+        # typed is text they are searching for. Without it `100%` matches every file in the repo.
+        needle = f"%{_like_escape(query)}%"
+        text, tp = (
+            " AND (t.title LIKE ? ESCAPE '\\' OR t.content LIKE ? ESCAPE '\\')",
+            [needle, needle],
+        )
     sql = (
         "SELECT t.* FROM github_items t WHERE t.kind = 'file'"
         + text

@@ -1662,10 +1662,16 @@ def test_search_repo_files_matches_head_only_and_relative_to_the_caller(tmp_path
         "VALUES(9,'svc','a@x','alpha bug','alpha issue','issue',1)"
     )
     conn.commit()
-    store.build_fts(conn)
 
     def found(query=None, ids=None, **kw):
         return [(r["repo"], r["content"]) for r in store.search_repo_files(conn, query, ids, **kw)]
+
+    # No index yet: this is the LIKE fallback, where a wildcard in the QUERY has to stay literal
+    # for the same reason one in a path fragment does -- unescaped, `%` answers with everything.
+    assert found("alpha") == [("svc", "alpha new"), ("zed", "alpha elsewhere")]
+    assert found("%") == []
+
+    store.build_fts(conn)
 
     # corpus-wide: svc/src/a.py answers with its NEWEST snapshot, and the issue never appears
     assert sorted(found("alpha")) == [("svc", "alpha new"), ("zed", "alpha elsewhere")]

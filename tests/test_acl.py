@@ -50,6 +50,43 @@ def test_private_doc_only_its_author(db, acl, tokens, keys):
     assert keys["jira-private"] not in _visible(db, acl, tokens["ava@acme.com"], "jira")
 
 
+def test_private_slack_thread_is_readable_by_every_speaker(tmp_path):
+    """`visibility: private` means private TO THE PEOPLE IN IT, and in a Slack thread the repliers
+    are among them: replying in a channel is being in it, which is the same fact
+    `conversations.members` serves. The root author's grant alone left every replier listed as a
+    member of a room they could not open — the state `store.slack_membership_violations` refuses."""
+    from tests._helpers import build_corpus
+
+    s = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "board-comp",
+                "content": "the comp band lands at 240k",
+                "author_email": "ava@acme.com",
+                "visibility": "private",
+                "replies": [
+                    {"content": "noted", "author_email": "bo@acme.com"},
+                    {"content": "same", "author_email": "cara@acme.com"},
+                ],
+            },
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    speakers = ["ava@acme.com", "bo@acme.com", "cara@acme.com"]
+    assert {tuple(r) for r in store.container_grants(conn, "slack", "board-comp")} == {
+        ("user", e) for e in speakers
+    }
+    # private stays private: no org grant, and nobody who did not speak is let in
+    assert store.container_has_public(conn, "slack", "board-comp") is False
+    assert store.slack_channels_for_principals(conn, ["dee@acme.com"]) == set()
+    for email in speakers:
+        assert store.slack_channels_for_principals(conn, [email]) == {"board-comp"}
+    assert store.slack_membership_violations(conn) == []
+    conn.close()
+
+
 def test_unknown_token_resolves_to_none(acl):
     assert acl.resolve("nope") is None
     assert acl.resolve(None) is None
@@ -628,6 +665,9 @@ def test_slack_channels_for_principals_reads_its_own_acl_table(tmp_path):
                 "doc_id": "collide-1",
                 "content": "restricted to engineering",
                 "author_email": "ava@acme.com",
+                # In the group she is posting to, or she would be a speaker in a channel she
+                # cannot read — which the loader refuses (store.slack_membership_violations).
+                "author_groups": ["engineering"],
                 "readers": ["engineering"],
             },
             {

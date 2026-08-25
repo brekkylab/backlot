@@ -586,6 +586,46 @@ def test_byo_slack_reply_clock_must_be_readable(tmp_path, bad):
         load(corpus, Settings(data_dir=tmp_path))
 
 
+def test_byo_a_speaker_outside_a_private_channels_readers_is_refused(tmp_path):
+    """A channel's members are the people who have spoken in it and what a caller may read is the
+    ACL, so a corpus that puts a speaker outside a private channel's grantees states two things
+    that cannot both be true: the same person is served by `conversations.members` and told
+    `channel_not_found` by `conversations.info`. Refused at load, where the corpus can still be
+    fixed, rather than served as a workspace nobody could have.
+
+    Asked of the DB and not of the record: covering a speaker can take a group grant, and which
+    people a group holds is only settled once the whole corpus has been read."""
+    speaker_elsewhere = {
+        "source_type": "slack",
+        "channel": "exec-only",
+        "content": "board deck draft",
+        "author_email": "dee@a.com",
+        "created": "2026-05-01T02:00:00Z",
+        "readers": ["user:eve@a.com"],
+    }
+    corpus = _write(tmp_path, [speaker_elsewhere])
+    with pytest.raises(SystemExit, match=r"speak in a private slack channel they cannot read"):
+        load(corpus, Settings(data_dir=tmp_path))
+    # ...and it is the mismatch that is refused, not the private channel: naming the speaker loads.
+    named = _write(
+        tmp_path,
+        [{**speaker_elsewhere, "readers": ["user:eve@a.com", "user:dee@a.com"]}],
+        name="named.jsonl",
+    )
+    load(named, Settings(data_dir=tmp_path))
+    conn = store.connect_ro(Settings(data_dir=tmp_path).db_path)
+    # Both readers are members of the private channel, the one who has never posted included —
+    # Slack shows a private channel only to the people in it, so its readers ARE its membership.
+    assert store.slack_channel_member_emails(conn, "exec-only") == ["dee@a.com", "eve@a.com"]
+    assert store.slack_membership_violations(conn) == []
+    conn.close()
+
+    # An explicitly EMPTY reader list is admin-only, which is a state a corpus is allowed to
+    # express — nobody may read it, so there is no reader for a speaker to be missing from.
+    nobody = _write(tmp_path, [{**speaker_elsewhere, "readers": []}], name="nobody.jsonl")
+    load(nobody, Settings(data_dir=tmp_path))
+
+
 def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
     """The asymmetry a reply's refusal created: a root's own `created` took the
     synthesized `epoch(doc_id)` for a typo without a word, so a record whose author

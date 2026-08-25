@@ -76,6 +76,15 @@ def test_github_link_header():
     assert pg.github_link_header("http://x", {}, 1, 10, 5) is None  # single page
 
 
+def test_github_link_header_percent_encodes_its_param_values():
+    """A param value is arbitrary text — a search `q` carries spaces and colons — and a URI cannot
+    hold them raw. Real percent-encodes, and a client that follows the link has to arrive at the
+    same query it was paging."""
+    h = pg.github_link_header("http://x/search/code", {"q": "repo:core in:path a b"}, 1, 2, 10)
+    assert "q=repo%3Acore%20in%3Apath%20a%20b" in h
+    assert " " not in h[h.index("<") : h.index(">")]
+
+
 def test_confluence_next_link():
     assert (
         pg.confluence_next_link("/wiki/rest/api/content", {"type": "page"}, 0, 25, 25, 60)

@@ -9,7 +9,6 @@ read too. Defaults are what the server uses when the var is unset.
 |---|---|---|
 | `BACKLOT_DATA_DIR` | `./data` (resolved against the cwd, **not** the install location) | Where the corpus lives: `mock.sqlite`, `tokens.yaml`, `credentials.yaml`. Both `backlot import` and `backlot serve` read it, which is how you keep several corpora side by side — `BACKLOT_DATA_DIR=/tmp/demo backlot import c.jsonl` |
 | `BACKLOT_ADMIN_TOKEN` | `admin-service-token` | The token that bypasses ACL filtering — a full-crawl / service identity. Set it to anything for a shared deployment |
-| `BACKLOT_ENFORCE_ACL` | `true` | When `false`, any well-formed token is treated as admin. The ACL is still *exposed* through each vendor's permission endpoints, just not *enforced* — useful for isolating whether a connector's gaps are permissions or parsing |
 | `BACKLOT_EXPOSE_TOKENS` | `true` | Serves `GET /_mock/users` and `GET /_mock/credentials`, which hand out every user's token in the clear. Fine for a local mock; set `false` to close both |
 | `BACKLOT_ORG_NAME` | inferred from the corpus (fallback `example`) | The org slug that shows up in `auth.test`, synthesized emails and self-URLs. Inferred from the dominant author email domain — `@acme.com` documents serve as org `acme` — so set it only to override that |
 | `BACKLOT_ORG_DOMAIN` | inferred from the corpus (fallback `example.com`) | The domain half of the same inference, e.g. `acme.com`. Used for addresses the corpus does not state |

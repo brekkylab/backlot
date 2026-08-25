@@ -172,6 +172,18 @@ def _principal(pid: str) -> tuple[str, str]:
     return ("user", pid) if "@" in pid else ("group", pid)
 
 
+def _speakers(rec: dict, src: str, author: str) -> list[str]:
+    """Everyone who speaks in a document: its author, and for a Slack thread its repliers too.
+
+    A Slack reply is a message by someone who is in the channel — the same fact
+    ``conversations.members`` serves — so the two have to be one list. Ordered and deduplicated,
+    the author first, because it becomes a grant list and the order is what a reader sees."""
+    people = [author]
+    if src == "slack":
+        people += [r.get("author_email") for r in rec.get("replies") or []]
+    return [e for e in dict.fromkeys(people) if e]
+
+
 def _linear_prefix(identifier) -> str:
     """The team key a linear identifier carries: everything before its FIRST hyphen.
 
@@ -1650,7 +1662,10 @@ class _Loader:
                 elif ptype == "group":
                     groups.add(pval)
         elif vis == "private" and author:
-            grant_types = [("user", author)]
+            # Private TO THE PEOPLE IN IT. For a Slack thread that is every speaker and not just
+            # whoever opened it: replying in a channel is being in it, so granting the root author
+            # alone would put the repliers in `conversations.members` holding no key to the room.
+            grant_types = [("user", e) for e in _speakers(rec, src, author)]
         elif vis == "group" and group:
             grant_types = [("group", group)]
         else:
@@ -3136,6 +3151,23 @@ def _load_records(
             f"INSERT OR IGNORE INTO {store.acl_table(source_type)} "
             f"VALUES ({', '.join('?' for _ in range(len(key) + 2))})",
             (*key, ptype, pid),
+        )
+
+    # Asked of the DB rather than of each record, and BEFORE the commit that would make it a
+    # corpus: the answer needs every grant, every group's membership and (under --append) the rows
+    # an earlier load wrote, none of which one record can see. Raising here rolls the whole import
+    # back — the load is a single transaction.
+    if violations := store.slack_membership_violations(conn):
+        shown = "; ".join(f"{email} in #{channel}" for channel, email in violations[:10])
+        rest = len(violations) - 10
+        raise SystemExit(
+            "these people speak in a private slack channel they cannot read: "
+            + shown
+            + (f" (and {rest} more)" if rest > 0 else "")
+            + ". Posting in a channel is being in it, so each of them is served by "
+            "conversations.members while conversations.info answers them channel_not_found. "
+            "Name them in that channel's `readers`, or let `visibility: private` name them by "
+            "writing them as the thread's speakers."
         )
     conn.commit()
     if reset:

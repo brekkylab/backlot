@@ -1629,6 +1629,72 @@ def test_repo_files_listing_and_kind_isolation(tmp_path):
     assert store.get_repo_file(conn, "svc", "nope.py") is None
 
 
+def test_search_repo_files_matches_head_only_and_relative_to_the_caller(tmp_path):
+    """The read behind `/search/code`: files only, and the HEAD of each (repo, path) as THAT caller
+    sees it.
+
+    The caller-relative part is the one a corpus-wide resolution would silently get wrong. A path
+    whose newest snapshot is restricted still has an older readable one, and that older row is the
+    file those callers are served everywhere else (see the listing test above) — so a string in it
+    has to be findable, while the restricted snapshot's own text stays invisible to them.
+    """
+    conn = store.connect_rw(tmp_path / "g.sqlite")
+    files = [
+        (1, "svc", "src/a.py", "alpha old", 1, "everyone"),
+        (2, "svc", "src/a.py", "alpha new", 9, "people"),  # newer, and restricted
+        (3, "svc", "src/b.py", "beta only", 1, "everyone"),
+        (4, "zed", "src/a.py", "alpha elsewhere", 1, "everyone"),
+    ]
+    for number, repo, path, content, ts, principal in files:
+        conn.execute(
+            "INSERT INTO github_items(number,repo,author_email,title,content,kind,path,created_ts)"
+            " VALUES(?,?,'a@x',?,?,'file',?,?)",
+            (number, repo, path.rsplit("/", 1)[-1], content, path, ts),
+        )
+        conn.execute(
+            "INSERT INTO github_acl(repo, number, principal_id, principal_type) "
+            "VALUES(?,?,?,'group')",
+            (repo, number, principal),
+        )
+    # an ISSUE whose body holds the same word: code search must never reach it
+    conn.execute(
+        "INSERT INTO github_items(number,repo,author_email,title,content,kind,created_ts) "
+        "VALUES(9,'svc','a@x','alpha bug','alpha issue','issue',1)"
+    )
+    conn.commit()
+
+    def found(query=None, ids=None, **kw):
+        return [(r["repo"], r["content"]) for r in store.search_repo_files(conn, query, ids, **kw)]
+
+    # No index yet: this is the LIKE fallback, where a wildcard in the QUERY has to stay literal
+    # for the same reason one in a path fragment does -- unescaped, `%` answers with everything.
+    assert found("alpha") == [("svc", "alpha new"), ("zed", "alpha elsewhere")]
+    assert found("%") == []
+
+    store.build_fts(conn)
+
+    # corpus-wide: svc/src/a.py answers with its NEWEST snapshot, and the issue never appears
+    assert sorted(found("alpha")) == [("svc", "alpha new"), ("zed", "alpha elsewhere")]
+    # 'everyone' cannot see snapshot 2, so snapshot 1 is that caller's HEAD and its text is findable
+    assert sorted(found("alpha", {"everyone"})) == [
+        ("svc", "alpha old"),
+        ("zed", "alpha elsewhere"),
+    ]
+    # ...and the restricted snapshot's own text is not
+    assert found("new", {"everyone"}) == []
+    assert found("new", {"everyone", "people"}) == [("svc", "alpha new")]
+
+    # the narrowings the endpoint pushes down
+    assert found("alpha", {"everyone"}, repo="svc") == [("svc", "alpha old")]
+    assert found(None, {"everyone"}, path_like=["src/b"]) == [("svc", "beta only")]
+    # no query at all is the whole visible HEAD set, ordered by (repo, path)
+    assert found(None, {"everyone"}) == [
+        ("svc", "alpha old"),
+        ("svc", "beta only"),
+        ("zed", "alpha elsewhere"),
+    ]
+
+
 def test_list_repo_file_paths_agrees_with_the_full_listing(tmp_path):
     """The paths-only listing must select exactly what list_repo_files does — same repo, same
     kind='file' filter, same order, same ACL scoping. It exists because a caller that only needs to

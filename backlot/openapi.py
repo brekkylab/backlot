@@ -66,7 +66,9 @@ def unique_operation_id(route) -> str:
     return f"{ident}_{method.lower()}"
 
 
-def qp(name: str, typ: str = "string", required: bool = False) -> dict:
+def qp(
+    name: str, typ: str = "string", required: bool = False, description: str | None = None
+) -> dict:
     """One OpenAPI query parameter, for a router's ``openapi_extra``.
 
     The routers read their query params off the raw request rather than through FastAPI signatures
@@ -74,8 +76,16 @@ def qp(name: str, typ: str = "string", required: bool = False) -> dict:
     one has to declare what it honours by hand. This is that declaration — and only for parameters
     the mock actually honours: advertising one it ignores makes a client ask for data that never
     arrives, which is worse than not offering it.
+
+    ``description`` is worth spending on a parameter whose DEFAULT decides what comes back, because
+    the spec is the whole of what a generated client knows: the OpenAPI slice is what
+    ``examples/using-mcp-with-agents/_openapi_bridge.py`` hands an agent as a tool, with no vendor
+    documentation behind it.
     """
-    return {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
+    p = {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
+    if description:
+        p["description"] = description
+    return p
 
 
 def slice_spec(spec: dict, prefixes: list[str]) -> dict:

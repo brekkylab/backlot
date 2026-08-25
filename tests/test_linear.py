@@ -13,9 +13,19 @@ import json
 from urllib.parse import urlparse
 
 import pytest
+from graphql import build_client_schema, parse, validate
 
 from backlot import synth
-from tests._helpers import build_corpus, client_for, corpus_client, db_count, served_id
+from backlot.graphql import mcp_tools
+from tests._helpers import (
+    build_corpus,
+    client_for,
+    corpus_client,
+    db_count,
+    selected_field_count,
+    selected_fields,
+    served_id,
+)
 
 
 # --- Linear (GraphQL) -------------------------------------------------------------
@@ -308,6 +318,32 @@ def test_linear_introspection_reports_the_served_schema(client, admin_h):
     assert data["__schema"]["mutationType"] is None
     names = {f["name"] for f in data["__type"]["fields"]}
     assert {"identifier", "branchName", "estimate", "dueDate", "state", "labels"} <= names
+
+
+def test_linear_mcp_tools_derive_from_the_served_introspection(client, admin_h):
+    """The GraphQL→MCP bridge ships no hand-written queries: it reads this endpoint's own
+    introspection and generates one document per root field. Every one has to be a document this
+    schema accepts, the selection has to stay bounded, and an issue's discussion has to be in it.
+
+    `examples/using-mcp-with-agents/linear.py` drives the bridge at depth 1, and the ceiling below
+    is why: a second level pulls `Issue.cycle.team` and its siblings in with all their
+    configuration leaves. The ceiling is well clear at depth 1 and well under a depth-2 selection,
+    so if a schema addition pushes it over, check what the new fields cost before raising it.
+    """
+    intro = gql(client, mcp_tools.INTROSPECTION_QUERY, admin_h).json()
+    schema = build_client_schema(intro["data"])
+    tools = mcp_tools.derive_tools(intro, depth=1)
+
+    assert {t.name for t in tools} == set(schema.query_type.fields)
+    for tool in tools:
+        assert not validate(schema, parse(tool.document)), tool.name
+
+    issues = next(t for t in tools if t.name == "issues")
+    assert selected_field_count(issues.document) < 600
+    # `Issue.comments` is the one nested connection that has to survive: `CommentFilter` carries
+    # id/body/createdAt and no key for the issue, so the root `comments` tool cannot stand in for
+    # it and an issue's discussion would be unreachable through the whole toolset.
+    assert "comments" in selected_fields(issues.document, "issues", "nodes")
 
 
 def test_linear_malformed_document_is_a_400_with_a_graphql_envelope(client, admin_h):

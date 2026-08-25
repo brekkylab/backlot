@@ -2827,6 +2827,21 @@ def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]
     ]
 
 
+def slack_channel_has_author(conn, channel, email) -> bool:
+    """Whether ``email`` is one of a channel's members — the same set
+    :func:`slack_channel_member_emails` pages, asked about one person. It is what the conversation
+    object's ``is_member`` reports, so a client that stats a channel and then walks its members
+    cannot get two answers. Index-only on idx_slack_channel_author with equality on both columns,
+    so it is a seek rather than the DISTINCT scan that counting the members is."""
+    return (
+        conn.execute(
+            "SELECT 1 FROM slack_messages WHERE channel = ? AND author_email = ? LIMIT 1",
+            (channel, email),
+        ).fetchone()
+        is not None
+    )
+
+
 def slack_channel_member_counts(conn) -> dict[str, int]:
     """Every channel's member count in one pass. Per-channel COUNT(DISTINCT) is ~1.9s on the
     biggest channel measured, and conversations.list shapes every channel in the page, so counting

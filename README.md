@@ -10,7 +10,7 @@ Backlot serves enterprise SaaS APIs — Slack, Gmail, Drive, GitHub, Jira, Notio
 more — with the exact response shapes, pagination, auth and per-document ACLs the real ones have,
 over a corpus you supply. Change the base URL; nothing else changes.
 
-![Importing the bundled corpus, starting the server, then reading a Slack message out of it with curl — beside the same call against the real Slack API, returning the same seven fields.](assets/readme-demo/demo.gif)
+![Connecting Slack to an app, two ways, side by side. On the left, the real Slack API: create a workspace, register an app, add a bot user, pick OAuth scopes, register a redirect URL, install to the workspace — then wait on an admin to approve it, with still zero API calls made. On the right, Backlot: pip install, backlot serve, and one changed base URL, after which a conversations.history response comes back with the same fields, pagination and per-document ACLs. A day gone, against seconds.](assets/slack-onboarding/demo.gif)
 
 <!-- figure: facades — assets/figures/facades-{light,dark}.svg
      alt: Vendor-shaped facades on one localhost port, all backed by a single corpus. -->

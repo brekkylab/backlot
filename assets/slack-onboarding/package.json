@@ -1,0 +1,22 @@
+{
+  "name": "backlot-slack-onboarding-demo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The README's demo: what connecting Slack costs, with and without Backlot.",
+  "scripts": {
+    "studio": "remotion studio",
+    "frames": "remotion render SlackOnboarding out/frames.mp4"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.410",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "^4.0.410"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "typescript": "^5.9.3"
+  }
+}

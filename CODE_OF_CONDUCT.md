@@ -21,8 +21,8 @@ project.
 
 ## Enforcement
 
-Report a problem privately to the maintainers — [@khj809](https://github.com/khj809). Reports are
-handled confidentially, and the reporter's identity is not shared with the person reported.
+Report a problem privately to the maintainers at oceanjoon@brekkylab.com. Reports are handled
+confidentially, and the reporter's identity is not shared with the person reported.
 
 Maintainers will respond as they judge appropriate: editing or removing the content, a warning,
 or a temporary or permanent ban from participating. Maintainers who do not uphold this document

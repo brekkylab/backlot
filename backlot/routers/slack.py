@@ -515,9 +515,16 @@ async def conversations_replies(request: Request):
         return err
     ts = _param(request, "ts")
     name = _channel_name(conn, _param(request, "channel") or "")
-    if name is None or not ts:
-        return _err("thread_not_found")
     ids = auth.visible_ids(request, caller)
+    # The channel is answered before the thread, and answered the same way its siblings answer it.
+    # Measured live, against a private channel the token is not in beside an id that names nothing:
+    # both are `channel_not_found` here, and `thread_not_found` is what a channel the caller CAN
+    # see says about a ts it does not hold — so resolving the ts first would report a missing
+    # thread for a room the caller cannot open.
+    if name is None or not _channel_visibility(request, conn, ids)(name):
+        return _err("channel_not_found")
+    if not ts:
+        return _err("thread_not_found")
     # Resolve the ts against ALL messages in the channel, not just roots: Slack accepts any in-thread
     # ts here, and a client that got its ts from a search hit will often pass a REPLY's ts. Find the
     # matched message, then return the thread it belongs to (its root's).

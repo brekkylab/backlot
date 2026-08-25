@@ -335,11 +335,19 @@ def test_slack_info_answers_one_shape_whoever_asks(client, admin_h, tokens):
 
 
 @pytest.mark.parametrize(
-    "method",
-    ["conversations.info", "conversations.members", "conversations.history"],
+    "method, extra, when_visible",
+    [
+        ("conversations.info", {}, None),
+        ("conversations.members", {}, None),
+        ("conversations.history", {}, None),
+        # replies takes a ts, and the channel is answered before it: for a channel the caller CAN
+        # see, a ts that names nothing is `thread_not_found` — which is why it is the third value
+        # here rather than an `ok`.
+        ("conversations.replies", {"ts": "1700000000.000100"}, "thread_not_found"),
+    ],
 )
 def test_slack_by_id_methods_refuse_a_channel_the_caller_cannot_see(
-    client, admin_h, tokens, method
+    client, admin_h, tokens, method, extra, when_visible
 ):
     """`conversations.list` scopes by ACL; the methods that resolve a channel by id did not, so an
     id was enough for any authenticated principal to confirm a private room, read its name, topic,
@@ -348,26 +356,31 @@ def test_slack_by_id_methods_refuse_a_channel_the_caller_cannot_see(
     `ok:true` with an empty `messages`, which reads as "this channel exists and you may read it; it
     happens to be empty" — the opposite of what the mock knows.
 
-    All three answer `channel_not_found`, the same answer an id that names nothing gets (measured
-    live: a well-formed id for no channel is `channel_not_found` on all three), so a hidden channel
-    is not distinguishable from one that was never there. NOT the `not_in_channel` that
-    `conversations.history` also documents — that is the case where the token can SEE the channel
-    and has not joined it, which is a public channel here and never refused; `conversations.info`
-    and `.members` do not document it at all."""
+    All four answer `channel_not_found`, the same answer an id that names nothing gets, so a hidden
+    channel is not distinguishable from one that was never there. Measured against slack.com with a
+    workspace token, on a private channel that token is not in beside a well-formed id for no
+    channel at all — every one of the eight answers is `channel_not_found`. NOT the `not_in_channel`
+    that `conversations.history` also documents: that is the case where the token can SEE the
+    channel and has not joined it, which is a public channel here and never refused, and the other
+    three methods do not document the error at all."""
     private = _private_channel(client, admin_h)
+    hidden_and_made_up = ({"channel": private["id"]}, {"channel": "C0000000000"})
     for email in ("ava@acme.com", "bob@acme.com"):
         h = {"Authorization": f"Bearer {tokens[email]}"}
-        j = client.get(f"/slack/api/{method}", headers=h, params={"channel": private["id"]}).json()
-        assert j == {"ok": False, "error": "channel_not_found"}, email
-    # ...the same answer as an id that names nothing at all, so the two cannot be told apart
-    for h in ({"Authorization": f"Bearer {tokens['ava@acme.com']}"}, admin_h):
-        made_up = client.get(f"/slack/api/{method}", headers=h, params={"channel": "C0000000000"})
-        assert made_up.json() == {"ok": False, "error": "channel_not_found"}
+        for params in hidden_and_made_up:
+            j = client.get(f"/slack/api/{method}", headers=h, params={**params, **extra}).json()
+            assert j == {"ok": False, "error": "channel_not_found"}, (email, params)
 
-    # The test is visibility, NOT membership: the one person who may read it is answered in full...
+    def answer(headers, channel):
+        j = client.get(
+            f"/slack/api/{method}", headers=headers, params={"channel": channel, **extra}
+        ).json()
+        return j.get("error") if not j["ok"] else None
+
+    # The test is visibility, NOT membership: the one person who may read it is answered on the
+    # channel's own terms...
     hana = {"Authorization": f"Bearer {tokens['hana@acme.com']}"}
-    ok = client.get(f"/slack/api/{method}", headers=hana, params={"channel": private["id"]}).json()
-    assert ok["ok"] is True
+    assert answer(hana, private["id"]) == when_visible
     # ...and so is a public channel the caller can see but has never posted in (bob has only ever
     # spoken in #incidents), which real Slack answers rather than refusing.
     bob = {"Authorization": f"Bearer {tokens['bob@acme.com']}"}
@@ -376,12 +389,7 @@ def test_slack_by_id_methods_refuse_a_channel_the_caller_cannot_see(
     ).json()["channels"]
     quiet = next(c for c in public if c["name"] == "eng-announcements")
     assert quiet["is_member"] is False
-    assert (
-        client.get(f"/slack/api/{method}", headers=bob, params={"channel": quiet["id"]}).json()[
-            "ok"
-        ]
-        is True
-    )
+    assert answer(bob, quiet["id"]) == when_visible
 
 
 def test_slack_conversations_list_rejects_an_unknown_type(client, admin_h):

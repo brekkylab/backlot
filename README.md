@@ -4,11 +4,11 @@
 [![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Change the base URL. Nothing else.**
+**Bring your own enterprise. Serve it like the real thing.**
 
 Backlot serves enterprise SaaS APIs — Slack, Gmail, Drive, GitHub, Jira, Notion, S3, and
 more — with the exact response shapes, pagination, auth and per-document ACLs the real ones have,
-over a corpus you supply.
+over a corpus you supply. Change the base URL; nothing else changes.
 
 ![Importing the bundled corpus, starting the server, then reading a Slack message out of it with curl — beside the same call against the real Slack API, returning the same seven fields.](assets/readme-demo/demo.gif)
 

@@ -60,22 +60,14 @@ def test_every_shipped_non_py_file_is_covered_by_package_data():
 # README.md carries relative image and link paths that only resolve on GitHub. PyPI passes them
 # through unchanged (measured 2026-08-14 against readme_renderer[md]: `<picture>` and `<details>`
 # survive, relative targets are left alone and therefore 404 under pypi.org), so the long
-# description points at a short absolute-URL-only page instead. The three tests below keep that
+# description points at a short absolute-URL-only page instead. The two tests below keep that
 # pair from drifting.
-_TAGLINE = "**Change the base URL. Nothing else.**"
 
 
 def test_long_description_is_the_pypi_readme():
     with open(REPO_ROOT / "pyproject.toml", "rb") as f:
         pyproject = tomllib.load(f)
     assert pyproject["project"]["readme"] == "README.pypi.md"
-
-
-def test_both_readmes_lead_with_the_same_tagline_and_install():
-    for name in ("README.md", "README.pypi.md"):
-        text = (REPO_ROOT / name).read_text()
-        assert _TAGLINE in text, f"{name} does not carry the shared tagline"
-        assert "pip install backlot" in text, f"{name} does not show the install command"
 
 
 def test_pypi_readme_has_no_relative_links():

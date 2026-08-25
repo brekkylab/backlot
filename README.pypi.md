@@ -1,10 +1,10 @@
 # Backlot
 
-**Change the base URL. Nothing else.**
+**Bring your own enterprise. Serve it like the real thing.**
 
 Backlot serves enterprise SaaS APIs — Slack, Gmail, Drive, GitHub, Jira, Notion, S3, and
 more — with the exact response shapes, pagination, auth and per-document ACLs the real ones have,
-over a corpus you supply.
+over a corpus you supply. Change the base URL; nothing else changes.
 
 ```bash
 pip install backlot

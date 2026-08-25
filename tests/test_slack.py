@@ -59,10 +59,12 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
 # application error as HTTP 200 with {"ok": false, "error": …}, which the mock already does — these
 # are about the cases where it answered something real Slack never would.
 #
-# NOTE: most expectations here come from Slack's published reference rather than from probing the
-# live API — there are no Slack credentials in this environment, and each one cites the documented
-# behaviour it encodes. The exception is the not_authed/invalid_auth split, which needs no account
-# to observe and so was measured directly (see test_slack_auth_errors_distinguish_...).
+# NOTE: each expectation says where it comes from, because they do not all come from the same
+# place. Some are transcribed from Slack's published reference (the channel object's field set, the
+# documented `types` default). Others are MEASURED against slack.com: the not_authed/invalid_auth
+# split, which needs no account at all, and — with a workspace user token — the error a by-id method
+# answers for a private channel that token is not in, for an id that names nothing, and for a
+# required argument that never arrived. A test that pins a measured answer says so.
 
 
 # Measured against slack.com, which answers all of these without an account:
@@ -540,11 +542,45 @@ def test_slack_num_members_agrees_with_the_member_list(client, admin_h):
         assert info["num_members"] == len(listed), c["name"]
 
 
-def test_slack_members_channel_not_found(client, admin_h):
-    j = client.get(
-        "/slack/api/conversations.members", headers=admin_h, params={"channel": "C_NOPE"}
-    ).json()
-    assert j == {"ok": False, "error": "channel_not_found"}
+_OWN_CHANNEL = "<the caller's own channel>"  # stands for an id only the test body can look up
+
+
+@pytest.mark.parametrize(
+    "method, params, error",
+    [
+        # An ABSENT required argument — the request is malformed, and no channel was ever named.
+        ("conversations.info", {}, "invalid_arguments"),
+        ("conversations.members", {}, "invalid_arguments"),
+        ("conversations.history", {}, "invalid_arguments"),
+        ("conversations.replies", {}, "invalid_arguments"),
+        ("conversations.replies", {"channel": "C_NOPE"}, "invalid_arguments"),  # ts absent
+        # PRESENT and empty, or present and naming nothing — the argument arrived, so what is
+        # missing is the channel.
+        ("conversations.info", {"channel": ""}, "channel_not_found"),
+        ("conversations.members", {"channel": ""}, "channel_not_found"),
+        ("conversations.history", {"channel": ""}, "channel_not_found"),
+        ("conversations.info", {"channel": "C_NOPE"}, "channel_not_found"),
+        ("conversations.members", {"channel": "C_NOPE"}, "channel_not_found"),
+        ("conversations.history", {"channel": "C_NOPE"}, "channel_not_found"),
+        ("conversations.replies", {"channel": "C_NOPE", "ts": "1.0"}, "channel_not_found"),
+        # ...and a ts that arrived empty is answered by the thread, the channel being readable.
+        ("conversations.replies", {"channel": _OWN_CHANNEL, "ts": ""}, "thread_not_found"),
+    ],
+)
+def test_slack_a_missing_argument_is_not_a_missing_channel(client, admin_h, method, params, error):
+    """Slack separates "you did not pass the argument" from "what you passed names nothing", and
+    the mock had only the second — so a client that omitted `channel` was told the thing it never
+    named does not exist. The two send it down different branches: `channel_not_found` is about the
+    workspace, `invalid_arguments` about the request it just built.
+
+    Every row measured against slack.com with a workspace token. Auth is settled first — a bad
+    token is `invalid_auth` with or without the arguments — which is why this table is all
+    authenticated."""
+    params = {
+        k: (_a_channel_id(client, admin_h) if v == _OWN_CHANNEL else v) for k, v in params.items()
+    }
+    j = client.get(f"/slack/api/{method}", headers=admin_h, params=params).json()
+    assert j == {"ok": False, "error": error}
 
 
 def test_slack_search_all(client, admin_h):

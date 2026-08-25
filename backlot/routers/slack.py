@@ -163,6 +163,24 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
     return None, _err("invalid_auth" if token else "not_authed")
 
 
+def _missing_argument(request: Request, *names: str) -> JSONResponse | None:
+    """``invalid_arguments`` if one of these required arguments was not sent at all.
+
+    Slack answers this before it resolves anything, and a client branches on the two differently:
+    `channel_not_found` is about the workspace — retry with another id, or treat the channel as
+    gone — while `invalid_arguments` is about the request the client just built. Collapsing them
+    told a client its own malformed call had named a channel that does not exist.
+
+    An argument that is PRESENT and empty is not this case: `channel=` resolves to nothing, which
+    is `channel_not_found`, and `ts=` on a readable channel is `thread_not_found`. Both measured,
+    along with the order — a bad token is `invalid_auth` whether or not the arguments are there,
+    so this sits after `_caller_or_error` rather than before it.
+    """
+    if any(_param(request, n) is None for n in names):
+        return _err("invalid_arguments")
+    return None
+
+
 def _channel_core(request: Request, conn, name: str, caller: Caller) -> dict:
     """The conversation object as BOTH conversations.list and .info answer it.
 
@@ -380,6 +398,8 @@ async def conversations_info(request: Request):
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
+    if err := _missing_argument(request, "channel"):
+        return err
     name = _channel_name(conn, _param(request, "channel") or "")
     ids = auth.visible_ids(request, caller)
     # A channel this caller cannot see does not exist as far as they are concerned, so it answers
@@ -411,10 +431,9 @@ async def conversations_history(request: Request):
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
-    channel_id = _param(request, "channel")
-    if not channel_id:
-        return _err("channel_not_found")
-    name = _channel_name(conn, channel_id)
+    if err := _missing_argument(request, "channel"):
+        return err
+    name = _channel_name(conn, _param(request, "channel") or "")
     ids = auth.visible_ids(request, caller)
     # A channel this caller cannot see is `channel_not_found`, exactly as in conversations.info —
     # NOT the `not_in_channel` the same page also documents, which is the other case: a channel the
@@ -513,6 +532,8 @@ async def conversations_replies(request: Request):
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
+    if err := _missing_argument(request, "channel", "ts"):
+        return err
     ts = _param(request, "ts")
     name = _channel_name(conn, _param(request, "channel") or "")
     ids = auth.visible_ids(request, caller)
@@ -585,6 +606,8 @@ async def conversations_members(request: Request):
     conn = auth.conn(request)
     caller, err = _caller_or_error(request)
     if err is not None:
+        return err
+    if err := _missing_argument(request, "channel"):
         return err
     name = _channel_name(conn, _param(request, "channel") or "")
     # Membership is derived from who has spoken in the channel, so this list is a projection of the

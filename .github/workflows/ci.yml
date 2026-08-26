@@ -27,7 +27,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - uses: astral-sh/setup-uv@v10
+      # Pinned to an exact version because that is all this action publishes — there is no
+      # floating `v10` tag to follow, unlike the actions/* above.
+      - uses: astral-sh/setup-uv@v10.0.1
 
       - name: Install
         # Every extra, so nothing self-skips: [examples] is the official vendor SDKs, [mcp] the MCP

@@ -67,16 +67,21 @@ them:
 |---|---|
 | `.[examples]` — the vendor SDKs | all of `tests/test_sdk.py` and all of `tests/test_s3.py`, plus the `googleapiclient` tests in `tests/test_integrations.py` |
 | `.[llamaindex]` — the official readers | all of `tests/test_llamaindex.py`, plus the reader tests in `tests/test_integrations.py` |
+| `llama-index-readers-hubspot`, which no extra carries | the HubSpot reader test in `tests/test_llamaindex.py` |
 | `.[mcp]` | all of `tests/test_mcp.py` |
 | `.[mirage]` | the shim tests in `tests/test_integrations.py` |
 | Docker, `npx`, `uvx` | one `tests/test_mcp.py` test each — the Atlassian, Notion and AWS MCP servers |
 | `git` | the tests in `tests/test_github.py` that build a real repo |
 
 Install what covers the surface you touched, or all of it at once, and let `-rs` confirm nothing
-you meant to run skipped:
+you meant to run skipped. The zero-skip install is two commands, the way CI's is: the HubSpot
+reader pins `hubspot-api-client<9` against the `>=12` that `examples` needs — over-restrictive
+rather than a real incompatibility, so it goes in past its own dependencies, at the version CI
+installs:
 
 ```bash
 uv pip install -e ".[dev,examples,mcp,llamaindex,mirage]"
+uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 ```
 
 CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request

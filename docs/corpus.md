@@ -2,8 +2,60 @@
 
 [← README](../README.md)
 
-The server reads a corpus from `data/` (`mock.sqlite` + `tokens.yaml`). Build it from your own
-documents, or load a public dataset.
+The server reads a corpus from `data/` (`mock.sqlite` + `tokens.yaml`), and there are three ways to
+put one there: the corpus that ships inside the package, your own documents, or a public dataset.
+
+## The bundled corpus
+
+```bash
+backlot import --bundled
+```
+
+Nothing to download and nothing to write — it lives in the wheel at
+[`backlot/data/hello.jsonl`](../backlot/data/hello.jsonl) and covers **every source**, so every
+endpoint answers immediately. It is what `backlot.mock_server()` loads when called with no
+arguments, and what the examples and the README's demo run against.
+
+What you get, on the org `acme`:
+
+| Source | Records in the file | Documents served |
+|---|---|---|
+| `slack` | 22 | 41 |
+| `gmail` | 10 | 22 |
+| `github` | 14 | 14 |
+| `google_drive` | 14 | 14 |
+| `linear` | 14 | 14 |
+| `confluence` | 11 | 11 |
+| `jira` | 12 | 12 |
+| `hubspot` | 12 | 12 |
+| `s3` | 12 | 12 |
+| `notion` | 9 | 9 |
+| `fireflies` | 6 | 6 |
+| **Total** | **136** | **167** |
+
+The two columns differ because a record is not always one document: a Slack message carrying
+`replies` and a Gmail thread carrying its messages each expand on load. `/health` reports both
+numbers for the same reason — `source_documents` is what the corpus offered, `documents` is what is
+served.
+
+It also ships **10 principals in 7 groups** — `engineering`, `sales`, `handbook`, `product`,
+`design`, `leadership`, `support` — with overlapping membership, and ten documents carry an explicit
+`readers` list. One person, `sam.ortiz@northwind.example`, is deliberately **outside the org**: an
+external collaborator, so "does an outsider see this?" is a question you can ask without building a
+corpus first. Every identity and its token comes back from `GET /_mock/users` — see
+[auth.md](auth.md).
+
+**It is also a worked example of the format below.** `hello.jsonl` is ordinary BYO input, not a
+special internal shape, and it validates as such:
+
+```bash
+backlot import backlot/data/hello.jsonl --dry-run   # OK: 136 records valid.
+```
+
+So the fastest way to learn what a record looks like for a given source is to read the lines for
+that source in a file you already have.
+
+## Bring your own corpus
 
 You describe each document the way its own service would, and a per-source JSON Schema says what
 that record may carry. `title` and `content` are served verbatim; so is every other field you set —
@@ -13,8 +65,6 @@ the container it lives in, and its clock. What the corpus does not own are the *
 those are derived **deterministically** — each hashed from the stable key it belongs to (the
 record's own identity, a container's name, an author's address) — so an id never moves between
 calls or pages.
-
-## Bring your own corpus
 
 One JSONL document per line, validated against a per-service JSON Schema
 ([`backlot/schemas/`](../backlot/schemas/)), then loaded:

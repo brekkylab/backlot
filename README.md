@@ -40,11 +40,11 @@ with backlot.mock_server() as m:                       # no arguments: the bundl
 
 ## When you need this
 
-- **Building or upgrading a connector** — crawl to exhaustion, then diff what you got against what you loaded
-- **Testing ACL-scoped retrieval** — every document carries its own readers, so a leak is a failing test
-- **Running that suite in CI** — no accounts, no secrets, no network, no flakes
-- **Evaluating RAG or agents** — the same answers every run; every served id is derived, never random
-- **Reproducing a bug you cannot reach** — write the document that causes it and serve it in seconds
+- 🔌 **Building or upgrading a connector** — crawl to exhaustion, then diff what you got against what you loaded
+- 🔒 **Testing ACL-scoped retrieval** — every document carries its own readers, so a leak is a failing test
+- ⚙️ **Running that suite in CI** — no accounts, no secrets, no network, no flakes
+- 🤖 **Evaluating RAG or agents** — the same answers every run; every served id is derived, never random
+- 🐛 **Reproducing a bug you cannot reach** — write the document that causes it and serve it in seconds
 
 ## Example Usages
 
@@ -55,10 +55,10 @@ with backlot.mock_server() as m:                       # no arguments: the bundl
 
 | Point this at it | Runnable, one script per service |
 |---|---|
-| Official vendor SDKs | [`examples/using-official-sdk/`](examples/using-official-sdk/) |
-| MCP servers, or the mock's own OpenAPI→ and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/) |
-| LlamaIndex readers | [`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/) |
-| [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](examples/using-mirage/) |
+| 📦 Official vendor SDKs | [`examples/using-official-sdk/`](examples/using-official-sdk/) |
+| 🔗 MCP servers, or the mock's own OpenAPI→ and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/) |
+| 🦙 LlamaIndex readers | [`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/) |
+| 🗂️ [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](examples/using-mirage/) |
 
 ## Documentation
 

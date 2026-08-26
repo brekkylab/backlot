@@ -31,19 +31,48 @@ export const F = {
 
 /** 30fps: the timeline below is written in frames, so keep these in sync with Root.tsx. */
 export const FPS = 30;
-export const DURATION = 450;
+export const DURATION = 690;
 
 /** Named beats, so the composition reads as a storyboard rather than a pile of magic numbers. */
 export const T = {
-  titleIn: 0,
-  titleOut: 36,
-  lanesIn: 36,
-  gates: [54, 78, 102, 126, 150, 174],
-  steps: [60, 96, 132],
-  connected: 162,
-  fields: 176,
-  chips: 236,
-  wall: 228,
-  verdict: 312,
-  endcard: 366,
+  // The wordmark opens centred and large on the full brand card, then shrinks into the top-left
+  // corner and stays there as the piece's header, with the subject line arriving beside it.
+  //
+  // The card is held for 1.8s here and 1.8s at the close. The split matters only to a first-time
+  // viewer, because the clip loops seamlessly — the last frame IS this one, so across a repeat the
+  // card reads as one 3.6s beat. Someone opening the README cold starts at frame 0, though, and
+  // giving them 0.8s of the brand before it leaves was too brief to register.
+  morphStart: 54,
+  // 16 frames, not 24. The travel is short and cubic-out lands it 95% of the way in the first ten,
+  // so the extra eight were the wordmark creeping the last pixel — during which it sat in the
+  // subject line's space and the two read as crowded. Landing here also lets the lanes start on the
+  // same frame, which is what makes the brand look like it finished moving before they begin.
+  morphEnd: 70,
+  // Lands with the wordmark, not after the lanes. Cubic-out puts the travel 78% of the way by the
+  // midpoint, so by here the corner is effectively occupied and the line reads as part of the
+  // header rather than as something the lanes brought with them.
+  headingIn: 64,
+
+  // Held until the wordmark has all but arrived — cubic-out has it 95% of the way by here. Starting
+  // it earlier read as the lanes beginning while the brand was still in flight. What keeps the frame
+  // from emptying in between is `headingIn`, not the lanes, so this can wait.
+  lanesIn: 70,
+  gates: [96, 120, 144, 168, 192, 216],
+  steps: [102, 138, 174],
+  connected: 204,
+  fields: 218,
+  wall: 270,
+  chips: 278,
+  // Chips settle at 297; this lands 9 frames later, and holds until the closing card arrives.
+  verdict: 306,
+  // The generalising act. The lanes slide left — Slack's column off the edge, Backlot's into its
+  // place — and then the surviving column repeats itself for one source after another. Showing it
+  // beats asserting it: every card below is a real response this server returned.
+  slide: 372,
+  // 24 frames each: short enough to fit eight sources, and the frame around them never moves,
+  // so the eye only has to track the strings that changed.
+  cycle: [392, 416, 440, 464, 488, 512, 536, 560],
+  // The closing card waits: the last tick lands at 560 and the checklist is only complete then, so
+  // cutting away 30 frames later gave the finished list no time to be read as finished.
+  endcard: 636,
 } as const;

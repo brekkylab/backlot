@@ -1,9 +1,9 @@
-import { interpolate, Easing } from "remotion";
+import { interpolate, Easing } from "./runtime";
 
 /**
  * Every entrance in this piece is the same shape: fade up over 9 frames and stop.
  *
- * `spring()` is the Remotion default and is wrong here. A spring settles asymptotically, so a row
+ * A spring would be wrong here, which is why none is used. A spring settles asymptotically, so a row
  * that has visually arrived is still moving by a subpixel for another twenty frames, and a
  * subpixel move rewrites the row's whole bounding box in the GIF. A clamped ease that actually
  * reaches its end value lets the frame go byte-identical, which is what makes the held stretches

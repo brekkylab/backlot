@@ -129,7 +129,12 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    # mcp-atlassian runs in a container and reaches a local mock through host-gateway, which on
+    # Linux is the docker bridge address — a loopback-only server never answers there. Docker
+    # Desktop forwards host-gateway to the host's own loopback instead, so macOS keeps the narrower
+    # bind and the firewall prompt that opening a port to the network raises.
+    host = "0.0.0.0" if sys.platform == "linux" else "127.0.0.1"
+    with serve_or_connect(CORPUS, url=args.url, host=host) as mock:
         if args.token:
             print("authenticating with --token → retrieval is ACL-filtered to that user")
         params = build_params(mock.base_url, args.token or mock.token, args.username)

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 import sys
 import urllib.request
+
+import pytest
 
 import backlot
 from tests._helpers import complete
@@ -15,6 +18,38 @@ from backlot.testing import _terminate
 def _get(url: str) -> dict:
     with urllib.request.urlopen(url, timeout=10) as r:
         return json.load(r)
+
+
+def _routable_address() -> str | None:
+    """This machine's own address on the interface a packet would leave by, or None when the only
+    address it has is loopback (an offline or network-isolated host)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("192.0.2.1", 9))  # TEST-NET-1: a UDP connect() picks a route, sends nothing
+            addr = s.getsockname()[0]
+        except OSError:
+            return None
+    return None if addr.startswith("127.") else addr
+
+
+def _ipv6_loopback() -> str | None:
+    """``"::1"`` when this machine has a usable IPv6 stack, else None — some CI networks have none.
+    Measured by binding it, not by ``socket.has_ipv6``, which only reports the build."""
+    try:
+        with socket.socket(socket.AF_INET6) as s:
+            s.bind(("::1", 0))
+    except OSError:
+        return None
+    return "::1"
+
+
+def _health(url: str) -> dict:
+    """``GET /health`` at ``url``, or ``{}`` when nothing there answers as Backlot — the connection
+    refused, or some other program holding that port."""
+    try:
+        return _get(url)
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def test_mock_server_with_no_arguments_serves_the_hello_corpus():
@@ -111,6 +146,50 @@ def test_serve_or_connect_does_not_fetch_the_token_over_plain_http_to_a_non_loop
         assert m.token == testing_mod.TOKEN
 
     assert calls == [], f"token fetch must not run against a plain-http non-loopback host: {calls}"
+
+
+@pytest.mark.parametrize("host, answers_off_loopback", [("127.0.0.1", False), ("0.0.0.0", True)])
+def test_mock_server_binds_where_host_says(host, answers_off_loopback):
+    """A wildcard bind is what lets something that cannot reach this machine's loopback reach the
+    mock: a Docker container on Linux, where ``--add-host=…:host-gateway`` resolves to the bridge
+    address (tests/test_mcp.py runs the Atlassian MCP server that way). The narrow default is
+    asserted alongside it, since one that quietly answered everywhere would pass either way.
+
+    Both halves dial this machine's own routable address, because only a request settles where a
+    server answers — and both ask whether BACKLOT answered, not whether the port accepted a
+    connection, which is a fact about the machine rather than about this server."""
+    addr = _routable_address()
+    if addr is None:
+        pytest.skip("this machine has no address but loopback to dial")
+
+    with backlot.mock_server(host=host) as m:
+        # A wildcard bind answers on every interface, loopback among them, so the URL a caller
+        # gets stays loopback in both cases here.
+        assert m.base_url.startswith("http://127.0.0.1:"), m.base_url
+        assert _health(f"{m.base_url}/health")["status"] == "ok"
+
+        port = int(m.base_url.rsplit(":", 1)[1])
+        answered = _health(f"http://{addr}:{port}/health").get("status") == "ok"
+        assert answered is answers_off_loopback
+
+
+@pytest.mark.parametrize(
+    "resolve, url_form",
+    [(_routable_address, "http://{}:"), (_ipv6_loopback, "http://[{}]:")],
+    ids=["one-interface", "ipv6-loopback"],
+)
+def test_a_narrow_bind_is_dialled_at_the_address_it_bound(resolve, url_form):
+    """``host`` is an address, not a switch between loopback and everywhere: a server bound to one
+    interface answers only there, so ``base_url`` has to name it. A ``base_url`` fixed at
+    127.0.0.1 leaves a server that is up and a readiness poll knocking somewhere it never bound,
+    which fails ten seconds later saying the server never came up."""
+    host = resolve()
+    if host is None:
+        pytest.skip("this machine has no such address to bind")
+
+    with backlot.mock_server(host=host) as m:
+        assert m.base_url.startswith(url_form.format(host)), m.base_url
+        assert _health(f"{m.base_url}/health")["status"] == "ok"
 
 
 def test_two_servers_get_different_ports():

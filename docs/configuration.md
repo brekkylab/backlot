@@ -51,7 +51,12 @@ The [`Dockerfile`](../Dockerfile) has three stages, and it bakes `BACKLOT_DATA_D
 ```bash
 docker build -t backlot .                       # full: corpus baked in
 docker build --target serve -t backlot .        # empty: mount your own /app/data
+docker build --build-arg VERSION=0.0.1 -t backlot .   # stamp the image with a version
 ```
+
+`.git` stays out of the build context, so an image built without `--build-arg VERSION` reports the
+fallback version `pyproject.toml` names rather than a release number. `backlot --version` inside the
+container is the only place that shows.
 
 [`docker-compose.yml`](../docker-compose.yml) builds the default target and passes the host's
 `.env` through, so `docker compose up` comes up on the package defaults with no file to write. It

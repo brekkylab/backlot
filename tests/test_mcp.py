@@ -196,6 +196,11 @@ def _s3_params(base: str, token: str):
 
     return StdioServerParameters(
         command="uvx",
+        # `@latest`, so this keeps proving the mock against the server awslabs ships today rather
+        # than one we froze. The cost is that a version uvx has not got yet is downloaded here,
+        # inside the window the client's `initialize` is waiting on, and that ends as
+        # `McpError('Connection closed')` rather than as a slow pass. CI fetches the server in a
+        # step above pytest so the download is never on this clock.
         args=["awslabs.aws-api-mcp-server@latest"],
         env={
             "AWS_ENDPOINT_URL": f"{base.rstrip('/')}/s3",

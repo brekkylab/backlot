@@ -2,8 +2,13 @@
 
 [← README](../README.md)
 
-The server reads a corpus from `data/` (`mock.sqlite` + `tokens.yaml`), and there are three ways to
-put one there: the corpus that ships inside the package, your own documents, or a public dataset.
+The server reads a corpus from `data/` — `mock.sqlite`, `tokens.yaml` and `credentials.yaml`. That
+location is `BACKLOT_DATA_DIR`, resolved against the working directory rather than the install
+location, so pointing it elsewhere is how you keep several corpora side by side; see
+[configuration.md](configuration.md).
+
+There are three ways to put a corpus there: the corpus that ships inside the package, your own
+documents, or a public dataset.
 
 ## The bundled corpus
 

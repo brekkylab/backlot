@@ -21,40 +21,24 @@ Nothing to download and nothing to write — it lives in the wheel at
 endpoint answers immediately. It is what `backlot.mock_server()` loads when called with no
 arguments, and what the examples and the README's demo run against.
 
-What you get, on the org `acme`:
+It serves the org `acme`, and `backlot import` prints the per-source breakdown as it loads.
 
-| Source | Records in the file | Documents served |
-|---|---|---|
-| `slack` | 22 | 41 |
-| `gmail` | 10 | 22 |
-| `github` | 14 | 14 |
-| `google_drive` | 14 | 14 |
-| `linear` | 14 | 14 |
-| `confluence` | 11 | 11 |
-| `jira` | 12 | 12 |
-| `hubspot` | 12 | 12 |
-| `s3` | 12 | 12 |
-| `notion` | 9 | 9 |
-| `fireflies` | 6 | 6 |
-| **Total** | **136** | **167** |
-
-The two columns differ because a record is not always one document: a Slack message carrying
-`replies` and a Gmail thread carrying its messages each expand on load. `/health` reports both
-numbers for the same reason — `source_documents` is what the corpus offered, `documents` is what is
+A record is not always one document: a Slack message carrying `replies` and a Gmail thread carrying
+its messages each expand on load, so more documents come out than went in. `/health` reports both
+sides for that reason — `source_documents` is what the corpus offered, `documents` is what is
 served.
 
-It also ships **10 principals in 7 groups** — `engineering`, `sales`, `handbook`, `product`,
-`design`, `leadership`, `support` — with overlapping membership, and ten documents carry an explicit
-`readers` list. One person, `sam.ortiz@northwind.example`, is deliberately **outside the org**: an
-external collaborator, so "does an outsider see this?" is a question you can ask without building a
-corpus first. Every identity and its token comes back from `GET /_mock/users` — see
-[auth.md](auth.md).
+Principals come with it, in overlapping groups — `engineering`, `sales`, `handbook`, `product`,
+`design`, `leadership` and `support` — and some documents carry an explicit `readers` list. One
+person, `sam.ortiz@northwind.example`, is deliberately **outside the org**: an external
+collaborator, so "does an outsider see this?" is a question you can ask without building a corpus
+first. Every identity and its token comes back from `GET /_mock/users` — see [auth.md](auth.md).
 
 **It is also a worked example of the format below.** `hello.jsonl` is ordinary BYO input, not a
 special internal shape, and it validates as such:
 
 ```bash
-backlot import backlot/data/hello.jsonl --dry-run   # OK: 136 records valid.
+backlot import backlot/data/hello.jsonl --dry-run   # every record valid, nothing written
 ```
 
 So the fastest way to learn what a record looks like for a given source is to read the lines for

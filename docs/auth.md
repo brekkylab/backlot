@@ -15,7 +15,7 @@ machine too, and the commands below are copy-pasteable against `backlot serve`.
 curl -s localhost:8000/_mock/users
 ```
 ```json
-{ "org": "acme", "admin_token": "admin-service-token", "count": 10,
+{ "org": "acme", "admin_token": "admin-service-token",
   "admin_s3_access_key_id": "AKIA732S…", "admin_s3_secret_access_key": "l4sz5sXT…",
   "users": [{ "email": "ava.chen@acme.com", "name": "Ava Chen",
               "token": "usr-29b84da5703116c2a832",
@@ -46,13 +46,17 @@ The same values are in `data/tokens.yaml`.
 
 The token is what authenticates — never the username, even where a scheme carries one. Send a
 user's token and every API filters to that user, which is what makes per-user access a test rather
-than an audit. Measured on the bundled corpus, one unchanged request answers differently per
-identity:
+than an audit. Send the same request three times, changing only the token, and count what comes
+back:
 
-| Request | admin | ava | dana |
-|---|---|---|---|
-| `GET /drive/v3/files` | 16 files | 13 | 9 |
-| `s3:ListBuckets` | 2 buckets | 1 | 1 |
+```bash
+for t in admin-service-token usr-29b84da5703116c2a832 usr-94ef7da374a581b973c0; do
+  curl -s localhost:8000/drive/v3/files -H "Authorization: Bearer $t" | jq '.files | length'
+done
+```
+
+The admin sees the whole corpus, ava sees what her four groups reach, and dana — in `sales` alone —
+sees least. Nothing about the request changes but the identity.
 
 ## What each service expects
 

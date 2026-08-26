@@ -2,7 +2,7 @@
 name: Fidelity gap
 about: Backlot answers something the real vendor API does not
 title: "source: "
-labels: ''
+labels: fidelity
 ---
 
 <!-- The common issue here. A divergence is a bug even when the mock's answer is reasonable, so

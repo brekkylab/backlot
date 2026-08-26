@@ -1,8 +1,8 @@
 ---
 name: Bug
-about: A crash, a wrong answer, or an import that fails — not a divergence from a vendor API
+about: Backlot is wrong by its own spec — a crash, a failed import, an answer the corpus does not license
 title: ''
-labels: ''
+labels: bug
 ---
 
 **What you ran** — the command, the request, or the corpus record.

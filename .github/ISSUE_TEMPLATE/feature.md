@@ -2,7 +2,7 @@
 name: Feature or new surface
 about: An endpoint, source, corpus field, or CLI option Backlot does not have yet
 title: ''
-labels: enhancement
+labels: feature
 ---
 
 **What's missing** — and the real thing it stands in for: the vendor endpoint, schema, or SDK

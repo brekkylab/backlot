@@ -53,17 +53,39 @@ Two words, and they are not interchangeable:
 ## Running tests and lint
 
 ```bash
-pytest                    # unit + HTTP endpoint tests; needs no data
+pytest                    # unit + HTTP endpoint tests; needs no data and no network
+pytest -rs                # the same, and it names every test that skipped, with the reason
 ruff check . && ruff format --check .    # both gate CI; ruff comes from the `dev` extra
 ```
 
-- **Unit + endpoint tests** run with no data and no network — these must pass for every change.
-- `tests/test_sdk.py` needs the `.[examples]` extra and `tests/test_mcp.py` needs Docker +
-  the `.[mcp]` extra; both spin up their own server and **self-skip** when their prerequisites
-  are absent. Run them when touching the relevant surface.
+Everything that runs on a `dev` install must pass for every change. Tests that drive something
+outside the package **self-skip** when what they need is absent, so a `dev`-only run is quietly
+narrower than the suite — three of those gates sit at module level and take the whole file with
+them:
 
-CI runs `pytest -q` on every push to `main` and every pull request (see
-`.github/workflows/ci.yml`).
+| Needs | Sits out without it |
+|---|---|
+| `.[examples]` — the vendor SDKs | all of `tests/test_sdk.py` and all of `tests/test_s3.py`, plus the `googleapiclient` tests in `tests/test_integrations.py` |
+| `.[llamaindex]` — the official readers | all of `tests/test_llamaindex.py`, plus the reader tests in `tests/test_integrations.py` |
+| `llama-index-readers-hubspot`, which no extra carries | the HubSpot reader test in `tests/test_llamaindex.py` |
+| `.[mcp]` | all of `tests/test_mcp.py` |
+| `.[mirage]` | the shim tests in `tests/test_integrations.py` |
+| Docker, `npx`, `uvx` | one `tests/test_mcp.py` test each — the Atlassian, Notion and AWS MCP servers |
+| `git` | the tests in `tests/test_github.py` that build a real repo |
+
+Install what covers the surface you touched, or all of it at once, and let `-rs` confirm nothing
+you meant to run skipped. The zero-skip install is two commands, the way CI's is: the HubSpot
+reader pins `hubspot-api-client<9` against the `>=12` that `examples` needs — over-restrictive
+rather than a real incompatibility, so it goes in past its own dependencies, at the version CI
+installs:
+
+```bash
+uv pip install -e ".[dev,examples,mcp,llamaindex,mirage]"
+uv pip install --no-deps "llama-index-readers-hubspot<0.6"
+```
+
+CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request
+(see `.github/workflows/ci.yml`).
 
 ## Pull requests
 
@@ -71,7 +93,8 @@ CI runs `pytest -q` on every push to `main` and every pull request (see
 2. Keep changes focused; one logical change per PR.
 3. Add or update tests — a bug fix should come with a test that fails without it.
 4. Make sure `pytest` passes locally before opening the PR.
-5. Write a clear description of *what* changed and *why*.
+5. Fill in the pull request template: what changed, the measurement that says it is right, and
+   the test output — describing the finished state rather than the rounds of work behind it.
 
 ## Adding or changing API behavior
 
@@ -92,8 +115,13 @@ The whole point of this project is **fidelity to the real APIs**, so:
 
 ## Reporting bugs & requesting features
 
-Open an issue at https://github.com/brekkylab/backlot/issues. For a bug, include
-the endpoint, the request you made, what you got, and what a real API would have returned.
+Open an issue at https://github.com/brekkylab/backlot/issues. The **fidelity gap** template
+is the one most issues here want: the endpoint, the request you made, what Backlot served, what
+the real API served, and how you measured the difference.
+
+## Code of Conduct
+
+Taking part in this project means following our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

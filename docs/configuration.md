@@ -3,27 +3,66 @@
 [← README](../README.md)
 
 Every setting is an env var with a `BACKLOT_` prefix, and a `.env` file in the working directory is
-read too. Defaults are what the server uses when the var is unset.
+read too — copy [`.env.example`](../.env.example) and edit. Defaults are what the server uses when
+the var is unset. There are ten, and this page is all of them.
+
+## Corpus and identity
 
 | Env var | Default | What it does |
 |---|---|---|
 | `BACKLOT_DATA_DIR` | `./data` (resolved against the cwd, **not** the install location) | Where the corpus lives: `mock.sqlite`, `tokens.yaml`, `credentials.yaml`. Both `backlot import` and `backlot serve` read it, which is how you keep several corpora side by side — `BACKLOT_DATA_DIR=/tmp/demo backlot import c.jsonl` |
 | `BACKLOT_ADMIN_TOKEN` | `admin-service-token` | The token that bypasses ACL filtering — a full-crawl / service identity. Set it to anything for a shared deployment |
-| `BACKLOT_EXPOSE_TOKENS` | `true` | Serves `GET /_mock/users` and `GET /_mock/credentials`, which hand out every user's token in the clear. Fine for a local mock; set `false` to close both |
+| `BACKLOT_EXPOSE_TOKENS` | `true` | Serves `GET /_mock/users` and `GET /_mock/credentials`, which hand out every user's token in the clear. Fine for a local mock; set `false` to close both (they 404). See [auth.md](auth.md) |
 | `BACKLOT_ORG_NAME` | inferred from the corpus (fallback `example`) | The org slug that shows up in `auth.test`, synthesized emails and self-URLs. Inferred from the dominant author email domain — `@acme.com` documents serve as org `acme` — so set it only to override that |
 | `BACKLOT_ORG_DOMAIN` | inferred from the corpus (fallback `example.com`) | The domain half of the same inference, e.g. `acme.com`. Used for addresses the corpus does not state |
+
+## Paging
+
+| Env var | Default | What it does |
+|---|---|---|
 | `BACKLOT_DEFAULT_PAGE_SIZE` | `100` | Page size when a request names none |
-| `BACKLOT_MAX_PAGE_SIZE` | `1000` | Ceiling a request may ask for. Per-vendor caps still win where the real API has one (Fireflies clamps to 50, HubSpot to 100) |
+| `BACKLOT_MAX_PAGE_SIZE` | `1000` | Ceiling a request may ask for |
+
+**A vendor's own cap still wins.** Where the real API documents a maximum, the mock enforces that
+one instead: Fireflies clamps `limit` to 50 rather than erroring, and HubSpot to 100 — the value its
+official client pages at. Raising `BACKLOT_MAX_PAGE_SIZE` does not lift either, because a client
+that gets 1000 rows from a call the real API caps at 50 is a client that breaks in production.
+
+## SQLite
+
+These are performance levers, not behaviour. Every one of them is safe to leave alone.
+
+| Env var | Default | What it does |
+|---|---|---|
 | `BACKLOT_SQLITE_MMAP_MB` | `256` | Memory-maps the DB so reads come from the OS page cache instead of a syscall each — the main lever against a slow first request after idle. SQLite maps `min(this, db size)`; raise it to at or above your DB size to map a big corpus fully |
 | `BACKLOT_SQLITE_CACHE_MB` | `64` | SQLite's own page cache, per serving connection |
 | `BACKLOT_SQLITE_BUSY_MS` | `5000` | How long a read waits for a lock instead of erroring, so reads ride through an out-of-band write (e.g. an in-place FTS rebuild) rather than 500ing |
 
-## Docker without a corpus
+## Docker
 
-The [`Dockerfile`](../Dockerfile)'s default target bakes a corpus into the image. Build the
-`serve` target instead for a server with **no** corpus, for a deployment that mounts its own
-`/app/data` — pointed at by `BACKLOT_DATA_DIR` above:
+The [`Dockerfile`](../Dockerfile) has three stages, and it bakes `BACKLOT_DATA_DIR=/app/data` in:
+
+| Target | Carries | For |
+|---|---|---|
+| `full` (**default**) | The bundled corpus, already imported | `docker run` and it answers — nothing to mount, nothing to import |
+| `serve` | No corpus | A deployment that mounts its own `/app/data` |
+| `builder` | An intermediate that runs `backlot import --bundled` | Not a target you run |
 
 ```bash
-docker build --target serve -t backlot .
+docker build -t backlot .                       # full: corpus baked in
+docker build --target serve -t backlot .        # empty: mount your own /app/data
 ```
+
+[`docker-compose.yml`](../docker-compose.yml) builds the default target and passes the host's
+`.env` through, so `docker compose up` comes up on the package defaults with no file to write. It
+hardcodes no setting on purpose: what a deployment needs is a property of its own corpus and
+exposure, and a multi-GB corpus wants different SQLite tuning than a laptop. Its commented-out
+`volumes:` entry is the `--target serve` path above.
+
+**The default image cannot do the OAuth-config path.** `full` copies only the two runtime files the
+import produced — `mock.sqlite` and `tokens.yaml` — and deliberately leaves `credentials.yaml`
+behind in `builder`. So in that image `GET /_mock/credentials` is a 404 and `POST /oauth2/token`
+answers `temporarily_unavailable: no mock credentials configured`. Bearer-token auth, `/_mock/users`
+and every vendor API are unaffected; it is only the Google client-config exchange
+([auth.md](auth.md)) that needs the file. Mount a data dir built by your own
+`backlot import` if you need it.

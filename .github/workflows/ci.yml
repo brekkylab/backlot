@@ -8,22 +8,66 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      # Every version reports; one failing leg must not cancel the others, or a break on 3.14
+      # hides which of 3.11/3.12/3.13 also broke.
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
-      - name: Install
-        run: pip install -e ".[dev]"
-      - name: Unit tests
-        # -n auto: pytest-xdist comes from the dev extra; --dist loadfile is in pyproject's addopts.
-        run: pytest -n auto
+          python-version: ${{ matrix.python-version }}
 
-      # Node is for the Linear example at the end of this job: `@linear/sdk` is the only client
-      # Linear publishes and there is no official Python one, so pytest cannot drive it.
+      # Node and uv are here for the SUITE, not only for the Linear example at the end of this job:
+      # tests/test_mcp.py runs the Notion MCP server under `npx` and the AWS one under `uvx`, and
+      # skips whichever is missing. Docker (the Atlassian server) and git (tests/test_github.py)
+      # are already on the runner.
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - uses: astral-sh/setup-uv@v10
+
+      - name: Install
+        # Every extra, so nothing self-skips: [examples] is the official vendor SDKs, [mcp] the MCP
+        # servers, [llamaindex] the readers, [mirage] the virtual-filesystem shims. Whole test
+        # files sit behind a module-level importorskip on these.
+        run: pip install -e ".[dev,examples,mcp,llamaindex,mirage]"
+      - name: Install the HubSpot reader past its stale pin
+        # Deliberately not in [llamaindex]: it pins hubspot-api-client<9 against the >=12 that
+        # [examples] needs, which no resolver can reconcile. The pin is over-restrictive rather
+        # than a real incompatibility (see pyproject.toml), so --no-deps installs the reader
+        # without letting it near the resolver — the same line the extra's comment prescribes.
+        run: pip install --no-deps llama-index-readers-hubspot
+      - name: Unit tests
+        # -n auto: pytest-xdist comes from the dev extra; --dist loadfile is in pyproject's addopts.
+        run: pytest -n auto -rs --junit-xml=junit.xml
+      - name: Every test ran
+        # This job installs everything the suite can ask for, so a skip is a signal, not noise: an
+        # extra that quietly stopped resolving, or a `docker`/`npx`/`uvx` that went missing from the
+        # runner. Either way whole files stop running while the job still reports green, which is
+        # exactly how the SDK, reader and MCP tests came to be skipped here for so long.
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          skipped = [
+              f"{case.get('classname')}::{case.get('name')} — {s.get('message', '')}"
+              for case in ET.parse("junit.xml").getroot().iter("testcase")
+              for s in case.findall("skipped")
+          ]
+          if skipped:
+              raise SystemExit(
+                  "these tests were skipped, but this job installs every dependency they "
+                  "need:\n  " + "\n  ".join(skipped)
+              )
+          print("no tests were skipped")
+          PY
+
+      # The Linear example is the one service pytest cannot drive: `@linear/sdk` is the only client
+      # Linear publishes and there is no official Python one. It starts the mock through $PYTHON,
+      # so it runs on each matrix leg rather than once.
       - name: Install the Linear example's dependencies
         working-directory: examples/using-official-sdk/linear
         run: npm install

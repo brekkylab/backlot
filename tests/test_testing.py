@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 import sys
 import urllib.request
+
+import pytest
 
 import backlot
 from tests._helpers import complete
@@ -15,6 +18,18 @@ from backlot.testing import _terminate
 def _get(url: str) -> dict:
     with urllib.request.urlopen(url, timeout=10) as r:
         return json.load(r)
+
+
+def _routable_address() -> str | None:
+    """This machine's own address on the interface a packet would leave by, or None when the only
+    address it has is loopback (an offline or network-isolated host)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("192.0.2.1", 9))  # TEST-NET-1: a UDP connect() picks a route, sends nothing
+            addr = s.getsockname()[0]
+        except OSError:
+            return None
+    return None if addr.startswith("127.") else addr
 
 
 def test_mock_server_with_no_arguments_serves_the_hello_corpus():
@@ -111,6 +126,33 @@ def test_serve_or_connect_does_not_fetch_the_token_over_plain_http_to_a_non_loop
         assert m.token == testing_mod.TOKEN
 
     assert calls == [], f"token fetch must not run against a plain-http non-loopback host: {calls}"
+
+
+@pytest.mark.parametrize("host, answers_off_loopback", [("127.0.0.1", False), ("0.0.0.0", True)])
+def test_mock_server_binds_where_host_says(host, answers_off_loopback):
+    """``host=`` is what lets something that cannot reach this machine's loopback reach the mock:
+    a Docker container on Linux, where ``--add-host=…:host-gateway`` resolves to the bridge
+    address (tests/test_mcp.py runs the Atlassian MCP server that way).
+
+    Asserted by dialling this machine's own routable address rather than by reading the argument
+    back, since only a connection proves the bind happened — and the loopback case is asserted
+    alongside it, because a default that quietly answered everywhere would pass either way. A host
+    whose only address is loopback has nothing to dial, and there only the first half is checked."""
+    with backlot.mock_server(host=host) as m:
+        # The URL a caller gets is loopback either way — it is what a client on this machine
+        # should dial, not the set of addresses the server answers on.
+        assert m.base_url.startswith("http://127.0.0.1:"), m.base_url
+        assert _get(f"{m.base_url}/health")["status"] == "ok"
+
+        addr = _routable_address()
+        if addr is None:
+            return
+        port = int(m.base_url.rsplit(":", 1)[1])
+        if answers_off_loopback:
+            assert _get(f"http://{addr}:{port}/health")["status"] == "ok"
+        else:
+            with pytest.raises(OSError):
+                socket.create_connection((addr, port), timeout=5).close()
 
 
 def test_two_servers_get_different_ports():

@@ -71,11 +71,16 @@ def test_long_description_is_the_pypi_readme():
 
 
 def test_pypi_readme_has_no_relative_links():
-    """A relative target resolves against pypi.org, where it is a 404."""
+    """A relative target resolves against pypi.org, where it is a 404.
+
+    Every ``](target)`` is checked, not just the ones a leading ``[`` precedes: a badge is nested
+    (``[![alt](image)](href)``) and the pattern that matches its inner image cannot also reach the
+    outer href, so a linked badge is exactly where a relative target hides.
+    """
     text = (REPO_ROOT / "README.pypi.md").read_text()
     relative = [
         target
-        for target in re.findall(r"!?\[[^\]]*\]\(([^)\s]+)", text)
+        for target in re.findall(r"\]\(([^)\s]+)\)", text)
         if not target.startswith(("http://", "https://", "#"))
     ]
     assert not relative, f"README.pypi.md links break on PyPI: {relative}"

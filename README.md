@@ -10,14 +10,11 @@
 
 Backlot serves enterprise SaaS APIs — Slack, Gmail, Drive, GitHub, Jira, Notion, S3, and
 more — with the exact response shapes, pagination, auth and per-document ACLs the real ones have,
-over a corpus you supply. Change the base URL; nothing else changes.
+over a corpus you supply. **No real account. No token issuance. No external network.**
 
-![Connecting Slack to an app, two ways, side by side. On the left, the real Slack API: create a workspace, register an app, add a bot user, pick OAuth scopes, register a redirect URL, install to the workspace — then wait on an admin to approve it, with still zero API calls made. On the right, Backlot: pip install, backlot serve, and one changed base URL, after which a conversations.history response comes back with the same fields, pagination and per-document ACLs. A day gone, against seconds.](assets/demo.gif)
+![backlot demo](assets/demo.gif)
 
-<!-- figure: facades — assets/figures/facades-{light,dark}.svg
-     alt: Vendor-shaped facades on one localhost port, all backed by a single corpus. -->
-**Each facade answers like the real service. Behind all of them is one corpus you supplied — with
-no vendor account, OAuth app, rate limit or network in between.**
+**Each facade answers like the real service. Behind all of them is one corpus you supplied.**
 
 ## Quickstart
 
@@ -38,27 +35,26 @@ with backlot.mock_server() as m:                       # no arguments: the bundl
     print(slack.conversations_list()["channels"])
 ```
 
+> ⚠️ Backlot is under active development, and breaking changes could land without a deprecation notice.
+
 ## When you need this
 
 - 🔌 **Building or upgrading a connector** — crawl to exhaustion, then diff what you got against what you loaded
 - 🔒 **Testing ACL-scoped retrieval** — every document carries its own readers, so a leak is a failing test
-- ⚙️ **Running that suite in CI** — no accounts, no secrets, no network, no flakes
+- ⚙️ **Running that suite in CI** — no vendor accounts, no secrets, no external calls, no flakes
 - 🤖 **Evaluating RAG or agents** — the same answers every run; every served id is derived, never random
 - 🐛 **Reproducing a bug you cannot reach** — write the document that causes it and serve it in seconds
 
 ## Example Usages
 
-<!-- figure: clients — assets/figures/clients-{light,dark}.svg
-     alt: Official SDKs, MCP servers, LlamaIndex readers and mirage all reaching one localhost
-          port; only the base URL changes. -->
 **The only change from talking to the live service is the base URL.**
 
 | Point this at it | Runnable, one script per service |
 |---|---|
 | 📦 Official vendor SDKs | [`examples/using-official-sdk/`](examples/using-official-sdk/) |
-| 🔗 MCP servers, or the mock's own OpenAPI→ and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/) |
-| 🦙 LlamaIndex readers | [`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/) |
-| 🗂️ [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](examples/using-mirage/) |
+| 🔗 MCP servers | [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/) |
+| 🦙 [LlamaIndex](https://github.com/run-llama/llama_index) readers | [`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/) |
+| 🗂️ [Mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](examples/using-mirage/) |
 
 ## Documentation
 

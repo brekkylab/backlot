@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=77", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "backlot"
-version = "0.0.1"
+dynamic = ["version"]
 description = "A read-only mock of enterprise SaaS knowledge APIs, served over your own corpus with per-document ACLs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +19,9 @@ classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Framework :: FastAPI",
     "Topic :: Software Development :: Testing :: Mocking",
 ]
@@ -137,6 +140,9 @@ filterwarnings = [
     # llama-index reads a pydantic field API pydantic itself deprecated; nothing here to change.
     "ignore:Call to deprecated function \\(or staticmethod\\) extra_info:DeprecationWarning",
 ]
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0.dev0"
 
 [tool.setuptools.packages.find]
 include = ["backlot*"]

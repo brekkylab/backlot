@@ -104,10 +104,24 @@ def _ensure_cert_bundle() -> None:
         pass
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
+def _free_port(host: str = "127.0.0.1") -> int:
+    # Probed on the address the server will actually bind, in that address's own family: a port
+    # free on loopback can still be taken on another interface, and the server would then die on
+    # startup instead of serving.
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family) as s:
+        s.bind((host, 0))
         return s.getsockname()[1]
+
+
+def _dialable(host: str) -> str:
+    """The address a client on THIS machine dials to reach a server bound to ``host``.
+
+    A wildcard bind answers on every interface, loopback among them, and loopback is the one that
+    stays right whatever the machine's addresses are; any narrower bind is dialled where it is
+    bound, because that is the only place it answers. IPv6 comes back bracketed, as a URL needs."""
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    return f"[{host}]" if ":" in host else host
 
 
 def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
@@ -169,8 +183,15 @@ def _healthy(url: str, timeout: float = 10) -> bool:
 
 
 @contextlib.contextmanager
-def mock_server(records: list[dict] | None = None):
-    """Serve ``records`` (or the bundled hello-world corpus) on a free local port."""
+def mock_server(records: list[dict] | None = None, host: str = "127.0.0.1"):
+    """Serve ``records`` (or the bundled hello-world corpus) on a free local port.
+
+    ``host`` is the bind address. The default keeps the server off every interface but loopback;
+    pass ``"0.0.0.0"`` (or ``"::"``) to reach it from somewhere the loopback address does not
+    resolve to this machine — a Docker container on Linux, where ``--add-host=…:host-gateway``
+    resolves to the bridge address. A single interface's address works too. ``base_url`` follows:
+    loopback for a wildcard bind, otherwise the address bound, since that is where the server
+    answers."""
     with tempfile.TemporaryDirectory() as data_dir:
         if records is None:
             corpus = HELLO_CORPUS
@@ -194,8 +215,8 @@ def mock_server(records: list[dict] | None = None):
             check=True,
             stdout=subprocess.DEVNULL,
         )
-        port = _free_port()
-        base = f"http://127.0.0.1:{port}"
+        port = _free_port(host)
+        base = f"http://{_dialable(host)}:{port}"
         # Captured to a file rather than subprocess.PIPE: a live pipe nobody drains can fill and
         # deadlock the child, and we only need the contents if uvicorn dies before serving.
         log_path = Path(data_dir) / "server.log"
@@ -206,6 +227,8 @@ def mock_server(records: list[dict] | None = None):
                     "-m",
                     "backlot",
                     "serve",
+                    "--host",
+                    host,
                     "--port",
                     str(port),
                     "--log-level",
@@ -234,11 +257,16 @@ def mock_server(records: list[dict] | None = None):
 
 
 @contextlib.contextmanager
-def serve_or_connect(records: list[dict] | None = None, url: str | None = None):
+def serve_or_connect(
+    records: list[dict] | None = None, url: str | None = None, host: str = "127.0.0.1"
+):
     """Use the server at ``url`` if reachable, else spin one up locally on ``records``.
 
     ``url`` is used only when given — this does not read ``sys.argv``. Pass
-    ``url=backlot.url_from_argv()`` to honour a ``--url`` flag the way the bundled examples do."""
+    ``url=backlot.url_from_argv()`` to honour a ``--url`` flag the way the bundled examples do.
+
+    ``host`` is ``mock_server``'s bind address, and so applies only when this falls back to a
+    local server; a reachable ``url`` is already bound however its own operator bound it."""
     url = (url or "").strip()
     if url:
         _ensure_cert_bundle()
@@ -257,7 +285,7 @@ def serve_or_connect(records: list[dict] | None = None, url: str | None = None):
             yield MockServer(base_url=url.rstrip("/"), token=token, data_dir=None)
             return
         print(f"--url {url!r} is not reachable — falling back to a local server")
-    with mock_server(records) as m:
+    with mock_server(records, host=host) as m:
         yield m
 
 

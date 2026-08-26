@@ -11,5 +11,7 @@ labels: ''
 
 **What you expected instead**
 
-**Where you ran it** — Backlot version or commit, Python version, OS, and the extras you have
-installed if the failure is in a surface that needs them (`examples`, `mcp`, `dev`).
+**Where you ran it** — Backlot version or commit, Python version, OS. If the failure is in a
+surface behind an optional dependency, say which you had installed (`examples`, `mcp`,
+`llamaindex`, `mirage`) and whether Docker, `npx` and `uvx` were on PATH — CONTRIBUTING.md maps
+each to the tests it gates.

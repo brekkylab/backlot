@@ -53,17 +53,34 @@ Two words, and they are not interchangeable:
 ## Running tests and lint
 
 ```bash
-pytest                    # unit + HTTP endpoint tests; needs no data
+pytest                    # unit + HTTP endpoint tests; needs no data and no network
+pytest -rs                # the same, and it names every test that skipped, with the reason
 ruff check . && ruff format --check .    # both gate CI; ruff comes from the `dev` extra
 ```
 
-- **Unit + endpoint tests** run with no data and no network — these must pass for every change.
-- `tests/test_sdk.py` needs the `.[examples]` extra and `tests/test_mcp.py` needs Docker +
-  the `.[mcp]` extra; both spin up their own server and **self-skip** when their prerequisites
-  are absent. Run them when touching the relevant surface.
+Everything that runs on a `dev` install must pass for every change. Tests that drive something
+outside the package **self-skip** when what they need is absent, so a `dev`-only run is quietly
+narrower than the suite — three of those gates sit at module level and take the whole file with
+them:
 
-CI runs `pytest -q` on every push to `main` and every pull request (see
-`.github/workflows/ci.yml`).
+| Needs | Sits out without it |
+|---|---|
+| `.[examples]` — the vendor SDKs | all of `tests/test_sdk.py` and all of `tests/test_s3.py`, plus the `googleapiclient` tests in `tests/test_integrations.py` |
+| `.[llamaindex]` — the official readers | all of `tests/test_llamaindex.py`, plus the reader tests in `tests/test_integrations.py` |
+| `.[mcp]` | all of `tests/test_mcp.py` |
+| `.[mirage]` | the shim tests in `tests/test_integrations.py` |
+| Docker, `npx`, `uvx` | one `tests/test_mcp.py` test each — the Atlassian, Notion and AWS MCP servers |
+| `git` | the tests in `tests/test_github.py` that build a real repo |
+
+Install what covers the surface you touched, or all of it at once, and let `-rs` confirm nothing
+you meant to run skipped:
+
+```bash
+uv pip install -e ".[dev,examples,mcp,llamaindex,mirage]"
+```
+
+CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request
+(see `.github/workflows/ci.yml`).
 
 ## Pull requests
 

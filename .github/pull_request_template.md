@@ -11,10 +11,15 @@
 
 ## Verification
 
-<!-- Paste the counts, don't summarize them. `pytest -n auto` on a `.[dev]` install, plus the
-     extras covering what you touched: `.[examples]` for tests/test_sdk.py, `.[mcp]` + Docker for
-     tests/test_mcp.py. A plain run skips those silently. Also
-     `ruff check . && ruff format --check .`, which gates CI. -->
+<!-- Fill in the lines below rather than summarizing them: a skip count means nothing without the
+     install that produced it. `.[dev]` alone leaves whole test files sitting out (all of
+     `tests/test_s3.py`, `tests/test_sdk.py`, `tests/test_mcp.py`, `tests/test_llamaindex.py`,
+     and the reader, Google and mirage tests in `tests/test_integrations.py`), so install what
+     covers the surface you touched — CONTRIBUTING.md maps each extra to what it gates. -->
+
+- **Tests** — `pytest` on a `.[…]` install:
+- **Optional surfaces that ran rather than skipped** —
+- **Lint** — `ruff check . && ruff format --check .`:
 
 - [ ] A test fails without this change
 - [ ] A new endpoint serving corpus content is ACL-scoped, proved for both an admin and a scoped token

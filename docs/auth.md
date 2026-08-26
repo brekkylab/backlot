@@ -74,7 +74,29 @@ curl -s localhost:8000/slack/api/auth.test \
 
 The scheme is required: a bare token answers `not_authed`. As with the real Web API, an auth failure
 is **HTTP 200 with `ok: false`** — `not_authed` when the header is missing or unscheme'd,
-`invalid_auth` when the token resolves to nobody.
+`invalid_auth` when the token resolves to nobody. The token is also accepted as a `token` query
+parameter or form field, which is where Slack's own clients put it.
+
+**It is a user token, not a bot token.** Slack has two kinds and they are not interchangeable; a
+Backlot token behaves as the first:
+
+| | Real Slack | Backlot |
+|---|---|---|
+| User token `xoxp-…` | Acts as a person — sees every channel that person is in | What a `usr-…` token is |
+| Bot token `xoxb-…` | Acts as the app — sees only channels the bot was **invited** to, and carries a `bot_id` | Not modelled |
+
+Two consequences worth knowing before you trust a passing test here:
+
+- **`search.messages`, `search.all` and `search.files` are user-token-only in real Slack.** A bot
+  token calling them gets `not_allowed_token_type`. Backlot serves all three, so search working here
+  says nothing about whether it will work for a connector that authenticates as a bot in production.
+- **There is no "invite the bot to the channel" step.** Backlot scopes by per-document readers — the
+  user model — so a caller reaches every channel their ACL allows. A bot in production starts with
+  access to nothing until it is invited, which is a failure mode this mock cannot reproduce.
+
+So if the connector under test uses a bot token in production, Backlot is the more permissive of the
+two on both counts. `auth.test` reflects the user shape it emulates: `user`, `user_id`, `team`,
+`team_id`, and no `bot_id`.
 
 ### Gmail, Drive, Docs, Sheets, Slides — `Bearer`
 

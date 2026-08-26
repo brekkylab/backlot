@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the machine-maintained block of docs/endpoints.md.
+"""Regenerate the machine-maintained block of docs/supported-sources.md.
 
     python scripts/gen_docs.py            # rewrite the block
     python scripts/gen_docs.py --check    # exit 1 if stale, or if SOURCES is out of step
@@ -33,7 +33,7 @@ from backlot.main import app
 from backlot.validation import SERVICE_SCHEMAS
 
 REPO = Path(__file__).resolve().parent.parent
-ENDPOINTS_DOC = REPO / "docs" / "endpoints.md"
+SOURCES_DOC = REPO / "docs" / "supported-sources.md"
 
 # source_type -> (display name, URL prefixes). The only place this mapping exists.
 SOURCES: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -131,14 +131,16 @@ def replace_block(text: str, name: str, body: str) -> str:
     start, end = _START.format(name=name), _END.format(name=name)
     pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
     if not pattern.search(text):
-        raise SystemExit(f"no {name!r} marker pair in {ENDPOINTS_DOC}")
+        raise SystemExit(f"no {name!r} marker pair in {SOURCES_DOC}")
     # A lambda, not a replacement string: the body is markdown full of backslashes and pipes that
     # re.sub would otherwise read as group references.
     return pattern.sub(lambda _: f"{start}\n{body}\n{end}", text)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Regenerate docs/endpoints.md's generated block.")
+    parser = argparse.ArgumentParser(
+        description="Regenerate docs/supported-sources.md's generated block."
+    )
     parser.add_argument(
         "--check", action="store_true", help="exit 1 if stale or invalid; write nothing"
     )
@@ -150,15 +152,18 @@ def main() -> int:
             print(f"  - {problem}", file=sys.stderr)
         return 1
 
-    current = ENDPOINTS_DOC.read_text()
+    current = SOURCES_DOC.read_text()
     updated = replace_block(current, "sources", render_sources())
     if args.check:
         if current != updated:
-            print("docs/endpoints.md is stale — run: python scripts/gen_docs.py", file=sys.stderr)
+            print(
+                "docs/supported-sources.md is stale — run: python scripts/gen_docs.py",
+                file=sys.stderr,
+            )
             return 1
         return 0
-    ENDPOINTS_DOC.write_text(updated)
-    print(f"wrote {ENDPOINTS_DOC.relative_to(REPO)}")
+    SOURCES_DOC.write_text(updated)
+    print(f"wrote {SOURCES_DOC.relative_to(REPO)}")
     return 0
 
 

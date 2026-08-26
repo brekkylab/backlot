@@ -6,7 +6,7 @@ Each service authenticates its own way, and the mock expects what the real one d
 for most, HTTP Basic for Jira/Confluence, a **bare** `Authorization` value for Linear's personal API
 keys, SigV4 for S3, and Google's OAuth token exchange for a connector carrying a client config.
 
-You construct none of it. Two mock-only endpoints hand out every credential the corpus generated —
+You construct none of it. Two of Backlot's own endpoints hand out every credential the corpus generated —
 an admin/service token that bypasses the ACL (use it to crawl), plus one identity per person, each
 seeing only what their own ACL permits:
 

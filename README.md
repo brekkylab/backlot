@@ -64,7 +64,7 @@ with backlot.mock_server() as m:                       # no arguments: the bundl
 
 | | |
 |---|---|
-| Every endpoint of every service | [docs/endpoints.md](docs/endpoints.md) |
+| Every source Backlot serves, and every endpoint of each | [docs/supported-sources.md](docs/supported-sources.md) |
 | Building a corpus, and public datasets | [docs/corpus.md](docs/corpus.md) |
 | Auth schemes and mock credentials | [docs/auth.md](docs/auth.md) |
 | Every `BACKLOT_*` setting | [docs/configuration.md](docs/configuration.md) |

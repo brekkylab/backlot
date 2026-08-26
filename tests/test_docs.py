@@ -61,7 +61,7 @@ def test_every_relative_link_resolves():
 _README_MAX_LINES = 130
 
 # "eleven sources", "12 SaaS APIs" — a count goes stale the next time a source is added, and the
-# generated inventory in docs/endpoints.md already carries the real one.
+# generated inventory in docs/supported-sources.md already carries the real one.
 _COUNT_RE = re.compile(
     r"\b(?:eleven|twelve|thirteen|fourteen|fifteen|\d{1,2})\s+"
     r"(?:enterprise\s+)?(?:SaaS\s+)?(?:sources|services|APIs|integrations|vendors)\b",
@@ -81,12 +81,12 @@ def test_readme_states_no_source_count():
     offenders = _COUNT_RE.findall((REPO / "README.md").read_text())
     assert not offenders, (
         f"README.md states a source count ({offenders}) — name a few sources and say "
-        '"and more"; the full list is generated into docs/endpoints.md'
+        '"and more"; the full list is generated into docs/supported-sources.md'
     )
 
 
 def test_generated_docs_are_current():
-    """`scripts/gen_docs.py --check` is the single gate on docs/endpoints.md going stale.
+    """`scripts/gen_docs.py --check` is the single gate on docs/supported-sources.md going stale.
 
     Run as a subprocess rather than imported: scripts/ is not a package (it is excluded from the
     wheel by [tool.setuptools.packages.find]), and reaching it would mean bending sys.path to pull
@@ -108,9 +108,9 @@ def test_every_source_type_is_documented():
     that silently omit it start lying. The endpoint reference is the one place the full list lives,
     so it is the one place that has to stay honest.
     """
-    doc = (REPO / "docs" / "endpoints.md").read_text()
+    doc = (REPO / "docs" / "supported-sources.md").read_text()
     missing = [st for st in sorted(SERVICE_SCHEMAS) if f"`{st}`" not in doc]
-    assert not missing, f"source_types with no row in docs/endpoints.md: {missing}"
+    assert not missing, f"source_types with no row in docs/supported-sources.md: {missing}"
 
 
 def test_documented_graphql_paths_are_mounted(client):
@@ -121,7 +121,7 @@ def test_documented_graphql_paths_are_mounted(client):
     back out of the generated table and call them: a documented path that 404s is a lie, whichever
     side of it moved.
     """
-    doc = (REPO / "docs" / "endpoints.md").read_text()
+    doc = (REPO / "docs" / "supported-sources.md").read_text()
     paths = re.findall(r"^\| `\w+` \|[^|]*\| `(/\S*/graphql)` \|", doc, re.M)
     assert paths, "the generated table lists no GraphQL path — did the table's shape change?"
 

@@ -101,8 +101,8 @@ up. To get it green:
 1. add the source to `SOURCES` in [`scripts/gen_docs.py`](scripts/gen_docs.py) — display name and
    URL prefixes;
 2. run `python scripts/gen_docs.py` to rewrite the generated table;
-3. write its row in the per-service table in [`docs/endpoints.md`](docs/endpoints.md), where the
-   fidelity notes live.
+3. add its subsection to [`docs/supported-sources.md`](docs/supported-sources.md) — a table of the
+   endpoints it serves, and the fidelity notes under it.
 
 The `README.md` needs no change — it names no source count and lists no sources, by design, so it
 does not go stale when this list grows.

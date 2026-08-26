@@ -77,7 +77,10 @@ def build_params(base_url: str, access_key: str, secret_key: str) -> StdioServer
     guard is safe here; against real AWS you'd weigh read-only vs. being able to read object bodies."""
     return StdioServerParameters(
         command="uvx",
-        args=["awslabs.aws-api-mcp-server@latest"],
+        # Pinned rather than `@latest`: `@latest` resolves against the index every run and will not
+        # reuse what uvx already has, so a release turns the next run into a download that the MCP
+        # client's `initialize` can outlive (see tests/test_mcp.py, which pins the same version).
+        args=["awslabs.aws-api-mcp-server==1.5.1"],
         env={
             "AWS_ENDPOINT_URL": f"{base_url.rstrip('/')}/s3",
             "AWS_ACCESS_KEY_ID": access_key,

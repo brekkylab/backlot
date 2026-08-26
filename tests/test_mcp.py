@@ -196,7 +196,11 @@ def _s3_params(base: str, token: str):
 
     return StdioServerParameters(
         command="uvx",
-        args=["awslabs.aws-api-mcp-server@latest"],
+        # Pinned rather than `@latest`, which declines a cached version and resolves against the
+        # index every run: the day awslabs publishes, every machine fetches at once. A fetch racing
+        # the client's `initialize` ends as `McpError('Connection closed')` — measured at 49.6s
+        # against 2.3s for a server uvx already has. CI fetches this same pin before pytest.
+        args=["awslabs.aws-api-mcp-server==1.5.1"],
         env={
             "AWS_ENDPOINT_URL": f"{base.rstrip('/')}/s3",
             "AWS_ACCESS_KEY_ID": synth.s3_access_key_id(token),

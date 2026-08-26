@@ -196,11 +196,12 @@ def _s3_params(base: str, token: str):
 
     return StdioServerParameters(
         command="uvx",
-        # Pinned rather than `@latest`, which declines a cached version and resolves against the
-        # index every run: the day awslabs publishes, every machine fetches at once. A fetch racing
-        # the client's `initialize` ends as `McpError('Connection closed')` — measured at 49.6s
-        # against 2.3s for a server uvx already has. CI fetches this same pin before pytest.
-        args=["awslabs.aws-api-mcp-server==1.5.1"],
+        # `@latest`, so this keeps proving the mock against the server awslabs ships today rather
+        # than one we froze. The cost is that a version uvx has not got yet is downloaded here,
+        # inside the window the client's `initialize` is waiting on, which ends as
+        # `McpError('Connection closed')` — 49.6s to fail, against 2.3s once uvx has it. CI fetches
+        # the server in a step above pytest so that download is never on this clock.
+        args=["awslabs.aws-api-mcp-server@latest"],
         env={
             "AWS_ENDPOINT_URL": f"{base.rstrip('/')}/s3",
             "AWS_ACCESS_KEY_ID": synth.s3_access_key_id(token),

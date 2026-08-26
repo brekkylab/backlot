@@ -63,7 +63,7 @@ identity:
 | Jira, Confluence | HTTP Basic with the token as the **password**, or a plain `Bearer` |
 | Linear | A **bare** `Authorization: <token>`, or `Bearer` |
 | Amazon S3 | AWS SigV4, signed with the identity's key pair |
-| A Google client with a config | Exchange it at `POST /oauth2/token` |
+| A Google client with a config | Exchange it at `POST /oauth2/token` — see the Google section |
 
 ### Slack — `Bearer`
 
@@ -109,6 +109,26 @@ curl -s "localhost:8000/drive/v3/files?fields=files(id,name)" \
 ```
 
 `me` works as the mailbox id, resolving to whoever the token is.
+
+#### A client carrying a config, not a token — `POST /oauth2/token`
+
+For a connector that configures with an OAuth client or a service account rather than a raw token,
+`token_uri` from `/_mock/credentials` points back at the mock, so the client's own refresh lands
+here and resolves to the same ACL:
+
+```bash
+curl -s localhost:8000/oauth2/token \
+  -d grant_type=refresh_token \
+  -d refresh_token=usr-29b84da5703116c2a832 \
+  -d client_id=e8ae7a3acfbfffb01ddab8df6961c15d.apps.googleusercontent.com \
+  -d client_secret=GOCSPX-…
+```
+
+A user's refresh token **is** their bearer token, so the exchange hands the same value straight back
+as the `access_token`. Expiry is cosmetic — a re-refresh returns the same token, so a long crawl
+never breaks. A signed service-account assertion works too, with its `sub` claim selecting the
+impersonated user; a bare service account with no `sub` resolves to the admin identity. See
+[supported-sources.md](supported-sources.md#oauth-and-batch).
 
 ### GitHub — `Bearer` or `token`
 
@@ -206,26 +226,6 @@ formality: these keys are **AWS-shaped on purpose** — `AKIA` + 16, and a 40-ch
 because botocore validates the shape before it signs. Secret scanners cannot tell them from live
 credentials, so GitHub push protection rejects a commit containing one. Keep them out of anything
 you commit, yours included.
-
-### A Google client carrying a config — `POST /oauth2/token`
-
-For a connector that configures with an OAuth client or a service account rather than a raw token,
-`token_uri` from `/_mock/credentials` points back at the mock, so the client's own refresh lands
-here and resolves to the same ACL:
-
-```bash
-curl -s localhost:8000/oauth2/token \
-  -d grant_type=refresh_token \
-  -d refresh_token=usr-29b84da5703116c2a832 \
-  -d client_id=e8ae7a3acfbfffb01ddab8df6961c15d.apps.googleusercontent.com \
-  -d client_secret=GOCSPX-…
-```
-
-A user's refresh token **is** their bearer token, so the exchange hands the same value straight back
-as the `access_token`. Expiry is cosmetic — a re-refresh returns the same token, so a long crawl
-never breaks. A signed service-account assertion works too, with its `sub` claim selecting the
-impersonated user; a bare service account with no `sub` resolves to the admin identity. See
-[supported-sources.md](supported-sources.md#oauth-and-batch).
 
 ## Per-service, runnable
 

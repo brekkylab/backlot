@@ -18,6 +18,7 @@ stay small and odd in ways neither of those may be, which is why it is not one o
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -969,12 +970,14 @@ def live_server(sample_settings):
     ``backlot.importer.byo``), so the two builds agree on everything the tests read from
     ``settings`` (``admin_token``, ``tokens_path``) even though they're different directories.
 
-    Bound past loopback on Linux only. ``test_mcp.py`` runs the Atlassian MCP server in Docker and
-    reaches back with ``--add-host=…:host-gateway``, which on Linux is the bridge address — a
-    loopback-only server never answers there. Docker Desktop forwards it to the host's loopback
-    instead, so on macOS the wider bind would buy nothing and cost every contributor the firewall
-    prompt that opening a port to the network raises.
+    Bound past loopback only where something outside this machine's loopback actually dials it:
+    ``test_mcp.py``'s Atlassian MCP server, which runs in Docker and reaches back with
+    ``--add-host=…:host-gateway``. On Linux that is the bridge address, where a loopback-only
+    server never answers; Docker Desktop forwards it to the host's own loopback instead, so on
+    macOS the wider bind would buy nothing and cost every contributor the firewall prompt that
+    opening a port to the network raises. With no ``docker`` at all, that test does not run and
+    nothing dials the wider bind either — the same predicate ``_docker_available`` opens with.
     """
-    host = "0.0.0.0" if sys.platform == "linux" else "127.0.0.1"
+    host = "0.0.0.0" if sys.platform == "linux" and shutil.which("docker") else "127.0.0.1"
     with backlot.mock_server(SAMPLE, host=host) as m:
         yield m.base_url, sample_settings

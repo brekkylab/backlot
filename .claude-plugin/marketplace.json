@@ -1,0 +1,14 @@
+{
+  "name": "brekkylab",
+  "owner": {
+    "name": "brekkylab",
+    "url": "https://github.com/brekkylab"
+  },
+  "plugins": [
+    {
+      "name": "backlot",
+      "source": "./",
+      "description": "Emulate an enterprise SaaS knowledge source over a corpus you supply, then wire a real client to it."
+    }
+  ]
+}

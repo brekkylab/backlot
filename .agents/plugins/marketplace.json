@@ -1,0 +1,19 @@
+{
+  "name": "brekkylab",
+  "interface": {
+    "displayName": "Backlot"
+  },
+  "plugins": [
+    {
+      "name": "backlot",
+      "source": {
+        "source": "url",
+        "url": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

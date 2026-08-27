@@ -1,10 +1,10 @@
 # Backlot
 
-[![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml) [![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R) [![X](https://img.shields.io/badge/Tweet-000000?logo=x&logoColor=white)](https://x.com/brekkylab)
+[![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml) [![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R) [![X](https://img.shields.io/badge/Follow-000000?logo=x&logoColor=white)](https://x.com/brekkylab)
 
 **Serve your own enterprise playground**
 
-Backlot is a mock server for enterprise SaaS APIs. Test your Slack, Gmail, Drive and eight other integrations.
+Backlot is a mock server for enterprise SaaS APIs. Test your Slack, Gmail, Drive and the rest of your integrations.
 
 **No account. No OAuth. No network.**
 
@@ -41,9 +41,11 @@ The only change from talking to the live service is the base URL.
 
 ## What it serves
 
-Every source on one local port, each behind the path prefix its own SDK expects. Every row links a runnable script that drives it the way the vendor documents — the official SDK where one exists.
+Every source on one local port, each behind the path prefix its own SDK expects.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="assets/figures/architecture.png"><img alt="Your code on the left, calling the Slack and GitHub SDKs with only their base URL changed. In the middle, one local server on 127.0.0.1:8000, listing the services it answers as and the path prefix each is served under. On the right, the single SQLite corpus behind all of them." src="assets/figures/architecture-light.png"></picture>
+
+Every row links a runnable example that drives that service the way the vendor documents it, using the official SDK where one exists.
 
 | Service | Base path | Example |
 |---|---|---|
@@ -59,17 +61,15 @@ Every source on one local port, each behind the path prefix its own SDK expects.
 | Fireflies | `/fireflies/graphql` | [`fireflies.py`](examples/using-official-sdk/fireflies.py) |
 | Amazon S3 | `/s3` | [`s3.py`](examples/using-official-sdk/s3.py) |
 
-Every endpoint of every service is listed in [docs/supported-sources.md](docs/supported-sources.md).
-
 **Next up:** Google Chat, Microsoft Graph, Box, Dropbox, DocuSign.
 
-The full list lives in [#89](https://github.com/brekkylab/backlot/issues/89) — ask there for the one you need.
+The full roadmap lives in [#89](https://github.com/brekkylab/backlot/issues/89) — ask there for the one you need.
 
 ## When you need this
 
 - 🔌 **Building or upgrading an integration**. The cursors, page shapes and error bodies the real API returns, without an account to get them from.
-- 🧪 **Testing it, and keeping it tested**. One fixture on your laptop and in CI, with no secrets and nothing to flake. Every user gets a token, so you can also assert that one caller's documents never reach another.
-- 🛠️ **Building for yourself or your team**. A Slack-shaped, Drive-shaped world to develop against before anyone hands you production credentials.
+- 🧪 **Testing it, and keeping it tested**. One fixture on your laptop and in CI, with no secrets and nothing to flake. Every user in the corpus gets a token, so you can also assert that one caller's documents never reach another.
+- 🛠️ **Building before you have credentials**. A Slack-shaped, Drive-shaped world to develop against before anyone hands you production credentials.
 - 🤖 **Evaluating a RAG pipeline or an agent**. The same corpus, the same ids and the same answers on every run, so a score that moves means your code moved.
 - 🐛 **Reproducing a bug in data you can't see**. A document inside someone else's workspace breaks your parser. Write one shaped like it, serve it, and keep the failing test.
 
@@ -78,7 +78,7 @@ The full list lives in [#89](https://github.com/brekkylab/backlot/issues/89) —
 | Point this at it | Runnable |
 |---|---|
 | 📦 Official vendor SDKs, one script per service | [`examples/using-official-sdk/`](examples/using-official-sdk/) |
-| 🔗 MCP servers, or the mock's own OpenAPI→ and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/) |
+| 🔗 MCP servers, or Backlot's own OpenAPI→MCP and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/) |
 | 🦙 Load it as documents, with the official [LlamaIndex](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/) readers | [`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/) |
 | 🗂️ Read it with `ls`, `cat` and `grep`, over [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](examples/using-mirage/) |
 | 📥 Your own corpus, from a JSONL file | [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus/) |
@@ -86,7 +86,7 @@ The full list lives in [#89](https://github.com/brekkylab/backlot/issues/89) —
 <details><summary>Or drop it straight into your test suite — <code>mock_server()</code> as a pytest fixture</summary>
 
 ```python
-# conftest.py — mock_server() takes a free port and tears itself down
+# conftest.py — mock_server() picks a free port and tears itself down
 import backlot
 import pytest
 

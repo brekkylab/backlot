@@ -31,7 +31,7 @@ export const F = {
 
 /** 30fps: the timeline below is written in frames, so keep these in sync with Root.tsx. */
 export const FPS = 30;
-export const DURATION = 690;
+export const DURATION = 600;
 
 /** Named beats, so the composition reads as a storyboard rather than a pile of magic numbers. */
 export const T = {
@@ -68,11 +68,11 @@ export const T = {
   // The generalising act. The lanes slide left — Slack's column off the edge, Backlot's into its
   // place — and then the surviving column repeats itself for one source after another. Showing it
   // beats asserting it: every card below is a real response this server returned.
-  slide: 372,
+  slide: 336,
   // 24 frames each: short enough to fit eight sources, and the frame around them never moves,
   // so the eye only has to track the strings that changed.
-  cycle: [392, 416, 440, 464, 488, 512, 536, 560],
+  cycle: [356, 378, 400, 422, 444, 466, 488, 510],
   // The closing card waits: the last tick lands at 560 and the checklist is only complete then, so
   // cutting away 30 frames later gave the finished list no time to be read as finished.
-  endcard: 636,
+  endcard: 556,
 } as const;

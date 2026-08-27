@@ -41,12 +41,9 @@ The only change from talking to the live service is the base URL.
 
 ## What it serves
 
-Eleven sources on one local port, each behind the path prefix its own SDK expects. Every row links a runnable script that drives it the way the vendor documents — the official SDK where one exists.
+Every source on one local port, each behind the path prefix its own SDK expects. Every row links a runnable script that drives it the way the vendor documents — the official SDK where one exists.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/figures/architecture.png">
-  <img alt="Your code on the left, calling the Slack and GitHub SDKs with only their base URL changed. In the middle, one local server on 127.0.0.1:8000, listing the eleven services it answers as and the path prefix each is served under. On the right, the single SQLite corpus behind all of them." src="assets/figures/architecture-light.png">
-</picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="assets/figures/architecture.png"><img alt="Your code on the left, calling the Slack and GitHub SDKs with only their base URL changed. In the middle, one local server on 127.0.0.1:8000, listing the services it answers as and the path prefix each is served under. On the right, the single SQLite corpus behind all of them." src="assets/figures/architecture-light.png"></picture>
 
 | Service | Base path | Example |
 |---|---|---|
@@ -64,7 +61,9 @@ Eleven sources on one local port, each behind the path prefix its own SDK expect
 
 Every endpoint of every service is listed in [docs/supported-sources.md](docs/supported-sources.md).
 
-**Next up:** Google Chat, Microsoft Graph, Box, Dropbox, DocuSign. The full list lives in [#89](https://github.com/brekkylab/backlot/issues/89) — ask there for the one you need.
+**Next up:** Google Chat, Microsoft Graph, Box, Dropbox, DocuSign.
+
+The full list lives in [#89](https://github.com/brekkylab/backlot/issues/89) — ask there for the one you need.
 
 ## When you need this
 
@@ -81,17 +80,13 @@ Every endpoint of every service is listed in [docs/supported-sources.md](docs/su
 | 📦 Official vendor SDKs, one script per service | [`examples/using-official-sdk/`](examples/using-official-sdk/) |
 | 🔗 MCP servers, or the mock's own OpenAPI→ and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/) |
 | 🦙 Load it as documents, with the official [LlamaIndex](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/) readers | [`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/) |
-| 🐍 Read it with `pandas`, `pyarrow` or `dask`, through [fsspec](https://filesystem-spec.readthedocs.io/) | [`examples/using-fsspec/`](examples/using-fsspec/) |
 | 🗂️ Read it with `ls`, `cat` and `grep`, over [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](examples/using-mirage/) |
 | 📥 Your own corpus, from a JSONL file | [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus/) |
 
-<details>
-<summary>Or drop it straight into your test suite — <code>mock_server()</code> as a pytest fixture</summary>
-
-`mock_server()` takes a free port and tears itself down, which makes it an ordinary fixture:
+<details><summary>Or drop it straight into your test suite — <code>mock_server()</code> as a pytest fixture</summary>
 
 ```python
-# conftest.py
+# conftest.py — mock_server() takes a free port and tears itself down
 import backlot
 import pytest
 
@@ -99,9 +94,9 @@ import pytest
 def enterprise():
     with backlot.mock_server() as m:
         yield m
-```
 
-```python
+
+# test_slack.py
 from slack_sdk import WebClient
 
 def test_history_paginates(enterprise):

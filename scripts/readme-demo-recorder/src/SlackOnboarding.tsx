@@ -245,7 +245,7 @@ const BrandCard: React.FC<{
         opacity: taglineOpacity,
       }}
     >
-      Bring your own enterprise. Serve it like the real thing.
+      Serve your own enterprise playground
     </div>
     <div
       style={{

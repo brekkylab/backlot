@@ -6,7 +6,7 @@
 [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R)
 [![X](https://img.shields.io/badge/Tweet-000000?logo=x&logoColor=white)](https://x.com/brekkylab)
 
-**Bring your own enterprise. Serve it like the real thing.**
+**Serve your own enterprise playground**
 
 Backlot serves enterprise SaaS APIs — Slack, Gmail, Drive, GitHub, Jira, Notion, S3, and
 more — with the exact response shapes, pagination, auth and per-document ACLs the real ones have,

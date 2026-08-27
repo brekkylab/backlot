@@ -220,10 +220,15 @@ s3 = boto3.client(
     aws_access_key_id=ava["s3_access_key_id"],
     aws_secret_access_key=ava["s3_secret_access_key"],
     region_name="us-east-1",                       # any region; it is read back out of the scope
-    config=Config(signature_version="s3v4"),
+    config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
 )
 print([b["Name"] for b in s3.list_buckets()["Buckets"]])
 ```
+
+**Path addressing is not optional.** The mock serves `/s3/{bucket}/{key}`, so virtual-hosted
+addressing — which puts the bucket in the host, `acme-artifacts.localhost:8000` — reaches nothing.
+boto3's default picks path for this endpoint today, so the setting looks redundant right up until
+someone carries a virtual-hosted config over from real S3.
 
 The pair is read at runtime rather than pasted here, and that is worth knowing rather than a
 formality: these keys are **AWS-shaped on purpose** — `AKIA` + 16, and a 40-character secret —

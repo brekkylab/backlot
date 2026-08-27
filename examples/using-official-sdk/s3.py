@@ -84,6 +84,11 @@ if __name__ == "__main__":
             aws_access_key_id=ak,
             aws_secret_access_key=sk,
             region_name="us-east-1",
+            # Path style, explicitly. The mock serves /s3/{bucket}/{key}, and virtual-hosted
+            # addressing puts the bucket in the HOST — acme-artifacts.localhost:8000 — which
+            # resolves to nothing. boto3's default happens to pick path for this endpoint today, so
+            # deleting this line looks harmless and then breaks for anyone who sets virtual out of
+            # habit from real S3.
             config=Config(s3={"addressing_style": "path"}),
         )
 

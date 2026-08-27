@@ -245,7 +245,9 @@ compiled into SQL, and full introspection.
 
 ### Amazon S3 — `/s3`
 
-Addressed as S3 operations rather than paths, which is how the AWS SDKs and CLI reach them.
+Addressed as S3 operations rather than paths, which is how the AWS SDKs and CLI reach them. Point a
+client at `/s3` with **path addressing** — the bucket belongs in the path, not the host, so a
+virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothing.
 
 | Operation | Notes |
 |---|---|

@@ -2,8 +2,7 @@
 
 [← README](../README.md)
 
-Every source Backlot serves and every endpoint of each. All of them are **read-only** — writes are
-out of scope.
+Every source Backlot serves and every endpoint of each.
 
 Endpoints are written relative to their service's prefix, in the spelling the vendor's own docs use.
 Everything is `GET` unless a row says otherwise.

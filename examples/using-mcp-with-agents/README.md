@@ -147,12 +147,12 @@ endpoint override, so the example just sets:
 - `AWS_REGION=us-east-1` — any region works (the mock's verifier reads the region back out of the
   client's own credential scope); this just has to be *some* valid region.
 
-We intentionally do **not** set `READ_OPERATIONS_ONLY`. It sounds right for a read-only mock, but
-it blocks `aws s3 cp s3://<bucket>/<key> -` — the one command that streams an object's **body**
-back to the model. (A read-only `s3api get-object` writes the bytes to a sandboxed file and returns
-only metadata; `… /dev/stdout` is path-blocked/deadlocks.) So with it on, the agent can *list*
-objects but never *read* them, and it thrashes. The mock has no write endpoints, so dropping the
-guard is safe here. The example's question therefore tells the agent to read via `s3 cp … -`.
+We intentionally do **not** set `READ_OPERATIONS_ONLY`. It sounds like the safe default, but it
+blocks `aws s3 cp s3://<bucket>/<key> -` — the one command that streams an object's **body** back to
+the model. (Under that flag `s3api get-object` writes the bytes to a sandboxed file and returns only
+metadata; `… /dev/stdout` is path-blocked/deadlocks.) So with it on, the agent can *list* objects but
+never *read* them, and it thrashes. The `/s3` surface it reaches answers `GET` and `HEAD` and nothing
+else, so dropping the guard is safe here. The example's question therefore tells the agent to read via `s3 cp … -`.
 
 Note this server is a **broad AWS-CLI wrapper**, not S3-specific — under the hood the agent runs
 `aws s3api …` commands (e.g. `list-objects-v2`, `get-object`) via the server's `call_aws` tool.

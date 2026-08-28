@@ -16,7 +16,7 @@ Why would you need that? Because right now:
 - **Then you do it again**. Gmail. Jira. Drive. Every source starts over from nothing.
 - **So you mock it, and the test passes**. It passes because you wrote both sides of it. It always passes.
 
-Backlot is the side you didn't write. It fails where the real one fails.
+Backlot is the side you didn't write. It behaves exactly like the real one.
 
 ## Quickstart
 

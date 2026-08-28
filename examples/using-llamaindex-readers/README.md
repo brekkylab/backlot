@@ -23,7 +23,7 @@ redirect them.
 | Notion | `NotionPageReader` | `patch_notion_at()` (rebinds hardcoded URL constants) |
 | Gmail | `GmailReader` | `point_gmail_at()` (wraps `googleapiclient.discovery.build`) + patches `_get_credentials` |
 | HubSpot | `HubspotReader` | `point_hubspot_at()` (rebinds `hubspot.HubSpot` to inject `host=`) |
-| Drive | `GoogleDriveReader` | `point_drive_at()` (wraps `build`) + real `service_account_key=` injection hook |
+| Google Drive | `GoogleDriveReader` | `point_drive_at()` (wraps `build`) + real `service_account_key=` injection hook |
 | Linear | `LinearReader` | `patch_linear_at()` (swaps the module's `requests` for a URL-rewriting proxy) |
 | Fireflies | **none exists** | n/a — `llama-index-readers-fireflies` is not on PyPI; see the note below |
 
@@ -102,13 +102,13 @@ exactly as against the real API.
   The installed `GmailReader` has no credential-injection hook — `_get_credentials()`
   unconditionally runs a local disk-based OAuth flow — so the example also patches
   `GmailReader._get_credentials` to hand back the Backlot-issued credential instead.
-- **Drive** (`gdrive.py`): `point_drive_at()` wraps `build` the same way, with Drive's `/drive/v3`
+- **Google Drive** (`gdrive.py`): `point_drive_at()` wraps `build` the same way, with Google Drive's `/drive/v3`
   service path folded into the `api_endpoint` (Gmail's bundled discovery doc's rootUrl has no
-  suffix; Drive's already carries `/drive/v3`). Unlike Gmail, `GoogleDriveReader` *does* accept
+  suffix; Google Drive's already carries `/drive/v3`). Unlike Gmail, `GoogleDriveReader` *does* accept
   `service_account_key=` directly, a real credential-injection hook — so the admin (non-
   impersonation) path needs no monkeypatch beyond `point_drive_at()`. Impersonating a user
   (`--user <email>`) still needs an instance-level `_get_credentials` override, since that
   constructor path drops any `subject`.
 
-Gmail/Drive credentials (and the shared OAuth client config) come from Backlot's
+Gmail/Google Drive credentials (and the shared OAuth client config) come from Backlot's
 `GET /_meta/credentials`, exactly as in `examples/using-official-sdk/`.

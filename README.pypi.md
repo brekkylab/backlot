@@ -8,14 +8,14 @@
 
 **Serve your own enterprise playground**
 
-Backlot is a local emulator for enterprise SaaS APIs. Test your Slack, Gmail, Drive and the rest of your integrations.
+Backlot is a local emulator for enterprise SaaS APIs. Test your Slack, Gmail, Google Drive and the rest of your integrations.
 
 **No account. No token. No network.**
 
 Why would you need that? Because right now:
 
 - **You can't log in yet**. So you create a workspace, register an app, pick OAuth scopes and wait on an admin who has never heard of you. Zero API calls so far.
-- **Then you do it again**. Gmail. Jira. Drive. Every source starts over from nothing.
+- **Then you do it again**. Gmail. Jira. Google Drive. Every source starts over from nothing.
 - **So you mock it, and the test passes**. It passes because you wrote both sides of it. It always passes.
 
 Backlot is the side you didn't write. It behaves exactly like the real one.

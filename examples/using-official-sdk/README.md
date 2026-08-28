@@ -123,7 +123,7 @@ library's own token exchange runs against Backlot's `POST /oauth2/token` in both
 | Jira | `atlassian-python-api` | `Jira(url="http://localhost:8000/atlassian", username="svc@x", password=T)` |
 | Confluence | `atlassian-python-api` | `Confluence(url="http://localhost:8000/atlassian/wiki", username="svc@x", password=T)` |
 | Gmail | `google-api-python-client` | `build("gmail","v1", …, client_options=ClientOptions(api_endpoint="http://localhost:8000"))` |
-| Drive | `google-api-python-client` | `build("drive","v3", …, client_options=ClientOptions(api_endpoint="http://localhost:8000/drive/v3"))` |
+| Google Drive | `google-api-python-client` | `build("drive","v3", …, client_options=ClientOptions(api_endpoint="http://localhost:8000/drive/v3"))` |
 | Notion | `notion-client` | `Client(auth=T, base_url="http://localhost:8000/notion")` (SDK appends `/v1/`) |
 | S3 | `boto3` | `client("s3", endpoint_url="http://localhost:8000/s3", config=Config(s3={"addressing_style":"path"}))` |
 

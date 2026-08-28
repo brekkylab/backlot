@@ -147,7 +147,7 @@ One `source_type` (`google_drive`) across four prefixes.
 | `/drive/v3/files/{id}/export` | |
 | `/drive/v3/files/{id}/permissions` | |
 | `/drive/v3/drives` | |
-| `/drive/v3/about` | `fields` **required**, as in real Drive; `storageQuota` is measured from the caller's visible corpus |
+| `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
 | `/docs/v1/documents/{id}` | |
 | `/sheets/v4/spreadsheets/{id}` | Structure only — cells need `includeGridData=true` (+ optional `ranges`), as in real Sheets |
 | `/sheets/v4/spreadsheets/{id}/values/{range}` | A1 ranges incl. `Sheet1!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not; `majorDimension`, `valueRenderOption` |
@@ -155,7 +155,7 @@ One `source_type` (`google_drive`) across four prefixes.
 | `/slides/v1/presentations/{id}` | |
 
 The three editor APIs serve native-doc content for editor-aware clients, read structurally instead
-of via Drive export.
+of via Google Drive export.
 
 Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like
 stored rows. Trashed files are excluded unless `trashed = true` asks for them.
@@ -175,7 +175,7 @@ because that is where Google puts them.
 | `POST /batch`, `POST /batch/{api}/{version}` | Google's `multipart/mixed` batch envelope: each part is an `application/http` sub-request, answered in order with its `Content-ID` preserved. The outer credential applies to any sub-request that does not carry its own, as real Google does |
 
 `/batch` is Google-shaped but not Google-scoped — sub-requests are dispatched against the whole
-app, so a batch may target any endpoint this server serves, not only Drive's.
+app, so a batch may target any endpoint this server serves, not only Google Drive's.
 
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 

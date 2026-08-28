@@ -1,0 +1,9 @@
+# setuptools-scm puts every git-tracked file in the sdist, which is the right default for source
+# but wrong for `assets/`: the demo GIF and the two architecture figures are README illustrations
+# that GitHub renders and nothing in the package reads. They were 1.4 MB of a 2.3 MB sdist, so
+# every install paid to download them.
+#
+# The shipped README.md still points at them relatively. That link resolves on GitHub and nowhere
+# else, which is already true of every relative target in it — the reason `project.readme` is
+# README.pypi.md, whose links are all absolute (tests/test_packaging.py pins both halves).
+prune assets

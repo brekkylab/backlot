@@ -57,6 +57,27 @@ def test_every_shipped_non_py_file_is_covered_by_package_data():
     )
 
 
+def test_the_sdist_prunes_the_readme_illustrations():
+    """The mirror image of the test above: a file that ships and should not.
+
+    ``setuptools-scm`` puts every git-tracked file in the sdist, so ``assets/`` rode along — the
+    demo GIF and two architecture figures, 1.4 MB of a 2.3 MB sdist, that GitHub renders and
+    nothing in the package reads. Asserted on the ``MANIFEST.in`` directive rather than on a built
+    artifact, because nothing here runs a real build (see the module docstring).
+    """
+    directives = [
+        line.split()
+        for line in (REPO_ROOT / "MANIFEST.in").read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert ["prune", "assets"] in directives, (
+        "MANIFEST.in no longer prunes assets/, so the sdist ships the README illustrations again: "
+        f"{directives}"
+    )
+    # Sanity check on the test itself: a prune of a directory that no longer exists proves nothing.
+    assert (REPO_ROOT / "assets").is_dir(), "assets/ is gone — drop the prune and this test with it"
+
+
 # README.md carries relative image and link paths that only resolve on GitHub. PyPI passes them
 # through unchanged (measured 2026-08-14 against readme_renderer[md]: `<picture>` and `<details>`
 # survive, relative targets are left alone and therefore 404 under pypi.org), so the long

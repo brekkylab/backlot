@@ -82,7 +82,7 @@ class Settings(BaseSettings):
 
     @property
     def db_path(self) -> Path:
-        return self.data_dir / "mock.sqlite"
+        return self.data_dir / "db.sqlite"
 
     @property
     def tokens_path(self) -> Path:

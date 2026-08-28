@@ -14,7 +14,7 @@ over a corpus you supply. **No real account. No token issuance. No external netw
 
 ```bash
 pip install backlot
-backlot import --bundled    # the bundled corpus -> data/mock.sqlite + data/tokens.yaml
+backlot import --bundled    # the bundled corpus -> data/db.sqlite + data/tokens.yaml
 backlot serve               # http://127.0.0.1:8000
 ```
 

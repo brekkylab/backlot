@@ -133,7 +133,7 @@ def test_import_defaults_to_byo_and_loads_the_corpus(tmp_path, monkeypatch):
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "data"))
 
     assert cli.main(["import", str(corpus)]) == 0
-    assert (tmp_path / "data" / "mock.sqlite").exists()
+    assert (tmp_path / "data" / "db.sqlite").exists()
 
 
 def test_import_dry_run_validates_without_writing_a_db(tmp_path, monkeypatch, capsys):
@@ -143,7 +143,7 @@ def test_import_dry_run_validates_without_writing_a_db(tmp_path, monkeypatch, ca
 
     assert cli.main(["import", str(corpus), "--dry-run"]) == 0
     assert "OK: 1 records valid." in plain(capsys.readouterr().out)
-    assert not (tmp_path / "data" / "mock.sqlite").exists()
+    assert not (tmp_path / "data" / "db.sqlite").exists()
 
 
 def test_a_corpus_the_importer_rejects_reports_its_reason_and_exits_1(
@@ -183,7 +183,7 @@ def test_import_bundled_loads_the_corpus_bundled_with_the_package(tmp_path, monk
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "data"))
     assert cli.main(["import", "--bundled"]) == 0
 
-    conn = sqlite3.connect(tmp_path / "data" / "mock.sqlite")
+    conn = sqlite3.connect(tmp_path / "data" / "db.sqlite")
     try:
         for src in store.SOURCE_TABLE:
             n = conn.execute(f"SELECT COUNT(*) FROM {store.table(src)}").fetchone()[0]
@@ -347,7 +347,7 @@ def a_data_dir_with_a_corpus(tmp_path, monkeypatch):
     """
     data = tmp_path / "data"
     data.mkdir()
-    _write_corpus_schema(data / "mock.sqlite")
+    _write_corpus_schema(data / "db.sqlite")
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
     return data
 
@@ -424,7 +424,7 @@ def test_serve_refuses_a_corpus_it_cannot_read(damage, reason, tmp_path, monkeyp
 
     data = tmp_path / "data"
     data.mkdir()
-    db = data / "mock.sqlite"
+    db = data / "db.sqlite"
     if damage == "random-bytes":
         db.write_bytes(b"\x00\xff" * 2048)
     elif damage == "truncated":  # what an interrupted copy of a real corpus looks like
@@ -450,7 +450,7 @@ def test_serve_refuses_to_start_without_a_corpus(tmp_path, monkeypatch, capsys):
     assert cli.main(["serve"]) == 2
     err = plain(capsys.readouterr().err)
     assert "no usable corpus" in err
-    assert "mock.sqlite is missing" in err  # the empty-dir case, distinct from a corrupt one
+    assert "db.sqlite is missing" in err  # the empty-dir case, distinct from a corrupt one
     assert "backlot import --bundled" in err  # the way out, not just the complaint
 
 
@@ -464,7 +464,7 @@ def test_data_dir_overrides_the_environment(tmp_path, monkeypatch):
     corpus.write_text(json.dumps(_record()) + "\n")
 
     assert cli.main(["import", str(corpus), "--data-dir", str(tmp_path / "from-flag")]) == 0
-    assert (tmp_path / "from-flag" / "mock.sqlite").exists()
+    assert (tmp_path / "from-flag" / "db.sqlite").exists()
     assert not (tmp_path / "from-env").exists()
 
 
@@ -502,7 +502,7 @@ def test_status_reports_an_unreadable_corpus_rather_than_raising(tmp_path, monke
     traceback."""
     data = tmp_path / "data"
     data.mkdir()
-    (data / "mock.sqlite").write_bytes(b"not a database")
+    (data / "db.sqlite").write_bytes(b"not a database")
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(data))
 
     assert cli.main(["status"]) == 1

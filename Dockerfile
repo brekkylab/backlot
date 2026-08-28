@@ -60,5 +60,5 @@ FROM serve AS full
 
 # Only the runtime data (the DB + the roster it generated); everything else the import wrote stays
 # behind in the builder.
-COPY --from=builder /app/data/mock.sqlite /app/data/mock.sqlite
+COPY --from=builder /app/data/db.sqlite /app/data/db.sqlite
 COPY --from=builder /app/data/tokens.yaml /app/data/tokens.yaml

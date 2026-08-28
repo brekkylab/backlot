@@ -243,7 +243,7 @@ def test_byo_meta_comments_hierarchy(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
 
     # meta blob on a doc
     assert store.jcol(
@@ -286,7 +286,7 @@ def test_byo_slack_threads(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
 
     # 3 docs total (root + 2 replies), but only the root is top-level
     assert conn.execute("SELECT COUNT(*) FROM slack_messages").fetchone()[0] == 3
@@ -374,7 +374,7 @@ def test_byo_created_updated_times(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
 
     # created accepts ISO, updated accepts epoch int — both land as epoch seconds
     j = conn.execute("SELECT created_ts, updated_ts FROM jira_issues WHERE title = 'T'").fetchone()
@@ -424,7 +424,7 @@ def test_byo_gmail_created_and_to(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     from backlot.routers.google import _gmail_message
 
     msg = _gmail_message(store.get_document(conn, "gmail", served_id("gmail", "m1")), "metadata")
@@ -458,7 +458,7 @@ def test_byo_slack_rich_replies(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     from backlot.routers.slack import _message
 
     channel, root_ts = conn.execute(
@@ -515,7 +515,7 @@ def test_byo_slack_reply_carries_its_own_clock(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     thread = conn.execute(
         "SELECT ts, created_ts FROM slack_messages WHERE channel = 'incidents' ORDER BY thread_seq"
     ).fetchall()
@@ -718,7 +718,7 @@ def test_byo_a_stated_epoch_zero_is_a_second_not_a_missing_value(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     assert conn.execute("SELECT created_ts FROM confluence_comments").fetchone()[0] == 0
     assert conn.execute("SELECT created_ts FROM gmail_messages").fetchone()[0] == 0
 
@@ -810,7 +810,7 @@ def test_byo_epoch_seconds_as_a_string(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     assert [
         r["created_ts"]
         for r in conn.execute("SELECT created_ts FROM slack_messages ORDER BY thread_seq")
@@ -2499,7 +2499,7 @@ def test_import_refuses_a_shard_that_does_not_match_the_manifest(tmp_path, monke
     with pytest.raises(SystemExit) as e:
         byo.run(out)
     assert e.value.code == 1
-    assert not (data / "mock.sqlite").exists(), "a rejected artifact must not leave a database"
+    assert not (data / "db.sqlite").exists(), "a rejected artifact must not leave a database"
 
 
 def test_a_single_gzipped_corpus_file_loads(tmp_path):
@@ -4830,7 +4830,7 @@ def test_github_changeset_fields_round_trip(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     row = conn.execute("SELECT * FROM github_items WHERE kind = 'pull_request'").fetchone()
     assert store.jcol(row, "changed_paths") == ["src/b.py", "src/a.py"]  # order preserved
     f0 = conn.execute("SELECT * FROM github_items WHERE kind = 'file' AND path = ?", ("src/a.py",))
@@ -4925,7 +4925,7 @@ def test_a_changed_path_matching_no_file_is_reported_and_loaded(tmp_path, capsys
     load(corpus, Settings(data_dir=tmp_path))
     err = capsys.readouterr().err
     assert "1 path reference" in err and "--dry-run" in err
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     # stored as the corpus stated it — the report does not edit the record
     row = conn.execute("SELECT * FROM github_items WHERE kind = 'pull_request'").fetchone()
     assert store.jcol(row, "changed_paths") == ["src/a.py", "src/typo.py"]

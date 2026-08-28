@@ -25,7 +25,7 @@ corpus — the bundled hello-world one (136 records covering every source) is en
 live server:
 
 ```bash
-backlot import backlot/data/hello.jsonl   # -> data/mock.sqlite + data/tokens.yaml
+backlot import backlot/data/hello.jsonl   # -> data/db.sqlite + data/tokens.yaml
 backlot serve                             # serves on http://127.0.0.1:8000
 curl -s localhost:8000/health
 ```

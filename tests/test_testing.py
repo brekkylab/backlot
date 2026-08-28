@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import urllib.request
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,11 +54,47 @@ def _health(url: str) -> dict:
 
 
 def test_serve_with_no_arguments_serves_the_hello_corpus():
+    """The counts are asserted, not just the status, and that is what makes this a real check:
+    ``/health`` answers 200 with ``documents: null`` for as long as the warm-up thread is still
+    filling its caches, so a ``serve()`` that returned on the status code alone would hand back a
+    server whose counts are not computed yet. It did, and this failed on one interpreter and not
+    the others. ``_warm`` is the readiness poll's condition now; the parametrized test below pins
+    the three answers it has to distinguish.
+    """
     with backlot.serve() as s:
         body = _get(f"{s.base_url}/health")
     assert body["status"] == "ok"
     assert body["source_documents"] > 0
     assert body["documents"] >= body["source_documents"]
+
+
+@pytest.mark.parametrize(
+    "body, warm",
+    [
+        pytest.param({"status": "ok", "documents": 41}, True, id="counts-landed"),
+        pytest.param({"status": "ok", "documents": None}, False, id="still-warming"),
+        # The caches will never fill and the server serves correctly on the fallbacks, so waiting
+        # longer would turn a reported failure into `did not become ready`.
+        pytest.param(
+            {"status": "degraded", "documents": None, "warm_error": "OperationalError: x"},
+            True,
+            id="warm-up-failed",
+        ),
+        pytest.param({"status": "ok", "documents": 0}, True, id="an-empty-corpus-is-warm"),
+    ],
+)
+def test_readiness_waits_for_the_warm_up_but_not_for_a_failed_one(body, warm, monkeypatch):
+    import contextlib as ctx
+    import json as json_mod
+
+    import backlot.testing as testing_mod
+
+    @ctx.contextmanager
+    def fake_urlopen(url, timeout=None):
+        yield SimpleNamespace(status=200, read=lambda: json_mod.dumps(body).encode())
+
+    monkeypatch.setattr(testing_mod.urllib.request, "urlopen", fake_urlopen)
+    assert testing_mod._warm("http://x", timeout=0.5) is warm
 
 
 def test_serve_accepts_records():

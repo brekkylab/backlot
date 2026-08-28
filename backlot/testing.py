@@ -182,6 +182,33 @@ def _healthy(url: str, timeout: float = 10) -> bool:
         return False
 
 
+def _warm(url: str, timeout: float) -> bool:
+    """Whether the server has finished warming its caches, not merely bound its port.
+
+    ``/health`` answers 200 with ``documents: null`` while the warm-up thread is still filling
+    (see ``backlot.main``'s lifespan), so a readiness poll that only checks the status code hands
+    back a server whose counts are not computed yet. Every consumer falls back to its own query,
+    which is why this is invisible until something reads the counts themselves: the caller sees a
+    null where a number belongs, once in a hundred runs, on whichever interpreter happened to be
+    slower that day.
+
+    Only ``serve()`` uses this. ``_healthy`` stays as it is for the remote branch of
+    ``serve_or_connect``, where a deployment that is serving correctly on the fallbacks must not
+    be refused for being mid-warm-up or permanently degraded.
+
+    A recorded ``warm_error`` counts as warm: the caches will never fill, the server serves
+    correctly without them, and waiting longer would only turn a reported failure into a timeout.
+    """
+    try:
+        with urllib.request.urlopen(f"{url.rstrip('/')}/health", timeout=timeout) as r:
+            if r.status != 200:
+                return False
+            body = json.loads(r.read().decode())
+    except Exception:  # noqa: BLE001
+        return False
+    return body.get("documents") is not None or body.get("warm_error") is not None
+
+
 @contextlib.contextmanager
 def serve(records: list[dict] | None = None, host: str = "127.0.0.1"):
     """Serve ``records`` (or the bundled hello-world corpus) on a free local port.
@@ -246,7 +273,7 @@ def serve(records: list[dict] | None = None, host: str = "127.0.0.1"):
                         f"Backlot exited with code {proc.returncode} before becoming ready on "
                         f"{base}:\n{tail}"
                     )
-                if _healthy(base, timeout=_LOCAL_HEALTH_TIMEOUT):
+                if _warm(base, timeout=_LOCAL_HEALTH_TIMEOUT):
                     break
                 time.sleep(0.1)
             else:

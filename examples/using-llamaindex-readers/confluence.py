@@ -51,10 +51,10 @@ def main(reader):
 
 def _parse_args():
     p = argparse.ArgumentParser(
-        description="Load Confluence pages via llama-index against the mock."
+        description="Load Confluence pages via llama-index against Backlot."
     )
-    p.add_argument("--url", help="mock base URL (default: spin up a local throwaway mock)")
-    p.add_argument("--token", help="mock bearer token from GET /_meta/users (default: admin)")
+    p.add_argument("--url", help="Backlot base URL (default: spin up a local throwaway server)")
+    p.add_argument("--token", help="Backlot bearer token from GET /_meta/users (default: admin)")
     return p.parse_args()
 
 

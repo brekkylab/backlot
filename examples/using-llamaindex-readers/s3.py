@@ -69,8 +69,8 @@ def _admin_keys(base_url):
 
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="Load S3 objects via llama-index against the mock.")
-    p.add_argument("--url", help="mock base URL (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Load S3 objects via llama-index against Backlot.")
+    p.add_argument("--url", help="Backlot base URL (default: spin up a local throwaway server)")
     p.add_argument("--access-key", help="AWS access key id (required with --url)")
     p.add_argument("--secret-key", help="AWS secret access key (required with --url)")
     args = p.parse_args()

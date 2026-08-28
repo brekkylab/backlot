@@ -114,12 +114,14 @@ def build_params(base_url: str, token: str, depth: int | None = None) -> StdioSe
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Drive the mock's Fireflies GraphQL API over MCP via the GraphQL bridge."
+        description="Drive Backlot's Fireflies GraphQL API over MCP via the GraphQL bridge."
     )
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_meta/users "
+        help="Backlot bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument(

@@ -69,8 +69,8 @@ def main(reader):
 
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="Load Gmail via llama-index against the mock.")
-    p.add_argument("--url", help="mock base URL (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Load Gmail via llama-index against Backlot.")
+    p.add_argument("--url", help="Backlot base URL (default: spin up a local throwaway server)")
     p.add_argument("--user", help="which user's OAuth token to use (default: the first user)")
     return p.parse_args()
 

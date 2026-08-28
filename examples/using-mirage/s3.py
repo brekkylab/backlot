@@ -105,8 +105,10 @@ def main_fuse(resource) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Read S3 through mirage against the mock's S3.")
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Read S3 through mirage against Backlot's S3.")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--access-key",
         help="AWS access key id (S3 uses a keypair, not a token); "

@@ -90,12 +90,14 @@ CORPUS = [
 ]
 
 _p = argparse.ArgumentParser(
-    description="Read HubSpot CRM through the official hubspot-api-client SDK against the mock."
+    description="Read HubSpot CRM through the official hubspot-api-client SDK against Backlot."
 )
-_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument(
+    "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+)
 _p.add_argument(
     "--token",
-    help="mock bearer token from GET /_meta/users "
+    help="Backlot bearer token from GET /_meta/users "
     "(default: the admin token, which sees everything)",
 )
 args = _p.parse_args()

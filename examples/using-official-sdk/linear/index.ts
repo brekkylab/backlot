@@ -4,19 +4,19 @@
  * This is the only TypeScript example in `examples/using-official-sdk/` — every sibling is
  * Python — because `@linear/sdk` is the only client Linear publishes and there is no official
  * Python SDK at all. A README snippet would have been cheaper, but an example nobody runs cannot
- * back the claim that the mock works with the real client, so this one runs (and CI runs it).
+ * back the claim that Backlot works with the real client, so this one runs (and CI runs it).
  *
  * Two things make it non-obvious, both handled below:
  *
  *  1. `LinearClient` has NO base-URL option. It accepts `apiKey`, `accessToken` and a
- *     `RequestInit`, and nothing else — so pointing it at a mock means using Linear's own
+ *     `RequestInit`, and nothing else — so pointing it at Backlot means using Linear's own
  *     documented escape hatch: extend `LinearSdk` with a custom request function.
  *  2. The SDK's own generated documents are enormous (`client.issues()` selects 171 field nodes
- *     across 11 fragments). The mock's schema is generated from those very documents, which is
+ *     across 11 fragments). Backlot's schema is generated from those very documents, which is
  *     why every field resolves instead of the query being rejected outright.
  *
  * Self-contained, like the Python examples: with no reachable `--url` it imports a tiny corpus
- * into a throwaway DB and runs the mock itself.
+ * into a throwaway DB and runs Backlot itself.
  *
  *     npm install && npx tsx index.ts
  *     npx tsx index.ts --url http://localhost:8000
@@ -85,10 +85,10 @@ const CORPUS = [
  * only wrinkle is the document type: the SDK hands over a `TypedDocumentString` (a class with a
  * `toString()`), not a plain string, so it is stringified before it goes on the wire.
  */
-class MockLinearClient extends LinearSdk {
+class BacklotLinearClient extends LinearSdk {
   constructor(baseUrl: string, apiKey: string) {
     const gql = new GraphQLClient(`${baseUrl.replace(/\/$/, "")}/linear/graphql`, {
-      // A Linear personal API key is the BARE header value — no `Bearer` prefix. (The mock
+      // A Linear personal API key is the BARE header value — no `Bearer` prefix. (Backlot
       // accepts `Bearer <token>` too, which is how Linear carries an OAuth access token.)
       headers: { Authorization: apiKey },
     });
@@ -102,7 +102,7 @@ class MockLinearClient extends LinearSdk {
   }
 }
 
-// ---------------------------------------------------------------- mock plumbing
+// ------------------------------------------------------------- Backlot plumbing
 function freePort(): Promise<number> {
   return new Promise((res, rej) => {
     const srv = createServer();
@@ -130,7 +130,7 @@ async function waitForHealth(url: string, tries = 100): Promise<void> {
     if (await healthy(url, 500)) return;
     await new Promise((r) => setTimeout(r, 100));
   }
-  throw new Error("mock server did not become ready");
+  throw new Error("Backlot did not become ready");
 }
 
 interface Server {
@@ -146,10 +146,10 @@ interface Server {
  */
 async function serveOrConnect(url: string | undefined): Promise<Server> {
   if (url && (await healthy(url))) {
-    console.log(`using mock server at ${url}`);
+    console.log(`using Backlot at ${url}`);
     return { baseUrl: url.replace(/\/$/, ""), token: ADMIN_TOKEN, stop: () => {} };
   }
-  if (url) console.log(`--url ${url} is not reachable — falling back to a local mock`);
+  if (url) console.log(`--url ${url} is not reachable — falling back to a local one`);
 
   const python = process.env.PYTHON ?? "python3";
   const dataDir = mkdtempSync(join(tmpdir(), "backlot-linear-"));
@@ -166,7 +166,7 @@ async function serveOrConnect(url: string | undefined): Promise<Server> {
     rmSync(dataDir, { recursive: true, force: true });
     throw new Error(
       `could not build the throwaway corpus with ${python}. Install the package ` +
-        `(pip install -e .) or point at a running mock with --url.`,
+        `(pip install -e .) or point at a running Backlot with --url.`,
     );
   }
 
@@ -191,7 +191,7 @@ async function serveOrConnect(url: string | undefined): Promise<Server> {
 }
 
 // ---------------------------------------------------------------- the example
-async function main(client: MockLinearClient): Promise<void> {
+async function main(client: BacklotLinearClient): Promise<void> {
   // `viewer` confirms which identity the credential resolved to — with `--token` that is a real
   // person and everything below is ACL-filtered to what they can see.
   const me = await client.viewer;
@@ -242,7 +242,7 @@ async function main(client: MockLinearClient): Promise<void> {
     break;
   }
 
-  // Server-side filtering — the mock compiles this into SQL rather than filtering in memory.
+  // Server-side filtering — Backlot compiles this into SQL rather than filtering in memory.
   const urgent = await client.issues({ filter: { priority: { lte: 2 } }, first: 10 });
   console.log(`\nissues with priority <= 2 (High/Urgent): ` +
     urgent.nodes.map((i) => `${i.identifier} (${i.priorityLabel})`).join(", "));
@@ -269,7 +269,7 @@ const args = parseArgs();
 const s = await serveOrConnect(args.url);
 try {
   if (args.token) console.log("authenticating with --token → responses are ACL-filtered to that user");
-  await main(new MockLinearClient(s.baseUrl, args.token ?? s.token));
+  await main(new BacklotLinearClient(s.baseUrl, args.token ?? s.token));
 } finally {
   s.stop();
 }

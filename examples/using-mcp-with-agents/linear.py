@@ -107,12 +107,14 @@ def build_params(base_url: str, token: str, depth: int = 1) -> StdioServerParame
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Drive the mock's Linear GraphQL API over MCP via the GraphQL bridge."
+        description="Drive Backlot's Linear GraphQL API over MCP via the GraphQL bridge."
     )
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--token",
-        help="mock token from GET /_meta/users "
+        help="Backlot token from GET /_meta/users "
         "(default: the admin token, which sees everything). Linear accepts it bare or as Bearer",
     )
     p.add_argument(

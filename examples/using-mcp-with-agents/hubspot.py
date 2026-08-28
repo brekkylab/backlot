@@ -99,12 +99,14 @@ def build_params(base_url: str, token: str) -> StdioServerParameters:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Drive the mock's HubSpot CRM API over MCP via the OpenAPI bridge."
+        description="Drive Backlot's HubSpot CRM API over MCP via the OpenAPI bridge."
     )
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_meta/users "
+        help="Backlot bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument(

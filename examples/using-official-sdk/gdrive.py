@@ -56,9 +56,11 @@ CORPUS = [
 ]
 
 _p = argparse.ArgumentParser(
-    description="Read Google Drive through google-api-python-client against the mock."
+    description="Read Google Drive through google-api-python-client against Backlot."
 )
-_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument(
+    "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+)
 _p.add_argument(
     "--user",
     help="email to impersonate via the service account (default: bare service account = admin, sees everything)",

@@ -35,9 +35,11 @@ CORPUS = [
 ]
 
 _p = argparse.ArgumentParser(
-    description="Read Gmail through google-api-python-client against the mock."
+    description="Read Gmail through google-api-python-client against Backlot."
 )
-_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument(
+    "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+)
 _p.add_argument(
     "--user",
     help="which user's OAuth token to use, from GET /_meta/users (default: the first user)",

@@ -119,8 +119,10 @@ def main_fuse(resource) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Read Google Drive through mirage against the mock.")
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Read Google Drive through mirage against Backlot.")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--user",
         help="which user's OAuth token to use, from GET /_meta/users (default: the first user)",

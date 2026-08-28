@@ -89,9 +89,11 @@ def build_params(base_url: str, access_key: str, secret_key: str) -> StdioServer
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Drive awslabs aws-api-mcp-server over MCP against the mock's S3."
+        description="Drive awslabs aws-api-mcp-server over MCP against Backlot's S3."
     )
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--access-key",
         help="AWS access key id (S3 uses a keypair, not a token); "

@@ -94,8 +94,8 @@ def main(reader):
 
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="Load Google Drive via llama-index against the mock.")
-    p.add_argument("--url", help="mock base URL (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Load Google Drive via llama-index against Backlot.")
+    p.add_argument("--url", help="Backlot base URL (default: spin up a local throwaway server)")
     p.add_argument("--user", help="email to impersonate via the service account (default: admin)")
     return p.parse_args()
 

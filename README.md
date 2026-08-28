@@ -4,7 +4,7 @@
 
 **Serve your own enterprise playground**
 
-Backlot is a mock server for enterprise SaaS APIs. Test your Slack, Gmail, Drive and the rest of your integrations.
+Backlot is a local emulator for enterprise SaaS APIs. Test your Slack, Gmail, Drive and the rest of your integrations.
 
 **No account. No OAuth. No network.**
 

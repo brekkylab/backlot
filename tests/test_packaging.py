@@ -76,11 +76,18 @@ def test_pypi_readme_has_no_relative_links():
     Every ``](target)`` is checked, not just the ones a leading ``[`` precedes: a badge is nested
     (``[![alt](image)](href)``) and the pattern that matches its inner image cannot also reach the
     outer href, so a linked badge is exactly where a relative target hides.
+
+    HTML attributes are checked too. Markdown is not the only way in — ``<picture>`` and ``<img>``
+    both survive the renderer, and a relative ``src``/``srcset`` in one is invisible to the
+    ``](target)`` pattern above while breaking on PyPI just the same.
     """
     text = (REPO_ROOT / "README.pypi.md").read_text()
-    relative = [
-        target
-        for target in re.findall(r"\]\(([^)\s]+)\)", text)
-        if not target.startswith(("http://", "https://", "#"))
+    targets = re.findall(r"\]\(([^)\s]+)\)", text)
+    targets += [
+        candidate.strip().split()[0]
+        for attribute in re.findall(r"(?:src|srcset|href)=\"([^\"]+)\"", text)
+        for candidate in attribute.split(",")
+        if candidate.strip()
     ]
+    relative = [t for t in targets if not t.startswith(("http://", "https://", "#"))]
     assert not relative, f"README.pypi.md links break on PyPI: {relative}"

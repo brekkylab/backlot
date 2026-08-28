@@ -32,7 +32,7 @@ Or run one programmatically on a free port:
 import backlot
 from slack_sdk import WebClient                        # pip install slack_sdk
 
-with backlot.serve() as s:                             # no arguments: the bundled corpus
+with backlot.serve() as s:                             # no arguments: a tiny hello-world corpus
     slack = WebClient(token=s.token, base_url=f"{s.base_url}/slack/api/")
     print(slack.conversations_list()["channels"])
 ```
@@ -45,7 +45,7 @@ Every source on one local port, each behind the path prefix its own SDK expects.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="assets/figures/architecture.png"><img alt="Your code on the left, calling the Slack and GitHub SDKs with only their base URL changed. In the middle, one local server on 127.0.0.1:8000, listing the services it answers as and the path prefix each is served under. On the right, the single SQLite corpus behind all of them." src="assets/figures/architecture-light.png"></picture>
 
-Every row links a runnable example that drives that service the way the vendor documents it, using the official SDK where one exists.
+Each row links a runnable example that drives that service the way the vendor documents it, using the official SDK where one exists.
 
 | Service | Base path | Example |
 |---|---|---|

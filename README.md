@@ -61,9 +61,7 @@ Every row links a runnable example that drives that service the way the vendor d
 | Fireflies | `/fireflies/graphql` | [`fireflies.py`](examples/using-official-sdk/fireflies.py) |
 | Amazon S3 | `/s3` | [`s3.py`](examples/using-official-sdk/s3.py) |
 
-**Next up:** Google Chat, Microsoft Graph, Box, Dropbox, DocuSign.
-
-The full roadmap lives in [#89](https://github.com/brekkylab/backlot/issues/89) — ask there for the one you need.
+The roadmap lives in [the tracking issue](https://github.com/brekkylab/backlot/issues/89) — ask there for the source you need.
 
 ## When you need this
 
@@ -82,34 +80,6 @@ The full roadmap lives in [#89](https://github.com/brekkylab/backlot/issues/89) 
 | 🦙 Load it as documents, with the official [LlamaIndex](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/) readers | [`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/) |
 | 🗂️ Read it with `ls`, `cat` and `grep`, over [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](examples/using-mirage/) |
 | 📥 Your own corpus, from a JSONL file | [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus/) |
-
-<details><summary>Or drop it straight into your test suite — <code>serve()</code> as a pytest fixture</summary>
-
-```python
-# conftest.py — serve() picks a free port and tears itself down
-import backlot
-import pytest
-
-@pytest.fixture(scope="session")
-def enterprise():
-    with backlot.serve() as m:
-        yield m
-
-
-# test_slack.py
-from slack_sdk import WebClient
-
-def test_history_paginates(enterprise):
-    slack = WebClient(token=enterprise.token, base_url=f"{enterprise.base_url}/slack/api/")
-    channel = slack.conversations_list()["channels"][0]["id"]
-
-    page = slack.conversations_history(channel=channel, limit=2)
-
-    assert page["has_more"]
-    assert page["response_metadata"]["next_cursor"]
-```
-
-</details>
 
 ## Documentation
 

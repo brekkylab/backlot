@@ -62,7 +62,7 @@ sees least. Nothing about the request changes but the identity.
 
 | Service | Header |
 |---|---|
-| Slack, Gmail, Drive/Docs/Sheets/Slides, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
+| Slack, Gmail, Google Drive/Docs/Sheets/Slides, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
 | GitHub | `Authorization: Bearer <token>`, or the legacy `token <token>` |
 | Jira, Confluence | HTTP Basic with the token as the **password**, or a plain `Bearer` |
 | Linear | A **bare** `Authorization: <token>`, or `Bearer` |
@@ -102,7 +102,7 @@ So if the connector under test uses a bot token in production, Backlot is the mo
 two on both counts. `auth.test` reflects the user shape it emulates: `user`, `user_id`, `team`,
 `team_id`, and no `bot_id`.
 
-### Gmail, Drive, Docs, Sheets, Slides — `Bearer`
+### Gmail, Google Drive, Docs, Sheets, Slides — `Bearer`
 
 ```bash
 curl -s "localhost:8000/gmail/v1/users/me/profile" \

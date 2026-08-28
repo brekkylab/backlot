@@ -18,7 +18,7 @@ service (like the other `examples/` dirs) — run the one you want:
   MCP server exists that can be pointed at anything self-hosted, so instead the bridge turns
   Backlot's own typed `/openapi.json` into MCP tools. See "How the OpenAPI→MCP bridge connects" below.
   This unlocks the sources with no base-URL-switchable vendor server; more sources
-  (Gmail/Drive) are being added the same way.
+  (Gmail/Google Drive) are being added the same way.
 - **`slack.py`** via the same **OpenAPI→MCP bridge** — no maintained Slack MCP server accepts a
   base-URL override (they hard-wire `slack.com`), so the bridge serves Backlot's Slack Web API
   (`/slack/api/*`) as tools instead.

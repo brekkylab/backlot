@@ -133,8 +133,8 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   — including which of them are real accounts. See
   [`schemas/README.md`](../../backlot/schemas/README.md).
 - **Timestamps:** every record accepts `created` (epoch seconds or ISO 8601) — it drives the
-  Slack `ts` / Gmail `Date`+`internalDate` / Drive `createdTime` / GitHub `created_at` / Jira
-  `created` / Confluence version time. Drive/GitHub/Jira/Confluence also accept `updated`
+  Slack `ts` / Gmail `Date`+`internalDate` / Google Drive `createdTime` / GitHub `created_at` / Jira
+  `created` / Confluence version time. Google Drive/GitHub/Jira/Confluence also accept `updated`
   (default: `created` + 1h). Omit either and it's synthesized deterministically from the `doc_id`.
 - **Gmail recipients:** `to` sets the `To` header (default `<mailbox>@<org_domain>`).
 

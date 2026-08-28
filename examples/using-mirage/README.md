@@ -80,8 +80,8 @@ point_google_at(s.base_url)              # googleapis.com  ->  Backlot
 gmail = GmailResource(GmailConfig(**creds))
 ```
 
-It redirects the OAuth token endpoint, the Drive API, and the Docs/Sheets/Slides APIs (mirage
-reads native Google docs structurally through those, not via Drive export) — each to a distinct
+It redirects the OAuth token endpoint, the Google Drive API, and the Docs/Sheets/Slides APIs (mirage
+reads native Google docs structurally through those, not via Google Drive export) — each to a distinct
 Backlot path, so Docs and Slides don't collide. The `--url` / `--user` / `--token` flags behave
 exactly as in the `using-official-sdk` examples: `serve_or_connect` comes from `backlot` itself,
 and `google_oauth_user` (Backlot-specific OAuth glue, not general API) from
@@ -142,13 +142,13 @@ entry:
   (≈3x slower end to end over a remote hop).
 - **Navigate, don't sweep** — `ls` one level and `cat` one file. `find` / `grep -r` over a
   whole mount force mirage to fetch every file; scope them to a subtree.
-- **Listing a huge directory is inherently proportional to its size** — e.g. `ls` of a Drive
+- **Listing a huge directory is inherently proportional to its size** — e.g. `ls` of a Google Drive
   folder with thousands of files, or a large mailbox label (mirage fetches every message to
   group by date). Prefer a `--user` whose ACL-scoped view is smaller, or a narrower path.
 
 Backlot's side of these paths was tuned alongside these examples (see git history): Slack
 `conversations.list` is memoized and its `created` comes from an aggregate (was a full
-per-channel message scan); Drive folder listings are SQL-scoped/paginated, resolve folder ids
+per-channel message scan); Google Drive folder listings are SQL-scoped/paginated, resolve folder ids
 without an ACL scan, batch the per-file ACL lookup, and honor the `fields` mask.
 
 ## Testing per-user ACL
@@ -159,7 +159,7 @@ Same as the official-SDK examples: pair the identity flag with `--url`.
 # Slack — a bearer token from GET /_meta/users
 python examples/using-mirage/slack.py --url http://localhost:8000 --token <usr-token>
 
-# Gmail / Drive — a user email (authorized-user credential, impersonating that user)
+# Gmail / Google Drive — a user email (authorized-user credential, impersonating that user)
 python examples/using-mirage/gdrive.py --url http://localhost:8000 --user mia@acme.com
 ```
 
@@ -168,7 +168,7 @@ The mounted filesystem then contains only what that identity is allowed to read.
 ## Backlot endpoints this exercises
 
 Pointing mirage at Backlot surfaced a few gaps that are now part of Backlot (see the git
-history): Drive's root is navigable (`'root' in parents` returns folder objects; shared-drives
+history): Google Drive's root is navigable (`'root' in parents` returns folder objects; shared-drives
 enumeration is present-but-empty), the Docs/Sheets/Slides read APIs serve native-doc content, a
 Slack channel's `created` never postdates its messages, and `conversations.history` honors
 `oldest`/`latest` so a per-day fetch returns only that day (not the whole channel). Coverage

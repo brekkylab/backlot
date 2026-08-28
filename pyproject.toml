@@ -111,6 +111,20 @@ mirage = [
     # find anywhere, so on 0.0.4 `point_google_at` would fail outright rather than degrade.
     "mirage-ai[fuse]~=0.0.5",
 ]
+# fsspec examples (examples/using-fsspec/): read the mock through the filesystem interface that
+# pandas, pyarrow, dask and LlamaIndex all consume. pandas is here because the examples' point is
+# that an ordinary `read_csv("s3://…")` works — it is the demonstration, not a helper.
+fsspec = [
+    "fsspec>=2026.6",
+    "s3fs>=2026.6",
+    # The fsspec-registered `gdrive://` implementation. It builds its Drive service with a bare
+    # `build("drive", "v3")`, so `integrations.fsspec` supplies the endpoint (and works around
+    # three of its bugs).
+    "gdrive-fsspec>=0.1",
+    "google-api-python-client>=2.198",
+    "google-auth>=2.55",
+    "pandas>=2.2",
+]
 
 [project.scripts]
 backlot = "backlot.cli:main"

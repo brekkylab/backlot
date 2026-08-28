@@ -548,6 +548,35 @@ def test_github_tree_non_recursive(gh_client, gh_admin_h, gh_org):
     assert paths == {"README.md", "src", "config"}  # top level only: root file + top dirs
 
 
+@pytest.mark.parametrize(
+    "params,expected",
+    [({}, {"main.py", "pkg"}), ({"recursive": "1"}, {"main.py", "pkg", "pkg/utils.py"})],
+    ids=["shallow", "recursive"],
+)
+def test_github_a_subtree_sha_resolves_to_that_subtree(
+    gh_client, gh_admin_h, gh_org, params, expected
+):
+    """git/trees takes a TREE sha, not only a commit-ish, and answers that tree's own entries with
+    paths relative to it. That is how a client walks a repo one directory at a time: it reads a
+    subtree's sha out of the parent listing and asks for it — which is what fsspec's
+    GithubFileSystem does.
+
+    Answering the root for every ref does not fail loudly; it reports the root's entries under the
+    child's name, so `ls("src")` yields `src/src` and `src/config` and a recursive walk descends
+    until it runs out of stack.
+    """
+    c, _ = gh_client
+    root = c.get(f"/github/repos/{gh_org}/codebase/git/trees/main", headers=gh_admin_h).json()
+    src_sha = next(e["sha"] for e in root["tree"] if e["path"] == "src")
+
+    body = c.get(
+        f"/github/repos/{gh_org}/codebase/git/trees/{src_sha}", headers=gh_admin_h, params=params
+    ).json()
+
+    assert body["sha"] == src_sha, "the response names the tree that was asked for, not the root"
+    assert {e["path"] for e in body["tree"]} == expected
+
+
 def test_github_contents_dir(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
     body = c.get(f"/github/repos/{gh_org}/codebase/contents/src", headers=gh_admin_h).json()

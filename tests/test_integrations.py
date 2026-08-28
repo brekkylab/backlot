@@ -10,7 +10,10 @@ Backlot — because a shim that silently no-ops would otherwise send a "mock" ru
 
 from __future__ import annotations
 
+import contextlib
+import json
 import sys
+import urllib.request
 
 import pytest
 
@@ -270,3 +273,216 @@ def test_patch_linear_at_only_rewrites_linear_urls():
         assert lb.requests.get is real.get
     finally:
         lb.requests = real
+
+
+@pytest.fixture(scope="module")
+def drive_mock():
+    """One mock for the Drive-over-fsspec tests; each builds its own filesystem off it."""
+    pytest.importorskip("gdrive_fsspec")
+    pytest.importorskip("googleapiclient")
+    with backlot.serve() as m:
+        yield m
+
+
+@pytest.fixture
+def drive_fs(drive_mock):
+    from backlot.integrations.fsspec import drive_filesystem_at
+
+    fs = drive_filesystem_at(drive_mock.base_url, drive_mock.token)
+    fs.dircache.clear()  # fsspec caches instances, so the cache outlives a single test
+    return fs
+
+
+def test_drive_filesystem_reads_the_mock_and_not_google(drive_fs):
+    """The observable effect the whole module exists for. gdrive_fsspec builds its Drive service
+    with a bare `build("drive", "v3", ...)`, whose endpoint is www.googleapis.com; a shim that
+    silently no-opped would send this listing to the real Drive and 401."""
+    assert "engineering-docs" in drive_fs.ls("", detail=False)
+
+
+def test_drive_filesystem_lists_a_folders_children_once_the_root_is_cached(drive_fs):
+    """gdrive_fsspec's `ls` consults `_ls_from_cache` first, which answers a directory listing out
+    of the cached PARENT listing — with that directory's own entry. So `ls("engineering-docs")`
+    returns `["engineering-docs"]` instead of its children, and every recursive walk bottoms out
+    one level in. No HTTP is involved, so this reproduces against real Google Drive too."""
+    drive_fs.ls("")  # warm the root listing, which is what triggers the bug
+    assert "engineering-docs/broker-upgrade-notes.txt" in drive_fs.ls("engineering-docs")
+
+
+def test_drive_filesystem_accepts_a_leading_slash(drive_fs):
+    """gdrive_fsspec's paths are relative and its `_strip_protocol` leaves a leading "/" on, so
+    `ls("/engineering-docs")` raises FileNotFoundError. Anything that roots paths at "/" — a URL
+    with a host-less path, fsspec.fuse, plain habit — hits it."""
+    assert drive_fs.ls("/engineering-docs") == drive_fs.ls("engineering-docs")
+
+
+@pytest.mark.parametrize(
+    "read",
+    [lambda fs, p: fs.cat_file(p), lambda fs, p: fs.open(p).read()],
+    ids=["cat_file", "open"],
+)
+def test_drive_filesystem_exports_native_workspace_documents(drive_fs, read):
+    """A Google-native doc has no binary content: `alt=media` answers 403 fileNotDownloadable, on
+    real Drive as much as here. gdrive_fsspec only ever calls `alt=media`, so reading a Doc, Sheet
+    or Slide deck fails unless the filesystem falls back to files.export.
+
+    Both entry points, because they are separate overrides and the examples use both: `cat_file`
+    for a whole-file read, `open` for the handle pandas and friends are given.
+    """
+    body = read(drive_fs, "engineering-docs/Ingest Lag Runbook")
+    assert body.strip(), "a native Google Doc read back empty"
+
+
+def test_drive_filesystem_reports_the_size_it_will_actually_return(drive_fs):
+    """`size` on a native doc is the stored content length, but the bytes a read returns are the
+    EXPORT of it, which is longer. Any consumer that trusts `size` — fsspec.fuse, a range read —
+    truncates the file without that reconciled."""
+    path = "engineering-docs/Ingest Lag Runbook"
+    assert drive_fs.info(path)["size"] == len(drive_fs.cat_file(path))
+
+
+@pytest.fixture(scope="module")
+def github_mock():
+    """One mock for the GitHub-over-fsspec tests; `pipeline` is the bundled repo with a nested tree."""
+    pytest.importorskip("fsspec")
+    with backlot.serve() as m:
+        yield m
+
+
+@pytest.fixture
+def github_fs(github_mock):
+    import urllib.request
+
+    from backlot.integrations.fsspec import github_filesystem_at
+
+    with urllib.request.urlopen(f"{github_mock.base_url}/_meta/users") as r:
+        org = json.load(r)["org"]
+    return github_filesystem_at(github_mock.base_url, github_mock.token, org=org, repo="pipeline")
+
+
+def test_github_filesystem_reads_the_mock_and_not_github(github_fs):
+    """fsspec's GithubFileSystem addresses api.github.com from six hardcoded places and takes no
+    endpoint argument; a shim that missed one would answer this listing from the real GitHub."""
+    assert "README.md" in github_fs.ls("")
+
+
+def test_github_filesystem_walks_into_subdirectories(github_fs):
+    """A client descends by the SUBTREE sha it read from the parent listing. `git/trees/{ref}` has
+    to answer that subtree — answering the repo root instead returns the root's own entries under
+    the child's name, and the walk recurses until it runs out of stack rather than failing."""
+    assert "src/ingest/consumer.py" in github_fs.find("")
+
+
+def test_github_filesystem_reads_a_file(github_fs):
+    assert github_fs.cat_file("src/ingest/consumer.py").strip()
+
+
+def test_github_filesystem_never_addresses_the_real_github(github_fs, monkeypatch):
+    """`branches`, `tags` and `repos` build their URLs as inline f-strings inside method bodies, so
+    a subclass has to replace them outright rather than rebind a constant. Leaving one behind is
+    the failure this guards: a run that was supposed to hit the mock quietly reads real GitHub.
+
+    Backlot serves no `/branches` or `/tags` listing and `repos` sends no auth, so all three of
+    those calls fail — what is asserted is only WHERE they were addressed, which is the part that
+    must never regress.
+
+    The match is on `github.com`, not `api.github.com`: a read can also escape to
+    `raw.githubusercontent.com`, and the narrower pattern let that through.
+    """
+    import requests
+
+    seen = []
+    real_get = requests.get
+
+    def spy(url, *args, **kwargs):
+        seen.append(url)
+        return real_get(url, *args, **kwargs)
+
+    monkeypatch.setattr(requests, "get", spy)
+    github_fs.invalidate_cache()
+    github_fs.ls("")
+    github_fs.cat_file("README.md")
+    for prop in ("branches", "tags"):
+        with contextlib.suppress(Exception):
+            getattr(github_fs, prop)
+    with contextlib.suppress(Exception):
+        github_fs.repos("acme")
+
+    assert seen, "nothing was requested, so this asserts nothing"
+    assert not [u for u in seen if "github.com" in u], seen
+
+
+def test_github_filesystem_reads_a_git_lfs_pointer_body_without_leaving_the_mock():
+    """A file whose bytes start with the git-LFS pointer marker makes fsspec's `_open` abandon the
+    contents response and fetch `download_url` instead — which Backlot reports, faithfully, as the
+    real `https://raw.githubusercontent.com/...`. Backlot has no LFS: a corpus that states a pointer
+    as a file's content means those ARE the bytes, and the contents response always carries them.
+
+    The URL guard above cannot see this one. That fetch goes out through `http_fs` (an
+    `HTTPFileSystem`, i.e. aiohttp), not through `requests`, so a spy on `requests.get` records
+    nothing while the read leaves the machine.
+    """
+    pytest.importorskip("fsspec")
+    from backlot.integrations.fsspec import github_filesystem_at
+
+    pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:abc123\nsize 4096\n"
+    corpus = [
+        {
+            "source_type": "github",
+            "repo": "platform",
+            "subtype": "file",
+            "path": "assets/model.bin",
+            "title": "model.bin",
+            "content": pointer,
+            "author_email": "ava@acme.com",
+            "created": "2026-02-01T09:00:00Z",
+        }
+    ]
+    with backlot.serve(records=corpus) as m:
+        with urllib.request.urlopen(f"{m.base_url}/_meta/users") as r:
+            org = json.load(r)["org"]
+        fs = github_filesystem_at(m.base_url, m.token, org=org, repo="platform")
+
+        escaped = []
+        fs.http_fs = _RecordingHTTPFS(escaped)
+
+        assert fs.cat_file("assets/model.bin").decode() == pointer
+        assert escaped == [], f"the read left the mock for {escaped}"
+
+
+def test_github_filesystem_applies_a_caller_timeout_to_every_request(github_mock, monkeypatch):
+    """The parent applies a `timeout=` kwarg partway through its own `__init__`, which is after the
+    default-branch lookup this subclass makes to avoid api.github.com — so without setting it first
+    that one request runs on the class default while everything after it honours the caller."""
+    import requests
+
+    from backlot.integrations.fsspec import github_filesystem_at
+
+    with urllib.request.urlopen(f"{github_mock.base_url}/_meta/users") as r:
+        org = json.load(r)["org"]
+
+    seen = []
+    real_get = requests.get
+
+    def spy(url, *args, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return real_get(url, *args, **kwargs)
+
+    monkeypatch.setattr(requests, "get", spy)
+    github_filesystem_at(
+        github_mock.base_url, github_mock.token, org=org, repo="pipeline", timeout=(3, 3)
+    )
+
+    assert seen, "nothing was requested, so this asserts nothing"
+    assert set(seen) == {(3, 3)}, seen
+
+
+class _RecordingHTTPFS:
+    """Stands in for `GithubFileSystem.http_fs`, so a fallthrough is recorded rather than fetched."""
+
+    def __init__(self, sink):
+        self._sink = sink
+
+    def open(self, url, **kwargs):
+        self._sink.append(url)
+        raise AssertionError(f"fell through to {url}")

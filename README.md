@@ -4,7 +4,7 @@
 
 **Serve your own enterprise playground**
 
-Backlot is a local emulator for enterprise SaaS APIs. Test your Slack, Gmail, Drive and the rest of your integrations.
+Backlot is a local emulator for enterprise SaaS APIs. Test your Slack, Gmail, Google Drive and the rest of your integrations.
 
 **No account. No token. No network.**
 
@@ -13,7 +13,7 @@ Backlot is a local emulator for enterprise SaaS APIs. Test your Slack, Gmail, Dr
 Why would you need that? Because right now:
 
 - **You can't log in yet**. So you create a workspace, register an app, pick OAuth scopes and wait on an admin who has never heard of you. Zero API calls so far.
-- **Then you do it again**. Gmail. Jira. Drive. Every source starts over from nothing.
+- **Then you do it again**. Gmail. Jira. Google Drive. Every source starts over from nothing.
 - **So you mock it, and the test passes**. It passes because you wrote both sides of it. It always passes.
 
 Backlot is the side you didn't write. It behaves exactly like the real one.
@@ -67,7 +67,7 @@ The roadmap lives in [the tracking issue](https://github.com/brekkylab/backlot/i
 
 - 🔌 **Building or upgrading an integration**. The cursors, page shapes and error bodies the real API returns, without an account to get them from.
 - 🧪 **Testing it, and keeping it tested**. One fixture on your laptop and in CI, with no secrets and nothing to flake. Every user in the corpus gets a token, so you can also assert that one caller's documents never reach another.
-- 🛠️ **Building before you have credentials**. A Slack-shaped, Drive-shaped world to develop against before anyone hands you production credentials.
+- 🛠️ **Building before you have credentials**. A Slack-shaped, Google Drive-shaped world to develop against before anyone hands you production credentials.
 - 🤖 **Evaluating a RAG pipeline or an agent**. The same corpus, the same ids and the same answers on every run, so a score that moves means your code moved.
 - 🐛 **Reproducing a bug in data you can't see**. A document inside someone else's workspace breaks your parser. Write one shaped like it, serve it, and keep the failing test.
 
@@ -78,6 +78,7 @@ The roadmap lives in [the tracking issue](https://github.com/brekkylab/backlot/i
 | 📦 Official vendor SDKs, one script per service | [`examples/using-official-sdk/`](examples/using-official-sdk/) |
 | 🔗 MCP servers, or Backlot's own OpenAPI→MCP and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/) |
 | 🦙 Load it as documents, with the official [LlamaIndex](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/) readers | [`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/) |
+| 🐍 Read it with `pandas`, `pyarrow` or `dask`, over an [fsspec](https://filesystem-spec.readthedocs.io/) filesystem | [`examples/using-fsspec/`](examples/using-fsspec/) |
 | 🗂️ Read it with `ls`, `cat` and `grep`, over [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](examples/using-mirage/) |
 | 📥 Your own corpus, from a JSONL file | [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus/) |
 

@@ -1057,9 +1057,25 @@ async def get_tree(
     """The repo's file set as a git tree (real API shape). `recursive` (any truthy value,
     GitHub-style) returns every blob/tree entry; otherwise only the entries directly under root.
 
-    **A tree keeps no history**, so any `ref` — a branch name, or a sha from /branches, /commits or
-    git/ref — resolves to the repo's CURRENT files. FILES themselves do have history: a corpus may
-    state several snapshots of one path, and `/contents/{path}?ref=` reaches them (see
+    `ref` selects WHICH tree, exactly as on real GitHub: a SUBTREE's own sha — the one a client
+    reads out of a parent listing's `tree` entry — answers that directory's entries, with paths
+    relative to it. That is how a client walks a repo one level at a time (fsspec's
+    `GithubFileSystem` does), and answering the root instead does not fail loudly: it reports the
+    root's entries under the child's name, so listing `src` yields `src/src` and `src/config` and a
+    recursive walk descends until it runs out of stack.
+
+    Two places it stops being exactly the real API, both quiet. A 40-hex sha naming no tree in this
+    repo answers the root with the ROOT's sha rather than 404 — the fallback below is deliberate
+    (it is what keeps a commit sha and a git/ref sha working), and it cannot tell those apart from
+    a sha that means nothing. And a subtree sha resolves PER CALLER, because the entries it is
+    matched against are already `visible_ids`-scoped: a token that can see nothing inside a folder
+    does not find that folder's sha and gets its own root instead. No content crosses the ACL —
+    the answer holds only what that token could already read — but the tree it names is not the
+    one asked for.
+
+    **A tree keeps no history**, so every other `ref` — a branch name, or a sha from /branches,
+    /commits or git/ref — resolves to the repo's CURRENT root. FILES themselves do have history: a
+    corpus may state several snapshots of one path, and `/contents/{path}?ref=` reaches them (see
     :func:`get_contents`). What has no per-ref shape is the tree — there is no mapping from a ref to
     the set of snapshots that were current at it — so this route answers HEAD for every ref, and a
     path appears exactly once however many snapshots it holds. Two consequences a client author will
@@ -1080,16 +1096,35 @@ async def get_tree(
     ab = _api_base(request)
     rows = store.list_repo_files(conn, repo, ids)
     entries = _tree_from_paths(owner, repo, rows, ab)
+    subtree = _subtree_path(repo, ref, entries)
+    if subtree is not None:
+        prefix = subtree + "/"
+        entries = [
+            {**e, "path": e["path"][len(prefix) :]} for e in entries if e["path"].startswith(prefix)
+        ]
     if not _truthy(recursive):
         entries = [e for e in entries if "/" not in e["path"]]
     entries, truncated = _cap_tree(entries)
-    tree_sha = _repo_tree_sha(repo)
+    tree_sha = _repo_tree_sha(repo) if subtree is None else _dir_sha(repo, subtree)
     return {
         "sha": tree_sha,
         "url": f"{ab}/repos/{owner}/{repo}/git/trees/{tree_sha}",
         "tree": entries,
         "truncated": truncated,
     }
+
+
+def _subtree_path(repo: str, ref: str, entries: list[dict]) -> str | None:
+    """The directory `ref` names, if `ref` is one of this repo's subtree shas — else None.
+
+    Reversed off the directory entries already built rather than stored: `_dir_sha` is a pure
+    function of (repo, path), so the shas handed out in a listing are exactly the ones recomputed
+    here. A repo with no directories can only ever answer None, which is the root.
+    """
+    for entry in entries:
+        if entry["type"] == "tree" and _dir_sha(repo, entry["path"]) == ref:
+            return entry["path"]
+    return None
 
 
 def _cap_tree(entries: list[dict]) -> tuple[list[dict], bool]:

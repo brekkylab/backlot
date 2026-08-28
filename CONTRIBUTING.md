@@ -72,6 +72,7 @@ file with them:
 | `llama-index-readers-hubspot`, which no extra carries | the HubSpot reader test in `tests/test_llamaindex.py` |
 | `.[mcp]` | all of `tests/test_mcp.py` |
 | `.[mirage]` | the shim tests in `tests/test_integrations.py` |
+| `.[fsspec]` — `fsspec` and `gdrive-fsspec` | the Google Drive and GitHub filesystem tests in `tests/test_integrations.py` |
 | Docker, `npx`, `uvx` | one `tests/test_mcp.py` test each — the Atlassian, Notion and AWS MCP servers |
 | `git` | the tests in `tests/test_github.py` that build a real repo |
 
@@ -82,7 +83,7 @@ rather than a real incompatibility, so it goes in past its own dependencies, at 
 installs:
 
 ```bash
-uv pip install -e ".[dev,examples,mcp,llamaindex,mirage]"
+uv pip install -e ".[dev,examples,mcp,llamaindex,mirage,fsspec]"
 uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 ```
 

@@ -28,6 +28,12 @@ leaves optional fields out on purpose — to see what a record MAY carry, read
 Deliberately a subprocess and a real port, not an in-process ASGI transport: the official vendor
 SDKs, the MCP servers, and the mirage mounts all make real HTTP calls, and a fake transport would
 not exercise them. This module imports no FastAPI, so ``import backlot`` stays cheap.
+
+``backlot.main`` DEFINES the ASGI app; this module holds the handle to a RUNNING one — the
+``Server`` dataclass and the two ways to get one. ``serve`` starts a subprocess.
+``serve_or_connect`` starts one or attaches to a deployment already up, which is what lets an
+example run against the hosted server without changing code. Neither is test-only: ``backlot.cli``
+reads ``HELLO_CORPUS`` from here to serve ``backlot import --bundled``.
 """
 
 from __future__ import annotations

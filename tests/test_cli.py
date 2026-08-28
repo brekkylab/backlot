@@ -218,7 +218,7 @@ def test_byo_options_reach_the_byo_importer_typed(tmp_path, spy_byo):
 
 
 def test_the_bundled_flag_resolves_to_the_packaged_corpus_path(spy_byo):
-    from backlot.testing import HELLO_CORPUS
+    from backlot.server import HELLO_CORPUS
 
     assert cli.main(["import", "--bundled"]) == 0
     assert spy_byo["corpus"] == HELLO_CORPUS

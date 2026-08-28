@@ -384,7 +384,7 @@ def import_(
             param_hint="'--id-map'",
         )
     if bundled:
-        from backlot.testing import HELLO_CORPUS
+        from backlot.server import HELLO_CORPUS
 
         corpus = HELLO_CORPUS
 

@@ -13,7 +13,7 @@ import pytest
 
 import backlot
 from tests._helpers import complete
-from backlot.testing import _terminate
+from backlot.server import _terminate
 
 
 def _get(url: str) -> dict:
@@ -87,14 +87,14 @@ def test_readiness_waits_for_the_warm_up_but_not_for_a_failed_one(body, warm, mo
     import contextlib as ctx
     import json as json_mod
 
-    import backlot.testing as testing_mod
+    import backlot.server as server_mod
 
     @ctx.contextmanager
     def fake_urlopen(url, timeout=None):
         yield SimpleNamespace(status=200, read=lambda: json_mod.dumps(body).encode())
 
-    monkeypatch.setattr(testing_mod.urllib.request, "urlopen", fake_urlopen)
-    assert testing_mod._warm("http://x", timeout=0.5) is warm
+    monkeypatch.setattr(server_mod.urllib.request, "urlopen", fake_urlopen)
+    assert server_mod._warm("http://x", timeout=0.5) is warm
 
 
 def test_serve_accepts_records():
@@ -168,19 +168,19 @@ def test_serve_or_connect_does_not_fetch_the_token_over_plain_http_to_a_non_loop
     WITHOUT the fetch ever being attempted. Asserted by spying on
     `_admin_token_from_meta_users` and requiring it was never called, which is a stronger claim
     than just checking the returned token (that could coincidentally match)."""
-    import backlot.testing as testing_mod
+    import backlot.server as server_mod
 
-    monkeypatch.setattr(testing_mod, "_healthy", lambda url, timeout=10: True)
+    monkeypatch.setattr(server_mod, "_healthy", lambda url, timeout=10: True)
 
     calls = []
     monkeypatch.setattr(
-        testing_mod,
+        server_mod,
         "_admin_token_from_meta_users",
         lambda url, timeout=10: calls.append(url) or "should-never-be-used",
     )
 
     with backlot.serve_or_connect(url="http://example.com:8000") as s:
-        assert s.token == testing_mod.TOKEN
+        assert s.token == server_mod.TOKEN
 
     assert calls == [], f"token fetch must not run against a plain-http non-loopback host: {calls}"
 

@@ -2,7 +2,7 @@
 
 Not general API — a real connector gets its credentials from the Cloud Console / an OAuth
 consent screen, not from Backlot's ``/_meta/credentials`` endpoint — so this stays under
-``examples/`` rather than in ``backlot.testing``. Every script that needs one of these puts
+``examples/`` rather than in the package API. Every script that needs one of these puts
 ``examples/`` on ``sys.path`` first:
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

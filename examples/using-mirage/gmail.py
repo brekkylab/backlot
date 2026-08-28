@@ -133,7 +133,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
     p.add_argument(
         "--user",
-        help="which user's OAuth token to use, from GET /_mock/users "
+        help="which user's OAuth token to use, from GET /_meta/users "
         f"(default: {MAILBOX_OWNER}, who owns the mailbox this corpus seeds)",
     )
     p.add_argument(

@@ -191,7 +191,7 @@ def _s3_params(base: str, token: str):
     """`uvx` args pointing the awslabs aws-api MCP server at the mock via AWS_ENDPOINT_URL (see
     examples/.../s3.py). The server shells the AWS CLI, whose boto3 client SigV4-signs each call;
     the mock verifies the signature against the access-key/secret derived from ``token`` (the same
-    pair GET /_mock/users exposes)."""
+    pair GET /_meta/users exposes)."""
     from mcp import StdioServerParameters
 
     return StdioServerParameters(
@@ -238,7 +238,7 @@ def test_mcp_s3_lists_objects(live_server):
 def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None) -> bool:
     """Exercise the OpenAPI→MCP bridge path WITHOUT touching ``examples/``.
 
-    Fetches the mock's MCP-ready spec (``GET /_mock/openapi/<source>`` — produced by ``backlot.openapi``,
+    Fetches the mock's MCP-ready spec (``GET /_meta/openapi/<source>`` — produced by ``backlot.openapi``,
     which owns the slice/dedupe logic) and serves it via an in-memory FastMCP client over an auth'd
     httpx client. That is the whole of what the example bridge does; the meaningful logic lives in
     the app and is unit-tested in ``tests/test_openapi.py``. Returns ``ok_pred`` over the tool's
@@ -248,7 +248,7 @@ def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None
     import httpx
     from fastmcp import Client, FastMCP
 
-    spec = httpx.get(f"{base}/_mock/openapi/{source}", timeout=10).json()
+    spec = httpx.get(f"{base}/_meta/openapi/{source}", timeout=10).json()
     if username:  # Atlassian: Basic username:token (the api_token IS the mock token)
         header = {
             "Authorization": "Basic " + b64.b64encode(f"{username}:{token}".encode()).decode()

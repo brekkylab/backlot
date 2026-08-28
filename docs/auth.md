@@ -12,7 +12,7 @@ machine too, and the commands below are copy-pasteable against `backlot serve`.
 ## Where credentials come from
 
 ```bash
-curl -s localhost:8000/_mock/users
+curl -s localhost:8000/_meta/users
 ```
 ```json
 { "org": "acme", "admin_token": "admin-service-token",
@@ -24,7 +24,7 @@ curl -s localhost:8000/_mock/users
 ```
 
 ```bash
-curl -s localhost:8000/_mock/credentials   # for a Google client that wants a config, not a token
+curl -s localhost:8000/_meta/credentials   # for a Google client that wants a config, not a token
 ```
 ```json
 { "org": "acme", "token_uri": "http://localhost:8000/oauth2/token",
@@ -117,7 +117,7 @@ curl -s "localhost:8000/drive/v3/files?fields=files(id,name)" \
 #### A client carrying a config, not a token — `POST /oauth2/token`
 
 For a connector that configures with an OAuth client or a service account rather than a raw token,
-`token_uri` from `/_mock/credentials` points back at the mock, so the client's own refresh lands
+`token_uri` from `/_meta/credentials` points back at the mock, so the client's own refresh lands
 here and resolves to the same ACL:
 
 ```bash
@@ -211,7 +211,7 @@ verifier resolves back to a user — so hand them to any AWS client:
 import boto3, httpx
 from botocore.config import Config
 
-ava = next(u for u in httpx.get("http://localhost:8000/_mock/users").json()["users"]
+ava = next(u for u in httpx.get("http://localhost:8000/_meta/users").json()["users"]
            if u["email"] == "ava.chen@acme.com")
 
 s3 = boto3.client(

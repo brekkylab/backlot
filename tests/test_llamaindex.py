@@ -180,7 +180,7 @@ def test_gmail(live_server):
 
 
 def _google_service_account_info(base_url: str) -> dict:
-    """Fetch the mock's service-account key from `/_mock/credentials` (the mock-specific glue
+    """Fetch the mock's service-account key from `/_meta/credentials` (the mock-specific glue
     standing in for the JSON downloaded from the Cloud Console) — bare (no `subject`), so the
     resulting credential authenticates as the service account itself (admin, sees everything).
 
@@ -190,7 +190,7 @@ def _google_service_account_info(base_url: str) -> dict:
     import json
     import urllib.request
 
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/credentials") as r:
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/credentials") as r:
         return json.load(r)["service_account"]
 
 

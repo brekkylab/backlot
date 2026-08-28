@@ -43,7 +43,7 @@ def test_github_serves_a_comment_dated_at_the_epoch(tmp_path):
     )
     with client_for(s, reload=True) as c:
         h = {"Authorization": f"Bearer {s.admin_token}"}
-        org = c.get("/_mock/users", headers=h).json()["org"]
+        org = c.get("/_meta/users", headers=h).json()["org"]
         (comment,) = c.get(f"/github/repos/{org}/gw/issues/7/comments", headers=h).json()
         assert comment["created_at"].startswith("1970-01-01T00:00:00")
         assert (
@@ -498,7 +498,7 @@ def gh_client(tmp_path_factory):
 @pytest.fixture(scope="module")
 def gh_org(gh_client):
     c, _ = gh_client
-    return c.get("/_mock/users").json()["org"]
+    return c.get("/_meta/users").json()["org"]
 
 
 @pytest.fixture(scope="module")

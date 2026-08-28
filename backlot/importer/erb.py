@@ -711,7 +711,7 @@ class Principals:
     def write_tokens(self, settings) -> None:
         # Only the employee directory are authenticating org users (realistic roster). Everyone
         # else the corpus references is display-only: they still appear as owners/authors/grantees
-        # on documents (name derived from their email), but get no bearer token / /_mock/users entry.
+        # on documents (name derived from their email), but get no bearer token / /_meta/users entry.
         users = [
             {"email": e, "name": u["name"], "token": _user_token(e)}
             for e, u in self.users.items()

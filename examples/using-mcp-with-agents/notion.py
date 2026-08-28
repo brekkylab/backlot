@@ -5,7 +5,7 @@ Runs `@notionhq/notion-mcp-server` via **npx** (Node) against a `--url` mock (or
 spins up), then lets an LLM agent answer a question by calling its MCP tools. The server takes a
 first-class `BASE_URL` override, so pointing it at the mock is one env var and a local `localhost`
 mock is reached directly (no Docker/host-gateway tricks). Auth is a mock token (`--token`, default
-admin; per-user from GET /_mock/users).
+admin; per-user from GET /_meta/users).
 
 Prereqs: Node/npx; `pip install -e ".[mcp]"`; an LLM key for `--agent` (`ANTHROPIC_API_KEY`, or
 `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
@@ -67,7 +67,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_mock/users "
+        help="mock bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument(

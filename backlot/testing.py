@@ -50,7 +50,7 @@ from backlot.config import Settings
 HELLO_CORPUS = Path(__file__).resolve().parent / "data" / "hello.jsonl"
 # Settings default; per-user tokens are in <data_dir>/tokens.yaml. Used only as the LAST-RESORT
 # fallback in serve_or_connect()'s remote branch, when the real token can't be fetched — either
-# GET /_mock/users is disabled (BACKLOT_EXPOSE_TOKENS=false, a legitimate configuration) or the
+# GET /_meta/users is disabled (BACKLOT_EXPOSE_TOKENS=false, a legitimate configuration) or the
 # URL doesn't clear _trusted_for_token_fetch's bar (plain HTTP to a non-loopback host: treating an
 # unauthenticated plaintext response as a credential there is the wrong default, not merely
 # unavailable). serve() itself never falls back to this: it reads the real value via
@@ -74,7 +74,7 @@ class Server:
     environment / cwd ``.env`` the subprocess inherits, so a caller's ``BACKLOT_ADMIN_TOKEN``
     override is reflected correctly. For an already-running remote server
     (``serve_or_connect``'s remote-``url`` branch), it is fetched from that server's own
-    ``GET /_mock/users`` — a mock-only affordance (``backlot/main.py``) that already serves
+    ``GET /_meta/users`` — a mock-only affordance (``backlot/main.py``) that already serves
     ``admin_token`` for exactly this purpose (``examples/using-official-sdk/s3.py`` tells users to
     get credentials from that endpoint for a remote server they didn't start) — but only when
     ``url`` clears ``_trusted_for_token_fetch`` (``https``, or a loopback host): a plaintext
@@ -136,7 +136,7 @@ def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
 
 
 def _trusted_for_token_fetch(url: str) -> bool:
-    """Whether it's safe to treat a plaintext ``GET /_mock/users`` response from ``url`` as a
+    """Whether it's safe to treat a plaintext ``GET /_meta/users`` response from ``url`` as a
     credential.
 
     Gates the token FETCH in ``serve_or_connect``'s remote branch only — not the connection
@@ -154,14 +154,14 @@ def _trusted_for_token_fetch(url: str) -> bool:
     return parsed.hostname in ("localhost", "127.0.0.1", "::1")
 
 
-def _admin_token_from_mock_users(url: str, timeout: float = 10) -> str | None:
-    """Fetch the real admin token from a remote server's own ``GET /_mock/users`` — the same
+def _admin_token_from_meta_users(url: str, timeout: float = 10) -> str | None:
+    """Fetch the real admin token from a remote server's own ``GET /_meta/users`` — the same
     affordance ``examples/using-official-sdk/s3.py`` already points users at for a remote
     server's credentials. Returns None (not raises) if the endpoint 404s
     (``BACKLOT_EXPOSE_TOKENS=false``, a legitimate configuration, not an error) or the response
     is otherwise unusable, so the caller can fall back to a guess rather than fail the connect."""
     try:
-        with urllib.request.urlopen(f"{url.rstrip('/')}/_mock/users", timeout=timeout) as r:
+        with urllib.request.urlopen(f"{url.rstrip('/')}/_meta/users", timeout=timeout) as r:
             if r.status != 200:
                 return None
             data = json.loads(r.read())
@@ -273,7 +273,7 @@ def serve_or_connect(
         if _healthy(url):
             print(f"using Backlot at {url}")
             # Fetched, not guessed, when possible AND safe (see Server.token's docstring): GET
-            # /_mock/users on the remote server reports its real admin_token. Gated by
+            # /_meta/users on the remote server reports its real admin_token. Gated by
             # _trusted_for_token_fetch — this is about not treating an unauthenticated plaintext
             # response from an arbitrary host as a credential, NOT about `url`'s server being
             # untrustworthy in general (we already talk to it either way). Falls back to the
@@ -281,7 +281,7 @@ def serve_or_connect(
             # disabled (BACKLOT_EXPOSE_TOKENS=false) or the URL not clearing that bar.
             token = TOKEN
             if _trusted_for_token_fetch(url):
-                token = _admin_token_from_mock_users(url) or TOKEN
+                token = _admin_token_from_meta_users(url) or TOKEN
             yield Server(base_url=url.rstrip("/"), token=token, data_dir=None)
             return
         print(f"--url {url!r} is not reachable — falling back to a local server")

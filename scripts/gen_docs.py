@@ -7,7 +7,7 @@
 Why a mapping lives here instead of being derived: nothing in the app answers "which URL prefix
 belongs to which source_type". ``jira`` and ``confluence`` both sit under ``/atlassian``; one
 ``google_drive`` spans ``/drive``, ``/docs``, ``/sheets`` and ``/slides``; and ``/batch``,
-``/oauth2``, ``/health`` and ``/_mock`` are not sources at all. ``backlot.openapi.SOURCE_PREFIXES``
+``/oauth2``, ``/health`` and ``/_meta`` are not sources at all. ``backlot.openapi.SOURCE_PREFIXES``
 cannot stand in — it is scoped to the MCP bridge, so it omits S3 deliberately and merges Jira with
 Confluence.
 

@@ -362,14 +362,14 @@ def google_oauth():
     from google.oauth2.credentials import Credentials as UserCreds
     from googleapiclient.discovery import build
 
-    with urllib.request.urlopen(f"{BASE}/_mock/credentials") as r:
+    with urllib.request.urlopen(f"{BASE}/_meta/credentials") as r:
         creds = json.load(r)
-    with urllib.request.urlopen(f"{BASE}/_mock/users") as r:
+    with urllib.request.urlopen(f"{BASE}/_meta/users") as r:
         who = json.load(r)["users"][0]
     oc, uri = creds["oauth_client"], creds["token_uri"]
     email = who["email"]
 
-    # authorized_user credential = the shared oauth_client + a user's token (from /_mock/users,
+    # authorized_user credential = the shared oauth_client + a user's token (from /_meta/users,
     # used as the refresh_token) + the mock's token_uri
     uc = UserCreds(
         None,

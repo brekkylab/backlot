@@ -13,7 +13,7 @@ hook, so a GET+POST route is inherently one id. Splitting every such route into 
 would be invasive and still leave a redundant GET-tool + POST-tool pair. Instead this module keeps
 the fidelity-shaped routes as-is and, for MCP consumers, slices the spec to one source's paths and
 collapses each route's methods to one callable operation (prefer GET, then fewest path params, then
-the lexicographically greatest path). Served at ``GET /_mock/openapi/{source}`` so a bridge consumes
+the lexicographically greatest path). Served at ``GET /_meta/openapi/{source}`` so a bridge consumes
 it directly — no client-side spec surgery. S3 is intentionally absent: it is SigV4-signed, which a
 static bridge auth header can't produce.
 """

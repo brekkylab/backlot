@@ -33,7 +33,7 @@ async def token(request: Request):
         return _err("temporarily_unavailable: no mock credentials configured")
 
     if grant == "refresh_token":
-        # the refresh_token IS the user's bearer token (from /_mock/users) — validate it
+        # the refresh_token IS the user's bearer token (from /_meta/users) — validate it
         # resolves to someone and hand it straight back as the access token.
         rt = form.get("refresh_token")
         access = rt if acl.resolve(rt) is not None else None

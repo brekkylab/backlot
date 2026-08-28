@@ -171,7 +171,7 @@ because that is where Google puts them.
 
 | Endpoint | Notes |
 |---|---|
-| `POST /oauth2/token` | Turns a Google-style client credential into a bearer token the rest of the mock already understands. Two grants: `refresh_token`, where the refresh token *is* the user's token from `/_mock/users`, and a signed service-account JWT assertion, whose `sub` claim selects the impersonated user under domain-wide delegation. A bare service account with no `sub` resolves to the admin/service identity. Expiry is cosmetic — a re-refresh returns the same token, so a long crawl never breaks |
+| `POST /oauth2/token` | Turns a Google-style client credential into a bearer token the rest of the mock already understands. Two grants: `refresh_token`, where the refresh token *is* the user's token from `/_meta/users`, and a signed service-account JWT assertion, whose `sub` claim selects the impersonated user under domain-wide delegation. A bare service account with no `sub` resolves to the admin/service identity. Expiry is cosmetic — a re-refresh returns the same token, so a long crawl never breaks |
 | `POST /batch`, `POST /batch/{api}/{version}` | Google's `multipart/mixed` batch envelope: each part is an `application/http` sub-request, answered in order with its `Content-ID` preserved. The outer credential applies to any sub-request that does not carry its own, as real Google does |
 
 `/batch` is Google-shaped but not Google-scoped — sub-requests are dispatched against the whole
@@ -292,10 +292,10 @@ Not part of any vendor's API — Backlot's own.
 | Endpoint | Notes |
 |---|---|
 | `/health` | Liveness, plus two corpus counts: `documents` is the root rows served, `source_documents` is what the corpus offered — smaller, because parsing turns one Slack transcript into many messages |
-| `/_mock/users` | Every generated user with their token and groups, in `data/tokens.yaml`'s shape, plus an `s3_access_key_id` / `s3_secret_access_key` pair each, since S3 authenticates with SigV4 rather than a bearer token. Pick a token, send it to any service, and see that user's ACL-filtered view |
-| `/_mock/credentials` | The shared Google-style OAuth client and the org service account, for connectors that configure with an OAuth client instead of a raw token. No per-user data — a user's refresh token is their bearer token from `/_mock/users` |
-| `/_mock/openapi/{source}` | One source's slice of `/openapi.json`, with the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each, ready to hand to `FastMCP.from_openapi()`. S3 is absent by design: SigV4 signs each request, which a static `Authorization` header cannot do |
+| `/_meta/users` | Every generated user with their token and groups, in `data/tokens.yaml`'s shape, plus an `s3_access_key_id` / `s3_secret_access_key` pair each, since S3 authenticates with SigV4 rather than a bearer token. Pick a token, send it to any service, and see that user's ACL-filtered view |
+| `/_meta/credentials` | The shared Google-style OAuth client and the org service account, for connectors that configure with an OAuth client instead of a raw token. No per-user data — a user's refresh token is their bearer token from `/_meta/users` |
+| `/_meta/openapi/{source}` | One source's slice of `/openapi.json`, with the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each, ready to hand to `FastMCP.from_openapi()`. S3 is absent by design: SigV4 signs each request, which a static `Authorization` header cannot do |
 | `/openapi.json` | FastAPI's own typed spec for the whole server |
 
-`/_mock/users` and `/_mock/credentials` hand out working credentials in the clear, so both 404 when
+`/_meta/users` and `/_meta/credentials` hand out working credentials in the clear, so both 404 when
 `BACKLOT_EXPOSE_TOKENS=false` — see [auth.md](auth.md) and [configuration.md](configuration.md).

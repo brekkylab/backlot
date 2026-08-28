@@ -40,7 +40,7 @@ _p = argparse.ArgumentParser(
 _p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
 _p.add_argument(
     "--user",
-    help="which user's OAuth token to use, from GET /_mock/users (default: the first user)",
+    help="which user's OAuth token to use, from GET /_meta/users (default: the first user)",
 )
 args = _p.parse_args()
 

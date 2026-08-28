@@ -112,7 +112,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
     p.add_argument(
         "--token",
-        help="mock token from GET /_mock/users "
+        help="mock token from GET /_meta/users "
         "(default: the admin token, which sees everything). Linear accepts it bare or as Bearer",
     )
     p.add_argument(

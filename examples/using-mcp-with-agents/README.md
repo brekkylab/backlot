@@ -95,16 +95,16 @@ ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/fireflies.py # via t
 **Auth is per-service.** Retrieval is ACL-scoped by the identity you pass:
 
 - **Atlassian / Notion** use a mock **token**: default is the admin token (sees everything); pass
-  `--token` a per-user token from `GET /_mock/users` to scope it (the token, not the username,
+  `--token` a per-user token from `GET /_meta/users` to scope it (the token, not the username,
   authenticates).
 - **S3** uses an AWS **access-key/secret pair** (not a token): pass `--access-key` / `--secret-key`
-  — **required with `--url`** (real AWS keys, or a pair from `GET <url>/_mock/users`, where each
+  — **required with `--url`** (real AWS keys, or a pair from `GET <url>/_meta/users`, where each
   user and the admin has an `s3_access_key_id` / `s3_secret_access_key`). Without `--url` the local
   throwaway mock uses its own admin keypair.
 
 - **Local** — `--url http://localhost:PORT`.
 - **Remote** — `--url https://host` plus the service's credentials. Grab them from
-  `GET /_mock/users` (don't reuse the built-in admin token/keys against someone else's server).
+  `GET /_meta/users` (don't reuse the built-in admin token/keys against someone else's server).
   `atlassian.py` additionally **requires** `--username` for a remote target (see below).
 
 ## How `atlassian.py` connects
@@ -142,7 +142,7 @@ endpoint override, so the example just sets:
 - `AWS_ENDPOINT_URL=<mock>/s3` — every AWS CLI call the server runs is routed at the mock instead
   of real AWS.
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — the required `--access-key` / `--secret-key` (the
-  keys the mock's SigV4 verifier accepts; grab a pair from `GET /_mock/users`), so botocore's
+  keys the mock's SigV4 verifier accepts; grab a pair from `GET /_meta/users`), so botocore's
   signature resolves back to that identity and the mock enforces its ACL.
 - `AWS_REGION=us-east-1` — any region works (the mock's verifier reads the region back out of the
   client's own credential scope); this just has to be *some* valid region.
@@ -178,7 +178,7 @@ the bridge" below). Instead of a vendor server, each launcher runs the **generic
 `_openapi_bridge.py` (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess. The bridge is
 deliberately thin — the mock does the spec work:
 
-- the mock serves an **MCP-ready spec per source** at **`GET /_mock/openapi/<source>`** — its own
+- the mock serves an **MCP-ready spec per source** at **`GET /_meta/openapi/<source>`** — its own
   typed `/openapi.json` (the routers declare query params and response models) sliced to that
   source and with the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each
   (the raw spec carries ~14 duplicate operationIds, which an MCP tool set can't have). This lives
@@ -189,7 +189,7 @@ deliberately thin — the mock does the spec work:
 
 stdio (not streamable-HTTP): FastMCP's HTTP mode has a known bug forwarding the client's
 `Authorization` header downstream. Auth: `--username` present → HTTP Basic (Atlassian); otherwise
-`Bearer` (`--token`, default admin; per-user from `GET /_mock/users`). Adding a source is one entry
+`Bearer` (`--token`, default admin; per-user from `GET /_meta/users`). Adding a source is one entry
 in `backlot/openapi.py`'s `SOURCE_PREFIXES` plus a thin launcher.
 
 **Notion and Atlassian** already have vendor-server launchers above, but they also work through the
@@ -203,13 +203,13 @@ python examples/using-mcp-with-agents/_openapi_bridge.py --source atlassian --ba
 Atlassian authenticates with HTTP Basic (`--username` + the mock token as the password), and its
 `SOURCE_PREFIXES` entry covers both the `/atlassian` (Jira) and `/wiki` (Confluence) path roots.
 **S3 is the one source with no bridge** — it is SigV4-signed (a static `Authorization` header can't
-sign each request), so it is absent from `/_mock/openapi/*`; use the vendor `s3.py` example.
+sign each request), so it is absent from `/_meta/openapi/*`; use the vendor `s3.py` example.
 
 ## How the GraphQL→MCP bridge connects (`linear.py` / `fireflies.py`)
 
 Linear and Fireflies are **GraphQL-only**, served at `POST /<source>/graphql` with
 `include_in_schema=False` — so there is no OpenAPI operation for the bridge above to slice, and
-`GET /_mock/openapi/linear` is a 404 by construction. What a GraphQL endpoint *does* publish is its
+`GET /_meta/openapi/linear` is a 404 by construction. What a GraphQL endpoint *does* publish is its
 schema, over standard introspection, so that is what `_graphql_bridge.py` reads. Same split as the
 OpenAPI bridge — the app does the schema work, the bridge is transport:
 

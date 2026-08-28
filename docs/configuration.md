@@ -12,7 +12,7 @@ the var is unset. There are ten, and this page is all of them.
 |---|---|---|
 | `BACKLOT_DATA_DIR` | `./data` (resolved against the cwd, **not** the install location) | Where the corpus lives: `mock.sqlite`, `tokens.yaml`, `credentials.yaml`. Both `backlot import` and `backlot serve` read it, which is how you keep several corpora side by side — `BACKLOT_DATA_DIR=/tmp/demo backlot import c.jsonl` |
 | `BACKLOT_ADMIN_TOKEN` | `admin-service-token` | The token that bypasses ACL filtering — a full-crawl / service identity. Set it to anything for a shared deployment |
-| `BACKLOT_EXPOSE_TOKENS` | `true` | Serves `GET /_mock/users` and `GET /_mock/credentials`, which hand out every user's token in the clear. Fine for a local mock; set `false` to close both (they 404). See [auth.md](auth.md) |
+| `BACKLOT_EXPOSE_TOKENS` | `true` | Serves `GET /_meta/users` and `GET /_meta/credentials`, which hand out every user's token in the clear. Fine for a local mock; set `false` to close both (they 404). See [auth.md](auth.md) |
 | `BACKLOT_ORG_NAME` | inferred from the corpus (fallback `example`) | The org slug that shows up in `auth.test`, synthesized emails and self-URLs. Inferred from the dominant author email domain — `@acme.com` documents serve as org `acme` — so set it only to override that |
 | `BACKLOT_ORG_DOMAIN` | inferred from the corpus (fallback `example.com`) | The domain half of the same inference, e.g. `acme.com`. Used for addresses the corpus does not state |
 
@@ -66,8 +66,8 @@ exposure, and a multi-GB corpus wants different SQLite tuning than a laptop. Its
 
 **The default image cannot do the OAuth-config path.** `full` copies only the two runtime files the
 import produced — `mock.sqlite` and `tokens.yaml` — and deliberately leaves `credentials.yaml`
-behind in `builder`. So in that image `GET /_mock/credentials` is a 404 and `POST /oauth2/token`
-answers `temporarily_unavailable: no mock credentials configured`. Bearer-token auth, `/_mock/users`
+behind in `builder`. So in that image `GET /_meta/credentials` is a 404 and `POST /oauth2/token`
+answers `temporarily_unavailable: no mock credentials configured`. Bearer-token auth, `/_meta/users`
 and every vendor API are unaffected; it is only the Google client-config exchange
 ([auth.md](auth.md)) that needs the file. Mount a data dir built by your own
 `backlot import` if you need it.

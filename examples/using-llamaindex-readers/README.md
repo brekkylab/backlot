@@ -111,4 +111,4 @@ exactly as against the real API.
   constructor path drops any `subject`.
 
 Gmail/Drive credentials (and the shared OAuth client config) come from the mock's
-`GET /_mock/credentials`, exactly as in `examples/using-official-sdk/`.
+`GET /_meta/credentials`, exactly as in `examples/using-official-sdk/`.

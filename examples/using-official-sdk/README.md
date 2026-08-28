@@ -77,7 +77,7 @@ uses — a token, Google `--user`, Atlassian Basic auth, or an S3 keypair:
 # Google: gmail.py (authorized_user) & gdrive.py (service account) both take --user <email>
 python examples/using-official-sdk/gmail.py --url http://localhost:8000 --user ava@acme.com
 
-# bearer-token services: slack.py, github.py, notion.py — grab a token from GET /_mock/users:
+# bearer-token services: slack.py, github.py, notion.py — grab a token from GET /_meta/users:
 python examples/using-official-sdk/github.py --url http://localhost:8000 --token <usr-token>
 
 # Linear (TypeScript): --token is sent as the bare Authorization value, no Bearer prefix
@@ -87,13 +87,13 @@ cd examples/using-official-sdk/linear && npx tsx index.ts --url http://localhost
 python examples/using-official-sdk/jira.py --url http://localhost:8000 \
     --username ava@acme.com --password <usr-token>
 
-# S3: boto3 SigV4 uses an AWS keypair (required with --url; grab a pair from GET /_mock/users)
+# S3: boto3 SigV4 uses an AWS keypair (required with --url; grab a pair from GET /_meta/users)
 python examples/using-official-sdk/s3.py --url http://localhost:8000 \
     --access-key <AKIA...> --secret-key <secret>
 ```
 
 The response then contains only what that identity is allowed to read. Grab tokens / emails /
-S3 keypairs from the running server's [`GET /_mock/users`](../../README.md#auth--tokens) directory.
+S3 keypairs from the running server's [`GET /_meta/users`](../../README.md#auth--tokens) directory.
 For Jira/Confluence either `--password <token>` or `--username <email>` alone identifies the user
 (the mock resolves by the api token, falling back to the username email). Pair
 `--user`/`--token`/`--password`/`--access-key`+`--secret-key` with `--url` so the identity exists
@@ -106,10 +106,10 @@ library's own token exchange runs against the mock's `POST /oauth2/token` in bot
 
 - **`gmail.py` → authorized-user (3-legged OAuth)**: `client_id`/`client_secret` + a
   `refresh_token`. The shared `oauth_client` comes from
-  [`GET /_mock/credentials`](../../README.md#auth--tokens); the
-  `refresh_token` is a user's token from `GET /_mock/users`. `--user <email>` picks the user
+  [`GET /_meta/credentials`](../../README.md#auth--tokens); the
+  `refresh_token` is a user's token from `GET /_meta/users`. `--user <email>` picks the user
   (default: the first); there is no admin in this flow.
-- **`gdrive.py` → service account**: the key from `/_mock/credentials` (standing in for the JSON
+- **`gdrive.py` → service account**: the key from `/_meta/credentials` (standing in for the JSON
   you'd download from the Cloud Console) signs a JWT. `--user <email>` sets the impersonation
   subject (domain-wide delegation); without it the bare service account maps to the admin
   identity (sees everything).
@@ -129,7 +129,7 @@ library's own token exchange runs against the mock's `POST /oauth2/token` in bot
 
 (`T` is a token from `data/tokens.yaml` — the admin token sees everything; a per-user token is
 scoped to that user's ACL. For Google, credentials come from a service account issued by
-`/_mock/credentials`; pass `static_discovery=True`. A raw `Credentials(token=T)` also still works.)
+`/_meta/credentials`; pass `static_discovery=True`. A raw `Credentials(token=T)` also still works.)
 
 ## Coverage
 

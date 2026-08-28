@@ -123,7 +123,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
     p.add_argument(
         "--user",
-        help="which user's OAuth token to use, from GET /_mock/users (default: the first user)",
+        help="which user's OAuth token to use, from GET /_meta/users (default: the first user)",
     )
     p.add_argument(
         "--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)"

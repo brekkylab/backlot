@@ -64,7 +64,7 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
 - Groups, users, and a per-user token for each are derived from the corpus and written to
   `data/tokens.yaml` — the same token-scoped ACL then applies across every one of them and MCP.
 - **Org:** the org name + domain are inferred from the corpus's dominant author email domain
-  (a `@acme.com` corpus serves as org `acme`, so Slack `auth.test`, `/_mock/users`, and default
+  (a `@acme.com` corpus serves as org `acme`, so Slack `auth.test`, `/_meta/users`, and default
   emails all say `acme` — not a hardcoded default). Override with `BACKLOT_ORG_NAME` /
   `BACKLOT_ORG_DOMAIN`. The chosen values are persisted to `data/tokens.yaml`.
 - **Slack threads:** a slack record may carry a `replies` array. Each reply is a full message,

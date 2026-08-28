@@ -72,7 +72,7 @@ CORPUS = [
 
 def build(mock, token):
     # Notion's host is a config knob — point it at the mock (no monkeypatch needed).
-    # --token <usr-token> (from /_mock/users) → ACL-filtered to that user; else admin sees all.
+    # --token <usr-token> (from /_meta/users) → ACL-filtered to that user; else admin sees all.
     return NotionResource(NotionConfig(api_key=token, base_url=f"{mock.base_url}/notion/v1"))
 
 
@@ -130,7 +130,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_mock/users "
+        help="mock bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument(

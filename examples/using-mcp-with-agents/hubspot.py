@@ -3,7 +3,7 @@
 
 The bridge (`_openapi_bridge.py`) fetches the mock's typed `/openapi.json`, slices it to `/hubspot`,
 and serves those operations over stdio with a `Bearer <token>` header — so retrieval is ACL-scoped by
-the token (default admin; per-user from GET /_mock/users). No vendor SDK and no vendor MCP server:
+the token (default admin; per-user from GET /_meta/users). No vendor SDK and no vendor MCP server:
 HubSpot has no base-URL-switchable one, so this bridge is its MCP path.
 
 Because the CRM API is polymorphic over `{object_type}`, the agent gets *five* tools that each work
@@ -104,7 +104,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_mock/users "
+        help="mock bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument(

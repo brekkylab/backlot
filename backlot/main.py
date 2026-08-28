@@ -199,8 +199,8 @@ async def health():
     return body
 
 
-@app.get("/_mock/users")
-async def mock_users():
+@app.get("/_meta/users")
+async def meta_users():
     """Directory of every generated user + their token, for testing per-user ACL.
 
     Not part of any emulated vendor API — a mock-only affordance. Present each user's
@@ -241,15 +241,15 @@ async def mock_users():
     }
 
 
-@app.get("/_mock/credentials")
-async def mock_credentials(request: Request):
+@app.get("/_meta/credentials")
+async def meta_credentials(request: Request):
     """Directory of Google-style OAuth client credentials, for driving connectors that
     configure with an OAuth client / service account rather than a raw access token.
 
     Returns only the **shared** credentials: the single ``oauth_client`` (client_id/secret) and
     the org ``service_account`` JSON (with its private key). There is no per-user data here — a
-    user's ``refresh_token`` is simply their bearer token from ``/_mock/users``, so build an
-    ``authorized_user`` credential by combining ``oauth_client`` + a token from ``/_mock/users`` +
+    user's ``refresh_token`` is simply their bearer token from ``/_meta/users``, so build an
+    ``authorized_user`` credential by combining ``oauth_client`` + a token from ``/_meta/users`` +
     ``token_uri``. ``token_uri`` points back at this mock's ``/oauth2/token``, so the client's
     refresh / JWT-bearer exchange lands here. Impersonate a user with the service account by
     setting ``subject=<email>``; a bare service account (no subject) resolves to the
@@ -269,8 +269,8 @@ async def mock_credentials(request: Request):
     }
 
 
-@app.get("/_mock/openapi/{source}")
-async def mock_openapi(source: str):
+@app.get("/_meta/openapi/{source}")
+async def meta_openapi(source: str):
     """An MCP-ready OpenAPI spec for one source: the app's own ``/openapi.json`` sliced to that
     source and with its GET/POST and v2/v3 fidelity aliases collapsed to one operation each, so an
     OpenAPI→MCP bridge can feed it straight to ``FastMCP.from_openapi()`` (see ``backlot.openapi``)."""

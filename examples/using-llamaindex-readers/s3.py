@@ -2,7 +2,7 @@
 """Load S3 objects through the official llama-index S3 reader. Self-contained.
 
 S3 uses an AWS access-key/secret pair (not a bearer token). With `--url` (a running server),
-`--access-key`/`--secret-key` are required — grab a pair from GET <url>/_mock/users. Without
+`--access-key`/`--secret-key` are required — grab a pair from GET <url>/_meta/users. Without
 `--url` the local throwaway mock's admin keypair is used.
 
     pip install -e ".[examples,llamaindex]"
@@ -63,7 +63,7 @@ def main(reader):
 
 
 def _admin_keys(base_url):
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/users") as r:
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/users") as r:
         data = json.load(r)
     return data["admin_s3_access_key_id"], data["admin_s3_secret_access_key"]
 
@@ -76,7 +76,7 @@ def _parse_args():
     args = p.parse_args()
     if args.url and not (args.access_key and args.secret_key):
         p.error(
-            "--access-key and --secret-key are required with --url (from GET <url>/_mock/users)"
+            "--access-key and --secret-key are required with --url (from GET <url>/_meta/users)"
         )
     return args
 

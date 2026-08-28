@@ -67,7 +67,7 @@ read correctly.
 f"{mock.base_url}/s3", path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
 `path_style=True` keeps the bucket in the path (`/s3/<bucket>/...`) rather than the hostname. S3
 uses an AWS keypair (not a bearer token): `--access-key`/`--secret-key` are **required with
-`--url`** (real AWS keys, or a pair from `GET <url>/_mock/users` — the keys the SigV4 verifier
+`--url`** (real AWS keys, or a pair from `GET <url>/_meta/users` — the keys the SigV4 verifier
 accepts); without `--url` the local throwaway mock uses its own admin keypair.
 
 **Google** has no such knob — its connectors read the API host from module constants that the
@@ -156,7 +156,7 @@ without an ACL scan, batch the per-file ACL lookup, and honor the `fields` mask.
 Same as the official-SDK examples: pair the identity flag with `--url`.
 
 ```bash
-# Slack — a bearer token from GET /_mock/users
+# Slack — a bearer token from GET /_meta/users
 python examples/using-mirage/slack.py --url http://localhost:8000 --token <usr-token>
 
 # Gmail / Drive — a user email (authorized-user credential, impersonating that user)

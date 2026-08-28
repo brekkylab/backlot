@@ -15,7 +15,7 @@ address"). So to drive a remote deployment, tunnel it to loopback and point `--u
 
 S3 authenticates with an AWS access-key/secret pair (not a bearer token). With `--url` (a running
 server) `--access-key` / `--secret-key` are **required** — pass real AWS keys, or a pair from
-`GET <url>/_mock/users` (each user, and the admin, has an `s3_access_key_id` / `s3_secret_access_key`
+`GET <url>/_meta/users` (each user, and the admin, has an `s3_access_key_id` / `s3_secret_access_key`
 there). Without `--url` the local throwaway mock uses its own admin keypair.
 
 Prereqs: uvx (Astral `uv`); `pip install -e ".[mcp]"`; an LLM key for `--agent` (`ANTHROPIC_API_KEY`,
@@ -95,7 +95,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--access-key",
         help="AWS access key id (S3 uses a keypair, not a token); "
-        "required with --url — from GET <url>/_mock/users, or real AWS",
+        "required with --url — from GET <url>/_meta/users, or real AWS",
     )
     p.add_argument("--secret-key", help="AWS secret access key (required with --url)")
     p.add_argument(
@@ -108,14 +108,14 @@ def _parse_args() -> argparse.Namespace:
     if args.url and not (args.access_key and args.secret_key):
         p.error(
             "--access-key and --secret-key are required with --url "
-            "(grab a pair from GET <url>/_mock/users)"
+            "(grab a pair from GET <url>/_meta/users)"
         )
     return args
 
 
 def _admin_keys(base_url: str) -> tuple[str, str]:
-    """The local throwaway mock's admin S3 keypair, read from its /_mock/users."""
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/users") as r:
+    """The local throwaway mock's admin S3 keypair, read from its /_meta/users."""
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/users") as r:
         data = json.load(r)
     return data["admin_s3_access_key_id"], data["admin_s3_secret_access_key"]
 

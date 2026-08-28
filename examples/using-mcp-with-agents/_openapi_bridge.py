@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generic OpenAPI→MCP bridge — run as a stdio subprocess by the per-source launchers.
 
-Fetches the mock's **MCP-ready** spec for one source (``GET /_mock/openapi/<source>`` — the mock
+Fetches the mock's **MCP-ready** spec for one source (``GET /_meta/openapi/<source>`` — the mock
 slices its own ``/openapi.json`` to that source and collapses the GET/POST and v2/v3 fidelity
 aliases server-side, so there's nothing to clean up here) and serves those operations as MCP tools
 via ``FastMCP.from_openapi()`` over an ``httpx.AsyncClient`` whose ``Authorization`` header is the
@@ -43,7 +43,7 @@ def _auth_header(token: str, username: str | None) -> dict[str, str]:
 
 
 def _fetch_mcp_spec(base_url: str, source: str) -> dict:
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/openapi/{source}", timeout=10) as r:
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/openapi/{source}", timeout=10) as r:
         return json.load(r)
 
 

@@ -8,7 +8,7 @@ via domain-wide delegation). This module lets those configs work against the moc
 - :func:`generate` synthesizes, at import time, one mock OAuth client and one org service
   account (a real RSA keypair), written to ``credentials.yaml``. There is **no** per-user data:
   a user's refresh_token is simply their existing bearer token (from ``tokens.yaml`` /
-  ``/_mock/users``), so the token endpoint's refresh grant just validates it and hands it back.
+  ``/_meta/users``), so the token endpoint's refresh grant just validates it and hands it back.
 - :class:`Oauth` is the runtime side: it exposes the client config and verifies a service-account
   JWT assertion (RS256, honoring the ``sub`` impersonation claim).
 
@@ -68,7 +68,7 @@ def generate(settings, org: str | None = None) -> dict:
             "client_id": _h("said", org)[:21],
             "private_key_id": _h("pkid", org)[:40],
             "private_key": private_pem,
-            "public_key_pem": public_pem,  # server-side only; never exposed via /_mock/credentials
+            "public_key_pem": public_pem,  # server-side only; never exposed via /_meta/credentials
         },
     }
     settings.credentials_path.write_text(yaml.safe_dump(creds, sort_keys=False))

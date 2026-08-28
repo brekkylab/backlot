@@ -45,7 +45,7 @@ _p.add_argument(
     "--password",
     help="api token used as the Basic-auth password (default: --token, else the admin token)",
 )
-_p.add_argument("--token", help="alias for --password: a mock bearer token from GET /_mock/users")
+_p.add_argument("--token", help="alias for --password: a mock bearer token from GET /_meta/users")
 args = _p.parse_args()
 
 with serve_or_connect(CORPUS, url=args.url) as mock:

@@ -34,10 +34,10 @@ import { GraphQLClient } from "graphql-request";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..", "..");
-/** The Settings default; a per-user token lives in <data>/tokens.yaml (and GET /_mock/users). */
+/** The Settings default; a per-user token lives in <data>/tokens.yaml (and GET /_meta/users). */
 const ADMIN_TOKEN = "admin-service-token";
 
-/** The same shape the Python examples' in-code corpora use — see `_mockserver.py`. */
+/** The same shape the Python examples' in-code corpora use — see `examples/_common/`. */
 const CORPUS = [
   {
     source_type: "linear", doc_id: "lin-kv", team: "engineering", group: "engineering",
@@ -141,7 +141,7 @@ interface Mock {
 
 /**
  * Use `--url` if it answers; otherwise build a throwaway DB from CORPUS and run uvicorn against
- * it — the same fallback `_mockserver.py` gives every Python example, so this script needs no
+ * it — the same fallback `examples/_common/` gives every Python example, so this script needs no
  * separate process launched by hand.
  */
 async function serveOrConnect(url: string | undefined): Promise<Mock> {

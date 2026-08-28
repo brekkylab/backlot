@@ -187,7 +187,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_mock/users "
+        help="mock bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument(

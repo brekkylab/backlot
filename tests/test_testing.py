@@ -105,7 +105,7 @@ def test_serve_token_reflects_a_custom_admin_token(monkeypatch):
 def test_serve_or_connect_fetches_a_remote_servers_real_admin_token(monkeypatch):
     """serve_or_connect's remote branch must not return the hardcoded Settings
     default as a GUESS for any remote server, even though the server exposes its real
-    admin_token at GET /_mock/users (the same endpoint examples/using-official-sdk/s3.py already
+    admin_token at GET /_meta/users (the same endpoint examples/using-official-sdk/s3.py already
     points users at, for exactly this purpose). Start a server configured with a non-default
     token, then connect to it via --url and confirm the returned token is the real one fetched
     from the server, not the guess."""
@@ -127,9 +127,9 @@ def test_serve_or_connect_does_not_fetch_the_token_over_plain_http_to_a_non_loop
 ):
     """Hardening: fetching a credential from an unauthenticated plaintext response is the wrong
     default once the host isn't loopback. Only https or loopback should trigger the
-    GET /_mock/users fetch at all — a plain-http non-loopback URL must fall back to the guess
+    GET /_meta/users fetch at all — a plain-http non-loopback URL must fall back to the guess
     WITHOUT the fetch ever being attempted. Asserted by spying on
-    `_admin_token_from_mock_users` and requiring it was never called, which is a stronger claim
+    `_admin_token_from_meta_users` and requiring it was never called, which is a stronger claim
     than just checking the returned token (that could coincidentally match)."""
     import backlot.testing as testing_mod
 
@@ -138,7 +138,7 @@ def test_serve_or_connect_does_not_fetch_the_token_over_plain_http_to_a_non_loop
     calls = []
     monkeypatch.setattr(
         testing_mod,
-        "_admin_token_from_mock_users",
+        "_admin_token_from_meta_users",
         lambda url, timeout=10: calls.append(url) or "should-never-be-used",
     )
 

@@ -43,7 +43,7 @@ still work — they re-enter the same CLI, so they cannot take a different set.
 Two words, and they are not interchangeable:
 
 - **source** — one of the things Backlot serves: `slack`, `gmail`, `jira`, … This is the codebase's
-  own word for it (`source_type` on every record, `store.SOURCE_TABLE`, `/_mock/openapi/<source>`),
+  own word for it (`source_type` on every record, `store.SOURCE_TABLE`, `/_meta/openapi/<source>`),
   so use it for anything on our side of the line: a corpus record, a router, a table, an example
   script, a test file.
 - **vendor** — the real company whose API a source imitates, and the artifacts that belong to them:

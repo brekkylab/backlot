@@ -32,7 +32,7 @@ Principals come with it, in overlapping groups — `engineering`, `sales`, `hand
 `design`, `leadership` and `support` — and some documents carry an explicit `readers` list. One
 person, `sam.ortiz@northwind.example`, is deliberately **outside the org**: an external
 collaborator, so "does an outsider see this?" is a question you can ask without building a corpus
-first. Every identity and its token comes back from `GET /_mock/users` — see [auth.md](auth.md).
+first. Every identity and its token comes back from `GET /_meta/users` — see [auth.md](auth.md).
 
 **It is also a worked example of the format below.** `hello.jsonl` is ordinary BYO input, not a
 special internal shape, and it validates as such:

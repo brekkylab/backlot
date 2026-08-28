@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # --- auth ---
     # A caller presenting this token bypasses ACL filtering (full crawl / service account).
     admin_token: str = "admin-service-token"
-    # Expose the /_mock/users directory (per-user tokens) so callers can test per-user ACL.
+    # Expose the /_meta/users directory (per-user tokens) so callers can test per-user ACL.
     # It hands out tokens in the clear — fine for a local test mock; set false to disable.
     expose_tokens: bool = True
 

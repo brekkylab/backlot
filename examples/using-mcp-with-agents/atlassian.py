@@ -8,7 +8,7 @@ mcp-atlassian only classifies a host as Atlassian *Cloud* (the v3 + `/wiki` shap
 when the hostname ends in `.atlassian.net`, so we always use a fake `mock.atlassian.net` mapped
 with Docker's `--add-host` — to the host machine (`host-gateway`) for a local mock, or to a remote
 deployment's resolved IP. Auth is HTTP Basic where the **api_token is a mock token** (`--token`,
-default admin; per-user from GET /_mock/users); the **username** is required by mcp-atlassian but
+default admin; per-user from GET /_meta/users); the **username** is required by mcp-atlassian but
 ignored by the mock once the token resolves.
 
 Prereqs: Docker; `pip install -e ".[mcp]"`; an LLM key for `--agent` (`ANTHROPIC_API_KEY`, or
@@ -72,7 +72,7 @@ def build_params(base_url: str, token: str, username: str | None) -> StdioServer
             sys.exit(
                 f"--url points at a remote deployment ({u.hostname}); also pass --username "
                 "(and --token) — mcp-atlassian needs a Basic-auth username for Cloud detection "
-                "and the token authenticates + scopes ACL (get one from GET /_mock/users)."
+                "and the token authenticates + scopes ACL (get one from GET /_meta/users)."
             )
         scheme = u.scheme
         port = u.port or (443 if u.scheme == "https" else 80)
@@ -114,7 +114,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_mock/users "
+        help="mock bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument("--username", help="Atlassian Basic-auth username (required for a remote --url)")

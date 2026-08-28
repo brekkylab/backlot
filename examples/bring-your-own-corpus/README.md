@@ -28,7 +28,7 @@ one written as `content`.
 
 Two other corpora in this repo look similar and answer different questions; see
 [**Which corpus is which**](../../backlot/schemas/README.md#which-corpus-is-which). The short
-version: read this one to learn the format, and run `backlot.mock_server()` if you just want a
+version: read this one to learn the format, and run `backlot.serve()` if you just want a
 populated server to poke at.
 
 ## Record format

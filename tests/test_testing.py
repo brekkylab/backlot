@@ -52,16 +52,16 @@ def _health(url: str) -> dict:
         return {}
 
 
-def test_mock_server_with_no_arguments_serves_the_hello_corpus():
-    with backlot.mock_server() as m:
+def test_serve_with_no_arguments_serves_the_hello_corpus():
+    with backlot.serve() as m:
         body = _get(f"{m.base_url}/health")
     assert body["status"] == "ok"
     assert body["source_documents"] > 0
     assert body["documents"] >= body["source_documents"]
 
 
-def test_mock_server_accepts_records():
-    with backlot.mock_server(
+def test_serve_accepts_records():
+    with backlot.serve(
         [
             complete(
                 source_type="confluence",
@@ -76,8 +76,8 @@ def test_mock_server_accepts_records():
     assert body["source_documents"] == 1
 
 
-def test_mock_server_token_authenticates():
-    with backlot.mock_server() as m:
+def test_serve_token_authenticates():
+    with backlot.serve() as m:
         req = urllib.request.Request(
             f"{m.base_url}/slack/api/auth.test", headers={"Authorization": f"Bearer {m.token}"}
         )
@@ -85,15 +85,15 @@ def test_mock_server_token_authenticates():
             assert json.load(r)["ok"] is True
 
 
-def test_mock_server_token_reflects_a_custom_admin_token(monkeypatch):
-    """MockServer.token must not be the hardcoded Settings default when the
-    caller's environment configured a different admin token — mock_server() passes os.environ
+def test_serve_token_reflects_a_custom_admin_token(monkeypatch):
+    """Server.token must not be the hardcoded Settings default when the
+    caller's environment configured a different admin token — serve() passes os.environ
     through to the subprocess, so the SERVER enforced "some-other-token" while the returned
-    MockServer.token still said "admin-service-token". The failure mode isn't an exception:
+    Server.token still said "admin-service-token". The failure mode isn't an exception:
     Slack fidelity means auth.test returns HTTP 200 with {"ok": false, "error": "not_authed"},
-    which reads as the caller's own mistake rather than a mock_server() bug."""
+    which reads as the caller's own mistake rather than a serve() bug."""
     monkeypatch.setenv("BACKLOT_ADMIN_TOKEN", "some-other-token")
-    with backlot.mock_server() as m:
+    with backlot.serve() as m:
         assert m.token == "some-other-token"
         req = urllib.request.Request(
             f"{m.base_url}/slack/api/auth.test", headers={"Authorization": f"Bearer {m.token}"}
@@ -110,7 +110,7 @@ def test_serve_or_connect_fetches_a_remote_servers_real_admin_token(monkeypatch)
     token, then connect to it via --url and confirm the returned token is the real one fetched
     from the server, not the guess."""
     monkeypatch.setenv("BACKLOT_ADMIN_TOKEN", "remote-real-token")
-    with backlot.mock_server() as server:
+    with backlot.serve() as server:
         with backlot.serve_or_connect(url=server.base_url) as m:
             assert m.token == "remote-real-token"
             assert m.token != "admin-service-token"  # the old guess would have returned this
@@ -149,7 +149,7 @@ def test_serve_or_connect_does_not_fetch_the_token_over_plain_http_to_a_non_loop
 
 
 @pytest.mark.parametrize("host, answers_off_loopback", [("127.0.0.1", False), ("0.0.0.0", True)])
-def test_mock_server_binds_where_host_says(host, answers_off_loopback):
+def test_serve_binds_where_host_says(host, answers_off_loopback):
     """A wildcard bind is what lets something that cannot reach this machine's loopback reach the
     mock: a Docker container on Linux, where ``--add-host=…:host-gateway`` resolves to the bridge
     address (tests/test_mcp.py runs the Atlassian MCP server that way). The narrow default is
@@ -162,7 +162,7 @@ def test_mock_server_binds_where_host_says(host, answers_off_loopback):
     if addr is None:
         pytest.skip("this machine has no address but loopback to dial")
 
-    with backlot.mock_server(host=host) as m:
+    with backlot.serve(host=host) as m:
         # A wildcard bind answers on every interface, loopback among them, so the URL a caller
         # gets stays loopback in both cases here.
         assert m.base_url.startswith("http://127.0.0.1:"), m.base_url
@@ -187,13 +187,13 @@ def test_a_narrow_bind_is_dialled_at_the_address_it_bound(resolve, url_form):
     if host is None:
         pytest.skip("this machine has no such address to bind")
 
-    with backlot.mock_server(host=host) as m:
+    with backlot.serve(host=host) as m:
         assert m.base_url.startswith(url_form.format(host)), m.base_url
         assert _health(f"{m.base_url}/health")["status"] == "ok"
 
 
 def test_two_servers_get_different_ports():
-    with backlot.mock_server() as a, backlot.mock_server() as b:
+    with backlot.serve() as a, backlot.serve() as b:
         assert a.base_url != b.base_url
 
 

@@ -18,7 +18,7 @@ backlot import --bundled
 
 Nothing to download and nothing to write — it lives in the wheel at
 [`backlot/data/hello.jsonl`](../backlot/data/hello.jsonl) and covers **every source**, so every
-endpoint answers immediately. It is what `backlot.mock_server()` loads when called with no
+endpoint answers immediately. It is what `backlot.serve()` loads when called with no
 arguments, and what the examples and the README's demo run against.
 
 It serves the org `acme`, and `backlot import` prints the per-source breakdown as it loads.

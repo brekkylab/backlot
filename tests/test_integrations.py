@@ -36,7 +36,7 @@ def test_slack_reader_is_constructed_against_the_mock():
     pytest.importorskip("llama_index.readers.slack")
     from backlot.integrations.llamaindex import slack_reader_at
 
-    with backlot.mock_server() as m:
+    with backlot.serve() as m:
         reader = slack_reader_at(m.base_url, m.token)
         built = str(reader._client.base_url)
         assert m.base_url in built
@@ -52,7 +52,7 @@ def test_patch_notion_at_rebinds_every_hardcoded_host():
 
     from backlot.integrations.llamaindex import patch_notion_at
 
-    with backlot.mock_server() as m:
+    with backlot.serve() as m:
         patch_notion_at(m.base_url)
         leaked = [
             n

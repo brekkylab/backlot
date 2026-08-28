@@ -961,7 +961,7 @@ def ro_conn(sample_settings):
 
 @pytest.fixture(scope="module")
 def live_server(sample_settings):
-    """SAMPLE served by a real uvicorn subprocess (via ``backlot.mock_server``); yields
+    """SAMPLE served by a real uvicorn subprocess (via ``backlot.serve``); yields
     ``(base_url, settings)`` for the official SDKs and the Dockerised MCP server, which make real
     HTTP calls rather than going through the in-process ``TestClient``.
 
@@ -979,5 +979,5 @@ def live_server(sample_settings):
     nothing dials the wider bind either — the same predicate ``_docker_available`` opens with.
     """
     host = "0.0.0.0" if sys.platform == "linux" and shutil.which("docker") else "127.0.0.1"
-    with backlot.mock_server(SAMPLE, host=host) as m:
+    with backlot.serve(SAMPLE, host=host) as m:
         yield m.base_url, sample_settings

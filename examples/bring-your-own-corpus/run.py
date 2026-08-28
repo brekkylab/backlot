@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from backlot import mock_server
+from backlot import serve
 
 CORPUS = Path(__file__).resolve().parent / "sample_corpus.jsonl"
 
@@ -32,7 +32,7 @@ if subprocess.run([sys.executable, "-m", "backlot", "import", str(CORPUS), "--dr
 # split on "\n" only, not splitlines(): JSON Lines separates records by \n, and
 # splitlines() also breaks on U+2028/U+2029 — ordinary characters inside a JSON string.
 records = [json.loads(line) for line in CORPUS.read_text().split("\n") if line.strip()]
-with mock_server(records) as mock:
+with serve(records) as mock:
     health = httpx.get(f"{mock.base_url}/health").json()
     print(f"\nserving {health['documents']} docs at {mock.base_url}")
     print(f"  by source: {health['by_source']}")

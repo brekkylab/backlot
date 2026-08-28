@@ -32,7 +32,7 @@ Or run one programmatically on a free port:
 import backlot
 from slack_sdk import WebClient                        # pip install slack_sdk
 
-with backlot.mock_server() as m:                       # no arguments: the bundled corpus
+with backlot.serve() as m:                             # no arguments: the bundled corpus
     slack = WebClient(token=m.token, base_url=f"{m.base_url}/slack/api/")
     print(slack.conversations_list()["channels"])
 ```
@@ -83,16 +83,16 @@ The full roadmap lives in [#89](https://github.com/brekkylab/backlot/issues/89) 
 | 🗂️ Read it with `ls`, `cat` and `grep`, over [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](examples/using-mirage/) |
 | 📥 Your own corpus, from a JSONL file | [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus/) |
 
-<details><summary>Or drop it straight into your test suite — <code>mock_server()</code> as a pytest fixture</summary>
+<details><summary>Or drop it straight into your test suite — <code>serve()</code> as a pytest fixture</summary>
 
 ```python
-# conftest.py — mock_server() picks a free port and tears itself down
+# conftest.py — serve() picks a free port and tears itself down
 import backlot
 import pytest
 
 @pytest.fixture(scope="session")
 def enterprise():
-    with backlot.mock_server() as m:
+    with backlot.serve() as m:
         yield m
 
 

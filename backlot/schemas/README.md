@@ -62,7 +62,7 @@ so here is the question each one answers, and the test that keeps it answering o
 | `tests/conftest.py::SAMPLE` | *"Does the server behave?"* The in-code fixture the HTTP/ACL/SDK tests run against. | no | the suite |
 
 If you are writing your own corpus, read the first one. If you want a server to poke at,
-`backlot.mock_server()` serves the second with no arguments.
+`backlot.serve()` serves the second with no arguments.
 
 ## Validate a corpus
 

@@ -2,7 +2,7 @@
 
     import backlot
 
-    with backlot.mock_server() as m:            # built-in hello-world corpus
+    with backlot.serve() as m:            # built-in hello-world corpus
         WebClient(token=m.token, base_url=f"{m.base_url}/slack/api/")
 
 Pass ``records`` (BYO-JSONL dicts) to serve your own corpus instead. ``serve_or_connect`` prefers
@@ -53,11 +53,11 @@ HELLO_CORPUS = Path(__file__).resolve().parent / "data" / "hello.jsonl"
 # GET /_mock/users is disabled (BACKLOT_EXPOSE_TOKENS=false, a legitimate configuration) or the
 # URL doesn't clear _trusted_for_token_fetch's bar (plain HTTP to a non-loopback host: treating an
 # unauthenticated plaintext response as a credential there is the wrong default, not merely
-# unavailable). mock_server() itself never falls back to this: it reads the real value via
+# unavailable). serve() itself never falls back to this: it reads the real value via
 # Settings() below.
 TOKEN = "admin-service-token"
 
-# How long mock_server()'s local readiness poll waits for each attempt, and how many attempts it
+# How long serve()'s local readiness poll waits for each attempt, and how many attempts it
 # makes. A subprocess that hasn't bound its port yet refuses the connection almost instantly, so
 # this is deliberately tight — unlike _healthy()'s own default, which has to allow for a remote,
 # possibly trans-continental HTTPS hop.
@@ -66,11 +66,11 @@ _LOCAL_HEALTH_ATTEMPTS = 100
 
 
 @dataclass(frozen=True)
-class MockServer:
+class Server:
     """A reachable Backlot server. ``data_dir`` is None when connected to a remote one.
 
     ``token`` is MEASURED, not assumed, in both cases where that's possible. For a server this
-    process started (``mock_server()``), it reads ``Settings().admin_token`` with the same
+    process started (``serve()``), it reads ``Settings().admin_token`` with the same
     environment / cwd ``.env`` the subprocess inherits, so a caller's ``BACKLOT_ADMIN_TOKEN``
     override is reflected correctly. For an already-running remote server
     (``serve_or_connect``'s remote-``url`` branch), it is fetched from that server's own
@@ -172,7 +172,7 @@ def _admin_token_from_mock_users(url: str, timeout: float = 10) -> str | None:
 
 
 def _healthy(url: str, timeout: float = 10) -> bool:
-    # Default timeout suits a remote deployment; mock_server()'s local readiness poll passes a
+    # Default timeout suits a remote deployment; serve()'s local readiness poll passes a
     # much smaller one (see _LOCAL_HEALTH_TIMEOUT) since a local subprocess either answers almost
     # immediately or hasn't bound the port yet, in which case the connection is refused, not slow.
     try:
@@ -183,7 +183,7 @@ def _healthy(url: str, timeout: float = 10) -> bool:
 
 
 @contextlib.contextmanager
-def mock_server(records: list[dict] | None = None, host: str = "127.0.0.1"):
+def serve(records: list[dict] | None = None, host: str = "127.0.0.1"):
     """Serve ``records`` (or the bundled hello-world corpus) on a free local port.
 
     ``host`` is the bind address. The default keeps the server off every interface but loopback;
@@ -203,7 +203,7 @@ def mock_server(records: list[dict] | None = None, host: str = "127.0.0.1"):
         # differs, and that doesn't affect admin_token), so this resolves to whatever token the
         # server will actually enforce — a caller's BACKLOT_ADMIN_TOKEN env var or a .env in
         # their cwd both change it (Settings declares env_file=".env"), and the returned
-        # MockServer.token must track that: otherwise a caller's first authenticated call fails
+        # Server.token must track that: otherwise a caller's first authenticated call fails
         # with HTTP 200 / {"ok": false} (Slack fidelity), which reads as the caller's own mistake.
         token = Settings().admin_token
         # `-m backlot` rather than the `backlot` script: same CLI, but resolved through THIS
@@ -251,7 +251,7 @@ def mock_server(records: list[dict] | None = None, host: str = "127.0.0.1"):
                 time.sleep(0.1)
             else:
                 raise RuntimeError(f"Backlot did not become ready on {base}")
-            yield MockServer(base_url=base, token=token, data_dir=Path(data_dir))
+            yield Server(base_url=base, token=token, data_dir=Path(data_dir))
         finally:
             _terminate(proc)
 
@@ -265,14 +265,14 @@ def serve_or_connect(
     ``url`` is used only when given — this does not read ``sys.argv``. Pass
     ``url=backlot.url_from_argv()`` to honour a ``--url`` flag the way the bundled examples do.
 
-    ``host`` is ``mock_server``'s bind address, and so applies only when this falls back to a
+    ``host`` is ``serve``'s bind address, and so applies only when this falls back to a
     local server; a reachable ``url`` is already bound however its own operator bound it."""
     url = (url or "").strip()
     if url:
         _ensure_cert_bundle()
         if _healthy(url):
             print(f"using Backlot at {url}")
-            # Fetched, not guessed, when possible AND safe (see MockServer.token's docstring): GET
+            # Fetched, not guessed, when possible AND safe (see Server.token's docstring): GET
             # /_mock/users on the remote server reports its real admin_token. Gated by
             # _trusted_for_token_fetch — this is about not treating an unauthenticated plaintext
             # response from an arbitrary host as a credential, NOT about `url`'s server being
@@ -282,10 +282,10 @@ def serve_or_connect(
             token = TOKEN
             if _trusted_for_token_fetch(url):
                 token = _admin_token_from_mock_users(url) or TOKEN
-            yield MockServer(base_url=url.rstrip("/"), token=token, data_dir=None)
+            yield Server(base_url=url.rstrip("/"), token=token, data_dir=None)
             return
         print(f"--url {url!r} is not reachable — falling back to a local server")
-    with mock_server(records, host=host) as m:
+    with serve(records, host=host) as m:
         yield m
 
 

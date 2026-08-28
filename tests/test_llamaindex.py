@@ -186,7 +186,7 @@ def _google_service_account_info(base_url: str) -> dict:
 
     Duplicated from `examples/_common/google_creds.py:google_service_account_info` — that one is
     mock-specific OAuth glue, not package API (it belongs to the examples, per
-    `backlot.mock_server`'s own docstring), and tests don't import from examples."""
+    `backlot.serve`'s own docstring), and tests don't import from examples."""
     import json
     import urllib.request
 

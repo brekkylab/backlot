@@ -1,29 +1,29 @@
 # Using MCP tools with agents
 
-Drive an LLM agent that retrieves corpus data through a **real MCP server** pointed at the
-mock, with retrieval **ACL-scoped** by the credentials you give it. One self-contained file per
+Drive an LLM agent that retrieves corpus data through a **real MCP server** pointed at
+Backlot, with retrieval **ACL-scoped** by the credentials you give it. One self-contained file per
 service (like the other `examples/` dirs) — run the one you want:
 
 - **`atlassian.py`** (Jira + Confluence) via the community-official
   [`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) (Docker).
 - **`notion.py`** via the **official**
   [`@notionhq/notion-mcp-server`](https://github.com/makenotion/notion-mcp-server) (npx/Node) —
-  it takes a first-class `BASE_URL` override, so pointing it at the mock is one env var.
+  it takes a first-class `BASE_URL` override, so pointing it at Backlot is one env var.
 - **`s3.py`** via the **official**
   [`awslabs.aws-api-mcp-server`](https://github.com/awslabs/mcp/tree/main/src/aws-api-mcp-server)
   (uvx/Python) — it shells the AWS CLI, whose boto3 client honors a first-class
   `AWS_ENDPOINT_URL` override and SigV4-signs every call; a broad AWS-CLI wrapper, so the agent
   runs `aws s3api …` commands.
 - **`github.py`** via the **generic OpenAPI→MCP bridge** (`_openapi_bridge.py`, Python/FastMCP) — no vendor
-  MCP server exists that can be pointed at a self-hosted mock, so instead the bridge turns the
-  mock's own typed `/openapi.json` into MCP tools. See "How the OpenAPI→MCP bridge connects" below.
+  MCP server exists that can be pointed at anything self-hosted, so instead the bridge turns
+  Backlot's own typed `/openapi.json` into MCP tools. See "How the OpenAPI→MCP bridge connects" below.
   This unlocks the sources with no base-URL-switchable vendor server; more sources
   (Gmail/Drive) are being added the same way.
 - **`slack.py`** via the same **OpenAPI→MCP bridge** — no maintained Slack MCP server accepts a
-  base-URL override (they hard-wire `slack.com`), so the bridge serves the mock's Slack Web API
+  base-URL override (they hard-wire `slack.com`), so the bridge serves Backlot's Slack Web API
   (`/slack/api/*`) as tools instead.
 - **`gmail.py`** via the same **OpenAPI→MCP bridge** — Gmail MCP servers hard-wire `googleapis.com`
-  and need real Google OAuth, so the bridge serves the mock's Gmail API (`/gmail/*`) as tools.
+  and need real Google OAuth, so the bridge serves Backlot's Gmail API (`/gmail/*`) as tools.
 - **`gdrive.py`** via the same **OpenAPI→MCP bridge** — likewise for Google Drive (`/drive/*`).
 - **`hubspot.py`** via the same **OpenAPI→MCP bridge** — no HubSpot MCP server takes a base-URL
   override. Because the CRM API is polymorphic over `{object_type}`, the agent gets five tools that
@@ -49,13 +49,13 @@ helpers:
 | File | What it is |
 |---|---|
 | `_agent.py` | The agent loop for both backends: `--agent anthropic` (default, Anthropic SDK + its beta MCP tool runner) or `--agent openai` (OpenAI Agents SDK) |
-| `backlot.serve_or_connect` | Starts the mock (`backlot.main`) on a small corpus, or connects to a `--url` one |
+| `backlot.serve_or_connect` | Starts Backlot (`backlot.main`) on a small corpus, or connects to a `--url` one |
 
 Each service file declares its own CLI options with `argparse` — run `python <file> --help` to see
 exactly what that source takes (e.g. `s3.py` takes `--access-key`/`--secret-key`, required with
 `--url`; `atlassian.py` takes `--token`/`--username`). All accept `--url` and `--agent {anthropic,openai}`.
 
-Each example spins up its own small mock by default, or pass `--url` to use an already-running one
+Each example spins up its own small server by default, or pass `--url` to use an already-running one
 (unreachable → it falls back to spinning up its own). Note the demo question is tuned to each
 example's own seed corpus; against a `--url` server holding *different* data it may have no exact
 match, so the agent answers from the closest documents and notes what's missing (it's told to be
@@ -94,13 +94,13 @@ ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/fireflies.py # via t
 
 **Auth is per-service.** Retrieval is ACL-scoped by the identity you pass:
 
-- **Atlassian / Notion** use a mock **token**: default is the admin token (sees everything); pass
+- **Atlassian / Notion** use a Backlot **token**: default is the admin token (sees everything); pass
   `--token` a per-user token from `GET /_meta/users` to scope it (the token, not the username,
   authenticates).
 - **S3** uses an AWS **access-key/secret pair** (not a token): pass `--access-key` / `--secret-key`
   — **required with `--url`** (real AWS keys, or a pair from `GET <url>/_meta/users`, where each
   user and the admin has an `s3_access_key_id` / `s3_secret_access_key`). Without `--url` the local
-  throwaway mock uses its own admin keypair.
+  throwaway server uses its own admin keypair.
 
 - **Local** — `--url http://localhost:PORT`.
 - **Remote** — `--url https://host` plus the service's credentials. Grab them from
@@ -110,41 +110,41 @@ ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/fireflies.py # via t
 ## How `atlassian.py` connects
 
 `mcp-atlassian` runs in Docker and only classifies a host as Atlassian **Cloud** (the v3 + `/wiki`
-API shape the mock speaks) when the hostname ends in `.atlassian.net`. So the example:
+API shape Backlot speaks) when the hostname ends in `.atlassian.net`. So the example:
 
 - uses a fake host `mock.atlassian.net`, mapped with Docker's `--add-host` — to the host machine
-  (`host-gateway`) for a local mock, or to a **remote** deployment's resolved IP;
+  (`host-gateway`) for a local server, or to a **remote** deployment's resolved IP;
 - sets `MCP_ALLOWED_URL_DOMAINS=atlassian.net` to pass the server's SSRF guard;
-- authenticates with HTTP Basic where the **api-token is a mock token** — the mock resolves it to a
+- authenticates with HTTP Basic where the **api-token is a Backlot token** — Backlot resolves it to a
   user and enforces that user's ACL. The Basic-auth **username** is required by mcp-atlassian but
-  ignored by the mock once the token resolves, so a placeholder (`svc@example.com`) works for a
-  local mock. For a **remote** target it must be explicit (`--username`), and because the
+  ignored by Backlot once the token resolves, so a placeholder (`svc@example.com`) works for a
+  local server. For a **remote** target it must be explicit (`--username`), and because the
   deployment's TLS cert is for its own name (not `mock.atlassian.net`), cert verification is
-  disabled for that hop (`*_SSL_VERIFY=false`) — fine for a test mock.
+  disabled for that hop (`*_SSL_VERIFY=false`) — fine for a throwaway server.
 
 ## How `notion.py` connects
 
 Much simpler — the official `notion-mcp-server` reads a **`BASE_URL`** env var and propagates it
 straight to its HTTP client, so the example just sets:
 
-- `BASE_URL=<mock>/notion` — the server appends the `/v1/...` paths from its bundled OpenAPI spec,
-  landing on the mock's `/notion/v1/...` routes. It runs on the host via `npx`, so a local
-  `localhost` mock is reached directly (no Docker/host-gateway aliasing).
-- `NOTION_TOKEN=<mock token>` — sent as `Authorization: Bearer …`; the mock resolves it to a user
+- `BASE_URL=<url>/notion` — the server appends the `/v1/...` paths from its bundled OpenAPI spec,
+  landing on Backlot's `/notion/v1/...` routes. It runs on the host via `npx`, so a local
+  `localhost` server is reached directly (no Docker/host-gateway aliasing).
+- `NOTION_TOKEN=<token>` — sent as `Authorization: Bearer …`; Backlot resolves it to a user
   and enforces that user's ACL.
-- `NOTION_VERSION=2025-09-03` — the mock's default (data-sources model).
+- `NOTION_VERSION=2025-09-03` — Backlot's default (data-sources model).
 
 ## How `s3.py` connects
 
 `awslabs.aws-api-mcp-server` shells the AWS CLI (botocore underneath), which takes a first-class
 endpoint override, so the example just sets:
 
-- `AWS_ENDPOINT_URL=<mock>/s3` — every AWS CLI call the server runs is routed at the mock instead
+- `AWS_ENDPOINT_URL=<url>/s3` — every AWS CLI call the server runs is routed at Backlot instead
   of real AWS.
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — the required `--access-key` / `--secret-key` (the
-  keys the mock's SigV4 verifier accepts; grab a pair from `GET /_meta/users`), so botocore's
-  signature resolves back to that identity and the mock enforces its ACL.
-- `AWS_REGION=us-east-1` — any region works (the mock's verifier reads the region back out of the
+  keys Backlot's SigV4 verifier accepts; grab a pair from `GET /_meta/users`), so botocore's
+  signature resolves back to that identity and Backlot enforces its ACL.
+- `AWS_REGION=us-east-1` — any region works (Backlot's verifier reads the region back out of the
   client's own credential scope); this just has to be *some* valid region.
 
 We intentionally do **not** set `READ_OPERATIONS_ONLY`. It sounds like the safe default, but it
@@ -176,16 +176,16 @@ restriction — they take the hostname directly.)
 These four sources have no vendor MCP server that accepts a base-URL override (see "Why these need
 the bridge" below). Instead of a vendor server, each launcher runs the **generic bridge**
 `_openapi_bridge.py` (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess. The bridge is
-deliberately thin — the mock does the spec work:
+deliberately thin — Backlot does the spec work:
 
-- the mock serves an **MCP-ready spec per source** at **`GET /_meta/openapi/<source>`** — its own
+- Backlot serves an **MCP-ready spec per source** at **`GET /_meta/openapi/<source>`** — its own
   typed `/openapi.json` (the routers declare query params and response models) sliced to that
   source and with the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each
   (the raw spec carries ~14 duplicate operationIds, which an MCP tool set can't have). This lives
   in `backlot/openapi.py`, so there is nothing to clean up client-side;
 - the bridge just fetches that spec and serves it over stdio via `FastMCP.from_openapi()` on an
-  `httpx.AsyncClient` whose base URL is the mock and whose **`Authorization`** header is the mock
-  token — so the mock resolves the token to a user and **enforces that user's ACL** on every call.
+  `httpx.AsyncClient` whose base URL is Backlot and whose **`Authorization`** header is Backlot
+  token — so Backlot resolves the token to a user and **enforces that user's ACL** on every call.
 
 stdio (not streamable-HTTP): FastMCP's HTTP mode has a known bug forwarding the client's
 `Authorization` header downstream. Auth: `--username` present → HTTP Basic (Atlassian); otherwise
@@ -196,11 +196,11 @@ in `backlot/openapi.py`'s `SOURCE_PREFIXES` plus a thin launcher.
 generic bridge (no vendor server) — run `_openapi_bridge.py` directly:
 
 ```bash
-python examples/using-mcp-with-agents/_openapi_bridge.py --source notion    --base-url <mock> --token <t>
-python examples/using-mcp-with-agents/_openapi_bridge.py --source atlassian --base-url <mock> --token <t> --username svc@example.com
+python examples/using-mcp-with-agents/_openapi_bridge.py --source notion    --base-url <url> --token <t>
+python examples/using-mcp-with-agents/_openapi_bridge.py --source atlassian --base-url <url> --token <t> --username svc@example.com
 ```
 
-Atlassian authenticates with HTTP Basic (`--username` + the mock token as the password), and its
+Atlassian authenticates with HTTP Basic (`--username` + Backlot token as the password), and its
 `SOURCE_PREFIXES` entry covers both the `/atlassian` (Jira) and `/wiki` (Confluence) path roots.
 **S3 is the one source with no bridge** — it is SigV4-signed (a static `Authorization` header can't
 sign each request), so it is absent from `/_meta/openapi/*`; use the vendor `s3.py` example.
@@ -219,7 +219,7 @@ OpenAPI bridge — the app does the schema work, the bridge is transport:
   argument JSON Schema *and* its GraphQL document, which is the one thing OpenAPI never has to
   decide: a REST operation returns a fixed body, a GraphQL field returns whatever was asked for.
 - **the bridge** posts `tool.document` with the caller's `Authorization: Bearer <token>` and passes
-  the GraphQL envelope back untouched, so the mock's per-token ACL decides every result. One header
+  the GraphQL envelope back untouched, so Backlot's per-token ACL decides every result. One header
   spelling serves both: Fireflies is the ordinary bearer path, and Linear accepts a bare API key or
   a `Bearer` token on the same header exactly as the real API does.
 
@@ -261,13 +261,13 @@ there is no consensus tooling to be faithful to.
 
 ## Why these need the bridge (no base-URL-switchable vendor server)
 
-These services' vendor MCP servers **cannot** be pointed at a self-hosted mock — that is exactly why
+These services' vendor MCP servers **cannot** be pointed at anything self-hosted — that is exactly why
 the OpenAPI→MCP bridge above exists (it needs no vendor server at all); each is now driven through
 it:
 
 - **GitHub** — the official `github/github-mcp-server` has `GITHUB_HOST`, but it strips the
   port (so needs port 80), forces GitHub-Enterprise paths (`/api/v3`, `/api/graphql`), and
-  relies on GraphQL the mock doesn't implement. **→ driven via the bridge (`github.py`) instead.**
+  relies on GraphQL Backlot doesn't implement. **→ driven via the bridge (`github.py`) instead.**
 - **Slack** — no API-base override in any maintained server (hard-wired to `slack.com`).
   **→ driven via the bridge (`slack.py`) instead.**
 - **Gmail / Google Drive** — official and community servers hard-wire `googleapis.com` and

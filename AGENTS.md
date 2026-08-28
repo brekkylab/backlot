@@ -46,7 +46,7 @@ docs, `pyproject.toml` keywords.
 - Run the suite before pushing: `pytest -q`. The docs tests above fail CI exactly like code tests.
 - Vendor tests are written against measured responses, not vendor docs. Bring a test that fails
   without your fix.
-- Examples are self-contained: each script spins up its own throwaway mock via
+- Examples are self-contained: each script spins up its own throwaway server via
   `backlot.serve_or_connect` on a tiny in-code corpus. Keep new examples to that shape.
 
 ## Data flows one way

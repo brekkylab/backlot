@@ -203,7 +203,7 @@ async def health():
 async def meta_users():
     """Directory of every generated user + their token, for testing per-user ACL.
 
-    Not part of any emulated vendor API — a mock-only affordance. Present each user's
+    Not part of any emulated vendor API — a Backlot-only affordance. Present each user's
     token in the same shape as ``data/tokens.yaml`` plus the groups they belong to, so a
     caller can pick a token, send it to any of the APIs, and see the ACL-filtered view.
     S3 doesn't use bearer tokens — it uses AWS SigV4 — so each user (and the admin) also

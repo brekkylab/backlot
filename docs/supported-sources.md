@@ -106,7 +106,7 @@ its choice in `X-GitHub-Api-Version-Selected`.
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository
-carries a URL template for each sub-resource this mock actually serves, and none for the ones it
+carries a URL template for each sub-resource Backlot actually serves, and none for the ones it
 doesn't: following a link is supposed to reach something. The `{owner}` segment is validated against
 the served org and 404s otherwise, as GitHub does.
 
@@ -160,7 +160,7 @@ of via Drive export.
 Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like
 stored rows. Trashed files are excluded unless `trashed = true` asks for them.
 
-A spreadsheet row is one stored **line**, held in a single cell verbatim — the mock picks no column
+A spreadsheet row is one stored **line**, held in a single cell verbatim — Backlot picks no column
 delimiter, so splitting (CSV, pipes, …) stays the corpus owner's decision. Reading a file of the
 wrong type through any of the three editor APIs is refused, as real Google does, not reinterpreted.
 
@@ -171,7 +171,7 @@ because that is where Google puts them.
 
 | Endpoint | Notes |
 |---|---|
-| `POST /oauth2/token` | Turns a Google-style client credential into a bearer token the rest of the mock already understands. Two grants: `refresh_token`, where the refresh token *is* the user's token from `/_meta/users`, and a signed service-account JWT assertion, whose `sub` claim selects the impersonated user under domain-wide delegation. A bare service account with no `sub` resolves to the admin/service identity. Expiry is cosmetic — a re-refresh returns the same token, so a long crawl never breaks |
+| `POST /oauth2/token` | Turns a Google-style client credential into a bearer token the rest of Backlot already understands. Two grants: `refresh_token`, where the refresh token *is* the user's token from `/_meta/users`, and a signed service-account JWT assertion, whose `sub` claim selects the impersonated user under domain-wide delegation. A bare service account with no `sub` resolves to the admin/service identity. Expiry is cosmetic — a re-refresh returns the same token, so a long crawl never breaks |
 | `POST /batch`, `POST /batch/{api}/{version}` | Google's `multipart/mixed` batch envelope: each part is an `application/http` sub-request, answered in order with its `Content-ID` preserved. The outer credential applies to any sub-request that does not carry its own, as real Google does |
 
 `/batch` is Google-shaped but not Google-scoped — sub-requests are dispatched against the whole

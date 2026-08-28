@@ -1,19 +1,19 @@
-# Using LlamaIndex readers with the mock
+# Using LlamaIndex readers with Backlot
 
 Point official [LlamaIndex readers](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/)
-(`llama-index-readers-*`) at the mock and load your enterprise corpus as `Document` objects — the
+(`llama-index-readers-*`) at Backlot and load your enterprise corpus as `Document` objects — the
 first step of any LlamaIndex ingestion / RAG pipeline. Each script is self-contained:
 
     pip install -e ".[examples,llamaindex]"
     pip install --no-deps llama-index-readers-hubspot     # see the HubSpot note below
-    python examples/using-llamaindex-readers/github.py            # local throwaway mock
+    python examples/using-llamaindex-readers/github.py            # local throwaway server
     python examples/using-llamaindex-readers/github.py --url http://localhost:8000 --token <usr-token>
 
 The only difference from talking to the real SaaS is where the reader points. Four readers take a
 host argument directly; five hardcode the host, so the helpers in `backlot.integrations.llamaindex`
 redirect them.
 
-| Source | Reader class | How it's pointed at the mock |
+| Source | Reader class | How it's pointed at Backlot |
 |--------|--------------|------------------------------|
 | GitHub | `GitHubRepositoryIssuesReader` | `GitHubIssuesClient(base_url=...)` |
 | S3 | `S3Reader` | `S3Reader(s3_endpoint_url=...)` |
@@ -38,8 +38,8 @@ exactly as against the real API.
   the ecosystem rather than as an omission in this directory. Nothing is lost: Fireflies
   publishes no SDK either, and its own quickstart is a raw HTTP POST, so
   `examples/using-official-sdk/fireflies.py` already shows the officially documented way to
-  read it — pointing that at the mock is a one-line base-URL change with no shim at all.
-  A reader, if one ever ships, would need no mock-side work.
+  read it — pointing that at Backlot is a one-line base-URL change with no shim at all.
+  A reader, if one ever ships, would need no Backlot-side work.
 - **GitHub** (`github.py`): `GitHubIssuesClient(base_url=...)` is a first-class constructor arg —
   no shim needed.
 - **HubSpot** (`hubspot.py`): the reader is **not** in the `[llamaindex]` extra — it pins
@@ -56,13 +56,13 @@ exactly as against the real API.
   approach Notion uses has nothing to rebind. The only seam is the module's `import requests`,
   which `patch_linear_at()` swaps for a proxy that rewrites Linear's host and forwards everything
   else untouched. The query is caller-supplied (`load_data(query)`), so the script carries the
-  GraphQL document — which doubles as a readable statement of what the mock serves.
+  GraphQL document — which doubles as a readable statement of what Backlot serves.
   **A client-side bug to know about:** the reader does `issue.get("assignee", {}).get("name", "")`,
   and a GraphQL response always *includes* a selected field — so an unassigned issue arrives as
   `assignee: null`, `.get`'s default never applies, and the reader raises
   `AttributeError: 'NoneType' object has no attribute 'get'`. The same holds for `project`,
   `state` and `creator`. Real Linear returns null for those too, so this reproduces against
-  api.linear.app and no mock-side change can fix it; the example filters to issues that have an
+  api.linear.app and no Backlot-side change can fix it; the example filters to issues that have an
   assignee and a project (`filter: {assignee: {null: false}, project: {null: false}}`, evaluated
   server-side), and `tests/test_llamaindex.py` pins the diagnosis so a fixed release is noticed.
 - **S3** (`s3.py`): `S3Reader(s3_endpoint_url=...)` points the reader itself, but whole-bucket
@@ -70,27 +70,27 @@ exactly as against the real API.
   `topdown` kwarg into `S3FileSystem._ls()`, which doesn't accept it, raising `TypeError`. The bug
   has existed since at least the 2023.x releases of both libraries and reproduces on every
   version installable today (including fsspec/s3fs 2026.6.0) and against real AWS S3 too — it's
-  independent of the mock, and no released version avoids it, so pinning to an older release isn't
+  independent of Backlot, and no released version avoids it, so pinning to an older release isn't
   a workaround. `s3.py` calls `backlot.integrations.llamaindex.patch_s3fs_walk()` (a small,
   self-disabling monkeypatch scoped to `S3FileSystem._walk`) before constructing the reader;
   `tests/test_llamaindex.py` imports and exercises the same function.
 - **Confluence** (`confluence.py`): the installed `atlassian-python-api` (4.0.7) does **not**
   append `/wiki` to the base URL itself, regardless of `cloud=` — `cloud` only toggles
   cloud-specific API shapes elsewhere — so `base_url` must spell out `.../atlassian/wiki`
-  explicitly, with `cloud=False` (the mock speaks the on-prem/server API shape). Also,
+  explicitly, with `cloud=False` (Backlot speaks the on-prem/server API shape). Also,
   `load_data()` must be called with `max_num_results=` set: left at its default, the reader
   forwards a bare `limit=None` to `Confluence.get_all_pages_from_space`, which raises `TypeError`
-  comparing against `None` — a client-side bug independent of the mock.
+  comparing against `None` — a client-side bug independent of Backlot.
 - **Jira** (`jira.py`): `JiraReader(PATauth={"server_url": ..., "api_token": ...})` is a
   first-class option. The `jira` PyPI client (used under the hood) probes
-  `GET /rest/api/2/serverInfo` during auth; the mock gained that endpoint as an alias so the real
+  `GET /rest/api/2/serverInfo` during auth; Backlot gained that endpoint as an alias so the real
   client works unmodified.
 - **Slack** (`slack.py`): `SlackReader.__init__` eagerly calls `client.api_test()` *during
   construction*, before the caller has a `reader._client` to set `base_url` on — so "construct,
   then set `_client.base_url`" isn't enough, since that eager call would hit the real
   `https://slack.com/api/` default first. `slack_reader_at()` swaps the `slack_sdk` module's
-  `WebClient` for a subclass defaulting to the mock's `base_url`, for the duration of construction
-  only (restored after), so even that first call lands on the mock — which gained an auth-free
+  `WebClient` for a subclass defaulting to Backlot's `base_url`, for the duration of construction
+  only (restored after), so even that first call lands on Backlot — which gained an auth-free
   `/slack/api/api.test` endpoint for exactly this. `_client.base_url` is set again explicitly
   afterward for clarity.
 - **Notion** (`notion.py`): `NotionPageReader` hardcodes the Notion host in module-level URL
@@ -101,7 +101,7 @@ exactly as against the real API.
   there's no module attribute to patch directly) to inject `client_options(api_endpoint=base)`.
   The installed `GmailReader` has no credential-injection hook — `_get_credentials()`
   unconditionally runs a local disk-based OAuth flow — so the example also patches
-  `GmailReader._get_credentials` to hand back the mock-issued credential instead.
+  `GmailReader._get_credentials` to hand back the Backlot-issued credential instead.
 - **Drive** (`gdrive.py`): `point_drive_at()` wraps `build` the same way, with Drive's `/drive/v3`
   service path folded into the `api_endpoint` (Gmail's bundled discovery doc's rootUrl has no
   suffix; Drive's already carries `/drive/v3`). Unlike Gmail, `GoogleDriveReader` *does* accept
@@ -110,5 +110,5 @@ exactly as against the real API.
   (`--user <email>`) still needs an instance-level `_get_credentials` override, since that
   constructor path drops any `subject`.
 
-Gmail/Drive credentials (and the shared OAuth client config) come from the mock's
+Gmail/Drive credentials (and the shared OAuth client config) come from Backlot's
 `GET /_meta/credentials`, exactly as in `examples/using-official-sdk/`.

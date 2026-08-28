@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "backlot"
 dynamic = ["version"]
-description = "A mock of enterprise SaaS APIs, served over your own corpus with per-document ACLs"
+description = "A local emulator for enterprise SaaS APIs, served over your own corpus with per-document ACLs"
 readme = "README.pypi.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -65,7 +65,7 @@ examples = [
     "boto3>=1.34",
     "hubspot-api-client>=12",
 ]
-# MCP agent examples (examples/using-mcp-with-agents/): drive the mock through a real MCP server.
+# MCP agent examples (examples/using-mcp-with-agents/): drive Backlot through a real MCP server.
 mcp = [
     "mcp>=1.2",
     "anthropic[mcp]>=0.40",
@@ -79,7 +79,7 @@ mcp = [
     "fastmcp>=3",
 ]
 # LlamaIndex reader examples (examples/using-llamaindex-readers/): point each official
-# llama-index reader at the mock and load Documents. The client libs below are the ones the
+# llama-index reader at Backlot and load Documents. The client libs below are the ones the
 # examples configure directly; the readers pull the rest transitively.
 llamaindex = [
     "llama-index-readers-slack>=0.5",
@@ -102,7 +102,7 @@ llamaindex = [
     "boto3>=1.40",
     "s3fs>=2026.6",
 ]
-# Mirage examples (examples/using-mirage/): drive the mock through mirage's virtual filesystem.
+# Mirage examples (examples/using-mirage/): drive Backlot through mirage's virtual filesystem.
 # The [fuse] extra powers the optional `--fuse` real-OS mount, which also needs an OS FUSE driver
 # (macFUSE / fuse3) — the Python dep itself installs everywhere.
 mirage = [

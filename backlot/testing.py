@@ -74,7 +74,7 @@ class Server:
     environment / cwd ``.env`` the subprocess inherits, so a caller's ``BACKLOT_ADMIN_TOKEN``
     override is reflected correctly. For an already-running remote server
     (``serve_or_connect``'s remote-``url`` branch), it is fetched from that server's own
-    ``GET /_meta/users`` — a mock-only affordance (``backlot/main.py``) that already serves
+    ``GET /_meta/users`` — a Backlot-only affordance (``backlot/main.py``) that already serves
     ``admin_token`` for exactly this purpose (``examples/using-official-sdk/s3.py`` tells users to
     get credentials from that endpoint for a remote server they didn't start) — but only when
     ``url`` clears ``_trusted_for_token_fetch`` (``https``, or a loopback host): a plaintext

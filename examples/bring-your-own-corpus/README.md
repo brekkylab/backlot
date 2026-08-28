@@ -1,6 +1,6 @@
 # Bring your own corpus
 
-Serve **any** document set through every mock API — provide a JSONL where each line is one
+Serve **any** document set through every emulated API — provide a JSONL where each line is one
 document, validate it, and load it:
 
 ```bash
@@ -10,7 +10,7 @@ backlot serve --port 8000
 ```
 
 `run.py` here is a self-contained walkthrough — it validates `sample_corpus.jsonl`, starts a
-real mock server backed by it, and reads it back over HTTP (ACL enforced):
+real server backed by it, and reads it back over HTTP (ACL enforced):
 
 ```bash
 python examples/bring-your-own-corpus/run.py
@@ -102,7 +102,7 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   of `subtype: "file"` records in the same repo — and that becomes the pull's changed-file list
   (`GET /pulls/{n}/files`, and the diff served for `Accept: application/vnd.github.diff`). Only
   *which* files: the hunks are always derived from each file's own content, so the diff applies with
-  real `git` either way. Omit it and the mock picks a few files deterministically instead — a
+  real `git` either way. Omit it and Backlot picks a few files deterministically instead — a
   well-formed diff, but unrelated to what the pull is about. A path naming no file the caller can
   read is skipped, so declaring one does not publish its name — and a path naming no file *at all*
   is skipped the same way, since telling the two apart per caller is what would publish it. That

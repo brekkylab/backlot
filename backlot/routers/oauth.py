@@ -30,7 +30,7 @@ async def token(request: Request):
     acl = request.app.state.acl
 
     if oauth is None:
-        return _err("temporarily_unavailable: no mock credentials configured")
+        return _err("temporarily_unavailable: no OAuth credentials configured")
 
     if grant == "refresh_token":
         # the refresh_token IS the user's bearer token (from /_meta/users) — validate it

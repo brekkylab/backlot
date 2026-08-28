@@ -96,7 +96,7 @@ Two consequences worth knowing before you trust a passing test here:
   says nothing about whether it will work for a connector that authenticates as a bot in production.
 - **There is no "invite the bot to the channel" step.** Backlot scopes by per-document readers — the
   user model — so a caller reaches every channel their ACL allows. A bot in production starts with
-  access to nothing until it is invited, which is a failure mode this mock cannot reproduce.
+  access to nothing until it is invited, which is a failure mode Backlot cannot reproduce.
 
 So if the connector under test uses a bot token in production, Backlot is the more permissive of the
 two on both counts. `auth.test` reflects the user shape it emulates: `user`, `user_id`, `team`,
@@ -117,7 +117,7 @@ curl -s "localhost:8000/drive/v3/files?fields=files(id,name)" \
 #### A client carrying a config, not a token — `POST /oauth2/token`
 
 For a connector that configures with an OAuth client or a service account rather than a raw token,
-`token_uri` from `/_meta/credentials` points back at the mock, so the client's own refresh lands
+`token_uri` from `/_meta/credentials` points back at Backlot, so the client's own refresh lands
 here and resolves to the same ACL:
 
 ```bash
@@ -146,7 +146,7 @@ the quickest check that an identity resolves.
 
 ### Jira and Confluence — Basic, or `Bearer`
 
-Atlassian clients send HTTP Basic with an API token as the password, so that is what the mock takes.
+Atlassian clients send HTTP Basic with an API token as the password, so that is what Backlot takes.
 The **username is ignored** once the token resolves — any placeholder works:
 
 ```bash
@@ -182,7 +182,7 @@ curl -s "localhost:8000/hubspot/crm/v3/objects/contacts" \
 
 ### Linear — bare, or `Bearer`
 
-Linear's personal API keys go in the header with **no scheme**, and the mock accepts that spelling
+Linear's personal API keys go in the header with **no scheme**, and Backlot accepts that spelling
 as well as `Bearer`, exactly as the real API does:
 
 ```bash
@@ -204,7 +204,7 @@ curl -s localhost:8000/fireflies/graphql \
 ### Amazon S3 — SigV4
 
 S3 does not take a bearer token. Each identity carries an `s3_access_key_id` /
-`s3_secret_access_key` pair, derived from that identity's token — which is what the mock's SigV4
+`s3_secret_access_key` pair, derived from that identity's token — which is what Backlot's SigV4
 verifier resolves back to a user — so hand them to any AWS client:
 
 ```python
@@ -225,7 +225,7 @@ s3 = boto3.client(
 print([b["Name"] for b in s3.list_buckets()["Buckets"]])
 ```
 
-**Path addressing is not optional.** The mock serves `/s3/{bucket}/{key}`, so virtual-hosted
+**Path addressing is not optional.** Backlot serves `/s3/{bucket}/{key}`, so virtual-hosted
 addressing — which puts the bucket in the host, `acme-artifacts.localhost:8000` — reaches nothing.
 boto3's default picks path for this endpoint today, so the setting looks redundant right up until
 someone carries a virtual-hosted config over from real S3.
@@ -238,5 +238,5 @@ you commit, yours included.
 
 ## Per-service, runnable
 
-One script per service, driving the vendor's own SDK against the mock:
+One script per service, driving the vendor's own SDK against Backlot:
 [`examples/using-official-sdk/`](../examples/using-official-sdk/).

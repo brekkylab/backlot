@@ -3,9 +3,9 @@
 Thanks for your interest in improving **Backlot**! Its essence is to serve each vendor's
 **API** — Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3,
 HubSpot, Linear, Fireflies — with the **smallest possible gap** from the real thing, so clients
-built against the real APIs work unchanged against the mock. The corpus is yours to supply;
+built against the real APIs work unchanged against Backlot. The corpus is yours to supply;
 EnterpriseRAG-Bench is just one dataset you can load into that surface. Contributions that shrink
-the gap between the mock and the real APIs — request/response shapes, status codes, pagination,
+the gap between Backlot and the real APIs — request/response shapes, status codes, pagination,
 error formats — are especially welcome.
 
 ## Development setup
@@ -108,7 +108,7 @@ The whole point of this project is **fidelity to the real APIs**, so:
   [`backlot/schemas/`](backlot/schemas/), which is the **ingest** contract (the BYO-JSONL record a
   corpus may carry). Touch a schema when you change what a corpus can express, and a
   `response_model` when you change what a client receives.
-- A divergence from the real API is a bug, even when the mock's answer is reasonable. Measure
+- A divergence from the real API is a bug, even when Backlot's answer is reasonable. Measure
   against the real service where you can, and record the measurement in the comment beside the fix —
   several of them exist precisely because someone diffed the two side by side.
 - ACL scoping is enforced per bearer token (the admin token bypasses). New endpoints that

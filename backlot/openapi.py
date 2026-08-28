@@ -1,4 +1,4 @@
-"""Derive an MCP-ready OpenAPI spec from the mock's own ``/openapi.json``.
+"""Derive an MCP-ready OpenAPI spec from Backlot's own ``/openapi.json``.
 
 For vendor fidelity several routes accept **more than one HTTP method on a single route** — every
 Slack Web API method takes GET and POST (``api_route(methods=["GET","POST"])``), Jira's
@@ -13,7 +13,7 @@ hook, so a GET+POST route is inherently one id. Splitting every such route into 
 would be invasive and still leave a redundant GET-tool + POST-tool pair. Instead this module keeps
 the fidelity-shaped routes as-is and, for MCP consumers, slices the spec to one source's paths and
 collapses each route's methods to one callable operation (prefer GET, then fewest path params, then
-the lexicographically greatest path). Served at ``GET /_mock/openapi/{source}`` so a bridge consumes
+the lexicographically greatest path). Served at ``GET /_meta/openapi/{source}`` so a bridge consumes
 it directly — no client-side spec surgery. S3 is intentionally absent: it is SigV4-signed, which a
 static bridge auth header can't produce.
 """
@@ -74,7 +74,7 @@ def qp(
     The routers read their query params off the raw request rather than through FastAPI signatures
     (a vendor's parameter names are not always valid Python, and several are conditional), so each
     one has to declare what it honours by hand. This is that declaration — and only for parameters
-    the mock actually honours: advertising one it ignores makes a client ask for data that never
+    Backlot actually honours: advertising one it ignores makes a client ask for data that never
     arrives, which is worse than not offering it.
 
     ``description`` is worth spending on a parameter whose DEFAULT decides what comes back, because
@@ -101,7 +101,7 @@ def slice_spec(spec: dict, prefixes: list[str]) -> dict:
 
 
 def dedupe_operations(spec: dict) -> dict:
-    """Keep one operation per operationId (the mock aliases the same op for fidelity).
+    """Keep one operation per operationId (Backlot aliases the same op for fidelity).
 
     Preference: GET before POST/…, then fewest path params, then lexicographically greatest path
     (so ``/rest/api/3`` beats ``/rest/api/2``; ``/batch`` beats ``/batch/{api}/{version}``)."""

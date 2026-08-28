@@ -301,7 +301,7 @@ def bare_request():
             "headers": [],
             "query_string": b"",
             "scheme": "http",
-            "server": ("mock", 80),
+            "server": ("backlot", 80),
             "path": "/",
         }
     )
@@ -325,7 +325,7 @@ def crawl_slack(client, headers):
     channels = []
     while True:
         # Both channel types, because Slack's own default is `public_channel` alone — a crawler
-        # that omits `types` reaches no private channel, on the mock or on the real API.
+        # that omits `types` reaches no private channel, on Backlot or on the real API.
         data = {"limit": 8, "types": "public_channel,private_channel"}
         if cursor:
             data["cursor"] = cursor
@@ -363,7 +363,7 @@ def crawl_slack(client, headers):
 
 def crawl_hubspot(client, headers, object_type, limit=2, archived=False):
     """Cursor-paginate one CRM object type. Terminates on the ABSENCE of paging.next — which is
-    exactly how the official client's fetch_all decides it is done, so a mock that always emits
+    exactly how the official client's fetch_all decides it is done, so a server that always emits
     paging.next would hang a real client rather than error."""
     out, after = [], None
     while True:

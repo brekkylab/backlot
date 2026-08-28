@@ -31,7 +31,7 @@ jobs:
       - name: Install the HubSpot reader past its stale pin
         run: pip install --no-deps "llama-index-readers-hubspot<0.6"
       - name: Fetch the AWS MCP server the S3 test drives
-        # tests/test_mcp.py runs this through `uvx …@latest`, which is the point — the mock is
+        # tests/test_mcp.py runs this through `uvx …@latest`, which is the point — Backlot is
         # proved against the server awslabs ships today. Downloading it here rather than there
         # keeps the fetch off the clock the MCP client's `initialize` waits on, which a uv cache
         # that has not seen this version otherwise loses.
@@ -45,7 +45,7 @@ jobs:
       - name: Typecheck the Linear example
         working-directory: examples/using-official-sdk/linear
         run: npx tsc --noEmit
-      - name: Run the Linear example against a mock it starts itself
+      - name: Run the Linear example against a server it starts itself
         working-directory: examples/using-official-sdk/linear
         env:
           PYTHON: python

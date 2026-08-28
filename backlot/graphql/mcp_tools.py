@@ -10,7 +10,7 @@ GraphQL document to send.
 
 Everything here is pure — a mapping in, :class:`Tool` objects out. No HTTP, no MCP: the transport
 is ``examples/using-mcp-with-agents/_graphql_bridge.py``, which posts ``tool.document`` with the
-caller's own credential so the mock's per-token ACL decides what comes back.
+caller's own credential so Backlot's per-token ACL decides what comes back.
 
 **One tool per root field, not one ``graphql(query:)`` passthrough.** A passthrough is three lines
 and turns the exercise into "can the model write GraphQL against a schema it has not seen"; none

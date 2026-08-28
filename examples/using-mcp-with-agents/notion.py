@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Drive the official notion-mcp-server over MCP, pointed at the mock. Self-contained.
+"""Drive the official notion-mcp-server over MCP, pointed at Backlot. Self-contained.
 
-Runs `@notionhq/notion-mcp-server` via **npx** (Node) against a `--url` mock (or a local one it
+Runs `@notionhq/notion-mcp-server` via **npx** (Node) against a `--url` server (or a local one it
 spins up), then lets an LLM agent answer a question by calling its MCP tools. The server takes a
-first-class `BASE_URL` override, so pointing it at the mock is one env var and a local `localhost`
-mock is reached directly (no Docker/host-gateway tricks). Auth is a mock token (`--token`, default
-admin; per-user from GET /_mock/users).
+first-class `BASE_URL` override, so pointing it at Backlot is one env var and a local `localhost`
+server is reached directly (no Docker/host-gateway tricks). Auth is a Backlot token (`--token`,
+default admin; per-user from GET /_meta/users).
 
 Prereqs: Node/npx; `pip install -e ".[mcp]"`; an LLM key for `--agent` (`ANTHROPIC_API_KEY`, or
 `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
@@ -50,7 +50,7 @@ QUESTION = (
 
 
 def build_params(base_url: str, token: str) -> StdioServerParameters:
-    """`npx` args pointing the official notion-mcp-server at the mock via BASE_URL."""
+    """`npx` args pointing the official notion-mcp-server at Backlot via BASE_URL."""
     return StdioServerParameters(
         command="npx",
         args=["-y", "@notionhq/notion-mcp-server"],
@@ -63,11 +63,13 @@ def build_params(base_url: str, token: str) -> StdioServerParameters:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Drive notion-mcp-server over MCP against the mock.")
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Drive notion-mcp-server over MCP against Backlot.")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_mock/users "
+        help="Backlot bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument(
@@ -81,8 +83,8 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → retrieval is ACL-filtered to that user")
-        params = build_params(mock.base_url, args.token or mock.token)
+        params = build_params(s.base_url, args.token or s.token)
         run_agent(args.agent, params, QUESTION)

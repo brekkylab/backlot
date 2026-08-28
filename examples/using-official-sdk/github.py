@@ -45,7 +45,7 @@ CORPUS = [
         "subtype": "pull_request",
         # The files this pull touched, named as `path` values of this repo's subtype='file' records.
         # Only WHICH files: the hunks are derived from each file's own content, so the diff applies
-        # with real git. Leave it out and the mock picks deterministically instead — a well-formed
+        # with real git. Leave it out and Backlot picks deterministically instead — a well-formed
         # diff, but unrelated to what the pull is about.
         "changed_paths": ["src/ratelimiter.py"],
         "comments": [
@@ -56,7 +56,7 @@ CORPUS = [
                 "author_email": "ava@acme.com",
             },
             # `path` -> a line-anchored REVIEW comment (GET /pulls/{n}/comments). Real GitHub keeps
-            # the two apart and counts them separately, and so does the mock.
+            # the two apart and counts them separately, and so does Backlot.
             {
                 "created_ts": "2026-02-09T16:20:00Z",
                 "content": "This clamps against `tokens`, so the bucket can never refill.",
@@ -105,23 +105,25 @@ CORPUS = [
 ]
 
 _p = argparse.ArgumentParser(
-    description="Read GitHub through the official PyGithub against the mock."
+    description="Read GitHub through the official PyGithub against Backlot."
 )
-_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument(
+    "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+)
 _p.add_argument(
     "--token",
-    help="mock bearer token from GET /_mock/users "
+    help="Backlot bearer token from GET /_meta/users "
     "(default: the admin token, which sees everything)",
 )
 args = _p.parse_args()
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     if args.token:
         print("authenticating with --token → responses are ACL-filtered to that user")
-    gh = Github(auth=Auth.Token(args.token or mock.token), base_url=f"{mock.base_url}/github")
+    gh = Github(auth=Auth.Token(args.token or s.token), base_url=f"{s.base_url}/github")
 
     # `get_user().get_repos()` is GET /user/repos — the credential's own view of what it can reach.
-    # Nothing here names the org: the mock derives it from the corpus's email domain and 404s any
+    # Nothing here names the org: Backlot derives it from the corpus's email domain and 404s any
     # other owner, as real GitHub does, so `full_name` is the only safe way to address a repo.
     repos = list(gh.get_user().get_repos())
     if not repos:

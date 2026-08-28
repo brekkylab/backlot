@@ -7,7 +7,7 @@ JSON column (see ``backlot/store.py``).
 
 Paths and shapes follow what the official ``hubspot-api-client`` actually calls: **v3 for objects,
 v4 for associations**. HubSpot also publishes a newer date-versioned scheme
-(``/crm/objects/2026-03/…``); the SDK does not use it, so neither does this mock.
+(``/crm/objects/2026-03/…``); the SDK does not use it, so neither does Backlot.
 
 Read-only: ``search`` and ``batch/read`` are reads issued over POST and are served; create/update/
 delete are not.
@@ -57,7 +57,7 @@ class HubspotPage(_HLoose):
     results: list[dict] = []
 
 
-# Only parameters the mock actually honours are advertised: `propertiesWithHistory` and inline
+# Only parameters Backlot actually honours are advertised: `propertiesWithHistory` and inline
 # `associations` expansion are not implemented, and declaring them would have clients ask for data
 # that silently never arrives (worse for `propertiesWithHistory`, which also makes the official
 # client drop its page size to 50).
@@ -186,7 +186,7 @@ def _record(row, keep: list[str] | None = None) -> dict:
 def _page(rows, limit: int, keep: list[str] | None) -> dict:
     """A paged listing. ``rows`` is limit+1 rows when a further page exists — the extra row is the
     only evidence needed, and it is dropped from the response. ``paging.next`` is emitted ONLY
-    when it exists: the official client's fetch_all treats its absence as "done", so a mock that
+    when it exists: the official client's fetch_all treats its absence as "done", so a server that
     always emits it makes a real client loop forever."""
     has_more = len(rows) > limit
     rows = rows[:limit]
@@ -208,7 +208,7 @@ def _keep(raw) -> list[str] | None:
 
 # HubSpot's standard CRM objects exist in every portal whether or not any records do, so an empty
 # `deals` is an empty listing rather than an unknown type. Custom objects exist only where defined,
-# which for this mock means present in the corpus.
+# which for Backlot means present in the corpus.
 _STANDARD_OBJECT_TYPES = frozenset(
     {
         "contacts",
@@ -310,8 +310,8 @@ _PLURAL = {plural: singular for singular, plural in _SINGULAR.items()}
 #
 # `0-<n>` is a much wider space than these thirteen: swept on 2026-08-24, every id from `0-1` to
 # `0-165` resolves apart from eleven gaps, and nothing above `0-165` does -- so most of the space is
-# internal types with no published name. Only the pairings above are mapped, because a name this
-# mock cannot verify is a name it would be inventing; an unmapped id stays a 400 rather than
+# internal types with no published name. Only the pairings above are mapped, because a name
+# Backlot cannot verify is a name it would be inventing; an unmapped id stays a 400 rather than
 # resolving to a guess.
 #
 # A custom object is a `2-<n>`, and its records are addressed here by the name the corpus gave it.
@@ -338,7 +338,7 @@ _TYPE_IDS = {
 # HubSpot answers those two with different messages.
 _TYPE_ID = re.compile(r"\d+-\d+")
 
-# Every spelling of a standard object -> the one this mock calls canonical (the API's plural).
+# Every spelling of a standard object -> the one Backlot calls canonical (the API's plural).
 _CANONICAL = {name: name for name in _STANDARD_OBJECT_TYPES}
 _CANONICAL.update(_SINGULAR)
 _CANONICAL.update(_TYPE_IDS)
@@ -474,7 +474,7 @@ def _match_one(prop, f: dict) -> bool:
     if op == "BETWEEN":
         # Numeric when all three parse as numbers, else lexicographic — the same fallback LT/GT
         # use. Without it an ISO-8601 range returns nothing while `GT` on the same property works,
-        # which bites the mock's own `hs_timestamp` values.
+        # which bites Backlot's own `hs_timestamp` values.
         hi_raw = f.get("highValue")
         lo_n, hi_n = _num(target), _num(hi_raw)
         for c in cands:
@@ -487,7 +487,7 @@ def _match_one(prop, f: dict) -> bool:
         return False
     if op in ("LT", "LTE", "GT", "GTE"):
         # numeric when both sides parse as numbers, else a string comparison — HubSpot property
-        # types are not declared to this mock, so the values decide.
+        # types are not declared to Backlot, so the values decide.
         t_num = _num(target)
         for c in cands:
             c_num = _num(c)
@@ -505,7 +505,7 @@ def _match_one(prop, f: dict) -> bool:
 
 def _sorted(rows, sorts):
     """Apply `sorts` (first entry wins, as HubSpot documents). Numeric when every value on that
-    property parses as a number, else lexicographic — the mock is not told property types."""
+    property parses as a number, else lexicographic — Backlot is not told property types."""
     if not sorts:
         return rows
     spec = sorts[0] if isinstance(sorts, list) and sorts else None

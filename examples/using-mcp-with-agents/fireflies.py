@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the mock's Fireflies GraphQL API as MCP tools via the GraphQL→MCP bridge. Self-contained.
+"""Drive Backlot's Fireflies GraphQL API as MCP tools via the GraphQL→MCP bridge. Self-contained.
 
 **Fireflies' official MCP server is remote-only** — vendor-hosted, no base-URL override — so, as
 with Linear, nothing local can stand in for it. The community side is thinner here than anywhere
@@ -7,7 +7,7 @@ else in this directory: barely-adopted servers, and the maintained one pins its 
 module constant with the API key its sole configurable. There is no consensus server to be faithful
 to and none that can be redirected, so carrying a patched fork of one would buy nothing.
 
-The tools therefore come from the mock's own schema: `_graphql_bridge.py` introspects
+The tools therefore come from Backlot's own schema: `_graphql_bridge.py` introspects
 `POST /fireflies/graphql` and serves its four root fields as typed tools — `transcripts` (with
 Fireflies' own `keyword` / `scope` / `fromDate` / `host_email` / `limit` / `skip` arguments),
 `transcript`, `user`, `users`. Stated plainly, since it is the reason this file exists: that
@@ -105,7 +105,7 @@ _BRIDGE = str(Path(__file__).with_name("_graphql_bridge.py"))
 
 
 def build_params(base_url: str, token: str, depth: int | None = None) -> StdioServerParameters:
-    """Run `_graphql_bridge.py --source fireflies` as a stdio MCP server pointed at the mock."""
+    """Run `_graphql_bridge.py --source fireflies` as a stdio MCP server pointed at Backlot."""
     args = [_BRIDGE, "--source", "fireflies", "--base-url", base_url.rstrip("/"), "--token", token]
     if depth is not None:
         args += ["--depth", str(depth)]
@@ -114,12 +114,14 @@ def build_params(base_url: str, token: str, depth: int | None = None) -> StdioSe
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Drive the mock's Fireflies GraphQL API over MCP via the GraphQL bridge."
+        description="Drive Backlot's Fireflies GraphQL API over MCP via the GraphQL bridge."
     )
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_mock/users "
+        help="Backlot bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument(
@@ -140,8 +142,8 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → retrieval is ACL-filtered to that user")
-        params = build_params(mock.base_url, args.token or mock.token, args.depth)
+        params = build_params(s.base_url, args.token or s.token, args.depth)
         run_agent(args.agent, params, QUESTION)

@@ -35,20 +35,22 @@ CORPUS = [
 ]
 
 _p = argparse.ArgumentParser(
-    description="Read Gmail through google-api-python-client against the mock."
+    description="Read Gmail through google-api-python-client against Backlot."
 )
-_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument(
+    "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+)
 _p.add_argument(
     "--user",
-    help="which user's OAuth token to use, from GET /_mock/users (default: the first user)",
+    help="which user's OAuth token to use, from GET /_meta/users (default: the first user)",
 )
 args = _p.parse_args()
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     # An ordinary Google authorized-user credential — exactly as against real Gmail; only the
-    # api_endpoint changes. The mock provides the client_id/secret + refresh token, and the
-    # library refreshes against token_uri (the mock's /oauth2/token) to get an access token.
-    client_id, client_secret, refresh_token, token_uri = google_oauth_user(mock.base_url, args.user)
+    # api_endpoint changes. Backlot provides the client_id/secret + refresh token, and the
+    # library refreshes against token_uri (Backlot's /oauth2/token) to get an access token.
+    client_id, client_secret, refresh_token, token_uri = google_oauth_user(s.base_url, args.user)
     creds = Credentials(
         None,
         refresh_token=refresh_token,
@@ -61,7 +63,7 @@ with serve_or_connect(CORPUS, url=args.url) as mock:
         "v1",
         credentials=creds,
         static_discovery=True,
-        client_options=ClientOptions(api_endpoint=mock.base_url),
+        client_options=ClientOptions(api_endpoint=s.base_url),
     )
 
     ids = gmail.users().messages().list(userId="me", maxResults=5).execute().get("messages", [])

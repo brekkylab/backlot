@@ -1,4 +1,4 @@
-"""Mock Google APIs (read-only): Gmail (``/gmail/v1``), Drive (``/drive/v3``), and the
+"""Google APIs (read-only): Gmail (``/gmail/v1``), Drive (``/drive/v3``), and the
 Workspace editor read APIs — Docs (``/docs/v1``), Sheets (``/sheets/v4``), Slides
 (``/slides/v1``) — for clients that read native docs structurally instead of via Drive export.
 
@@ -143,7 +143,7 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
     outer_auth = request.headers.get("authorization")
     transport = httpx.ASGITransport(app=request.app, raise_app_exceptions=False)
     out_parts: list[tuple[str, str]] = []
-    async with httpx.AsyncClient(transport=transport, base_url="http://mock.batch") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://backlot.batch") as client:
         for part in parsed.get_payload():
             cid = part.get("Content-ID", "")
             method, target, sub_headers, sub_body = _parse_batch_subrequest(
@@ -372,7 +372,7 @@ def _gmail_date(v: str) -> int | None:
 
 # Gmail relative-age units for newer_than:/older_than:. Real Gmail counts calendar months/years,
 # which we can't reproduce without the query's wall-clock calendar; days-per-unit is a faithful-
-# enough approximation for a mock (the operators are otherwise honored exactly).
+# enough approximation here (the operators are otherwise honored exactly).
 _GMAIL_REL_UNIT = {"d": 1, "m": 30, "y": 365}
 _GMAIL_REL = re.compile(r"(\d+)([dmy])")
 
@@ -415,7 +415,7 @@ def _gmail_op_match(row, ops: dict) -> bool:
             return False
     # `in:` and `label:` ask the same question of a message — Gmail's folders ARE labels — and both
     # have to see the label a message is served under rather than only a stated one. `in:anywhere`
-    # is the exception: it widens the search to spam and trash, which this mock holds none of, so
+    # is the exception: it widens the search to spam and trash, which Backlot holds none of, so
     # it restricts nothing.
     labels = [x.lower() for x in store.jcol(row, "label_ids")] or [_GMAIL_DEFAULT_LABEL.lower()]
     for v in ops.get("label", []) + [x for x in ops.get("in", []) if x.lower() != "anywhere"]:
@@ -889,7 +889,7 @@ def _drive_facts(row) -> dict:
         "name": row["title"] or "",
         "modified": synth.rfc3339(modified),
         "owner_email": row["author_email"],
-        # real Drive keys `in owners` on the owner's email; the mock also accepts the owner
+        # real Drive keys `in owners` on the owner's email; Backlot also accepts the owner
         # display name, since that's the only owner identifier some callers have.
         "owners": {(row["author_email"] or "").lower(), (row["owner_display"] or "").lower()},
     }
@@ -960,7 +960,7 @@ def _drive_folder_obj(conn, name: str, me: str | None = None) -> dict:
     their parent (``synth.drive_folder_id``), and it hangs under ``root`` so a client that
     navigates from My Drive root (e.g. mirage) can discover and descend into it.
 
-    The mock models no folder owner, so a folder is never owned by the caller and carries
+    Backlot models no folder owner, so a folder is never owned by the caller and carries
     ``sharedWithMeTime`` like any other item the ``sharedWithMe`` filter returns — the folder stream
     has to answer a clause the same way the row stream does."""
     fid = synth.drive_folder_id(name)
@@ -1012,9 +1012,9 @@ def _drive_folder_name_by_id(conn, file_id: str) -> str | None:
 
 # --- `fields` projection -------------------------------------------------------------------
 # Every field of the Drive v3 `files` resource per Google's reference — deliberately the whole
-# documented set, not just the keys this mock synthesizes: real Drive accepts a documented field
+# documented set, not just the keys Backlot synthesizes: real Drive accepts a documented field
 # it has no value for (and omits it from the response) while rejecting anything unknown with 400.
-# Validating against it is what makes a mock-backed test able to catch a typo'd or stale mask.
+# Validating against it is what makes a Backlot-backed test able to catch a typo'd or stale mask.
 _DRIVE_FILE_FIELDS = frozenset(
     """
     appProperties capabilities contentHints contentRestrictions copyRequiresWriterPermission
@@ -1057,7 +1057,7 @@ def _mask_names(mask: str) -> set[str]:
 def _check_mask(names, allowed: frozenset) -> None:
     """Reject an unknown field name the way real Drive does. Without this a bogus name simply
     matched nothing and vanished, so the response was a 200 full of empty objects and no
-    mock-backed test could catch a mask that 400s in production."""
+    Backlot-backed test could catch a mask that 400s in production."""
     for n in sorted(names):
         if n != "*" and n not in allowed:
             raise gerr.invalid_parameter("fields", f"Invalid field selection {n}")
@@ -1069,7 +1069,7 @@ def _drive_file_field_keys(fields: str | None) -> set[str] | None:
     form (``files/id``); both are honored. ``None`` = no projection (an absent mask, or one that
     asks for everything with ``*``).
 
-    Top-level names are validated but not projected: the mock always returns ``kind`` and
+    Top-level names are validated but not projected: Backlot always returns ``kind`` and
     ``incompleteSearch``, because its typed response model (``DriveFileList``, which the OpenAPI
     schema is built from) declares them."""
     if not (fields or "").strip():
@@ -1137,7 +1137,7 @@ def _natural_key(name: str) -> list[tuple]:
 # Real Drive's documented `orderBy` keys -> the sort key each takes from the served file object
 # (sorting what the client actually sees, so folders and stored rows order together). Names sort
 # case-insensitively, the way Drive's collation presents them. `recency` is Drive's "most recent
-# by any signal"; the mock models exactly one modification timestamp, which stands in for it.
+# by any signal"; Backlot models exactly one modification timestamp, which stands in for it.
 _DRIVE_ORDER_KEYS = {
     "createdTime": lambda f: f.get("createdTime") or "",
     "modifiedTime": lambda f: f.get("modifiedTime") or "",
@@ -1147,12 +1147,12 @@ _DRIVE_ORDER_KEYS = {
     "folder": lambda f: f.get("mimeType") != DRIVE_FOLDER_MIME,  # folders first
     "starred": lambda f: bool(f.get("starred")),
     "quotaBytesUsed": lambda f: int(f.get("quotaBytesUsed") or f.get("size") or 0),
-    # Sortable because the mock DOES model the relation behind it — owner vs caller — even though it
+    # Sortable because Backlot DOES model the relation behind it — owner vs caller — even though it
     # records no share event (see _shared_with_me_time). Absent for the admin/service token, where
     # every key ties and the order falls back to the id, as it would on real Drive over nulls.
     "sharedWithMeTime": lambda f: f.get("sharedWithMeTime") or "",
 }
-# Documented by Drive, but derived from per-caller signals this mock does not model at all: nothing
+# Documented by Drive, but derived from per-caller signals Backlot does not model at all: nothing
 # here is ever viewed or modified *by* anyone in particular. Sorting by one of these could only be a
 # no-op, and a silently unapplied sort is the very failure this fix is about — so they 400, which
 # tells a consumer "verify this against real Drive" instead of quietly agreeing.
@@ -1175,7 +1175,7 @@ def _drive_order_specs(order_by: str | None) -> list[tuple]:
         if key in _DRIVE_ORDER_UNMODELLED:
             raise gerr.invalid_value(
                 "orderBy",
-                f"Sorting by '{key}' is not supported by this mock (it models no per-caller "
+                f"Sorting by '{key}' is not supported by Backlot (it models no per-caller "
                 f"view/share timestamps). Supported: {', '.join(sorted(_DRIVE_ORDER_KEYS))}.",
             )
         if key not in _DRIVE_ORDER_KEYS:
@@ -1216,7 +1216,7 @@ def _drive_folder_candidates(conn, ids, q: str, me: str | None) -> list[dict]:
     matcher stored rows go through — so ``mimeType='…folder'`` finds them, not only
     ``'root' in parents``, and they honor the ``fields`` projection like any other row.
 
-    Skipped for a ``fullText contains`` query: a folder's only text is its name (the mock's index
+    Skipped for a ``fullText contains`` query: a folder's only text is its name (Backlot's index
     covers document content, not container names), so it can't take part in an FTS match."""
     if _DRIVE_FULLTEXT_RE.search(q) or _drive_q_excludes_folders(q):
         return []
@@ -1304,10 +1304,10 @@ def _drive_about_field_keys(fields: str | None) -> set[str] | None:
 
 
 # The conversion tables below describe the *API's* capabilities, not this account's, so they carry
-# Google's real values even though the mock is read-only: a client that reads them to decide what
+# Google's real values even though Backlot is read-only: a client that reads them to decide what
 # to ask for must branch the same way it would against real Drive.
 
-# What `files.export` can turn each native type into. Kept to the three native types the mock
+# What `files.export` can turn each native type into. Kept to the three native types Backlot
 # actually stores (`_NATIVE` minus the folder, which is not exportable anywhere).
 _DRIVE_EXPORT_FORMATS = {
     DRIVE_DOC_MIME: [
@@ -1338,7 +1338,7 @@ _DRIVE_EXPORT_FORMATS = {
 }
 
 # Source type -> the native types Drive can convert it into on upload. Google's map is longer;
-# this is the part that covers every format the mock's own corpus contains (native docs, Office
+# this is the part that covers every format Backlot's own corpus contains (native docs, Office
 # files, PDFs, delimited text, images), so a client's lookup for a real file resolves.
 _DRIVE_IMPORT_FORMATS = {
     "application/pdf": [DRIVE_DOC_MIME],
@@ -1426,7 +1426,7 @@ async def drive_about(request: Request):
         "user": _drive_user(email) | {"me": True},  # `about.user` IS the caller
         "storageQuota": {
             "limit": str(_DRIVE_STORAGE_LIMIT),
-            # `usage` spans every Google service; the mock stores nothing outside Drive, so the two
+            # `usage` spans every Google service; Backlot stores nothing outside Drive, so the two
             # are equal. Both include the trash, which is the subset `usageInDriveTrash` reports.
             "usage": str(used),
             "usageInDrive": str(used),
@@ -1450,7 +1450,7 @@ async def drive_about(request: Request):
 
 @router.get("/drive/v3/drives")
 async def drive_shared_drives(request: Request):
-    """Shared (Team) Drives — the mock's corpus lives entirely in My Drive, so this is empty.
+    """Shared (Team) Drives — Backlot's corpus lives entirely in My Drive, so this is empty.
     Present so shared-drive-aware clients don't 404 while enumerating."""
     _require(request)
     return {"kind": "drive#driveList", "drives": []}
@@ -1476,7 +1476,7 @@ async def drive_files_list(request: Request):
     # A folder-scoped parent resolves to one container name (for the SQL-scoped paths below).
     scoped = [pid for pid in parent_ids if pid != "root"]
     container = next((n for pid in scoped if (n := _drive_folder_name_by_id(conn, pid))), None)
-    # The mock's folders all hang directly under the root, so a query scoped inside one can only
+    # Backlot's folders all hang directly under the root, so a query scoped inside one can only
     # match files — no folder stream to build.
     folders = [] if scoped else _drive_folder_candidates(conn, ids, q, me)
 
@@ -1764,12 +1764,12 @@ async def sheets_get(spreadsheet_id: str, request: Request):
 # range against the same grid `sheets_get` builds, so the three calls cannot disagree about what
 # a cell holds.
 
-SHEETS_SHEET_TITLE = "Sheet1"  # the mock shapes every spreadsheet as one sheet with this title
+SHEETS_SHEET_TITLE = "Sheet1"  # Backlot shapes every spreadsheet as one sheet with this title
 
 # A real sheet's GRID is larger than its data — Sheets creates one at 1000x26 — and every range
 # behaviour below is defined against the grid rather than against the occupied cells. Measured on a
 # real spreadsheet holding 14 rows: `values/<title>` echoes `A1:Z1000`, `A:A` echoes `A1:A1000`.
-# So the mock declares the same grid. This is API scaffolding, like the synthesized `sheetId` and
+# So Backlot declares the same grid. This is API scaffolding, like the synthesized `sheetId` and
 # sheet title beside it — not invented cell data, which `_sheets_grid` still refuses to manufacture.
 SHEETS_GRID_ROWS = 1000
 SHEETS_GRID_COLS = 26
@@ -1931,7 +1931,7 @@ def _sheets_grid_data(rows: list[list[str]], spec: str) -> dict:
 
     Two divergences, stated rather than hidden: real Sheets pads ``rowData`` to the WHOLE 1000-row
     grid and this stops at the last row holding data; and real cells carry format objects plus
-    ``rowMetadata``/``columnMetadata``, none of which this mock models."""
+    ``rowMetadata``/``columnMetadata``, none of which Backlot models."""
     r0, c0, _r1, c1, block = _sheets_block(rows, spec)
     width = c1 - c0
     out: dict = {}
@@ -2186,7 +2186,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
 def _drive_permissions(conn, file_id: str, *, folder: str | None = None) -> list[dict]:
     """Build from the doc's ACL grants (preserving user/group/org identity) + an owner. For a
     synthesized folder, ``folder`` names the container and the grants come from its files (which is
-    what makes the folder visible in the first place); the mock models no folder owner, so there is
+    what makes the folder visible in the first place); Backlot models no folder owner, so there is
     no owner permission to add."""
     grants = (
         store.container_grants(conn, "google_drive", folder)

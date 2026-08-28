@@ -48,10 +48,8 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
-    client = GitHubIssuesClient(
-        github_token=token, base_url=f"{mock.base_url}/github", verbose=False
-    )
+def build(s, token):
+    client = GitHubIssuesClient(github_token=token, base_url=f"{s.base_url}/github", verbose=False)
     return GitHubRepositoryIssuesReader(client, owner="acme", repo="gateway", verbose=False)
 
 
@@ -63,15 +61,15 @@ def main(reader):
 
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="Load GitHub issues via llama-index against the mock.")
-    p.add_argument("--url", help="mock base URL (default: spin up a local throwaway mock)")
-    p.add_argument("--token", help="mock bearer token from GET /_mock/users (default: admin)")
+    p = argparse.ArgumentParser(description="Load GitHub issues via llama-index against Backlot.")
+    p.add_argument("--url", help="Backlot base URL (default: spin up a local throwaway server)")
+    p.add_argument("--token", help="Backlot bearer token from GET /_meta/users (default: admin)")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        main(build(mock, args.token or mock.token))
+        main(build(s, args.token or s.token))

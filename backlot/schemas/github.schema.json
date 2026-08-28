@@ -26,7 +26,7 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9._-]+$",
       "maxLength": 100,
-      "description": "The repo this document belongs to, as the API's bare `name` -- `gateway`, not `acme/gateway`. The owner is a path segment of its own, supplied from the org this mock serves, and `full_name` is composed from the two; a value that carries the owner is served as `name` verbatim and appears in `full_name` twice. GitHub's own rule for a repository name is the constraint -- \"must not exceed 100 characters, and can only contain ASCII letters, digits, and the characters `.`, `-`, and `_`\" -- so a slash or a space is refused. The further limits GitHub enforces but does not publish (a name of `.` or `..`, a `.git` suffix) are not."
+      "description": "The repo this document belongs to, as the API's bare `name` -- `gateway`, not `acme/gateway`. The owner is a path segment of its own, supplied from the org Backlot serves, and `full_name` is composed from the two; a value that carries the owner is served as `name` verbatim and appears in `full_name` twice. GitHub's own rule for a repository name is the constraint -- \"must not exceed 100 characters, and can only contain ASCII letters, digits, and the characters `.`, `-`, and `_`\" -- so a slash or a space is refused. The further limits GitHub enforces but does not publish (a name of `.` or `..`, a `.git` suffix) are not."
     },
     "group": {
       "type": [

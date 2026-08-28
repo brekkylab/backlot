@@ -1,20 +1,20 @@
-"""Mock OAuth credentials for the Google-style client-configuration flow.
+"""OAuth credentials for the Google-style client-configuration flow.
 
 Real Gmail/Drive connectors rarely hold a raw access token — they carry an OAuth **client
 config**: either an ``authorized_user`` bundle (client_id/secret + a per-user refresh_token)
 or a **service account** JSON (a private key used to mint a signed JWT and impersonate a user
-via domain-wide delegation). This module lets those configs work against the mock unmodified:
+via domain-wide delegation). This module lets those configs work against Backlot unmodified:
 
-- :func:`generate` synthesizes, at import time, one mock OAuth client and one org service
+- :func:`generate` synthesizes, at import time, one OAuth client and one org service
   account (a real RSA keypair), written to ``credentials.yaml``. There is **no** per-user data:
   a user's refresh_token is simply their existing bearer token (from ``tokens.yaml`` /
-  ``/_mock/users``), so the token endpoint's refresh grant just validates it and hands it back.
+  ``/_meta/users``), so the token endpoint's refresh grant just validates it and hands it back.
 - :class:`Oauth` is the runtime side: it exposes the client config and verifies a service-account
   JWT assertion (RS256, honoring the ``sub`` impersonation claim).
 
-The mock token endpoint (``POST /oauth2/token``) turns either grant into that user's bearer
-token, so the rest of auth/ACL is unchanged. ``token_uri`` in every bundle points back at the
-mock, so the client's refresh / JWT-bearer call lands here rather than at Google.
+Backlot token endpoint (``POST /oauth2/token``) turns either grant into that user's bearer
+token, so the rest of auth/ACL is unchanged. ``token_uri`` in every bundle points back at
+Backlot, so the client's refresh / JWT-bearer call lands here rather than at Google.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def _h(*parts: str) -> str:
 
 
 def generate(settings, org: str | None = None) -> dict:
-    """Build (and persist to ``credentials.yaml``) the mock's OAuth credentials: one OAuth client
+    """Build (and persist to ``credentials.yaml``) Backlot's OAuth credentials: one OAuth client
     and one org service account with a freshly generated RSA keypair. No per-user data — refresh
     tokens are the users' existing bearer tokens. Deterministic except the RSA key, which is
     generated once per import and stored."""
@@ -68,7 +68,7 @@ def generate(settings, org: str | None = None) -> dict:
             "client_id": _h("said", org)[:21],
             "private_key_id": _h("pkid", org)[:40],
             "private_key": private_pem,
-            "public_key_pem": public_pem,  # server-side only; never exposed via /_mock/credentials
+            "public_key_pem": public_pem,  # server-side only; never exposed via /_meta/credentials
         },
     }
     settings.credentials_path.write_text(yaml.safe_dump(creds, sort_keys=False))

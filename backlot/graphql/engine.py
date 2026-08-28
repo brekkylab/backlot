@@ -10,7 +10,7 @@ Execution is deliberately split into parse -> validate -> execute rather than de
 spec, a **request error** (malformed document, failed validation, uncoercible variables) is
 detected before execution begins and the response carries no ``data`` entry at all, while a
 **field error** raised mid-execution returns partial ``data`` alongside ``errors``. Real
-servers make that distinction and clients key off it, so the mock does too —
+servers make that distinction and clients key off it, so Backlot does too —
 ``ExecutionResult.formatted`` alone would emit ``"data": null`` for every request error.
 """
 

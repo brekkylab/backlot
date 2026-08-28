@@ -27,10 +27,14 @@ RUN python -m venv /opt/venv
 # Both are named by pyproject (`readme`, `license-files`). Neither is required to build — setuptools
 # tolerates either being absent, silently — but the installed dist-info then loses it: without
 # LICENSE the image redistributes MIT-licensed code carrying no copy of the notice, and without
-# README `pip show backlot` in the container has an empty description.
-COPY pyproject.toml README.md LICENSE ./
+# README.pypi.md `pip show backlot` in the container has an empty description.
+COPY pyproject.toml README.pypi.md LICENSE ./
 COPY backlot ./backlot
-RUN pip install --no-cache-dir .
+# .dockerignore keeps .git out of the build context, so setuptools-scm finds no tag to read and the
+# image carries the fallback version pyproject names. Pass the version being built to stamp it:
+#     docker build --build-arg VERSION=0.0.1 .
+ARG VERSION
+RUN SETUPTOOLS_SCM_PRETEND_VERSION=${VERSION} pip install --no-cache-dir .
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
@@ -56,5 +60,5 @@ FROM serve AS full
 
 # Only the runtime data (the DB + the roster it generated); everything else the import wrote stays
 # behind in the builder.
-COPY --from=builder /app/data/mock.sqlite /app/data/mock.sqlite
+COPY --from=builder /app/data/db.sqlite /app/data/db.sqlite
 COPY --from=builder /app/data/tokens.yaml /app/data/tokens.yaml

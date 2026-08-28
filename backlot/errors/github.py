@@ -1,4 +1,4 @@
-"""GitHub's error envelope, for the errors this mock shapes on purpose.
+"""GitHub's error envelope, for the errors Backlot shapes on purpose.
 
 Real GitHub answers an error as ``{"message", "documentation_url", "status"}`` — plus a
 ``"errors"`` member on a few, where it is sometimes a string rather than the usual array. That is

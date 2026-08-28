@@ -1,4 +1,4 @@
-"""Mock Notion API (read-only).
+"""Notion API (read-only).
 
 Base URL for a client: ``http://<host>/notion/v1/`` (the notion-client SDK appends ``/v1/`` to
 its ``base_url``, so point it at ``http://<host>/notion``). Bearer auth
@@ -13,7 +13,7 @@ ACL-filtered. Errors use Notion's envelope: ``{"object":"error","status","code",
 - ``2022-06-28`` (e.g. mirage): ``databases.retrieve`` returns ``properties`` (schema) inline and
   rows are read via ``POST /databases/{id}/query``.
 
-Both query paths and both retrieve shapes are always served; the mock has one data source per
+Both query paths and both retrieve shapes are always served; Backlot has one data source per
 database, its id assigned at import alongside the database's own.
 
 Object mapping: a Notion *page* is one doc (``subtype='page'``); a *database* is one doc

@@ -1,7 +1,7 @@
 """Run an LLM agent against a live MCP server. Shared by the per-service examples.
 
 Each service example (`atlassian.py`, `notion.py`, `s3.py`) builds its own
-``StdioServerParameters`` (pointing a real MCP server at the mock) and calls
+``StdioServerParameters`` (pointing a real MCP server at Backlot) and calls
 ``run_agent(agent, params, question)``. Two agent backends ship:
 
 - ``anthropic`` (default) — Claude via the Anthropic SDK's beta MCP tool runner. Needs

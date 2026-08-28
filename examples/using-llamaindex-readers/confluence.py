@@ -32,19 +32,17 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
+def build(s, token):
     # atlassian-python-api 4.0.7 does not append `/wiki` itself regardless of `cloud` (`cloud`
-    # only toggles cloud-specific API shapes elsewhere, not the URL), so the mock's
+    # only toggles cloud-specific API shapes elsewhere, not the URL), so Backlot's
     # `/atlassian/wiki/rest/api` root must be spelled out in `base_url`.
-    return ConfluenceReader(
-        base_url=f"{mock.base_url}/atlassian/wiki", cloud=False, api_token=token
-    )
+    return ConfluenceReader(base_url=f"{s.base_url}/atlassian/wiki", cloud=False, api_token=token)
 
 
 def main(reader):
     # `max_num_results` must be passed explicitly: llama-index-readers-confluence 0.7.0's
     # `load_data` otherwise forwards a bare `limit=None` to `Confluence.get_all_pages_from_space`,
-    # which raises `TypeError` comparing `None` — a client-side bug independent of the mock.
+    # which raises `TypeError` comparing `None` — a client-side bug independent of Backlot.
     docs = reader.load_data(space_key="handbook", max_num_results=50)
     print(f"loaded {len(docs)} Document(s):")
     for d in docs:
@@ -53,16 +51,16 @@ def main(reader):
 
 def _parse_args():
     p = argparse.ArgumentParser(
-        description="Load Confluence pages via llama-index against the mock."
+        description="Load Confluence pages via llama-index against Backlot."
     )
-    p.add_argument("--url", help="mock base URL (default: spin up a local throwaway mock)")
-    p.add_argument("--token", help="mock bearer token from GET /_mock/users (default: admin)")
+    p.add_argument("--url", help="Backlot base URL (default: spin up a local throwaway server)")
+    p.add_argument("--token", help="Backlot bearer token from GET /_meta/users (default: admin)")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        main(build(mock, args.token or mock.token))
+        main(build(s, args.token or s.token))

@@ -3,12 +3,12 @@
 value: many backends, one set of bash commands. Self-contained: run it directly.
 
     pip install -e ".[examples,mirage]"
-    python examples/using-mirage/unified.py                                # local throwaway mock
+    python examples/using-mirage/unified.py                                # local throwaway server
     python examples/using-mirage/unified.py --url http://localhost:8000 --token xoxb-... --user ava@acme.com
     python examples/using-mirage/unified.py --fuse                          # all three as one OS mount
 
 Slack is ACL-filtered by ``--token``; Gmail/Drive by ``--user`` (they share one Google
-authorized-user credential). Point them all at the same mock.
+authorized-user credential). Point them all at the same server.
 """
 
 import argparse
@@ -95,12 +95,12 @@ async def _first_drive_file(ws):
     return f"/gdrive/{folders[0]}/{files[0]}" if files else None
 
 
-def build(mock, token, user) -> dict:
-    point_google_at(mock.base_url)  # Google has no host config; Slack takes base_url below
-    client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url, user)
+def build(s, token, user) -> dict:
+    point_google_at(s.base_url)  # Google has no host config; Slack takes base_url below
+    client_id, client_secret, refresh_token, _ = google_oauth_user(s.base_url, user)
     google = dict(client_id=client_id, client_secret=client_secret, refresh_token=refresh_token)
     return {  # three backends, one filesystem
-        "/slack": SlackResource(SlackConfig(token=token, base_url=f"{mock.base_url}/slack/api")),
+        "/slack": SlackResource(SlackConfig(token=token, base_url=f"{s.base_url}/slack/api")),
         "/gmail": GmailResource(GmailConfig(**google)),
         "/gdrive": GoogleDriveResource(GoogleDriveConfig(**google)),
     }
@@ -158,11 +158,13 @@ def main_fuse(resources: dict) -> None:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Read Slack + Gmail + Drive through mirage against the mock."
+        description="Read Slack + Gmail + Drive through mirage against Backlot."
     )
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
     p.add_argument(
-        "--token", help="Slack: mock bearer token from GET /_mock/users (default: admin)"
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
+    p.add_argument(
+        "--token", help="Slack: Backlot bearer token from GET /_meta/users (default: admin)"
     )
     p.add_argument(
         "--user",
@@ -176,8 +178,8 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        resources = build(mock, args.token or mock.token, args.user)
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        resources = build(s, args.token or s.token, args.user)
         if args.fuse:
             main_fuse(resources)
         else:

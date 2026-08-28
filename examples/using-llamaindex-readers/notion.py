@@ -2,7 +2,7 @@
 """Load Notion pages through the official llama-index Notion reader. Self-contained.
 
 NotionPageReader hardcodes the Notion host in module constants; patch_notion_at() rebinds them at
-the mock before the reader runs.
+Backlot before the reader runs.
 
     pip install -e ".[examples,llamaindex]"
     python examples/using-llamaindex-readers/notion.py            # or: --url http://localhost:8000
@@ -40,15 +40,15 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
-    patch_notion_at(f"{mock.base_url}/notion")
+def build(s, token):
+    patch_notion_at(f"{s.base_url}/notion")
     return NotionPageReader(integration_token=token)
 
 
 def main(reader):
-    # Discover page ids via the reader's own search (patched at the mock), then load them. The
+    # Discover page ids via the reader's own search (patched at Backlot), then load them. The
     # installed reader's `search()` returns a flat list of ids (not result dicts), and an empty
-    # query returns everything visible on the mock (pages and databases alike — no object-type
+    # query returns everything visible on Backlot (pages and databases alike — no object-type
     # filter is applied client-side here).
     page_ids = reader.search("")
     docs = reader.load_data(page_ids=page_ids)
@@ -58,15 +58,15 @@ def main(reader):
 
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="Load Notion pages via llama-index against the mock.")
-    p.add_argument("--url", help="mock base URL (default: spin up a local throwaway mock)")
-    p.add_argument("--token", help="mock bearer token from GET /_mock/users (default: admin)")
+    p = argparse.ArgumentParser(description="Load Notion pages via llama-index against Backlot.")
+    p.add_argument("--url", help="Backlot base URL (default: spin up a local throwaway server)")
+    p.add_argument("--token", help="Backlot bearer token from GET /_meta/users (default: admin)")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        main(build(mock, args.token or mock.token))
+        main(build(s, args.token or s.token))

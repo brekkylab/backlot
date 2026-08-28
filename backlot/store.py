@@ -776,7 +776,7 @@ CREATE TABLE IF NOT EXISTS s3_buckets        (bucket  TEXT PRIMARY KEY, group_id
 CREATE TABLE IF NOT EXISTS hubspot_object_types (object_type TEXT PRIMARY KEY, group_id TEXT);
 -- `served_id` (`synth.linear_team_id`, a UUID) and `served_key` (`synth.linear_team_key`, "ENG")
 -- are the OTHER two spellings real `team(id:)` accepts, alongside this table's own primary key
--- (the raw container name -- a mock affordance, see resolve_team's docstring). Both are written
+-- (the raw container name -- a Backlot affordance, see resolve_team's docstring). Both are written
 -- unconditionally at import (backlot.importer.byo's write_containers). `served_key` carries NO
 -- unique index:
 -- `linear_team_key` is not injective -- two containers can reduce to one key -- so a lookup
@@ -1180,7 +1180,7 @@ def list_hubspot_objects(
 
 
 # --- Linear: issues, their comments, and the identifier lookup ---------------------
-# Linear pages a Relay connection, and the mock's `after` is the same opaque offset cursor every
+# Linear pages a Relay connection, and Backlot's `after` is the same opaque offset cursor every
 # other source's page token is (see backlot/pagination.py), so these take an offset. The ORDER BY is
 # always total — the sort column plus `id` as the tiebreak — because an offset page over a
 # non-total order can silently repeat or skip a row between pages.
@@ -2399,7 +2399,7 @@ def slack_channels_for_principals(conn, principals) -> set[str]:
 
 def slack_latest_ts(conn, channel, visible_ids=None) -> str | None:
     """The ts of the newest message in a channel — what conversations.info reports as the caller's
-    ``last_read``, this mock modelling no unread state of its own.
+    ``last_read``, Backlot modelling no unread state of its own.
 
     Ordered by ``created_ts`` rather than ``MAX(ts)`` for the reason slack_latest_reply_ts gives:
     ts is TEXT, so a max over it is lexicographic and picks the wrong row when a channel straddles
@@ -2658,7 +2658,7 @@ def get_repo_file(conn, repo, path, visible_ids=None, ref=None) -> sqlite3.Row |
     """One file at `(repo, path)` — HEAD, or the snapshot `ref` names.
 
     `ref` matches the column a corpus states, and falls back to HEAD when no snapshot answers to
-    it. The fallback is deliberate: a ref is also a git ref, and this mock keeps no branch list, so
+    it. The fallback is deliberate: a ref is also a git ref, and Backlot keeps no branch list, so
     `?ref=main` from a real client has to resolve to the current file rather than 404 (the
     no-history tolerance `routers.github.get_tree` documents). A ref a corpus DID name is knowable,
     so it wins.

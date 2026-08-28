@@ -12,7 +12,7 @@ mirage's GitHub connector only mirrors the *file tree* (git ``trees``/``blobs``)
 use `examples/using-official-sdk/github.py` for those.
 
     pip install -e ".[examples,mirage]"
-    python examples/using-mirage/github.py                                  # local throwaway mock
+    python examples/using-mirage/github.py                                  # local throwaway server
     python examples/using-mirage/github.py --url http://localhost:8000
     python examples/using-mirage/github.py --url http://localhost:8000 --token <usr-token>
     python examples/using-mirage/github.py --url http://localhost:8000 --fuse   # real OS mount
@@ -35,7 +35,7 @@ from backlot.integrations.mirage import point_github_at
 
 from _helpers import FUSE_HELP, lines, run_mirage
 
-REPO = "gateway"  # the throwaway CORPUS's repo; a --url mock's own repos are discovered below
+REPO = "gateway"  # the throwaway CORPUS's repo; a --url server's own repos are discovered below
 CORPUS = [
     {
         "state": "open",
@@ -98,13 +98,13 @@ def discover_repo(base_url: str, token: str) -> tuple[str, str] | None:
     ``GitHubResource.__init__`` 404s immediately (it eagerly fetches the repo + its tree).
 
     Goes through ``GET /user/repos`` — the CREDENTIAL's own view of what it can reach — so nothing
-    here has to guess the owner: the mock derives its org from the corpus's email domain and 404s
+    here has to guess the owner: Backlot derives its org from the corpus's email domain and 404s
     any other owner, exactly as real GitHub does, and each entry's ``full_name`` already carries
     the right ``owner/repo`` pair.
 
     Returns the first repo whose recursive git tree has at least one ``blob`` entry (a repo of only
     issues/PRs would give the ls/cat walk below nothing to read), falling back to the first visible
-    repo, or ``None`` if the token can reach none at all (or the mock can't be reached).
+    repo, or ``None`` if the token can reach none at all (or Backlot can't be reached).
     """
     base = f"{base_url.rstrip('/')}/github"
     try:
@@ -124,11 +124,11 @@ def discover_repo(base_url: str, token: str) -> tuple[str, str] | None:
     return pairs[0] if pairs else None
 
 
-def build(mock, token, owner, repo):
+def build(s, token, owner, repo):
     # GitHubConfig has no base_url field — redirect the hardcoded API_BASE constant first, then
     # construct the resource (its __init__ makes synchronous HTTP calls to fetch the default
     # branch and the recursive tree).
-    point_github_at(mock.base_url)
+    point_github_at(s.base_url)
     return GitHubResource(GitHubConfig(token=token, owner=owner, repo=repo, ref="main"))
 
 
@@ -182,12 +182,14 @@ def main_fuse(resource) -> None:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Read a GitHub repo's code through mirage against the mock."
+        description="Read a GitHub repo's code through mirage against Backlot."
     )
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_mock/users "
+        help="Backlot bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument(
@@ -198,21 +200,21 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        token = args.token or mock.token
+        token = args.token or s.token
 
         # Discover a repo that actually has files rather than assuming this script's own CORPUS
-        # repo exists on whatever's behind --url. The owner comes from the mock too — it 404s a
+        # repo exists on whatever's behind --url. The owner comes from Backlot too — it 404s a
         # wrong one, so there is nothing to hardcode.
-        discovered = discover_repo(mock.base_url, token)
+        discovered = discover_repo(s.base_url, token)
         if discovered is None:
             raise SystemExit("no repositories visible to this token — nothing to mount")
         owner, repo = discovered
         print(f"mounting {owner}/{repo}")
 
-        resource = build(mock, token, owner, repo)
+        resource = build(s, token, owner, repo)
         if args.fuse:
             main_fuse(resource)
         else:

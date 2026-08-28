@@ -2,9 +2,9 @@
 """Load Google Drive files through the official llama-index Google reader. Self-contained.
 
 GoogleDriveReader builds its Drive service with no host override; point_drive_at() wraps the
-`googleapiclient.discovery.build` symbol it locally imports on every call to target the mock (same
+`googleapiclient.discovery.build` symbol it locally imports on every call to target Backlot (same
 shim as gmail.py, with Drive's `/drive/v3` service path added to the endpoint). Auth is an ordinary
-Google service-account credential from the mock, exactly as against real Drive.
+Google service-account credential from Backlot, exactly as against real Drive.
 
 Credential injection: `GoogleDriveReader.__init__` accepts `service_account_key` (a raw dict) and
 `_get_credentials()` turns it into a Credentials object itself — but it does so with
@@ -71,9 +71,9 @@ CORPUS = [
 ]
 
 
-def build(mock, user):
-    point_drive_at(mock.base_url)
-    sa_info, subject = google_service_account_info(mock.base_url, user)
+def build(s, user):
+    point_drive_at(s.base_url)
+    sa_info, subject = google_service_account_info(s.base_url, user)
     reader = GoogleDriveReader(service_account_key=sa_info)
     if subject:
         # service_account_key alone can't carry `subject` through the reader's own
@@ -94,13 +94,13 @@ def main(reader):
 
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="Load Google Drive via llama-index against the mock.")
-    p.add_argument("--url", help="mock base URL (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Load Google Drive via llama-index against Backlot.")
+    p.add_argument("--url", help="Backlot base URL (default: spin up a local throwaway server)")
     p.add_argument("--user", help="email to impersonate via the service account (default: admin)")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        main(build(mock, args.user))
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        main(build(s, args.user))

@@ -23,7 +23,7 @@ per-sentence utterances with speakers and timings).
 ## Walkthrough
 
 `run.py` runs the import into `examples/import-enterpriserag-bench/data` (downloading on the
-first run; cached after), starts a real mock server against it, and prints what got served:
+first run; cached after), starts a real server against it, and prints what got served:
 
 ```bash
 python examples/import-enterpriserag-bench/run.py
@@ -76,9 +76,9 @@ Properties of the data, not of the server — they apply only when you load this
   rest are on the org's own domain. 74k speakers against an 11,913-person directory is not a
   headcount any real workspace has.
 
-  The mock does not paper over it. `users.list` serves the directory, so **an author outside it
+  Backlot does not paper over it. `users.list` serves the directory, so **an author outside it
   resolves through `users.info` but never appears in `users.list`** — a combination real Slack
-  cannot produce, and the one place a client written against the mock will behave differently in
+  cannot produce, and the one place a client written against Backlot will behave differently in
   production. What is available instead: `conversations.members` pages the channel's own speakers,
   so every author of a channel is discoverable there even when the roster omits them. Reconciling
   the two sets means either inventing ~70k colleagues or discarding the transcripts' own speakers,

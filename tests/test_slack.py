@@ -20,7 +20,7 @@ def test_admin_slack_crawls_all(client, admin_h, ro_conn):
 def test_slack_api_test_requires_no_auth(client):
     # real Slack's api.test needs no token at all (it's a bare connectivity check); several real
     # clients call it at construction/connect time (e.g. llama-index's SlackReader.__init__), so
-    # the mock must answer 200 without auth rather than 404/not_authed.
+    # Backlot must answer 200 without auth rather than 404/not_authed.
     ok = client.post("/slack/api/api.test", data={"foo": "bar"}).json()
     assert ok == {"ok": True, "args": {"foo": "bar"}}
     err = client.post("/slack/api/api.test", data={"error": "boom"}).json()
@@ -28,7 +28,7 @@ def test_slack_api_test_requires_no_auth(client):
 
 
 def test_slack_accepts_form_field_token(client, tokens_yaml):
-    # the official slack-go SDK posts the token as a form field (no bearer header); the mock
+    # the official slack-go SDK posts the token as a form field (no bearer header); Backlot
     # must accept it exactly like a real Slack Web API.
     admin = tokens_yaml["admin_token"]
     ok = client.post("/slack/api/search.messages", data={"token": admin, "query": "the"}).json()
@@ -55,8 +55,8 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
 
 # --- Slack fidelity ---------------------------------------------------------------------
 #
-# Reported from building a filesystem-style Slack client against the mock. Slack answers an
-# application error as HTTP 200 with {"ok": false, "error": …}, which the mock already does — these
+# Reported from building a filesystem-style Slack client against Backlot. Slack answers an
+# application error as HTTP 200 with {"ok": false, "error": …}, which Backlot already does — these
 # are about the cases where it answered something real Slack never would.
 #
 # NOTE: each expectation says where it comes from, because they do not all come from the same
@@ -282,8 +282,8 @@ def test_slack_channel_object_carries_slacks_documented_field_set(client, admin_
     # carries none of them and only the conversation object reference describes them. Sent on every
     # live response either way — a single-workspace channel shared with nobody.
     for ch in (listed, info):
-        assert ch["context_team_id"] == "T0000MOCK"
-        assert ch["shared_team_ids"] == ["T0000MOCK"]
+        assert ch["context_team_id"] == "T0000BKLT"
+        assert ch["shared_team_ids"] == ["T0000BKLT"]
         assert ch["pending_connected_team_ids"] == []
         assert ch["parent_conversation"] is None
         # contextual channel configuration, which no corpus states — present but empty, never
@@ -356,7 +356,7 @@ def test_slack_by_id_methods_refuse_a_channel_the_caller_cannot_see(
     purpose and creation time, and enumerate who is in it — `conversations.members` being a
     projection of the very messages the ACL is withholding. `conversations.history` answered
     `ok:true` with an empty `messages`, which reads as "this channel exists and you may read it; it
-    happens to be empty" — the opposite of what the mock knows.
+    happens to be empty" — the opposite of what Backlot knows.
 
     All four answer `channel_not_found`, the same answer an id that names nothing gets, so a hidden
     channel is not distinguishable from one that was never there. Measured against slack.com with a
@@ -395,7 +395,7 @@ def test_slack_by_id_methods_refuse_a_channel_the_caller_cannot_see(
 
 
 def test_slack_conversations_list_rejects_an_unknown_type(client, admin_h):
-    """Real Slack answers `invalid_types`; the mock accepted anything, so a typo'd filter silently
+    """Real Slack answers `invalid_types`; Backlot accepted anything, so a typo'd filter silently
     returned the unfiltered list."""
     j = client.get(
         "/slack/api/conversations.list", headers=admin_h, params={"types": "bogus_type"}
@@ -588,7 +588,7 @@ def test_slack_an_absent_argument_is_not_a_thing_that_was_not_found(
     client, admin_h, method, params, error
 ):
     """Slack separates "you did not pass the argument" from "what you passed names nothing", and
-    the mock had only the second — so a client that omitted `channel` was told the thing it never
+    Backlot had only the second — so a client that omitted `channel` was told the thing it never
     named does not exist. The two send it down different branches: `channel_not_found` is about the
     workspace, `invalid_arguments` about the request it just built.
 
@@ -637,7 +637,7 @@ def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
 # --- Slack: enrichment did not change the responses ---------------------------------------
 
 
-# Transcribed from live conversations.history responses, one per shape Slack builds. The mock
+# Transcribed from live conversations.history responses, one per shape Slack builds. Backlot
 # derives `blocks` from the same text a real client typed, so these are the payloads to match.
 _LIVE_BLOCKS = {
     "test": [

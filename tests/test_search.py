@@ -255,7 +255,7 @@ def test_gmail_q_parse_and_match():
 def test_gmail_folder_query_sees_the_label_a_message_is_served_under(db):
     """A message the corpus gives no labels is served `labelIds: ["INBOX"]`, so `in:inbox` and
     `label:inbox` have to find it — reading only the STATED labels answered "no such mail" about
-    every message in the mock. `in:anywhere` widens the search to spam and trash, which this mock
+    every message in Backlot. `in:anywhere` widens the search to spam and trash, which Backlot
     holds none of, so it restricts nothing."""
     from backlot.routers.google import _gmail_query
 

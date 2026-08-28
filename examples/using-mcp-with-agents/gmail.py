@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Drive the mock's Gmail API as MCP tools via the generic OpenAPI→MCP bridge. Self-contained.
+"""Drive Backlot's Gmail API as MCP tools via the generic OpenAPI→MCP bridge. Self-contained.
 
 Official and community Gmail MCP servers hard-wire `googleapis.com` and require real Google OAuth,
-so none can be pointed at a self-hosted mock. Instead `_openapi_bridge.py` turns the mock's typed
+so none can be pointed at a self-hosted server. Instead `_openapi_bridge.py` turns Backlot's typed
 `/openapi.json` into MCP tools: it slices to `/gmail`, dedupes operation aliases, and serves them
 over stdio with a `Bearer <token>` header — retrieval is ACL-scoped by the token (default admin;
-per-user from GET /_mock/users).
+per-user from GET /_meta/users).
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
@@ -50,7 +50,7 @@ _BRIDGE = str(Path(__file__).with_name("_openapi_bridge.py"))
 
 
 def build_params(base_url: str, token: str) -> StdioServerParameters:
-    """Run `_openapi_bridge.py --source gmail` as a stdio MCP server pointed at the mock."""
+    """Run `_openapi_bridge.py --source gmail` as a stdio MCP server pointed at Backlot."""
     return StdioServerParameters(
         command=sys.executable,
         args=[_BRIDGE, "--source", "gmail", "--base-url", base_url.rstrip("/"), "--token", token],
@@ -59,12 +59,14 @@ def build_params(base_url: str, token: str) -> StdioServerParameters:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Drive the mock's Gmail API over MCP via the OpenAPI bridge."
+        description="Drive Backlot's Gmail API over MCP via the OpenAPI bridge."
     )
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_mock/users "
+        help="Backlot bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument(
@@ -78,8 +80,8 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → retrieval is ACL-filtered to that user")
-        params = build_params(mock.base_url, args.token or mock.token)
+        params = build_params(s.base_url, args.token or s.token)
         run_agent(args.agent, params, QUESTION)

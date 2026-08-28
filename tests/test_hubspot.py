@@ -115,7 +115,7 @@ def test_hubspot_unknown_object_type_is_400(client, admin_h):
         ("0-3", True),  # deals: a real type, so an empty page rather than an error
         ("0-6", False),  # no standard object holds it
         ("0-41", False),
-        ("2-12345", False),  # a custom object's id, which no corpus of this mock defines
+        ("2-12345", False),  # a custom object's id, which no corpus of Backlot defines
     ],
 )
 def test_hubspot_an_object_type_id_is_a_spelling_of_its_type(client, admin_h, asked, ok):

@@ -3,8 +3,8 @@
 Mirage (https://github.com/strukto-ai/mirage) is a virtual filesystem for AI agents: you mount a
 SaaS backend and read it with bash-style commands (``ls``, ``cat``, ``grep``, ``find``).
 
-Slack, Notion and S3 take the host as a config field, so they need nothing from here — pass the
-mock's URL for that resource straight in (``f"{base_url}/slack/api"``, ``…/notion/v1``, ``…/s3``).
+Slack, Notion and S3 take the host as a config field, so they need nothing from here — pass
+Backlot's URL for the resource in (``f"{base_url}/slack/api"``, ``…/notion/v1``, ``…/s3``).
 GitHub reads its host from a module-level constant. Google offers a single-host override, but
 Backlot needs a distinct prefix for each API. ``point_google_at`` / ``point_github_at`` therefore
 rebind the corresponding constants in ``mirage.core.*._client``.
@@ -58,20 +58,20 @@ def _rebind_mirage_constants(source_module: str, overrides: dict[str, str]) -> N
         raise RuntimeError(
             f"{', '.join(missing)} not found in {source_module} or any imported mirage.core.* "
             f"module — mirage's constants moved in an upgrade. Update this shim before the run "
-            f"silently reaches the real vendor instead of the mock."
+            f"silently reaches the real vendor instead of Backlot."
         )
 
 
 def point_google_at(base_url: str) -> None:
     """Redirect mirage's Google connectors (Gmail/Drive/Docs/Sheets/Slides/Calendar/Forms + OAuth)
-    at the mock.
+    at Backlot.
 
     The constants are patched rather than configured, and the reason is NOT that mirage offers no
     host config -- it does. ``GoogleConfig.api_base`` exists and its own comment calls it a
     "single-host override for every Google API ... used to point backends at a fake server", and
     every base in ``_client`` consults it first. What rules it out here is the SINGLE: with one
     ``api_base``, mirage composes ``docs_base``, ``slides_base`` and ``forms_base`` as
-    ``{base}/v1`` alike, and the mock serves docs at ``/docs/v1`` and slides at ``/slides/v1``, so
+    ``{base}/v1`` alike, and Backlot serves docs at ``/docs/v1`` and slides at ``/slides/v1``, so
     three APIs would arrive on one prefix it cannot route apart. Per-constant rebinding is what
     keeps them distinguishable.
 
@@ -86,7 +86,7 @@ def point_google_at(base_url: str) -> None:
             "TOKEN_URL": f"{base}/oauth2/token",
             "GMAIL_API_BASE": f"{base}/gmail/v1",
             "DRIVE_API_BASE": f"{base}/drive/v3",
-            # Backlot serves no upload route, so bind it to the mock to make a write FAIL there
+            # Backlot serves no upload route, so bind it to Backlot to make a write FAIL there
             # rather than succeed against real Drive.
             "DRIVE_UPLOAD_BASE": f"{base}/upload/drive/v3",
             "DOCS_API_BASE": f"{base}/docs/v1",
@@ -94,7 +94,7 @@ def point_google_at(base_url: str) -> None:
             "SLIDES_API_BASE": f"{base}/slides/v1",
             # Backlot serves neither Calendar nor Forms, so these two are here for the reason
             # DRIVE_UPLOAD_BASE is: mirage 0.0.5 added them, a caller who believed the whole client
-            # was redirected would otherwise reach the real Google, and a 404 from the mock is the
+            # was redirected would otherwise reach the real Google, and a 404 from Backlot is the
             # failure that says so.
             "CALENDAR_API_BASE": f"{base}/calendar/v3",
             "FORMS_API_BASE": f"{base}/forms/v1",
@@ -103,7 +103,7 @@ def point_google_at(base_url: str) -> None:
 
 
 def point_github_at(base_url: str) -> None:
-    """Redirect mirage's GitHub connector (repo tree/contents/blobs) at the mock.
+    """Redirect mirage's GitHub connector (repo tree/contents/blobs) at Backlot.
 
     One constant, ``_client.API_BASE``, read as a module global at call time — so unlike Google's,
     patching the source alone would do. The sweep is kept for symmetry, in case a future mirage

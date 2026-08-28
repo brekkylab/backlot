@@ -537,7 +537,7 @@ def _request(method, path, query, headers) -> Request:
         "query_string": query.encode("ascii"),
         "headers": [(k.lower().encode("ascii"), v.encode("ascii")) for k, v in headers.items()],
         "scheme": "http",
-        "server": ("mock", 80),
+        "server": ("backlot", 80),
         "app": SimpleNamespace(state=SimpleNamespace(acl=_acl())),
     }
     return Request(scope)
@@ -549,7 +549,11 @@ def _header_auth_request(
     """Build a header-auth GET signed for `amz_date` with a genuinely valid signature."""
     date_stamp = amz_date[:8]
     signed_headers = "host;x-amz-date"
-    headers = {"host": "mock", "x-amz-date": amz_date, "x-amz-content-sha256": "UNSIGNED-PAYLOAD"}
+    headers = {
+        "host": "backlot",
+        "x-amz-date": amz_date,
+        "x-amz-content-sha256": "UNSIGNED-PAYLOAD",
+    }
     sig = expected_signature(
         SK,
         "GET",
@@ -573,7 +577,7 @@ def _presigned_request(amz_date: str, expires: int, path="/s3/eng-artifacts", re
     """Build a presigned-query GET signed for `amz_date`/`expires` with a valid signature."""
     date_stamp = amz_date[:8]
     signed_headers = "host"
-    headers = {"host": "mock"}
+    headers = {"host": "backlot"}
     credential = f"{AK}/{date_stamp}/{region}/s3/aws4_request"
     params = {
         "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
@@ -626,7 +630,7 @@ def test_header_auth_skew_check_precedes_signature_check():
     stale = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(AMZ_DATE_FORMAT)
     date_stamp = stale[:8]
     signed_headers = "host;x-amz-date"
-    headers = {"host": "mock", "x-amz-date": stale, "x-amz-content-sha256": "UNSIGNED-PAYLOAD"}
+    headers = {"host": "backlot", "x-amz-date": stale, "x-amz-content-sha256": "UNSIGNED-PAYLOAD"}
     credential = f"{AK}/{date_stamp}/us-east-1/s3/aws4_request"
     headers["authorization"] = (
         f"AWS4-HMAC-SHA256 Credential={credential}, "

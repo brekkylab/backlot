@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Drive mcp-atlassian (Jira + Confluence) over MCP, pointed at the mock. Self-contained.
+"""Drive mcp-atlassian (Jira + Confluence) over MCP, pointed at Backlot. Self-contained.
 
-Runs the community-official `mcp-atlassian` server in **Docker** against a `--url` mock (or a local
+Runs the community-official `mcp-atlassian` server in **Docker** against a `--url` server (or
 one it spins up), then lets an LLM agent answer a question by calling its MCP tools.
 
-mcp-atlassian only classifies a host as Atlassian *Cloud* (the v3 + `/wiki` shape the mock speaks)
-when the hostname ends in `.atlassian.net`, so we always use a fake `mock.atlassian.net` mapped
-with Docker's `--add-host` — to the host machine (`host-gateway`) for a local mock, or to a remote
-deployment's resolved IP. Auth is HTTP Basic where the **api_token is a mock token** (`--token`,
-default admin; per-user from GET /_mock/users); the **username** is required by mcp-atlassian but
-ignored by the mock once the token resolves.
+mcp-atlassian only classifies a host as Atlassian *Cloud* (the v3 + `/wiki` shape Backlot speaks)
+when the hostname ends in `.atlassian.net`, so we always use a fake `backlot.atlassian.net` mapped
+with Docker's `--add-host` — to the host machine (`host-gateway`) for a local server, or to a remote
+deployment's resolved IP. Auth is HTTP Basic where the **api_token is a Backlot token** (`--token`,
+default admin; per-user from GET /_meta/users); the **username** is required by mcp-atlassian but
+ignored by Backlot once the token resolves.
 
 Prereqs: Docker; `pip install -e ".[mcp]"`; an LLM key for `--agent` (`ANTHROPIC_API_KEY`, or
 `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
@@ -60,24 +60,24 @@ _LOCAL_HOSTS = ("127.0.0.1", "localhost", "0.0.0.0")
 
 
 def build_params(base_url: str, token: str, username: str | None) -> StdioServerParameters:
-    """`docker run` args pointing mcp-atlassian at the mock (Cloud shape via mock.atlassian.net)."""
+    """`docker run` args pointing mcp-atlassian at Backlot (Cloud shape via the fake host)."""
     u = urlparse(base_url)
-    host = "mock.atlassian.net"  # must end in .atlassian.net for Cloud detection
+    host = "backlot.atlassian.net"  # must end in .atlassian.net for Cloud detection
     if (u.hostname or "127.0.0.1") in _LOCAL_HOSTS:
         scheme, port, addhost, ssl_verify = "http", (u.port or 80), "host-gateway", True
-        user = username or "svc@example.com"  # placeholder; the mock ignores it once token resolves
+        user = username or "svc@example.com"  # placeholder; Backlot ignores it once token resolves
     else:
         # remote deployment: alias the fake host to its IP, and require an explicit identity
         if not username:
             sys.exit(
                 f"--url points at a remote deployment ({u.hostname}); also pass --username "
                 "(and --token) — mcp-atlassian needs a Basic-auth username for Cloud detection "
-                "and the token authenticates + scopes ACL (get one from GET /_mock/users)."
+                "and the token authenticates + scopes ACL (get one from GET /_meta/users)."
             )
         scheme = u.scheme
         port = u.port or (443 if u.scheme == "https" else 80)
         addhost = socket.gethostbyname(u.hostname)
-        ssl_verify = False  # cert is for the real host, not mock.atlassian.net
+        ssl_verify = False  # cert is for the real host, not backlot.atlassian.net
         user = username
     default_port = (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
     base = f"{scheme}://{host}" if default_port else f"{scheme}://{host}:{port}"
@@ -110,11 +110,13 @@ def build_params(base_url: str, token: str, username: str | None) -> StdioServer
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Drive mcp-atlassian over MCP against the mock.")
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Drive mcp-atlassian over MCP against Backlot.")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--token",
-        help="mock bearer token from GET /_mock/users "
+        help="Backlot bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
     p.add_argument("--username", help="Atlassian Basic-auth username (required for a remote --url)")
@@ -129,13 +131,13 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    # mcp-atlassian runs in a container and reaches a local mock through host-gateway, which on
+    # mcp-atlassian runs in a container and reaches a local server through host-gateway, which on
     # Linux is the docker bridge address — a loopback-only server never answers there. Docker
     # Desktop forwards host-gateway to the host's own loopback instead, so macOS keeps the narrower
     # bind and the firewall prompt that opening a port to the network raises.
     host = "0.0.0.0" if sys.platform == "linux" else "127.0.0.1"
-    with serve_or_connect(CORPUS, url=args.url, host=host) as mock:
+    with serve_or_connect(CORPUS, url=args.url, host=host) as s:
         if args.token:
             print("authenticating with --token → retrieval is ACL-filtered to that user")
-        params = build_params(mock.base_url, args.token or mock.token, args.username)
+        params = build_params(s.base_url, args.token or s.token, args.username)
         run_agent(args.agent, params, QUESTION)

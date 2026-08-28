@@ -256,13 +256,13 @@ def gmail_message_id(key: str) -> str:
 
     UNPADDED, unlike the opaque ``gmail_id`` above: real Gmail renders the integer, so an id whose
     top nibble is zero is 15 digits there and 16 here — and the real API resolves its own
-    unpadded spelling, which the mock answered 404 for. Roughly one id in 16 was affected."""
+    unpadded spelling, which Backlot answered 404 for. Roughly one id in 16 was affected."""
     return f"{hnum(key, salt='msg', length=16) % GMAIL_ID_MAX:x}"
 
 
 def drive_folder_id(container: str) -> str:
     """A folder's served id: ``0A`` plus 17 base64url characters — the shape and length of a real
-    Drive top-level (shared-drive) id, which is what this mock's folders are: containers hanging
+    Drive top-level (shared-drive) id, which is what Backlot's folders are: containers hanging
     directly under the root with nothing above them.
 
     Base64url rather than the hex slice this used to be, for the reason ``gdrive_file_id`` gives:
@@ -429,7 +429,7 @@ def _key(container: str, fallback: str) -> str:
 # keys must be unique and start with an uppercase letter followed by one or more uppercase
 # alphanumeric characters. The maximum length is 10 characters." -- which is the pattern
 # `jira.schema.json` enforces on a corpus-provided key, so a key this module DERIVES has to satisfy
-# it too or the mock serves one it would refuse as input.
+# it too or Backlot serves one it would refuse as input.
 JIRA_PROJECT_KEY_MAX = 10
 
 
@@ -625,7 +625,7 @@ def atlassian_comment_id(comment_row_id: str) -> str:
 
     Wrapped at serve time, exactly as ``notion_id`` and ``linear_comment_id`` wrap their stored
     child ids: the stored id composes the PARENT's key with the comment's position (`PAY-7::c1`),
-    which is the mock's own bookkeeping and not a shape either API emits — real ids there are
+    which is Backlot's own bookkeeping and not a shape either API emits — real ids there are
     numeric strings, so a client that parses or pattern-matches one rejected it."""
     return str(hnum("atlassian-comment:" + str(comment_row_id), 0, 8) % 9_000_000_000 + 10_000)
 
@@ -975,7 +975,7 @@ def fireflies_transcript_url(transcript_id: str) -> str:
 
 
 def fireflies_media_url(transcript_id: str, kind: str) -> str:
-    """The `audio_url` / `video_url` the API serves. The mock serves the URLs, not the media."""
+    """The `audio_url` / `video_url` the API serves. Backlot serves the URLs, not the media."""
     ext = "mp4" if kind == "video" else "mp3"
     return f"https://cdn.fireflies.ai/{kind}/{transcript_id}.{ext}"
 

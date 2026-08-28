@@ -1,10 +1,10 @@
-"""Read-only coverage: drive each official LlamaIndex reader against the mock.
+"""Read-only coverage: drive each official LlamaIndex reader against Backlot.
 
 Uses the `live_server` fixture (a real uvicorn on the conftest SAMPLE corpus) — readers make real
 HTTP calls, so they need a listening port. One test per source; each self-skips if its reader
-package is absent (installed via the `[llamaindex]` extra). The point-at-the-mock helpers are
+package is absent (installed via the `[llamaindex]` extra). The point-at-Backlot helpers are
 `backlot.integrations.llamaindex` — package API, so imported directly rather than duplicated.
-`_google_service_account_info` is the one exception: it's mock-specific OAuth glue that lives
+`_google_service_account_info` is the one exception: it's Backlot-specific OAuth glue that lives
 under `examples/` (not package API), and tests don't import from `examples/`, so it stays
 duplicated here.
 """
@@ -37,12 +37,12 @@ def test_confluence(live_server):
     from llama_index.readers.confluence import ConfluenceReader
 
     base, admin = _base_token(live_server)
-    # atlassian-python-api 4.0.7 does not append `/wiki` itself regardless of `cloud`, so the
-    # mock's `/atlassian/wiki/rest/api` root must be spelled out here (`cloud` only toggles
+    # atlassian-python-api 4.0.7 does not append `/wiki` itself regardless of `cloud`, so
+    # Backlot's `/atlassian/wiki/rest/api` root must be spelled out here (`cloud` only toggles
     # cloud-specific API shapes elsewhere, not the URL). `max_num_results` must be passed
     # explicitly: llama-index-readers-confluence 0.7.0's `load_data` forwards a bare `limit=None`
     # to `Confluence.get_all_pages_from_space`, which does `len(results) <= limit` and raises
-    # `TypeError` when `limit` is None — a client-side bug independent of the mock/server.
+    # `TypeError` when `limit` is None — a client-side bug independent of Backlot/server.
     reader = ConfluenceReader(base_url=f"{base}/atlassian/wiki", cloud=False, api_token=admin)
     docs = reader.load_data(space_key="handbook", max_num_results=50)
     assert docs, "expected at least one page Document"
@@ -165,7 +165,7 @@ def test_gmail(live_server):
         # `ValueError`: it isn't a declared pydantic field on this reader version). Patch the
         # method to hand back the admin bearer credential instead of touching disk;
         # `load_data()` then builds its own service via the wrapped `build` (since `service` is
-        # left falsy), landing on the mock.
+        # left falsy), landing on Backlot.
         gm.GmailReader._get_credentials = lambda self: Credentials(token=admin)
 
         reader = GmailReader(
@@ -180,17 +180,17 @@ def test_gmail(live_server):
 
 
 def _google_service_account_info(base_url: str) -> dict:
-    """Fetch the mock's service-account key from `/_mock/credentials` (the mock-specific glue
+    """Fetch Backlot's service-account key from `/_meta/credentials` (the Backlot-specific glue
     standing in for the JSON downloaded from the Cloud Console) — bare (no `subject`), so the
     resulting credential authenticates as the service account itself (admin, sees everything).
 
     Duplicated from `examples/_common/google_creds.py:google_service_account_info` — that one is
-    mock-specific OAuth glue, not package API (it belongs to the examples, per
-    `backlot.mock_server`'s own docstring), and tests don't import from examples."""
+    Backlot-specific OAuth glue, not package API (it belongs to the examples, per
+    `backlot.serve`'s own docstring), and tests don't import from examples."""
     import json
     import urllib.request
 
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/credentials") as r:
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/credentials") as r:
         return json.load(r)["service_account"]
 
 
@@ -223,7 +223,7 @@ def test_gdrive(live_server):
 
         # `load_data()` requires `folder_id` or `file_ids` (a bare `query_string` alone is a
         # no-op in this reader version — it only narrows results once one of those is given, see
-        # `GoogleDriveReader.load_data`). "root" is the mock's synthetic root: `_get_fileids_meta`
+        # `GoogleDriveReader.load_data`). "root" is Backlot's synthetic root: `_get_fileids_meta`
         # recurses from it through every visible folder (marketing/finance/security) down to
         # their files, so this reaches the whole visible corpus without resolving a real folder id.
         docs = reader.load_data(folder_id="root")
@@ -247,7 +247,7 @@ def test_linear(live_server):
     null — i.e. for every unassigned issue. `.get(k, default)` only returns the default when the
     key is ABSENT, and a GraphQL response always includes a selected field. This is a client-side
     bug that reproduces identically against real api.linear.app (Linear returns null for an
-    unassigned issue too), so no mock-side change can fix it; the mock's `filter` support is the
+    unassigned issue too), so no Backlot-side change can fix it; Backlot's `filter` support is the
     workaround, and `test_linear_reader_crashes_on_a_null_relation` below pins the diagnosis so a
     future reader release that fixes it is noticed.
     """
@@ -361,7 +361,7 @@ def test_linear_reader_crashes_on_a_null_relation(live_server):
     `LinearReader` does `issue.get("assignee", {}).get("name", "")`. A GraphQL response always
     includes a selected field, so an unassigned issue yields `assignee: null` — present, not
     absent — and `.get`'s default never applies. Real Linear answers the same way, so this is not
-    something the mock can serve around; `test_linear` filters unassigned issues out instead.
+    something Backlot can serve around; `test_linear` filters unassigned issues out instead.
     """
     pytest.importorskip("llama_index.readers.linear")
     import llama_index.readers.linear.base as lb

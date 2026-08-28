@@ -42,20 +42,22 @@ CORPUS = [
 ]
 
 _p = argparse.ArgumentParser(
-    description="Read Slack through the official slack_sdk against the mock."
+    description="Read Slack through the official slack_sdk against Backlot."
 )
-_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument(
+    "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+)
 _p.add_argument(
     "--token",
-    help="mock bearer token from GET /_mock/users "
+    help="Backlot bearer token from GET /_meta/users "
     "(default: the admin token, which sees everything)",
 )
 args = _p.parse_args()
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     if args.token:
         print("authenticating with --token → responses are ACL-filtered to that user")
-    client = WebClient(token=args.token or mock.token, base_url=f"{mock.base_url}/slack/api/")
+    client = WebClient(token=args.token or s.token, base_url=f"{s.base_url}/slack/api/")
 
     channels = client.conversations_list()["channels"]
     if not channels:

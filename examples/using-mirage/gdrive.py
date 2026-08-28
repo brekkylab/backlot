@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Read Google Drive through mirage's virtual filesystem. Self-contained: run it directly.
 
-Mirage mounts the mock's Drive API as a filesystem — folders and files you read with plain
+Mirage mounts Backlot's Drive API as a filesystem — folders and files you read with plain
 ``ls`` / ``cat`` (Google-native docs are exported to text on read). Auth is an ordinary Google
 authorized-user credential; the only mirage-specific glue is ``point_google_at`` (mirage's
-Google connectors have no host config, so we patch the module constants at the mock).
+Google connectors have no host config, so we patch the module constants at Backlot).
 
     pip install -e ".[examples,mirage]"
     python examples/using-mirage/gdrive.py                                 # first user, locally
@@ -56,9 +56,9 @@ CORPUS = [
 ]
 
 
-def build(mock, user):
-    point_google_at(mock.base_url)
-    client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url, user)
+def build(s, user):
+    point_google_at(s.base_url)
+    client_id, client_secret, refresh_token, _ = google_oauth_user(s.base_url, user)
     return GoogleDriveResource(
         GoogleDriveConfig(
             client_id=client_id, client_secret=client_secret, refresh_token=refresh_token
@@ -119,11 +119,13 @@ def main_fuse(resource) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Read Google Drive through mirage against the mock.")
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Read Google Drive through mirage against Backlot.")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--user",
-        help="which user's OAuth token to use, from GET /_mock/users (default: the first user)",
+        help="which user's OAuth token to use, from GET /_meta/users (default: the first user)",
     )
     p.add_argument(
         "--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)"
@@ -133,8 +135,8 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        resource = build(mock, args.user)
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        resource = build(s, args.user)
         if args.fuse:
             main_fuse(resource)
         else:

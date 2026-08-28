@@ -3,7 +3,7 @@
 Over the conftest SAMPLE corpus (built into a tmp dir — hermetic, so the suite neither depends on
 nor crawls whatever ambient import lives in ``data/``): a non-admin's crawl is a strict subset of
 the admin's across every source at once, content round-trips byte-for-byte through each vendor's
-encoding, and the ``/_mock/*`` affordances behave.
+encoding, and the ``/_meta/*`` affordances behave.
 
 Each vendor's own endpoints live in ``test_<router>.py`` — the per-router crawlers those tests and
 these share are in ``tests/_helpers.py``.
@@ -51,11 +51,11 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens_yaml, ro_conn, sample
     assert user_conf == db_count(ro_conn, "confluence", visible_ids=vids)
 
 
-def test_mock_users_directory(client, tokens_yaml, org):
-    # the /_mock/users directory lists every user + token (for testing per-user ACL)
+def test_meta_users_directory(client, tokens_yaml, org):
+    # the /_meta/users directory lists every user + token (for testing per-user ACL)
     from backlot import synth
 
-    body = client.get("/_mock/users").json()
+    body = client.get("/_meta/users").json()
     assert body["admin_token"] == tokens_yaml["admin_token"]
     # S3 uses an AWS keypair, not a token — the directory exposes an admin pair (derived from the
     # admin token, which is what the SigV4 verifier resolves) so a client can use it directly
@@ -80,11 +80,11 @@ def test_mock_users_directory(client, tokens_yaml, org):
     assert 0 < len(user_repos) <= len(admin_repos)
 
 
-def test_mock_users_can_be_disabled(client, monkeypatch):
+def test_meta_users_can_be_disabled(client, monkeypatch):
     from backlot import main
 
     monkeypatch.setattr(main, "get_settings", lambda: Settings(expose_tokens=False))
-    assert client.get("/_mock/users").status_code == 404
+    assert client.get("/_meta/users").status_code == 404
 
 
 def test_unauthenticated_is_rejected(client):
@@ -124,11 +124,11 @@ def test_router_advertises_the_params_it_honours(client, path, expected):
     assert expected <= {p["name"] for p in op.get("parameters", [])}
 
 
-# --- /_mock/openapi/{source}: the MCP-ready spec endpoint ---------------
+# --- /_meta/openapi/{source}: the MCP-ready spec endpoint ---------------
 
 
-def test_mock_openapi_spec_endpoint(client):
-    gh = client.get("/_mock/openapi/github")
+def test_meta_openapi_spec_endpoint(client):
+    gh = client.get("/_meta/openapi/github")
     assert gh.status_code == 200
     ids = [
         op["operationId"]
@@ -139,8 +139,8 @@ def test_mock_openapi_spec_endpoint(client):
     assert ids and len(ids) == len(set(ids)), (
         "served spec must have unique operationIds (bridge-ready)"
     )
-    assert client.get("/_mock/openapi/s3").status_code == 404  # SigV4 — intentionally no bridge
-    assert client.get("/_mock/openapi/nope").status_code == 404
+    assert client.get("/_meta/openapi/s3").status_code == 404  # SigV4 — intentionally no bridge
+    assert client.get("/_meta/openapi/nope").status_code == 404
 
 
 # --- /health: source_documents beside documents ---------------------------------------------

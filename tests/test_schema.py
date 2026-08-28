@@ -218,7 +218,7 @@ def test_a_child_row_states_its_author_and_its_time():
 
 def test_a_fireflies_sentence_still_needs_no_author():
     """The vendor's `Sentence` carries no email at all, and an unnamed speaker is what diarization
-    produces — so the mock must not be stricter than the API it stands in for."""
+    produces — so Backlot must not be stricter than the API it stands in for."""
     assert (
         record_errors(
             {

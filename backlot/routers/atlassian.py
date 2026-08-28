@@ -1,4 +1,4 @@
-"""Mock Atlassian Cloud APIs (read-only): Jira (``/rest/api/3``) and Confluence
+"""Atlassian Cloud APIs (read-only): Jira (``/rest/api/3``) and Confluence
 (``/wiki/rest/api``). Client base_url: ``http://<host>/atlassian``.
 
 Auth: HTTP Basic ``email:api_token`` (or Bearer). Jira issue descriptions are ADF;
@@ -99,8 +99,8 @@ def _require(request: Request) -> Caller:
 def _site(request: Request) -> str:
     """The base of every ``self`` URL Jira/Confluence emit, from the REQUEST first.
 
-    Echoing the caller's own ``Host`` is what makes a returned URL usable: a client reaching the
-    mock through a proxy, a container alias or a tunnel gets links back to the host it actually
+    Echoing the caller's own ``Host`` is what makes a returned URL usable: a client reaching
+    Backlot through a proxy, a container alias or a tunnel gets links back to the host it actually
     called, not to one this process was configured with. Every SDK sends the header, so the
     ``<org>.atlassian.net`` fallback is only for a hand-rolled HTTP/1.0 request — which is also why
     there is no setting here to override it. The org half is already configurable
@@ -741,7 +741,7 @@ def _export_view(content: str) -> str:
 
 
 def _space_container_for_key(conn, space_key: str) -> str | None:
-    """Resolve a Confluence ``spaceKey`` to its backing container name. The mock models a space
+    """Resolve a Confluence ``spaceKey`` to its backing container name. Backlot models a space
     by its corpus name, so both the synthesized key (``synth.confluence_space_key(name)``, the
     hash-suffixed value ``/space`` advertises) and the literal container name (e.g. ``"handbook"``,
     a legitimate natural key) resolve. Anything else is unresolvable -> ``None`` (never a silent

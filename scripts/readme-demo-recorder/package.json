@@ -1,0 +1,22 @@
+{
+  "name": "backlot-readme-demo-recorder",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The README's demo: what connecting Slack costs, with and without Backlot.",
+  "scripts": {
+    "capture": "node capture.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.1",
+    "playwright": "^1.49.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "typescript": "^5.9.3"
+  }
+}

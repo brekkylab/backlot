@@ -2,7 +2,7 @@
 
 `google-api-python-client` reads ``error.message`` to build its ``HttpError``, and real clients
 branch on ``error.status`` or ``errors[].reason``. FastAPI's default ``{"detail": …}`` gives them
-none of that, so error handling could not be developed or tested against this mock even though its
+none of that, so error handling could not be developed or tested against Backlot even though its
 status codes were already right.
 
 Everything here was measured against the live Docs / Drive / Gmail / Sheets / Slides APIs. The
@@ -114,7 +114,7 @@ def invalid_parameter(param: str, message: str) -> GoogleError:
 
 def invalid_value(param: str, message: str | None = None) -> GoogleError:
     """A parameter whose value is not accepted. Google says only ``Invalid Value``; a caller may
-    pass a fuller message where the mock can explain a refusal Google does not have."""
+    pass a fuller message where Backlot can explain a refusal Google does not have."""
     return GoogleError(400, message or "Invalid Value", reason="invalid", location=param)
 
 

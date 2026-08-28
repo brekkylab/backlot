@@ -1,11 +1,11 @@
 # Contributing
 
 Thanks for your interest in improving **Backlot**! Its essence is to serve each vendor's
-**read-only API** — Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3,
+**API** — Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3,
 HubSpot, Linear, Fireflies — with the **smallest possible gap** from the real thing, so clients
-built against the real APIs work unchanged against the mock. The corpus is yours to supply;
+built against the real APIs work unchanged against Backlot. The corpus is yours to supply;
 EnterpriseRAG-Bench is just one dataset you can load into that surface. Contributions that shrink
-the gap between the mock and the real APIs — request/response shapes, status codes, pagination,
+the gap between Backlot and the real APIs — request/response shapes, status codes, pagination,
 error formats — are especially welcome.
 
 ## Development setup
@@ -25,7 +25,7 @@ corpus — the bundled hello-world one (136 records covering every source) is en
 live server:
 
 ```bash
-backlot import backlot/data/hello.jsonl   # -> data/mock.sqlite + data/tokens.yaml
+backlot import backlot/data/hello.jsonl   # -> data/db.sqlite + data/tokens.yaml
 backlot serve                             # serves on http://127.0.0.1:8000
 curl -s localhost:8000/health
 ```
@@ -43,7 +43,7 @@ still work — they re-enter the same CLI, so they cannot take a different set.
 Two words, and they are not interchangeable:
 
 - **source** — one of the things Backlot serves: `slack`, `gmail`, `jira`, … This is the codebase's
-  own word for it (`source_type` on every record, `store.SOURCE_TABLE`, `/_mock/openapi/<source>`),
+  own word for it (`source_type` on every record, `store.SOURCE_TABLE`, `/_meta/openapi/<source>`),
   so use it for anything on our side of the line: a corpus record, a router, a table, an example
   script, a test file.
 - **vendor** — the real company whose API a source imitates, and the artifacts that belong to them:
@@ -58,10 +58,12 @@ pytest -rs                # the same, and it names every test that skipped, with
 ruff check . && ruff format --check .    # both gate CI; ruff comes from the `dev` extra
 ```
 
-Everything that runs on a `dev` install must pass for every change. Tests that drive something
-outside the package **self-skip** when what they need is absent, so a `dev`-only run is quietly
-narrower than the suite — three of those gates sit at module level and take the whole file with
-them:
+Everything that runs on a `dev` install must pass for every change, and it needs no data and no
+network: the unit half covers synth, pagination, ACL, the schemas and the importer parsers, and the
+endpoint half covers full-crawl completeness, content round-trip and ACL enforcement. Tests that
+drive something outside the package **self-skip** when what they need is absent, so a `dev`-only run
+is quietly narrower than the suite — three of those gates sit at module level and take the whole
+file with them:
 
 | Needs | Sits out without it |
 |---|---|
@@ -106,12 +108,27 @@ The whole point of this project is **fidelity to the real APIs**, so:
   [`backlot/schemas/`](backlot/schemas/), which is the **ingest** contract (the BYO-JSONL record a
   corpus may carry). Touch a schema when you change what a corpus can express, and a
   `response_model` when you change what a client receives.
-- A divergence from the real API is a bug, even when the mock's answer is reasonable. Measure
+- A divergence from the real API is a bug, even when Backlot's answer is reasonable. Measure
   against the real service where you can, and record the measurement in the comment beside the fix —
   several of them exist precisely because someone diffed the two side by side.
 - ACL scoping is enforced per bearer token (the admin token bypasses). New endpoints that
   expose corpus content must respect the same ACL rules — add a test proving an
   ACL-restricted item is readable by the admin token and blocked for a scoped user token.
+
+### Adding a source
+
+A new source is a new `backlot/schemas/<source_type>.schema.json`. That file alone makes
+`<source_type>` something the importer accepts, so `tests/test_docs.py` fails until the docs catch
+up. To get it green:
+
+1. add the source to `SOURCES` in [`scripts/gen_docs.py`](scripts/gen_docs.py) — display name and
+   URL prefixes;
+2. run `python scripts/gen_docs.py` to rewrite the generated table;
+3. add its subsection to [`docs/supported-sources.md`](docs/supported-sources.md) — a table of the
+   endpoints it serves, and the fidelity notes under it.
+
+The `README.md` needs no change — it names no source count and lists no sources, by design, so it
+does not go stale when this list grows.
 
 ## Reporting bugs & requesting features
 

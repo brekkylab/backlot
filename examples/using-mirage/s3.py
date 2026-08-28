@@ -3,15 +3,15 @@
 
 Mirage mounts an S3 bucket as a filesystem under ``/s3`` — read it with plain ``ls`` / ``cat`` /
 ``grep``. S3's endpoint is a config knob (``S3Config(endpoint_url=..., path_style=True)``), so we
-point it straight at the mock — no monkeypatch (unlike Google). mirage/aioboto3 SigV4-signs every
+point it straight at Backlot — no monkeypatch (unlike Google). mirage/aioboto3 SigV4-signs every
 request. S3 uses an AWS access-key/secret pair (not a bearer token): with ``--url`` (a running
 server) ``--access-key``/``--secret-key`` are **required** — pass real AWS keys, or a pair from
-``GET <url>/_mock/users`` (each user, and the admin, has an ``s3_access_key_id`` /
-``s3_secret_access_key`` there). Without ``--url`` the local throwaway mock uses its own admin
+``GET <url>/_meta/users`` (each user, and the admin, has an ``s3_access_key_id`` /
+``s3_secret_access_key`` there). Without ``--url`` the local throwaway server uses its own admin
 keypair.
 
     pip install -e ".[examples,mirage]"
-    python examples/using-mirage/s3.py                              # local throwaway mock
+    python examples/using-mirage/s3.py                              # local throwaway server
     python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret>
     python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret> --fuse   # real OS mount
 
@@ -56,11 +56,11 @@ CORPUS = [
 ]
 
 
-def build(mock, access_key, secret_key):
+def build(s, access_key, secret_key):
     return S3Resource(
         S3Config(
             bucket=BUCKET,
-            endpoint_url=f"{mock.base_url}/s3",
+            endpoint_url=f"{s.base_url}/s3",
             path_style=True,
             region="us-east-1",
             aws_access_key_id=access_key,
@@ -105,12 +105,14 @@ def main_fuse(resource) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Read S3 through mirage against the mock's S3.")
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Read S3 through mirage against Backlot's S3.")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--access-key",
         help="AWS access key id (S3 uses a keypair, not a token); "
-        "required with --url — from GET <url>/_mock/users, or real AWS",
+        "required with --url — from GET <url>/_meta/users, or real AWS",
     )
     p.add_argument("--secret-key", help="AWS secret access key (required with --url)")
     p.add_argument(
@@ -119,23 +121,23 @@ def _parse_args() -> argparse.Namespace:
     args = p.parse_args()
     if args.url and not (args.access_key and args.secret_key):
         p.error(
-            "--access-key and --secret-key are required with --url (grab a pair from GET <url>/_mock/users)"
+            "--access-key and --secret-key are required with --url (grab a pair from GET <url>/_meta/users)"
         )
     return args
 
 
 def _admin_keys(base_url: str) -> tuple[str, str]:
-    """The local throwaway mock's admin S3 keypair, read from its /_mock/users."""
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/users") as r:
+    """The local throwaway server's admin S3 keypair, read from its /_meta/users."""
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/users") as r:
         data = json.load(r)
     return data["admin_s3_access_key_id"], data["admin_s3_secret_access_key"]
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(mock.base_url)
-        resource = build(mock, ak, sk)
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(s.base_url)
+        resource = build(s, ak, sk)
         if args.fuse:
             main_fuse(resource)
         else:

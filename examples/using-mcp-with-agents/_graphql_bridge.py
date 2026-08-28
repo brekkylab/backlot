@@ -5,7 +5,7 @@ Introspects one source's GraphQL endpoint (``POST /<source>/graphql``) and serve
 ``Query`` field as its own MCP tool. ``backlot.graphql.mcp_tools`` owns the derivation — the tool
 names, the argument JSON Schemas, and the generated selection sets, with every rule stated in that
 module's docstring. Everything here is transport: post ``tool.document`` with the caller's
-credential, so the mock's per-token ACL decides what comes back on every call.
+credential, so Backlot's per-token ACL decides what comes back on every call.
 
 This is the GraphQL counterpart to ``_openapi_bridge.py``, and it exists because the OpenAPI one
 cannot serve these two sources at all: ``/linear/graphql`` and ``/fireflies/graphql`` are
@@ -22,7 +22,7 @@ stdio only, matching ``_openapi_bridge.py``: FastMCP's streamable-HTTP mode has 
 Authorization-forwarding bug.
 
     python _graphql_bridge.py --source linear --base-url http://127.0.0.1:8000 --token <t> --depth 1
-    python _graphql_bridge.py --source fireflies --base-url https://host --token <mock-token>
+    python _graphql_bridge.py --source fireflies --base-url https://host --token <token>
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ def main() -> None:
             )
             body = r.json()
             # The GraphQL envelope goes through untouched, on the same principle as
-            # `_openapi_bridge.py`'s `validate_output=False`: the mock's response is the source of
+            # `_openapi_bridge.py`'s `validate_output=False`: Backlot's response is the source of
             # truth and a passthrough must not reshape it. What the bridge does add is the MCP
             # error flag, so a caller can tell a refusal from an answer — raised only when there
             # is no `data` at all (a rejected document, or a non-null field the ACL hid), not for

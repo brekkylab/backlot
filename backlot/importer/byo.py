@@ -1,6 +1,6 @@
-"""Load a Bring-Your-Own (BYO) corpus from JSONL into the mock DB.
+"""Load a Bring-Your-Own (BYO) corpus from JSONL into Backlot DB.
 
-Serve *any* document set through every vendor API this mock speaks.
+Serve *any* document set through every vendor API Backlot speaks.
 Each line is one document:
 
     {
@@ -208,7 +208,7 @@ def _time_given(v) -> bool:
 
 
 def _seconds(n):
-    """A number as unix seconds, or None if it is not a second this mock can serve.
+    """A number as unix seconds, or None if it is not a second Backlot can serve.
 
     Two ways a number gets here without being a time. ``inf`` and ``nan`` have no
     integer form at all — `json.loads` accepts both as bare literals, so a corpus can
@@ -779,7 +779,7 @@ def load_roster(path) -> dict:
 # Two halves, and they fail differently.
 #
 # The SHAPE — which subtype may carry the field at all — is a hard error, because an issue has no
-# changeset endpoint and no review-comment endpoint, so either field on one is data the mock would
+# changeset endpoint and no review-comment endpoint, so either field on one is data Backlot would
 # store and never serve. Stated here rather than as a schema `if`/`then`: expressed that way, both
 # rules report as `'subtype' is a required property` at the record root, which names neither the
 # field that put the rule in force nor what is unservable about the pairing, and leaves the author
@@ -1265,7 +1265,7 @@ class _Loader:
 
         Author and text, because a slack record states no id: the channel and the second are
         already fixed by the ts itself, so those two are what is left to compare, and two messages
-        agreeing on all four are indistinguishable to any client of this mock."""
+        agreeing on all four are indistinguishable to any client of Backlot."""
         row = self.conn.execute(
             "SELECT author_email, content FROM slack_messages WHERE channel = ? AND ts = ?",
             (channel, ts),
@@ -1432,7 +1432,7 @@ class _Loader:
         # up: a keyless row stamped before the record that states its spelling arrived took it
         # first, and the corpus's own issue then answered "Entity not found" at the id its
         # documents cite. Which of the two moves is not a tie -- what the corpus wrote is the id it
-        # asked for, and what this mock derived is a hash it can re-derive elsewhere.
+        # asked for, and what Backlot derived is a hash it can re-derive elsewhere.
         self._linear_provided = set()
 
     def seed_tracker_ids(self) -> None:
@@ -1519,7 +1519,7 @@ class _Loader:
         # Linear teams: the key a team answers at is settled by its FIRST import and read back
         # from `linear_teams.served_key`, not re-derived from the identifiers. That column is
         # exactly what the previous run decided (`write_containers` writes it), where an identifier
-        # cannot say whether its prefix was the corpus's or this mock's -- both spellings share the
+        # cannot say whether its prefix was the corpus's or Backlot's -- both spellings share the
         # one column, and the value a probe walked away from its derived spelling is recomputable
         # from neither.
         #
@@ -2444,7 +2444,7 @@ class _Loader:
         prefix out is served under that prefix everywhere, and this column is where every serving
         surface reads it from (``store.linear_team_keys``). It is also what the next
         ``--append`` seeds its prefix maps from, which is the only record of what this run decided
-        -- an identifier cannot say whether its prefix was the corpus's or this mock's."""
+        -- an identifier cannot say whether its prefix was the corpus's or Backlot's."""
         for (src, name), group_id in self.containers.items():
             gtable, gcol = store.GROUPING[src]
             if src == "linear":
@@ -3238,7 +3238,7 @@ def run(
     roster: Path | None = None,
     id_map: Path | None = None,
 ) -> int:
-    """Load ``corpus`` into the mock DB (or, with ``dry_run``, only validate it).
+    """Load ``corpus`` into Backlot DB (or, with ``dry_run``, only validate it).
 
     Takes keyword arguments rather than an argv list: the command line that reaches this lives in
     ``backlot.cli``, which is where every flag and its help text is declared. Nothing here parses

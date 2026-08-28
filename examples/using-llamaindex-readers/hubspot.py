@@ -2,7 +2,7 @@
 """Load HubSpot CRM records through the official llama-index HubSpot reader. Self-contained.
 
 HubspotReader takes only an access token and constructs the SDK client itself, so
-point_hubspot_at() rebinds `hubspot.HubSpot` to inject the mock's host before the reader runs.
+point_hubspot_at() rebinds `hubspot.HubSpot` to inject Backlot's host before the reader runs.
 
 The reader is deliberately NOT in the [llamaindex] extra: it pins hubspot-api-client<9, which no
 resolver can reconcile with the >=12 that [examples] needs. The pin is over-restrictive — the reader
@@ -16,7 +16,7 @@ only calls HubSpot(access_token=...) and crm.{deals,contacts,companies}.get_all(
 
 Note what the reader returns: **three** Documents — one each for deals, contacts, and companies —
 whose text is the `str()` of a list of SDK objects, not one Document per record. That is the
-reader's own design; the mock just serves the three listings it pages through.
+reader's own design; Backlot just serves the three listings it pages through.
 """
 
 import argparse
@@ -74,8 +74,8 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
-    point_hubspot_at(f"{mock.base_url}/hubspot")
+def build(s, token):
+    point_hubspot_at(f"{s.base_url}/hubspot")
     return HubspotReader(access_token=token)
 
 
@@ -93,15 +93,15 @@ def main(reader):
 
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="Load HubSpot CRM via llama-index against the mock.")
-    p.add_argument("--url", help="mock base URL (default: spin up a local throwaway mock)")
-    p.add_argument("--token", help="mock bearer token from GET /_mock/users (default: admin)")
+    p = argparse.ArgumentParser(description="Load HubSpot CRM via llama-index against Backlot.")
+    p.add_argument("--url", help="Backlot base URL (default: spin up a local throwaway server)")
+    p.add_argument("--token", help="Backlot bearer token from GET /_meta/users (default: admin)")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        main(build(mock, args.token or mock.token))
+        main(build(s, args.token or s.token))

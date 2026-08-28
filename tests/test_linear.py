@@ -127,7 +127,7 @@ def test_linear_issue_url_is_the_real_vendor_domain(client, admin_h):
     slash — spelling that combination anywhere, even in a comment, makes a repeat of the bug
     rewrite it right alongside the code it guards. A bare `"linear.app"` with nothing appended
     has no slash for the pattern to land on, so it survives. The `"backlot" not in host` half is
-    the one that actually matters: a rename can only ever INTRODUCE the mock's own name into a
+    the one that actually matters: a rename can only ever INTRODUCE Backlot's own name into a
     vendor domain, never remove it, so no mechanical substitution can turn that assertion from
     failing into passing."""
     issue = gql(client, '{ issue(id: "ENG-101") { url } }', admin_h).json()["data"]["issue"]
@@ -154,7 +154,7 @@ def test_linear_team_resolves_by_key_and_uuid(client, admin_h, ro_conn):
         ]
         == "ENG"
     )
-    # The container's own raw name is a third, mock-only affordance on top of the two real
+    # The container's own raw name is a third, Backlot-only affordance on top of the two real
     # spellings above (key, uuid) -- costs nothing, so it stays alongside them.
     assert (
         gql(client, '{ team(id: "engineering") { key } }', admin_h).json()["data"]["team"]["key"]
@@ -314,7 +314,7 @@ def test_linear_introspection_reports_the_served_schema(client, admin_h):
     )
     data = r.json()["data"]
     assert data["__schema"]["queryType"]["name"] == "Query"
-    # Read-only mock: no Mutation root at all, rather than one advertising writes that fail.
+    # Read-only: no Mutation root at all, rather than one advertising writes that fail.
     assert data["__schema"]["mutationType"] is None
     names = {f["name"] for f in data["__type"]["fields"]}
     assert {"identifier", "branchName", "estimate", "dueDate", "state", "labels"} <= names
@@ -344,6 +344,23 @@ def test_linear_mcp_tools_derive_from_the_served_introspection(client, admin_h):
     # id/body/createdAt and no key for the issue, so the root `comments` tool cannot stand in for
     # it and an issue's discussion would be unreachable through the whole toolset.
     assert "comments" in selected_fields(issues.document, "issues", "nodes")
+
+
+def test_linear_the_hand_written_examples_query_still_validates(client, admin_h):
+    """The LlamaIndex reader example writes its own document rather than generating one, so a
+    schema change can turn it into a 400 that no test sees. Read it as text (a test must not
+    import from ``examples/``) and hold it to the bar the generated documents meet above.
+    """
+    import re
+
+    from tests.conftest import REPO_ROOT
+
+    text = (REPO_ROOT / "examples/using-llamaindex-readers/linear.py").read_text()
+    document = re.search(r'^QUERY = """(.*?)"""', text, re.S | re.M)
+    assert document, "no QUERY literal found -- fix this extractor, not the assertion"
+
+    schema = build_client_schema(gql(client, mcp_tools.INTROSPECTION_QUERY, admin_h).json()["data"])
+    assert [e.message for e in validate(schema, parse(document.group(1)))] == []
 
 
 def test_linear_malformed_document_is_a_400_with_a_graphql_envelope(client, admin_h):
@@ -1054,7 +1071,7 @@ def test_linear_team_key_precedes_the_raw_name_affordance(tmp_path):
     one whose KEY is also "ABCD" (`synth.linear_team_key("alpha-beta-charlie-delta")` takes word
     initials). Resolving both spellings out of one shared lookup would settle it by team-NAME order
     -- "ABCD" sorts before "alpha-beta-charlie-delta", so the literal name would win. It must
-    resolve to the KEY's team instead: a real Linear spelling beats the mock-only affordance."""
+    resolve to the KEY's team instead: a real Linear spelling beats the Backlot-only affordance."""
     assert synth.linear_team_key("ABCD") == "ABC"  # its own key -- not a collision with itself
     assert synth.linear_team_key("alpha-beta-charlie-delta") == "ABCD"
     docs = [
@@ -1205,7 +1222,7 @@ def test_a_stated_key_beats_one_another_team_only_derives_from_its_name(tmp_path
     """`payments-platform` states ENG; `engineering` merely shortens to it. Both then serve
     `key: "ENG"` — a collision `linear_team_key` has always allowed — but `team(id: "ENG")`
     can return one, and returning the team that never wrote ENG down anywhere made the
-    corpus's own spelling unreachable. What a corpus states outranks what this mock derives,
+    corpus's own spelling unreachable. What a corpus states outranks what Backlot derives,
     the same order the issue and jira indexes resolve a tie in."""
     settings = build_corpus(
         tmp_path,

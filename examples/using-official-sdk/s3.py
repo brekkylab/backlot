@@ -2,16 +2,16 @@
 """Read S3 through the official AWS SDK (boto3). Self-contained: run it directly.
 
     pip install -e ".[examples]"
-    python examples/using-official-sdk/s3.py            # local mock, uses its admin keypair
+    python examples/using-official-sdk/s3.py            # local server, uses its admin keypair
     python examples/using-official-sdk/s3.py --url http://localhost:8000 \
-        --access-key <AKIA...> --secret-key <secret>    # AWS keys, e.g. from GET /_mock/users
+        --access-key <AKIA...> --secret-key <secret>    # AWS keys, e.g. from GET /_meta/users
 
-The only changes from talking to real S3 are ``endpoint_url`` (point it at the mock's ``/s3``) and
+The only changes from talking to real S3 are ``endpoint_url`` (point it at Backlot's ``/s3``) and
 path-style addressing (so the bucket stays in the path, not the hostname). boto3 SigV4-signs every
 request. S3 uses an AWS access-key/secret pair (not a bearer token). With ``--url`` (a running
 server) ``--access-key`` / ``--secret-key`` are **required** — pass real AWS keys, or a pair from
-``GET <url>/_mock/users`` (each user, and the admin, has an ``s3_access_key_id`` /
-``s3_secret_access_key`` there). Without ``--url`` the local throwaway mock uses its own admin
+``GET <url>/_meta/users`` (each user, and the admin, has an ``s3_access_key_id`` /
+``s3_secret_access_key`` there). Without ``--url`` the local throwaway server uses its own admin
 keypair.
 """
 
@@ -49,41 +49,48 @@ CORPUS = [
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Read S3 through boto3 against the mock's S3.")
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Read S3 through boto3 against Backlot's S3.")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--access-key",
         help="AWS access key id (S3 uses a keypair, not a token); "
-        "required with --url — from GET <url>/_mock/users, or real AWS",
+        "required with --url — from GET <url>/_meta/users, or real AWS",
     )
     p.add_argument("--secret-key", help="AWS secret access key (required with --url)")
     args = p.parse_args()
     if args.url and not (args.access_key and args.secret_key):
         p.error(
             "--access-key and --secret-key are required with --url "
-            "(grab a pair from GET <url>/_mock/users)"
+            "(grab a pair from GET <url>/_meta/users)"
         )
     return args
 
 
 def _admin_keys(base_url: str) -> tuple[str, str]:
-    """The local throwaway mock's admin S3 keypair, read from its /_mock/users."""
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/users") as r:
+    """The local throwaway server's admin S3 keypair, read from its /_meta/users."""
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/users") as r:
         data = json.load(r)
     return data["admin_s3_access_key_id"], data["admin_s3_secret_access_key"]
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        # with --url you pass your own AWS keys; the local throwaway mock uses its admin keypair
-        ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(mock.base_url)
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        # with --url you pass your own AWS keys; the local throwaway server uses its admin keypair
+        ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(s.base_url)
         s3 = boto3.client(
             "s3",
-            endpoint_url=f"{mock.base_url}/s3",
+            endpoint_url=f"{s.base_url}/s3",
             aws_access_key_id=ak,
             aws_secret_access_key=sk,
             region_name="us-east-1",
+            # Path style, explicitly. Backlot serves /s3/{bucket}/{key}, and virtual-hosted
+            # addressing puts the bucket in the HOST — acme-artifacts.localhost:8000 — which
+            # resolves to nothing. boto3's default happens to pick path for this endpoint today, so
+            # deleting this line looks harmless and then breaks for anyone who sets virtual out of
+            # habit from real S3.
             config=Config(s3={"addressing_style": "path"}),
         )
 

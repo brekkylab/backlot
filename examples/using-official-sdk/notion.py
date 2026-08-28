@@ -5,8 +5,8 @@
     python examples/using-official-sdk/notion.py            # or: --url http://localhost:8000
     python examples/using-official-sdk/notion.py --url http://localhost:8000 --token <usr-token>
 
-The only change from talking to real Notion is ``base_url`` — point it at the mock's ``/notion``
-prefix (the SDK appends ``/v1/`` itself). The mock defaults to the ``2025-09-03`` API version, so
+The only change from talking to real Notion is ``base_url`` — point it at Backlot's ``/notion``
+prefix (the SDK appends ``/v1/`` itself). Backlot defaults to the ``2025-09-03`` API version, so
 a database exposes a *data source* you query for its rows.
 """
 
@@ -61,20 +61,22 @@ CORPUS = [
 CORPUS[1]["doc_id"] = "eng-tasks-db"
 
 _p = argparse.ArgumentParser(
-    description="Read Notion through the official notion-client SDK against the mock."
+    description="Read Notion through the official notion-client SDK against Backlot."
 )
-_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument(
+    "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+)
 _p.add_argument(
     "--token",
-    help="mock bearer token from GET /_mock/users "
+    help="Backlot bearer token from GET /_meta/users "
     "(default: the admin token, which sees everything)",
 )
 args = _p.parse_args()
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     if args.token:
         print("authenticating with --token → responses are ACL-filtered to that user")
-    notion = Client(auth=args.token or mock.token, base_url=f"{mock.base_url}/notion")
+    notion = Client(auth=args.token or s.token, base_url=f"{s.base_url}/notion")
 
     results = notion.search(query="on-call")["results"]
     print(f"search 'on-call' → {len(results)} result(s)")

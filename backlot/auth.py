@@ -96,7 +96,7 @@ def slack_bearer_token(request: Request) -> str | None:
     A tab is not a space to Slack, so the generic whitespace split in :func:`bearer_token` is
     wrong here, and so is its case-insensitive scheme match. That function stays permissive because
     GitHub really does accept ``token <t>`` and RFC 7235 really does make the scheme
-    case-insensitive; Slack implements neither. Sharing it would let this mock authenticate six
+    case-insensitive; Slack implements neither. Sharing it would let Backlot authenticate six
     spellings live Slack refuses outright, so a client sending ``Authorization: token <xoxb>``
     would pass every test here and reach nothing in production.
     """
@@ -156,7 +156,7 @@ def resolve_basic(request: Request) -> Caller | None:
     caller = a.resolve(pw)
     if caller is not None:
         return caller
-    # allow username=email as an identity shortcut (mock convenience)
+    # allow username=email as an identity shortcut (a Backlot convenience)
     if user and "@" in user:
         from backlot import store
 

@@ -1,4 +1,4 @@
-# Using mirage against the mock
+# Using mirage against Backlot
 
 [mirage](https://github.com/strukto-ai/mirage) (`mirage-ai`) is a **virtual filesystem for AI
 agents**: it mounts a SaaS backend and lets you read it with plain bash — `ls`, `cat`, `grep`,
@@ -10,12 +10,12 @@ pip install -e ".[examples,mirage]"
 python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py, s3.py, github.py, unified.py
 ```
 
-Each script spins up its own throwaway mock on a tiny in-code corpus, points a mirage
+Each script spins up its own throwaway server on a tiny in-code corpus, points a mirage
 `Resource` at it, and runs a few filesystem commands. Pass `--url http://host:port` to use an
-already-running mock instead (it falls back to a local one if that's unreachable).
+already-running server instead (it falls back to a local one if that's unreachable).
 
 ```bash
-python examples/using-mirage/unified.py --url https://your-mock-host.example.com
+python examples/using-mirage/unified.py --url https://your-backlot-host.example.com
 ```
 
 Add **`--fuse`** to any source's script to expose the mount as a **real OS filesystem** instead
@@ -40,51 +40,51 @@ bounded navigation keeps them fast. `find`/`grep -r` still work; just scope them
 
 **Not included:** Jira / Confluence (mirage has no connector for them). GitHub *is* included, but
 only its **code** side: mirage's GitHub connector mirrors a repo's file tree via the git
-`trees`/`contents`/`blobs` API — it has no notion of issues/PRs, which the mock also serves as
+`trees`/`contents`/`blobs` API — it has no notion of issues/PRs, which Backlot also serves as
 GitHub documents. Use `examples/using-mirage/github.py` for the code crawl and
 [`examples/using-official-sdk/github.py`](../using-official-sdk/github.py) for issues/PRs (or
 both, together).
 
-## Pointing mirage at the mock
+## Pointing mirage at Backlot
 
-**Slack** and **Notion** take a `base_url` config, so you point them straight at the mock — no glue:
+**Slack** and **Notion** take a `base_url` config, so you point them straight at Backlot — no glue:
 
 ```python
 from backlot import serve_or_connect
-with serve_or_connect(CORPUS) as mock:
-    resource = SlackResource(SlackConfig(token=mock.token,
-                                         base_url=f"{mock.base_url}/slack/api"))
+with serve_or_connect(CORPUS) as s:
+    resource = SlackResource(SlackConfig(token=s.token,
+                                         base_url=f"{s.base_url}/slack/api"))
     ws = Workspace({"/slack": resource}, mode=MountMode.READ)
     print(await (await ws.execute("ls /slack/channels/")).stdout_str())
 ```
 
-**Notion** is the same one-liner — `NotionConfig(base_url=f"{mock.base_url}/notion/v1")`, no
-monkeypatch. mirage sends `Notion-Version: 2022-06-28`, which the mock's version-aware router
+**Notion** is the same one-liner — `NotionConfig(base_url=f"{s.base_url}/notion/v1")`, no
+monkeypatch. mirage sends `Notion-Version: 2022-06-28`, which Backlot's version-aware router
 serves (the legacy inline-`properties` / `databases.query` shape), so pages and databases both
 read correctly.
 
 **S3** is also plain config, no monkeypatch and no pin bump: `S3Config(endpoint_url=
-f"{mock.base_url}/s3", path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
+f"{s.base_url}/s3", path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
 `path_style=True` keeps the bucket in the path (`/s3/<bucket>/...`) rather than the hostname. S3
 uses an AWS keypair (not a bearer token): `--access-key`/`--secret-key` are **required with
-`--url`** (real AWS keys, or a pair from `GET <url>/_mock/users` — the keys the SigV4 verifier
-accepts); without `--url` the local throwaway mock uses its own admin keypair.
+`--url`** (real AWS keys, or a pair from `GET <url>/_meta/users` — the keys the SigV4 verifier
+accepts); without `--url` the local throwaway server uses its own admin keypair.
 
 **Google** has no such knob — its connectors read the API host from module constants that the
 base helpers return verbatim. So `backlot.integrations.mirage` exposes `point_google_at(base_url)`,
-which rewrites those constants to the mock before the Google resources are built:
+which rewrites those constants to Backlot before the Google resources are built:
 
 ```python
 from backlot.integrations.mirage import point_google_at
-point_google_at(mock.base_url)              # googleapis.com  ->  the mock
+point_google_at(s.base_url)              # googleapis.com  ->  Backlot
 gmail = GmailResource(GmailConfig(**creds))
 ```
 
 It redirects the OAuth token endpoint, the Drive API, and the Docs/Sheets/Slides APIs (mirage
 reads native Google docs structurally through those, not via Drive export) — each to a distinct
-mock path, so Docs and Slides don't collide. The `--url` / `--user` / `--token` flags behave
+Backlot path, so Docs and Slides don't collide. The `--url` / `--user` / `--token` flags behave
 exactly as in the `using-official-sdk` examples: `serve_or_connect` comes from `backlot` itself,
-and `google_oauth_user` (mock-specific OAuth glue, not general API) from
+and `google_oauth_user` (Backlot-specific OAuth glue, not general API) from
 [`examples/_common/google_creds.py`](../_common/google_creds.py).
 
 **GitHub** is the same shape as Google, but with one constant: `GitHubConfig` has no `base_url`
@@ -94,7 +94,7 @@ resource is built:
 
 ```python
 from backlot.integrations.mirage import point_github_at
-point_github_at(mock.base_url)                       # api.github.com  ->  the mock
+point_github_at(s.base_url)                       # api.github.com  ->  Backlot
 repo = GitHubResource(GitHubConfig(token=T, owner="acme", repo="gateway"))
 ```
 
@@ -107,12 +107,12 @@ time — so the single patch is enough in practice; the copy-sweep is kept for p
 
 Everything above drives the filesystem **in-process** with `ws.execute("ls …")`. mirage can also
 expose a mount as a **real filesystem** via FUSE, so *any* process — `cat`, `grep`, `rg`, an
-editor, an indexer — reads the mock's data as ordinary files:
+editor, an indexer — reads Backlot's data as ordinary files:
 
 ```bash
-python examples/using-mirage/slack.py  --url https://your-mock-host.example.com --fuse
-python examples/using-mirage/gmail.py  --url https://your-mock-host.example.com --user ceo@acme.com --fuse
-python examples/using-mirage/gdrive.py --url https://your-mock-host.example.com --fuse
+python examples/using-mirage/slack.py  --url https://your-backlot-host.example.com --fuse
+python examples/using-mirage/gmail.py  --url https://your-backlot-host.example.com --user ceo@acme.com --fuse
+python examples/using-mirage/gdrive.py --url https://your-backlot-host.example.com --fuse
 ```
 
 Each prints a real mountpoint (e.g. `/tmp/mirage-xxxx`), reads a file through the kernel's FUSE
@@ -146,7 +146,7 @@ entry:
   folder with thousands of files, or a large mailbox label (mirage fetches every message to
   group by date). Prefer a `--user` whose ACL-scoped view is smaller, or a narrower path.
 
-The mock side of these paths was tuned alongside these examples (see git history): Slack
+Backlot's side of these paths was tuned alongside these examples (see git history): Slack
 `conversations.list` is memoized and its `created` comes from an aggregate (was a full
 per-channel message scan); Drive folder listings are SQL-scoped/paginated, resolve folder ids
 without an ACL scan, batch the per-file ACL lookup, and honor the `fields` mask.
@@ -156,7 +156,7 @@ without an ACL scan, batch the per-file ACL lookup, and honor the `fields` mask.
 Same as the official-SDK examples: pair the identity flag with `--url`.
 
 ```bash
-# Slack — a bearer token from GET /_mock/users
+# Slack — a bearer token from GET /_meta/users
 python examples/using-mirage/slack.py --url http://localhost:8000 --token <usr-token>
 
 # Gmail / Drive — a user email (authorized-user credential, impersonating that user)
@@ -165,9 +165,9 @@ python examples/using-mirage/gdrive.py --url http://localhost:8000 --user mia@ac
 
 The mounted filesystem then contains only what that identity is allowed to read.
 
-## Mock endpoints this exercises
+## Backlot endpoints this exercises
 
-Pointing mirage at the mock surfaced a few gaps that are now part of the mock (see the git
+Pointing mirage at Backlot surfaced a few gaps that are now part of Backlot (see the git
 history): Drive's root is navigable (`'root' in parents` returns folder objects; shared-drives
 enumeration is present-but-empty), the Docs/Sheets/Slides read APIs serve native-doc content, a
 Slack channel's `created` never postdates its messages, and `conversations.history` honors

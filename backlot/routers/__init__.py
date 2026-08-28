@@ -2,7 +2,7 @@
 
 Deliberately small. Anything that shapes a *response* stays in its own router even where two
 vendors look similar — a user object, an error envelope and a page wrapper differ per vendor by
-definition, and collapsing them is how a mock starts serving the wrong vendor's shape. What lands
+definition, and collapsing them is how an emulator serves the wrong vendor's shape. What lands
 here is plumbing that is genuinely vendor-independent.
 """
 

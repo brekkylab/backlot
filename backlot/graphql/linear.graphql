@@ -1,4 +1,4 @@
-# Linear's GraphQL API, as served by the mock at `POST /linear/graphql`.
+# Linear's GraphQL API, as served by Backlot at `POST /linear/graphql`.
 #
 # PROVENANCE — this is not hand-drafted from the docs. The object types below were generated
 # from `@linear/sdk`'s OWN generated documents: the SDK ships one pre-built document per
@@ -14,12 +14,12 @@
 # relation accessors hit — `await issue.state` fires a fresh `workflowState(id:)` query rather
 # than reading the value out of the issue it just fetched.
 #
-# WHAT IS REAL vs WHAT IS A STUB. The mock has data behind issues, comments, teams, and the
+# WHAT IS REAL vs WHAT IS A STUB. Backlot has data behind issues, comments, teams, and the
 # `state` / `project` / `cycle` / `labels` / `creator` / `assignee` relations on an issue.
 # Everything else the SDK's fragments demand (`botActor`, `syncedWith`, `favorite`, the SLA
 # timestamps, the board/sort orders) resolves to null or an empty list: declared so real SDK
 # documents validate, not backed by a corpus. Fields are never silently faked — a null here means
-# "this mock has no such data", which is a legal Linear response. The one deliberate exception is
+# "no such data here", which is a legal Linear response. The one deliberate exception is
 # `Issue.sharedAccess`, which is NON-null because the SDK constructs it unconditionally and a null
 # crashes the client; its values ("nothing is shared") are accurate anyway.
 #
@@ -76,7 +76,7 @@ type Query {
 
 # --- id-only stubs ------------------------------------------------------------------
 # Every one of these appears in the SDK's generated fragments as `field { id }` and nowhere
-# else. They exist so those documents validate; the mock has no data behind them, so the
+# else. They exist so those documents validate; Backlot has no data behind them, so the
 # owning field always resolves to null and the type is never actually reached.
 type AgentSession { id: ID! }
 type Document { id: ID! }
@@ -109,7 +109,7 @@ input EstimateSort { nulls: PaginationNulls, order: PaginationSortOrder }
 input CreatedAtSort { nulls: PaginationNulls, order: PaginationSortOrder }
 input UpdatedAtSort { nulls: PaginationNulls, order: PaginationSortOrder }
 
-"""The issue sort keys the mock can order by. Linear's own input is wider; anything it
+"""The issue sort keys Backlot can order by. Linear's own input is wider; anything it
 accepts and this does not is a validation error here rather than a silently ignored sort."""
 input IssueSortInput {
   title: TitleSort
@@ -124,7 +124,7 @@ input NameSort { nulls: PaginationNulls, order: PaginationSortOrder }
 
 # --- filter inputs --------------------------------------------------------------------
 # Linear's filter inputs are enormous (every field crossed with every comparator). These
-# declare ONLY what the mock genuinely evaluates, on purpose: an unsupported key then comes
+# declare ONLY what Backlot genuinely evaluates, on purpose: an unsupported key then comes
 # back as a GraphQL validation error naming the field, instead of being accepted and quietly
 # ignored — which would hand a client a full, wrong result set.
 input IDComparator { eq: ID, neq: ID, in: [ID!], nin: [ID!] }
@@ -219,7 +219,7 @@ input IssueLabelCollectionFilter {
   or: [IssueLabelCollectionFilter!]
 }
 
-"""Attachment fields the mock can evaluate. Linear's own input is wider; as everywhere else in
+"""Attachment fields Backlot can evaluate. Linear's own input is wider; as everywhere else in
 this schema, only what is implemented is declared, so an unsupported key is a validation error
 rather than a filter that is dropped and answered with the full set."""
 input AttachmentFilter {
@@ -276,7 +276,7 @@ input IssueFilter {
 #   * IssueSharedAccess.disallowedIssueFields is a LIST (`…DisallowedField[]`), fixed below.
 #   * Team.visibility / Issue.integrationSourceType / ExternalEntityInfo.service are enums
 #     upstream and stay `String` here — an enum name is a JSON string on the wire either way,
-#     and a partial enum would reject a value the mock has no member list for.
+#     and a partial enum would reject a value Backlot has no member list for.
 type ActorBot {
   avatarUrl: String
   subType: String

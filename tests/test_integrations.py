@@ -2,10 +2,10 @@
 
 What lives in ``backlot.integrations`` is only what a caller cannot write themselves: the
 monkeypatchers, and the one reader that must be built already-redirected. A client that takes a base
-URL as an argument gets ``f"{mock.base_url}/<prefix>"`` at the call site instead — see the examples.
+URL as an argument gets ``f"{s.base_url}/<prefix>"`` at the call site instead — see the examples.
 
-The patchers are checked for their observable effect — a constructed client actually addressing the
-mock — because a shim that silently no-ops would otherwise send a "mock" run to the real vendor.
+The patchers are checked for their observable effect — a constructed client actually addressing
+Backlot — because a shim that silently no-ops would otherwise send a "mock" run to the real vendor.
 """
 
 from __future__ import annotations
@@ -32,14 +32,14 @@ _NAMED_BY_THE_PATCHERS = {
 }
 
 
-def test_slack_reader_is_constructed_against_the_mock():
+def test_slack_reader_is_constructed_against_backlot():
     pytest.importorskip("llama_index.readers.slack")
     from backlot.integrations.llamaindex import slack_reader_at
 
-    with backlot.mock_server() as m:
-        reader = slack_reader_at(m.base_url, m.token)
+    with backlot.serve() as s:
+        reader = slack_reader_at(s.base_url, s.token)
         built = str(reader._client.base_url)
-        assert m.base_url in built
+        assert s.base_url in built
         # The TRAILING SLASH is the whole reason this URL is built inside the helper rather than
         # passed in: slack_sdk joins `base_url + method`, so without it every call would address
         # `/slackconversations.history`.
@@ -52,8 +52,8 @@ def test_patch_notion_at_rebinds_every_hardcoded_host():
 
     from backlot.integrations.llamaindex import patch_notion_at
 
-    with backlot.mock_server() as m:
-        patch_notion_at(m.base_url)
+    with backlot.serve() as s:
+        patch_notion_at(s.base_url)
         leaked = [
             n
             for n in dir(nb)
@@ -80,7 +80,7 @@ def test_point_gmail_at_is_idempotent():
 
 def test_point_gmail_and_drive_at_each_redirect_their_own_service():
     """point_gmail_at and point_drive_at must not each wrap the same
-    googleapiclient.discovery.build behind one shared `_points_at_mock` flag, so whichever ran
+    googleapiclient.discovery.build behind one shared `_backlot_wrapped` flag, so whichever ran
     second found the flag already set and silently no-opped — leaving its service pointed at the
     OTHER function's endpoint. Confirmed failing on the pre-fix code: calling gmail@1111 then
     drive@2222 left `build("drive", ...)` resolving to 1111, Gmail's endpoint, not 2222/drive/v3.
@@ -112,7 +112,7 @@ def test_point_gmail_and_drive_at_each_redirect_their_own_service():
 
 
 def test_google_build_registry_does_not_survive_a_direct_uninstall():
-    """`_MOCK_SERVICE_ENDPOINTS` is a module-level dict that can outlive the wrapper
+    """`_BACKLOT_SERVICE_ENDPOINTS` is a module-level dict that can outlive the wrapper
     reading it — unlike the old per-function closures, which were discarded whenever
     `discovery.build` was reset. Reproduction: point_gmail_at(A) installs the wrapper and
     registers "gmail" -> A; something resets `discovery.build` directly (exactly what this file's
@@ -236,7 +236,7 @@ def test_mirage_patchers_rebind_every_constant_they_name(monkeypatch):
 def test_mirage_patchers_name_every_host_constant_mirage_ships(monkeypatch):
     """A constant mirage adds later is one the patchers do not know about, so it keeps pointing at
     the real vendor — silently, because the raise above only covers names we already name. Fails
-    when mirage grows one, which is the moment to decide whether the mock serves it.
+    when mirage grows one, which is the moment to decide whether Backlot serves it.
     """
     real = pytest.importorskip("mirage.core.google._client")
     real_github = pytest.importorskip("mirage.core.github._client")

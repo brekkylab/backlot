@@ -342,8 +342,37 @@ def test_fireflies_mcp_tools_derive_from_the_served_introspection(client, admin_
     assert "positive_pct" in tools["transcripts"].document
 
 
+def test_fireflies_the_hand_written_examples_queries_still_validate(client, admin_h):
+    """Fireflies has no SDK, so the example's queries are hand-written and drift silently: nothing
+    executes that file, and a schema change here turns it into a 400 nobody sees. Read it as text
+    (a test must not import from ``examples/``) and hold every document it sends to the same bar
+    the generated MCP documents meet above.
+    """
+    import re
+
+    from tests.conftest import REPO_ROOT
+
+    text = (REPO_ROOT / "examples/using-official-sdk/fireflies.py").read_text()
+    documents = {
+        name: body
+        for name, body in re.findall(r'^([A-Z_]+) = """(.*?)"""', text, re.S | re.M)
+        if "query " in body
+    }
+    assert documents, "no query literals found -- fix this extractor, not the assertion"
+
+    schema = build_client_schema(
+        ff_gql(client, mcp_tools.INTROSPECTION_QUERY, admin_h).json()["data"]
+    )
+    assert {
+        name: [e.message for e in validate(schema, parse(body))]
+        for name, body in documents.items()
+        if validate(schema, parse(body))
+    } == {}
+
+
 def test_fireflies_declares_no_mutations(client, admin_h):
-    """A read-only mock declares no Mutation type rather than accepting writes and dropping them."""
+    """A read-only server declares no Mutation type rather than accepting writes and dropping
+    them."""
     r = ff_gql(client, "{ __schema { mutationType { name } } }", admin_h)
     assert r.json()["data"]["__schema"]["mutationType"] is None
 
@@ -480,7 +509,7 @@ def test_fireflies_action_items_are_a_newline_joined_string(tmp_path):
 
 
 def test_fireflies_sentence_times_are_seconds_while_duration_is_minutes(tmp_path):
-    """The two units really do differ in the real API; a mock that made them agree would look
+    """The two units really do differ in the real API; a server that made them agree would look
     tidier and be wrong."""
     with _fireflies_client(tmp_path) as (client, settings):
         t = _ff(
@@ -643,7 +672,7 @@ def test_fireflies_no_openapi_entry_for_the_graphql_route(tmp_path):
 
 
 def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path, monkeypatch):
-    """`users` must be the people with an ACCOUNT. The mock's principals table registers every
+    """`users` must be the people with an ACCOUNT. Backlot's principals table registers every
     internal reference across every source — 16,034 on the deployed bench corpus, of whom 327 have
     a token — so serving all of them would be wrong (they have no Fireflies account) AND a 1.6 MB
     unpaginated response. The real query takes no pagination args, so scoping is what bounds it.

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Drive the mock's Linear GraphQL API as MCP tools via the GraphQL→MCP bridge. Self-contained.
+"""Drive Backlot's Linear GraphQL API as MCP tools via the GraphQL→MCP bridge. Self-contained.
 
 **Linear's official MCP server is remote-only** — vendor-hosted at `https://mcp.linear.app/mcp`
-with no base-URL override, so there is nothing local to point at a mock. The community servers hard-
+with no base-URL override, so nothing local can be pointed at Backlot. The community servers hard-
 wire `https://api.linear.app` in source and take only a token, and they run as `npx` subprocesses,
 out of reach of the in-process URL rewrite backlot uses for the LlamaIndex Linear reader.
 
-So the tools come from the mock's own schema instead: `_graphql_bridge.py` introspects
+So the tools come from Backlot's own schema instead: `_graphql_bridge.py` introspects
 `POST /linear/graphql` and serves each root `Query` field as a typed tool (`issues`, `issue`,
 `teams`, `comments`, `viewer`, the by-id relation roots …). That trade is worth stating plainly —
 this exercises *our* tool surface rather than the community tooling an agent meets in production,
@@ -88,7 +88,7 @@ _BRIDGE = str(Path(__file__).with_name("_graphql_bridge.py"))
 
 
 def build_params(base_url: str, token: str, depth: int = 1) -> StdioServerParameters:
-    """Run `_graphql_bridge.py --source linear` as a stdio MCP server pointed at the mock."""
+    """Run `_graphql_bridge.py --source linear` as a stdio MCP server pointed at Backlot."""
     return StdioServerParameters(
         command=sys.executable,
         args=[
@@ -107,12 +107,14 @@ def build_params(base_url: str, token: str, depth: int = 1) -> StdioServerParame
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Drive the mock's Linear GraphQL API over MCP via the GraphQL bridge."
+        description="Drive Backlot's Linear GraphQL API over MCP via the GraphQL bridge."
     )
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--token",
-        help="mock token from GET /_mock/users "
+        help="Backlot token from GET /_meta/users "
         "(default: the admin token, which sees everything). Linear accepts it bare or as Bearer",
     )
     p.add_argument(
@@ -133,8 +135,8 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → retrieval is ACL-filtered to that user")
-        params = build_params(mock.base_url, args.token or mock.token, args.depth)
+        params = build_params(s.base_url, args.token or s.token, args.depth)
         run_agent(args.agent, params, QUESTION)

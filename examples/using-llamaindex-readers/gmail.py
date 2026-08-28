@@ -2,15 +2,15 @@
 """Load Gmail messages through the official llama-index Google reader. Self-contained.
 
 GmailReader builds its Google service with no host override; point_gmail_at() wraps the
-`googleapiclient.discovery.build` symbol it locally imports on every call to target the mock.
-Auth is an ordinary Google authorized-user credential (client_id/secret + refresh token) from the
-mock, exactly as against real Gmail.
+`googleapiclient.discovery.build` symbol it locally imports on every call to target Backlot.
+Auth is an ordinary Google authorized-user credential (client_id/secret + refresh token) from
+Backlot, exactly as against real Gmail.
 
 The installed GmailReader._get_credentials() unconditionally runs a local disk-based OAuth flow
 (reads token.json / credentials.json off disk) every call, regardless of whether a `service` was
 already supplied -- there's no constructor hook to inject credentials directly (this reader
 version has no `credentials` field; setting one raises `ValueError`). We patch that method to
-hand back the mock-issued credential instead of touching disk.
+hand back the Backlot-issued credential instead of touching disk.
 
     pip install -e ".[examples,llamaindex]"
     python examples/using-llamaindex-readers/gmail.py                     # first user
@@ -42,9 +42,9 @@ CORPUS = [
 ]
 
 
-def build(mock, user):
-    point_gmail_at(mock.base_url)
-    client_id, client_secret, refresh_token, token_uri = google_oauth_user(mock.base_url, user)
+def build(s, user):
+    point_gmail_at(s.base_url)
+    client_id, client_secret, refresh_token, token_uri = google_oauth_user(s.base_url, user)
     creds = Credentials(
         None,
         refresh_token=refresh_token,
@@ -69,13 +69,13 @@ def main(reader):
 
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="Load Gmail via llama-index against the mock.")
-    p.add_argument("--url", help="mock base URL (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Load Gmail via llama-index against Backlot.")
+    p.add_argument("--url", help="Backlot base URL (default: spin up a local throwaway server)")
     p.add_argument("--user", help="which user's OAuth token to use (default: the first user)")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        main(build(mock, args.user))
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        main(build(s, args.user))

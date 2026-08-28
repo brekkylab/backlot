@@ -10,5 +10,6 @@ __pycache__/
 tests/
 examples/
 .env
-# README.md is NOT ignored: pyproject.toml declares it as the package readme, so
-# `pip install .` in the image fails without it.
+# README.pypi.md is NOT ignored: pyproject.toml declares it as the package readme. Leaving it out
+# does not fail the build: setuptools drops the long description silently, shipping an image whose
+# dist-info carries no description at all.

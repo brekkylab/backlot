@@ -10,7 +10,7 @@ the client's ``_default_api_factory`` copies every unknown kwarg onto its ``Conf
 patching or shim is needed, which makes this the simplest of the SDK examples.
 
 Requires the current SDK (>=12). On 8.x the ``host`` kwarg is silently **ignored** and the client
-talks to api.hubapi.com instead — so ``assert_reaches_mock`` below fails loudly rather than letting
+talks to api.hubapi.com instead — so ``assert_reaches_backlot`` below fails loudly, not letting
 an example quietly hit production.
 """
 
@@ -90,35 +90,37 @@ CORPUS = [
 ]
 
 _p = argparse.ArgumentParser(
-    description="Read HubSpot CRM through the official hubspot-api-client SDK against the mock."
+    description="Read HubSpot CRM through the official hubspot-api-client SDK against Backlot."
 )
-_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument(
+    "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+)
 _p.add_argument(
     "--token",
-    help="mock bearer token from GET /_mock/users "
+    help="Backlot bearer token from GET /_meta/users "
     "(default: the admin token, which sees everything)",
 )
 args = _p.parse_args()
 
 
-def assert_reaches_mock(api, base_url: str) -> None:
+def assert_reaches_backlot(api, base_url: str) -> None:
     """Fail loudly if `host` did not take effect — an ignored override would send this example's
     traffic to the real HubSpot API, which looks like an auth error rather than a config bug."""
     host = api.crm.companies.basic_api.api_client.configuration.host
     if base_url not in host:
         raise SystemExit(
-            f"the SDK is configured for {host!r}, not the mock at {base_url!r} — the `host` kwarg "
+            f"the SDK is configured for {host!r}, not Backlot at {base_url!r} — the `host` kwarg "
             f"was ignored. Upgrade: pip install -U 'hubspot-api-client>=12'"
         )
 
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     if args.token:
         print("authenticating with --token → responses are ACL-filtered to that user")
-    api = HubSpot(access_token=args.token or mock.token, host=f"{mock.base_url}/hubspot")
-    assert_reaches_mock(api, mock.base_url)
+    api = HubSpot(access_token=args.token or s.token, host=f"{s.base_url}/hubspot")
+    assert_reaches_backlot(api, s.base_url)
 
-    # get_all pages until a response omits paging.next — the mock's termination contract
+    # get_all pages until a response omits paging.next — Backlot's termination contract
     companies = api.crm.companies.get_all()
     print(f"companies → {len(companies)}")
     for c in companies:

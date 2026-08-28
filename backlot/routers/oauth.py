@@ -1,10 +1,10 @@
-"""Mock OAuth 2.0 token endpoint (``POST /oauth2/token``).
+"""OAuth 2.0 token endpoint (``POST /oauth2/token``).
 
-Turns a Google-style client credential into a bearer access token the rest of the mock already
+Turns a Google-style client credential into a bearer access token the rest of Backlot already
 understands (the user's ``usr-`` token): a ``refresh_token`` grant (authorized-user flow) or a
 signed service-account JWT assertion (``jwt-bearer`` grant, with the ``sub`` claim selecting the
 impersonated user under domain-wide delegation). A bare service account with no ``sub`` maps to
-the admin/service token — a full-crawl identity, the pragmatic mock stand-in for a service
+the admin/service token — a full-crawl identity, the pragmatic stand-in for a service
 principal. See :mod:`backlot.oauth` for how the credentials are generated and verified.
 """
 
@@ -30,10 +30,10 @@ async def token(request: Request):
     acl = request.app.state.acl
 
     if oauth is None:
-        return _err("temporarily_unavailable: no mock credentials configured")
+        return _err("temporarily_unavailable: no OAuth credentials configured")
 
     if grant == "refresh_token":
-        # the refresh_token IS the user's bearer token (from /_mock/users) — validate it
+        # the refresh_token IS the user's bearer token (from /_meta/users) — validate it
         # resolves to someone and hand it straight back as the access token.
         rt = form.get("refresh_token")
         access = rt if acl.resolve(rt) is not None else None

@@ -1,4 +1,4 @@
-"""FastAPI app hosting every vendor mock under path prefixes.
+"""FastAPI app hosting every emulated vendor API under path prefixes.
 
 Startup opens the read-only DB, loads the ACL/token map, and starts a background cache warm-up.
 """
@@ -115,7 +115,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     # The server's name, never a corpus's: it reaches /openapi.json and every generated client.
-    title="Backlot Mock Server",
+    title="Backlot",
     lifespan=lifespan,
     # FastAPI's default derives the method suffix from a set, so it changes between restarts.
     generate_unique_id_function=openapi.unique_operation_id,
@@ -199,11 +199,11 @@ async def health():
     return body
 
 
-@app.get("/_mock/users")
-async def mock_users():
+@app.get("/_meta/users")
+async def meta_users():
     """Directory of every generated user + their token, for testing per-user ACL.
 
-    Not part of any emulated vendor API — a mock-only affordance. Present each user's
+    Not part of any emulated vendor API — a Backlot-only affordance. Present each user's
     token in the same shape as ``data/tokens.yaml`` plus the groups they belong to, so a
     caller can pick a token, send it to any of the APIs, and see the ACL-filtered view.
     S3 doesn't use bearer tokens — it uses AWS SigV4 — so each user (and the admin) also
@@ -241,19 +241,19 @@ async def mock_users():
     }
 
 
-@app.get("/_mock/credentials")
-async def mock_credentials(request: Request):
+@app.get("/_meta/credentials")
+async def meta_credentials(request: Request):
     """Directory of Google-style OAuth client credentials, for driving connectors that
     configure with an OAuth client / service account rather than a raw access token.
 
     Returns only the **shared** credentials: the single ``oauth_client`` (client_id/secret) and
     the org ``service_account`` JSON (with its private key). There is no per-user data here — a
-    user's ``refresh_token`` is simply their bearer token from ``/_mock/users``, so build an
-    ``authorized_user`` credential by combining ``oauth_client`` + a token from ``/_mock/users`` +
-    ``token_uri``. ``token_uri`` points back at this mock's ``/oauth2/token``, so the client's
+    user's ``refresh_token`` is simply their bearer token from ``/_meta/users``, so build an
+    ``authorized_user`` credential by combining ``oauth_client`` + a token from ``/_meta/users`` +
+    ``token_uri``. ``token_uri`` points back at Backlot's ``/oauth2/token``, so the client's
     refresh / JWT-bearer exchange lands here. Impersonate a user with the service account by
     setting ``subject=<email>``; a bare service account (no subject) resolves to the
-    admin/service token. Mock-only affordance; disable with ``BACKLOT_EXPOSE_TOKENS=false``. See
+    admin/service token. Backlot-only affordance; disable with ``BACKLOT_EXPOSE_TOKENS=false``. See
     ``examples/using-official-sdk/gmail.py``.
     """
     settings = get_settings()
@@ -269,8 +269,8 @@ async def mock_credentials(request: Request):
     }
 
 
-@app.get("/_mock/openapi/{source}")
-async def mock_openapi(source: str):
+@app.get("/_meta/openapi/{source}")
+async def meta_openapi(source: str):
     """An MCP-ready OpenAPI spec for one source: the app's own ``/openapi.json`` sliced to that
     source and with its GET/POST and v2/v3 fidelity aliases collapsed to one operation each, so an
     OpenAPI→MCP bridge can feed it straight to ``FastMCP.from_openapi()`` (see ``backlot.openapi``)."""

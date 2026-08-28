@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Generic OpenAPI→MCP bridge — run as a stdio subprocess by the per-source launchers.
 
-Fetches the mock's **MCP-ready** spec for one source (``GET /_mock/openapi/<source>`` — the mock
+Fetches Backlot's **MCP-ready** spec for one source (``GET /_meta/openapi/<source>`` — Backlot
 slices its own ``/openapi.json`` to that source and collapses the GET/POST and v2/v3 fidelity
 aliases server-side, so there's nothing to clean up here) and serves those operations as MCP tools
 via ``FastMCP.from_openapi()`` over an ``httpx.AsyncClient`` whose ``Authorization`` header is the
-caller's credential — so the mock's per-token ACL is enforced on every tool call.
+caller's credential — so Backlot's per-token ACL is enforced on every tool call.
 
 Auth: ``--username`` present → HTTP Basic (``username:token``, used by Atlassian); otherwise Bearer.
 stdio only: FastMCP's streamable-HTTP mode has a known Authorization-forwarding bug.
 
-    python _openapi_bridge.py --source github --base-url http://127.0.0.1:8000 --token <mock-token>
+    python _openapi_bridge.py --source github --base-url http://127.0.0.1:8000 --token <token>
     python _openapi_bridge.py --source atlassian --base-url https://host --token <t> --username svc@example.com
 """
 
@@ -36,14 +36,14 @@ except ImportError:
 
 
 def _auth_header(token: str, username: str | None) -> dict[str, str]:
-    if username:  # Atlassian resolves Basic email:api_token, where the api_token is the mock token
+    if username:  # Atlassian resolves Basic email:api_token, where the api_token is Backlot token
         raw = f"{username}:{token}".encode()
         return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
     return {"Authorization": f"Bearer {token}"}
 
 
 def _fetch_mcp_spec(base_url: str, source: str) -> dict:
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/openapi/{source}", timeout=10) as r:
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/openapi/{source}", timeout=10) as r:
         return json.load(r)
 
 
@@ -68,8 +68,8 @@ def main() -> None:
         headers=_auth_header(args.token, args.username),
         timeout=30,
     )
-    # validate_output=False: the mock's responses are the source of truth; a passthrough bridge
-    # must never reject a real mock response for not matching a loose schema.
+    # validate_output=False: Backlot's responses are the source of truth; a passthrough bridge
+    # must never reject a real server response for not matching a loose schema.
     mcp = FastMCP.from_openapi(
         openapi_spec=spec, client=client, name=f"{args.source}-bridge", validate_output=False
     )

@@ -1,0 +1,1 @@
+Follow `AGENTS.md`.

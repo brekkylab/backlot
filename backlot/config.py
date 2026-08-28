@@ -1,4 +1,4 @@
-"""Runtime configuration for the mock server.
+"""Runtime configuration for Backlot server.
 
 All settings are overridable via environment variables (prefix ``BACKLOT_``) so the
 server and the offline build scripts read the same values.
@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     # --- auth ---
     # A caller presenting this token bypasses ACL filtering (full crawl / service account).
     admin_token: str = "admin-service-token"
-    # Expose the /_mock/users directory (per-user tokens) so callers can test per-user ACL.
-    # It hands out tokens in the clear — fine for a local test mock; set false to disable.
+    # Expose the /_meta/users directory (per-user tokens) so callers can test per-user ACL.
+    # It hands out tokens in the clear — fine locally; set false to disable.
     expose_tokens: bool = True
 
     # --- pagination defaults ---
@@ -82,7 +82,7 @@ class Settings(BaseSettings):
 
     @property
     def db_path(self) -> Path:
-        return self.data_dir / "mock.sqlite"
+        return self.data_dir / "db.sqlite"
 
     @property
     def tokens_path(self) -> Path:

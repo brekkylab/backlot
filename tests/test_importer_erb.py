@@ -117,7 +117,7 @@ def test_every_bench_source_has_a_converter():
 
 
 def test_byo_only_sources_have_no_bench_representation():
-    """Notion and S3 are the only sources the mock serves that the bench does not ship, so they can
+    """Notion and S3 are the only sources Backlot serves that the bench does not ship, so they can
     arrive solely through a BYO corpus."""
     assert set(store.SOURCE_TABLE) - BENCH_SOURCES == {"notion", "s3"}
 
@@ -1200,7 +1200,7 @@ def test_drive_owner_is_faithful():
 
 
 def test_drive_doc_type_maps_onto_drive_mime_types():
-    """The bench's `doc_type` vocabulary (doc/sheet/slides/pdf) is not the mock's native subtype
+    """The bench's `doc_type` vocabulary (doc/sheet/slides/pdf) is not Backlot's native subtype
     vocabulary, so without the mapping every imported row falls back to `application/octet-stream` — making
     anything that branches on mimeType untestable against the bench corpus."""
     from backlot.routers.google import _drive_file
@@ -1271,7 +1271,7 @@ def test_jira_assignee_reporter_and_duedate():
     assert row["status"] == "In Progress"
 
 
-# --- HubSpot: bench company records mapped onto the mock's CRM schema -------------
+# --- HubSpot: bench company records mapped onto Backlot's CRM schema -------------
 # Shapes below mirror real bench records (data/raw/generated_data/sources/hubspot): `notes` is a
 # list of undated CRM fragments, `timeline` is a dated activity log, and the `linked_*` arrays are
 # free-text stubs pointing at other sources rather than resolvable document ids.
@@ -1306,7 +1306,7 @@ HS_RAW = {
 
 
 def test_hubspot_company_maps_to_crm_properties():
-    """The bench's denormalized company record is mapped onto the mock's HubSpot-API-shaped
+    """The bench's denormalized company record is mapped onto Backlot's HubSpot-API-shaped
     schema — not stored in ERB's own shape. Fields with a real HubSpot company property take that
     name; the rest stay as custom properties, which is what a real portal looks like."""
     conn = _conn()
@@ -3019,7 +3019,7 @@ def test_erb_to_byo_output_validates_against_the_byo_schemas(tmp_path):
 
 
 def test_byo_drive_subtypes_are_all_accepted_by_the_schema():
-    """`_drive_type` is the mock's Drive subtype vocabulary, and a converted record has to
+    """`_drive_type` is Backlot's Drive subtype vocabulary, and a converted record has to
     carry its output — so the BYO drive schema must accept every value it can produce, or an
     artifact fails validation on a file type the importer itself created."""
     from backlot.validation import record_errors

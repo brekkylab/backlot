@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Read Gmail through mirage's virtual filesystem. Self-contained: run it directly.
 
-Mirage mounts the mock's Gmail API as a filesystem — a directory per label, then per day, then
+Mirage mounts Backlot's Gmail API as a filesystem — a directory per label, then per day, then
 a file per message — so an agent reads mail with plain ``ls`` / ``cat``. Auth is an ordinary
 Google authorized-user credential (client_id/secret + refresh token); the only mirage-specific
 glue is ``point_google_at`` (mirage's Google connectors have no host config, so we patch the
-module constants; the mock's ``/oauth2/token`` honors the refresh).
+module constants; Backlot's ``/oauth2/token`` honors the refresh).
 
     pip install -e ".[examples,mirage]"
     python examples/using-mirage/gmail.py                                  # the mailbox owner
@@ -59,9 +59,9 @@ CORPUS = [
 ]
 
 
-def build(mock, user):
-    point_google_at(mock.base_url)
-    client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url, user)
+def build(s, user):
+    point_google_at(s.base_url)
+    client_id, client_secret, refresh_token, _ = google_oauth_user(s.base_url, user)
     return GmailResource(
         GmailConfig(client_id=client_id, client_secret=client_secret, refresh_token=refresh_token)
     )
@@ -129,11 +129,13 @@ def main_fuse(resource) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Read Gmail through mirage against the mock.")
-    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p = argparse.ArgumentParser(description="Read Gmail through mirage against Backlot.")
+    p.add_argument(
+        "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
+    )
     p.add_argument(
         "--user",
-        help="which user's OAuth token to use, from GET /_mock/users "
+        help="which user's OAuth token to use, from GET /_meta/users "
         f"(default: {MAILBOX_OWNER}, who owns the mailbox this corpus seeds)",
     )
     p.add_argument(
@@ -144,8 +146,8 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        resource = build(mock, args.user or MAILBOX_OWNER)
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        resource = build(s, args.user or MAILBOX_OWNER)
         if args.fuse:
             main_fuse(resource)
         else:

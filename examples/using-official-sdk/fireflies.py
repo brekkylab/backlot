@@ -10,7 +10,7 @@ shows four examples — curl, Python ``requests.post``, JS ``axios.post`` and Ja
 all posting a GraphQL document to one endpoint with a Bearer key. So this script is not working
 around a missing client: it is the documented way to use the API, and the base URL is just a
 variable in user code. Nothing to shim. (Contrast ``linear/``, where the vendor DOES publish a
-client and pointing it at the mock takes a real shim.)
+client and pointing it at Backlot takes a real shim.)
 
 ``httpx`` is already a dependency, so that is what this uses; ``requests`` would be identical.
 """
@@ -103,7 +103,7 @@ query Transcripts($limit: Int, $skip: Int, $keyword: String, $scope: String) {
     duration
     host_email
     organizer_email
-    channels
+    channels { id title }
     participants
     transcript_url
     audio_url
@@ -129,7 +129,7 @@ query Transcript($id: String!) {
 """
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--url", help="existing mock server (default: spawn a throwaway one)")
+parser.add_argument("--url", help="an already-running Backlot (default: spawn a throwaway one)")
 parser.add_argument("--token", help="user token; responses are then ACL-filtered to that user")
 args = parser.parse_args()
 
@@ -149,26 +149,28 @@ def gql(client, endpoint, token, query, **variables):
     return body["data"]
 
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     if args.token:
         print("authenticating with --token → responses are ACL-filtered to that user")
-    token = args.token or mock.token
-    endpoint = f"{mock.base_url}/fireflies/graphql"
+    token = args.token or s.token
+    endpoint = f"{s.base_url}/fireflies/graphql"
 
     with httpx.Client(timeout=30) as client:
         data = gql(client, endpoint, token, TRANSCRIPTS, limit=10)
         print(f"transcripts → {len(data['transcripts'])}")
         for t in data["transcripts"]:
-            s = t["summary"]
+            summary = t["summary"]
             print(f"\n  {t['title']}")
             print(f"    {t['dateString']}  {t['duration']} min  host={t['host_email']}")
-            print(f"    channels={t['channels']}  id={t['id']}")
-            print(f"    overview: {(s['overview'] or '(none)')[:88]}")
-            if s["topics_discussed"]:
-                print(f"    topics: {', '.join(s['topics_discussed'])}")
-            if s["action_items"]:
+            # a channel's `id` IS its name, and is what `transcripts(channel_id:)` takes back
+            channels = [c["id"] for c in t["channels"]]
+            print(f"    channels={channels}  id={t['id']}")
+            print(f"    overview: {(summary['overview'] or '(none)')[:88]}")
+            if summary["topics_discussed"]:
+                print(f"    topics: {', '.join(summary['topics_discussed'])}")
+            if summary["action_items"]:
                 # action_items is ONE newline-joined string in the real API, not a list
-                for item in s["action_items"].split("\n"):
+                for item in summary["action_items"].split("\n"):
                     print(f"      [ ] {item}")
             sent = t["analytics"]["sentiments"]
             print(
@@ -207,18 +209,20 @@ with serve_or_connect(CORPUS, url=args.url) as mock:
         first = data["transcripts"][0]["id"]
         one = gql(client, endpoint, token, ONE_TRANSCRIPT, id=first)["transcript"]
         print(f"\ntranscript({first}) → {one['title']}")
-        for s in one["sentences"]:
-            who = s["speaker_name"] or "(unattributed)"
+        for sentence in one["sentences"]:
+            who = sentence["speaker_name"] or "(unattributed)"
             print(
-                f"  [{s['start_time']:6.1f}s-{s['end_time']:6.1f}s] "
-                f"#{s['speaker_id']} {who}: {s['text']}"
+                f"  [{sentence['start_time']:6.1f}s-{sentence['end_time']:6.1f}s] "
+                f"#{sentence['speaker_id']} {who}: {sentence['text']}"
             )
 
-        # The concatenated sentence text IS the document the mock indexes for search, so the
+        # The concatenated sentence text IS the document Backlot indexes for search, so the
         # transcript round-trips: joining the sentences back up recovers it exactly.
         rebuilt = "\n".join(
-            f"{s['speaker_name']}: {s['text']}" if s["speaker_name"] else s["text"]
-            for s in one["sentences"]
+            f"{sentence['speaker_name']}: {sentence['text']}"
+            if sentence["speaker_name"]
+            else sentence["text"]
+            for sentence in one["sentences"]
         )
         print(f"\nrebuilt transcript ({len(rebuilt)} chars) — this is what full-text search sees:")
         print("  " + rebuilt.replace("\n", "\n  "))

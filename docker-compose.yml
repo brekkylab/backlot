@@ -3,7 +3,7 @@
 name: backlot
 
 services:
-  mock:
+  backlot:
     build: .
     image: backlot:latest
     ports:

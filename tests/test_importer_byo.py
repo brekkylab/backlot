@@ -243,7 +243,7 @@ def test_byo_meta_comments_hierarchy(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
 
     # meta blob on a doc
     assert store.jcol(
@@ -286,7 +286,7 @@ def test_byo_slack_threads(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
 
     # 3 docs total (root + 2 replies), but only the root is top-level
     assert conn.execute("SELECT COUNT(*) FROM slack_messages").fetchone()[0] == 3
@@ -374,7 +374,7 @@ def test_byo_created_updated_times(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
 
     # created accepts ISO, updated accepts epoch int — both land as epoch seconds
     j = conn.execute("SELECT created_ts, updated_ts FROM jira_issues WHERE title = 'T'").fetchone()
@@ -424,7 +424,7 @@ def test_byo_gmail_created_and_to(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     from backlot.routers.google import _gmail_message
 
     msg = _gmail_message(store.get_document(conn, "gmail", served_id("gmail", "m1")), "metadata")
@@ -458,7 +458,7 @@ def test_byo_slack_rich_replies(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     from backlot.routers.slack import _message
 
     channel, root_ts = conn.execute(
@@ -515,7 +515,7 @@ def test_byo_slack_reply_carries_its_own_clock(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     thread = conn.execute(
         "SELECT ts, created_ts FROM slack_messages WHERE channel = 'incidents' ORDER BY thread_seq"
     ).fetchall()
@@ -718,7 +718,7 @@ def test_byo_a_stated_epoch_zero_is_a_second_not_a_missing_value(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     assert conn.execute("SELECT created_ts FROM confluence_comments").fetchone()[0] == 0
     assert conn.execute("SELECT created_ts FROM gmail_messages").fetchone()[0] == 0
 
@@ -810,7 +810,7 @@ def test_byo_epoch_seconds_as_a_string(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     assert [
         r["created_ts"]
         for r in conn.execute("SELECT created_ts FROM slack_messages ORDER BY thread_seq")
@@ -2499,7 +2499,7 @@ def test_import_refuses_a_shard_that_does_not_match_the_manifest(tmp_path, monke
     with pytest.raises(SystemExit) as e:
         byo.run(out)
     assert e.value.code == 1
-    assert not (data / "mock.sqlite").exists(), "a rejected artifact must not leave a database"
+    assert not (data / "db.sqlite").exists(), "a rejected artifact must not leave a database"
 
 
 def test_a_single_gzipped_corpus_file_loads(tmp_path):
@@ -2728,7 +2728,7 @@ def test_hello_corpus_loads_and_covers_every_source(tmp_path):
     # The two counts must differ, or the corpus does not demonstrate the parsing layer.
     assert int(store.read_meta(conn, "source_documents")) < sum(counts.values())
     # Every child-row table is exercised too: a comment API with nothing behind it teaches a
-    # reader that the mock has no comments rather than that this corpus has none.
+    # reader that Backlot has no comments rather than that this corpus has none.
     for src, tbl in store.COMMENT_TABLE.items():
         n = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
         assert n > 0, f"hello corpus has no {src} child rows ({tbl})"
@@ -3418,7 +3418,7 @@ def _jira_rec(did, project, key=None):
     ids=["six-word-name", "name-starting-with-a-digit"],
 )
 def test_byo_a_project_can_state_the_key_it_was_served(tmp_path, project):
-    """An --append MUST state a key (`_require_provided_id`), so the key the mock serves has to be
+    """An --append MUST state a key (`_require_provided_id`), so the key Backlot serves has to be
     one the corpus is allowed to write back. Two shapes of project name had none: omitting the key
     is refused by the importer, and the key they were served was refused by validation.
 
@@ -3583,7 +3583,7 @@ def test_byo_linear_prefixes_hold_one_to_one(tmp_path):
 def test_byo_a_teams_key_is_settled_by_its_first_import(tmp_path):
     """An --append cannot rename a team. Every identifier already stored is prefixed with the key
     that import settled on, and re-stamping them is not on the table: they are the ids clients hold,
-    and a stored identifier cannot even say whether its prefix was the corpus's or this mock's --
+    and a stored identifier cannot even say whether its prefix was the corpus's or Backlot's --
     both spellings share the one column. So the shard that would rename the team is refused
     instead, naming the key its issues already carry."""
     settings = Settings(data_dir=tmp_path / "d")
@@ -3762,10 +3762,10 @@ def test_byo_a_slug_shaped_key_claims_only_its_leading_prefix(tmp_path):
     ids=["prefix-longer-than-real-linears-5", "prefix-starting-with-a-digit"],
 )
 def test_byo_a_derived_identifier_is_accepted_as_input(tmp_path, team):
-    """Whatever the mock materializes, it must also accept: `synth.linear_team_key` takes one
+    """Whatever Backlot materializes, it must also accept: `synth.linear_team_key` takes one
     initial per word with no upper bound and no leading-letter rule, so it serves `PIRACO-8079` and
     `3P-8079` — and a pattern written to real Linear's 1-5 character team key refused a corpus
-    stating the very identifier the mock had handed out. The round trip is the assertion: derive the
+    stating the very identifier Backlot had handed out. The round trip is the assertion: derive the
     identifier, state it, load with validation on."""
     derived = synth.linear_identifier("ln-a", synth.linear_team_key(team))
     settings = Settings(data_dir=tmp_path / "d")
@@ -4830,7 +4830,7 @@ def test_github_changeset_fields_round_trip(tmp_path):
         ),
         Settings(data_dir=tmp_path),
     )
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     row = conn.execute("SELECT * FROM github_items WHERE kind = 'pull_request'").fetchone()
     assert store.jcol(row, "changed_paths") == ["src/b.py", "src/a.py"]  # order preserved
     f0 = conn.execute("SELECT * FROM github_items WHERE kind = 'file' AND path = ?", ("src/a.py",))
@@ -4907,7 +4907,7 @@ def test_github_changeset_misuse_is_refused(tmp_path, records, expected, capsys)
 
 
 def test_a_changed_path_matching_no_file_is_reported_and_loaded(tmp_path, capsys):
-    """A declared path that names no `file` document is a corpus typo the mock cannot prove is one:
+    """A declared path that names no `file` document is a corpus typo Backlot cannot prove is one:
     a corpus is routinely a SLICE of a repo, and under `--append` the file may land in a later
     shard. So it is REPORTED — naming the pull and the path — and loaded verbatim, leaving the
     router to drop it from the changeset. Refusing would make a pull that states the files it
@@ -4925,7 +4925,7 @@ def test_a_changed_path_matching_no_file_is_reported_and_loaded(tmp_path, capsys
     load(corpus, Settings(data_dir=tmp_path))
     err = capsys.readouterr().err
     assert "1 path reference" in err and "--dry-run" in err
-    conn = store.connect_ro(tmp_path / "mock.sqlite")
+    conn = store.connect_ro(tmp_path / "db.sqlite")
     # stored as the corpus stated it — the report does not edit the record
     row = conn.execute("SELECT * FROM github_items WHERE kind = 'pull_request'").fetchone()
     assert store.jcol(row, "changed_paths") == ["src/a.py", "src/typo.py"]

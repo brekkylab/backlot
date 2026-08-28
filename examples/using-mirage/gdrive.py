@@ -57,8 +57,8 @@ CORPUS = [
 
 
 def build(mock, user):
-    point_google_at(mock.base_url)
-    client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url, user)
+    point_google_at(s.base_url)
+    client_id, client_secret, refresh_token, _ = google_oauth_user(s.base_url, user)
     return GoogleDriveResource(
         GoogleDriveConfig(
             client_id=client_id, client_secret=client_secret, refresh_token=refresh_token
@@ -133,8 +133,8 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        resource = build(mock, args.user)
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        resource = build(s, args.user)
         if args.fuse:
             main_fuse(resource)
         else:

@@ -24,8 +24,8 @@ Or run one programmatically on a free port:
 import backlot
 from slack_sdk import WebClient
 
-with backlot.serve() as m:
-    slack = WebClient(token=m.token, base_url=f"{m.base_url}/slack/api/")
+with backlot.serve() as s:
+    slack = WebClient(token=s.token, base_url=f"{s.base_url}/slack/api/")
     print(slack.conversations_list()["channels"])
 ```
 

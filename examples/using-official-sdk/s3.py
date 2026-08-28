@@ -75,12 +75,12 @@ def _admin_keys(base_url: str) -> tuple[str, str]:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         # with --url you pass your own AWS keys; the local throwaway mock uses its admin keypair
-        ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(mock.base_url)
+        ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(s.base_url)
         s3 = boto3.client(
             "s3",
-            endpoint_url=f"{mock.base_url}/s3",
+            endpoint_url=f"{s.base_url}/s3",
             aws_access_key_id=ak,
             aws_secret_access_key=sk,
             region_name="us-east-1",

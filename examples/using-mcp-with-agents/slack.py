@@ -75,8 +75,8 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → retrieval is ACL-filtered to that user")
-        params = build_params(mock.base_url, args.token or mock.token)
+        params = build_params(s.base_url, args.token or s.token)
         run_agent(args.agent, params, QUESTION)

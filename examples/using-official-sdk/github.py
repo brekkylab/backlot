@@ -115,10 +115,10 @@ _p.add_argument(
 )
 args = _p.parse_args()
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     if args.token:
         print("authenticating with --token → responses are ACL-filtered to that user")
-    gh = Github(auth=Auth.Token(args.token or mock.token), base_url=f"{mock.base_url}/github")
+    gh = Github(auth=Auth.Token(args.token or s.token), base_url=f"{s.base_url}/github")
 
     # `get_user().get_repos()` is GET /user/repos — the credential's own view of what it can reach.
     # Nothing here names the org: the mock derives it from the corpus's email domain and 404s any

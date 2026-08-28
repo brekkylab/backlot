@@ -133,7 +133,7 @@ async function waitForHealth(url: string, tries = 100): Promise<void> {
   throw new Error("mock server did not become ready");
 }
 
-interface Mock {
+interface Server {
   baseUrl: string;
   token: string;
   stop(): void;
@@ -144,7 +144,7 @@ interface Mock {
  * it — the same fallback `examples/_common/` gives every Python example, so this script needs no
  * separate process launched by hand.
  */
-async function serveOrConnect(url: string | undefined): Promise<Mock> {
+async function serveOrConnect(url: string | undefined): Promise<Server> {
   if (url && (await healthy(url))) {
     console.log(`using mock server at ${url}`);
     return { baseUrl: url.replace(/\/$/, ""), token: ADMIN_TOKEN, stop: () => {} };
@@ -266,10 +266,10 @@ function parseArgs(): { url?: string; token?: string } {
 }
 
 const args = parseArgs();
-const mock = await serveOrConnect(args.url);
+const s = await serveOrConnect(args.url);
 try {
   if (args.token) console.log("authenticating with --token → responses are ACL-filtered to that user");
-  await main(new MockLinearClient(mock.baseUrl, args.token ?? mock.token));
+  await main(new MockLinearClient(s.baseUrl, args.token ?? s.token));
 } finally {
-  mock.stop();
+  s.stop();
 }

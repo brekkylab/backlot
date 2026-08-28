@@ -58,7 +58,7 @@ CORPUS = [  # `created` keeps the throwaway channels' dates tight (one day) rath
 def build(mock, token):
     # Slack's host is a config knob — point it at the mock (no monkeypatch needed).
     # --token <usr-token> (from /_meta/users) → ACL-filtered to that user; else admin sees all.
-    return SlackResource(SlackConfig(token=token, base_url=f"{mock.base_url}/slack/api"))
+    return SlackResource(SlackConfig(token=token, base_url=f"{s.base_url}/slack/api"))
 
 
 async def main(resource) -> None:
@@ -128,10 +128,10 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        resource = build(mock, args.token or mock.token)
+        resource = build(s, args.token or s.token)
         if args.fuse:
             main_fuse(resource)
         else:

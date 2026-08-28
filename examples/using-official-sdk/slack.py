@@ -52,10 +52,10 @@ _p.add_argument(
 )
 args = _p.parse_args()
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     if args.token:
         print("authenticating with --token → responses are ACL-filtered to that user")
-    client = WebClient(token=args.token or mock.token, base_url=f"{mock.base_url}/slack/api/")
+    client = WebClient(token=args.token or s.token, base_url=f"{s.base_url}/slack/api/")
 
     channels = client.conversations_list()["channels"]
     if not channels:

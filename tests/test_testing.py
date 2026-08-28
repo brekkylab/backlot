@@ -53,8 +53,8 @@ def _health(url: str) -> dict:
 
 
 def test_serve_with_no_arguments_serves_the_hello_corpus():
-    with backlot.serve() as m:
-        body = _get(f"{m.base_url}/health")
+    with backlot.serve() as s:
+        body = _get(f"{s.base_url}/health")
     assert body["status"] == "ok"
     assert body["source_documents"] > 0
     assert body["documents"] >= body["source_documents"]
@@ -71,15 +71,15 @@ def test_serve_accepts_records():
                 author_email="ava@acme.com",
             ),
         ]
-    ) as m:
-        body = _get(f"{m.base_url}/health")
+    ) as s:
+        body = _get(f"{s.base_url}/health")
     assert body["source_documents"] == 1
 
 
 def test_serve_token_authenticates():
-    with backlot.serve() as m:
+    with backlot.serve() as s:
         req = urllib.request.Request(
-            f"{m.base_url}/slack/api/auth.test", headers={"Authorization": f"Bearer {m.token}"}
+            f"{s.base_url}/slack/api/auth.test", headers={"Authorization": f"Bearer {s.token}"}
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             assert json.load(r)["ok"] is True
@@ -93,10 +93,10 @@ def test_serve_token_reflects_a_custom_admin_token(monkeypatch):
     Slack fidelity means auth.test returns HTTP 200 with {"ok": false, "error": "not_authed"},
     which reads as the caller's own mistake rather than a serve() bug."""
     monkeypatch.setenv("BACKLOT_ADMIN_TOKEN", "some-other-token")
-    with backlot.serve() as m:
-        assert m.token == "some-other-token"
+    with backlot.serve() as s:
+        assert s.token == "some-other-token"
         req = urllib.request.Request(
-            f"{m.base_url}/slack/api/auth.test", headers={"Authorization": f"Bearer {m.token}"}
+            f"{s.base_url}/slack/api/auth.test", headers={"Authorization": f"Bearer {s.token}"}
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             assert json.load(r)["ok"] is True
@@ -110,13 +110,13 @@ def test_serve_or_connect_fetches_a_remote_servers_real_admin_token(monkeypatch)
     token, then connect to it via --url and confirm the returned token is the real one fetched
     from the server, not the guess."""
     monkeypatch.setenv("BACKLOT_ADMIN_TOKEN", "remote-real-token")
-    with backlot.serve() as server:
-        with backlot.serve_or_connect(url=server.base_url) as m:
-            assert m.token == "remote-real-token"
-            assert m.token != "admin-service-token"  # the old guess would have returned this
+    with backlot.serve() as remote:
+        with backlot.serve_or_connect(url=remote.base_url) as s:
+            assert s.token == "remote-real-token"
+            assert s.token != "admin-service-token"  # the old guess would have returned this
             req = urllib.request.Request(
-                f"{m.base_url}/slack/api/auth.test",
-                headers={"Authorization": f"Bearer {m.token}"},
+                f"{s.base_url}/slack/api/auth.test",
+                headers={"Authorization": f"Bearer {s.token}"},
             )
             with urllib.request.urlopen(req, timeout=10) as r:
                 assert json.load(r)["ok"] is True
@@ -142,8 +142,8 @@ def test_serve_or_connect_does_not_fetch_the_token_over_plain_http_to_a_non_loop
         lambda url, timeout=10: calls.append(url) or "should-never-be-used",
     )
 
-    with backlot.serve_or_connect(url="http://example.com:8000") as m:
-        assert m.token == testing_mod.TOKEN
+    with backlot.serve_or_connect(url="http://example.com:8000") as s:
+        assert s.token == testing_mod.TOKEN
 
     assert calls == [], f"token fetch must not run against a plain-http non-loopback host: {calls}"
 
@@ -162,13 +162,13 @@ def test_serve_binds_where_host_says(host, answers_off_loopback):
     if addr is None:
         pytest.skip("this machine has no address but loopback to dial")
 
-    with backlot.serve(host=host) as m:
+    with backlot.serve(host=host) as s:
         # A wildcard bind answers on every interface, loopback among them, so the URL a caller
         # gets stays loopback in both cases here.
-        assert m.base_url.startswith("http://127.0.0.1:"), m.base_url
-        assert _health(f"{m.base_url}/health")["status"] == "ok"
+        assert s.base_url.startswith("http://127.0.0.1:"), s.base_url
+        assert _health(f"{s.base_url}/health")["status"] == "ok"
 
-        port = int(m.base_url.rsplit(":", 1)[1])
+        port = int(s.base_url.rsplit(":", 1)[1])
         answered = _health(f"http://{addr}:{port}/health").get("status") == "ok"
         assert answered is answers_off_loopback
 
@@ -187,9 +187,9 @@ def test_a_narrow_bind_is_dialled_at_the_address_it_bound(resolve, url_form):
     if host is None:
         pytest.skip("this machine has no such address to bind")
 
-    with backlot.serve(host=host) as m:
-        assert m.base_url.startswith(url_form.format(host)), m.base_url
-        assert _health(f"{m.base_url}/health")["status"] == "ok"
+    with backlot.serve(host=host) as s:
+        assert s.base_url.startswith(url_form.format(host)), s.base_url
+        assert _health(f"{s.base_url}/health")["status"] == "ok"
 
 
 def test_two_servers_get_different_ports():
@@ -198,8 +198,8 @@ def test_two_servers_get_different_ports():
 
 
 def test_serve_or_connect_falls_back_when_the_url_is_unreachable():
-    with backlot.serve_or_connect(url="http://127.0.0.1:1/") as m:
-        assert _get(f"{m.base_url}/health")["status"] == "ok"
+    with backlot.serve_or_connect(url="http://127.0.0.1:1/") as s:
+        assert _get(f"{s.base_url}/health")["status"] == "ok"
 
 
 def test_teardown_reaps_a_process_that_ignores_sigterm():

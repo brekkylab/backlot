@@ -72,8 +72,8 @@ CORPUS = [
 
 
 def build(mock, user):
-    point_drive_at(mock.base_url)
-    sa_info, subject = google_service_account_info(mock.base_url, user)
+    point_drive_at(s.base_url)
+    sa_info, subject = google_service_account_info(s.base_url, user)
     reader = GoogleDriveReader(service_account_key=sa_info)
     if subject:
         # service_account_key alone can't carry `subject` through the reader's own
@@ -102,5 +102,5 @@ def _parse_args():
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        main(build(mock, args.user))
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        main(build(s, args.user))

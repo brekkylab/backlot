@@ -128,7 +128,7 @@ def build(mock, token, owner, repo):
     # GitHubConfig has no base_url field — redirect the hardcoded API_BASE constant first, then
     # construct the resource (its __init__ makes synchronous HTTP calls to fetch the default
     # branch and the recursive tree).
-    point_github_at(mock.base_url)
+    point_github_at(s.base_url)
     return GitHubResource(GitHubConfig(token=token, owner=owner, repo=repo, ref="main"))
 
 
@@ -198,21 +198,21 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        token = args.token or mock.token
+        token = args.token or s.token
 
         # Discover a repo that actually has files rather than assuming this script's own CORPUS
         # repo exists on whatever's behind --url. The owner comes from the mock too — it 404s a
         # wrong one, so there is nothing to hardcode.
-        discovered = discover_repo(mock.base_url, token)
+        discovered = discover_repo(s.base_url, token)
         if discovered is None:
             raise SystemExit("no repositories visible to this token — nothing to mount")
         owner, repo = discovered
         print(f"mounting {owner}/{repo}")
 
-        resource = build(mock, token, owner, repo)
+        resource = build(s, token, owner, repo)
         if args.fuse:
             main_fuse(resource)
         else:

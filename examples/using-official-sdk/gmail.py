@@ -44,11 +44,11 @@ _p.add_argument(
 )
 args = _p.parse_args()
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     # An ordinary Google authorized-user credential — exactly as against real Gmail; only the
     # api_endpoint changes. The mock provides the client_id/secret + refresh token, and the
     # library refreshes against token_uri (the mock's /oauth2/token) to get an access token.
-    client_id, client_secret, refresh_token, token_uri = google_oauth_user(mock.base_url, args.user)
+    client_id, client_secret, refresh_token, token_uri = google_oauth_user(s.base_url, args.user)
     creds = Credentials(
         None,
         refresh_token=refresh_token,
@@ -61,7 +61,7 @@ with serve_or_connect(CORPUS, url=args.url) as mock:
         "v1",
         credentials=creds,
         static_discovery=True,
-        client_options=ClientOptions(api_endpoint=mock.base_url),
+        client_options=ClientOptions(api_endpoint=s.base_url),
     )
 
     ids = gmail.users().messages().list(userId="me", maxResults=5).execute().get("messages", [])

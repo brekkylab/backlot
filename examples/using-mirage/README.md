@@ -51,20 +51,20 @@ both, together).
 
 ```python
 from backlot import serve_or_connect
-with serve_or_connect(CORPUS) as mock:
-    resource = SlackResource(SlackConfig(token=mock.token,
-                                         base_url=f"{mock.base_url}/slack/api"))
+with serve_or_connect(CORPUS) as s:
+    resource = SlackResource(SlackConfig(token=s.token,
+                                         base_url=f"{s.base_url}/slack/api"))
     ws = Workspace({"/slack": resource}, mode=MountMode.READ)
     print(await (await ws.execute("ls /slack/channels/")).stdout_str())
 ```
 
-**Notion** is the same one-liner — `NotionConfig(base_url=f"{mock.base_url}/notion/v1")`, no
+**Notion** is the same one-liner — `NotionConfig(base_url=f"{s.base_url}/notion/v1")`, no
 monkeypatch. mirage sends `Notion-Version: 2022-06-28`, which Backlot's version-aware router
 serves (the legacy inline-`properties` / `databases.query` shape), so pages and databases both
 read correctly.
 
 **S3** is also plain config, no monkeypatch and no pin bump: `S3Config(endpoint_url=
-f"{mock.base_url}/s3", path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
+f"{s.base_url}/s3", path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
 `path_style=True` keeps the bucket in the path (`/s3/<bucket>/...`) rather than the hostname. S3
 uses an AWS keypair (not a bearer token): `--access-key`/`--secret-key` are **required with
 `--url`** (real AWS keys, or a pair from `GET <url>/_meta/users` — the keys the SigV4 verifier
@@ -76,7 +76,7 @@ which rewrites those constants to Backlot before the Google resources are built:
 
 ```python
 from backlot.integrations.mirage import point_google_at
-point_google_at(mock.base_url)              # googleapis.com  ->  the mock
+point_google_at(s.base_url)              # googleapis.com  ->  the mock
 gmail = GmailResource(GmailConfig(**creds))
 ```
 
@@ -94,7 +94,7 @@ resource is built:
 
 ```python
 from backlot.integrations.mirage import point_github_at
-point_github_at(mock.base_url)                       # api.github.com  ->  the mock
+point_github_at(s.base_url)                       # api.github.com  ->  the mock
 repo = GitHubResource(GitHubConfig(token=T, owner="acme", repo="gateway"))
 ```
 

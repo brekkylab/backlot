@@ -134,8 +134,8 @@ if __name__ == "__main__":
     # Desktop forwards host-gateway to the host's own loopback instead, so macOS keeps the narrower
     # bind and the firewall prompt that opening a port to the network raises.
     host = "0.0.0.0" if sys.platform == "linux" else "127.0.0.1"
-    with serve_or_connect(CORPUS, url=args.url, host=host) as mock:
+    with serve_or_connect(CORPUS, url=args.url, host=host) as s:
         if args.token:
             print("authenticating with --token → retrieval is ACL-filtered to that user")
-        params = build_params(mock.base_url, args.token or mock.token, args.username)
+        params = build_params(s.base_url, args.token or s.token, args.username)
         run_agent(args.agent, params, QUESTION)

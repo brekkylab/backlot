@@ -96,11 +96,11 @@ async def _first_drive_file(ws):
 
 
 def build(mock, token, user) -> dict:
-    point_google_at(mock.base_url)  # Google has no host config; Slack takes base_url below
-    client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url, user)
+    point_google_at(s.base_url)  # Google has no host config; Slack takes base_url below
+    client_id, client_secret, refresh_token, _ = google_oauth_user(s.base_url, user)
     google = dict(client_id=client_id, client_secret=client_secret, refresh_token=refresh_token)
     return {  # three backends, one filesystem
-        "/slack": SlackResource(SlackConfig(token=token, base_url=f"{mock.base_url}/slack/api")),
+        "/slack": SlackResource(SlackConfig(token=token, base_url=f"{s.base_url}/slack/api")),
         "/gmail": GmailResource(GmailConfig(**google)),
         "/gdrive": GoogleDriveResource(GoogleDriveConfig(**google)),
     }
@@ -176,8 +176,8 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        resources = build(mock, args.token or mock.token, args.user)
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        resources = build(s, args.token or s.token, args.user)
         if args.fuse:
             main_fuse(resources)
         else:

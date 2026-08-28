@@ -112,11 +112,11 @@ def assert_reaches_mock(api, base_url: str) -> None:
         )
 
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     if args.token:
         print("authenticating with --token → responses are ACL-filtered to that user")
-    api = HubSpot(access_token=args.token or mock.token, host=f"{mock.base_url}/hubspot")
-    assert_reaches_mock(api, mock.base_url)
+    api = HubSpot(access_token=args.token or s.token, host=f"{s.base_url}/hubspot")
+    assert_reaches_mock(api, s.base_url)
 
     # get_all pages until a response omits paging.next — the mock's termination contract
     companies = api.crm.companies.get_all()

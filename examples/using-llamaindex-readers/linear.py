@@ -124,7 +124,7 @@ query Team {
 
 
 def build(mock, token):
-    patch_linear_at(f"{mock.base_url}/linear")
+    patch_linear_at(f"{s.base_url}/linear")
     return LinearReader(api_key=token)
 
 
@@ -156,7 +156,7 @@ def _parse_args():
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        main(build(mock, args.token or mock.token))
+        main(build(s, args.token or s.token))

@@ -75,7 +75,7 @@ CORPUS = [
 
 
 def build(mock, token):
-    point_hubspot_at(f"{mock.base_url}/hubspot")
+    point_hubspot_at(f"{s.base_url}/hubspot")
     return HubspotReader(access_token=token)
 
 
@@ -101,7 +101,7 @@ def _parse_args():
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        main(build(mock, args.token or mock.token))
+        main(build(s, args.token or s.token))

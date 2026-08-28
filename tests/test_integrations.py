@@ -2,7 +2,7 @@
 
 What lives in ``backlot.integrations`` is only what a caller cannot write themselves: the
 monkeypatchers, and the one reader that must be built already-redirected. A client that takes a base
-URL as an argument gets ``f"{mock.base_url}/<prefix>"`` at the call site instead — see the examples.
+URL as an argument gets ``f"{s.base_url}/<prefix>"`` at the call site instead — see the examples.
 
 The patchers are checked for their observable effect — a constructed client actually addressing the
 mock — because a shim that silently no-ops would otherwise send a "mock" run to the real vendor.
@@ -36,10 +36,10 @@ def test_slack_reader_is_constructed_against_the_mock():
     pytest.importorskip("llama_index.readers.slack")
     from backlot.integrations.llamaindex import slack_reader_at
 
-    with backlot.serve() as m:
-        reader = slack_reader_at(m.base_url, m.token)
+    with backlot.serve() as s:
+        reader = slack_reader_at(s.base_url, s.token)
         built = str(reader._client.base_url)
-        assert m.base_url in built
+        assert s.base_url in built
         # The TRAILING SLASH is the whole reason this URL is built inside the helper rather than
         # passed in: slack_sdk joins `base_url + method`, so without it every call would address
         # `/slackconversations.history`.
@@ -52,8 +52,8 @@ def test_patch_notion_at_rebinds_every_hardcoded_host():
 
     from backlot.integrations.llamaindex import patch_notion_at
 
-    with backlot.serve() as m:
-        patch_notion_at(m.base_url)
+    with backlot.serve() as s:
+        patch_notion_at(s.base_url)
         leaked = [
             n
             for n in dir(nb)

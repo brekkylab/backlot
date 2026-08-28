@@ -60,7 +60,7 @@ def build(mock, access_key, secret_key):
     return S3Resource(
         S3Config(
             bucket=BUCKET,
-            endpoint_url=f"{mock.base_url}/s3",
+            endpoint_url=f"{s.base_url}/s3",
             path_style=True,
             region="us-east-1",
             aws_access_key_id=access_key,
@@ -133,9 +133,9 @@ def _admin_keys(base_url: str) -> tuple[str, str]:
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(mock.base_url)
-        resource = build(mock, ak, sk)
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(s.base_url)
+        resource = build(s, ak, sk)
         if args.fuse:
             main_fuse(resource)
         else:

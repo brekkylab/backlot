@@ -48,7 +48,7 @@ def build(mock, access_key, secret_key):
     patch_s3fs_walk()  # fsspec/s3fs compat bug workaround; see backlot.integrations.llamaindex
     return S3Reader(
         bucket=BUCKET,
-        s3_endpoint_url=f"{mock.base_url}/s3",
+        s3_endpoint_url=f"{s.base_url}/s3",
         aws_access_id=access_key,
         aws_access_secret=secret_key,
         region_name="us-east-1",
@@ -83,6 +83,6 @@ def _parse_args():
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(mock.base_url)
-        main(build(mock, ak, sk))
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(s.base_url)
+        main(build(s, ak, sk))

@@ -49,7 +49,7 @@ CORPUS = [
 
 
 def build(mock, token):
-    return JiraReader(PATauth={"server_url": f"{mock.base_url}/atlassian", "api_token": token})
+    return JiraReader(PATauth={"server_url": f"{s.base_url}/atlassian", "api_token": token})
 
 
 def main(reader):
@@ -68,7 +68,7 @@ def _parse_args():
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
+    with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        main(build(mock, args.token or mock.token))
+        main(build(s, args.token or s.token))

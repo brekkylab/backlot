@@ -2,8 +2,8 @@
 
     import backlot
 
-    with backlot.serve() as m:            # built-in hello-world corpus
-        WebClient(token=m.token, base_url=f"{m.base_url}/slack/api/")
+    with backlot.serve() as s:            # built-in hello-world corpus
+        WebClient(token=s.token, base_url=f"{s.base_url}/slack/api/")
 
 Pass ``records`` (BYO-JSONL dicts) to serve your own corpus instead. ``serve_or_connect`` prefers
 an already-running server when one is reachable, which is what lets an example run against the
@@ -285,8 +285,8 @@ def serve_or_connect(
             yield Server(base_url=url.rstrip("/"), token=token, data_dir=None)
             return
         print(f"--url {url!r} is not reachable — falling back to a local server")
-    with serve(records, host=host) as m:
-        yield m
+    with serve(records, host=host) as s:
+        yield s
 
 
 def url_from_argv(argv: list[str] | None = None) -> str | None:

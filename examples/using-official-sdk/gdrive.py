@@ -65,11 +65,11 @@ _p.add_argument(
 )
 args = _p.parse_args()
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     # Auth is an ordinary Google service-account credential; only the api_endpoint changes. The
     # mock issues the key and honors the JWT exchange it triggers.
     sa_info, subject = google_service_account_info(
-        mock.base_url, args.user
+        s.base_url, args.user
     )  # stands in for the JSON key file
     creds = service_account.Credentials.from_service_account_info(
         sa_info, scopes=["https://www.googleapis.com/auth/drive.readonly"], subject=subject
@@ -79,7 +79,7 @@ with serve_or_connect(CORPUS, url=args.url) as mock:
         "v3",
         credentials=creds,
         static_discovery=True,
-        client_options=ClientOptions(api_endpoint=f"{mock.base_url}/drive/v3"),
+        client_options=ClientOptions(api_endpoint=f"{s.base_url}/drive/v3"),
     )
 
     files = gdrive.files().list(pageSize=5).execute()["files"]

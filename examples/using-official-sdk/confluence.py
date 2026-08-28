@@ -48,13 +48,13 @@ _p.add_argument(
 _p.add_argument("--token", help="alias for --password: a mock bearer token from GET /_meta/users")
 args = _p.parse_args()
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     username = args.username
-    password = args.password or args.token or mock.token
+    password = args.password or args.token or s.token
     if args.username != "svc@example.com" or args.password or args.token:
         print(f"authenticating as {username} → responses are ACL-filtered to that user")
     confluence = Confluence(
-        url=f"{mock.base_url}/atlassian/wiki", username=username, password=password
+        url=f"{s.base_url}/atlassian/wiki", username=username, password=password
     )
 
     pages = confluence.get("rest/api/content", params={"limit": 5, "expand": "body.storage"})[

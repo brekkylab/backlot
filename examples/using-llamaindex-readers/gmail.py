@@ -43,8 +43,8 @@ CORPUS = [
 
 
 def build(mock, user):
-    point_gmail_at(mock.base_url)
-    client_id, client_secret, refresh_token, token_uri = google_oauth_user(mock.base_url, user)
+    point_gmail_at(s.base_url)
+    client_id, client_secret, refresh_token, token_uri = google_oauth_user(s.base_url, user)
     creds = Credentials(
         None,
         refresh_token=refresh_token,
@@ -77,5 +77,5 @@ def _parse_args():
 
 if __name__ == "__main__":
     args = _parse_args()
-    with serve_or_connect(CORPUS, url=args.url) as mock:
-        main(build(mock, args.user))
+    with serve_or_connect(CORPUS, url=args.url) as s:
+        main(build(s, args.user))

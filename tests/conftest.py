@@ -979,5 +979,5 @@ def live_server(sample_settings):
     nothing dials the wider bind either — the same predicate ``_docker_available`` opens with.
     """
     host = "0.0.0.0" if sys.platform == "linux" and shutil.which("docker") else "127.0.0.1"
-    with backlot.serve(SAMPLE, host=host) as m:
-        yield m.base_url, sample_settings
+    with backlot.serve(SAMPLE, host=host) as s:
+        yield s.base_url, sample_settings

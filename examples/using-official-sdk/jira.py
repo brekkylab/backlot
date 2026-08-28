@@ -53,12 +53,12 @@ _p.add_argument(
 _p.add_argument("--token", help="alias for --password: a mock bearer token from GET /_meta/users")
 args = _p.parse_args()
 
-with serve_or_connect(CORPUS, url=args.url) as mock:
+with serve_or_connect(CORPUS, url=args.url) as s:
     username = args.username
-    password = args.password or args.token or mock.token
+    password = args.password or args.token or s.token
     if args.username != "svc@example.com" or args.password or args.token:
         print(f"authenticating as {username} → responses are ACL-filtered to that user")
-    jira = Jira(url=f"{mock.base_url}/atlassian", username=username, password=password)
+    jira = Jira(url=f"{s.base_url}/atlassian", username=username, password=password)
 
     issues = jira.get("rest/api/3/search/jql", params={"maxResults": 5})["issues"]
     if not issues:

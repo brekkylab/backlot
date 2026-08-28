@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Read Gmail through mirage's virtual filesystem. Self-contained: run it directly.
 
-Mirage mounts the mock's Gmail API as a filesystem — a directory per label, then per day, then
+Mirage mounts Backlot's Gmail API as a filesystem — a directory per label, then per day, then
 a file per message — so an agent reads mail with plain ``ls`` / ``cat``. Auth is an ordinary
 Google authorized-user credential (client_id/secret + refresh token); the only mirage-specific
 glue is ``point_google_at`` (mirage's Google connectors have no host config, so we patch the
-module constants; the mock's ``/oauth2/token`` honors the refresh).
+module constants; Backlot's ``/oauth2/token`` honors the refresh).
 
     pip install -e ".[examples,mirage]"
     python examples/using-mirage/gmail.py                                  # the mailbox owner
@@ -59,7 +59,7 @@ CORPUS = [
 ]
 
 
-def build(mock, user):
+def build(s, user):
     point_google_at(s.base_url)
     client_id, client_secret, refresh_token, _ = google_oauth_user(s.base_url, user)
     return GmailResource(

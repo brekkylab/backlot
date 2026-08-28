@@ -32,9 +32,9 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
+def build(s, token):
     # atlassian-python-api 4.0.7 does not append `/wiki` itself regardless of `cloud` (`cloud`
-    # only toggles cloud-specific API shapes elsewhere, not the URL), so the mock's
+    # only toggles cloud-specific API shapes elsewhere, not the URL), so Backlot's
     # `/atlassian/wiki/rest/api` root must be spelled out in `base_url`.
     return ConfluenceReader(base_url=f"{s.base_url}/atlassian/wiki", cloud=False, api_token=token)
 
@@ -42,7 +42,7 @@ def build(mock, token):
 def main(reader):
     # `max_num_results` must be passed explicitly: llama-index-readers-confluence 0.7.0's
     # `load_data` otherwise forwards a bare `limit=None` to `Confluence.get_all_pages_from_space`,
-    # which raises `TypeError` comparing `None` — a client-side bug independent of the mock.
+    # which raises `TypeError` comparing `None` — a client-side bug independent of Backlot.
     docs = reader.load_data(space_key="handbook", max_num_results=50)
     print(f"loaded {len(docs)} Document(s):")
     for d in docs:

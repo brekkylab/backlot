@@ -3,7 +3,7 @@
 Atlassian clients (atlassian-python-api, which mcp-atlassian uses) parse an error body as Atlassian
 Cloud's shape — Confluence's ``raise_for_status`` does ``response.json()["message"]`` — so FastAPI's
 default ``{"detail": …}`` turns every error into a cryptic ``KeyError: 'message'`` inside the client
-rather than the error the mock meant to report. Both Jira's ``errorMessages`` list and Confluence's
+rather than the error Backlot meant to report. Both Jira's ``errorMessages`` list and Confluence's
 scalar ``message`` are emitted, since one envelope serves both APIs here.
 """
 

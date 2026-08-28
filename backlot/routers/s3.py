@@ -1,4 +1,4 @@
-"""Mock Amazon S3 API (read-only, object storage).
+"""Amazon S3 API (read-only, object storage).
 
 Path-style endpoint for a client: ``http://<host>/s3`` (boto3: ``endpoint_url=".../s3"`` with
 ``addressing_style=path``; mirage: ``S3Config(endpoint_url=".../s3", path_style=True)``). Auth is

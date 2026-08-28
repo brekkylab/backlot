@@ -366,7 +366,7 @@ def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, 
             for sub in ("and", "or"):
                 if spec.get(sub):
                     raise GraphQLError(
-                        f"labels.{sub} is not supported by this mock; use labels.some / labels.every"
+                        f"labels.{sub} is not supported by Backlot; use labels.some / labels.every"
                     )
             # Key PRESENCE, not truthiness: `some: {}` is present-but-empty and deserves the
             # more precise "must constrain something" from _labels_predicate, not this one.

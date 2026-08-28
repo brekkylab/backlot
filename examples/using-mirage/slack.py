@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Read Slack through mirage's virtual filesystem. Self-contained: run it directly.
 
-Mirage mounts the mock's Slack API as a filesystem — channels, dates, and a ``chat.jsonl`` per
+Mirage mounts Backlot's Slack API as a filesystem — channels, dates, and a ``chat.jsonl`` per
 day — so an agent reads it with plain ``ls`` / ``cat``. Slack's API host is a config knob
-(``SlackConfig(base_url=...)``), so we point it straight at the mock — no monkeypatch.
+(``SlackConfig(base_url=...)``), so we point it straight at Backlot — no monkeypatch.
 
     pip install -e ".[examples,mirage]"
-    python examples/using-mirage/slack.py                                  # local throwaway mock
+    python examples/using-mirage/slack.py                                  # local throwaway server
     python examples/using-mirage/slack.py --url http://localhost:8000
     python examples/using-mirage/slack.py --url http://localhost:8000 --token <usr-token>
     python examples/using-mirage/slack.py --url http://localhost:8000 --fuse   # real OS mount
@@ -55,8 +55,8 @@ CORPUS = [  # `created` keeps the throwaway channels' dates tight (one day) rath
 ]
 
 
-def build(mock, token):
-    # Slack's host is a config knob — point it at the mock (no monkeypatch needed).
+def build(s, token):
+    # Slack's host is a config knob — point it at Backlot (no monkeypatch needed).
     # --token <usr-token> (from /_meta/users) → ACL-filtered to that user; else admin sees all.
     return SlackResource(SlackConfig(token=token, base_url=f"{s.base_url}/slack/api"))
 

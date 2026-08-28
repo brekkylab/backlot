@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Read Google Drive through mirage's virtual filesystem. Self-contained: run it directly.
 
-Mirage mounts the mock's Drive API as a filesystem — folders and files you read with plain
+Mirage mounts Backlot's Drive API as a filesystem — folders and files you read with plain
 ``ls`` / ``cat`` (Google-native docs are exported to text on read). Auth is an ordinary Google
 authorized-user credential; the only mirage-specific glue is ``point_google_at`` (mirage's
-Google connectors have no host config, so we patch the module constants at the mock).
+Google connectors have no host config, so we patch the module constants at Backlot).
 
     pip install -e ".[examples,mirage]"
     python examples/using-mirage/gdrive.py                                 # first user, locally
@@ -56,7 +56,7 @@ CORPUS = [
 ]
 
 
-def build(mock, user):
+def build(s, user):
     point_google_at(s.base_url)
     client_id, client_secret, refresh_token, _ = google_oauth_user(s.base_url, user)
     return GoogleDriveResource(

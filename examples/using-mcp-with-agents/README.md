@@ -112,14 +112,14 @@ ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/fireflies.py # via t
 `mcp-atlassian` runs in Docker and only classifies a host as Atlassian **Cloud** (the v3 + `/wiki`
 API shape Backlot speaks) when the hostname ends in `.atlassian.net`. So the example:
 
-- uses a fake host `mock.atlassian.net`, mapped with Docker's `--add-host` — to the host machine
+- uses a fake host `backlot.atlassian.net`, mapped with Docker's `--add-host` — to the host machine
   (`host-gateway`) for a local server, or to a **remote** deployment's resolved IP;
 - sets `MCP_ALLOWED_URL_DOMAINS=atlassian.net` to pass the server's SSRF guard;
 - authenticates with HTTP Basic where the **api-token is a Backlot token** — Backlot resolves it to a
   user and enforces that user's ACL. The Basic-auth **username** is required by mcp-atlassian but
   ignored by Backlot once the token resolves, so a placeholder (`svc@example.com`) works for a
   local server. For a **remote** target it must be explicit (`--username`), and because the
-  deployment's TLS cert is for its own name (not `mock.atlassian.net`), cert verification is
+  deployment's TLS cert is for its own name (not `backlot.atlassian.net`), cert verification is
   disabled for that hop (`*_SSL_VERIFY=false`) — fine for a throwaway server.
 
 ## How `notion.py` connects

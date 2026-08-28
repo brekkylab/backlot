@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bring-Your-Own corpus, end to end: validate a JSONL, then serve it. Self-contained.
 
-Validates the sample corpus against the schemas, starts a real mock server backed by it
+Validates the sample corpus against the schemas, starts a real server backed by it
 (a uvicorn subprocess — nothing else needs to be running), prints what got served, and keeps
 serving until you press Ctrl+C.
 
@@ -28,7 +28,7 @@ CORPUS = Path(__file__).resolve().parent / "sample_corpus.jsonl"
 if subprocess.run([sys.executable, "-m", "backlot", "import", str(CORPUS), "--dry-run"]).returncode:
     raise SystemExit("corpus is invalid")
 
-# 2. Serve it with a real mock server and keep it running until Ctrl+C.
+# 2. Serve it with a real server and keep it running until Ctrl+C.
 # split on "\n" only, not splitlines(): JSON Lines separates records by \n, and
 # splitlines() also breaks on U+2028/U+2029 — ordinary characters inside a JSON string.
 records = [json.loads(line) for line in CORPUS.read_text().split("\n") if line.strip()]

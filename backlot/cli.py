@@ -193,7 +193,7 @@ def serve(
     ] = None,
     data_dir: DataDir = None,
 ) -> None:
-    """Serve the mock APIs over the corpus in the data dir.
+    """Serve Backlot APIs over the corpus in the data dir.
 
     Every default here is uvicorn's own, so this is a shorter spelling of `python -m uvicorn backlot.main:app` rather than a second set of behaviour to keep in step with it.
     """  # noqa: E501 — one source line per paragraph: typer renders a docstring newline as a line break, so a wrapped paragraph reaches the help screen broken mid-sentence.

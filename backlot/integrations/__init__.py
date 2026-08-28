@@ -7,5 +7,5 @@ attribute, and getting that right differs per client. Each function's docstring 
 uses and why that one.
 
 Every patcher is idempotent and fails loudly if its seam disappears in a client upgrade, rather
-than silently letting a run that was supposed to hit the mock reach the real vendor.
+than silently letting a run that was supposed to hit Backlot reach the real vendor.
 """

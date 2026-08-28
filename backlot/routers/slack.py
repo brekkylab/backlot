@@ -1,4 +1,4 @@
-"""Mock Slack Web API (read-only).
+"""Slack Web API (read-only).
 
 Base URL for a client: ``http://<host>/slack/api/`` (methods live under ``/api/``).
 Slack always returns HTTP 200 with an ``{"ok": bool}`` envelope, so auth failures are
@@ -87,9 +87,9 @@ _P_CONVERSATIONS_LIST = _P_PAGED + [
 _P_CHANNEL = [qp("channel", required=True)]
 _P_INFO = [qp("channel", required=True), qp("include_num_members", "boolean")]
 
-# The one workspace this mock emulates. Every conversation is in it, shared with nobody, so the
+# The one workspace Backlot emulates. Every conversation is in it, shared with nobody, so the
 # sharing ids below are all this team or empty.
-TEAM_ID = "T0000MOCK"
+TEAM_ID = "T0000BKLT"
 _P_HISTORY = [
     qp("channel", required=True),
     qp("limit", "integer"),
@@ -119,9 +119,9 @@ def _err(error: str) -> JSONResponse:
 
 
 # Slack's conversation types. This corpus models channels only, so `im`/`mpim` select nothing —
-# which is exactly what real Slack answers for a workspace with no DMs, so a client cannot tell the
-# mock's "no DMs" from production's. An unknown value is `invalid_types`, as documented; accepting
-# it silently returned the unfiltered list to a caller who had typo'd their filter.
+# which is exactly what real Slack answers for a workspace with no DMs, so a client cannot tell
+# Backlot's "no DMs" from production's. An unknown value is `invalid_types`, as documented;
+# accepting it silently returned the list to a caller who had typo'd their filter.
 _SLACK_TYPES = {"public_channel", "private_channel", "im", "mpim"}
 _CHANNEL_TYPES = {"public_channel", "private_channel"}
 
@@ -200,7 +200,7 @@ def _channel_core(request: Request, conn, name: str, caller: Caller) -> dict:
 
     What each adds is deliberately not here, because the real API does not agree between the two:
     `num_members` is a `.list` field that `.info` returns only for `include_num_members=true`, and
-    `last_read` is `.info`-only (and the caller's). Building one object for both made this mock the
+    `last_read` is `.info`-only (and the caller's). Building one object for both made Backlot the
     only place a client could rely on them matching.
     """
     is_private = _is_private(request, conn, name)
@@ -264,7 +264,7 @@ def _last_read(conn, name: str, caller: Caller, visible_ids) -> str:
 
     A service token gets the zero ts rather than the channel's newest message: it is not a person
     and has read nothing, the same reasoning `_subscribed` applies to a thread it cannot have
-    followed. Otherwise this mock models no unread state, so a channel the caller can read reads as
+    followed. Otherwise Backlot models no unread state, so a channel the caller can read reads as
     caught up."""
     if not (caller.email or ""):
         return ZERO_TS
@@ -340,8 +340,8 @@ async def api_test(request: Request):
     """Real Slack's connectivity check — no auth required, echoes back any params other than
     `error` (which flips the response to an error envelope carrying that value). Several real
     clients call this at construction/connect time (e.g. llama-index's `SlackReader.__init__`),
-    so the mock must answer it rather than 404 — a 404 there breaks reader construction entirely,
-    before the caller ever gets a chance to point it at the mock."""
+    so Backlot must answer it rather than 404 — a 404 there breaks reader construction entirely,
+    before the caller ever gets a chance to point it at Backlot."""
     error = _param(request, "error")
     if error:
         return _err(error)
@@ -721,7 +721,7 @@ def _parse_slack_query(raw: str) -> tuple[str, str | None, bool]:
 
     - ``in:#channel`` (or ``in:channel``) scopes results to that channel — a container filter, not
       three stray search tokens (``in``, the ``#`` name...). ``in:@user`` (a DM) has no container in
-      the mock's channel-based corpus, so it's stripped without scoping rather than mis-scoped.
+      Backlot's channel-based corpus, so it's stripped without scoping rather than mis-scoped.
     - a fully ``"quoted"`` query matches its tokens ADJACENTLY (an FTS phrase) instead of ANDed
       anywhere — Slack's quote semantics, and what a grep push-down needs so a literal pattern isn't
       buried under docs that merely contain the words scattered.
@@ -763,7 +763,7 @@ def _messages_block(request: Request):
     page = max(1, _int(request, "page", 1))
     offset = (page - 1) * count
     # Honor Slack's sort: "score" (default) = relevance; "timestamp" = by message time. sort_dir
-    # defaults to desc (newest first). Previously the mock always ranked by relevance regardless.
+    # defaults to desc (newest first). Previously Backlot always ranked by relevance regardless.
     sort = (_param(request, "sort") or "score").lower()
     sort_dir = (_param(request, "sort_dir") or "desc").lower()
     order_by = None
@@ -819,7 +819,7 @@ async def search_messages(request: Request):
     openapi_extra={"parameters": _P_SEARCH_FILES},
 )
 async def search_files(request: Request):
-    """Slack file search. The mock has no uploaded-file corpus (files exist only as message
+    """Slack file search. Backlot has no uploaded-file corpus (files exist only as message
     attachments), so matches are always empty — but the endpoint must exist and return ok=True:
     real Slack has it, and mirage's grep push-down calls search.files for any file-inclusive scope;
     a 404 there reads as an error and forces a slow full-tree per-file fallback."""
@@ -855,7 +855,7 @@ async def search_files(request: Request):
     openapi_extra={"parameters": _P_SEARCH},
 )
 async def search_all(request: Request):
-    """Slack's combined search (the slack-go SDK's Search()/SearchContext() hits this). The mock
+    """Slack's combined search (the slack-go SDK's Search()/SearchContext() hits this). Backlot
     has no file corpus, so ``files`` is always empty; ``messages`` matches search.messages."""
     query, block = _messages_block(request)
     if block is None:

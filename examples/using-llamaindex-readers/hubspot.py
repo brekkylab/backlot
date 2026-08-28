@@ -2,7 +2,7 @@
 """Load HubSpot CRM records through the official llama-index HubSpot reader. Self-contained.
 
 HubspotReader takes only an access token and constructs the SDK client itself, so
-point_hubspot_at() rebinds `hubspot.HubSpot` to inject the mock's host before the reader runs.
+point_hubspot_at() rebinds `hubspot.HubSpot` to inject Backlot's host before the reader runs.
 
 The reader is deliberately NOT in the [llamaindex] extra: it pins hubspot-api-client<9, which no
 resolver can reconcile with the >=12 that [examples] needs. The pin is over-restrictive — the reader
@@ -16,7 +16,7 @@ only calls HubSpot(access_token=...) and crm.{deals,contacts,companies}.get_all(
 
 Note what the reader returns: **three** Documents — one each for deals, contacts, and companies —
 whose text is the `str()` of a list of SDK objects, not one Document per record. That is the
-reader's own design; the mock just serves the three listings it pages through.
+reader's own design; Backlot just serves the three listings it pages through.
 """
 
 import argparse
@@ -74,7 +74,7 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
+def build(s, token):
     point_hubspot_at(f"{s.base_url}/hubspot")
     return HubspotReader(access_token=token)
 

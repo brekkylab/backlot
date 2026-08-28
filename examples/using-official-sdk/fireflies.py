@@ -10,7 +10,7 @@ shows four examples — curl, Python ``requests.post``, JS ``axios.post`` and Ja
 all posting a GraphQL document to one endpoint with a Bearer key. So this script is not working
 around a missing client: it is the documented way to use the API, and the base URL is just a
 variable in user code. Nothing to shim. (Contrast ``linear/``, where the vendor DOES publish a
-client and pointing it at the mock takes a real shim.)
+client and pointing it at Backlot takes a real shim.)
 
 ``httpx`` is already a dependency, so that is what this uses; ``requests`` would be identical.
 """
@@ -216,7 +216,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
                 f"#{sentence['speaker_id']} {who}: {sentence['text']}"
             )
 
-        # The concatenated sentence text IS the document the mock indexes for search, so the
+        # The concatenated sentence text IS the document Backlot indexes for search, so the
         # transcript round-trips: joining the sentences back up recovers it exactly.
         rebuilt = "\n".join(
             f"{sentence['speaker_name']}: {sentence['text']}"

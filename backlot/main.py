@@ -1,4 +1,4 @@
-"""FastAPI app hosting every vendor mock under path prefixes.
+"""FastAPI app hosting every emulated vendor API under path prefixes.
 
 Startup opens the read-only DB, loads the ACL/token map, and starts a background cache warm-up.
 """
@@ -115,7 +115,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     # The server's name, never a corpus's: it reaches /openapi.json and every generated client.
-    title="Backlot Mock Server",
+    title="Backlot",
     lifespan=lifespan,
     # FastAPI's default derives the method suffix from a set, so it changes between restarts.
     generate_unique_id_function=openapi.unique_operation_id,
@@ -250,10 +250,10 @@ async def meta_credentials(request: Request):
     the org ``service_account`` JSON (with its private key). There is no per-user data here — a
     user's ``refresh_token`` is simply their bearer token from ``/_meta/users``, so build an
     ``authorized_user`` credential by combining ``oauth_client`` + a token from ``/_meta/users`` +
-    ``token_uri``. ``token_uri`` points back at this mock's ``/oauth2/token``, so the client's
+    ``token_uri``. ``token_uri`` points back at Backlot's ``/oauth2/token``, so the client's
     refresh / JWT-bearer exchange lands here. Impersonate a user with the service account by
     setting ``subject=<email>``; a bare service account (no subject) resolves to the
-    admin/service token. Mock-only affordance; disable with ``BACKLOT_EXPOSE_TOKENS=false``. See
+    admin/service token. Backlot-only affordance; disable with ``BACKLOT_EXPOSE_TOKENS=false``. See
     ``examples/using-official-sdk/gmail.py``.
     """
     settings = get_settings()

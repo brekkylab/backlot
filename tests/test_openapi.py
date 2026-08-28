@@ -1,7 +1,7 @@
 """Unit tests for backlot.openapi — the MCP-ready OpenAPI derivation served at /_meta/openapi/{source}.
 
 This is app code (not examples), so it's imported and tested directly: the slice/dedupe logic that
-lets an OpenAPI→MCP bridge consume the mock's spec without operationId collisions.
+lets an OpenAPI→MCP bridge consume Backlot's spec without operationId collisions.
 """
 
 from __future__ import annotations

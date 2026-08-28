@@ -1,4 +1,4 @@
-"""ACL enforced end-to-end through real MCP servers pointed at the mock.
+"""ACL enforced end-to-end through real MCP servers pointed at Backlot.
 
 Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corpus) and drives a
 real MCP server against it: a document the admin can read is blocked for an ACL-restricted user —
@@ -9,7 +9,7 @@ same tool, same object, different identity.
   first run downloads the npm package.
 - **S3** (`awslabs.aws-api-mcp-server`, uvx) — skipped unless ``uvx`` is on PATH; the first run
   downloads the package. This one isn't an ACL test (it's a broad AWS-CLI wrapper, not read-one-
-  object-at-a-time like the others): it just proves the server, pointed at the mock via
+  object-at-a-time like the others): it just proves the server, pointed at Backlot via
   ``AWS_ENDPOINT_URL``, lists a bucket's objects through a real signed AWS CLI call.
 
 All require the ``mcp`` package. The stdio params below intentionally **duplicate** the wiring in
@@ -45,15 +45,15 @@ def _docker_available() -> bool:
 
 
 def _atlassian_params(base: str, token: str):
-    """`docker run` args pointing mcp-atlassian at a local mock (see examples/.../atlassian.py).
+    """`docker run` args pointing mcp-atlassian at a local server (see examples/.../atlassian.py).
 
     mcp-atlassian only classifies a host as Atlassian *Cloud* when it ends in `.atlassian.net`, so
-    use a fake `mock.atlassian.net` mapped to the host via `--add-host`, and Basic auth where the
-    api_token is a mock token (the mock resolves it to a user and enforces that user's ACL)."""
+    use a fake `backlot.atlassian.net` mapped to the host via `--add-host`, and Basic auth where the
+    api_token is a Backlot token (Backlot resolves it to a user and enforces that user's ACL)."""
     from mcp import StdioServerParameters
 
-    port = base.rsplit(":", 1)[1]  # Docker reaches the host mock via host-gateway
-    host, url = "mock.atlassian.net", f"http://mock.atlassian.net:{port}"
+    port = base.rsplit(":", 1)[1]  # Docker reaches Backlot on the host via host-gateway
+    host, url = "backlot.atlassian.net", f"http://backlot.atlassian.net:{port}"
     return StdioServerParameters(
         command="docker",
         args=[
@@ -85,7 +85,7 @@ def _atlassian_params(base: str, token: str):
 
 
 def _notion_params(base: str, token: str):
-    """`npx` args pointing the official notion-mcp-server at the mock via BASE_URL."""
+    """`npx` args pointing the official notion-mcp-server at Backlot via BASE_URL."""
     from mcp import StdioServerParameters
 
     return StdioServerParameters(
@@ -100,7 +100,7 @@ def _notion_params(base: str, token: str):
 
 
 def _restricted_doc(settings, user_token: str, source: str, where: str | None = None):
-    """A doc of ``source`` the admin can read but this user cannot (per the mock's own ACL)."""
+    """A doc of ``source`` the admin can read but this user cannot (per Backlot's own ACL)."""
     conn = store.connect_ro(settings.db_path)
     acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     caller = acl.resolve(user_token)
@@ -188,15 +188,15 @@ def test_mcp_notion_acl_enforced(live_server):
 
 
 def _s3_params(base: str, token: str):
-    """`uvx` args pointing the awslabs aws-api MCP server at the mock via AWS_ENDPOINT_URL (see
+    """`uvx` args pointing the awslabs aws-api MCP server at Backlot via AWS_ENDPOINT_URL (see
     examples/.../s3.py). The server shells the AWS CLI, whose boto3 client SigV4-signs each call;
-    the mock verifies the signature against the access-key/secret derived from ``token`` (the same
+    Backlot verifies the signature against the access-key/secret derived from ``token`` (the same
     pair GET /_meta/users exposes)."""
     from mcp import StdioServerParameters
 
     return StdioServerParameters(
         command="uvx",
-        # `@latest`, so this keeps proving the mock against the server awslabs ships today rather
+        # `@latest`, so this keeps proving Backlot against the server awslabs ships today rather
         # than one we froze. The cost is that a version uvx has not got yet is downloaded here,
         # inside the window the client's `initialize` is waiting on, and that ends as
         # `McpError('Connection closed')` rather than as a slow pass. CI fetches the server in a
@@ -214,7 +214,7 @@ def _s3_params(base: str, token: str):
 
 @pytest.mark.skipif(shutil.which("uvx") is None, reason="uvx not installed")
 def test_mcp_s3_lists_objects(live_server):
-    """The awslabs aws-api MCP server, pointed at the mock, lists objects via a signed AWS CLI call."""
+    """The awslabs aws-api MCP server, pointed at Backlot, lists objects via a signed AWS CLI call."""
     base, settings = live_server
     params = _s3_params(base, settings.admin_token)
     out = asyncio.run(
@@ -238,7 +238,7 @@ def test_mcp_s3_lists_objects(live_server):
 def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None) -> bool:
     """Exercise the OpenAPI→MCP bridge path WITHOUT touching ``examples/``.
 
-    Fetches the mock's MCP-ready spec (``GET /_meta/openapi/<source>`` — produced by ``backlot.openapi``,
+    Fetches Backlot's MCP-ready spec (``GET /_meta/openapi/<source>`` — produced by ``backlot.openapi``,
     which owns the slice/dedupe logic) and serves it via an in-memory FastMCP client over an auth'd
     httpx client. That is the whole of what the example bridge does; the meaningful logic lives in
     the app and is unit-tested in ``tests/test_openapi.py``. Returns ``ok_pred`` over the tool's
@@ -249,7 +249,7 @@ def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None
     from fastmcp import Client, FastMCP
 
     spec = httpx.get(f"{base}/_meta/openapi/{source}", timeout=10).json()
-    if username:  # Atlassian: Basic username:token (the api_token IS the mock token)
+    if username:  # Atlassian: Basic username:token (the api_token IS Backlot token)
         header = {
             "Authorization": "Basic " + b64.b64encode(f"{username}:{token}".encode()).decode()
         }
@@ -388,7 +388,7 @@ def test_mcp_bridge_enforces_the_acl(
 # bridge derives its tools from introspection instead (`backlot.graphql.mcp_tools`, unit-tested
 # in tests/test_graphql.py, with the per-vendor documents checked in test_linear.py /
 # test_fireflies.py). What is left to prove here is the same property the REST bridges prove:
-# the tool carries the caller's credential, so the mock's ACL decides what comes back.
+# the tool carries the caller's credential, so Backlot's ACL decides what comes back.
 
 
 def _graphql_bridge_call(base, source, token, *, tool_name, args, ok_pred, depth) -> bool:

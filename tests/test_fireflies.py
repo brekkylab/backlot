@@ -371,7 +371,8 @@ def test_fireflies_the_hand_written_examples_queries_still_validate(client, admi
 
 
 def test_fireflies_declares_no_mutations(client, admin_h):
-    """A read-only mock declares no Mutation type rather than accepting writes and dropping them."""
+    """A read-only server declares no Mutation type rather than accepting writes and dropping
+    them."""
     r = ff_gql(client, "{ __schema { mutationType { name } } }", admin_h)
     assert r.json()["data"]["__schema"]["mutationType"] is None
 
@@ -508,7 +509,7 @@ def test_fireflies_action_items_are_a_newline_joined_string(tmp_path):
 
 
 def test_fireflies_sentence_times_are_seconds_while_duration_is_minutes(tmp_path):
-    """The two units really do differ in the real API; a mock that made them agree would look
+    """The two units really do differ in the real API; a server that made them agree would look
     tidier and be wrong."""
     with _fireflies_client(tmp_path) as (client, settings):
         t = _ff(
@@ -671,7 +672,7 @@ def test_fireflies_no_openapi_entry_for_the_graphql_route(tmp_path):
 
 
 def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path, monkeypatch):
-    """`users` must be the people with an ACCOUNT. The mock's principals table registers every
+    """`users` must be the people with an ACCOUNT. Backlot's principals table registers every
     internal reference across every source — 16,034 on the deployed bench corpus, of whom 327 have
     a token — so serving all of them would be wrong (they have no Fireflies account) AND a 1.6 MB
     unpaginated response. The real query takes no pagination args, so scoping is what bounds it.

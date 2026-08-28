@@ -315,7 +315,7 @@ def _project(name: str | None, info) -> dict | None:
     """A ``Project``. The corpus knows a project only by name, so the 26 non-null fields the SDK's
     fragment demands take neutral values — empty history arrays, zero progress/scope — rather than
     invented burndown data. `state` is Linear's project state string; "started" is the only claim
-    the mock can make about a project it sees issues in."""
+    Backlot can make about a project it sees issues in."""
     if not name:
         return None
     slug = synth.hnum(name, 0, 8).__format__("08x")
@@ -534,7 +534,7 @@ def resolve_team_issue_count(team, info) -> int:
 
 
 def _team(container: str, info) -> dict:
-    """A ``Team``. 42 of its fields are non-null in the SDK's fragment; the ones the mock cannot
+    """A ``Team``. 42 of its fields are non-null in the SDK's fragment; the ones Backlot cannot
     know take Linear's own product defaults (cycles off, 2-week duration, estimate scale
     ``notUsed``) rather than zero values that would read as configured."""
     key = _team_key(container, info)
@@ -843,7 +843,7 @@ def resolve_issue(_root, info, id):
 
 
 def resolve_team(_root, info, id):
-    """``team(id:)`` takes a team UUID, its key (``ENG``), or -- a mock-only affordance, not a
+    """``team(id:)`` takes a team UUID, its key (``ENG``), or -- a Backlot-only affordance, not a
     real spelling, kept because it costs nothing (see the schema comment on ``linear_teams``) --
     the container's own raw name. Tried in that FIXED order: served UUID, then served key, then
     raw name.
@@ -855,7 +855,7 @@ def resolve_team(_root, info, id):
 
     KEY BEFORE RAW NAME is a fixed priority, not an accident of iteration order: when one team's
     key spells identically to a DIFFERENT team's raw name, the real Linear spelling has to win,
-    because the raw name is a mock-only affordance
+    because the raw name is a Backlot-only affordance
     (test_linear_team_key_precedes_the_raw_name_affordance pins it).
 
     Scoped the same way ``teams`` is: a team the caller can see no issue in is not a team they can

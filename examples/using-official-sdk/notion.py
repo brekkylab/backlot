@@ -5,8 +5,8 @@
     python examples/using-official-sdk/notion.py            # or: --url http://localhost:8000
     python examples/using-official-sdk/notion.py --url http://localhost:8000 --token <usr-token>
 
-The only change from talking to real Notion is ``base_url`` — point it at the mock's ``/notion``
-prefix (the SDK appends ``/v1/`` itself). The mock defaults to the ``2025-09-03`` API version, so
+The only change from talking to real Notion is ``base_url`` — point it at Backlot's ``/notion``
+prefix (the SDK appends ``/v1/`` itself). Backlot defaults to the ``2025-09-03`` API version, so
 a database exposes a *data source* you query for its rows.
 """
 

@@ -947,7 +947,7 @@ def admin_h(tokens_yaml) -> dict[str, str]:
 
 @pytest.fixture(scope="module")
 def org(client) -> str:
-    """The org the mock derived from the corpus (SAMPLE is @acme.com -> 'acme')."""
+    """The org Backlot derived from the corpus (SAMPLE is @acme.com -> 'acme')."""
     return client.get("/_meta/users").json()["org"]
 
 

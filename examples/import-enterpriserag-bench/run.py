@@ -2,7 +2,7 @@
 """Import EnterpriseRAG-Bench, then serve it — a self-contained walkthrough.
 
 Runs the one-command import into examples/import-enterpriserag-bench/data (downloading on the
-first run; cached afterwards), starts a real mock server against it, prints what got served, and
+first run; cached afterwards), starts a real server against it, prints what got served, and
 keeps serving until you press Ctrl+C:
 
     python examples/import-enterpriserag-bench/run.py

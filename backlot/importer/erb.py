@@ -1,4 +1,4 @@
-"""Import EnterpriseRAG-Bench (ERB) into the mock DB — the faithful, structured pipeline.
+"""Import EnterpriseRAG-Bench (ERB) into Backlot DB — the faithful, structured pipeline.
 
 Downloads the bench's ``generated_data/``, resolves display names to real emails via
 ``Principals``, converts each document to BYO record(s) (``to_byo``) and loads those, deriving
@@ -480,7 +480,7 @@ def _name(header: str | None) -> str:
 
 # ---------------------------------------------------------------- principals
 class Principals:
-    """Resolve document principal references (display names) to the mock's email-keyed identities.
+    """Resolve document principal references (display names) to Backlot's email-keyed identities.
 
     The bench names people by display string, inconsistently across sources ("Connor O'Brien" vs
     "Connor OBrien"), and only Gmail headers reveal real addresses. Builds one canonical identity
@@ -619,7 +619,7 @@ class Principals:
         person, a desk ("Support"), a rota ("SRE Oncall").
 
         NOT entered in ``users``, so it gets no bearer token: the corpus can say who wrote a row
-        without the mock claiming that identity can sign in. This is the treatment a Slack first
+        without Backlot claiming that identity can sign in. This is the treatment a Slack first
         name already gets (see ``resolve``'s ``SLACK_ROLE`` branch).
         """
         return f"{_slug(name)}@{self.org_domain}"
@@ -1040,7 +1040,7 @@ _ATT_MIME = {
 }
 
 
-# The bench's Drive ``doc_type`` vocabulary -> the mock's Drive subtype vocabulary (the keys
+# The bench's Drive ``doc_type`` vocabulary -> Backlot's Drive subtype vocabulary (the keys
 # ``backlot.routers.google._NATIVE`` recognises as Workspace types). The bench says "doc"/"sheet"/
 # "slides", none of which are native keys — unmapped, every row falls back to
 # ``application/octet-stream`` and the binary ``webViewLink`` shape, leaving nothing in the corpus
@@ -1475,7 +1475,7 @@ def _slug_mailbox(name: str) -> str:
 # The bench's HubSpot docs are denormalized company (account) records — there are no contact/deal
 # objects in the corpus. These are the fields with a real HubSpot company property to map onto;
 # everything else becomes a custom property, which is what an actual portal looks like (a mix of
-# HubSpot defaults and portal-specific fields). We map the bench onto the mock's API-shaped schema
+# HubSpot defaults and portal-specific fields). We map the bench onto Backlot's API-shaped schema
 # rather than storing ERB's shape, exactly as the drive/github converters do for their sources.
 _HS_PROPERTY = {
     "company_name": "name",
@@ -2939,7 +2939,7 @@ def run() -> int:
 
     There is deliberately no way to import part of it. A subset leaves containers sparse, so every
     ACL decision and every pagination result becomes a property of the subset rather than of the
-    corpus — which is the opposite of what a fidelity mock is for. The roster falls out of the
+    corpus — which is the opposite of what a fidelity emulator is for. The roster falls out of the
     import itself, so it needs no pass of its own either.
     """
     settings, gen_dir = _fetch_and_seed_roster()

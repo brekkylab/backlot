@@ -85,7 +85,7 @@ def test_admin_gmail_crawls_all(client, admin_h, ro_conn):
 
 
 def test_admin_drive_crawls_all(client, admin_h, ro_conn):
-    # An unfiltered files.list includes folders on real Drive, and the mock synthesizes one per
+    # An unfiltered files.list includes folders on real Drive, and Backlot synthesizes one per
     # container — so a full crawl is every stored file plus every folder.
     folders = ro_conn.execute("SELECT COUNT(*) FROM gdrive_folders").fetchone()[0]
     assert len(crawl_drive(client, admin_h)) == db_count(ro_conn, "google_drive") + folders
@@ -128,7 +128,7 @@ def _a_gmail_row(ro_conn):
 @pytest.mark.parametrize("mailbox", ["ava", "ava@acme.com"])
 def test_a_message_with_no_recipient_serves_no_to_header(tmp_path, mailbox):
     """Real Gmail returns the headers a message has. RFC 5322 allows one with no destination field
-    at all -- a Bcc-only send -- so inventing a To makes a case this mock could never reproduce.
+    at all -- a Bcc-only send -- so inventing a To makes a case Backlot could never reproduce.
     `Delivered-To` keeps its default: a receiving MTA really does add it.
 
     `Subject` is the same clause of the same section (3.6 gives `to` and `subject` both 0..1), and
@@ -467,7 +467,7 @@ def test_drive_export_roundtrip(client, admin_h, ro_conn):
 
 
 def test_drive_in_owners_query(client, admin_h, ro_conn):
-    # real Drive supports `'<owner>' in owners`; the mock must filter by owner (email or name),
+    # real Drive supports `'<owner>' in owners`; Backlot must filter by owner (email or name),
     # not ignore the clause. (qst_0031's broken owner-lookup path.)
     total = db_count(ro_conn, "google_drive")
     owner = ro_conn.execute("SELECT author_email FROM gdrive_files LIMIT 1").fetchone()[
@@ -491,7 +491,7 @@ def test_drive_in_owners_query(client, admin_h, ro_conn):
 
 
 def test_google_batch_dispatches_subrequests(client, admin_h, ro_conn):
-    # google-api-python-client posts a multipart/mixed batch to /batch; the mock must dispatch each
+    # google-api-python-client posts a multipart/mixed batch to /batch; Backlot must dispatch each
     # application/http sub-request in-process and return a multipart/mixed of sub-responses matched
     # by Content-ID. Regression for the batch escaping to real Google (401). Build the batch body
     # exactly like BatchHttpRequest does.
@@ -578,7 +578,7 @@ def _batch_one(client, headers, mid, fmt, uri="/batch"):
 @pytest.mark.parametrize("uri", ["/batch", "/batch/gmail/v1"])
 def test_google_batch_honors_subrequest_query_params(client, admin_h, uri):
     # The sub-request's query string must reach the dispatched handler. `format` is the tell: a
-    # dropped query defaults to full, so if the mock ignored it, `format=minimal` would still carry a
+    # dropped query defaults to full, so if Backlot ignored it, `format=minimal` would still carry a
     # payload. A batch-trusting client that caches these would cache bodyless messages otherwise.
     mid = client.get(
         "/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 1}
@@ -630,7 +630,7 @@ def _gerr(resp):
 
 def test_google_errors_use_googles_envelope(client, admin_h):
     """`google-api-python-client` reads `error.message` to build HttpError, so `{"detail": …}` left
-    every error unreadable to the one client the mock exists to serve."""
+    every error unreadable to the one client Backlot exists to serve."""
     r = client.get("/drive/v3/files", headers=admin_h, params={"fields": "totallyBogusField"})
     assert r.status_code == 400
     e = _gerr(r)
@@ -781,7 +781,7 @@ def test_a_bad_token_is_unauthenticated_everywhere(client, path):
 def test_a_missing_header_differs_by_family(client, path, code, status):
     """The surprise, measured: no `Authorization` header at all is NOT uniformly 401. Drive and
     Sheets answer 403 PERMISSION_DENIED, Gmail and the Docs/Slides APIs answer 401. A bad token is
-    401 everywhere — so the two cases are genuinely distinct and the mock conflated them."""
+    401 everywhere — so the two cases are genuinely distinct and Backlot conflated them."""
     r = client.get(path)
     assert r.status_code == code
     e = _gerr(r)
@@ -878,7 +878,7 @@ def test_drive_export_and_media_stay_non_json(client, admin_h):
 # --- Drive fidelity: measured divergences from real Google Drive ---------------
 #
 # Each case below was diffed against https://www.googleapis.com/drive/v3 with equivalent
-# credentials; the mock's old behaviour returned 200 with wrong/unfiltered data, so a consumer
+# credentials; Backlot's old behaviour returned 200 with wrong/unfiltered data, so a consumer
 # could not tell anything was off.
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -950,7 +950,7 @@ def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
 
 
 def test_drive_order_by_shared_with_me_time(client, tokens_yaml):
-    """The mock models the relation this key sorts on (owner vs caller), so it sorts rather than
+    """Backlot models the relation this key sorts on (owner vs caller), so it sorts rather than
     400s — unlike the view/modify-by-me timestamps, which have no counterpart here at all."""
     mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
     r = client.get(
@@ -964,7 +964,7 @@ def test_drive_order_by_shared_with_me_time(client, tokens_yaml):
 
 
 def test_drive_owned_by_me_reflects_the_caller(client, tokens_yaml):
-    """`ownedByMe` is per-caller in real Drive; the mock reported False for every file."""
+    """`ownedByMe` is per-caller in real Drive; Backlot reported False for every file."""
     mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
     assert _drive_find(client, mia, "Brand")["ownedByMe"] is True
     assert _drive_find(client, mia, "Whitepaper")["ownedByMe"] is False
@@ -972,7 +972,7 @@ def test_drive_owned_by_me_reflects_the_caller(client, tokens_yaml):
 
 def test_drive_order_by_sorts_the_result(client, admin_h):
     """`orderBy` was accepted and never applied — silent, so a client that relies on server-side
-    ordering appears to work against the mock and misbehaves against production."""
+    ordering appears to work against Backlot and misbehaves against production."""
     names = [
         f["name"]
         for f in client.get(
@@ -1064,7 +1064,7 @@ def test_drive_order_by_does_not_change_the_rows_themselves(client, admin_h):
 
 
 def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
-    """Real Drive 400s an undocumented sort key. The mock models no per-caller view/share
+    """Real Drive 400s an undocumented sort key. Backlot models no per-caller view/share
     timestamps, so those documented keys are rejected loudly rather than silently ignored."""
     for bad in ("bogusKey", "name descending", "viewedByMeTime"):
         r = client.get("/drive/v3/files", headers=admin_h, params={"orderBy": bad})
@@ -1077,7 +1077,7 @@ def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
 
 def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
     """Accepting an unknown field name and yielding empty file objects (200 {}) lets a typo or a
-    stale field name in a consumer's mask pass every mock-backed test and 400 in production."""
+    stale field name in a consumer's mask pass every Backlot-backed test and 400 in production."""
     r = client.get(
         "/drive/v3/files",
         headers=admin_h,
@@ -1089,7 +1089,7 @@ def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
         "/drive/v3/files", headers=admin_h, params={"pageSize": 1, "fields": "bogusTop,files(id)"}
     )
     assert bad_top.status_code == 400
-    # a documented field the mock does not synthesize is still valid (real Drive omits it, 200)
+    # a documented field Backlot does not synthesize is still valid (real Drive omits it, 200)
     ok = client.get(
         "/drive/v3/files",
         headers=admin_h,
@@ -1170,7 +1170,7 @@ def test_drive_folder_permissions_resolve(client, admin_h):
 
 
 def test_drive_native_docs_report_size(client, admin_h):
-    """Google populates `size` for binary content *and for Docs Editors files*; the mock omitted
+    """Google populates `size` for binary content *and for Docs Editors files*; Backlot omitted
     it on native rows, which taught implementors something false about the API."""
     doc = _drive_find(client, admin_h, "Brand")
     assert doc["mimeType"] == DOC_MIME
@@ -1185,7 +1185,7 @@ def test_drive_native_docs_report_size(client, admin_h):
 # --- Drive about.get -----------------------------------------------------------------------
 #
 # `about` answers "who am I and how much space do I use" — the call a Drive client makes first,
-# and the one the mock had no route for at all (404). Its contract is unusual: `fields` is
+# and the one Backlot had no route for at all (404). Its contract is unusual: `fields` is
 # mandatory, and the response carries only what the mask asked for.
 
 ABOUT = "/drive/v3/about"
@@ -1235,7 +1235,7 @@ def test_drive_about_serves_only_the_requested_fields(client, admin_h):
 
 
 def test_drive_about_nested_mask_selects_its_parent(client, admin_h):
-    """`storageQuota/limit` selects `storageQuota`, the same rule every other mask in this mock
+    """`storageQuota/limit` selects `storageQuota`, the same rule every other mask in Backlot
     follows — one projection depth, applied consistently."""
     j = _about(client, admin_h, "storageQuota/limit").json()
     assert set(j) == {"storageQuota"}
@@ -1272,7 +1272,7 @@ def test_drive_about_usage_matches_the_sizes_files_list_serves(client, tokens_ya
     listed = sum(int(f["size"]) for f in files if "size" in f)  # folders carry no size
     assert listed > 0
     assert int(quota["usageInDrive"]) == listed
-    assert quota["usage"] == quota["usageInDrive"]  # the mock stores nothing outside Drive
+    assert quota["usage"] == quota["usageInDrive"]  # Backlot stores nothing outside Drive
     assert int(quota["limit"]) == 2199023255552  # 2 TiB
     assert int(quota["usageInDriveTrash"]) == 0  # SAMPLE trashes nothing
 
@@ -1296,13 +1296,13 @@ def test_drive_about_export_formats_are_honoured_by_files_export(client, admin_h
             f"/drive/v3/files/{doc['id']}/export", headers=admin_h, params={"mimeType": target}
         )
         assert r.status_code == 200, target
-    # every native type the mock serves is covered; the folder type is not exportable anywhere
+    # every native type Backlot serves is covered; the folder type is not exportable anywhere
     assert set(formats) == {DOC_MIME, SHEET_MIME, "application/vnd.google-apps.presentation"}
     assert "text/csv" in formats[SHEET_MIME]
 
 
 def test_drive_about_shared_drive_fields_agree_with_the_drives_listing(client, admin_h):
-    """The mock's corpus is all My Drive and `/drive/v3/drives` is empty, so every shared-drive
+    """Backlot's corpus is all My Drive and `/drive/v3/drives` is empty, so every shared-drive
     field has to say the same thing rather than hinting at a capability that isn't there."""
     j = _about(client, admin_h, "*").json()
     assert client.get("/drive/v3/drives", headers=admin_h).json()["drives"] == []
@@ -1631,7 +1631,7 @@ def test_editor_apis_enforce_acl(base, live_server):
 #   3  Feb,135000
 #
 # The commas stay inside the cell. Splitting on them would be a delimiter policy, and the bench
-# corpus says the mock has no business guessing one: of its 1,875 `doc_type: sheet` records, NONE
+# corpus says Backlot has no business guessing one: of its 1,875 `doc_type: sheet` records, NONE
 # is delimiter-uniform CSV — 82.6% are prose and 17.4% are prose around a PIPE-delimited table.
 
 GRID = [["month,revenue"], ["Jan,120000"], ["Feb,135000"]]
@@ -1688,7 +1688,7 @@ def test_sheets_values_get_keeps_a_line_intact(base, admin_h, sheet_id):
     """The cell holds the whole line, commas and all. Splitting on commas manufactures columns out
     of sentence punctuation over the real corpus — a prose line like "customer dates, ARR exposure,
     highest-risk deals" becomes three cells of a table that never existed. Which delimiter (if any)
-    applies is the corpus owner's call, not the mock's."""
+    applies is the corpus owner's call, not Backlot's."""
     j = _values(base, admin_h, sheet_id, "Sheet1!A1").json()
     assert j["values"] == [["month,revenue"]]
     # and there is exactly one column: B is past the end of every row
@@ -1787,7 +1787,7 @@ def test_sheets_values_get_omits_values_when_the_range_is_empty(base, admin_h, s
 
 @pytest.mark.parametrize("rng", ["Other!A1:B2", "not a range", "A1:", "!A1", ""])
 def test_sheets_values_get_rejects_an_unusable_range(base, admin_h, sheet_id, rng):
-    """The mock has exactly one sheet, `Sheet1`; naming another is as unresolvable as a malformed
+    """Backlot has exactly one sheet, `Sheet1`; naming another is as unresolvable as a malformed
     reference, and real Sheets 400s on both rather than returning an empty grid."""
     assert _values(base, admin_h, sheet_id, rng).status_code == 400
 
@@ -1919,7 +1919,7 @@ def test_sheets_values_accept_a_bare_quoted_sheet_name(base, admin_h, sheet_id):
     """`'Sheet1'` with no `!cellpart` means "every cell in that sheet" — measured on a real
     spreadsheet, quoted and unquoted alike, on both `values.get` and `values:batchGet`.
 
-    The mock only un-quoted a title when a `!` followed, so the one form that means "the whole
+    Backlot only un-quoted a title when a `!` followed, so the one form that means "the whole
     sheet without naming bounds" 400d. A client cannot drop the quotes to work around it: quoting is
     what disambiguates a sheet name from a cell reference, measured below."""
     for rng in ("Sheet1", "'Sheet1'"):
@@ -2155,7 +2155,7 @@ def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
 
 def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
     """Google: `size` "is populated for files with binary content stored in Google Drive AND for
-    Docs Editors files; it is not populated for shortcuts or folders." The mock set it only in the
+    Docs Editors files; it is not populated for shortcuts or folders." Backlot set it only in the
     binary branch, so it taught implementors that native Docs have no byte size."""
     from backlot.routers.google import _drive_file
 

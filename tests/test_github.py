@@ -53,7 +53,7 @@ def test_github_serves_a_comment_dated_at_the_epoch(tmp_path):
 
 
 # Which fields belong to which object, from a key-set diff of api.github.com's issue and pull
-# bodies. Only the ones this mock has reason to serve: real's issue also carries
+# bodies. Only the ones Backlot has reason to serve: real's issue also carries
 # `sub_issues_summary`, `type` and friends, which no corpus here has anything to fill in.
 #
 # `pull_request` is in the issue set because an issue that IS a pull carries that marker — the
@@ -655,7 +655,7 @@ def test_github_a_file_body_is_searchable_as_code_and_not_as_an_issue(
     assert item["score"] == 1.0  # real reports a flat 1.0; the ORDER carries the relevance
     assert item["repository"]["full_name"] == f"{gh_org}/codebase"
     assert item["html_url"] == f"https://github.com/{gh_org}/codebase/blob/main/src/pkg/utils.py"
-    # the links the item carries are ones this mock serves
+    # the links the item carries are ones Backlot serves
     for url in (item["url"], item["git_url"]):
         assert c.get(url.split("testserver", 1)[1], headers=gh_admin_h).status_code == 200
 
@@ -808,7 +808,7 @@ def test_github_code_search_text_matches_only_under_the_media_type(gh_client, gh
 def test_github_code_search_refuses_a_query_less_search(gh_client, gh_admin_h):
     """Real answers a `q`-less code search 422 in its own envelope, not FastAPI's `{"detail": …}`.
 
-    Unlike `/search/issues`, which this mock lets serve an empty `q` as a listing.
+    Unlike `/search/issues`, which Backlot lets serve an empty `q` as a listing.
     """
     c, _ = gh_client
     r = c.get("/github/search/code", headers=gh_admin_h)
@@ -1190,7 +1190,7 @@ def test_github_repo_carries_a_url_template_for_each_resource_it_serves(
     Values, not just keys: a template whose placeholder is wrong (`{sha}` where real says `{/sha}`)
     expands to a URL that 404s, which is the same dead end as omitting the field.
 
-    THE RULE IS "a template iff the resource": real serves 42 of these and this mock has routes for a
+    THE RULE IS "a template iff the resource": real serves 42 of these and Backlot has routes for a
     third of them, so the rest stay absent rather than inviting a client to follow a link into a 404.
     A key set that lies about what can be fetched is worse for the caller than a short one — and the
     caller can tell the difference, which is the whole point of hypermedia. Adding a route later
@@ -1212,12 +1212,12 @@ def test_github_repo_carries_a_url_template_for_each_resource_it_serves(
         "teams_url": f"{api}/teams",
     }.items():
         assert repo[field].endswith(expected), f"{field}: {repo[field]}"
-    # the git-protocol URLs name github.com, not this mock, so they promise it nothing
+    # the git-protocol URLs name github.com, not Backlot, so they promise it nothing
     assert repo["clone_url"] == f"https://github.com/{gh_org}/gateway.git"
     assert repo["ssh_url"] == f"git@github.com:{gh_org}/gateway.git"
     assert repo["git_url"] == f"git://github.com/{gh_org}/gateway.git"
     assert repo["svn_url"] == f"https://github.com/{gh_org}/gateway"
-    # real serves these; this mock has no such route, so it does not advertise one
+    # real serves these; Backlot has no such route, so it does not advertise one
     unserved = {
         "archive_url",
         "assignees_url",
@@ -1229,7 +1229,7 @@ def test_github_repo_carries_a_url_template_for_each_resource_it_serves(
         "events_url",
         "forks_url",
         "git_commits_url",
-        "git_refs_url",  # this mock serves `/git/ref/{ref}`, not real's plural `/git/refs{/sha}`
+        "git_refs_url",  # Backlot serves `/git/ref/{ref}`, not real's plural `/git/refs{/sha}`
         "git_tags_url",
         "hooks_url",
         "issue_events_url",
@@ -1254,7 +1254,7 @@ def test_github_pull_sub_resources_the_new_links_point_at(gh_client, gh_admin_h,
     """`_links.commits`/`statuses` name resources a client is invited to follow, so the routes have
     to exist — an emitted URL that 404s is a worse deal for the caller than an absent field.
 
-    `commits` is the one commit the pull object already claims; `statuses` is empty because this mock
+    `commits` is the one commit the pull object already claims; `statuses` is empty because Backlot
     has no CI, which is what real answers for a sha nobody reported a status on."""
     c, _ = gh_client
     from backlot import synth
@@ -1387,7 +1387,7 @@ def test_github_unsupported_api_version_is_refused_ahead_of_everything(gh_client
     assert '"1999-01-01"' in body["errors"] and "is not a supported version" in body["errors"]
     assert '"2026-03-10" (most recent) and "2022-11-28"' in body["errors"]
     assert "X-GitHub-Api-Version-Selected" not in r.headers
-    # no credentials, and an owner the mock does not serve: still the version's 400
+    # no credentials, and an owner Backlot does not serve: still the version's 400
     assert c.get("/github/repos/nope/nope/pulls/1", headers=bad).status_code == 400
     assert c.get("/github/search/issues", headers=bad, params={"q": "x"}).status_code == 400
 
@@ -1496,7 +1496,7 @@ def test_github_pull_diff_reverse_applies_with_real_git(
 ):
     """The claim a synthesized diff has to earn: real `git apply` accepts it.
 
-    The snapshot the mock serves IS the pull's head, so `git apply --reverse` must be able to walk
+    The snapshot Backlot serves IS the pull's head, so `git apply --reverse` must be able to walk
     it back to the base. Nothing weaker proves it — a hunk header off by one line, or context that
     doesn't match the file, still looks like a diff and still passes a shape assertion. Run for both
     changeset kinds: declaring the files changes WHICH files are in the diff, not whether the hunks
@@ -1762,7 +1762,7 @@ def test_github_declared_paths_are_resolved_and_deduplicated(tmp_path):
 
 def test_github_pull_files_paginates(declared_pr):
     """Real GitHub paginates the changed-file list; a client's paging loop over it is only
-    exercisable if the mock emits the Link header — and a synthesized changeset caps at three files,
+    exercisable if Backlot emits the Link header — and a synthesized changeset caps at three files,
     so a declared one is what makes a second page reachable at all."""
     c, h, org, num = declared_pr
     url = f"/github/repos/{org}/diffable/pulls/{num}/files"
@@ -1996,7 +1996,7 @@ def test_hunk_position_indexes_into_the_hunk():
 
 
 def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
-    """Every absolute URL the mock puts in a response has to be one the mock accepts back — SDK
+    """Every absolute URL Backlot puts in a response has to be one Backlot accepts back — SDK
     clients complete objects lazily by following them (see `_api_base`). Now that a wrong owner
     404s, an emitted URL built from a different notion of the org would be a dead link, and the
     builders do not all read the org from the same place.
@@ -2017,7 +2017,7 @@ def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
     # the hypermedia a pull gained with its own field set — a template is not a URL, so
     # `review_comment_url` is expanded the way a client would rather than fetched verbatim.
     seen += [pull[k] for k in ("commits_url", "review_comments_url", "statuses_url")]
-    # `_links` minus the two forms this check cannot make: `html` names github.com, which this mock
+    # `_links` minus the two forms this check cannot make: `html` names github.com, which Backlot
     # does not serve at all (like `diff_url`/`clone_url`), and `review_comment` is a template.
     # Everything else is a route here, and is expected to answer.
     api_prefix = pull["url"].split("/repos/")[0]
@@ -2068,7 +2068,7 @@ def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
 
 
 def test_github_tree_truncates_at_the_real_caps(gh_client, gh_admin_h, gh_org, monkeypatch):
-    """Real GitHub caps a recursive tree (100k entries / 7 MB) and sets `truncated: true`; a mock
+    """Real GitHub caps a recursive tree (100k entries / 7 MB) and sets `truncated: true`; a server
     that can never set it leaves a client's truncation-handling path untested.
 
     (The un-truncated case is already asserted by test_github_tree_recursive.)"""

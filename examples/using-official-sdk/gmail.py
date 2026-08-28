@@ -48,8 +48,8 @@ args = _p.parse_args()
 
 with serve_or_connect(CORPUS, url=args.url) as s:
     # An ordinary Google authorized-user credential — exactly as against real Gmail; only the
-    # api_endpoint changes. The mock provides the client_id/secret + refresh token, and the
-    # library refreshes against token_uri (the mock's /oauth2/token) to get an access token.
+    # api_endpoint changes. Backlot provides the client_id/secret + refresh token, and the
+    # library refreshes against token_uri (Backlot's /oauth2/token) to get an access token.
     client_id, client_secret, refresh_token, token_uri = google_oauth_user(s.base_url, args.user)
     creds = Credentials(
         None,

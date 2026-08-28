@@ -4,8 +4,8 @@
 The reader has no base_url arg, but its underlying slack_sdk WebClient does. It's not enough to
 set it *after* construction, though: `SlackReader.__init__` eagerly calls `client.api_test()`
 before returning, using whatever base_url the client was built with. `slack_reader_at` (in
-`backlot.integrations.llamaindex`) briefly swaps in a WebClient subclass that defaults to the
-mock's base_url for just that one construction, so even the eager call lands on the mock.
+`backlot.integrations.llamaindex`) briefly swaps in a WebClient subclass that defaults to
+Backlot's base_url for just that one construction, so even the eager call lands on Backlot.
 
     pip install -e ".[examples,llamaindex]"
     python examples/using-llamaindex-readers/slack.py            # or: --url http://localhost:8000
@@ -47,7 +47,7 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
+def build(s, token):
     return slack_reader_at(s.base_url, token)
 
 

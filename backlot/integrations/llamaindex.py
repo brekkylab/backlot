@@ -6,7 +6,7 @@ via constructor args (GitHub `base_url`, Jira `PATauth.server_url`, Confluence `
 says what seam it uses and why that one:
 
   - Slack: `slack_reader_at` — the reader calls `api_test()` DURING construction, so the client
-    has to arrive already pointed at the mock.
+    has to arrive already pointed at Backlot.
   - Gmail/Drive: `point_gmail_at` / `point_drive_at` — wrap `build` to inject
     `client_options(api_endpoint=...)`.
   - Notion: `patch_notion_at` — rebind the module-level URL constants.
@@ -27,41 +27,41 @@ __all__ = [
 
 
 def slack_reader_at(base_url: str, token: str):
-    """Build a `SlackReader` with its `WebClient` pointed at the mock from the very first call.
+    """Build a `SlackReader` with its `WebClient` pointed at Backlot from the very first call.
 
     `SlackReader.__init__` eagerly calls `client.api_test()` before returning, using whatever
     `base_url` the client was constructed with (there's no constructor arg to pass one in). Left
     alone that call goes to the real `https://slack.com/api/` default. `SlackReader.__init__`
     does a *local* `from slack_sdk import WebClient` on every call, so temporarily swapping the
-    `slack_sdk` module's `WebClient` attribute for a subclass that defaults `base_url` to the
-    mock — for the duration of this one construction only, restored in `finally` — redirects
-    that eager call to the mock instead. `reader._client.base_url` is set again explicitly
+    `slack_sdk` module's `WebClient` attribute for a subclass that defaults `base_url` to
+    Backlot — for the duration of this one construction only, restored in `finally` — redirects
+    that eager call to Backlot instead. `reader._client.base_url` is set again explicitly
     afterward for clarity, though the patched default already applied it.
     """
     import slack_sdk
     from llama_index.readers.slack import SlackReader
 
-    mocked_url = (
+    backlot_url = (
         f"{base_url.rstrip('/')}/slack/api/"  # trailing slash: slack_sdk joins base + method
     )
     real_web_client = slack_sdk.WebClient
 
-    class _WebClientAtMock(real_web_client):
+    class _WebClientAtBacklot(real_web_client):
         def __init__(self, *args, **kwargs):
-            kwargs.setdefault("base_url", mocked_url)
+            kwargs.setdefault("base_url", backlot_url)
             super().__init__(*args, **kwargs)
 
-    slack_sdk.WebClient = _WebClientAtMock
+    slack_sdk.WebClient = _WebClientAtBacklot
     try:
         reader = SlackReader(slack_token=token)
     finally:
         slack_sdk.WebClient = real_web_client
-    reader._client.base_url = mocked_url
+    reader._client.base_url = backlot_url
     return reader
 
 
 def patch_s3fs_walk() -> None:
-    """Work around a long-standing fsspec/s3fs bug, NOT anything mock-side (it reproduces
+    """Work around a long-standing fsspec/s3fs bug, NOT anything Backlot-side (it reproduces
     identically against real AWS S3): a whole-bucket `S3Reader.load_data()` reaches
     `fs.walk(..., topdown=True)`, and `S3FileSystem` is async so its `_walk` chain bottoms out in
     `_ls()`, which does not accept `topdown`.
@@ -98,24 +98,24 @@ def patch_s3fs_walk() -> None:
 # googleapiclient serviceName ("gmail" / "drive") -> the api_endpoint it should be built with.
 # Consulted, at call time, by the ONE shared wrapper `_ensure_google_build_wrapped` installs.
 #
-# ONE wrapper, not one per function: two wrappers guarded by the same `_points_at_mock` flag on
+# ONE wrapper, not one per function: two wrappers guarded by the same `_backlot_wrapped` flag on
 # the symbol cannot coexist. That flag records only THAT a wrapper is installed, not which endpoint
 # it points at, so whichever ran second would find it set, return immediately, and leave its service
 # pointed at the OTHER's endpoint (Drive traffic hitting Gmail's `api_endpoint`, or vice versa).
 # A per-service registry keyed by the `serviceName` `build()` is actually invoked with — llama-index
 # calls `build("gmail", "v1", ...)` / `build("drive", "v3", ...)`, confirmed by reading both
 # readers' source — lets both stay active at once, in either order, through one wrapper.
-_MOCK_SERVICE_ENDPOINTS: dict[str, str] = {}
+_BACKLOT_SERVICE_ENDPOINTS: dict[str, str] = {}
 
 
 def _ensure_google_build_wrapped() -> None:
     """Install the shared `googleapiclient.discovery.build` wrapper, once. Safe to call from both
     `point_gmail_at` and `point_drive_at`, in either order, any number of times — it only wraps
     on the first call (checked via `_backlot_wrapped` on the symbol) and every call after that is
-    a no-op here; the actual redirection happens through `_MOCK_SERVICE_ENDPOINTS`, updated by the
+    a no-op here; the actual redirection happens through `_BACKLOT_SERVICE_ENDPOINTS`, set by the
     caller after this returns.
 
-    Clears `_MOCK_SERVICE_ENDPOINTS` whenever it (re)installs — i.e. exactly when `discovery.build`
+    Clears `_BACKLOT_SERVICE_ENDPOINTS` whenever it (re)installs — exactly when `discovery.build`
     does NOT already carry the wrapper. That happens not just on the very first call, but also
     whenever something has reset `discovery.build` back to a plain callable since the wrapper was
     last installed — the tests in this repo do exactly that in a `finally:` block to undo a patch.
@@ -133,12 +133,12 @@ def _ensure_google_build_wrapped() -> None:
     if getattr(discovery.build, "_backlot_wrapped", False):
         return
 
-    _MOCK_SERVICE_ENDPOINTS.clear()
+    _BACKLOT_SERVICE_ENDPOINTS.clear()
     _real_build = discovery.build
 
     def _build(*args, **kwargs):
         service_name = args[0] if args else kwargs.get("serviceName")
-        endpoint = _MOCK_SERVICE_ENDPOINTS.get(service_name)
+        endpoint = _BACKLOT_SERVICE_ENDPOINTS.get(service_name)
         if endpoint is not None:
             kwargs.setdefault("static_discovery", True)
             kwargs["client_options"] = ClientOptions(api_endpoint=endpoint)
@@ -149,7 +149,7 @@ def _ensure_google_build_wrapped() -> None:
 
 
 def point_gmail_at(base_url: str) -> None:
-    """Redirect GmailReader at the mock.
+    """Redirect GmailReader at Backlot.
 
     GmailReader builds its Google service with googleapiclient's `build` and no host override.
     Its `load_data()` does a *local* `from googleapiclient.discovery import build` on every call
@@ -174,11 +174,11 @@ def point_gmail_at(base_url: str) -> None:
             "point_gmail_at: googleapiclient.discovery.build is gone — update the shim"
         )
     _ensure_google_build_wrapped()
-    _MOCK_SERVICE_ENDPOINTS["gmail"] = base_url.rstrip("/")  # gmail: rootUrl replaced as-is
+    _BACKLOT_SERVICE_ENDPOINTS["gmail"] = base_url.rstrip("/")  # gmail: rootUrl replaced as-is
 
 
 def point_drive_at(base_url: str) -> None:
-    """Redirect GoogleDriveReader at the mock.
+    """Redirect GoogleDriveReader at Backlot.
 
     Same wrap point as `point_gmail_at`: `GoogleDriveReader` builds its Drive service with
     googleapiclient's `build` and no host override, and every method that needs it
@@ -204,11 +204,11 @@ def point_drive_at(base_url: str) -> None:
             "point_drive_at: googleapiclient.discovery.build is gone — update the shim"
         )
     _ensure_google_build_wrapped()
-    _MOCK_SERVICE_ENDPOINTS["drive"] = f"{base_url.rstrip('/')}/drive/v3"
+    _BACKLOT_SERVICE_ENDPOINTS["drive"] = f"{base_url.rstrip('/')}/drive/v3"
 
 
 def patch_notion_at(base_url: str) -> None:
-    """Redirect NotionPageReader at the mock. The reader hardcodes the Notion host in module-level
+    """Redirect NotionPageReader at Backlot. The reader hardcodes the Notion host in module-level
     URL constants (no base_url arg); rebind every one that points at api.notion.com. Fails loudly
     if the expected constants are gone (a reader upgrade), rather than hitting the real host."""
     import llama_index.readers.notion.base as nb
@@ -239,7 +239,7 @@ def patch_notion_at(base_url: str) -> None:
 
 
 def point_hubspot_at(base_url: str) -> None:
-    """Redirect HubspotReader at the mock. The reader takes only an access token and builds
+    """Redirect HubspotReader at Backlot. The reader takes only an access token and builds
     ``HubSpot(access_token=...)`` itself — but it does ``from hubspot import HubSpot`` *inside*
     ``load_data()``, so rebinding the module attribute is enough and the reader needs no changes.
 
@@ -253,7 +253,7 @@ def point_hubspot_at(base_url: str) -> None:
     real = getattr(hubspot, "_backlot_real_HubSpot", hubspot.HubSpot)
     hubspot._backlot_real_HubSpot = real  # idempotent across repeated calls
 
-    def _at_mock(*a, **kw):
+    def _at_backlot(*a, **kw):
         kw.setdefault("host", base)
         client = real(*a, **kw)
         host = client.crm.companies.basic_api.api_client.configuration.host
@@ -266,11 +266,11 @@ def point_hubspot_at(base_url: str) -> None:
             )
         return client
 
-    hubspot.HubSpot = _at_mock
+    hubspot.HubSpot = _at_backlot
 
 
 def patch_linear_at(base_url: str) -> None:
-    """Redirect LinearReader at the mock.
+    """Redirect LinearReader at Backlot.
 
     Harder than the other shims, and the reason is worth stating: `LinearReader.load_data` sets
     ``graphql_endpoint = "https://api.linear.app/graphql"`` as a **local variable inside the
@@ -297,7 +297,7 @@ def patch_linear_at(base_url: str) -> None:
         )
     lb._backlot_real_requests = real  # idempotent across repeated calls
 
-    class _RequestsAtMock:
+    class _RequestsAtBacklot:
         """Forwards everything to the real `requests`, rewriting only Linear's hardcoded URL."""
 
         def __getattr__(self, name):
@@ -308,4 +308,4 @@ def patch_linear_at(base_url: str) -> None:
                 url = url.replace("https://api.linear.app", base)
             return real.post(url, *args, **kwargs)
 
-    lb.requests = _RequestsAtMock()
+    lb.requests = _RequestsAtBacklot()

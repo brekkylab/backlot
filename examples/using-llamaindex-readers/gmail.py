@@ -2,15 +2,15 @@
 """Load Gmail messages through the official llama-index Google reader. Self-contained.
 
 GmailReader builds its Google service with no host override; point_gmail_at() wraps the
-`googleapiclient.discovery.build` symbol it locally imports on every call to target the mock.
-Auth is an ordinary Google authorized-user credential (client_id/secret + refresh token) from the
-mock, exactly as against real Gmail.
+`googleapiclient.discovery.build` symbol it locally imports on every call to target Backlot.
+Auth is an ordinary Google authorized-user credential (client_id/secret + refresh token) from
+Backlot, exactly as against real Gmail.
 
 The installed GmailReader._get_credentials() unconditionally runs a local disk-based OAuth flow
 (reads token.json / credentials.json off disk) every call, regardless of whether a `service` was
 already supplied -- there's no constructor hook to inject credentials directly (this reader
 version has no `credentials` field; setting one raises `ValueError`). We patch that method to
-hand back the mock-issued credential instead of touching disk.
+hand back the Backlot-issued credential instead of touching disk.
 
     pip install -e ".[examples,llamaindex]"
     python examples/using-llamaindex-readers/gmail.py                     # first user
@@ -42,7 +42,7 @@ CORPUS = [
 ]
 
 
-def build(mock, user):
+def build(s, user):
     point_gmail_at(s.base_url)
     client_id, client_secret, refresh_token, token_uri = google_oauth_user(s.base_url, user)
     creds = Credentials(

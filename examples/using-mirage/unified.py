@@ -3,12 +3,12 @@
 value: many backends, one set of bash commands. Self-contained: run it directly.
 
     pip install -e ".[examples,mirage]"
-    python examples/using-mirage/unified.py                                # local throwaway mock
+    python examples/using-mirage/unified.py                                # local throwaway server
     python examples/using-mirage/unified.py --url http://localhost:8000 --token xoxb-... --user ava@acme.com
     python examples/using-mirage/unified.py --fuse                          # all three as one OS mount
 
 Slack is ACL-filtered by ``--token``; Gmail/Drive by ``--user`` (they share one Google
-authorized-user credential). Point them all at the same mock.
+authorized-user credential). Point them all at the same server.
 """
 
 import argparse
@@ -95,7 +95,7 @@ async def _first_drive_file(ws):
     return f"/gdrive/{folders[0]}/{files[0]}" if files else None
 
 
-def build(mock, token, user) -> dict:
+def build(s, token, user) -> dict:
     point_google_at(s.base_url)  # Google has no host config; Slack takes base_url below
     client_id, client_secret, refresh_token, _ = google_oauth_user(s.base_url, user)
     google = dict(client_id=client_id, client_secret=client_secret, refresh_token=refresh_token)

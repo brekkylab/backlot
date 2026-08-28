@@ -1,4 +1,4 @@
-"""Mock GitHub REST API (read-only). Client base_url: ``http://<host>/github``.
+"""GitHub REST API (read-only). Client base_url: ``http://<host>/github``.
 
 Each dataset ``github`` document is modelled as an issue in its repo (= container).
 Responses are bare JSON arrays with an RFC5988 ``Link`` header for pagination, as the
@@ -25,7 +25,7 @@ from backlot.pagination import clamp_page, github_link_header
 
 # Real GitHub caps a recursive tree at 100k entries / 7 MB and reports `truncated: true`. Module
 # level rather than settings, so a test can lower them: a corpus big enough to hit the real cap is
-# not a practical fixture, and a client's truncation-handling path is only reachable if the mock
+# not a practical fixture, and a client's truncation-handling path is only reachable if Backlot
 # can set the flag at all.
 TREE_MAX_ENTRIES = 100_000
 TREE_MAX_BYTES = 7 * 1024 * 1024
@@ -36,7 +36,7 @@ def _require(request: Request) -> Caller:
 
 
 def _org(request: Request) -> str:
-    """The single org this mock serves. ``tokens.yaml``'s ``org`` wins over the setting and lands
+    """The single org Backlot serves. ``tokens.yaml``'s ``org`` wins over the setting and lands
     on the ACL (see ``backlot.main``), so read it from there when there is one."""
     return getattr(getattr(request.app.state, "acl", None), "org_name", None) or (
         get_settings().org_name
@@ -120,7 +120,7 @@ async def _validate_path_owner(request: Request) -> None:
     """404 a request whose ``{owner}``/``{org}`` segment is not the org we serve.
 
     Real GitHub 404s a wrong owner; echoing whatever was asked for back into the response lets a
-    client's owner-handling bug pass against the mock and fail in production. A router-wide
+    client's owner-handling bug pass against Backlot and fail in production. A router-wide
     dependency rather than a call in each handler so a route added later cannot forget it — routes
     with neither path param (``/search/issues``, ``/user/repos``) are unaffected. Credentials are
     checked first, so a bad token still reports 401 rather than the owner's 404.
@@ -224,8 +224,8 @@ def _base_url(request: Request) -> str:
 
 
 def _api_base(request: Request) -> str:
-    """The mock's GitHub API root (…/github), used for resource `url` fields so SDK
-    clients (e.g. PyGithub) that lazily complete objects fetch back from the mock."""
+    """Backlot's GitHub API root (…/github), used for resource `url` fields so SDK
+    clients (e.g. PyGithub) that lazily complete objects fetch back from Backlot."""
     host = request.headers.get("host", "localhost")
     return f"{request.url.scheme}://{host}/github"
 
@@ -413,7 +413,7 @@ def _code_repos(conn, quals: dict, org: str) -> set[str] | None:
     on real.
 
     An EMPTY set is a restriction nothing satisfies, and that is the point: a `repo:` naming a repo
-    this mock does not serve — or one under another owner, which `_validate_path_owner` 404s
+    Backlot does not serve — or one under another owner, which `_validate_path_owner` 404s
     everywhere else — has to match nothing rather than quietly widening back to the whole corpus and
     answering with files from a repo the caller did not ask about.
     """
@@ -472,7 +472,7 @@ def _code_hit(conn, owner: str, row, api_base: str) -> dict:
     LOCATES a file, and `url` is where its content is then fetched from.
 
     Real's `url`/`git_url` name `/repositories/{id}/…` and pin `?ref=` to the commit it indexed.
-    This mock serves no `/repositories/{id}` route, so the links take the `/repos/{owner}/{repo}/…`
+    Backlot serves no `/repositories/{id}` route, so the links take the `/repos/{owner}/{repo}/…`
     form it does serve — a link the caller can follow beats one that matches real's spelling and
     404s, which is the rule :func:`_repo_obj` states for its url templates. The snapshot pin is
     kept, as the HEAD row's own `ref`, so following `url` returns the bytes that were searched.
@@ -526,7 +526,7 @@ async def search_code(
     repo:/path:/filename:/extension:/in: qualifiers, ACL-scoped to the caller.
 
     ONE RESULT PER (repo, path) — the HEAD snapshot's. Real code search indexes the DEFAULT BRANCH
-    only, while this mock stores a row per snapshot of a path (see ``store._file_head_clause``), so
+    only, while Backlot stores a row per snapshot of a path (see ``store._file_head_clause``), so
     without that restriction a path would answer once per revision it was ever recorded at and one
     repo's history would crowd the rest of the corpus out of the result set. The cost is deliberate,
     and it is real's cost too: a string surviving only in a SUPERSEDED snapshot is not findable
@@ -537,7 +537,7 @@ async def search_code(
 
     A blank `q` is real's 422 rather than a listing: a code search with no term is a client bug
     better reported than answered with a corpus dump. (`/search/issues` above answers a blank `q`
-    as a listing instead — a tolerance this mock keeps there, not a rule this endpoint follows.)
+    as a listing instead — a tolerance Backlot keeps there, not a rule this endpoint follows.)
     """
     caller = _require(request)
     if not q.strip():
@@ -668,7 +668,7 @@ async def list_user_repos(
     view of the world. This is the endpoint a credential uses to discover its own reach, and
     without it a client has to be configured with an explicit repo name per mount.
 
-    Real GitHub also takes ``visibility``/``affiliation``/``type``/``sort``; the mock serves a
+    Real GitHub also takes ``visibility``/``affiliation``/``type``/``sort``; Backlot serves a
     single org whose repos are all owned by it, so those would have nothing to select between and
     are left out rather than accepted and ignored.
     """
@@ -936,7 +936,7 @@ async def pull_commits(owner: str, repo: str, number: int, request: Request):
     Here because ``_links.commits``/``commits_url`` name it: a field whose whole purpose is to be
     followed must lead somewhere, and a 404 at the end of an advertised link is a worse answer for
     the caller than no link at all. Nothing is invented — the sha, the message and the author are the
-    pull's own, and the mock keeps no history to draw a second commit from (see ``get_tree``).
+    pull's own, and Backlot keeps no history to draw a second commit from (see ``get_tree``).
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -978,7 +978,7 @@ async def commit_statuses(owner: str, repo: str, sha: str, request: Request):
     """Statuses for a commit: always empty, and empty is the honest answer rather than a stub.
 
     A corpus records no CI, and real GitHub answers `[]` for a sha nobody reported a status on — so
-    this is a shape a client will meet in production, not a mock-only degenerate case. It exists
+    this is a shape a client will meet in production, not a Backlot-only degenerate case. It exists
     because a pull's ``statuses_url`` and ``_links.statuses`` name it.
     """
     conn = auth.conn(request)
@@ -1022,7 +1022,7 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     without this route such a branch cannot be pinned to a commit at all.
 
     Any ref resolves to the repo's snapshot commit, as ``/branches`` and ``git/trees`` already do —
-    the mock keeps no COMMIT history and the schema carries no branch list, so ref EXISTENCE is not
+    Backlot keeps no COMMIT history and the schema carries no branch list, so ref EXISTENCE is not
     knowable here. (A file's own snapshots are a separate axis, reachable on ``/contents`` — see
     :func:`get_tree`.) That is the documented no-history simplification (see :func:`get_tree`), not the
     unvalidated-segment bug that the owner check fixes: an owner IS knowable.
@@ -1095,7 +1095,7 @@ async def get_tree(
 def _cap_tree(entries: list[dict]) -> tuple[list[dict], bool]:
     """Apply the real API's tree caps, returning ``(entries, truncated)``.
 
-    Real GitHub caps a recursive tree at 100k entries / 7 MB and sets `truncated: true`; a mock that
+    Real GitHub caps a recursive tree at 100k entries / 7 MB and sets `truncated: true`; a server
     reports `false` unconditionally means a client's truncation-handling path — the fallback where
     it walks the tree one level at a time instead — is never exercised. The whole-list `dumps` is
     the common case and runs once; the per-entry loop only runs for a tree that actually overflows.
@@ -1511,20 +1511,20 @@ def _reactions(val, api_url: str = "") -> dict:
 
 
 def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
-    """A repository, carrying a URL template for each sub-resource this mock serves.
+    """A repository, carrying a URL template for each sub-resource Backlot serves.
 
     The templates are how an SDK completes a repository lazily — PyGithub expands them for the
     example this repo ships — so without them the client assembles the URLs from parts, which is the
     work hypermedia exists to remove. All of them derive from owner/repo; none needs stored data.
 
-    THE RULE IS "a template iff the resource". Real serves 42 of these and this mock has routes for a
+    THE RULE IS "a template iff the resource". Real serves 42 of these and Backlot has routes for a
     third, so the rest are absent rather than inviting a caller into a 404: a key set that lies about
     what can be fetched is a worse deal than a short one, and short is something the caller can
     detect and work around. Adding a route later means adding its template here. (`git_refs_url` is
-    absent for a subtler version of the same reason — this mock serves `/git/ref/{ref}`, singular,
+    absent for a subtler version of the same reason — Backlot serves `/git/ref/{ref}`, singular,
     not real's plural `/git/refs{/sha}`.)
 
-    The git-protocol URLs are the exception: they name github.com rather than this mock, so they
+    The git-protocol URLs are the exception: they name github.com rather than Backlot, so they
     promise it nothing and cost nothing to state.
     """
     private = not store.container_has_public(conn, "github", name)
@@ -1723,7 +1723,7 @@ def _pr_obj(
 
     The hypermedia half (``_links`` and the ``*_url`` siblings) is the point of the field set: it is
     how a caller reaches a pull's sub-resources without assembling URLs from parts, which is what
-    hypermedia is for. Every href here names a route this mock serves, so following one gets an
+    hypermedia is for. Every href here names a route Backlot serves, so following one gets an
     answer rather than a 404 — ``review_comment`` excepted, which real serves as a template too.
     """
     obj = _shared_obj(conn, owner, repo, row, api_base, version)
@@ -1837,7 +1837,7 @@ def _pr_obj(
 #     zero. There is no snapshot to diff, and naming a file the repo does not contain would
 #     contradict its own tree.
 #   - `status: "removed"` is NOT produced. A deleted file is absent from the head, but the snapshot
-#     is the only state the mock has, so a file it names as removed would still be in the tree — and
+#     is the only state Backlot has, so a file it names as removed would still be in the tree — and
 #     a diff mixing that with a `modified` hunk claims the snapshot is base and head at once, which
 #     no client can apply. Deletions come from the `dedup` flavour below instead.
 
@@ -1902,7 +1902,7 @@ def _pr_files(
         chosen = list(dict.fromkeys(declared))
         # A corpus naming a path says the pull CHANGED a file the repo already has, so every
         # declared file is `modified` (bar the ones _changed_file has to downgrade for want of a
-        # hunk). Varying it would have the mock claim the pull CREATED a file, which is more than
+        # hunk). Varying it would have Backlot claim the pull CREATED a file, which is more than
         # the corpus said. A synthesized changeset still varies, so `added` stays exercisable.
         statuses = dict.fromkeys(chosen, "modified")
     else:

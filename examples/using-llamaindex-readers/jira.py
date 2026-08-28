@@ -48,7 +48,7 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
+def build(s, token):
     return JiraReader(PATauth={"server_url": f"{s.base_url}/atlassian", "api_token": token})
 
 

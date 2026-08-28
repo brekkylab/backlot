@@ -47,7 +47,7 @@ def test_atlassian_401_keeps_the_atlassian_error_envelope(client):
 
 def test_jira_serverinfo_v2_alias_matches_v3(client, admin_h):
     # the `jira` PyPI client (used by llama-index's JiraReader) probes serverInfo under
-    # /rest/api/2 on connect; the mock must serve the same shape as the v3 handler.
+    # /rest/api/2 on connect; Backlot must serve the same shape as the v3 handler.
     v2 = client.get("/atlassian/rest/api/2/serverInfo", headers=admin_h).json()
     v3 = client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h).json()
     assert v2 == v3
@@ -138,8 +138,8 @@ def test_confluence_content_filtered_by_space_key(client, admin_h):
 
 
 def test_atlassian_comment_ids_are_numeric_on_the_wire(tmp_path):
-    """The stored id composes the parent's key with the comment's position (`PAY-7::c1`) — this
-    mock's own bookkeeping. Real Jira and Confluence report numeric strings, and both the `self`
+    """The stored id composes the parent's key with the comment's position (`PAY-7::c1`) — this is
+    Backlot's own bookkeeping. Real Jira and Confluence report numeric strings, and both the `self`
     link and Confluence's `focusedCommentId` carry the value, so the internal scheme leaked into
     three places a client reads."""
     s = tiny_corpus(
@@ -260,8 +260,8 @@ def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
 
 
 def test_atlassian_errors_use_atlassian_envelope(client):
-    # atlassian-python-api's Confluence client does response.json()["message"] on any error, so the
-    # mock must shape /atlassian errors like Atlassian Cloud (message + statusCode), not {"detail"}.
+    # atlassian-python-api's Confluence client does response.json()["message"] on any error, so
+    # Backlot must shape /atlassian errors like Cloud does (message + statusCode), not {"detail"}.
     r = client.get("/atlassian/wiki/rest/api/content/999999")  # unauthenticated -> 401
     assert r.status_code == 401
     assert r.json().get("message") and r.json().get("statusCode") == 401

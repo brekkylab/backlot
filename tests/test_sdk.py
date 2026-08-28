@@ -1,4 +1,4 @@
-"""Read-only coverage: drive each official SDK against the mock.
+"""Read-only coverage: drive each official SDK against Backlot.
 
 Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corpus, which
 carries the +α surface) — the official SDKs make real HTTP calls, so they need a listening
@@ -130,7 +130,7 @@ def gmail():
         )
     )
     # Served ids must look like Gmail's own: 16 lowercase hex under 2**63. A dsid would be
-    # refused by the real API as an invalid id value, so a client written against the mock would
+    # refused by the real API as an invalid id value, so a client written against Backlot would
     # only discover that in production.
     check("Gmail", "ids are Gmail-shaped")(
         lambda: (
@@ -331,9 +331,7 @@ def github():
     from github import Auth, Github
 
     gh = Github(auth=Auth.Token(ADMIN), base_url=f"{BASE}/github")
-    repo = gh.get_repo(
-        "acme/gateway"
-    )  # the SAMPLE corpus is @acme.com; owner is echoed by the mock
+    repo = gh.get_repo("acme/gateway")  # the SAMPLE corpus is @acme.com; owner is echoed by Backlot
     check("GitHub", "get_repo")(lambda: repo.full_name)
     issues = list(repo.get_issues(state="all"))
     check("GitHub", "get_issues (issues+PRs)")(lambda: f"{len(issues)} items")
@@ -353,8 +351,8 @@ def github():
 # ---------------------------------------------- Google OAuth client config
 def google_oauth():
     """Drive Gmail via a Google *client config* (not a raw token): the authorized-user
-    refresh flow and a service account impersonating a user — both refreshing against the
-    mock's /oauth2/token. Proves the config→token-endpoint→usr-token→ACL chain end to end."""
+    refresh flow and a service account impersonating a user — both refreshing against
+    Backlot's /oauth2/token. Proves the config→token-endpoint→usr-token→ACL chain end to end."""
     import json
     import urllib.request
     from google.api_core.client_options import ClientOptions
@@ -370,7 +368,7 @@ def google_oauth():
     email = who["email"]
 
     # authorized_user credential = the shared oauth_client + a user's token (from /_meta/users,
-    # used as the refresh_token) + the mock's token_uri
+    # used as the refresh_token) + Backlot's token_uri
     uc = UserCreds(
         None,
         refresh_token=who["token"],
@@ -552,7 +550,7 @@ def test_s3_sdk_read_matrix(live_server):
 
 
 def test_hubspot_sdk_read_matrix(live_server):
-    """The official client points at the mock through the plain `host` kwarg — no shim. On 8.x that
+    """The official client points at Backlot through the plain `host` kwarg — no shim. On 8.x that
     kwarg is silently ignored and the client talks to api.hubapi.com, so the host assertion below
     is the guard that a "mock" run is not really hitting production."""
     pytest.importorskip("hubspot")

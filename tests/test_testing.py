@@ -150,8 +150,8 @@ def test_serve_or_connect_does_not_fetch_the_token_over_plain_http_to_a_non_loop
 
 @pytest.mark.parametrize("host, answers_off_loopback", [("127.0.0.1", False), ("0.0.0.0", True)])
 def test_serve_binds_where_host_says(host, answers_off_loopback):
-    """A wildcard bind is what lets something that cannot reach this machine's loopback reach the
-    mock: a Docker container on Linux, where ``--add-host=…:host-gateway`` resolves to the bridge
+    """A wildcard bind is what lets something that cannot reach this machine's loopback reach
+    Backlot: a Docker container on Linux, where ``--add-host=…:host-gateway`` resolves to the bridge
     address (tests/test_mcp.py runs the Atlassian MCP server that way). The narrow default is
     asserted alongside it, since one that quietly answered everywhere would pass either way.
 

@@ -68,8 +68,8 @@ _p.add_argument(
 args = _p.parse_args()
 
 with serve_or_connect(CORPUS, url=args.url) as s:
-    # Auth is an ordinary Google service-account credential; only the api_endpoint changes. The
-    # mock issues the key and honors the JWT exchange it triggers.
+    # Auth is an ordinary Google service-account credential; only the api_endpoint changes.
+    # Backlot issues the key and honors the JWT exchange it triggers.
     sa_info, subject = google_service_account_info(
         s.base_url, args.user
     )  # stands in for the JSON key file

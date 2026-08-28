@@ -3,15 +3,15 @@
 
 Mirage mounts an S3 bucket as a filesystem under ``/s3`` — read it with plain ``ls`` / ``cat`` /
 ``grep``. S3's endpoint is a config knob (``S3Config(endpoint_url=..., path_style=True)``), so we
-point it straight at the mock — no monkeypatch (unlike Google). mirage/aioboto3 SigV4-signs every
+point it straight at Backlot — no monkeypatch (unlike Google). mirage/aioboto3 SigV4-signs every
 request. S3 uses an AWS access-key/secret pair (not a bearer token): with ``--url`` (a running
 server) ``--access-key``/``--secret-key`` are **required** — pass real AWS keys, or a pair from
 ``GET <url>/_meta/users`` (each user, and the admin, has an ``s3_access_key_id`` /
-``s3_secret_access_key`` there). Without ``--url`` the local throwaway mock uses its own admin
+``s3_secret_access_key`` there). Without ``--url`` the local throwaway server uses its own admin
 keypair.
 
     pip install -e ".[examples,mirage]"
-    python examples/using-mirage/s3.py                              # local throwaway mock
+    python examples/using-mirage/s3.py                              # local throwaway server
     python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret>
     python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret> --fuse   # real OS mount
 
@@ -56,7 +56,7 @@ CORPUS = [
 ]
 
 
-def build(mock, access_key, secret_key):
+def build(s, access_key, secret_key):
     return S3Resource(
         S3Config(
             bucket=BUCKET,
@@ -127,7 +127,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _admin_keys(base_url: str) -> tuple[str, str]:
-    """The local throwaway mock's admin S3 keypair, read from its /_meta/users."""
+    """The local throwaway server's admin S3 keypair, read from its /_meta/users."""
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/users") as r:
         data = json.load(r)
     return data["admin_s3_access_key_id"], data["admin_s3_secret_access_key"]

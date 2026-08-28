@@ -2,7 +2,7 @@
 """Load Notion pages through the official llama-index Notion reader. Self-contained.
 
 NotionPageReader hardcodes the Notion host in module constants; patch_notion_at() rebinds them at
-the mock before the reader runs.
+Backlot before the reader runs.
 
     pip install -e ".[examples,llamaindex]"
     python examples/using-llamaindex-readers/notion.py            # or: --url http://localhost:8000
@@ -40,15 +40,15 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
+def build(s, token):
     patch_notion_at(f"{s.base_url}/notion")
     return NotionPageReader(integration_token=token)
 
 
 def main(reader):
-    # Discover page ids via the reader's own search (patched at the mock), then load them. The
+    # Discover page ids via the reader's own search (patched at Backlot), then load them. The
     # installed reader's `search()` returns a flat list of ids (not result dicts), and an empty
-    # query returns everything visible on the mock (pages and databases alike — no object-type
+    # query returns everything visible on Backlot (pages and databases alike — no object-type
     # filter is applied client-side here).
     page_ids = reader.search("")
     docs = reader.load_data(page_ids=page_ids)

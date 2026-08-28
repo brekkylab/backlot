@@ -134,8 +134,8 @@ def test_jira_project_key_unique_for_colliding_names():
 def test_jira_project_key_is_a_shape_real_jira_can_issue(container):
     """`CreateProjectDetails.key` states the whole rule: a project key starts with an uppercase
     letter, continues in uppercase alphanumerics, and is at most 10 characters. `jira.schema.json`
-    enforces exactly that on a corpus-PROVIDED key, so a DERIVED one has to satisfy it too or the
-    mock refuses as input the key it just served -- which it did, for any project name past four
+    enforces exactly that on a corpus-PROVIDED key, so a DERIVED one has to satisfy it too or
+    Backlot refuses as input the key it just served -- which it did, for any project name past four
     words and for one whose first word starts with a digit."""
     key = synth.jira_project_key(container)
     assert re.fullmatch(r"[A-Z][A-Z0-9]{1,9}", key), key
@@ -247,7 +247,7 @@ def test_served_uuids_are_rfc_4122_version_4():
 def test_gmail_message_ids_are_never_zero_padded():
     """Real Gmail renders the id as an integer, so an id whose top nibble is zero is 15 digits
     there — and the real API resolves that spelling while refusing the padded one. `:016x` padded
-    roughly one id in 16, and the mock served the spelling real 404s."""
+    roughly one id in 16, and Backlot served the spelling real 404s."""
     ids = [synth.gmail_message_id(f"seed-{i}") for i in range(3000)]
     assert not [i for i in ids if i.startswith("0")]
     assert all(int(i, 16) < synth.GMAIL_ID_MAX for i in ids)
@@ -260,7 +260,7 @@ def test_gmail_message_ids_are_never_zero_padded():
 
 def test_atlassian_comment_ids_do_not_leak_the_child_spelling():
     """A stored comment id composes its PARENT's key with the comment's position (`PAY-7::c1`) —
-    the mock's own bookkeeping. Real Jira and Confluence report a numeric string, so a client that
+    Backlot's own bookkeeping. Real Jira and Confluence report a numeric string, so a client that
     parses or pattern-matches the id rejected what this served, and the internal scheme leaked to
     the wire. notion and linear already wrapped theirs."""
     cid = synth.atlassian_comment_id("PAY-7::c1")
@@ -276,7 +276,7 @@ def test_linear_url_is_the_real_vendor_domain():
     combination anywhere, even in a comment, makes a repeat of the bug rewrite it right alongside
     the code it guards. A bare `"linear.app"` with nothing appended has no slash for the pattern
     to land on, so it survives. The `"backlot" not in host` half is the one that actually
-    matters: a rename can only ever INTRODUCE the mock's own name into a vendor domain, never
+    matters: a rename can only ever INTRODUCE Backlot's own name into a vendor domain, never
     remove it, so no mechanical substitution can turn that assertion from failing into passing."""
     host = urlparse(synth.linear_url("ENG-1", "fix the thing", org="acme")).netloc
     assert host == "linear.app"

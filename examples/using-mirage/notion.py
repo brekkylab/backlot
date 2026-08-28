@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Read Notion through mirage's virtual filesystem. Self-contained: run it directly.
 
-Mirage mounts the mock's Notion API as a filesystem — ``pages/`` and ``databases/`` at the root,
+Mirage mounts Backlot's Notion API as a filesystem — ``pages/`` and ``databases/`` at the root,
 each entry a directory with a ``page.json`` / ``database.json`` — so an agent reads it with plain
 ``ls`` / ``cat``. Notion's API host is a config knob (``NotionConfig(base_url=...)``), so we point
-it straight at the mock — no monkeypatch (unlike Google). mirage sends ``Notion-Version:
-2022-06-28``, which the mock's version-aware router serves.
+it straight at Backlot — no monkeypatch (unlike Google). mirage sends ``Notion-Version:
+2022-06-28``, which Backlot's version-aware router serves.
 
     pip install -e ".[examples,mirage]"
-    python examples/using-mirage/notion.py                                  # local throwaway mock
+    python examples/using-mirage/notion.py                                  # local throwaway server
     python examples/using-mirage/notion.py --url http://localhost:8000
     python examples/using-mirage/notion.py --url http://localhost:8000 --token <usr-token>
     python examples/using-mirage/notion.py --url http://localhost:8000 --fuse   # real OS mount
@@ -70,8 +70,8 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
-    # Notion's host is a config knob — point it at the mock (no monkeypatch needed).
+def build(s, token):
+    # Notion's host is a config knob — point it at Backlot (no monkeypatch needed).
     # --token <usr-token> (from /_meta/users) → ACL-filtered to that user; else admin sees all.
     return NotionResource(NotionConfig(api_key=token, base_url=f"{s.base_url}/notion/v1"))
 

@@ -1,7 +1,7 @@
-"""Mock-specific Google OAuth glue for the Gmail/Drive examples.
+"""Backlot-specific Google OAuth glue for the Gmail/Drive examples.
 
 Not general API — a real connector gets its credentials from the Cloud Console / an OAuth
-consent screen, not from a mock's ``/_meta/credentials`` endpoint — so this stays under
+consent screen, not from Backlot's ``/_meta/credentials`` endpoint — so this stays under
 ``examples/`` rather than in ``backlot.testing``. Every script that needs one of these puts
 ``examples/`` on ``sys.path`` first:
 
@@ -20,12 +20,12 @@ __all__ = ["google_oauth_user", "google_service_account_info"]
 def google_service_account_info(
     base_url: str, subject: str | None = None
 ) -> tuple[dict, str | None]:
-    """Fetch the mock's service-account key from ``/_meta/credentials`` — the mock-specific glue,
+    """Fetch Backlot's service-account key from ``/_meta/credentials`` — the Backlot-specific glue,
     standing in for the JSON you'd download from the Cloud Console. Returns ``(sa_info, subject)``
     where ``subject`` is the user to impersonate via domain-wide delegation (ACL-filtered to them)
     or None (bare service account → admin, sees everything). The caller turns ``sa_info`` into a
     credential with the official google-auth library (see the examples). ``token_uri`` inside
-    ``sa_info`` already points at the mock's ``/oauth2/token``."""
+    ``sa_info`` already points at Backlot's ``/oauth2/token``."""
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/credentials") as r:
         sa = json.load(r)["service_account"]
     if subject:
@@ -34,12 +34,12 @@ def google_service_account_info(
 
 
 def google_oauth_user(base_url: str, user: str | None = None) -> tuple[str, str, str, str]:
-    """Mock glue for the authorized-user (3LO) flow. Returns ``(client_id, client_secret,
+    """Backlot glue for the authorized-user (3LO) flow. Returns ``(client_id, client_secret,
     refresh_token, token_uri)``: the shared OAuth client's id/secret and ``token_uri`` from
     ``/_meta/credentials``, plus a user's bearer token (from ``/_meta/users`` — ``user`` if given,
     else the first) used as the ``refresh_token``. The caller builds the Credentials with the
     official google-auth library (see gmail.py); the library then refreshes against ``token_uri``
-    (the mock's ``/oauth2/token``)."""
+    (Backlot's ``/oauth2/token``)."""
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/credentials") as r:
         creds = json.load(r)
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/users") as r:
@@ -51,7 +51,7 @@ def google_oauth_user(base_url: str, user: str | None = None) -> tuple[str, str,
     )
     if who is None:
         raise SystemExit(
-            f"--user {user!r} not found in /_meta/users" if user else "no users on the mock"
+            f"--user {user!r} not found in /_meta/users" if user else "no users on Backlot"
         )
     print(f"authenticating as {who['email']} (authorized_user — client_id/secret + refresh token)")
     client = creds["oauth_client"]

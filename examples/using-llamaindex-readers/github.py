@@ -48,7 +48,7 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
+def build(s, token):
     client = GitHubIssuesClient(github_token=token, base_url=f"{s.base_url}/github", verbose=False)
     return GitHubRepositoryIssuesReader(client, owner="acme", repo="gateway", verbose=False)
 

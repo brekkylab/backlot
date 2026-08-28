@@ -3,7 +3,7 @@
 
 S3 uses an AWS access-key/secret pair (not a bearer token). With `--url` (a running server),
 `--access-key`/`--secret-key` are required — grab a pair from GET <url>/_meta/users. Without
-`--url` the local throwaway mock's admin keypair is used.
+`--url` the local throwaway server's admin keypair is used.
 
     pip install -e ".[examples,llamaindex]"
     python examples/using-llamaindex-readers/s3.py
@@ -44,7 +44,7 @@ CORPUS = [
 ]
 
 
-def build(mock, access_key, secret_key):
+def build(s, access_key, secret_key):
     patch_s3fs_walk()  # fsspec/s3fs compat bug workaround; see backlot.integrations.llamaindex
     return S3Reader(
         bucket=BUCKET,

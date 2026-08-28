@@ -8,7 +8,7 @@ is the reader module's `import requests`, which `patch_linear_at()` swaps for a 
 rewrites Linear's host and forwards everything else untouched.
 
 The query is caller-supplied (`load_data(query)`), so it lives here — which makes this script
-double as a readable statement of what the mock's schema supports.
+double as a readable statement of what Backlot's schema supports.
 
     pip install -e ".[examples,llamaindex]"
     pip install llama-index-readers-linear
@@ -20,8 +20,8 @@ A GraphQL response always includes a selected field, so an *unassigned* issue co
 `assignee: null` — present, not absent — `.get`'s default never applies, and the reader raises
 `AttributeError: 'NoneType' object has no attribute 'get'`. The same holds for `project`, `state`
 and `creator`. Real Linear returns null for those too, so this reproduces against
-api.linear.app and no mock-side change can fix it. The query below therefore filters to issues
-that have both an assignee and a project — server-side, which the mock compiles into SQL.
+api.linear.app and no Backlot-side change can fix it. The query below therefore filters to issues
+that have both an assignee and a project — server-side, which Backlot compiles into SQL.
 """
 
 import argparse
@@ -91,7 +91,7 @@ CORPUS = [
 
 # The reader's own field set, plus the filter that keeps its null-dereference bug out of the way.
 # `load_data(query)` takes a document and nothing else — there is no variables argument — so the
-# team is formatted in rather than passed as `$id`. "ENG" is the team KEY; the mock also accepts
+# team is formatted in rather than passed as `$id`. "ENG" is the team KEY; Backlot also accepts
 # the team's UUID or its name.
 QUERY = """
 query Team {
@@ -123,7 +123,7 @@ query Team {
 """
 
 
-def build(mock, token):
+def build(s, token):
     patch_linear_at(f"{s.base_url}/linear")
     return LinearReader(api_key=token)
 
@@ -135,7 +135,7 @@ def main(reader, team="ENG"):
         # printing a cheerful "loaded 0".
         raise SystemExit(
             f"no issues came back for team {team!r} — the reader discards GraphQL "
-            f"errors silently, so check the query against the mock's schema."
+            f"errors silently, so check the query against Backlot's schema."
         )
     print(f"loaded {len(docs)} Document(s):")
     for d in docs:

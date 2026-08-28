@@ -2,16 +2,16 @@
 """Read S3 through the official AWS SDK (boto3). Self-contained: run it directly.
 
     pip install -e ".[examples]"
-    python examples/using-official-sdk/s3.py            # local mock, uses its admin keypair
+    python examples/using-official-sdk/s3.py            # local server, uses its admin keypair
     python examples/using-official-sdk/s3.py --url http://localhost:8000 \
         --access-key <AKIA...> --secret-key <secret>    # AWS keys, e.g. from GET /_meta/users
 
-The only changes from talking to real S3 are ``endpoint_url`` (point it at the mock's ``/s3``) and
+The only changes from talking to real S3 are ``endpoint_url`` (point it at Backlot's ``/s3``) and
 path-style addressing (so the bucket stays in the path, not the hostname). boto3 SigV4-signs every
 request. S3 uses an AWS access-key/secret pair (not a bearer token). With ``--url`` (a running
 server) ``--access-key`` / ``--secret-key`` are **required** — pass real AWS keys, or a pair from
 ``GET <url>/_meta/users`` (each user, and the admin, has an ``s3_access_key_id`` /
-``s3_secret_access_key`` there). Without ``--url`` the local throwaway mock uses its own admin
+``s3_secret_access_key`` there). Without ``--url`` the local throwaway server uses its own admin
 keypair.
 """
 
@@ -69,7 +69,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _admin_keys(base_url: str) -> tuple[str, str]:
-    """The local throwaway mock's admin S3 keypair, read from its /_meta/users."""
+    """The local throwaway server's admin S3 keypair, read from its /_meta/users."""
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/_meta/users") as r:
         data = json.load(r)
     return data["admin_s3_access_key_id"], data["admin_s3_secret_access_key"]
@@ -78,7 +78,7 @@ def _admin_keys(base_url: str) -> tuple[str, str]:
 if __name__ == "__main__":
     args = _parse_args()
     with serve_or_connect(CORPUS, url=args.url) as s:
-        # with --url you pass your own AWS keys; the local throwaway mock uses its admin keypair
+        # with --url you pass your own AWS keys; the local throwaway server uses its admin keypair
         ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(s.base_url)
         s3 = boto3.client(
             "s3",
@@ -86,7 +86,7 @@ if __name__ == "__main__":
             aws_access_key_id=ak,
             aws_secret_access_key=sk,
             region_name="us-east-1",
-            # Path style, explicitly. The mock serves /s3/{bucket}/{key}, and virtual-hosted
+            # Path style, explicitly. Backlot serves /s3/{bucket}/{key}, and virtual-hosted
             # addressing puts the bucket in the HOST — acme-artifacts.localhost:8000 — which
             # resolves to nothing. boto3's default happens to pick path for this endpoint today, so
             # deleting this line looks harmless and then breaks for anyone who sets virtual out of

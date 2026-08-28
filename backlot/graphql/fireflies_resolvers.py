@@ -117,12 +117,12 @@ def _user(email: str | None, display: str | None = None) -> dict | None:
         "num_transcripts": None,
         "recent_meeting": None,
         "recent_transcript": None,
-        # account/billing state this mock does not model — see the SDL header
+        # account/billing state Backlot does not model — see the SDL header
         "minutes_consumed": None,
         "is_admin": None,
         "integrations": None,
         "is_calendar_in_sync": None,
-        # The mock's ACL groups are a permission mechanism, not Fireflies user-groups, so they are
+        # Backlot's ACL groups are a permission mechanism, not Fireflies user-groups, so they are
         # not served under this name. Fireflies serves the empty list, not null.
         "user_groups": [],
     }
@@ -484,7 +484,7 @@ def resolve_users(_root, info, **_ignored):
     roster, not every person the corpus happens to name.
 
     The real `users` query takes no pagination arguments, because a real workspace has tens or
-    hundreds of members. The mock's `principals` table is much broader: every internal reference
+    hundreds of members. Backlot's `principals` table is much broader: every internal reference
     across every source is registered there (16,034 of them on the largest deployed corpus, of whom
     only 327 have a token). Serving all of those as workspace members would be both wrong — they
     have no Fireflies account — and a 1.6 MB unpaginated response, the same hazard Slack's

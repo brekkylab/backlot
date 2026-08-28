@@ -346,6 +346,23 @@ def test_linear_mcp_tools_derive_from_the_served_introspection(client, admin_h):
     assert "comments" in selected_fields(issues.document, "issues", "nodes")
 
 
+def test_linear_the_hand_written_examples_query_still_validates(client, admin_h):
+    """The LlamaIndex reader example writes its own document rather than generating one, so a
+    schema change can turn it into a 400 that no test sees. Read it as text (a test must not
+    import from ``examples/``) and hold it to the bar the generated documents meet above.
+    """
+    import re
+
+    from tests.conftest import REPO_ROOT
+
+    text = (REPO_ROOT / "examples/using-llamaindex-readers/linear.py").read_text()
+    document = re.search(r'^QUERY = """(.*?)"""', text, re.S | re.M)
+    assert document, "no QUERY literal found -- fix this extractor, not the assertion"
+
+    schema = build_client_schema(gql(client, mcp_tools.INTROSPECTION_QUERY, admin_h).json()["data"])
+    assert [e.message for e in validate(schema, parse(document.group(1)))] == []
+
+
 def test_linear_malformed_document_is_a_400_with_a_graphql_envelope(client, admin_h):
     r = gql(client, "{ issues(first: }", admin_h)
     assert r.status_code == 400

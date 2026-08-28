@@ -103,7 +103,7 @@ query Transcripts($limit: Int, $skip: Int, $keyword: String, $scope: String) {
     duration
     host_email
     organizer_email
-    channels
+    channels { id title }
     participants
     transcript_url
     audio_url
@@ -129,7 +129,7 @@ query Transcript($id: String!) {
 """
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--url", help="existing mock server (default: spawn a throwaway one)")
+parser.add_argument("--url", help="an already-running Backlot (default: spawn a throwaway one)")
 parser.add_argument("--token", help="user token; responses are then ACL-filtered to that user")
 args = parser.parse_args()
 
@@ -162,7 +162,9 @@ with serve_or_connect(CORPUS, url=args.url) as s:
             summary = t["summary"]
             print(f"\n  {t['title']}")
             print(f"    {t['dateString']}  {t['duration']} min  host={t['host_email']}")
-            print(f"    channels={t['channels']}  id={t['id']}")
+            # a channel's `id` IS its name, and is what `transcripts(channel_id:)` takes back
+            channels = [c["id"] for c in t["channels"]]
+            print(f"    channels={channels}  id={t['id']}")
             print(f"    overview: {(summary['overview'] or '(none)')[:88]}")
             if summary["topics_discussed"]:
                 print(f"    topics: {', '.join(summary['topics_discussed'])}")

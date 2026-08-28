@@ -76,7 +76,7 @@ which rewrites those constants to Backlot before the Google resources are built:
 
 ```python
 from backlot.integrations.mirage import point_google_at
-point_google_at(s.base_url)              # googleapis.com  ->  the mock
+point_google_at(s.base_url)              # googleapis.com  ->  Backlot
 gmail = GmailResource(GmailConfig(**creds))
 ```
 
@@ -94,7 +94,7 @@ resource is built:
 
 ```python
 from backlot.integrations.mirage import point_github_at
-point_github_at(s.base_url)                       # api.github.com  ->  the mock
+point_github_at(s.base_url)                       # api.github.com  ->  Backlot
 repo = GitHubResource(GitHubConfig(token=T, owner="acme", repo="gateway"))
 ```
 

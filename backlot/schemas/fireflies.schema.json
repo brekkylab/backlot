@@ -62,7 +62,7 @@
               "integer",
               "number"
             ],
-            "description": "Seconds from the start of the meeting. Required, and not null: the alternative is a speaking-rate estimate of when somebody spoke. The live API declares this `Float` and nullable, so this is a rule the mock imposes on a corpus rather than one Fireflies states — every sentence a real transcript serves carries a reading."
+            "description": "Seconds from the start of the meeting. Required, and not null: the alternative is a speaking-rate estimate of when somebody spoke. The live API declares this `Float` and nullable, so this is a rule Backlot imposes on a corpus rather than one Fireflies states — every sentence a real transcript serves carries a reading."
           },
           "end_time": {
             "type": [
@@ -86,7 +86,7 @@
             ]
           }
         ],
-        "description": "A transcript utterance. Its text is required: `content` IS the sentence concatenation, so a sentence carrying none becomes a stored row the transcript's own text does not contain, and the inverse the two are defined by no longer holds. `start_time` is required too — a rule this mock imposes rather than one the API states, whose `Sentence.start_time` is a nullable `Float`: every sentence a real transcript serves carries a reading, and the alternative here is a speaking-rate estimate of when somebody spoke.",
+        "description": "A transcript utterance. Its text is required: `content` IS the sentence concatenation, so a sentence carrying none becomes a stored row the transcript's own text does not contain, and the inverse the two are defined by no longer holds. `start_time` is required too — a rule Backlot imposes rather than one the API states, whose `Sentence.start_time` is a nullable `Float`: every sentence a real transcript serves carries a reading, and the alternative here is a speaking-rate estimate of when somebody spoke.",
         "required": [
           "start_time"
         ]
@@ -242,16 +242,16 @@
     },
     "analytics": {
       "type": "object",
-      "description": "Served as `Transcript.analytics` (sentiments / speakers / categories). Synthesized deterministically when absent — the mock never derives sentiment from the text.",
+      "description": "Served as `Transcript.analytics` (sentiments / speakers / categories). Synthesized deterministically when absent — Backlot never derives sentiment from the text.",
       "additionalProperties": true
     },
     "audio_url": {
       "type": "string",
-      "description": "Recording URL. Default: derived from the transcript id. The mock serves the URL, never the media bytes."
+      "description": "Recording URL. Default: derived from the transcript id. Backlot serves the URL, never the media bytes."
     },
     "video_url": {
       "type": "string",
-      "description": "Recording URL. Default: derived from the transcript id. The mock serves the URL, never the media bytes."
+      "description": "Recording URL. Default: derived from the transcript id. Backlot serves the URL, never the media bytes."
     },
     "transcript_url": {
       "type": "string",

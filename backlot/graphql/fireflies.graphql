@@ -12,7 +12,7 @@
 # not carry resolves to null rather than to an invented one. The specific stubs are:
 #
 #   * `Sentence.ai_filters` classifier flags (task/question/metric) — deriving them would mean
-#     running the classifiers this mock deliberately does not. The object itself is served, as
+#     running the classifiers Backlot deliberately does not. The object itself is served, as
 #     Fireflies serves it, with `text_cleanup` carrying the sentence text.
 #   * `Summary.transcript_chapters`, `bullet_gist`, `gist` — further LLM renderings of the same
 #     notes; the corpus carries one set of notes, served as `overview`/`action_items`/`outline`/
@@ -25,10 +25,10 @@
 #   * `Transcript.shared_with`, `workspace_users` — link-sharing and workspace membership state.
 #   * `Summary.notes`, `short_overview`, `extended_sections` — see the LLM-rendering note above.
 #   * `User.minutes_consumed`, `is_admin`, `integrations`, `is_calendar_in_sync`, `user_groups`
-#     — account/billing state, which is not what this mock models. The mock's own ACL groups are
+#     — account/billing state, which is not what Backlot models. Backlot's own ACL groups are
 #     a permission mechanism, not Fireflies user-groups, so they are not served under that name.
 #
-# Mutations are deliberately absent: this is a read-only mock, so the schema declares no
+# Mutations are deliberately absent: this is a read-only server, so the schema declares no
 # Mutation type at all rather than accepting writes and dropping them.
 
 "Unix epoch milliseconds, which is what Fireflies returns for a meeting date."
@@ -128,9 +128,9 @@ type Transcript {
   "Channels the meeting belongs to."
   channels: [Channel!]!
   transcript_url: String
-  "URL of the recording. The mock serves the URL; there are no media bytes behind it."
+  "URL of the recording. Backlot serves the URL; there are no media bytes behind it."
   audio_url: String
-  "URL of the recording. The mock serves the URL; there are no media bytes behind it."
+  "URL of the recording. Backlot serves the URL; there are no media bytes behind it."
   video_url: String
   "The utterances, in spoken order."
   sentences: [Sentence!]
@@ -300,15 +300,15 @@ type User {
   recent_meeting: String
   "The id of the user's most recent transcript."
   recent_transcript: String
-  "Account state, which this mock does not model. Always null."
+  "Account state, which Backlot does not model. Always null."
   is_calendar_in_sync: Boolean
-  "Account state, which this mock does not model. Always empty — see the header."
+  "Account state, which Backlot does not model. Always empty — see the header."
   user_groups: [UserGroup!]
-  "Account/billing state, which this mock does not model. Always null."
+  "Account/billing state, which Backlot does not model. Always null."
   minutes_consumed: Float
-  "Account/billing state, which this mock does not model. Always null."
+  "Account/billing state, which Backlot does not model. Always null."
   is_admin: Boolean
-  "Account/billing state, which this mock does not model. Always null."
+  "Account/billing state, which Backlot does not model. Always null."
   integrations: [String!]
 }
 

@@ -89,7 +89,7 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `repos/{o}/{r}/git/trees/{ref}` | |
 | `repos/{o}/{r}/git/blobs/{sha}` | |
 | `repos/{o}/{r}/git/ref/{ref}` | Takes the ref as a trailing path, so `heads/release/2026-03` resolves |
-| `repos/{o}/{r}/branches[/{branch}]` | |
+| `repos/{o}/{r}/branches[/{branch}]` | `protected`: selects, and nothing here is protected |
 | `repos/{o}/{r}/tags` | Empty: a corpus states a repo's files, never its tags |
 | `repos/{o}/{r}/commits/{sha}` | |
 | `repos/{o}/{r}/statuses/{sha}` | |

@@ -1224,7 +1224,9 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
 
 
 @router.get("/repos/{owner}/{repo}/branches")
-async def list_branches(owner: str, repo: str, request: Request):
+async def list_branches(
+    owner: str, repo: str, request: Request, protected: str | None = Query(None)
+):
     """The repo's branches — one, the branch the corpus snapshots and the `default_branch` a repo
     object reports.
 
@@ -1232,11 +1234,18 @@ async def list_branches(owner: str, repo: str, request: Request):
     api.github.com an item's `commit` carries `sha` and `url` and stops there, where the
     single-branch route nests the whole commit under the same key. Serving the longer object from
     both would hand a client a field real GitHub never sends here.
+
+    `?protected=` selects, so it is honoured rather than ignored: nothing here is protected, and a
+    client that asked for the protected ones and got an unprotected branch back would read this
+    branch as push-guarded. Real parses the value the way `?recursive=` is parsed (measured:
+    `true`/`1`/`TRUE`/`yes`/`banana` filter, `false`/`0`/empty do not), which is :func:`_truthy`.
     """
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
+    if _truthy(protected):
+        return []
     sha = _repo_commit_sha(repo)
     return [
         {

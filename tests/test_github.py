@@ -643,6 +643,17 @@ def test_github_lists_the_refs_a_client_enumerates_before_it_reads(gh_client, gh
     assert body[0]["commit"]["sha"] == single["commit"]["sha"]
     assert body[0]["commit"]["url"] == single["commit"]["url"]
 
+    # `?protected=` selects, and by the same rule `?recursive=` follows on git/trees: measured on
+    # api.github.com, `true`/`1`/`TRUE`/`yes`/`banana` all filter to the protected branches (none,
+    # there or here) while `false`/`0`/empty leave the listing alone.
+    for value, kept in (("true", 0), ("1", 0), ("yes", 0), ("false", 1), ("0", 1), ("", 1)):
+        r = c.get(
+            f"/github/repos/{gh_org}/codebase/branches",
+            headers=gh_admin_h,
+            params={"protected": value},
+        )
+        assert r.status_code == 200 and len(r.json()) == kept, f"?protected={value!r}"
+
     tags = c.get(f"/github/repos/{gh_org}/codebase/tags", headers=gh_admin_h)
     assert tags.status_code == 200 and tags.json() == []
 

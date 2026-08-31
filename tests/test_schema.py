@@ -109,6 +109,47 @@ def test_a_github_repo_is_a_name_not_an_owner_qualified_path(repo, ok):
 
 
 @pytest.mark.parametrize(
+    "channel,ok",
+    [
+        ("incidents", True),
+        ("eng-platform", True),
+        ("release_war_room", True),
+        ("q4-2026", True),
+        ("#incidents", False),
+        ("Incidents", False),
+        ("eng platform", False),
+        ("slack/sports", False),
+        ("eng.platform", False),
+        # Measured, against what the docs say: a live workspace's conversations.list answers with
+        # these three, so a name real Slack holds cannot be refused here either.
+        ("일반", True),
+        ("랜덤", True),
+        ("식사", True),
+        ("東京-eng", True),
+        ("café", True),
+        # "must be 80 characters or less" is the other half of the sentence Slack states
+        ("c" * 80, True),
+        ("c" * 81, False),
+    ],
+)
+def test_a_slack_channel_is_named_the_way_slack_names_one(channel, ok):
+    """`channel` is served verbatim as a conversation's `name` and `name_normalized`, so a name
+    Slack would refuse is an object `conversations.list` could never answer with -- and a connector
+    that round-trips the name back into a call fails against Slack while passing here. The leading
+    `#` is the one an LLM writing a corpus reaches for, because it is the spelling humans use, but
+    it is display sugar the client adds rather than part of the name: stored, it also doubles into
+    a `##incidents` topic. Slack's own charset is the check, so uppercase and a space go with it.
+
+    The charset is wider than the documented sentence, though: `conversations.create` names only
+    lowercase letters, digits, hyphens and underscores, while real Slack also holds non-Latin
+    names. Enforcing the sentence as written would refuse a corpus the live API could serve, which
+    is the same bug pointing the other way.
+    """
+    errors = _first_error({"source_type": "slack", "channel": channel})
+    assert (errors == []) is ok
+
+
+@pytest.mark.parametrize(
     "source_type,container",
     sorted((src, store.grouping_col(src)) for src in store.SOURCE_TABLE),
 )

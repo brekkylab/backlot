@@ -17,7 +17,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 |---|---|---|---|---|---|
 | `confluence` | Confluence | `/atlassian/wiki/rest/api` | 10 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one `POST`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
-| `github` | GitHub | `/github` | 29 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue or pull request. |
+| `github` | GitHub | `/github` | 31 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue or pull request. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
 | `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 11 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
@@ -89,7 +89,8 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `repos/{o}/{r}/git/trees/{ref}` | |
 | `repos/{o}/{r}/git/blobs/{sha}` | |
 | `repos/{o}/{r}/git/ref/{ref}` | Takes the ref as a trailing path, so `heads/release/2026-03` resolves |
-| `repos/{o}/{r}/branches/{branch}` | |
+| `repos/{o}/{r}/branches[/{branch}]` | |
+| `repos/{o}/{r}/tags` | Empty: a corpus states a repo's files, never its tags |
 | `repos/{o}/{r}/commits/{sha}` | |
 | `repos/{o}/{r}/statuses/{sha}` | |
 | `repos/{o}/{r}/collaborators` | |

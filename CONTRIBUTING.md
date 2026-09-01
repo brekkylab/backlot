@@ -77,13 +77,14 @@ file with them:
 | `git` | the tests in `tests/test_github.py` that build a real repo |
 
 Install what covers the surface you touched, or all of it at once, and let `-rs` confirm nothing
-you meant to run skipped. The zero-skip install is two commands, the way CI's is: the HubSpot
+you meant to run skipped. The zero-skip install is two commands, the way CI's is — `.[all]`
+is every extra above, kept in step with them by `tests/test_packaging.py`, and the HubSpot
 reader pins `hubspot-api-client<9` against the `>=12` that `examples` needs — over-restrictive
 rather than a real incompatibility, so it goes in past its own dependencies, at the version CI
 installs:
 
 ```bash
-uv pip install -e ".[dev,examples,mcp,llamaindex,mirage,fsspec]"
+uv pip install -e ".[all]"
 uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 ```
 

@@ -1360,3 +1360,39 @@ def test_slack_a_private_channels_members_are_its_readers(tmp_path):
         assert client.get(
             "/slack/api/conversations.history", headers=bo, params={"channel": private["id"]}
         ).json()["messages"], "a member of a private channel reads it"
+
+
+def test_slack_one_person_has_one_handle_across_the_surface(tmp_path):
+    """`users.list` names a person by `name` and `search.messages` names the same person by
+    `username`, and Slack spells both the handle: this method's own spec example carries
+    `"username": "roach"` (`slack_web_openapi_v2.json`,
+    `paths./search.messages.get.responses.200`). A client that reads the id off `user` and the
+    label off `username` gets one person, so the two must not answer two spellings of them.
+
+    A dotted address is what separates the two derivations — the handle drops the dot, and the raw
+    local part does not — and no address in the module's shared fixture has one, so the case is
+    stated here rather than assumed.
+    """
+    records = [
+        {
+            "source_type": "slack",
+            "channel": "incidents",
+            "content": "gateway is throwing 502s",
+            "author_email": "ava.chen@acme.com",
+            "visibility": "public",
+        }
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        member = next(
+            m
+            for m in client.post("/slack/api/users.list", headers=h).json()["members"]
+            if m["profile"]["email"] == "ava.chen@acme.com"
+        )
+        (hit,) = client.post(
+            "/slack/api/search.messages", headers=h, params={"query": "gateway"}
+        ).json()["messages"]["matches"]
+
+        assert hit["user"] == member["id"]  # the id already agreed
+        assert hit["username"] == member["name"] == "avachen"
+        assert "." not in hit["username"], "a handle drops the dot the address carries"

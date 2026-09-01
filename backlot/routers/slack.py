@@ -899,7 +899,14 @@ async def search_all(request: Request):
 
 
 def _search_match(conn, row) -> dict:
-    """A search.messages `matches[]` entry for a slack row."""
+    """A search.messages `matches[]` entry for a slack row.
+
+    `username` is the author's handle, the same string `users.list` gives that person as `name` —
+    Slack's spec spells it that way in this method's own example (`slack_web_openapi_v2.json`,
+    `paths./search.messages.get.responses.200`, whose matches carry `"username": "roach"`). It goes
+    through `_handle` for that reason: a hit and a user object name one person, and a client that
+    reads the id off `user` and the handle off `username` must not get two spellings of them.
+    """
     ch = row["channel"]
     cid = synth.slack_channel_id(ch)
     text = row["content"]
@@ -913,7 +920,7 @@ def _search_match(conn, row) -> dict:
             "is_private": not store.container_has_public(conn, "slack", ch),
         },
         "user": synth.slack_user_id(row["author_email"]),
-        "username": row["author_email"].split("@")[0],
+        "username": _handle(row["author_email"]),
         "ts": ts,
         "text": text,
         "permalink": f"https://{get_settings().org_name}.slack.com/archives/{cid}/p{ts.replace('.', '')}",

@@ -2281,7 +2281,7 @@ def _slack_channel(raw) -> str:
     charset instead of failing a million-document import over one record.
     """
     name = str(raw.get("channel") or "").rsplit("/", 1)[-1].strip().lower()
-    return _SLACK_NAME_ILLEGAL.sub("-", name).strip("-")[:80] or "general"
+    return _SLACK_NAME_ILLEGAL.sub("-", name)[:80].strip("-") or "general"
 
 
 def _byo_slack(dsid, raw, P):

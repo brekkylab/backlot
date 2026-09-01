@@ -90,6 +90,21 @@ uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request
 (see `.github/workflows/ci.yml`).
 
+### Testing the agent skill
+
+The repository is its own plugin marketplace, so a working tree can be installed as one. Point the
+harness at a **git URL with your branch as the fragment**, not at the checkout's path:
+
+```bash
+claude plugin marketplace add "https://github.com/brekkylab/backlot.git#<branch>"
+claude plugin install backlot@brekkylab
+```
+
+A directory source is copied verbatim, gitignored files included, which pulls your `.venv` into
+`~/.claude/plugins/cache/` and costs hundreds of megabytes. Cloning a ref takes the tracked tree
+alone, a few megabytes, and is what a user installing from `main` gets. Remove both the plugin and
+the marketplace when you are done — uninstalling leaves the cache directory behind.
+
 ## Pull requests
 
 1. Fork and create a topic branch off `main`.

@@ -19,8 +19,9 @@
     },
     "channel": {
       "type": "string",
-      "minLength": 1,
-      "description": "The channel this document belongs to."
+      "pattern": "^(?:[a-z0-9_-]|[^\\u0000-\\u007f])+$",
+      "maxLength": 80,
+      "description": "The channel this document belongs to, named the way Slack names one. The ASCII half of the rule is documented -- `conversations.create` and `conversations.rename` both say \"Channel names may only contain lowercase letters, numbers, hyphens, and underscores, and must be 80 characters or less\", refusing the rest as `invalid_name_specials` (\"unallowed special characters or upper case characters\") or `invalid_name_maxlength`. The other half is not: Slack also holds non-Latin names, which no vendor page states and a live workspace demonstrates -- `conversations.list` there answers with `일반`, `랜덤` and `식사` -- so every character above U+007F is accepted rather than refused for a rule Slack does not enforce. What is refused is what Slack refuses: uppercase, whitespace and ASCII punctuation. The value is served verbatim as a conversation's `name` and `name_normalized`, so a name Slack would refuse is an object the real API cannot return, and a connector that feeds the name back into a call fails against Slack while passing here. The leading `#` is the one to watch: it is display sugar a client puts in front, never part of the name, and stored it also doubles into a `##incidents` topic."
     },
     "group": {
       "type": [

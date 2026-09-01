@@ -109,6 +109,51 @@ def test_a_github_repo_is_a_name_not_an_owner_qualified_path(repo, ok):
 
 
 @pytest.mark.parametrize(
+    "channel,ok",
+    [
+        ("incidents", True),
+        ("eng-platform", True),
+        ("release_war_room", True),
+        ("q4-2026", True),
+        ("#incidents", False),
+        ("Incidents", False),
+        ("eng platform", False),
+        ("slack/sports", False),
+        ("eng.platform", False),
+        # A legal name with a newline stuck on the end. Python's `$` matches before a final
+        # newline and ECMA-262's does not, so this one is the validator's business rather than
+        # the pattern's -- see test_every_anchored_pattern_refuses_a_trailing_newline.
+        ("incidents\n", False),
+        # Measured, against what the docs say: a live workspace's conversations.list answers with
+        # these three, so a name real Slack holds cannot be refused here either.
+        ("일반", True),
+        ("랜덤", True),
+        ("식사", True),
+        ("東京-eng", True),
+        ("café", True),
+        # "must be 80 characters or less" is the other half of the sentence Slack states
+        ("c" * 80, True),
+        ("c" * 81, False),
+    ],
+)
+def test_a_slack_channel_is_named_the_way_slack_names_one(channel, ok):
+    """`channel` is served verbatim as a conversation's `name` and `name_normalized`, so a name
+    Slack would refuse is an object `conversations.list` could never answer with -- and a connector
+    that round-trips the name back into a call fails against Slack while passing here. The leading
+    `#` is the one an LLM writing a corpus reaches for, because it is the spelling humans use, but
+    it is display sugar the client adds rather than part of the name: stored, it also doubles into
+    a `##incidents` topic. Slack's own charset is the check, so uppercase and a space go with it.
+
+    The charset is wider than the documented sentence, though: `conversations.create` names only
+    lowercase letters, digits, hyphens and underscores, while real Slack also holds non-Latin
+    names. Enforcing the sentence as written would refuse a corpus the live API could serve, which
+    is the same bug pointing the other way.
+    """
+    errors = _first_error({"source_type": "slack", "channel": channel})
+    assert (errors == []) is ok
+
+
+@pytest.mark.parametrize(
     "source_type,container",
     sorted((src, store.grouping_col(src)) for src in store.SOURCE_TABLE),
 )
@@ -375,6 +420,75 @@ def test_schema_files_are_valid_json_schemas():
     for src, schema in validation.SERVICE_SCHEMAS.items():
         Draft202012Validator.check_schema(schema)
         assert schema["properties"]["source_type"]["const"] == src
+
+
+# One value each pattern in backlot/schemas/ accepts. Asserted to COVER every patterned field
+# below, so adding a pattern without a sample fails here rather than going untested.
+PATTERN_SAMPLES = {
+    ("github", "repo"): "gateway",
+    ("hubspot", "record_id"): "12345",
+    ("jira", "key"): "PAY-1",
+    ("linear", "identifier"): "ENG-7",
+    ("s3", "bucket"): "eng-artifacts",
+    ("slack", "channel"): "incidents",
+}
+
+
+def _patterned_fields():
+    return {
+        (src, field)
+        for src, schema in validation.SERVICE_SCHEMAS.items()
+        for field, spec in schema["properties"].items()
+        if isinstance(spec, dict) and "pattern" in spec
+    }
+
+
+def test_pattern_samples_cover_every_patterned_field():
+    assert _patterned_fields() == set(PATTERN_SAMPLES), (
+        "PATTERN_SAMPLES is what proves each pattern is anchored; a pattern with no sample here "
+        "is a pattern nothing checks"
+    )
+
+
+@pytest.mark.parametrize("src,field", sorted(_patterned_fields()))
+def test_every_anchored_pattern_refuses_a_trailing_newline(src, field):
+    """`pattern` is defined against ECMA-262, whose `$` matches only at the end of the input.
+    Python's `$` also matches just before a final newline, so `re.search` leaves an `^...$`
+    pattern unanchored for exactly one character -- and every pattern in backlot/schemas/ is
+    anchored. A corpus could state a container name the vendor could not hold past a schema that
+    already writes the refusal down: `channel` is served verbatim as a conversation's `name`.
+
+    Only the trailing newline: a newline anywhere else was always refused, which is what says the
+    validator is at fault rather than the patterns.
+    """
+    good = PATTERN_SAMPLES[(src, field)]
+    assert record_errors(complete(**{"source_type": src, field: good})) == []
+    for bad in (good + "\n", good + "\n\n", good + "\nx", good + "\r"):
+        errs = record_errors(complete(**{"source_type": src, field: bad}))
+        assert errs, f"{src}.{field} accepted {bad!r}"
+        assert any("does not match" in e for e in errs), errs
+
+
+@pytest.mark.parametrize(
+    "patrn,expected",
+    [
+        (r"^[a-z]+$", r"^[a-z]+\Z"),
+        # `$` is a metacharacter in every branch, not just the last one
+        (r"^(?:a$|b)$", r"^(?:a\Z|b)\Z"),
+        # ...and not when it is escaped, or inside a character class
+        (r"^\$[0-9]+$", r"^\$[0-9]+\Z"),
+        (r"^[$a-z]+$", r"^[$a-z]+\Z"),
+        # A `]` in the first position of a class is a literal, so the class closes on the second
+        (r"^[]$]+$", r"^[]$]+\Z"),
+        (r"^[^]$]+$", r"^[^]$]+\Z"),
+        # An unanchored pattern stays unanchored: `pattern` is a partial match by spec
+        (r"^[a-z]+", r"^[a-z]+"),
+    ],
+)
+def test_the_end_anchor_rewrite_touches_only_a_real_end_anchor(patrn, expected):
+    """A literal dollar sign is a value a corpus can carry, so rewriting one would refuse a
+    record the schema accepts."""
+    assert validation._ecma_end_anchors(patrn) == expected
 
 
 @pytest.mark.parametrize(

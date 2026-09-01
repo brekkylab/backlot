@@ -2261,8 +2261,31 @@ def _byo_gmail(dsid, raw, P):
     return [rec], {"owner": owner_email, "people": people, "group": None, "confidentiality": None}
 
 
+# The characters a Slack channel name may not hold, which is `slack.schema.json`'s `channel`
+# pattern read the other way round: uppercase, whitespace and ASCII punctuation. Everything above
+# U+007F stays -- real Slack serves non-Latin names, so reducing one to hyphens would destroy a
+# name it could hold. The schema is the contract; `test_byo_slack_channel_is_a_name_slack_could_hold`
+# validates this function's output against it, so the two cannot drift apart.
+_SLACK_NAME_ILLEGAL = re.compile(r"[^a-z0-9_\u0080-\U0010ffff-]+")
+
+
+def _slack_channel(raw) -> str:
+    """The bench's channel as a name Slack could hold.
+
+    A value the schema would refuse stops the whole import rather than serving a conversation
+    object the real API cannot return, so the conversion states a legal name instead.
+
+    One thread in the bench spells its channel as the path from the sources root, `slack/sports`,
+    rather than as the channel; the directory it sits in and the fifteen threads beside it both
+    spell it `sports`, so the trailing segment is the name. Everything left over is reduced to the
+    charset instead of failing a million-document import over one record.
+    """
+    name = str(raw.get("channel") or "").rsplit("/", 1)[-1].strip().lower()
+    return _SLACK_NAME_ILLEGAL.sub("-", name)[:80].strip("-") or "general"
+
+
 def _byo_slack(dsid, raw, P):
-    channel = raw.get("channel") or "general"
+    channel = _slack_channel(raw)
     _title, content = _title_content(raw)
     participants = _names(raw.get("participants"))
     turns = parse_slack_transcript(content, participants)

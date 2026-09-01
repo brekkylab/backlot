@@ -208,6 +208,12 @@ def _channel_core(request: Request, conn, name: str, caller: Caller) -> dict:
     return {
         "id": synth.slack_channel_id(name),
         "name": name,
+        # The same string as `name`, measured rather than assumed: every channel a live
+        # workspace's conversations.list answers with carries a `name_normalized` identical to
+        # its `name`, and that holds for the non-Latin ones too, which is where a normalization
+        # would show if there were one. Slack documents nothing about what it does -- the
+        # conversation object shows only an ASCII example, and the vendor's OpenAPI carries no
+        # description for the field -- so the response is the only source there is.
         "name_normalized": name,
         "is_channel": True,
         "is_group": False,

@@ -32,6 +32,22 @@ TREE_MAX_BYTES = 7 * 1024 * 1024
 
 
 def _require(request: Request) -> Caller:
+    """The caller, or real's 401 for the reason it failed.
+
+    Two reasons, two messages, as real has them: "Bad credentials" is for a credential that arrived
+    and did not resolve, and a request carrying none gets "Requires authentication" (measured
+    against api.github.com: a bad bearer at `/repos/{owner}/{repo}/collaborators`, no header at the same route
+    and at `/user`). A client that branches on which — retry versus re-authenticate — reads one
+    answer for both otherwise.
+
+    Header PRESENT but not a scheme this API takes is the second case, not the first: real ignores
+    an `Authorization` it cannot parse and serves the request anonymously (measured: `Basic …` and a
+    scheme-less value both answer 200 on a public repo), so the caller reaches an auth-required
+    route with no credential rather than with a rejected one. Backlot serves nothing anonymously,
+    which is why that lands here as the missing-credential 401 rather than as a public read.
+    """
+    if auth.bearer_token(request) is None:
+        raise HTTPException(status_code=401, detail="Requires authentication")
     return auth.require_bearer(request, "Bad credentials")
 
 
@@ -307,13 +323,21 @@ async def search_issues(
     request: Request,
     response: Response,
     q: str = Query("", description="Issues/PRs search query"),
-    page: int | None = Query(None, ge=1),
-    per_page: int | None = Query(None, ge=1),
+    page: int | None = Query(None),
+    per_page: int | None = Query(None),
 ):
     """Issues-and-PRs search (GitHub `GET /search/issues`): free text over title+body (FTS)
-    plus repo:/is:/state:/type:/label:/author: qualifiers, ACL-scoped to the caller."""
-    conn = auth.conn(request)
+    plus repo:/is:/state:/type:/label:/author: qualifiers, ACL-scoped to the caller.
+
+    A blank `q` is real's 422, the same envelope `/search/code` answers with. This used to be a
+    listing of everything the caller can see, which is the expensive kind of divergence: a client
+    that forgot its query got a plausible, ACL-scoped result set here and a hard 422 in production
+    (measured against api.github.com — `GET /search/issues` with no `q` is `Validation Failed`, field `q`,
+    code `missing`)."""
     caller = _require(request)
+    if not q.strip():
+        raise _search_validation_failed("q")
+    conn = auth.conn(request)
     ids = auth.visible_ids(request, caller)
     free, quals = _parse_q(q, _GH_ISSUE_QUALS)
     container = None  # a repo: qualifier narrows to one repo
@@ -519,8 +543,8 @@ async def search_code(
             "repo:/path:/filename:/extension:/in:file/in:path qualifiers."
         ),
     ),
-    page: int | None = Query(None, ge=1),
-    per_page: int | None = Query(None, ge=1),
+    page: int | None = Query(None),
+    per_page: int | None = Query(None),
 ):
     """Code search (GitHub `GET /search/code`): free text over a file's body and its path, plus
     repo:/path:/filename:/extension:/in: qualifiers, ACL-scoped to the caller.
@@ -536,8 +560,8 @@ async def search_code(
     useful rather than merely located.
 
     A blank `q` is real's 422 rather than a listing: a code search with no term is a client bug
-    better reported than answered with a corpus dump. (`/search/issues` above answers a blank `q`
-    as a listing instead — a tolerance Backlot keeps there, not a rule this endpoint follows.)
+    better reported than answered with a corpus dump. `/search/issues` above answers a blank `q`
+    the same way, and for the same measured reason.
     """
     caller = _require(request)
     if not q.strip():
@@ -647,8 +671,8 @@ def _repo_page(request, conn, owner: str, ids, page, per_page) -> Response:
 async def list_repos(
     org: str,
     request: Request,
-    page: int | None = Query(None, ge=1),
-    per_page: int | None = Query(None, ge=1),
+    page: int | None = Query(None),
+    per_page: int | None = Query(None),
 ):
     conn = auth.conn(request)
     caller = _require(request)
@@ -658,8 +682,8 @@ async def list_repos(
 @router.get("/user/repos")
 async def list_user_repos(
     request: Request,
-    page: int | None = Query(None, ge=1),
-    per_page: int | None = Query(None, ge=1),
+    page: int | None = Query(None),
+    per_page: int | None = Query(None),
 ):
     """The repositories the CREDENTIAL can reach (real ``GET /user/repos``).
 
@@ -693,8 +717,8 @@ async def list_issues(
     repo: str,
     request: Request,
     state: str = Query("open"),
-    page: int | None = Query(None, ge=1),
-    per_page: int | None = Query(None, ge=1),
+    page: int | None = Query(None),
+    per_page: int | None = Query(None),
 ):
     conn = auth.conn(request)
     caller = _require(request)
@@ -808,8 +832,8 @@ async def list_pulls(
     repo: str,
     request: Request,
     state: str = Query("open"),
-    page: int | None = Query(None, ge=1),
-    per_page: int | None = Query(None, ge=1),
+    page: int | None = Query(None),
+    per_page: int | None = Query(None),
 ):
     conn = auth.conn(request)
     caller = _require(request)
@@ -994,8 +1018,8 @@ async def pull_files(
     repo: str,
     number: int,
     request: Request,
-    page: int | None = Query(None, ge=1),
-    per_page: int | None = Query(None, ge=1),
+    page: int | None = Query(None),
+    per_page: int | None = Query(None),
 ):
     """The pull's changed-file list (``filename``/``status``/``additions``/``deletions``/``patch``),
     paginated as the real API paginates it. See the changeset note below for where it comes from."""

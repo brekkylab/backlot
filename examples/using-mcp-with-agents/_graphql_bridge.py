@@ -98,8 +98,7 @@ def main() -> None:
 
     import httpx
     from fastmcp import FastMCP
-    from fastmcp.tools import Tool
-    from fastmcp.tools.tool import ToolResult
+    from fastmcp.tools import Tool, ToolResult
 
     client = httpx.AsyncClient(headers={"Authorization": f"Bearer {args.token}"}, timeout=30)
 

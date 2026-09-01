@@ -4,7 +4,7 @@
 Fetches Backlot's **MCP-ready** spec for one source (``GET /_meta/openapi/<source>`` — Backlot
 slices its own ``/openapi.json`` to that source and collapses the GET/POST and v2/v3 fidelity
 aliases server-side, so there's nothing to clean up here) and serves those operations as MCP tools
-via ``FastMCP.from_openapi()`` over an ``httpx.AsyncClient`` whose ``Authorization`` header is the
+via ``FastMCP.from_openapi()`` over an ``httpx2.AsyncClient`` whose ``Authorization`` header is the
 caller's credential — so Backlot's per-token ACL is enforced on every tool call.
 
 Auth: ``--username`` present → HTTP Basic (``username:token``, used by Atlassian); otherwise Bearer.
@@ -60,10 +60,12 @@ def main() -> None:
     args = _parse_args()
     spec = _fetch_mcp_spec(args.base_url, args.source)
 
-    import httpx
+    import httpx2
     from fastmcp import FastMCP
 
-    client = httpx.AsyncClient(
+    # httpx2, not httpx: `from_openapi` takes an httpx2 client. A legacy httpx one is still
+    # accepted, under a deprecation warning that says it will stop being accepted.
+    client = httpx2.AsyncClient(
         base_url=args.base_url.rstrip("/"),
         headers=_auth_header(args.token, args.username),
         timeout=30,

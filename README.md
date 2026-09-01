@@ -39,6 +39,19 @@ with backlot.serve() as s:                             # no arguments: a tiny he
 
 The only change from talking to the live service is the base URL.
 
+### Let your coding agent run Backlot instantly
+
+This repo is its own plugin marketplace, so the [agent skill](skills/backlot/SKILL.md) installs with no clone and no `pip install` first:
+
+```bash
+claude plugin marketplace add brekkylab/backlot && claude plugin install backlot@brekkylab
+codex plugin marketplace add brekkylab/backlot && codex plugin add backlot@brekkylab
+```
+
+and prompt like this:
+
+> Mock our Slack workspace with three messages in an #incidents channel, get a server running, then show me what `conversations.history` actually returns for that channel.
+
 ## What it serves
 
 Every source on one local port, each behind the path prefix its own SDK expects.

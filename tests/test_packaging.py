@@ -17,6 +17,7 @@ different shape — a path resolving *outside* the package entirely — which en
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import tomllib
@@ -112,3 +113,139 @@ def test_pypi_readme_has_no_relative_links():
     ]
     relative = [t for t in targets if not t.startswith(("http://", "https://", "#"))]
     assert not relative, f"README.pypi.md links break on PyPI: {relative}"
+
+
+# The same drift class, one layer up: an OPTIONAL-dependency gate. `pytest.importorskip` makes a
+# test self-skip when its module is absent, so a gate whose distribution no extra carries never
+# fails anywhere — a contributor who installed every extra still skips it, believing they ran it,
+# and CI's `-rs` reports it without failing (kept that way on purpose; these tests read sources,
+# not runs). CONTRIBUTING maps each extra to what sits out without it, and that table is prose:
+# nothing held it to `pyproject.toml` or to what the tests actually gate on. The two tests below do.
+
+# importorskip module -> the pyproject dependency that provides it, for the names PEP 503
+# normalization cannot reach. Everything else maps by convention (`llama_index.readers.slack` <->
+# `llama-index-readers-slack`); a new gate that lands here with neither breaks the test, which is
+# the point — the map is then updated in the same diff that adds the gate.
+_IMPORT_TO_DIST_EXCEPTIONS = {
+    "googleapiclient": "google-api-python-client",
+    "github": "PyGithub",
+    "atlassian": "atlassian-python-api",
+    "botocore": "boto3",  # carried transitively: boto3 pins it
+    "hubspot": "hubspot-api-client",
+    "mirage.core.github._client": "mirage-ai",
+    "mirage.core.google._client": "mirage-ai",
+}
+
+# Gates whose distribution deliberately has no extra — CONTRIBUTING's "which no extra carries"
+# row. A module leaves this set by an extra gaining its distribution, not by editing the set.
+_DOCUMENTED_ABSENT = {"llama_index.readers.hubspot": "llama-index-readers-hubspot"}
+
+
+def _norm(dist: str) -> str:
+    return re.sub(r"[-_.]+", "-", dist).lower()
+
+
+def _extras() -> dict[str, set[str]]:
+    with open(REPO_ROOT / "pyproject.toml", "rb") as f:
+        pyproject = tomllib.load(f)
+    deps = pyproject["project"]["optional-dependencies"]
+    return {
+        extra: {_norm(re.match(r"[A-Za-z0-9_.-]+", d).group()) for d in reqs}
+        for extra, reqs in deps.items()
+    }
+
+
+def _importorskip_modules() -> dict[str, list[str]]:
+    """Every module the suite gates on, module -> the test files that gate on it.
+
+    Read with ``ast`` rather than a regex because one gate is spelled through a loop variable
+    (``for _mod in (...): pytest.importorskip(_mod)`` in ``tests/test_sdk.py``), which a string
+    scan for literals silently drops — and a collector that misses gates proves nothing.
+    """
+    found: dict[str, list[str]] = {}
+    for path in sorted((REPO_ROOT / "tests").glob("*.py")):
+        tree = ast.parse(path.read_text())
+        loop_names: dict[str, list[str]] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+                if isinstance(node.iter, ast.Tuple) and all(
+                    isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.iter.elts
+                ):
+                    loop_names[node.target.id] = [e.value for e in node.iter.elts]
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and node.args):
+                continue
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+            if name != "importorskip":
+                continue
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                mods = [arg.value]
+            elif isinstance(arg, ast.Name) and arg.id in loop_names:
+                mods = loop_names[arg.id]
+            else:  # pragma: no cover — a shape this collector cannot read must fail, not skip
+                raise AssertionError(
+                    f"unreadable importorskip argument in {path.name}: {ast.dump(arg)}"
+                )
+            for m in mods:
+                found.setdefault(m, []).append(path.name)
+    return found
+
+
+def test_the_contributing_extras_are_the_pyproject_extras():
+    """CONTRIBUTING's gate table is prose over `pyproject.toml`, and prose drifts: an extra renamed
+    or added in pyproject leaves the table telling contributors to install something that does not
+    exist, or not naming something they need. Both directions are asserted, plus that every test
+    file the table points at is still there."""
+    text = (REPO_ROOT / "CONTRIBUTING.md").read_text()
+    named = {e for group in re.findall(r"\.\[([\w,]+)\]", text) for e in group.split(",")}
+    extras = set(_extras())
+    assert named == extras, (
+        f"CONTRIBUTING names extras pyproject does not define: {sorted(named - extras)}; "
+        f"pyproject defines extras CONTRIBUTING never names: {sorted(extras - named)}"
+    )
+    missing = [
+        f for f in set(re.findall(r"`(tests/[\w./]+\.py)`", text)) if not (REPO_ROOT / f).is_file()
+    ]
+    assert missing == [], f"CONTRIBUTING points at test files that are gone: {missing}"
+
+
+def test_every_optional_import_gate_is_reachable_from_an_extra():
+    """A gate nobody can install is a test nobody runs. Every ``importorskip``'d module must map to
+    a distribution some extra (or the core dependencies) carries, or sit in the one documented
+    exception — so the next optional test arrives either with its extra or with its absence written
+    down, instead of skipping forever on machines that installed everything."""
+    with open(REPO_ROOT / "pyproject.toml", "rb") as f:
+        pyproject = tomllib.load(f)
+    provided = {
+        _norm(re.match(r"[A-Za-z0-9_.-]+", d).group()) for d in pyproject["project"]["dependencies"]
+    }
+    for dists in _extras().values():
+        provided |= dists
+
+    gates = _importorskip_modules()
+    # Sanity check on the collector itself: the loop-variable spelling in test_sdk.py must be seen,
+    # or this test walks a subset and proves nothing.
+    assert "slack_sdk" in gates and "test_sdk.py" in gates["slack_sdk"]
+
+    unreachable = {}
+    for module, files in gates.items():
+        if module in _DOCUMENTED_ABSENT:
+            continue
+        dist = _norm(_IMPORT_TO_DIST_EXCEPTIONS.get(module, module))
+        if dist not in provided:
+            unreachable[module] = files
+    assert unreachable == {}, (
+        "these importorskip gates name modules no extra's distribution provides, so the tests "
+        "behind them skip even on a full install — add the extra, or document the absence: "
+        f"{unreachable}"
+    )
+
+    # ...and the documented absence stays true: the day an extra carries the distribution, the
+    # exception row here and in CONTRIBUTING comes out rather than shadowing a gate that now runs.
+    for module, dist in _DOCUMENTED_ABSENT.items():
+        assert module in gates, f"nothing gates on {module} any more — retire its absence row"
+        assert _norm(dist) not in provided, (
+            f"{dist} is now carried by an extra; {module} is no longer a documented absence"
+        )

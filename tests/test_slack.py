@@ -159,6 +159,31 @@ def test_slack_auth_error_split_is_uniform_across_methods(client):
         ), path
 
 
+def test_slack_auth_test_identifies_the_caller(client, admin_h, tokens):
+    """`auth.test` answers "who am I", so `user_id` must be the caller's own derived id — the same
+    `U…` users.list reports for that person and conversations.history reports as a message's
+    author. A client that calls auth.test and matches `user_id` against authors to find its own
+    messages can never match on a constant; one that skips the check passes here and breaks
+    against production.
+
+    The admin/service token stays on the service constant: it has no corpus email, and real Slack
+    answers a bot token with the app's own id rather than a person's."""
+    members = client.post("/slack/api/users.list", headers=admin_h).json()["members"]
+    by_email = {m["profile"]["email"]: m["id"] for m in members}
+    ids = {}
+    for email in ("hana@acme.com", "bob@acme.com"):
+        r = client.post(
+            "/slack/api/auth.test", headers={"Authorization": f"Bearer {tokens[email]}"}
+        ).json()
+        assert r["ok"] is True and r["user"] == email
+        assert r["user_id"] == by_email[email], email
+        ids[email] = r["user_id"]
+    assert ids["hana@acme.com"] != ids["bob@acme.com"]  # per caller, not per workspace
+
+    admin = client.post("/slack/api/auth.test", headers=admin_h).json()
+    assert admin["user"] == "service-account" and admin["user_id"] == "USERVICE0"
+
+
 def _a_channel_id(client, admin_h):
     return client.get("/slack/api/conversations.list", headers=admin_h, params={"limit": 1}).json()[
         "channels"

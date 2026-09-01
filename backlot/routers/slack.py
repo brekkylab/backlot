@@ -354,6 +354,13 @@ async def api_test(request: Request):
 
 @router.api_route("/auth.test", methods=["GET", "POST"])
 async def auth_test(request: Request):
+    """Who the token is: `user_id` is the CALLER's derived id, the same `U…` every other route
+    reports for that person (users.list `id`, a message's `user`). Real Slack answers the token
+    owner's own id here, and "call auth.test, then match `user_id` against message authors" is how
+    a client identifies its own messages — a constant can never match.
+
+    The admin/service token has no corpus email, so it keeps the service constant: that identity
+    is not a person, and real answers a bot token with the app's own id rather than a user's."""
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
@@ -363,7 +370,7 @@ async def auth_test(request: Request):
         "url": f"https://{get_settings().org_name}.slack.com/",
         "team": get_settings().org_name,
         "user": who,
-        "user_id": "USERVICE0",
+        "user_id": "USERVICE0" if caller.is_admin else synth.slack_user_id(caller.email),
         "team_id": TEAM_ID,
     }
 

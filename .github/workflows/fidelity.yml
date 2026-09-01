@@ -1,0 +1,96 @@
+# Does the vendor still serve what Backlot claims it does?
+#
+# Two jobs, because the two halves have different costs. The REST sources are compared against
+# contracts their vendors PUBLISH — no credential, no quota, readable from a fork — so that half
+# gates a pull request like any other check. The GraphQL sources need a key, which a fork cannot
+# read and which a vendor outage can take away, so that half runs on a schedule and opens an issue
+# instead of failing a merge that has nothing to do with it.
+name: Fidelity
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  # No secrets, so this one runs on every pull request, forks included.
+  published-specs:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [slack, gmail, google_drive, github, jira, confluence, hubspot, notion, s3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install -e .
+      - name: Compare ${{ matrix.source }} against the contract its vendor publishes
+        run: backlot diff --source ${{ matrix.source }}
+
+  schema-diff:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [fireflies, linear]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install -e .
+
+      - name: Compare ${{ matrix.source }} against its vendor
+        id: diff
+        env:
+          FIREFLIES_API_KEY: ${{ secrets.FIREFLIES_API_KEY }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: |
+          set +e
+          backlot diff --source ${{ matrix.source }} 2>&1 | tee report.txt
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # Exit 2 is "we could not ask" — an expired key, a vendor outage, a network blip. That is not
+      # a fidelity finding and must not open a bug against the mock.
+      - name: Report an unreadable vendor schema
+        if: steps.diff.outputs.status == '2'
+        run: |
+          echo "::warning::${{ matrix.source }}'s schema could not be read; no comparison ran."
+          cat report.txt
+
+      - name: Open an issue for a new divergence
+        if: steps.diff.outputs.status == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ matrix.source }}
+        run: |
+          title="Fidelity: $SOURCE diverges from its vendor"
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
+          body=$(printf '%s\n\n```\n%s\n```\n' \
+            "\`backlot diff --source $SOURCE\` reported divergences that the baseline does not acknowledge. Each one is either a bug in the mock or a deliberate gap; a deliberate gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`." \
+            "$(cat report.txt)")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
+
+      - name: Fail the run so the schedule shows red
+        if: steps.diff.outputs.status == '1'
+        run: exit 1

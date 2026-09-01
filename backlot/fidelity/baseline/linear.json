@@ -1,0 +1,4699 @@
+{
+  "source": "linear",
+  "endpoint": "https://api.linear.app/graphql",
+  "measured": "2026-09-01",
+  "acknowledged": [
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.activities",
+      "detail": "vendor serves activities: AgentActivityConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.appUser",
+      "detail": "vendor serves appUser: User!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.codingHarnessModelLabel",
+      "detail": "vendor serves codingHarnessModelLabel: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.comment",
+      "detail": "vendor serves comment: Comment; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.context",
+      "detail": "vendor serves context: JSON!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.creator",
+      "detail": "vendor serves creator: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.dismissedAt",
+      "detail": "vendor serves dismissedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.dismissedBy",
+      "detail": "vendor serves dismissedBy: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.endedAt",
+      "detail": "vendor serves endedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.externalLink",
+      "detail": "vendor serves externalLink: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.externalLinks",
+      "detail": "vendor serves externalLinks: [AgentSessionExternalLink!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.externalUrls",
+      "detail": "vendor serves externalUrls: JSON!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.issue",
+      "detail": "vendor serves issue: Issue; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.modelSelection",
+      "detail": "vendor serves modelSelection: JSON; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.plan",
+      "detail": "vendor serves plan: JSON; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.pullRequest",
+      "detail": "vendor serves pullRequest: PullRequest; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.pullRequests",
+      "detail": "vendor serves pullRequests: AgentSessionToPullRequestConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.slugId",
+      "detail": "vendor serves slugId: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.sourceComment",
+      "detail": "vendor serves sourceComment: Comment; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.sourceMetadata",
+      "detail": "vendor serves sourceMetadata: JSON; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.startedAt",
+      "detail": "vendor serves startedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.status",
+      "detail": "vendor serves status: AgentSessionStatus!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.summary",
+      "detail": "vendor serves summary: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.type",
+      "detail": "vendor serves type: AgentSessionType; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.url",
+      "detail": "vendor serves url: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.workspaceDiff",
+      "detail": "vendor serves workspaceDiff: JSON; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AgentSession.workspaceDiffFiles",
+      "detail": "vendor serves workspaceDiffFiles: [AgentSessionWorkspaceDiffFile!]; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AttachmentConnection.edges",
+      "detail": "vendor serves edges: [AttachmentEdge!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AttachmentFilter.createdAt",
+      "detail": "vendor serves createdAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AttachmentFilter.creator",
+      "detail": "vendor serves creator: NullableUserFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "AttachmentFilter.updatedAt",
+      "detail": "vendor serves updatedAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Comment.agentSessions",
+      "detail": "vendor serves agentSessions: AgentSessionConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Comment.aiPromptProgresses",
+      "detail": "vendor serves aiPromptProgresses: AiPromptProgressConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Comment.bodyData",
+      "detail": "vendor serves bodyData: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Comment.children",
+      "detail": "vendor serves children: CommentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Comment.createdIssues",
+      "detail": "vendor serves createdIssues: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Comment.hideInLinear",
+      "detail": "vendor serves hideInLinear: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Comment.isArtificialAgentSessionRoot",
+      "detail": "vendor serves isArtificialAgentSessionRoot: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Comment.onBehalfOf",
+      "detail": "vendor serves onBehalfOf: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Comment.post",
+      "detail": "vendor serves post: Post; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Comment.spawnedAgentSessions",
+      "detail": "vendor serves spawnedAgentSessions: AgentSessionConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Comment.threadSummary",
+      "detail": "vendor serves threadSummary: JSONObject; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "CommentConnection.edges",
+      "detail": "vendor serves edges: [CommentEdge!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "CommentFilter.documentContent",
+      "detail": "vendor serves documentContent: NullableDocumentContentFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "CommentFilter.initiative",
+      "detail": "vendor serves initiative: NullableInitiativeFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "CommentFilter.initiativeUpdate",
+      "detail": "vendor serves initiativeUpdate: NullableInitiativeUpdateFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "CommentFilter.issue",
+      "detail": "vendor serves issue: NullableIssueFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "CommentFilter.needs",
+      "detail": "vendor serves needs: CustomerNeedCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "CommentFilter.parent",
+      "detail": "vendor serves parent: NullableCommentFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "CommentFilter.project",
+      "detail": "vendor serves project: NullableProjectFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "CommentFilter.projectUpdate",
+      "detail": "vendor serves projectUpdate: NullableProjectUpdateFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "CommentFilter.reactions",
+      "detail": "vendor serves reactions: ReactionCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "CommentFilter.user",
+      "detail": "vendor serves user: UserFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Cycle.currentProgress",
+      "detail": "vendor serves currentProgress: JSONObject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Cycle.documents",
+      "detail": "vendor serves documents: DocumentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Cycle.issues",
+      "detail": "vendor serves issues: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Cycle.links",
+      "detail": "vendor serves links: EntityExternalLinkConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Cycle.progressHistory",
+      "detail": "vendor serves progressHistory: JSONObject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Cycle.uncompletedIssuesUponClose",
+      "detail": "vendor serves uncompletedIssuesUponClose: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "DateComparator.in",
+      "detail": "vendor serves in: [DateTimeOrDuration!]; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "DateComparator.nin",
+      "detail": "vendor serves nin: [DateTimeOrDuration!]; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.color",
+      "detail": "vendor serves color: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.comments",
+      "detail": "vendor serves comments: CommentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.content",
+      "detail": "vendor serves content: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.contentState",
+      "detail": "vendor serves contentState: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.creator",
+      "detail": "vendor serves creator: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.cycle",
+      "detail": "vendor serves cycle: Cycle; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.documentContentId",
+      "detail": "vendor serves documentContentId: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.hiddenAt",
+      "detail": "vendor serves hiddenAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.icon",
+      "detail": "vendor serves icon: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.initiative",
+      "detail": "vendor serves initiative: Initiative; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.issue",
+      "detail": "vendor serves issue: Issue; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.lastAppliedTemplate",
+      "detail": "vendor serves lastAppliedTemplate: Template; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.owner",
+      "detail": "vendor serves owner: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.project",
+      "detail": "vendor serves project: Project; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.release",
+      "detail": "vendor serves release: Release; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.slugId",
+      "detail": "vendor serves slugId: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.sortOrder",
+      "detail": "vendor serves sortOrder: Float!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.subscribers",
+      "detail": "vendor serves subscribers: UserConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.summary",
+      "detail": "vendor serves summary: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.team",
+      "detail": "vendor serves team: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.title",
+      "detail": "vendor serves title: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.trashed",
+      "detail": "vendor serves trashed: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.updatedBy",
+      "detail": "vendor serves updatedBy: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Document.url",
+      "detail": "vendor serves url: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "DocumentContent.meeting",
+      "detail": "vendor serves meeting: Meeting; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "DocumentContent.pullRequest",
+      "detail": "vendor serves pullRequest: PullRequest; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ExternalUser.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ExternalUser.avatarUrl",
+      "detail": "vendor serves avatarUrl: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ExternalUser.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ExternalUser.displayName",
+      "detail": "vendor serves displayName: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ExternalUser.email",
+      "detail": "vendor serves email: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ExternalUser.lastSeen",
+      "detail": "vendor serves lastSeen: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ExternalUser.name",
+      "detail": "vendor serves name: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ExternalUser.organization",
+      "detail": "vendor serves organization: Organization!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ExternalUser.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.aiConversation",
+      "detail": "vendor serves aiConversation: AiConversation; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.children",
+      "detail": "vendor serves children: FavoriteConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.color",
+      "detail": "vendor serves color: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.customView",
+      "detail": "vendor serves customView: CustomView; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.customer",
+      "detail": "vendor serves customer: Customer; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.cycle",
+      "detail": "vendor serves cycle: Cycle; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.dashboard",
+      "detail": "vendor serves dashboard: Dashboard; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.detail",
+      "detail": "vendor serves detail: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.document",
+      "detail": "vendor serves document: Document; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.facet",
+      "detail": "vendor serves facet: Facet; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.folderName",
+      "detail": "vendor serves folderName: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.icon",
+      "detail": "vendor serves icon: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.initiative",
+      "detail": "vendor serves initiative: Initiative; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.initiativeLabel",
+      "detail": "vendor serves initiativeLabel: InitiativeLabel; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.initiativeTab",
+      "detail": "vendor serves initiativeTab: InitiativeTab; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.issue",
+      "detail": "vendor serves issue: Issue; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.label",
+      "detail": "vendor serves label: IssueLabel; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.liveFolderDefinition",
+      "detail": "vendor serves liveFolderDefinition: JSONObject; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.liveFolderPreset",
+      "detail": "vendor serves liveFolderPreset: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.owner",
+      "detail": "vendor serves owner: User!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.parent",
+      "detail": "vendor serves parent: Favorite; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.pipelineTab",
+      "detail": "vendor serves pipelineTab: PipelineTab; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.predefinedViewTeam",
+      "detail": "vendor serves predefinedViewTeam: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.predefinedViewType",
+      "detail": "vendor serves predefinedViewType: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.project",
+      "detail": "vendor serves project: Project; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.projectLabel",
+      "detail": "vendor serves projectLabel: ProjectLabel; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.projectTab",
+      "detail": "vendor serves projectTab: ProjectTab; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.projectTeam",
+      "detail": "vendor serves projectTeam: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.pullRequest",
+      "detail": "vendor serves pullRequest: PullRequest; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.release",
+      "detail": "vendor serves release: Release; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.releaseNote",
+      "detail": "vendor serves releaseNote: ReleaseNote; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.releasePipeline",
+      "detail": "vendor serves releasePipeline: ReleasePipeline; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.sortOrder",
+      "detail": "vendor serves sortOrder: Float!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.team",
+      "detail": "vendor serves team: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.title",
+      "detail": "vendor serves title: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.type",
+      "detail": "vendor serves type: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.url",
+      "detail": "vendor serves url: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.user",
+      "detail": "vendor serves user: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Favorite.workflowDefinition",
+      "detail": "vendor serves workflowDefinition: WorkflowDefinition; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.canceledAt",
+      "detail": "vendor serves canceledAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.color",
+      "detail": "vendor serves color: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.completedAt",
+      "detail": "vendor serves completedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.content",
+      "detail": "vendor serves content: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.creator",
+      "detail": "vendor serves creator: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.description",
+      "detail": "vendor serves description: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.documentContent",
+      "detail": "vendor serves documentContent: DocumentContent; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.documents",
+      "detail": "vendor serves documents: DocumentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.facets",
+      "detail": "vendor serves facets: [Facet!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.frequencyResolution",
+      "detail": "vendor serves frequencyResolution: FrequencyResolutionType!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.health",
+      "detail": "vendor serves health: InitiativeUpdateHealthType; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.healthUpdatedAt",
+      "detail": "vendor serves healthUpdatedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.history",
+      "detail": "vendor serves history: InitiativeHistoryConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.icon",
+      "detail": "vendor serves icon: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.identifier",
+      "detail": "vendor serves identifier: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.initiativeUpdates",
+      "detail": "vendor serves initiativeUpdates: InitiativeUpdateConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.integrationsSettings",
+      "detail": "vendor serves integrationsSettings: IntegrationsSettings; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.labelIds",
+      "detail": "vendor serves labelIds: [String!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.labels",
+      "detail": "vendor serves labels: InitiativeLabelConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.lastUpdate",
+      "detail": "vendor serves lastUpdate: InitiativeUpdate; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.leadTeam",
+      "detail": "vendor serves leadTeam: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.links",
+      "detail": "vendor serves links: EntityExternalLinkConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.name",
+      "detail": "vendor serves name: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.organization",
+      "detail": "vendor serves organization: Organization!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.owner",
+      "detail": "vendor serves owner: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.parentInitiative",
+      "detail": "vendor serves parentInitiative: Initiative; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.parentInitiatives",
+      "detail": "vendor serves parentInitiatives: InitiativeConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.previousIdentifiers",
+      "detail": "vendor serves previousIdentifiers: [String!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.priority",
+      "detail": "vendor serves priority: Int!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.prioritySortOrder",
+      "detail": "vendor serves prioritySortOrder: Float!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.projects",
+      "detail": "vendor serves projects: ProjectConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.slugId",
+      "detail": "vendor serves slugId: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.sortOrder",
+      "detail": "vendor serves sortOrder: Float!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.startedAt",
+      "detail": "vendor serves startedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.status",
+      "detail": "vendor serves status: InitiativeStatus!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.subInitiatives",
+      "detail": "vendor serves subInitiatives: InitiativeConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.targetDate",
+      "detail": "vendor serves targetDate: TimelessDate; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.targetDateResolution",
+      "detail": "vendor serves targetDateResolution: DateResolutionType; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.trashed",
+      "detail": "vendor serves trashed: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.updateReminderFrequency",
+      "detail": "vendor serves updateReminderFrequency: Float; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.updateReminderFrequencyInWeeks",
+      "detail": "vendor serves updateReminderFrequencyInWeeks: Float; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.updateRemindersDay",
+      "detail": "vendor serves updateRemindersDay: Day; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.updateRemindersHour",
+      "detail": "vendor serves updateRemindersHour: Float; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.url",
+      "detail": "vendor serves url: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Initiative.visibility",
+      "detail": "vendor serves visibility: InitiativeVisibility!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.body",
+      "detail": "vendor serves body: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.bodyData",
+      "detail": "vendor serves bodyData: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.commentCount",
+      "detail": "vendor serves commentCount: Int!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.comments",
+      "detail": "vendor serves comments: CommentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.diff",
+      "detail": "vendor serves diff: JSONObject; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.diffMarkdown",
+      "detail": "vendor serves diffMarkdown: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.editedAt",
+      "detail": "vendor serves editedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.health",
+      "detail": "vendor serves health: InitiativeUpdateHealthType!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.infoSnapshot",
+      "detail": "vendor serves infoSnapshot: JSONObject; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.initiative",
+      "detail": "vendor serves initiative: Initiative!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.isDiffHidden",
+      "detail": "vendor serves isDiffHidden: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.isStale",
+      "detail": "vendor serves isStale: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.reactionData",
+      "detail": "vendor serves reactionData: JSONObject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.reactions",
+      "detail": "vendor serves reactions: [Reaction!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.slugId",
+      "detail": "vendor serves slugId: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.url",
+      "detail": "vendor serves url: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "InitiativeUpdate.user",
+      "detail": "vendor serves user: User!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.contextViewType",
+      "detail": "vendor serves contextViewType: ContextViewType; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.initiative",
+      "detail": "vendor serves initiative: Initiative; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.microsoftTeamsProjectUpdateCreated",
+      "detail": "vendor serves microsoftTeamsProjectUpdateCreated: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.project",
+      "detail": "vendor serves project: Project; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackInitiativeUpdateCreated",
+      "detail": "vendor serves slackInitiativeUpdateCreated: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackIssueAddedToTriage",
+      "detail": "vendor serves slackIssueAddedToTriage: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackIssueAddedToView",
+      "detail": "vendor serves slackIssueAddedToView: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackIssueCreated",
+      "detail": "vendor serves slackIssueCreated: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackIssueNewComment",
+      "detail": "vendor serves slackIssueNewComment: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackIssueSlaBreached",
+      "detail": "vendor serves slackIssueSlaBreached: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackIssueSlaHighRisk",
+      "detail": "vendor serves slackIssueSlaHighRisk: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackIssueStatusChangedAll",
+      "detail": "vendor serves slackIssueStatusChangedAll: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackIssueStatusChangedDone",
+      "detail": "vendor serves slackIssueStatusChangedDone: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackProjectUpdateCreated",
+      "detail": "vendor serves slackProjectUpdateCreated: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackProjectUpdateCreatedToTeam",
+      "detail": "vendor serves slackProjectUpdateCreatedToTeam: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.slackProjectUpdateCreatedToWorkspace",
+      "detail": "vendor serves slackProjectUpdateCreatedToWorkspace: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.team",
+      "detail": "vendor serves team: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IntegrationsSettings.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.activitySummary",
+      "detail": "vendor serves activitySummary: JSONObject; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.agentSessions",
+      "detail": "vendor serves agentSessions: AgentSessionConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.aiPromptProgresses",
+      "detail": "vendor serves aiPromptProgresses: AiPromptProgressConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.descriptionState",
+      "detail": "vendor serves descriptionState: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.documentContent",
+      "detail": "vendor serves documentContent: DocumentContent; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.documents",
+      "detail": "vendor serves documents: DocumentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.formerAttachments",
+      "detail": "vendor serves formerAttachments: AttachmentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.formerNeeds",
+      "detail": "vendor serves formerNeeds: CustomerNeedConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.history",
+      "detail": "vendor serves history: IssueHistoryConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.incomingSuggestions",
+      "detail": "vendor serves incomingSuggestions: IssueSuggestionConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.needs",
+      "detail": "vendor serves needs: CustomerNeedConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.stateHistory",
+      "detail": "vendor serves stateHistory: IssueStateSpanConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.subscribers",
+      "detail": "vendor serves subscribers: UserConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.suggestions",
+      "detail": "vendor serves suggestions: IssueSuggestionConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.suggestionsGeneratedAt",
+      "detail": "vendor serves suggestionsGeneratedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.summary",
+      "detail": "vendor serves summary: Summary; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Issue.trusted",
+      "detail": "vendor serves trusted: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueConnection.edges",
+      "detail": "vendor serves edges: [IssueEdge!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.accumulatedStateUpdatedAt",
+      "detail": "vendor serves accumulatedStateUpdatedAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.activity",
+      "detail": "vendor serves activity: ActivityCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.addedToCycleAt",
+      "detail": "vendor serves addedToCycleAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.addedToCyclePeriod",
+      "detail": "vendor serves addedToCyclePeriod: CyclePeriodComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.ageTime",
+      "detail": "vendor serves ageTime: NullableDurationComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.archivedAt",
+      "detail": "vendor serves archivedAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.attachments",
+      "detail": "vendor serves attachments: AttachmentCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.autoArchivedAt",
+      "detail": "vendor serves autoArchivedAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.autoClosedAt",
+      "detail": "vendor serves autoClosedAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.children",
+      "detail": "vendor serves children: IssueCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.comments",
+      "detail": "vendor serves comments: CommentCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.customerCount",
+      "detail": "vendor serves customerCount: NumberComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.customerImportantCount",
+      "detail": "vendor serves customerImportantCount: NumberComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.cycle",
+      "detail": "vendor serves cycle: NullableCycleFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.cycleTime",
+      "detail": "vendor serves cycleTime: NullableDurationComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.delegate",
+      "detail": "vendor serves delegate: NullableUserFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasActiveAgentSessions",
+      "detail": "vendor serves hasActiveAgentSessions: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasBlockedByRelations",
+      "detail": "vendor serves hasBlockedByRelations: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasBlockingRelations",
+      "detail": "vendor serves hasBlockingRelations: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasDismissedAgentSessions",
+      "detail": "vendor serves hasDismissedAgentSessions: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasDuplicateRelations",
+      "detail": "vendor serves hasDuplicateRelations: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasErroredAgentSessions",
+      "detail": "vendor serves hasErroredAgentSessions: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasMergedAgentPullRequests",
+      "detail": "vendor serves hasMergedAgentPullRequests: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasRelatedRelations",
+      "detail": "vendor serves hasRelatedRelations: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasSharedUsers",
+      "detail": "vendor serves hasSharedUsers: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasSuggestedAssignees",
+      "detail": "vendor serves hasSuggestedAssignees: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasSuggestedLabels",
+      "detail": "vendor serves hasSuggestedLabels: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasSuggestedProjects",
+      "detail": "vendor serves hasSuggestedProjects: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasSuggestedRelatedIssues",
+      "detail": "vendor serves hasSuggestedRelatedIssues: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasSuggestedSimilarIssues",
+      "detail": "vendor serves hasSuggestedSimilarIssues: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.hasSuggestedTeams",
+      "detail": "vendor serves hasSuggestedTeams: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.lastAppliedTemplate",
+      "detail": "vendor serves lastAppliedTemplate: NullableTemplateFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.leadTime",
+      "detail": "vendor serves leadTime: NullableDurationComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.needs",
+      "detail": "vendor serves needs: CustomerNeedCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.number",
+      "detail": "vendor serves number: NumberComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.parent",
+      "detail": "vendor serves parent: NullableIssueFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.projectMilestone",
+      "detail": "vendor serves projectMilestone: NullableProjectMilestoneFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.reactions",
+      "detail": "vendor serves reactions: ReactionCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.recurringIssueTemplate",
+      "detail": "vendor serves recurringIssueTemplate: NullableTemplateFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.releases",
+      "detail": "vendor serves releases: ReleaseCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.searchableContent",
+      "detail": "vendor serves searchableContent: ContentComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.sharedWith",
+      "detail": "vendor serves sharedWith: UserCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.slaBreachesAt",
+      "detail": "vendor serves slaBreachesAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.slaStatus",
+      "detail": "vendor serves slaStatus: SlaStatusComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.snoozedBy",
+      "detail": "vendor serves snoozedBy: NullableUserFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.snoozedUntilAt",
+      "detail": "vendor serves snoozedUntilAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.sourceMetadata",
+      "detail": "vendor serves sourceMetadata: SourceMetadataComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.startedAt",
+      "detail": "vendor serves startedAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.subscribers",
+      "detail": "vendor serves subscribers: UserCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.suggestions",
+      "detail": "vendor serves suggestions: IssueSuggestionCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.triageTime",
+      "detail": "vendor serves triageTime: NullableDurationComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueFilter.triagedAt",
+      "detail": "vendor serves triagedAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabel.children",
+      "detail": "vendor serves children: IssueLabelConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabel.issues",
+      "detail": "vendor serves issues: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabel.organization",
+      "detail": "vendor serves organization: Organization!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabel.retiredAt",
+      "detail": "vendor serves retiredAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelCollectionFilter.createdAt",
+      "detail": "vendor serves createdAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelCollectionFilter.creator",
+      "detail": "vendor serves creator: NullableUserFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelCollectionFilter.id",
+      "detail": "vendor serves id: IDComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelCollectionFilter.isGroup",
+      "detail": "vendor serves isGroup: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelCollectionFilter.length",
+      "detail": "vendor serves length: NumberComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelCollectionFilter.name",
+      "detail": "vendor serves name: StringComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelCollectionFilter.null",
+      "detail": "vendor serves null: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelCollectionFilter.parent",
+      "detail": "vendor serves parent: IssueLabelFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelCollectionFilter.team",
+      "detail": "vendor serves team: NullableTeamFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelCollectionFilter.updatedAt",
+      "detail": "vendor serves updatedAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelConnection.edges",
+      "detail": "vendor serves edges: [IssueLabelEdge!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelFilter.createdAt",
+      "detail": "vendor serves createdAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelFilter.creator",
+      "detail": "vendor serves creator: NullableUserFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelFilter.id",
+      "detail": "vendor serves id: IDComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelFilter.isGroup",
+      "detail": "vendor serves isGroup: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelFilter.parent",
+      "detail": "vendor serves parent: IssueLabelFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelFilter.team",
+      "detail": "vendor serves team: NullableTeamFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueLabelFilter.updatedAt",
+      "detail": "vendor serves updatedAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueRelationConnection.edges",
+      "detail": "vendor serves edges: [IssueRelationEdge!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.accumulatedStateUpdatedAt",
+      "detail": "vendor serves accumulatedStateUpdatedAt: TimeInStatusSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.assignee",
+      "detail": "vendor serves assignee: AssigneeSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.completedAt",
+      "detail": "vendor serves completedAt: CompletedAtSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.customer",
+      "detail": "vendor serves customer: CustomerSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.customerCount",
+      "detail": "vendor serves customerCount: CustomerCountSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.customerImportantCount",
+      "detail": "vendor serves customerImportantCount: CustomerImportantCountSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.customerRevenue",
+      "detail": "vendor serves customerRevenue: CustomerRevenueSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.cycle",
+      "detail": "vendor serves cycle: CycleSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.delegate",
+      "detail": "vendor serves delegate: DelegateSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.dueDate",
+      "detail": "vendor serves dueDate: DueDateSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.label",
+      "detail": "vendor serves label: LabelSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.labelGroup",
+      "detail": "vendor serves labelGroup: LabelGroupSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.linkCount",
+      "detail": "vendor serves linkCount: LinkCountSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.manual",
+      "detail": "vendor serves manual: ManualSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.milestone",
+      "detail": "vendor serves milestone: MilestoneSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.project",
+      "detail": "vendor serves project: ProjectSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.release",
+      "detail": "vendor serves release: ReleaseSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.rootIssue",
+      "detail": "vendor serves rootIssue: RootIssueSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.slaStatus",
+      "detail": "vendor serves slaStatus: SlaStatusSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.team",
+      "detail": "vendor serves team: TeamSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "IssueSortInput.workflowState",
+      "detail": "vendor serves workflowState: WorkflowStateSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableDateComparator.in",
+      "detail": "vendor serves in: [DateTimeOrDuration!]; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableDateComparator.nin",
+      "detail": "vendor serves nin: [DateTimeOrDuration!]; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.accessibleTeams",
+      "detail": "vendor serves accessibleTeams: TeamCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.activityType",
+      "detail": "vendor serves activityType: StringComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.canceledAt",
+      "detail": "vendor serves canceledAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.completedAt",
+      "detail": "vendor serves completedAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.completedProjectMilestones",
+      "detail": "vendor serves completedProjectMilestones: ProjectMilestoneCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.createdAt",
+      "detail": "vendor serves createdAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.creator",
+      "detail": "vendor serves creator: UserFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.customIdentifier",
+      "detail": "vendor serves customIdentifier: NullableStringComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.customerCount",
+      "detail": "vendor serves customerCount: NumberComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.customerImportantCount",
+      "detail": "vendor serves customerImportantCount: NumberComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.hasBlockedByRelations",
+      "detail": "vendor serves hasBlockedByRelations: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.hasBlockingRelations",
+      "detail": "vendor serves hasBlockingRelations: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.hasDependedOnByRelations",
+      "detail": "vendor serves hasDependedOnByRelations: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.hasDependsOnRelations",
+      "detail": "vendor serves hasDependsOnRelations: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.hasRelatedRelations",
+      "detail": "vendor serves hasRelatedRelations: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.hasViolatedRelations",
+      "detail": "vendor serves hasViolatedRelations: RelationExistsComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.health",
+      "detail": "vendor serves health: StringComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.healthWithAge",
+      "detail": "vendor serves healthWithAge: StringComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.initiatives",
+      "detail": "vendor serves initiatives: InitiativeCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.issues",
+      "detail": "vendor serves issues: IssueCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.labels",
+      "detail": "vendor serves labels: ProjectLabelCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.lastAppliedTemplate",
+      "detail": "vendor serves lastAppliedTemplate: NullableTemplateFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.lead",
+      "detail": "vendor serves lead: NullableUserFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.leadTeam",
+      "detail": "vendor serves leadTeam: NullableTeamFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.members",
+      "detail": "vendor serves members: UserCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.needs",
+      "detail": "vendor serves needs: CustomerNeedCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.nextProjectMilestone",
+      "detail": "vendor serves nextProjectMilestone: ProjectMilestoneFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.priority",
+      "detail": "vendor serves priority: NullableNumberComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.projectMilestones",
+      "detail": "vendor serves projectMilestones: ProjectMilestoneCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.projectUpdates",
+      "detail": "vendor serves projectUpdates: ProjectUpdatesCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.roadmaps",
+      "detail": "vendor serves roadmaps: RoadmapCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.searchableContent",
+      "detail": "vendor serves searchableContent: ContentComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.slugId",
+      "detail": "vendor serves slugId: StringComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.startDate",
+      "detail": "vendor serves startDate: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.startedAt",
+      "detail": "vendor serves startedAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.state",
+      "detail": "vendor serves state: StringComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.status",
+      "detail": "vendor serves status: ProjectStatusFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.targetDate",
+      "detail": "vendor serves targetDate: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableProjectFilter.updatedAt",
+      "detail": "vendor serves updatedAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableStringComparator.containsIgnoreCaseAndAccent",
+      "detail": "vendor serves containsIgnoreCaseAndAccent: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableStringComparator.notContains",
+      "detail": "vendor serves notContains: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableStringComparator.notContainsIgnoreCase",
+      "detail": "vendor serves notContainsIgnoreCase: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableStringComparator.notEndsWith",
+      "detail": "vendor serves notEndsWith: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableStringComparator.notStartsWith",
+      "detail": "vendor serves notStartsWith: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableStringComparator.startsWithIgnoreCase",
+      "detail": "vendor serves startsWithIgnoreCase: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableUserFilter.active",
+      "detail": "vendor serves active: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableUserFilter.admin",
+      "detail": "vendor serves admin: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableUserFilter.app",
+      "detail": "vendor serves app: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableUserFilter.assignedIssues",
+      "detail": "vendor serves assignedIssues: IssueCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableUserFilter.createdAt",
+      "detail": "vendor serves createdAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableUserFilter.invited",
+      "detail": "vendor serves invited: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableUserFilter.isInvited",
+      "detail": "vendor serves isInvited: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableUserFilter.isMe",
+      "detail": "vendor serves isMe: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableUserFilter.owner",
+      "detail": "vendor serves owner: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "NullableUserFilter.updatedAt",
+      "detail": "vendor serves updatedAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "PrioritySort.noPriorityFirst",
+      "detail": "vendor serves noPriorityFirst: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "PrioritySort.usePrioritySortOrderTiebreaker",
+      "detail": "vendor serves usePrioritySortOrderTiebreaker: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.attachments",
+      "detail": "vendor serves attachments: ProjectAttachmentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.comments",
+      "detail": "vendor serves comments: CommentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.contentState",
+      "detail": "vendor serves contentState: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.currentProgress",
+      "detail": "vendor serves currentProgress: JSONObject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.documents",
+      "detail": "vendor serves documents: DocumentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.externalLinks",
+      "detail": "vendor serves externalLinks: EntityExternalLinkConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.facets",
+      "detail": "vendor serves facets: [Facet!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.history",
+      "detail": "vendor serves history: ProjectHistoryConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.identifier",
+      "detail": "vendor serves identifier: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.initiativeToProjects",
+      "detail": "vendor serves initiativeToProjects: InitiativeToProjectConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.initiatives",
+      "detail": "vendor serves initiatives: InitiativeConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.inverseRelations",
+      "detail": "vendor serves inverseRelations: ProjectRelationConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.issues",
+      "detail": "vendor serves issues: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.labels",
+      "detail": "vendor serves labels: ProjectLabelConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.leadTeam",
+      "detail": "vendor serves leadTeam: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.members",
+      "detail": "vendor serves members: UserConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.needs",
+      "detail": "vendor serves needs: CustomerNeedConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.previousIdentifiers",
+      "detail": "vendor serves previousIdentifiers: [String!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.progressHistory",
+      "detail": "vendor serves progressHistory: JSONObject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.projectMilestones",
+      "detail": "vendor serves projectMilestones: ProjectMilestoneConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.projectUpdates",
+      "detail": "vendor serves projectUpdates: ProjectUpdateConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.relations",
+      "detail": "vendor serves relations: ProjectRelationConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.resourceCount",
+      "detail": "vendor serves resourceCount: Int!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Project.teams",
+      "detail": "vendor serves teams: TeamConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.currentProgress",
+      "detail": "vendor serves currentProgress: JSONObject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.description",
+      "detail": "vendor serves description: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.descriptionState",
+      "detail": "vendor serves descriptionState: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.documentContent",
+      "detail": "vendor serves documentContent: DocumentContent; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.issues",
+      "detail": "vendor serves issues: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.name",
+      "detail": "vendor serves name: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.progress",
+      "detail": "vendor serves progress: Float!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.progressHistory",
+      "detail": "vendor serves progressHistory: JSONObject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.project",
+      "detail": "vendor serves project: Project!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.sortOrder",
+      "detail": "vendor serves sortOrder: Float!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.status",
+      "detail": "vendor serves status: ProjectMilestoneStatus!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.targetDate",
+      "detail": "vendor serves targetDate: TimelessDate; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectMilestone.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.color",
+      "detail": "vendor serves color: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.description",
+      "detail": "vendor serves description: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.indefinite",
+      "detail": "vendor serves indefinite: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.inheritedFrom",
+      "detail": "vendor serves inheritedFrom: ProjectStatus; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.name",
+      "detail": "vendor serves name: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.position",
+      "detail": "vendor serves position: Float!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.team",
+      "detail": "vendor serves team: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.type",
+      "detail": "vendor serves type: ProjectStatusType!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectStatus.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.body",
+      "detail": "vendor serves body: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.bodyData",
+      "detail": "vendor serves bodyData: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.commentCount",
+      "detail": "vendor serves commentCount: Int!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.comments",
+      "detail": "vendor serves comments: CommentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.diff",
+      "detail": "vendor serves diff: JSONObject; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.diffMarkdown",
+      "detail": "vendor serves diffMarkdown: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.editedAt",
+      "detail": "vendor serves editedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.health",
+      "detail": "vendor serves health: ProjectUpdateHealthType!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.infoSnapshot",
+      "detail": "vendor serves infoSnapshot: JSONObject; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.isDiffHidden",
+      "detail": "vendor serves isDiffHidden: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.isStale",
+      "detail": "vendor serves isStale: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.project",
+      "detail": "vendor serves project: Project!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.reactionData",
+      "detail": "vendor serves reactionData: JSONObject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.reactions",
+      "detail": "vendor serves reactions: [Reaction!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.slugId",
+      "detail": "vendor serves slugId: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.url",
+      "detail": "vendor serves url: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ProjectUpdate.user",
+      "detail": "vendor serves user: User!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.administrableTeams",
+      "detail": "vendor serves administrableTeams: TeamConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.agentActivities",
+      "detail": "vendor serves agentActivities: AgentActivityConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.agentActivity",
+      "detail": "vendor serves agentActivity: AgentActivity!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.agentSession",
+      "detail": "vendor serves agentSession: AgentSession!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.agentSessionSandbox",
+      "detail": "vendor serves agentSessionSandbox: CodingAgentSandboxPayload; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.agentSessions",
+      "detail": "vendor serves agentSessions: AgentSessionConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.agentSkill",
+      "detail": "vendor serves agentSkill: AgentSkill!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.agentSkills",
+      "detail": "vendor serves agentSkills: AgentSkillConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.applicationInfo",
+      "detail": "vendor serves applicationInfo: Application!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.archivedIntegrations",
+      "detail": "vendor serves archivedIntegrations: [ArchivedIntegrationPayload!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.archivedTeams",
+      "detail": "vendor serves archivedTeams: [Team!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.attachmentIssue",
+      "detail": "vendor serves attachmentIssue: Issue!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.attachmentSources",
+      "detail": "vendor serves attachmentSources: AttachmentSourcesPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.attachments",
+      "detail": "vendor serves attachments: AttachmentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.attachmentsForURL",
+      "detail": "vendor serves attachmentsForURL: AttachmentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.auditEntries",
+      "detail": "vendor serves auditEntries: AuditEntryConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.auditEntryTypes",
+      "detail": "vendor serves auditEntryTypes: [AuditEntryType!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.auditLogWebhookFailureEvents",
+      "detail": "vendor serves auditLogWebhookFailureEvents: [WebhookFailureEvent!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.authenticationSessions",
+      "detail": "vendor serves authenticationSessions: [AuthenticationSessionResponse!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.availableUsers",
+      "detail": "vendor serves availableUsers: AuthResolverResponse!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.comment",
+      "detail": "vendor serves comment: Comment!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customView",
+      "detail": "vendor serves customView: CustomView!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customViewDetailsSuggestion",
+      "detail": "vendor serves customViewDetailsSuggestion: CustomViewSuggestionPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customViewHasSubscribers",
+      "detail": "vendor serves customViewHasSubscribers: CustomViewHasSubscribersPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customViews",
+      "detail": "vendor serves customViews: CustomViewConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customer",
+      "detail": "vendor serves customer: Customer!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customerNeed",
+      "detail": "vendor serves customerNeed: CustomerNeed!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customerNeeds",
+      "detail": "vendor serves customerNeeds: CustomerNeedConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customerStatus",
+      "detail": "vendor serves customerStatus: CustomerStatus!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customerStatuses",
+      "detail": "vendor serves customerStatuses: CustomerStatusConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customerTier",
+      "detail": "vendor serves customerTier: CustomerTier!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customerTiers",
+      "detail": "vendor serves customerTiers: CustomerTierConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.customers",
+      "detail": "vendor serves customers: CustomerConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.cycles",
+      "detail": "vendor serves cycles: CycleConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.diff",
+      "detail": "vendor serves diff: Diff!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.document",
+      "detail": "vendor serves document: Document!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.documentContentHistory",
+      "detail": "vendor serves documentContentHistory: DocumentContentHistoryPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.documentContentHistoryEntries",
+      "detail": "vendor serves documentContentHistoryEntries: DocumentContentHistoryPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.documentContentHistoryTimeline",
+      "detail": "vendor serves documentContentHistoryTimeline: DocumentContentHistoryTimelinePayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.documents",
+      "detail": "vendor serves documents: DocumentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.emailIntakeAddress",
+      "detail": "vendor serves emailIntakeAddress: EmailIntakeAddress!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.emoji",
+      "detail": "vendor serves emoji: Emoji!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.emojis",
+      "detail": "vendor serves emojis: EmojiConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.entityExternalLink",
+      "detail": "vendor serves entityExternalLink: EntityExternalLink!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.externalUser",
+      "detail": "vendor serves externalUser: ExternalUser!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.externalUsers",
+      "detail": "vendor serves externalUsers: ExternalUserConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.failuresForOauthWebhooks",
+      "detail": "vendor serves failuresForOauthWebhooks: [WebhookFailureEvent!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.favorite",
+      "detail": "vendor serves favorite: Favorite!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.favorites",
+      "detail": "vendor serves favorites: FavoriteConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiative",
+      "detail": "vendor serves initiative: Initiative!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiativeFilterSuggestion",
+      "detail": "vendor serves initiativeFilterSuggestion: InitiativeFilterSuggestionPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiativeLabel",
+      "detail": "vendor serves initiativeLabel: InitiativeLabel!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiativeLabels",
+      "detail": "vendor serves initiativeLabels: InitiativeLabelConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiativeLeadTeamChangeImpact",
+      "detail": "vendor serves initiativeLeadTeamChangeImpact: InitiativeLeadTeamChangeImpact!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiativeRelation",
+      "detail": "vendor serves initiativeRelation: InitiativeRelation!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiativeRelations",
+      "detail": "vendor serves initiativeRelations: InitiativeRelationConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiativeToProject",
+      "detail": "vendor serves initiativeToProject: InitiativeToProject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiativeToProjects",
+      "detail": "vendor serves initiativeToProjects: InitiativeToProjectConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiativeUpdate",
+      "detail": "vendor serves initiativeUpdate: InitiativeUpdate!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiativeUpdates",
+      "detail": "vendor serves initiativeUpdates: InitiativeUpdateConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.initiatives",
+      "detail": "vendor serves initiatives: InitiativeConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.integration",
+      "detail": "vendor serves integration: Integration!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.integrationHasScopes",
+      "detail": "vendor serves integrationHasScopes: IntegrationHasScopesPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.integrationJiraProjectStatuses",
+      "detail": "vendor serves integrationJiraProjectStatuses: JiraProjectStatusesPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.integrationTemplate",
+      "detail": "vendor serves integrationTemplate: IntegrationTemplate!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.integrationTemplates",
+      "detail": "vendor serves integrationTemplates: IntegrationTemplateConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.integrations",
+      "detail": "vendor serves integrations: IntegrationConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.integrationsSettings",
+      "detail": "vendor serves integrationsSettings: IntegrationsSettings!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueFigmaFileKeySearch",
+      "detail": "vendor serves issueFigmaFileKeySearch: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueFilterSuggestion",
+      "detail": "vendor serves issueFilterSuggestion: IssueFilterSuggestionPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueImportCheckCSV",
+      "detail": "vendor serves issueImportCheckCSV: IssueImportCheckPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueImportCheckSync",
+      "detail": "vendor serves issueImportCheckSync: IssueImportSyncCheckPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueImportJqlCheck",
+      "detail": "vendor serves issueImportJqlCheck: IssueImportJqlCheckPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueLabels",
+      "detail": "vendor serves issueLabels: IssueLabelConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issuePriorityValues",
+      "detail": "vendor serves issuePriorityValues: [IssuePriorityValue!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueRelations",
+      "detail": "vendor serves issueRelations: IssueRelationConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueRepositorySuggestions",
+      "detail": "vendor serves issueRepositorySuggestions: RepositorySuggestionsPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueSearch",
+      "detail": "vendor serves issueSearch: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueTitleSuggestionFromCustomerRequest",
+      "detail": "vendor serves issueTitleSuggestionFromCustomerRequest: IssueTitleSuggestionFromCustomerRequestPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueToRelease",
+      "detail": "vendor serves issueToRelease: IssueToRelease!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueToReleases",
+      "detail": "vendor serves issueToReleases: IssueToReleaseConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.issueVcsBranchSearch",
+      "detail": "vendor serves issueVcsBranchSearch: Issue; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.latestReleaseByAccessKey",
+      "detail": "vendor serves latestReleaseByAccessKey: AccessKeyRelease; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.microsoftTeamsChannels",
+      "detail": "vendor serves microsoftTeamsChannels: MicrosoftTeamsChannelsPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.notification",
+      "detail": "vendor serves notification: Notification!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.notificationSubscription",
+      "detail": "vendor serves notificationSubscription: NotificationSubscription!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.notificationSubscriptions",
+      "detail": "vendor serves notificationSubscriptions: NotificationSubscriptionConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.notifications",
+      "detail": "vendor serves notifications: NotificationConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.notificationsUnreadCount",
+      "detail": "vendor serves notificationsUnreadCount: Int!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.oauthApplication",
+      "detail": "vendor serves oauthApplication: OAuthApplication!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.oauthApplications",
+      "detail": "vendor serves oauthApplications: [OAuthApplication!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.organization",
+      "detail": "vendor serves organization: Organization!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.organizationDomainClaimRequest",
+      "detail": "vendor serves organizationDomainClaimRequest: OrganizationDomainClaimPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.organizationExists",
+      "detail": "vendor serves organizationExists: OrganizationExistsPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.organizationInvite",
+      "detail": "vendor serves organizationInvite: OrganizationInvite!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.organizationInviteDetails",
+      "detail": "vendor serves organizationInviteDetails: OrganizationInviteDetailsPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.organizationInvites",
+      "detail": "vendor serves organizationInvites: OrganizationInviteConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.organizationMeta",
+      "detail": "vendor serves organizationMeta: OrganizationMeta; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.partnerOfferDetails",
+      "detail": "vendor serves partnerOfferDetails: PartnerOfferDetailsPayload; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.partnerOfferWorkspaces",
+      "detail": "vendor serves partnerOfferWorkspaces: PartnerOfferWorkspacesPayload; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.partnerProgramPartners",
+      "detail": "vendor serves partnerProgramPartners: [PartnerProgramPartnerPayload!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectFilterSuggestion",
+      "detail": "vendor serves projectFilterSuggestion: ProjectFilterSuggestionPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectLabel",
+      "detail": "vendor serves projectLabel: ProjectLabel!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectLabels",
+      "detail": "vendor serves projectLabels: ProjectLabelConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectMilestone",
+      "detail": "vendor serves projectMilestone: ProjectMilestone!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectMilestones",
+      "detail": "vendor serves projectMilestones: ProjectMilestoneConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectRelation",
+      "detail": "vendor serves projectRelation: ProjectRelation!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectRelations",
+      "detail": "vendor serves projectRelations: ProjectRelationConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectStatus",
+      "detail": "vendor serves projectStatus: ProjectStatus!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectStatusProjectCount",
+      "detail": "vendor serves projectStatusProjectCount: ProjectStatusCountPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectStatuses",
+      "detail": "vendor serves projectStatuses: ProjectStatusConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectUpdate",
+      "detail": "vendor serves projectUpdate: ProjectUpdate!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projectUpdates",
+      "detail": "vendor serves projectUpdates: ProjectUpdateConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.projects",
+      "detail": "vendor serves projects: ProjectConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.pushSubscriptionTest",
+      "detail": "vendor serves pushSubscriptionTest: PushSubscriptionTestPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.rateLimitStatus",
+      "detail": "vendor serves rateLimitStatus: RateLimitPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.recentReleasesByAccessKey",
+      "detail": "vendor serves recentReleasesByAccessKey: [AccessKeyRelease!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.releaseNote",
+      "detail": "vendor serves releaseNote: ReleaseNote!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.releaseNotes",
+      "detail": "vendor serves releaseNotes: ReleaseNoteConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.releasePipeline",
+      "detail": "vendor serves releasePipeline: ReleasePipeline!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.releasePipelineByAccessKey",
+      "detail": "vendor serves releasePipelineByAccessKey: AccessKeyReleasePipeline!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.releasePipelines",
+      "detail": "vendor serves releasePipelines: ReleasePipelineConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.releaseSearch",
+      "detail": "vendor serves releaseSearch: [Release!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.releaseStage",
+      "detail": "vendor serves releaseStage: ReleaseStage!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.releaseStages",
+      "detail": "vendor serves releaseStages: ReleaseStageConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.releases",
+      "detail": "vendor serves releases: ReleaseConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.roadmap",
+      "detail": "vendor serves roadmap: Roadmap!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.roadmapToProject",
+      "detail": "vendor serves roadmapToProject: RoadmapToProject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.roadmapToProjects",
+      "detail": "vendor serves roadmapToProjects: RoadmapToProjectConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.roadmaps",
+      "detail": "vendor serves roadmaps: RoadmapConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.searchDocuments",
+      "detail": "vendor serves searchDocuments: DocumentSearchPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.searchIssues",
+      "detail": "vendor serves searchIssues: IssueSearchPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.searchProjects",
+      "detail": "vendor serves searchProjects: ProjectSearchPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.semanticSearch",
+      "detail": "vendor serves semanticSearch: SemanticSearchPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.slaConfigurations",
+      "detail": "vendor serves slaConfigurations: [SlaConfiguration!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.ssoUrlFromEmail",
+      "detail": "vendor serves ssoUrlFromEmail: SsoUrlFromEmailResponse!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.teamMembership",
+      "detail": "vendor serves teamMembership: TeamMembership!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.teamMemberships",
+      "detail": "vendor serves teamMemberships: TeamMembershipConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.template",
+      "detail": "vendor serves template: Template!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.templateSearch",
+      "detail": "vendor serves templateSearch: [Template!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.templates",
+      "detail": "vendor serves templates: [Template!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.templatesForIntegration",
+      "detail": "vendor serves templatesForIntegration: [Template!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.timeSchedule",
+      "detail": "vendor serves timeSchedule: TimeSchedule!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.timeSchedules",
+      "detail": "vendor serves timeSchedules: TimeScheduleConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.triageResponsibilities",
+      "detail": "vendor serves triageResponsibilities: TriageResponsibilityConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.triageResponsibility",
+      "detail": "vendor serves triageResponsibility: TriageResponsibility!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.usageAlert",
+      "detail": "vendor serves usageAlert: UsageAlert!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.usageAlerts",
+      "detail": "vendor serves usageAlerts: UsageAlertConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.userSessions",
+      "detail": "vendor serves userSessions: [AuthenticationSessionResponse!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.userSettings",
+      "detail": "vendor serves userSettings: UserSettings!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.verifyGitHubEnterpriseServerInstallation",
+      "detail": "vendor serves verifyGitHubEnterpriseServerInstallation: GitHubEnterpriseServerInstallVerificationPayload!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.webhook",
+      "detail": "vendor serves webhook: Webhook!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.webhooks",
+      "detail": "vendor serves webhooks: WebhookConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.workflowStates",
+      "detail": "vendor serves workflowStates: WorkflowStateConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Reaction.post",
+      "detail": "vendor serves post: Post; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Release.documents",
+      "detail": "vendor serves documents: DocumentConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Release.history",
+      "detail": "vendor serves history: ReleaseHistoryConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_arg",
+      "severity": "gap",
+      "path": "Release.issueCount(includeArchived)",
+      "detail": "vendor accepts includeArchived: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Release.issues",
+      "detail": "vendor serves issues: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Release.links",
+      "detail": "vendor serves links: EntityExternalLinkConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Release.releaseNote",
+      "detail": "vendor serves releaseNote: ReleaseNote; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseConnection.edges",
+      "detail": "vendor serves edges: [ReleaseEdge!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseFilter.completedAt",
+      "detail": "vendor serves completedAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseFilter.createdAt",
+      "detail": "vendor serves createdAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseFilter.hasReleaseNotes",
+      "detail": "vendor serves hasReleaseNotes: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseFilter.pipeline",
+      "detail": "vendor serves pipeline: ReleasePipelineFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseFilter.stage",
+      "detail": "vendor serves stage: ReleaseStageFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseFilter.updatedAt",
+      "detail": "vendor serves updatedAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseFilter.version",
+      "detail": "vendor serves version: StringComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseNote.releases",
+      "detail": "vendor serves releases: [Release!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.approximateReleaseCount",
+      "detail": "vendor serves approximateReleaseCount: Int!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.autoGenerateReleaseNotesOnCompletion",
+      "detail": "vendor serves autoGenerateReleaseNotesOnCompletion: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.includePathPatterns",
+      "detail": "vendor serves includePathPatterns: [String!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.isProduction",
+      "detail": "vendor serves isProduction: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.latestReleaseNote",
+      "detail": "vendor serves latestReleaseNote: ReleaseNote; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.name",
+      "detail": "vendor serves name: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.releaseNoteTemplate",
+      "detail": "vendor serves releaseNoteTemplate: Template; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.releases",
+      "detail": "vendor serves releases: ReleaseConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.rolloverIssuesOnCompletion",
+      "detail": "vendor serves rolloverIssuesOnCompletion: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.slugId",
+      "detail": "vendor serves slugId: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.stages",
+      "detail": "vendor serves stages: ReleaseStageConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.teams",
+      "detail": "vendor serves teams: TeamConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.trashed",
+      "detail": "vendor serves trashed: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.type",
+      "detail": "vendor serves type: ReleasePipelineType!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleasePipeline.url",
+      "detail": "vendor serves url: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseStage.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseStage.color",
+      "detail": "vendor serves color: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseStage.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseStage.frozen",
+      "detail": "vendor serves frozen: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseStage.name",
+      "detail": "vendor serves name: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseStage.pipeline",
+      "detail": "vendor serves pipeline: ReleasePipeline!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseStage.position",
+      "detail": "vendor serves position: Float!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseStage.releases",
+      "detail": "vendor serves releases: ReleaseConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseStage.type",
+      "detail": "vendor serves type: ReleaseStageType!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "ReleaseStage.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "StringComparator.containsIgnoreCaseAndAccent",
+      "detail": "vendor serves containsIgnoreCaseAndAccent: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "StringComparator.notContains",
+      "detail": "vendor serves notContains: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "StringComparator.notContainsIgnoreCase",
+      "detail": "vendor serves notContainsIgnoreCase: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "StringComparator.notEndsWith",
+      "detail": "vendor serves notEndsWith: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "StringComparator.notStartsWith",
+      "detail": "vendor serves notStartsWith: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "StringComparator.startsWithIgnoreCase",
+      "detail": "vendor serves startsWithIgnoreCase: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.ancestors",
+      "detail": "vendor serves ancestors: [Team!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.children",
+      "detail": "vendor serves children: [Team!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.currentProgress",
+      "detail": "vendor serves currentProgress: JSONObject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.cycles",
+      "detail": "vendor serves cycles: CycleConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.facets",
+      "detail": "vendor serves facets: [Facet!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.gitAutomationStates",
+      "detail": "vendor serves gitAutomationStates: GitAutomationStateConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.inheritProjectStatuses",
+      "detail": "vendor serves inheritProjectStatuses: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.inheritSlackAutoCreateProjectChannel",
+      "detail": "vendor serves inheritSlackAutoCreateProjectChannel: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.initiativesEnabled",
+      "detail": "vendor serves initiativesEnabled: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_arg",
+      "severity": "gap",
+      "path": "Team.issueCount(includeArchived)",
+      "detail": "vendor accepts includeArchived: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.joinByDefault",
+      "detail": "vendor serves joinByDefault: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.labels",
+      "detail": "vendor serves labels: IssueLabelConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.members",
+      "detail": "vendor serves members: UserConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.membership",
+      "detail": "vendor serves membership: TeamMembership; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.memberships",
+      "detail": "vendor serves memberships: TeamMembershipConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.organization",
+      "detail": "vendor serves organization: Organization!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.pinnedResources",
+      "detail": "vendor serves pinnedResources: [TeamPinnedResource!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.posts",
+      "detail": "vendor serves posts: [Post!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.progressHistory",
+      "detail": "vendor serves progressHistory: JSONObject!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.projects",
+      "detail": "vendor serves projects: ProjectConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.protectedBy",
+      "detail": "vendor serves protectedBy: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.protectedById",
+      "detail": "vendor serves protectedById: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.releasePipelines",
+      "detail": "vendor serves releasePipelines: ReleasePipelineConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.resourceSections",
+      "detail": "vendor serves resourceSections: [TeamResourceSection!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.restrictedBy",
+      "detail": "vendor serves restrictedBy: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.restrictedById",
+      "detail": "vendor serves restrictedById: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.slackAutoCreateProjectChannel",
+      "detail": "vendor serves slackAutoCreateProjectChannel: Boolean; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.states",
+      "detail": "vendor serves states: WorkflowStateConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.templates",
+      "detail": "vendor serves templates: TemplateConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Team.webhooks",
+      "detail": "vendor serves webhooks: WebhookConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamConnection.edges",
+      "detail": "vendor serves edges: [TeamEdge!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.ancestors",
+      "detail": "vendor serves ancestors: TeamCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.createdAt",
+      "detail": "vendor serves createdAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.description",
+      "detail": "vendor serves description: NullableStringComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.issues",
+      "detail": "vendor serves issues: IssueCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.members",
+      "detail": "vendor serves members: UserCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.owners",
+      "detail": "vendor serves owners: UserCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.parent",
+      "detail": "vendor serves parent: NullableTeamFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.private",
+      "detail": "vendor serves private: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.releasePipelines",
+      "detail": "vendor serves releasePipelines: ReleasePipelineCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.restrictedBy",
+      "detail": "vendor serves restrictedBy: NullableTeamFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.retiredAt",
+      "detail": "vendor serves retiredAt: NullableDateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.updatedAt",
+      "detail": "vendor serves updatedAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.users",
+      "detail": "vendor serves users: UserCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TeamFilter.visibility",
+      "detail": "vendor serves visibility: TeamVisibilityComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.color",
+      "detail": "vendor serves color: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.content",
+      "detail": "vendor serves content: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.creator",
+      "detail": "vendor serves creator: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.description",
+      "detail": "vendor serves description: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.hasFormFields",
+      "detail": "vendor serves hasFormFields: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.icon",
+      "detail": "vendor serves icon: String; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.inheritedFrom",
+      "detail": "vendor serves inheritedFrom: Template; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.lastAppliedAt",
+      "detail": "vendor serves lastAppliedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.lastUpdatedBy",
+      "detail": "vendor serves lastUpdatedBy: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.name",
+      "detail": "vendor serves name: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.organization",
+      "detail": "vendor serves organization: Organization!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.pipeline",
+      "detail": "vendor serves pipeline: ReleasePipeline; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.sortOrder",
+      "detail": "vendor serves sortOrder: Float!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.team",
+      "detail": "vendor serves team: Team; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.templateData",
+      "detail": "vendor serves templateData: JSON!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.type",
+      "detail": "vendor serves type: String!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Template.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TriageResponsibility.action",
+      "detail": "vendor serves action: TriageResponsibilityAction!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TriageResponsibility.archivedAt",
+      "detail": "vendor serves archivedAt: DateTime; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TriageResponsibility.createdAt",
+      "detail": "vendor serves createdAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TriageResponsibility.currentUser",
+      "detail": "vendor serves currentUser: User; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TriageResponsibility.manualSelection",
+      "detail": "vendor serves manualSelection: TriageResponsibilityManualSelection; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TriageResponsibility.team",
+      "detail": "vendor serves team: Team!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TriageResponsibility.timeSchedule",
+      "detail": "vendor serves timeSchedule: TimeSchedule; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "TriageResponsibility.updatedAt",
+      "detail": "vendor serves updatedAt: DateTime!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "User.assignedIssues",
+      "detail": "vendor serves assignedIssues: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "User.createdIssues",
+      "detail": "vendor serves createdIssues: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "User.delegatedIssues",
+      "detail": "vendor serves delegatedIssues: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "User.drafts",
+      "detail": "vendor serves drafts: DraftConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "User.feedFacets",
+      "detail": "vendor serves feedFacets: FacetConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "User.hasGitHubCodeAccess",
+      "detail": "vendor serves hasGitHubCodeAccess: Boolean!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "User.identityProvider",
+      "detail": "vendor serves identityProvider: IdentityProvider; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "User.issueDrafts",
+      "detail": "vendor serves issueDrafts: IssueDraftConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "User.organization",
+      "detail": "vendor serves organization: Organization!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "User.teamMemberships",
+      "detail": "vendor serves teamMemberships: TeamMembershipConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "User.teams",
+      "detail": "vendor serves teams: TeamConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserConnection.edges",
+      "detail": "vendor serves edges: [UserEdge!]!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserFilter.active",
+      "detail": "vendor serves active: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserFilter.admin",
+      "detail": "vendor serves admin: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserFilter.app",
+      "detail": "vendor serves app: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserFilter.assignedIssues",
+      "detail": "vendor serves assignedIssues: IssueCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserFilter.createdAt",
+      "detail": "vendor serves createdAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserFilter.invited",
+      "detail": "vendor serves invited: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserFilter.isInvited",
+      "detail": "vendor serves isInvited: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserFilter.isMe",
+      "detail": "vendor serves isMe: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserFilter.owner",
+      "detail": "vendor serves owner: BooleanComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserFilter.updatedAt",
+      "detail": "vendor serves updatedAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "UserSortInput.displayName",
+      "detail": "vendor serves displayName: UserDisplayNameSort; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "WorkflowState.issues",
+      "detail": "vendor serves issues: IssueConnection!; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "WorkflowStateFilter.createdAt",
+      "detail": "vendor serves createdAt: DateComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "WorkflowStateFilter.description",
+      "detail": "vendor serves description: StringComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "WorkflowStateFilter.id",
+      "detail": "vendor serves id: IDComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "WorkflowStateFilter.issues",
+      "detail": "vendor serves issues: IssueCollectionFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "WorkflowStateFilter.position",
+      "detail": "vendor serves position: NumberComparator; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "WorkflowStateFilter.team",
+      "detail": "vendor serves team: TeamFilter; Backlot does not"
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "WorkflowStateFilter.updatedAt",
+      "detail": "vendor serves updatedAt: DateComparator; Backlot does not"
+    }
+  ]
+}

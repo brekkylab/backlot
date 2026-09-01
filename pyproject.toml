@@ -173,4 +173,10 @@ include = ["backlot*"]
 # Every non-.py file backlot/ ships. All are read at runtime, so a missing one breaks the install
 # rather than degrading it: no schemas and every BYO record fails validation, no .graphql and
 # `import backlot.main` raises. tests/test_packaging.py fails on an asset with no glob here.
-backlot = ["schemas/*.json", "schemas/*.md", "graphql/*.graphql", "data/*.jsonl"]
+backlot = [
+    "schemas/*.json",
+    "schemas/*.md",
+    "graphql/*.graphql",
+    "data/*.jsonl",
+    "fidelity/baseline/*.json",
+]

@@ -222,11 +222,11 @@ def _importorskip_modules() -> dict[str, list[str]]:
 def test_the_all_extra_aggregates_every_other_one():
     """`.[all]` is what CI installs, so it is what decides whether a gated test runs at all.
 
-    It is a fourth copy of the extras list — `pyproject.toml` defines them, CONTRIBUTING's table
-    names them, its install line and `.github/workflows/ci.yml` install them — and the copy that
-    silently costs coverage: an extra added everywhere else but left out of the aggregate installs
-    nowhere, so every test behind it skips forever and `-rs` reports that without failing. The
-    other three copies are held to each other by the test below; this holds the one that matters.
+    It is one of three places that enumerate the extras — `pyproject.toml` defines them,
+    CONTRIBUTING's table names them, this aggregate installs them — and the one that silently
+    costs coverage: an extra added to the other two but left out here installs nowhere, so every
+    test behind it skips forever and `-rs` reports that without failing. The table and the
+    definitions are held to each other by the test below; this holds the copy CI acts on.
 
     An aggregate rather than a flag because pip has no `--all-extras` (measured on pip 26.2.1),
     and a self-reference rather than a duplicated list because pip resolves `backlot[...]` to the

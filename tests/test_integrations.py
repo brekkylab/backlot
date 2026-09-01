@@ -377,14 +377,23 @@ def test_github_filesystem_reads_a_file(github_fs):
     assert github_fs.cat_file("src/ingest/consumer.py").strip()
 
 
+def test_github_filesystem_enumerates_the_repos_refs(github_fs):
+    """`.branches`, `.tags` and `.refs` are how a client that was handed a repo rather than a sha
+    picks what to read. Each is one of the two ref listings and nothing else, so a repo they cannot
+    answer for is one such a client cannot get started on."""
+    assert github_fs.branches == ["main"]
+    assert github_fs.tags == []
+    assert github_fs.refs == {"tags": [], "branches": ["main"]}
+
+
 def test_github_filesystem_never_addresses_the_real_github(github_fs, monkeypatch):
     """`branches`, `tags` and `repos` build their URLs as inline f-strings inside method bodies, so
     a subclass has to replace them outright rather than rebind a constant. Leaving one behind is
     the failure this guards: a run that was supposed to hit the mock quietly reads real GitHub.
 
-    Backlot serves no `/branches` or `/tags` listing and `repos` sends no auth, so all three of
-    those calls fail — what is asserted is only WHERE they were addressed, which is the part that
-    must never regress.
+    `branches` and `tags` answer (the listings behind them are served); `repos` sends no auth and
+    fails. Either way what is asserted here is only WHERE they were addressed, which is the part
+    that must never regress.
 
     The match is on `github.com`, not `api.github.com`: a read can also escape to
     `raw.githubusercontent.com`, and the narrower pattern let that through.
@@ -402,9 +411,7 @@ def test_github_filesystem_never_addresses_the_real_github(github_fs, monkeypatc
     github_fs.invalidate_cache()
     github_fs.ls("")
     github_fs.cat_file("README.md")
-    for prop in ("branches", "tags"):
-        with contextlib.suppress(Exception):
-            getattr(github_fs, prop)
+    github_fs.refs
     with contextlib.suppress(Exception):
         github_fs.repos("acme")
 

@@ -617,6 +617,49 @@ def test_github_blob_unknown_sha_404(gh_client, gh_admin_h, gh_org):
     assert r.json() == {"detail": "Not Found"}
 
 
+def test_github_lists_the_refs_a_client_enumerates_before_it_reads(gh_client, gh_admin_h, gh_org):
+    """The two ref LISTINGS, which a client that is handed a repo rather than a sha starts from —
+    fsspec's `GithubFileSystem.branches`/`.tags`/`.refs` are these two routes and nothing else.
+
+    A listed branch is real's SHORT branch, not the object `/branches/{branch}` serves: measured
+    against api.github.com, an item carries `commit: {sha, url}` and stops there, where the
+    single-branch route nests the whole commit under the same key. Serving the longer object here
+    would hand a client a field real GitHub never sends.
+
+    Tags are `[]`: a corpus states none, and `[]` is what real answers for a repo with no tags
+    (measured against octocat/Hello-World) — a shape a client meets in production rather than a
+    mock-only degenerate case, the same reasoning `/statuses/{sha}` is written on.
+    """
+    c, _ = gh_client
+    repo = c.get(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h).json()
+    branches = c.get(f"/github/repos/{gh_org}/codebase/branches", headers=gh_admin_h)
+    assert branches.status_code == 200
+    body = branches.json()
+    assert [b["name"] for b in body] == [repo["default_branch"]]
+    assert body[0]["protected"] is False
+    assert set(body[0]["commit"]) == {"sha", "url"}
+    # the one branch is the one `/branches/{branch}` already serves, down to the commit
+    single = c.get(f"/github/repos/{gh_org}/codebase/branches/main", headers=gh_admin_h).json()
+    assert body[0]["commit"]["sha"] == single["commit"]["sha"]
+    assert body[0]["commit"]["url"] == single["commit"]["url"]
+
+    # `?protected=` selects: real answers only the protected branches for a true value, only the
+    # unprotected ones for `false`/`0`, and all of them for an empty or omitted parameter —
+    # measured on fastapi/fastapi, 22 branches with one protected, answering 1 / 21 / 22. The one
+    # branch here is unprotected, so those last two coincide and `_truthy`'s split is the whole
+    # rule, as it is for `?recursive=` on git/trees.
+    for value, kept in (("true", 0), ("1", 0), ("yes", 0), ("false", 1), ("0", 1), ("", 1)):
+        r = c.get(
+            f"/github/repos/{gh_org}/codebase/branches",
+            headers=gh_admin_h,
+            params={"protected": value},
+        )
+        assert r.status_code == 200 and len(r.json()) == kept, f"?protected={value!r}"
+
+    tags = c.get(f"/github/repos/{gh_org}/codebase/tags", headers=gh_admin_h)
+    assert tags.status_code == 200 and tags.json() == []
+
+
 def test_github_branch_and_commit_resolve_tree(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
     branch = c.get(f"/github/repos/{gh_org}/codebase/branches/main", headers=gh_admin_h).json()
@@ -1196,7 +1239,9 @@ def test_github_user_repos(gh_client, gh_admin_h, gh_user_tokens, gh_org):
         "/readme",
         "/git/trees/main",
         "/git/ref/heads/main",
+        "/branches",
         "/branches/main",
+        "/tags",
         "/commits/deadbeef",
         "/contents",
         "/collaborators",
@@ -1235,6 +1280,7 @@ def test_github_repo_carries_a_url_template_for_each_resource_it_serves(
         "blobs_url": f"{api}/git/blobs{{/sha}}",
         "trees_url": f"{api}/git/trees{{/sha}}",
         "branches_url": f"{api}/branches{{/branch}}",
+        "tags_url": f"{api}/tags",
         "commits_url": f"{api}/commits{{/sha}}",
         "statuses_url": f"{api}/statuses/{{sha}}",
         "collaborators_url": f"{api}/collaborators{{/collaborator}}",
@@ -1272,7 +1318,6 @@ def test_github_repo_carries_a_url_template_for_each_resource_it_serves(
         "stargazers_url",
         "subscribers_url",
         "subscription_url",
-        "tags_url",
     }
     assert not unserved & set(repo), sorted(unserved & set(repo))
     # nothing invented either: the engagement counters real serves are absent, not made up
@@ -1347,7 +1392,9 @@ def test_github_validates_the_owner_segment(gh_client, gh_admin_h, gh_org):
         "/readme",
         "/contents/README.md",
         "/git/trees/main",
+        "/branches",
         "/branches/main",
+        "/tags",
         "/collaborators",
     ):
         r = c.get(f"/github/repos/not-the-owner/codebase{path}", headers=gh_admin_h)
@@ -2075,6 +2122,8 @@ def test_github_emitted_urls_are_fetchable(gh_client, gh_admin_h, gh_org):
         repo["trees_url"].replace("{/sha}", "/main"),
         repo["blobs_url"].replace("{/sha}", "/" + files[0]["sha"]),
         repo["branches_url"].replace("{/branch}", "/main"),
+        repo["branches_url"].replace("{/branch}", ""),
+        repo["tags_url"],
         repo["commits_url"].replace("{/sha}", "/" + pull["head"]["sha"]),
         repo["statuses_url"].replace("{sha}", pull["head"]["sha"]),
         repo["collaborators_url"].replace("{/collaborator}", ""),

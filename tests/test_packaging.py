@@ -235,6 +235,7 @@ def test_the_all_extra_aggregates_every_other_one():
     """
     extras = _extras()
     assert "all" in extras, "the aggregate CI installs is gone; ci.yml still names `.[all]`"
+    assert '".[all]"' in (REPO_ROOT / ".github/workflows/ci.yml").read_text()
     (aggregate,) = pyproject_optional_dependencies()["all"]
     named = set(
         re.search(r"backlot\[([\w,\s-]+)\]", aggregate).group(1).replace(" ", "").split(",")

@@ -3018,6 +3018,38 @@ def test_erb_to_byo_output_validates_against_the_byo_schemas(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_byo_slack_channel_is_a_name_slack_could_hold():
+    """A converted record carries the bench's channel, and the schema holds it to Slack's own
+    charset -- so a value spelled any other way would stop the whole import rather than serve a
+    conversation object the real API cannot return. One bench thread spells its channel as the path
+    from the sources root, `slack/sports`; its directory and the fifteen threads beside it spell it
+    `sports`, which is the name it lands under here."""
+    from backlot.validation import record_errors
+
+    for raw_channel, expected in (
+        ("incidents", "incidents"),
+        ("slack/sports", "sports"),
+        ("#incidents", "incidents"),
+        ("Eng Platform", "eng-platform"),
+        # Real Slack holds a non-Latin name, so the reduction must leave one intact rather than
+        # hyphenate it away.
+        ("일반", "일반"),
+        (None, "general"),
+    ):
+        raw = {
+            "participants": ["Ava Ng"],
+            "content_field_names": ["messages"],
+            "messages": "Ava Ng: 502s from the gateway?",
+            "first_message_ts": 1770000000,
+        }
+        if raw_channel is not None:
+            raw["channel"] = raw_channel
+        (rec,), bundle = C._byo_slack("sl-c", raw, Principals([], "redwood.com"))
+        assert rec["channel"] == expected, f"{raw_channel!r} -> {rec['channel']!r}"
+        assert bundle["group"] == expected
+        assert record_errors(rec) == []
+
+
 def test_byo_drive_subtypes_are_all_accepted_by_the_schema():
     """`_drive_type` is Backlot's Drive subtype vocabulary, and a converted record has to
     carry its output — so the BYO drive schema must accept every value it can produce, or an

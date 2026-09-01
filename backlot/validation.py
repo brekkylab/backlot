@@ -13,7 +13,11 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
+import re
+
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import validators as _js_validators
+from jsonschema.exceptions import ValidationError
 
 # __file__-relative, not cwd-relative: these are resources the package SHIPS (see the
 # [tool.setuptools.package-data] entry in pyproject.toml), unlike backlot.config's data_dir,
@@ -44,9 +48,77 @@ def _load_schemas() -> dict[str, dict]:
 SERVICE_SCHEMAS: dict[str, dict] = _load_schemas()
 
 
+def _ecma_end_anchors(patrn: str) -> str:
+    """``patrn`` with every ``$`` METACHARACTER rewritten to ``\\Z``.
+
+    JSON Schema defines ``pattern`` against the ECMA-262 dialect, where ``$`` (no ``m`` flag)
+    matches only at the end of the input. Python's ``$`` matches there *or* immediately before a
+    final newline, so an anchored pattern silently stops being anchored for exactly one character:
+    ``re.search(r"^[a-z]+$", "incidents\\n")`` matches, and every pattern in ``backlot/schemas/``
+    is anchored ``^…$``. A corpus could therefore state a container name the vendor could not hold
+    -- a Slack ``channel`` is served verbatim as a conversation's ``name`` -- past a schema that
+    already writes the refusal down.
+
+    Rewriting ``$`` rather than matching with :func:`re.fullmatch` keeps the other half of the
+    contract intact: the spec's ``pattern`` is an UNANCHORED partial match, so a full match would
+    trade this divergence for a second one the moment a schema wants a pattern anchored at neither
+    end. It also leaves the shipped schemas readable by a non-Python validator, which they have to
+    be -- they are the documented contract for a BYO corpus, not an implementation detail.
+
+    A ``$`` is only a metacharacter when it is unescaped and outside a character class, so a
+    literal ``[$]`` or ``\\$`` is left exactly as written.
+    """
+    out: list[str] = []
+    i, in_class = 0, False
+    while i < len(patrn):
+        c = patrn[i]
+        if c == "\\" and i + 1 < len(patrn):
+            out.append(patrn[i : i + 2])
+            i += 2
+            continue
+        if in_class:
+            # A `]` in the first position of a class is a literal, so `[]]` and `[^]]` close on
+            # their SECOND `]`. Reading the first one as the close would put the rest of the
+            # pattern "outside" a class it is still inside.
+            if c == "]" and not (out[-1] == "[" or (out[-1] == "^" and out[-2] == "[")):
+                in_class = False
+        elif c == "[":
+            in_class = True
+        elif c == "$":
+            out.append("\\Z")
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+@lru_cache(maxsize=None)
+def _ecma_regex(patrn: str) -> re.Pattern:
+    return re.compile(_ecma_end_anchors(patrn))
+
+
+def _pattern_ecma(validator, patrn, instance, schema):
+    """``pattern``, applied with ECMA-262's end anchor (see :func:`_ecma_end_anchors`).
+
+    Still a `search`, and still reported against the pattern the schema WROTE rather than the
+    rewritten one, so an author reads back the rule they can look up in the schema file.
+    """
+    if not isinstance(instance, str):
+        return
+    if not _ecma_regex(patrn).search(instance):
+        yield ValidationError(f"{instance!r} does not match {patrn!r}")
+
+
+# Only `pattern` is overridden; every other keyword stays the library's. `check_schema` and the
+# error paths `record_errors` renders come through unchanged, because this IS Draft 2020-12 with
+# one keyword's implementation corrected.
+_BacklotValidator = _js_validators.extend(Draft202012Validator, {"pattern": _pattern_ecma})
+
+
 @lru_cache(maxsize=None)
 def _validator(source_type: str) -> Draft202012Validator:
-    return Draft202012Validator(SERVICE_SCHEMAS[source_type], format_checker=FormatChecker())
+    return _BacklotValidator(SERVICE_SCHEMAS[source_type], format_checker=FormatChecker())
 
 
 def _subschema(schema: dict, parts: list):

@@ -137,10 +137,11 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
 
 @app.exception_handler(RequestValidationError)
 async def _validation_exception_handler(request: Request, exc: RequestValidationError):
-    body = errors.validation_body(request.url.path, exc.errors())
-    if body is None:
-        body = {"detail": jsonable_encoder(exc.errors())}
-    return JSONResponse(status_code=422, content=body)
+    answer = errors.validation_body(request.url.path, exc.errors())
+    if answer is None:
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
+    status_code, body = answer
+    return JSONResponse(status_code=status_code, content=body)
 
 
 @app.middleware("http")

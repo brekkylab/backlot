@@ -8,7 +8,11 @@ offset and the vendor's token/header representation.
 from __future__ import annotations
 
 import base64
+from typing import Annotated
 from urllib.parse import quote
+
+from fastapi import Query
+from pydantic import BeforeValidator
 
 
 # --- opaque offset cursor (Slack next_cursor, Gmail/Drive pageToken, Jira token) ---
@@ -71,6 +75,32 @@ def clamp_limit(limit: int | None, default: int, maximum: int) -> int:
 
 
 # --- GitHub: page/per_page + RFC5988 Link header --------------------------------
+
+
+def _absorb_page(v):
+    """A page parameter's value, or ``None`` for one that will not parse.
+
+    Real GitHub refuses no value here: `per_page=0`, `per_page=abc`, `page=0`, `page=-1` and
+    `page=abc` are each a 200 with the defaults applied, and a `per_page` over the cap is a 200 at
+    the cap (measured against a public repository's issue listing). Refusing them would hand a
+    paginator computing an edge value a hard error where production absorbs it.
+
+    A `BeforeValidator` rather than a `str` annotation: the parameter stays an integer in the
+    OpenAPI schema, which is what real's own spec declares, so the tolerance is in the runtime
+    where real has it and not in the contract where real does not.
+    """
+    if v is None or isinstance(v, int):
+        return v
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+#: A GitHub `page`/`per_page` query parameter. Declared per route as `page: PageParam = None`.
+#: Only the GitHub surface uses it — the other vendors' answers to an unparseable page value are
+#: not measured, and a helper that spread this tolerance to them would be asserting they share it.
+PageParam = Annotated[int | None, BeforeValidator(_absorb_page), Query()]
 
 
 def clamp_page(

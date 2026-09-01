@@ -224,7 +224,7 @@ def http_body(path: str, exc: HTTPException) -> dict:
     return {"error": err}
 
 
-def validation_body(errors) -> None:
+def validation_body(path: str, errors) -> None:
     """None: keep FastAPI's own 422 body. A bad parameter on a Google route is refused by the router
     with a :class:`GoogleError`, so FastAPI's validator is not the path that reports it."""
     return None

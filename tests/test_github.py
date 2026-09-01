@@ -1024,22 +1024,91 @@ def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admi
 
 def test_github_tolerates_the_pagination_values_real_tolerates(gh_client, gh_admin_h, gh_org):
     """Real refuses no pagination value at all. Measured on a public repository's issue listing:
-    `per_page=0`, `per_page=abc`, `page=0`, `page=-1` are each
-    a 200 with the defaults applied, and a per_page above the cap is a 200 at the cap.
+    `per_page=0`, `per_page=abc`, `page=0`, `page=-1` and `page=abc` are each a 200 with the
+    defaults applied, and a per_page above the cap is a 200 at the cap.
 
-    Backlot declared `ge=1` and answered FastAPI's 422 array instead, so a paginator that computed
-    an edge value got a hard error where production absorbs it. The floor is gone and
-    `clamp_page` — which already treated a non-positive value as absent — does the work.
+    Backlot declared `ge=1` and an `int` annotation, so FastAPI answered its 422 before
+    `clamp_page` was reached and a paginator computing an edge value got a hard error where
+    production absorbs it. Both are gone: the parameter absorbs a value it cannot parse, and the
+    OpenAPI schema stays an integer, which is what real's own spec declares — the tolerance
+    belongs in the runtime where real has it, not in the contract where real does not.
     """
     c, _ = gh_client
     base = f"/github/repos/{gh_org}/codebase/issues"
     full = c.get(base, headers=gh_admin_h).json()
-    for params in ({"per_page": 0}, {"page": 0}, {"page": -1}, {"per_page": -5}):
+    for params in (
+        {"per_page": 0},
+        {"page": 0},
+        {"page": -1},
+        {"per_page": -5},
+        {"per_page": "abc"},
+        {"page": "abc"},
+        {"page": ""},
+    ):
         r = c.get(base, headers=gh_admin_h, params=params)
         assert r.status_code == 200, params
         assert r.json() == full, params
     # over the cap is still the cap, not an error
     assert c.get(base, headers=gh_admin_h, params={"per_page": 100_000}).status_code == 200
+    # ...and the parameter is still declared an integer, as real's spec declares it
+    route = "/github/repos/{owner}/{repo}/issues"
+    spec = c.get("/openapi.json").json()["paths"][route]["get"]
+    page = next(p for p in spec["parameters"] if p["name"] == "page")
+    assert {"type": "integer"} in page["schema"]["anyOf"]
+
+
+def test_github_a_path_parameter_it_cannot_parse_is_the_route_s_404(gh_client, gh_admin_h, gh_org):
+    """Real has no route for `/issues/notanint`, so it answers the 404 that route's own anchor
+    names — measured: `Not Found`, `documentation_url: .../rest/issues/issues#get-an-issue`.
+
+    Backlot declares `number: int` and so matches the route and fails after, which is a difference
+    in how the two arrive rather than in what they answer. What it must not do is answer a 422:
+    `{"detail": [...]}` announced itself as the mock's own default, and an envelope does not — a
+    status real never sends would read as measured.
+    """
+    c, _ = gh_client
+    r = c.get(f"/github/repos/{gh_org}/codebase/issues/notanint", headers=gh_admin_h)
+    assert r.status_code == 404
+    assert r.json() == {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/issues/issues#get-an-issue",
+        "status": "404",
+    }
+
+
+def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
+    """Every route here declares GET, so a wrong method is refused by Starlette with
+    `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which answers a
+    wrong method per endpoint rather than uniformly (an unauthenticated `POST /repos/{owner}/{repo}`
+    is real's 401 Requires authentication, measured).
+
+    So it keeps FastAPI's `detail`, which says plainly that the mock is answering. The envelope is
+    for the errors whose wording was measured.
+    """
+    c, _ = gh_client
+    r = c.post(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h)
+    assert r.status_code == 405
+    assert r.json() == {"detail": "Method Not Allowed"}
+
+
+def test_github_a_validation_failure_names_the_route_it_failed_on(gh_org):
+    """One route answered two `documentation_url`s for its own 422: the hand-shaped q-less search
+    named `v3/search` while anything reaching FastAPI's validator named the bare root, because the
+    validation envelope was not given the path. It is now, so both halves agree.
+
+    Called directly because the pagination parameters absorb rather than refuse, which leaves no
+    query parameter on this surface that still reaches the validator.
+    """
+    from backlot.errors import github as gh_errors
+
+    status, body = gh_errors.validation_body(
+        "/github/search/issues", [{"loc": ("query", "per_page"), "msg": "nope"}]
+    )
+    assert status == 422
+    assert body["documentation_url"] == "https://docs.github.com/v3/search"
+    assert body["errors"] == [
+        {"resource": "Request", "field": "per_page", "code": "invalid", "message": "nope"}
+    ]
 
 
 def _link_rels(header: str) -> dict:

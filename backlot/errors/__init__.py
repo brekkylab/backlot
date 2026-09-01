@@ -11,9 +11,10 @@ A module in ``_ENVELOPES`` provides:
 - ``owns(path)`` — whether this vendor shapes errors for that path.
 - ``http_body(path, exc)`` — the body for an ``HTTPException``. The exception itself, because a
   vendor may carry its extra fields as attributes on it (Google does).
-- ``validation_body(errors)`` — the body for a 422 from request validation, or ``None`` to keep
-  FastAPI's own. Only Atlassian overrides it: Google's editor APIs answer a bad *parameter* through
-  a router-raised ``GoogleError``, and nothing reaches FastAPI's validator with a Google path.
+- ``validation_body(path, errors)`` — the status and body for a request-validation failure, or
+  ``None`` to keep FastAPI's own 422. Google is the one that keeps it: its editor APIs answer a bad
+  *parameter* through a router-raised ``GoogleError``, so the validator is not the path that
+  reports one.
 
 Adding a vendor is a module plus one entry below — not an edit to the handler.
 """
@@ -33,11 +34,16 @@ def http_body(path: str, exc) -> dict | None:
     return None
 
 
-def validation_body(path: str, errors) -> dict | None:
-    """The vendor-shaped body for a 422 on ``path``, or ``None`` for FastAPI's."""
+def validation_body(path: str, errors) -> tuple[int, dict] | None:
+    """The status and vendor-shaped body for a request-validation failure on ``path``, or ``None``
+    to keep FastAPI's own 422.
+
+    The STATUS as well as the body, because a vendor may answer this case with something other than
+    422: a path parameter GitHub has no route for is its 404, not a validation failure.
+    """
     for envelope in _ENVELOPES:
         if envelope.owns(path):
-            return envelope.validation_body(errors)
+            return envelope.validation_body(path, errors)
     return None
 
 

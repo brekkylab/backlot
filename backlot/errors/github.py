@@ -21,6 +21,9 @@ both 401s, which is this module's one knowing divergence.
 
 from __future__ import annotations
 
+import re
+from functools import lru_cache
+
 PREFIX = "/github"
 
 # What real sends when the failure is about the credential rather than the resource.
@@ -86,55 +89,51 @@ ROUTE_DOCS: dict[str, str] = {
     "/github/repos/{owner}/{repo}/teams": _DOCS + "repos/repos#list-repository-teams",
 }
 
-# The two routes whose final parameter is a path converter, so it takes every remaining segment:
-# `git/ref/{ref:path}` resolves a ref like `heads/release/2026-03`, and `contents/{path:path}` a
-# nested file. The OpenAPI spec this table is keyed on writes both as an ordinary `{name}`, which is
-# why they are named here instead of being inferred — letting any trailing placeholder run greedy
-# would hand `/repos/{owner}/{repo}` every deeper path that failed to match something longer.
-_TRAILING_PATH_ROUTES = frozenset(
-    {
-        "/github/repos/{owner}/{repo}/git/ref/{ref}",
-        "/github/repos/{owner}/{repo}/contents/{path}",
-    }
-)
-
 
 def owns(path: str) -> bool:
     return path.startswith(PREFIX)
 
 
-def _matches(template: str, segments: list[str]) -> bool:
-    """Whether a concrete path's ``segments`` fit ``template``."""
-    parts = template.strip("/").split("/")
-    greedy = template in _TRAILING_PATH_ROUTES
-    if len(parts) > len(segments) or (not greedy and len(parts) != len(segments)):
-        return False
-    for i, part in enumerate(parts):
-        placeholder = part.startswith("{") and part.endswith("}")
-        if greedy and placeholder and i == len(parts) - 1:
-            return True  # swallows segments[i:]
-        if not placeholder and part != segments[i]:
-            return False
-    return len(parts) == len(segments)
+@lru_cache(maxsize=1)
+def _routes() -> list[tuple[object, str]]:
+    """The router's own routes, each paired with the key :data:`ROUTE_DOCS` uses.
+
+    Asking Starlette which route a path reaches, rather than re-implementing the match here: a
+    hand-rolled scanner has to know that `git/ref/{ref:path}` swallows the rest of the path while
+    `branches/{branch}` does not, and that `issues/comments/{id}` is tried before
+    `issues/{number}/comments` — rules that are already true of the router, and that a restatement
+    would get wrong the first time a route arrived with a converter the restatement had not met.
+
+    Imported inside the function: ``backlot.errors`` is imported before the routers are, and the
+    router imports nothing from this package, so the dependency stays one-way.
+    """
+    from starlette.routing import Route
+
+    from backlot.routers.github import router as github_router
+
+    return [
+        (r, re.sub(r"\{(\w+):path\}", r"{\1}", r.path))
+        for r in github_router.routes
+        if isinstance(r, Route)
+    ]
 
 
 def docs_url(path: str) -> str:
     """The anchor real names for the route ``path`` reaches, or the root for anything else.
 
-    First match wins, in the router's own declaration order, because two templates can cover one
-    path and FastAPI resolves those the same way.
-
     The root is also the honest answer for a path that matches no route: real has no endpoint
     documentation to point at for a URL it does not serve either.
     """
-    segments = path.strip("/").split("/")
-    for template, url in ROUTE_DOCS.items():
-        if _matches(template, segments):
-            return url
+    from starlette.routing import Match
+
+    scope = {"type": "http", "path": path, "method": "GET", "path_params": {}, "headers": []}
+    for route, template in _routes():
+        if route.matches(scope)[0] is not Match.NONE:
+            return ROUTE_DOCS.get(template, DOCS_ROOT)
     return DOCS_ROOT
 
 
-def http_body(path: str, exc) -> dict:
+def http_body(path: str, exc) -> dict | None:
     """Render an exception into the envelope.
 
     An error the router shaped by hand carries its own body as ``github_body`` — the version 400
@@ -142,10 +141,18 @@ def http_body(path: str, exc) -> dict:
     and that wins. Everything else is the three-member envelope over the exception's own detail,
     whose wording is already real's ("Not Found", "Bad credentials") because the routers were
     written against measured responses; only the shape around it was FastAPI's.
+
+    A 405 is the exception, and keeps FastAPI's ``detail``. Every route here declares GET, so a
+    wrong method is refused by Starlette with ``http.HTTPStatus(405).phrase`` — a string no
+    measurement attributes to real, which answers a wrong method per endpoint rather than
+    uniformly (an unauthenticated ``POST /repos/{owner}/{repo}`` is its 401 Requires
+    authentication). Dressing Starlette's phrase in real's envelope would read as measured.
     """
     body = getattr(exc, "github_body", None)
     if isinstance(body, dict):
         return body
+    if exc.status_code == 405:
+        return None
     detail = exc.detail
     message = detail if isinstance(detail, str) else str(detail)
     return {
@@ -155,18 +162,26 @@ def http_body(path: str, exc) -> dict:
     }
 
 
-def validation_body(errors) -> dict:
-    """A 422 from FastAPI's own request validation, in real's Validation Failed envelope.
+def validation_body(path: str, errors) -> tuple[int, dict]:
+    """A 422 from FastAPI's own request validation, as the status and body real would answer.
 
-    Real reaches this case far less often than Backlot does — it refuses no pagination value at all
-    (measured: ``per_page=0``, ``per_page=abc``, ``page=0``, ``page=-1`` are each a 200
-    with the defaults applied), which is why the page parameters here no longer declare a floor and
-    clamp instead. What is left arriving at FastAPI's validator is a parameter whose TYPE will not
-    parse, and real answers those per route rather than uniformly — a non-integer issue number is
-    its 404, not a 422. So this is the closest real shape for a case real does not have, not a
-    measured reproduction of one: the envelope is the search 422's, whose ``errors`` entries name
-    the offending field.
+    A PATH parameter that will not parse is real's 404, not a 422: `/repos/{o}/{r}/issues/notanint`
+    is `Not Found` with that route's own anchor, because real has no route for it to reach in the
+    first place (measured). Backlot declares `number: int`, so it matches the route and fails after,
+    which is a difference in how the two arrive at the answer rather than in the answer.
+
+    A QUERY parameter is the residue. Real refuses no pagination value at all, which is why those
+    now absorb (see :func:`backlot.pagination._absorb_page`) and never reach here; what is left is
+    a shape real has no measured answer for, so it keeps the Validation Failed envelope real uses
+    for a parameter it does refuse, with this route's anchor rather than the bare root.
     """
+    where = errors[0].get("loc", ()) if errors else ()
+    if where and where[0] == "path":
+        return 404, {
+            "message": "Not Found",
+            "documentation_url": docs_url(path),
+            "status": "404",
+        }
     entries = [
         {
             "resource": "Request",
@@ -176,9 +191,9 @@ def validation_body(errors) -> dict:
         }
         for e in errors
     ]
-    return {
+    return 422, {
         "message": "Validation Failed",
-        "documentation_url": DOCS_ROOT,
+        "documentation_url": docs_url(path),
         "errors": entries,
         "status": "422",
     }

@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict
 from backlot import auth, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
-from backlot.pagination import clamp_page, github_link_header
+from backlot.pagination import PageParam, clamp_page, github_link_header
 
 # Real GitHub caps a recursive tree at 100k entries / 7 MB and reports `truncated: true`. Module
 # level rather than settings, so a test can lower them: a corpus big enough to hit the real cap is
@@ -323,8 +323,8 @@ async def search_issues(
     request: Request,
     response: Response,
     q: str = Query("", description="Issues/PRs search query"),
-    page: int | None = Query(None),
-    per_page: int | None = Query(None),
+    page: PageParam = None,
+    per_page: PageParam = None,
 ):
     """Issues-and-PRs search (GitHub `GET /search/issues`): free text over title+body (FTS)
     plus repo:/is:/state:/type:/label:/author: qualifiers, ACL-scoped to the caller.
@@ -543,8 +543,8 @@ async def search_code(
             "repo:/path:/filename:/extension:/in:file/in:path qualifiers."
         ),
     ),
-    page: int | None = Query(None),
-    per_page: int | None = Query(None),
+    page: PageParam = None,
+    per_page: PageParam = None,
 ):
     """Code search (GitHub `GET /search/code`): free text over a file's body and its path, plus
     repo:/path:/filename:/extension:/in: qualifiers, ACL-scoped to the caller.
@@ -671,8 +671,8 @@ def _repo_page(request, conn, owner: str, ids, page, per_page) -> Response:
 async def list_repos(
     org: str,
     request: Request,
-    page: int | None = Query(None),
-    per_page: int | None = Query(None),
+    page: PageParam = None,
+    per_page: PageParam = None,
 ):
     conn = auth.conn(request)
     caller = _require(request)
@@ -682,8 +682,8 @@ async def list_repos(
 @router.get("/user/repos")
 async def list_user_repos(
     request: Request,
-    page: int | None = Query(None),
-    per_page: int | None = Query(None),
+    page: PageParam = None,
+    per_page: PageParam = None,
 ):
     """The repositories the CREDENTIAL can reach (real ``GET /user/repos``).
 
@@ -717,8 +717,8 @@ async def list_issues(
     repo: str,
     request: Request,
     state: str = Query("open"),
-    page: int | None = Query(None),
-    per_page: int | None = Query(None),
+    page: PageParam = None,
+    per_page: PageParam = None,
 ):
     conn = auth.conn(request)
     caller = _require(request)
@@ -832,8 +832,8 @@ async def list_pulls(
     repo: str,
     request: Request,
     state: str = Query("open"),
-    page: int | None = Query(None),
-    per_page: int | None = Query(None),
+    page: PageParam = None,
+    per_page: PageParam = None,
 ):
     conn = auth.conn(request)
     caller = _require(request)
@@ -1018,8 +1018,8 @@ async def pull_files(
     repo: str,
     number: int,
     request: Request,
-    page: int | None = Query(None),
-    per_page: int | None = Query(None),
+    page: PageParam = None,
+    per_page: PageParam = None,
 ):
     """The pull's changed-file list (``filename``/``status``/``additions``/``deletions``/``patch``),
     paginated as the real API paginates it. See the changeset note below for where it comes from."""

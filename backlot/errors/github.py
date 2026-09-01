@@ -170,13 +170,16 @@ def validation_body(path: str, errors) -> tuple[int, dict]:
     first place (measured). Backlot declares `number: int`, so it matches the route and fails after,
     which is a difference in how the two arrive at the answer rather than in the answer.
 
+    Any path error decides it, not the first error reported: a request that fails on a path and a
+    query parameter at once has one answer, and which of the two FastAPI happens to list first is
+    not it.
+
     A QUERY parameter is the residue. Real refuses no pagination value at all, which is why those
     now absorb (see :func:`backlot.pagination._absorb_page`) and never reach here; what is left is
     a shape real has no measured answer for, so it keeps the Validation Failed envelope real uses
     for a parameter it does refuse, with this route's anchor rather than the bare root.
     """
-    where = errors[0].get("loc", ()) if errors else ()
-    if where and where[0] == "path":
+    if any(tuple(e.get("loc", ()))[:1] == ("path",) for e in errors):
         return 404, {
             "message": "Not Found",
             "documentation_url": docs_url(path),

@@ -1091,6 +1091,27 @@ def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh
     assert r.json() == {"detail": "Method Not Allowed"}
 
 
+def test_github_a_path_failure_decides_the_answer_whatever_order_it_is_reported_in():
+    """A request can fail on a path and a query parameter at once, and it has one answer: the 404
+    the path failure earns. Reading the first error reported would make that answer depend on the
+    order FastAPI happens to list them in, which is not a rule anyone could rely on.
+
+    Unreachable on this surface today — the page parameters absorb and every other query parameter
+    is a `str` — so the function is called directly, with the pair in both orders.
+    """
+    from backlot.errors import github as gh_errors
+
+    path_err = {"loc": ("path", "number"), "msg": "not an integer"}
+    query_err = {"loc": ("query", "per_page"), "msg": "not an integer"}
+    route = "/github/repos/acme/codebase/issues/notanint"
+    for errors in ([path_err, query_err], [query_err, path_err]):
+        status, body = gh_errors.validation_body(route, errors)
+        assert status == 404, [e["loc"] for e in errors]
+        assert body["message"] == "Not Found"
+    # ...and a query failure on its own is still the 422
+    assert gh_errors.validation_body(route, [query_err])[0] == 422
+
+
 def test_github_a_validation_failure_names_the_route_it_failed_on(gh_org):
     """One route answered two `documentation_url`s for its own 422: the hand-shaped q-less search
     named `v3/search` while anything reaching FastAPI's validator named the bare root, because the

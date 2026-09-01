@@ -292,6 +292,12 @@ def _channel_names(conn) -> list[str]:
     return [row["name"] for row in store.list_containers(conn, "slack")]
 
 
+def _handle(email: str) -> str:
+    """A corpus email as Slack's handle — the `name` a user object carries and the `user`
+    `auth.test` reports for the same person."""
+    return email.split("@")[0].replace(".", "")
+
+
 def _user_obj(conn, email: str) -> dict:
     u = store.get_user(conn, email)
     display = u["display_name"] if u else email.split("@")[0]
@@ -301,7 +307,7 @@ def _user_obj(conn, email: str) -> dict:
     return {
         "id": synth.slack_user_id(email),
         "team_id": TEAM_ID,
-        "name": email.split("@")[0].replace(".", ""),
+        "name": _handle(email),
         "real_name": display,
         "deleted": False,
         "is_bot": is_bot,
@@ -354,17 +360,24 @@ async def api_test(request: Request):
 
 @router.api_route("/auth.test", methods=["GET", "POST"])
 async def auth_test(request: Request):
-    """Who the token is: `user_id` is the CALLER's derived id, the same `U…` every other route
-    reports for that person (users.list `id`, a message's `user`). Real Slack answers the token
-    owner's own id here, and "call auth.test, then match `user_id` against message authors" is how
-    a client identifies its own messages — a constant can never match.
+    """Who the token is, in the caller's own terms.
 
-    The admin/service token has no corpus email, so it keeps the service constant: that identity
-    is not a person, and real answers a bot token with the app's own id rather than a user's."""
+    Slack's spec pins both fields at once: `slack_web_openapi_v2.json`,
+    `paths./auth.test.get.responses.200`, whose user-token example is `"user": "grace"` with
+    `"user_id": "W12345678"`. So `user` is the HANDLE, not an address — the same `name` a user
+    object carries for that person — and `user_id` is that caller's own id, the `U…` that
+    `users.list` reports and that a message in `conversations.history` names as its author.
+
+    Both were constants before, and the id is the one that costs: "call auth.test, then match
+    `user_id` against message authors" is how a client finds its own messages, and a workspace
+    constant can never match.
+
+    The admin/service token has no corpus email, so it keeps the service identity: that caller is
+    not a person, and real Slack answers a bot token with the app's own id rather than a user's."""
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
-    who = "service-account" if caller.is_admin else caller.email
+    who = "service-account" if caller.is_admin else _handle(caller.email)
     return {
         "ok": True,
         "url": f"https://{get_settings().org_name}.slack.com/",

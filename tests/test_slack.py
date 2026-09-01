@@ -160,25 +160,50 @@ def test_slack_auth_error_split_is_uniform_across_methods(client):
 
 
 def test_slack_auth_test_identifies_the_caller(client, admin_h, tokens):
-    """`auth.test` answers "who am I", so `user_id` must be the caller's own derived id — the same
-    `U…` users.list reports for that person and conversations.history reports as a message's
-    author. A client that calls auth.test and matches `user_id` against authors to find its own
-    messages can never match on a constant; one that skips the check passes here and breaks
-    against production.
+    """`auth.test` answers "who am I", and both fields it answers with are the caller's own.
 
-    The admin/service token stays on the service constant: it has no corpus email, and real Slack
+    Slack's spec fixes their shape — `slack_web_openapi_v2.json`,
+    `paths./auth.test.get.responses.200` is `"user": "grace"`, `"user_id": "W12345678"` — so `user`
+    is a handle rather than an address, and `user_id` is that person's id.
+
+    The id is asserted against `conversations.history`, not against `users.list`: the scenario the
+    issue describes is a client matching `auth.test` to the author of a message to find its own, and
+    both `auth.test` and `users.list` derive the id through `synth.slack_user_id`, so comparing
+    those two would still pass if the derivation drifted away from what a message carries.
+
+    The admin/service token keeps the service identity: it has no corpus email, and real Slack
     answers a bot token with the app's own id rather than a person's."""
-    members = client.post("/slack/api/users.list", headers=admin_h).json()["members"]
-    by_email = {m["profile"]["email"]: m["id"] for m in members}
-    ids = {}
-    for email in ("hana@acme.com", "bob@acme.com"):
-        r = client.post(
-            "/slack/api/auth.test", headers={"Authorization": f"Bearer {tokens[email]}"}
-        ).json()
-        assert r["ok"] is True and r["user"] == email
-        assert r["user_id"] == by_email[email], email
-        ids[email] = r["user_id"]
-    assert ids["hana@acme.com"] != ids["bob@acme.com"]  # per caller, not per workspace
+    # each of these fixture users authors a message in the channel beside them
+    for email, channel in (("ava@acme.com", "eng-announcements"), ("bob@acme.com", "incidents")):
+        h = {"Authorization": f"Bearer {tokens[email]}"}
+        me = client.post("/slack/api/auth.test", headers=h).json()
+        assert me["ok"] is True
+        assert me["user"] == email.split("@")[0]  # the handle, not the address
+        assert "@" not in me["user"]
+
+        chans = client.post(
+            "/slack/api/conversations.list",
+            headers=admin_h,
+            params={"types": "public_channel,private_channel", "limit": 100},
+        ).json()["channels"]
+        cid = next(c["id"] for c in chans if c["name"] == channel)
+        msgs = client.post(
+            "/slack/api/conversations.history", headers=admin_h, params={"channel": cid}
+        ).json()["messages"]
+        mine = [m for m in msgs if m["user"] == me["user_id"]]
+        assert mine, (
+            f"{email} authors a message in #{channel}, but auth.test's user_id "
+            f"{me['user_id']} matches none of {sorted({m['user'] for m in msgs})}"
+        )
+
+    # ...and it is per caller, not one id for the workspace
+    ids = {
+        e: client.post(
+            "/slack/api/auth.test", headers={"Authorization": f"Bearer {tokens[e]}"}
+        ).json()["user_id"]
+        for e in ("ava@acme.com", "bob@acme.com", "hana@acme.com")
+    }
+    assert len(set(ids.values())) == 3, ids
 
     admin = client.post("/slack/api/auth.test", headers=admin_h).json()
     assert admin["user"] == "service-account" and admin["user_id"] == "USERVICE0"

@@ -145,6 +145,13 @@ def _norm(dist: str) -> str:
     return re.sub(r"[-_.]+", "-", dist).lower()
 
 
+def pyproject_optional_dependencies() -> dict[str, list[str]]:
+    """`[project.optional-dependencies]` verbatim — the requirement strings, not the parsed names,
+    which is what the aggregate has to be read from."""
+    with open(REPO_ROOT / "pyproject.toml", "rb") as f:
+        return tomllib.load(f)["project"]["optional-dependencies"]
+
+
 def _extras() -> dict[str, set[str]]:
     with open(REPO_ROOT / "pyproject.toml", "rb") as f:
         pyproject = tomllib.load(f)
@@ -155,23 +162,42 @@ def _extras() -> dict[str, set[str]]:
     }
 
 
+def _loop_values(tree: ast.AST, call: ast.Call, target: str) -> list[str] | None:
+    """The strings ``target`` takes, if ``call`` sits inside a ``for`` that binds it to a literal
+    sequence of them. A tuple and a list are the same loop, so both are read.
+
+    Scoped to the enclosing loop rather than to the file: the answer depends on WHERE the call is,
+    and a name is free to mean something else in the next loop down.
+    """
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.For) and isinstance(node.target, ast.Name)):
+            continue
+        if node.target.id != target or not isinstance(node.iter, ast.Tuple | ast.List):
+            continue
+        if not all(
+            isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.iter.elts
+        ):
+            continue
+        if any(child is call for child in ast.walk(node)):
+            return [e.value for e in node.iter.elts]
+    return None
+
+
 def _importorskip_modules() -> dict[str, list[str]]:
     """Every module the suite gates on, module -> the test files that gate on it.
 
     Read with ``ast`` rather than a regex because one gate is spelled through a loop variable
     (``for _mod in (...): pytest.importorskip(_mod)`` in ``tests/test_sdk.py``), which a string
     scan for literals silently drops — and a collector that misses gates proves nothing.
+
+    The loop variable is resolved INSIDE the loop that binds it, not from a file-wide map: one
+    map per file is last-write-wins, so a second ``for`` over the same name would drop the first
+    loop's gates, and a second ``for`` that is ordinary iteration would contribute names that gate
+    nothing. Both leave the collector reporting confidently on the wrong set.
     """
     found: dict[str, list[str]] = {}
     for path in sorted((REPO_ROOT / "tests").glob("*.py")):
         tree = ast.parse(path.read_text())
-        loop_names: dict[str, list[str]] = {}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
-                if isinstance(node.iter, ast.Tuple) and all(
-                    isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.iter.elts
-                ):
-                    loop_names[node.target.id] = [e.value for e in node.iter.elts]
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and node.args):
                 continue
@@ -182,8 +208,8 @@ def _importorskip_modules() -> dict[str, list[str]]:
             arg = node.args[0]
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 mods = [arg.value]
-            elif isinstance(arg, ast.Name) and arg.id in loop_names:
-                mods = loop_names[arg.id]
+            elif isinstance(arg, ast.Name) and (bound := _loop_values(tree, node, arg.id)):
+                mods = bound
             else:  # pragma: no cover — a shape this collector cannot read must fail, not skip
                 raise AssertionError(
                     f"unreadable importorskip argument in {path.name}: {ast.dump(arg)}"
@@ -193,13 +219,46 @@ def _importorskip_modules() -> dict[str, list[str]]:
     return found
 
 
+def test_the_all_extra_aggregates_every_other_one():
+    """`.[all]` is what CI installs, so it is what decides whether a gated test runs at all.
+
+    It is a fourth copy of the extras list — `pyproject.toml` defines them, CONTRIBUTING's table
+    names them, its install line and `.github/workflows/ci.yml` install them — and the copy that
+    silently costs coverage: an extra added everywhere else but left out of the aggregate installs
+    nowhere, so every test behind it skips forever and `-rs` reports that without failing. The
+    other three copies are held to each other by the test below; this holds the one that matters.
+
+    An aggregate rather than a flag because pip has no `--all-extras` (measured on pip 26.2.1),
+    and a self-reference rather than a duplicated list because pip resolves `backlot[...]` to the
+    directory being installed: the resolution report names a `file://` url for it and marks it
+    direct, so the release on PyPI is never consulted.
+    """
+    extras = _extras()
+    assert "all" in extras, "the aggregate CI installs is gone; ci.yml still names `.[all]`"
+    (aggregate,) = pyproject_optional_dependencies()["all"]
+    named = set(
+        re.search(r"backlot\[([\w,\s-]+)\]", aggregate).group(1).replace(" ", "").split(",")
+    )
+    assert named == set(extras) - {"all"}, (
+        f"`all` installs {sorted(named)} but the extras are {sorted(set(extras) - {'all'})} — "
+        "an extra missing here is one CI never installs"
+    )
+
+
 def test_the_contributing_extras_are_the_pyproject_extras():
     """CONTRIBUTING's gate table is prose over `pyproject.toml`, and prose drifts: an extra renamed
     or added in pyproject leaves the table telling contributors to install something that does not
     exist, or not naming something they need. Both directions are asserted, plus that every test
     file the table points at is still there."""
     text = (REPO_ROOT / "CONTRIBUTING.md").read_text()
-    named = {e for group in re.findall(r"\.\[([\w,]+)\]", text) for e in group.split(",")}
+    # `[\w,\s-]`, not `[\w,]`: an extra may be hyphenated and a list may be spaced (`.[dev, mcp]`),
+    # and a pattern that cannot match those reports a correctly documented extra as missing.
+    named = {
+        e.strip()
+        for group in re.findall(r"\.\[([\w,\s-]+)\]", text)
+        for e in group.split(",")
+        if e.strip()
+    }
     extras = set(_extras())
     assert named == extras, (
         f"CONTRIBUTING names extras pyproject does not define: {sorted(named - extras)}; "

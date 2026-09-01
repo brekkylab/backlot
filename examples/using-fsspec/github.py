@@ -49,7 +49,12 @@ CORPUS = [
 
 
 def main(fs, repo: str) -> None:
-    print(f"=== fs.ls('') — the root of {repo!r} ===")
+    # Where a client that was handed a repo rather than a sha starts. `.branches` and `.tags` are
+    # one listing endpoint each, and `.refs` is the pair of them.
+    print(f"=== fs.refs — the refs of {repo!r} ===")
+    print(f"  {fs.refs}")
+
+    print(f"\n=== fs.ls('') — the root of {repo!r} ===")
     for entry in fs.ls("", detail=True):
         print(f"  {entry['type']:9} {entry['name']}")
 

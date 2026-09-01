@@ -77,7 +77,14 @@ def build_params(base_url: str, access_key: str, secret_key: str) -> StdioServer
     guard is safe here; against real AWS you'd weigh read-only vs. being able to read object bodies."""
     return StdioServerParameters(
         command="uvx",
-        args=["awslabs.aws-api-mcp-server@latest"],
+        # `--with mcp<2`: uvx resolves this server in an env of its own, and the server is still
+        # on mcp v1 — it declares `mcp>=1.23.0` with no upper bound, yet imports
+        # `mcp.shared.exceptions.McpError`, which v2 renamed to `MCPError`. What used to hold that
+        # resolve on v1 was the server's own `fastmcp>=3.4.3`, whose fastmcp-slim capped `mcp<2`;
+        # fastmcp 4.0 lifted the cap, so unconstrained it now takes mcp 2.x and dies on the
+        # ImportError before speaking a byte of protocol. Our own env is on v2 (see the `mcp`
+        # extra) — the two never share a process, only the wire protocol, which negotiates.
+        args=["--with", "mcp<2", "awslabs.aws-api-mcp-server@latest"],
         env={
             "AWS_ENDPOINT_URL": f"{base_url.rstrip('/')}/s3",
             "AWS_ACCESS_KEY_ID": access_key,

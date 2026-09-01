@@ -35,7 +35,7 @@ jobs:
         # proved against the server awslabs ships today. Downloading it here rather than there
         # keeps the fetch off the clock the MCP client's `initialize` waits on, which a uv cache
         # that has not seen this version otherwise loses.
-        run: uv tool install "awslabs.aws-api-mcp-server@latest"
+        run: uv tool install --with "mcp<2" "awslabs.aws-api-mcp-server@latest"
       - name: Unit tests
         run: pytest -rs
 

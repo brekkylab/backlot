@@ -1223,6 +1223,61 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
     }
 
 
+@router.get("/repos/{owner}/{repo}/branches")
+async def list_branches(
+    owner: str, repo: str, request: Request, protected: str | None = Query(None)
+):
+    """The repo's branches — one, the branch the corpus snapshots and the `default_branch` a repo
+    object reports.
+
+    A listed branch is real's SHORT branch, not the object :func:`get_branch` serves below: on
+    api.github.com an item's `commit` carries `sha` and `url` and stops there, where the
+    single-branch route nests the whole commit under the same key. Serving the longer object from
+    both would hand a client a field real GitHub never sends here.
+
+    `?protected=` selects, so it is honoured rather than ignored: a client that asked for the
+    protected branches and got an unprotected one back would read this branch as push-guarded.
+    Real has three answers — only protected branches for a true value, only unprotected ones for
+    `false`, and all of them when the parameter is omitted — and parses the value the way
+    `?recursive=` is parsed, every non-empty value but `false`/`0` reading true. Measured on
+    fastapi/fastapi (22 branches, one of them protected): `true`/`1`/`TRUE`/`yes`/`banana` answer
+    1, `false`/`0` answer 21, an empty value and an omitted one answer 22. The single branch here
+    is unprotected, which collapses real's last two answers into the same list, so :func:`_truthy`
+    covers every value.
+    """
+    conn = auth.conn(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    _require_repo(conn, repo, ids)
+    if _truthy(protected):
+        return []
+    sha = _repo_commit_sha(repo)
+    return [
+        {
+            "name": "main",
+            "commit": {
+                "sha": sha,
+                "url": f"{_api_base(request)}/repos/{owner}/{repo}/commits/{sha}",
+            },
+            "protected": False,
+        }
+    ]
+
+
+@router.get("/repos/{owner}/{repo}/tags")
+async def list_tags(owner: str, repo: str, request: Request):
+    """No tags: a corpus states a repo's files and history, never its tags.
+
+    Empty rather than absent. Real GitHub answers `[]` for a repo with none — octocat/Hello-World
+    does — so this is a shape a client meets in production, where a 404 would be one it only ever
+    meets here. Same reasoning as `/statuses/{sha}`, which is empty because Backlot has no CI.
+    """
+    conn = auth.conn(request)
+    caller = _require(request)
+    _require_repo(conn, repo, auth.visible_ids(request, caller))
+    return []
+
+
 @router.get("/repos/{owner}/{repo}/branches/{branch}")
 async def get_branch(owner: str, repo: str, branch: str, request: Request):
     conn = auth.conn(request)
@@ -1591,6 +1646,7 @@ def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
         "blobs_url": f"{repo_url}/git/blobs{{/sha}}",
         "trees_url": f"{repo_url}/git/trees{{/sha}}",
         "branches_url": f"{repo_url}/branches{{/branch}}",
+        "tags_url": f"{repo_url}/tags",
         "commits_url": f"{repo_url}/commits{{/sha}}",
         "statuses_url": f"{repo_url}/statuses/{{sha}}",
         "collaborators_url": f"{repo_url}/collaborators{{/collaborator}}",

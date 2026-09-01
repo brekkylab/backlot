@@ -1,16 +1,12 @@
 # Does the vendor still serve what Backlot claims it does?
 #
-# Two jobs, because the two halves have different costs. The REST sources are compared against
-# contracts their vendors PUBLISH — no credential, no quota, readable from a fork — so that half
-# gates a pull request like any other check. The GraphQL sources need a key, which a fork cannot
-# read and which a vendor outage can take away, so that half runs on a schedule and opens an issue
-# instead of failing a merge that has nothing to do with it.
+# On a schedule, never on a pull request. Drift is this project's bug, but it is never the bug of
+# whichever pull request happens to be open when a vendor ships a change — so a divergence opens an
+# issue rather than failing someone else's merge. Two sources need a credential a fork could not
+# read anyway.
 name: Fidelity
 
 on:
-  pull_request:
-  push:
-    branches: [main]
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
@@ -20,35 +16,23 @@ permissions:
   issues: write
 
 jobs:
-  # No secrets, so this one runs on every pull request, forks included.
-  published-specs:
+  compare:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        source: [slack, gmail, google_drive, github, jira, confluence, hubspot, notion]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - name: Install
-        run: pip install -e .
-      - name: Compare ${{ matrix.source }} against the contract its vendor publishes
-        run: backlot diff --source ${{ matrix.source }}
-
-  # Reported, not gated. Two of these need a credential a fork cannot read; s3 is here instead
-  # because it is red for a filed reason (#103) and a check that is always red stops being read.
-  # Move it back up once that is closed.
-  reported:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        source: [fireflies, linear, s3]
+        source:
+          - slack
+          - gmail
+          - google_drive
+          - github
+          - jira
+          - confluence
+          - hubspot
+          - notion
+          - fireflies
+          - linear
+          - s3
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -70,11 +54,11 @@ jobs:
           echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       # Exit 2 is "we could not ask" — an expired key, a vendor outage, a network blip. That is not
-      # a fidelity finding and must not open a bug against the mock.
-      - name: Report an unreadable vendor schema
+      # a fidelity finding and must not open a bug against Backlot.
+      - name: Report an unreadable vendor contract
         if: steps.diff.outputs.status == '2'
         run: |
-          echo "::warning::${{ matrix.source }}'s schema could not be read; no comparison ran."
+          echo "::warning::${{ matrix.source }}'s contract could not be read; no comparison ran."
           cat report.txt
 
       - name: Open an issue for a new divergence
@@ -86,7 +70,7 @@ jobs:
           title="Fidelity: $SOURCE diverges from its vendor"
           existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
           body=$(printf '%s\n\n```\n%s\n```\n' \
-            "\`backlot diff --source $SOURCE\` reported divergences that the baseline does not acknowledge. Each one is either a bug in the mock or a deliberate gap; a deliberate gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`." \
+            "\`backlot diff --source $SOURCE\` reported divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; a gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`." \
             "$(cat report.txt)")
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"

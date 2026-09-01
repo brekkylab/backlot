@@ -19,8 +19,8 @@ For a source compared against a **document its vendor publishes**, the request s
 operations exist, and which query parameters each accepts. Backlot's side is the app's own
 `/openapi.json`. The vendor's side comes in two formats, read by two parsers, because Google does
 not publish OpenAPI: an **OpenAPI** document for GitHub, Slack, Jira, Confluence, Notion and
-HubSpot, and a **Google API Discovery** document for Gmail and Drive. Both are public, so
-this half runs with **no credential, no quota and no account**. Response bodies are out of scope
+HubSpot, and a **Google API Discovery** document for Gmail and Drive. Both are public, so these
+comparisons run with **no credential, no quota and no account**. Response bodies are out of scope
 here: a vendor spec describes them through deep `$ref` chains that Backlot's `response_model` set
 does not mirror shape-for-shape, so a body diff would report how two documents are written rather
 than how two servers answer.
@@ -160,10 +160,11 @@ baseline has gone stale, which is its own kind of drift.
 
 ## In CI
 
-[`.github/workflows/fidelity.yml`](../.github/workflows/fidelity.yml) runs it daily, not on pull
-requests. A fork cannot read the credential, so it could never be a required check there, and a
-contributor fixing a typo must not be blocked because a vendor shipped a field overnight. A new
-divergence opens an issue instead.
+[`.github/workflows/fidelity.yml`](../.github/workflows/fidelity.yml) runs every source daily,
+and on demand through `workflow_dispatch`. Never on a pull request: drift is this project's bug,
+but it is never the bug of whichever pull request happens to be open when a vendor ships a change,
+and a contributor fixing a typo must not be blocked by it. A new divergence opens an issue and
+turns the scheduled run red instead.
 
 ## Coverage
 

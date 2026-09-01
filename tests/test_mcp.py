@@ -201,7 +201,14 @@ def _s3_params(base: str, token: str):
         # inside the window the client's `initialize` is waiting on, and that ends as
         # `McpError('Connection closed')` rather than as a slow pass. CI fetches the server in a
         # step above pytest so the download is never on this clock.
-        args=["awslabs.aws-api-mcp-server@latest"],
+        # `--with mcp<2`: uvx resolves this server in an env of its own, and the server is still
+        # on mcp v1 — it declares `mcp>=1.23.0` with no upper bound, yet imports
+        # `mcp.shared.exceptions.McpError`, which v2 renamed to `MCPError`. What used to hold that
+        # resolve on v1 was the server's own `fastmcp>=3.4.3`, whose fastmcp-slim capped `mcp<2`;
+        # fastmcp 4.0 lifted the cap, so unconstrained it now takes mcp 2.x and dies on the
+        # ImportError before speaking a byte of protocol. Our own env is on v2 (see the `mcp`
+        # extra) — the two never share a process, only the wire protocol, which negotiates.
+        args=["--with", "mcp<2", "awslabs.aws-api-mcp-server@latest"],
         env={
             "AWS_ENDPOINT_URL": f"{base.rstrip('/')}/s3",
             "AWS_ACCESS_KEY_ID": synth.s3_access_key_id(token),
@@ -240,15 +247,15 @@ def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None
 
     Fetches Backlot's MCP-ready spec (``GET /_meta/openapi/<source>`` — produced by ``backlot.openapi``,
     which owns the slice/dedupe logic) and serves it via an in-memory FastMCP client over an auth'd
-    httpx client. That is the whole of what the example bridge does; the meaningful logic lives in
+    httpx2 client. That is the whole of what the example bridge does; the meaningful logic lives in
     the app and is unit-tested in ``tests/test_openapi.py``. Returns ``ok_pred`` over the tool's
     response text; a blocked/errored call is ``False``."""
     import base64 as b64
 
-    import httpx
+    import httpx2
     from fastmcp import Client, FastMCP
 
-    spec = httpx.get(f"{base}/_meta/openapi/{source}", timeout=10).json()
+    spec = httpx2.get(f"{base}/_meta/openapi/{source}", timeout=10).json()
     if username:  # Atlassian: Basic username:token (the api_token IS Backlot token)
         header = {
             "Authorization": "Basic " + b64.b64encode(f"{username}:{token}".encode()).decode()
@@ -257,7 +264,9 @@ def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None
         header = {"Authorization": f"Bearer {token}"}
 
     async def _go():
-        client = httpx.AsyncClient(base_url=base, headers=header, timeout=30)
+        # httpx2, not httpx: `from_openapi` takes an httpx2 client. A legacy httpx one is
+        # still accepted, under a deprecation warning that says it will stop being accepted.
+        client = httpx2.AsyncClient(base_url=base, headers=header, timeout=30)
         server = FastMCP.from_openapi(openapi_spec=spec, client=client, validate_output=False)
         async with Client(server) as c:
             tool = next(t for t in (await c.list_tools()) if tool_pred(t.name))
@@ -400,8 +409,7 @@ def _graphql_bridge_call(base, source, token, *, tool_name, args, ok_pred, depth
     derivation, which lives in the app. Returns ``ok_pred`` over the tool's response text."""
     import httpx
     from fastmcp import Client, FastMCP
-    from fastmcp.tools import Tool
-    from fastmcp.tools.tool import ToolResult
+    from fastmcp.tools import Tool, ToolResult
 
     endpoint = f"{base}/{source}/graphql"
     headers = {"Authorization": f"Bearer {token}"}

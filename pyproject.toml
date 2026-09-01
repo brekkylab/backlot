@@ -67,16 +67,21 @@ examples = [
 ]
 # MCP agent examples (examples/using-mcp-with-agents/): drive Backlot through a real MCP server.
 mcp = [
-    "mcp>=1.2",
+    # `mcp` and `fastmcp` split into two incompatible generations, and the floors below pick the
+    # newer one on both sides. mcp 2.x renamed `McpError` -> `MCPError` and moved `mcp.types` to
+    # snake_case; `fastmcp` 3.x cannot see any of that, because it reaches `mcp` through
+    # fastmcp-slim, which caps `mcp<2`. fastmcp 4.x is the version that requires `mcp>=2`, so the
+    # two floors have to move together — leave either one behind and the resolver satisfies it by
+    # walking the other package backward instead of failing.
+    "mcp>=2",
+    "fastmcp>=4",
+    # The OpenAPI→MCP bridge hands `FastMCP.from_openapi()` its client, and fastmcp 4.x wants
+    # that to be an httpx2 one. fastmcp pulls httpx2 in regardless; this declares the import.
+    "httpx2",
     "anthropic[mcp]>=0.40",
     "openai>=1.40",
     "openai-agents>=0.1",
     "pyyaml>=6.0",
-    # >=3: fastmcp 2.x imports `mcp.shared.exceptions.McpError`, which mcp 2.0 renamed to
-    # `MCPError` — so an unbounded pair resolves to two packages that cannot import each other and
-    # every MCP test fails inside fastmcp's own module body. 3.x is the version that agrees with a
-    # current `mcp`.
-    "fastmcp>=3",
 ]
 # LlamaIndex reader examples (examples/using-llamaindex-readers/): point each official
 # llama-index reader at Backlot and load Documents. The client libs below are the ones the

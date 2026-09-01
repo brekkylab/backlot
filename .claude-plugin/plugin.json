@@ -1,0 +1,13 @@
+{
+  "name": "backlot",
+  "version": "0.1.0",
+  "description": "Emulate an enterprise SaaS knowledge source over a corpus you supply, then wire a real client to it.",
+  "author": {
+    "name": "brekkylab",
+    "url": "https://github.com/brekkylab"
+  },
+  "homepage": "https://github.com/brekkylab/backlot",
+  "repository": "https://github.com/brekkylab/backlot",
+  "license": "MIT",
+  "keywords": ["emulator", "rag", "connector", "acl", "slack", "gmail", "github", "jira", "s3"]
+}

@@ -1235,10 +1235,15 @@ async def list_branches(
     single-branch route nests the whole commit under the same key. Serving the longer object from
     both would hand a client a field real GitHub never sends here.
 
-    `?protected=` selects, so it is honoured rather than ignored: nothing here is protected, and a
-    client that asked for the protected ones and got an unprotected branch back would read this
-    branch as push-guarded. Real parses the value the way `?recursive=` is parsed (measured:
-    `true`/`1`/`TRUE`/`yes`/`banana` filter, `false`/`0`/empty do not), which is :func:`_truthy`.
+    `?protected=` selects, so it is honoured rather than ignored: a client that asked for the
+    protected branches and got an unprotected one back would read this branch as push-guarded.
+    Real has three answers — only protected branches for a true value, only unprotected ones for
+    `false`, and all of them when the parameter is omitted — and parses the value the way
+    `?recursive=` is parsed, every non-empty value but `false`/`0` reading true. Measured on
+    fastapi/fastapi (22 branches, one of them protected): `true`/`1`/`TRUE`/`yes`/`banana` answer
+    1, `false`/`0` answer 21, an empty value and an omitted one answer 22. The single branch here
+    is unprotected, which collapses real's last two answers into the same list, so :func:`_truthy`
+    covers every value.
     """
     conn = auth.conn(request)
     caller = _require(request)

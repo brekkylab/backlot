@@ -368,9 +368,8 @@ async def auth_test(request: Request):
     object carries for that person — and `user_id` is that caller's own id, the `U…` that
     `users.list` reports and that a message in `conversations.history` names as its author.
 
-    Both were constants before, and the id is the one that costs: "call auth.test, then match
-    `user_id` against message authors" is how a client finds its own messages, and a workspace
-    constant can never match.
+    A workspace constant can never match: "call auth.test, then match `user_id` against message
+    authors" is how a client finds its own messages, so the id is the field that costs.
 
     The admin/service token has no corpus email, so it keeps the service identity: that caller is
     not a person, and real Slack answers a bot token with the app's own id rather than a user's."""

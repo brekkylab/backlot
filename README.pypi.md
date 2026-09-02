@@ -6,11 +6,11 @@
 [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R)
 [![X](https://img.shields.io/badge/Tweet-000000?logo=x&logoColor=white)](https://x.com/brekkylab)
 
-**Serve your own enterprise playground**
+**Run enterprise SaaS APIs locally.**
 
-Backlot is a local emulator for enterprise SaaS APIs. Test your Slack, Gmail, Google Drive and the rest of your integrations.
+Backlot is a local emulator for Slack, Gmail, Google Drive, GitHub, Jira, Notion, S3 and other enterprise APIs. It reproduces the response shapes, pagination, authentication, errors and per-document access controls an integration has to handle, over a deterministic corpus you control — so you build and test against the official vendor SDKs with no vendor account, no OAuth approval, no secrets in CI and no network.
 
-**No account. No token. No network.**
+> Think LocalStack, but for the SaaS APIs your connectors and agents talk to.
 
 Why would you need that? Because right now:
 

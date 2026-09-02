@@ -1,7 +1,7 @@
 {
   "source": "github",
   "endpoint": "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
-  "measured": "2026-09-01",
+  "measured": "2026-09-02",
   "acknowledged": [
     {
       "kind": "extra_operation",
@@ -1832,6 +1832,12 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
+      "path": "GET /orgs/{}/actions/runners/deprecations/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
       "path": "GET /orgs/{}/actions/runners/downloads",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -2865,6 +2871,12 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /repos/{}/{}/actions/runners",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /repos/{}/{}/actions/runners/deprecations/{}",
       "detail": "the vendor serves it; Backlot does not"
     },
     {

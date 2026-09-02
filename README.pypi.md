@@ -1,10 +1,6 @@
 # Backlot
 
-[![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml)
-[![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/brekkylab/backlot/blob/main/LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R)
-[![X](https://img.shields.io/badge/Tweet-000000?logo=x&logoColor=white)](https://x.com/brekkylab)
+[![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml) [![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/brekkylab/backlot/blob/main/LICENSE) [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R) [![X](https://img.shields.io/badge/Tweet-000000?logo=x&logoColor=white)](https://x.com/brekkylab)
 
 **Run enterprise SaaS APIs locally.**
 
@@ -42,7 +38,7 @@ with backlot.serve() as s:  # no arguments: a tiny hello-world corpus
 
 ### Let your coding agent run Backlot instantly
 
-The repo is its own plugin marketplace, so the [agent skill](https://github.com/brekkylab/backlot/blob/main/skills/backlot/SKILL.md) installs with no clone and no `pip install` first:
+This repo is its own plugin marketplace, so the [agent skill](https://github.com/brekkylab/backlot/blob/main/skills/backlot/SKILL.md) installs with no clone and no `pip install` first:
 
 ```bash
 claude plugin marketplace add brekkylab/backlot && claude plugin install backlot@brekkylab
@@ -83,7 +79,7 @@ It emulates the documented subset of each API it supports, not every vendor endp
 | Jira | `/atlassian/rest/api` | [`jira.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/jira.py) |
 | Confluence | `/atlassian/wiki/rest/api` | [`confluence.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/confluence.py) |
 | Notion | `/notion/v1` | [`notion.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/notion.py) |
-| Linear | `/linear/graphql` | [`linear/`](https://github.com/brekkylab/backlot/tree/main/examples/using-official-sdk/linear) |
+| Linear | `/linear/graphql` | [`linear/`](https://github.com/brekkylab/backlot/tree/main/examples/using-official-sdk/linear/) |
 | HubSpot | `/hubspot` | [`hubspot.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/hubspot.py) |
 | Fireflies | `/fireflies/graphql` | [`fireflies.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/fireflies.py) |
 | Amazon S3 | `/s3` | [`s3.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/s3.py) |
@@ -116,22 +112,22 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 
 | Point this at it | Runnable |
 |---|---|
-| 📦 Official vendor SDKs, one script per service | [`examples/using-official-sdk/`](https://github.com/brekkylab/backlot/tree/main/examples/using-official-sdk) |
-| 🔗 MCP servers, or Backlot's own OpenAPI→MCP and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](https://github.com/brekkylab/backlot/tree/main/examples/using-mcp-with-agents) |
-| 🦙 Load it as documents, with the official [LlamaIndex](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/) readers | [`examples/using-llamaindex-readers/`](https://github.com/brekkylab/backlot/tree/main/examples/using-llamaindex-readers) |
-| 🐍 Read it with `pandas`, `pyarrow` or `dask`, over an [fsspec](https://filesystem-spec.readthedocs.io/) filesystem | [`examples/using-fsspec/`](https://github.com/brekkylab/backlot/tree/main/examples/using-fsspec) |
-| 🗂️ Read it with `ls`, `cat` and `grep`, over [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](https://github.com/brekkylab/backlot/tree/main/examples/using-mirage) |
-| 📥 Your own corpus, from a JSONL file | [`examples/bring-your-own-corpus/`](https://github.com/brekkylab/backlot/tree/main/examples/bring-your-own-corpus) |
+| 📦 Official vendor SDKs, one script per service | [`examples/using-official-sdk/`](https://github.com/brekkylab/backlot/tree/main/examples/using-official-sdk/) |
+| 🔗 MCP servers, or Backlot's own OpenAPI→MCP and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](https://github.com/brekkylab/backlot/tree/main/examples/using-mcp-with-agents/) |
+| 🦙 Load it as documents, with the official [LlamaIndex](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/) readers | [`examples/using-llamaindex-readers/`](https://github.com/brekkylab/backlot/tree/main/examples/using-llamaindex-readers/) |
+| 🐍 Read it with `pandas`, `pyarrow` or `dask`, over an [fsspec](https://filesystem-spec.readthedocs.io/) filesystem | [`examples/using-fsspec/`](https://github.com/brekkylab/backlot/tree/main/examples/using-fsspec/) |
+| 🗂️ Read it with `ls`, `cat` and `grep`, over [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](https://github.com/brekkylab/backlot/tree/main/examples/using-mirage/) |
+| 📥 Your own corpus, from a JSONL file | [`examples/bring-your-own-corpus/`](https://github.com/brekkylab/backlot/tree/main/examples/bring-your-own-corpus/) |
 
 ## Documentation
 
 | | |
 |---|---|
-| Every source Backlot serves, and every endpoint of each | [supported-sources.md](https://github.com/brekkylab/backlot/blob/main/docs/supported-sources.md) |
-| Building a corpus, and public datasets | [corpus.md](https://github.com/brekkylab/backlot/blob/main/docs/corpus.md) |
-| Auth schemes and tokens | [auth.md](https://github.com/brekkylab/backlot/blob/main/docs/auth.md) |
-| Measuring Backlot against the real APIs | [fidelity.md](https://github.com/brekkylab/backlot/blob/main/docs/fidelity.md) |
-| Every `BACKLOT_*` setting, and Docker | [configuration.md](https://github.com/brekkylab/backlot/blob/main/docs/configuration.md) |
+| Every source Backlot serves, and every endpoint of each | [docs/supported-sources.md](https://github.com/brekkylab/backlot/blob/main/docs/supported-sources.md) |
+| Building a corpus, and public datasets | [docs/corpus.md](https://github.com/brekkylab/backlot/blob/main/docs/corpus.md) |
+| Auth schemes and tokens | [docs/auth.md](https://github.com/brekkylab/backlot/blob/main/docs/auth.md) |
+| Measuring Backlot against the real APIs | [docs/fidelity.md](https://github.com/brekkylab/backlot/blob/main/docs/fidelity.md) |
+| Every `BACKLOT_*` setting, and Docker | [docs/configuration.md](https://github.com/brekkylab/backlot/blob/main/docs/configuration.md) |
 | Vendor names and trademarks | [NOTICE.md](https://github.com/brekkylab/backlot/blob/main/NOTICE.md) |
 
 ## Contributing

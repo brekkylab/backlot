@@ -59,7 +59,10 @@ export const Step: React.FC<{
         display: "flex",
         alignItems: "flex-start",
         gap: 12,
-        marginBottom: 13,
+        // The right lane has 504px between the header and its verdict, and has to hold four rows,
+        // the response card and the chips in it. The card is what gives when they do not fit — it
+        // is the one element that shrinks, and it loses its last field and its bottom edge first.
+        marginBottom: 9,
       }}
     >
       {count === undefined ? (
@@ -149,7 +152,7 @@ export const Chips: React.FC<{ frame: number; at: number; items: string[] }> = (
   at,
   items,
 }) => (
-  <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 13 }}>
+  <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 9 }}>
     {items.map((label, i) => {
       const t = appear(frame, at + i * 5);
       return (
@@ -194,7 +197,7 @@ export const ResponseCard: React.FC<{ frame: number; at: number }> = ({ frame, a
       style={{
         opacity: t,
         transform: `translateY(${rise(t)}px)`,
-        marginTop: 15,
+        marginTop: 10,
         borderRadius: 9,
         border: `1px solid ${C.panelEdge}`,
         background: C.panel,
@@ -425,7 +428,7 @@ const tick = (
 
 const prefixLine = (s: Served) => (
   <div style={{ font: `500 20px ${F.mono}`, color: C.ink, whiteSpace: "nowrap" }}>
-    base_url=<span style={{ color: C.mint }}>&quot;http://localhost:8000{s.prefix}&quot;</span>
+    base_url=<span style={{ color: C.mint }}>&quot;http://127.0.0.1:8000{s.prefix}&quot;</span>
   </div>
 );
 
@@ -455,9 +458,9 @@ export const SourceCycle: React.FC<{
 
   return (
     <div style={{ position: "absolute", left, top: 118, width }}>
-      {/* The two lines that never change stay put and stay ticked: the point is that the third is
-          the only part of the story that differs per source. */}
-      {["pip install backlot", "backlot serve"].map((line) => (
+      {/* The lines that never change stay put and stay ticked: the point is that the base URL
+          below them is the only part of the story that differs per source. */}
+      {["pip install backlot", "backlot import --bundled", "backlot serve"].map((line) => (
         <div
           key={line}
           style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 17 }}

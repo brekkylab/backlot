@@ -130,6 +130,7 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 | Every source Backlot serves, and every endpoint of each | [supported-sources.md](https://github.com/brekkylab/backlot/blob/main/docs/supported-sources.md) |
 | Building a corpus, and public datasets | [corpus.md](https://github.com/brekkylab/backlot/blob/main/docs/corpus.md) |
 | Auth schemes and tokens | [auth.md](https://github.com/brekkylab/backlot/blob/main/docs/auth.md) |
+| Measuring Backlot against the real APIs | [fidelity.md](https://github.com/brekkylab/backlot/blob/main/docs/fidelity.md) |
 | Every `BACKLOT_*` setting, and Docker | [configuration.md](https://github.com/brekkylab/backlot/blob/main/docs/configuration.md) |
 | Vendor names and trademarks | [NOTICE.md](https://github.com/brekkylab/backlot/blob/main/NOTICE.md) |
 

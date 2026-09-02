@@ -133,7 +133,7 @@ Every one of these is a real client with its base URL changed, nothing more:
 | Want | Where |
 |---|---|
 | the vendor's own SDK | [`examples/using-official-sdk/`](../../examples/using-official-sdk/) |
-| MCP tools for an agent | [`examples/using-mcp-with-agents/`](../../examples/using-mcp-with-agents/) |
+| MCP tools for an agent | `backlot mcp` — every source from one stdio server, starting Backlot itself if none is running; a vendor's own MCP server pointed at Backlot is in [`examples/using-mcp-with-agents/`](../../examples/using-mcp-with-agents/) |
 | LlamaIndex `Document` loading | [`examples/using-llamaindex-readers/`](../../examples/using-llamaindex-readers/) |
 | `pandas`/`pyarrow`/`dask` over a filesystem | [`examples/using-fsspec/`](../../examples/using-fsspec/) |
 | a virtual filesystem to `ls`, `cat` and `grep` | [`examples/using-mirage/`](../../examples/using-mirage/) |

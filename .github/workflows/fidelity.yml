@@ -118,8 +118,10 @@ jobs:
           # characters and jira's 69k — so the report is capped well under the limit.
           report=$(cat report.txt)
           if [ "${#report}" -gt 55000 ]; then
+            # Sliced, not `head -c`: the test above counts characters, and cutting bytes leaves
+            # half of a multibyte character at the seam — the report is full of `·` and `…`.
             report="$(printf '%s\n… truncated at 55000 of %d characters. The whole report is in the run log: %s' \
-              "$(printf '%s' "$report" | head -c 55000)" "${#report}" "$RUN_URL")"
+              "${report:0:55000}" "${#report}" "$RUN_URL")"
           fi
           body=$(printf '%s\n\n```\n%s\n```\n' \
             "\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; a gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`. This body is the latest scheduled run's report, rewritten in place." \

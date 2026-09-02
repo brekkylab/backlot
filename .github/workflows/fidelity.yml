@@ -18,6 +18,15 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-latest
+    # One run per source at a time. A `workflow_dispatch` fired while the nightly run is mid-
+    # comparison would have both halves search for an issue neither has created yet and create it
+    # twice — and GitHub indexes issue search asynchronously, so the second would not see the first
+    # even after it existed. Per job rather than per workflow, because `matrix` is only in context
+    # here; queued rather than cancelled, because a comparison that was going to report something
+    # should finish and report it.
+    concurrency:
+      group: fidelity-${{ matrix.source }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -61,21 +70,41 @@ jobs:
           echo "::warning::${{ matrix.source }}'s contract could not be read; no comparison ran."
           cat report.txt
 
-      - name: Open an issue for a new divergence
+      # One issue per source, for the life of the repository, carrying the latest run's report in
+      # its body. Searching open issues alone files a fresh duplicate the morning after someone
+      # triages and closes one, and commenting unconditionally buries the morning a report changed
+      # under a year of identical ones — both of which are the alarm nobody reads by the third run,
+      # arriving through the tracker instead of the terminal.
+      - name: Report the divergence on this source's issue
         if: steps.diff.outputs.status == '1'
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE: ${{ matrix.source }}
         run: |
-          title="Fidelity: $SOURCE diverges from its vendor"
-          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
+          TITLE="Fidelity: $SOURCE diverges from its vendor"
+          export TITLE
+          # Matched on the exact title AND on the issue being this workflow's own. `in:title` is a
+          # word search, so it can answer with something that merely shares the words, and an issue
+          # a person opened under this name must never have its body rewritten from under them.
+          existing=$(gh issue list --state all --search "$TITLE in:title" \
+            --json number,title,author,state \
+            --jq 'first(.[] | select(.title == env.TITLE and .author.is_bot)) // empty')
           body=$(printf '%s\n\n```\n%s\n```\n' \
-            "\`backlot diff --source $SOURCE\` reported divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; a gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`." \
+            "\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; a gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`. This body is the latest scheduled run's report, rewritten in place." \
             "$(cat report.txt)")
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "$body"
-          else
-            gh issue create --title "$title" --body "$body"
+          if [ -z "$existing" ]; then
+            gh issue create --title "$TITLE" --body "$body"
+            exit 0
+          fi
+          number=$(printf '%s' "$existing" | jq -r .number)
+          if [ "$(printf '%s' "$existing" | jq -r .state)" = "CLOSED" ]; then
+            gh issue reopen "$number" --comment "Still diverging on the scheduled run, so this is open again."
+          fi
+          # A comment only when the report is not the one already on the issue: reopening and a
+          # changed report are the two things worth a notification.
+          if [ "$(gh issue view "$number" --json body --jq .body)" != "$body" ]; then
+            gh issue edit "$number" --body "$body"
+            gh issue comment "$number" --body "The divergences on \`$SOURCE\` changed. The issue body now carries the latest report."
           fi
 
       - name: Fail the run so the schedule shows red

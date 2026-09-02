@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Drive Backlot's HubSpot CRM API as MCP tools via the generic OpenAPI→MCP bridge. Self-contained.
 
-The bridge (`_openapi_bridge.py`) fetches Backlot's typed `/openapi.json`, slices it to `/hubspot`,
-and serves those operations over stdio with a `Bearer <token>` header — so retrieval is ACL-scoped by
-the token (default admin; per-user from GET /_meta/users). No vendor SDK and no vendor MCP server:
-HubSpot has no base-URL-switchable one, so this bridge is its MCP path.
+The bridge (`backlot mcp --source hubspot`) fetches Backlot's typed `/openapi.json`, slices it to
+`/hubspot`, and serves those operations over stdio with a `Bearer <token>` header — so retrieval
+is ACL-scoped by the token (default admin; per-user from GET /_meta/users). No vendor SDK and no
+vendor MCP server: HubSpot has no base-URL-switchable one, so this bridge is its MCP path.
 
 Because the CRM API is polymorphic over `{object_type}`, the agent gets *five* tools that each work
 across every object type (list, read, search, batch-read, associations) rather than a set per type —
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from mcp import StdioServerParameters
 
@@ -86,14 +85,15 @@ QUESTION = (
     "text you relied on."
 )
 
-_BRIDGE = str(Path(__file__).with_name("_openapi_bridge.py"))
-
 
 def build_params(base_url: str, token: str) -> StdioServerParameters:
-    """Run `_openapi_bridge.py --source hubspot` as a stdio MCP server pointed at Backlot."""
+    """Run `backlot mcp --source hubspot` as a stdio MCP server pointed at Backlot.
+
+    `-m backlot` through this interpreter rather than the `backlot` script, so it works in an
+    environment whose bin/ is not on PATH."""
     return StdioServerParameters(
         command=sys.executable,
-        args=[_BRIDGE, "--source", "hubspot", "--base-url", base_url.rstrip("/"), "--token", token],
+        args=["-m", "backlot", "mcp", "--source", "hubspot", "--url", base_url, "--token", token],
     )
 
 

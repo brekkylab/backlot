@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Drive Backlot's GitHub API as MCP tools via the generic OpenAPI→MCP bridge. Self-contained.
 
-The bridge (`_openapi_bridge.py`) fetches Backlot's typed `/openapi.json`, slices it to `/github`, and
-serves those operations over stdio with a `Bearer <token>` header — so retrieval is ACL-scoped by
-the token (default admin; per-user from GET /_meta/users). No vendor SDK and no vendor MCP server.
+The bridge (`backlot mcp --source github`) fetches Backlot's typed `/openapi.json`, slices it to
+`/github`, and serves those operations over stdio with a `Bearer <token>` header — so retrieval is
+ACL-scoped by the token (default admin; per-user from GET /_meta/users). No vendor SDK and no vendor
+MCP server.
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
@@ -14,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from mcp import StdioServerParameters
 
@@ -49,14 +49,15 @@ QUESTION = (
     "runbook issue. Cite the titles."
 )
 
-_BRIDGE = str(Path(__file__).with_name("_openapi_bridge.py"))
-
 
 def build_params(base_url: str, token: str) -> StdioServerParameters:
-    """Run `_openapi_bridge.py --source github` as a stdio MCP server pointed at Backlot."""
+    """Run `backlot mcp --source github` as a stdio MCP server pointed at Backlot.
+
+    `-m backlot` through this interpreter rather than the `backlot` script, so it works in an
+    environment whose bin/ is not on PATH."""
     return StdioServerParameters(
         command=sys.executable,
-        args=[_BRIDGE, "--source", "github", "--base-url", base_url.rstrip("/"), "--token", token],
+        args=["-m", "backlot", "mcp", "--source", "github", "--url", base_url, "--token", token],
     )
 
 

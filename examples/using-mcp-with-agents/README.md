@@ -14,7 +14,7 @@ service (like the other `examples/` dirs) — run the one you want:
   (uvx/Python) — it shells the AWS CLI, whose boto3 client honors a first-class
   `AWS_ENDPOINT_URL` override and SigV4-signs every call; a broad AWS-CLI wrapper, so the agent
   runs `aws s3api …` commands.
-- **`github.py`** via the **generic OpenAPI→MCP bridge** (`_openapi_bridge.py`, Python/FastMCP) — no vendor
+- **`github.py`** via the **generic OpenAPI→MCP bridge** (`backlot mcp`, Python/FastMCP) — no vendor
   MCP server exists that can be pointed at anything self-hosted, so instead the bridge turns
   Backlot's own typed `/openapi.json` into MCP tools. See "How the OpenAPI→MCP bridge connects" below.
   This unlocks the sources with no base-URL-switchable vendor server; more sources
@@ -30,7 +30,7 @@ service (like the other `examples/` dirs) — run the one you want:
   each work across every object type (list, read, search, batch-read, associations) rather than a set
   per type, so "find the account, then its notes" is two calls with the object type as an argument.
 - **`linear.py`** and **`fireflies.py`** via the **generic GraphQL→MCP bridge**
-  (`_graphql_bridge.py`, Python/FastMCP). Both sources are GraphQL-only, so the OpenAPI bridge
+  (`backlot mcp`, Python/FastMCP). Both sources are GraphQL-only, so the OpenAPI bridge
   cannot serve them at all — `/openapi.json` describes one `POST /<source>/graphql` operation,
   which would derive a single raw-document tool rather than a usable toolset. This bridge reads the
   endpoint's own **introspection** instead and turns each root `Query` field into a typed tool. See
@@ -171,33 +171,52 @@ address`. To drive a remote deployment, tunnel it to loopback and point `--url` 
 `--url http://127.0.0.1:18000 --access-key … --secret-key …`. (boto3 and mirage have no such
 restriction — they take the hostname directly.)
 
-## How the OpenAPI→MCP bridge connects (`github.py` / `slack.py` / `gmail.py` / `gdrive.py`)
+## `backlot mcp` — every source as MCP tools, one command
 
-These four sources have no vendor MCP server that accepts a base-URL override (see "Why these need
-the bridge" below). Instead of a vendor server, each launcher runs the **generic bridge**
-`_openapi_bridge.py` (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess. The bridge is
-deliberately thin — Backlot does the spec work:
+The bridge both families below run is Backlot's own command, so an MCP client needs nothing from
+this directory:
+
+```bash
+pip install "backlot[mcp]" && claude mcp add backlot -- backlot mcp
+```
+
+With no `--source` it serves every bridgeable source from one process, each tool namespaced
+`<source>_<tool>` (`slack_search_messages`, `atlassian_jira_get_issue`); `--source slack` serves one
+source under its plain tool names. It bridges the server at `--url`, else the one on `127.0.0.1:8000`
+if a Backlot server answers there, else **starts one itself** over the data dir's corpus (the bundled
+corpus when the data dir is empty) and stops it when the client disconnects — which is what makes
+the install a single line. `--token` scopes every call to one user; `--username` switches Atlassian
+to the Basic scheme; `--depth` is the GraphQL selection depth. The code is `backlot/mcp.py`.
+
+## How the OpenAPI→MCP bridge connects (`github.py` / `slack.py` / `gmail.py` / `gdrive.py` / `hubspot.py`)
+
+These sources have no vendor MCP server that accepts a base-URL override (see "Why these need
+the bridge" below). Instead of a vendor server, each launcher runs `backlot mcp --source <name>`
+(Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess. The bridge is deliberately thin —
+Backlot does the spec work:
 
 - Backlot serves an **MCP-ready spec per source** at **`GET /_meta/openapi/<source>`** — its own
   typed `/openapi.json` (the routers declare query params and response models) sliced to that
-  source and with the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each
-  (the raw spec carries ~14 duplicate operationIds, which an MCP tool set can't have). This lives
-  in `backlot/openapi.py`, so there is nothing to clean up client-side;
+  source, each operation renamed to its route's own name (`search_messages`, not
+  `search_messages_slack_api_search_messages_get`), and the GET/POST and Jira v2/v3 fidelity
+  aliases collapsed to one operation each (the raw spec carries ~14 duplicate operationIds, which
+  an MCP tool set can't have). This lives in `backlot/openapi.py`, so there is nothing to clean up
+  client-side;
 - the bridge just fetches that spec and serves it over stdio via `FastMCP.from_openapi()` on an
   `httpx.AsyncClient` whose base URL is Backlot and whose **`Authorization`** header is Backlot
   token — so Backlot resolves the token to a user and **enforces that user's ACL** on every call.
 
 stdio (not streamable-HTTP): FastMCP's HTTP mode has a known bug forwarding the client's
-`Authorization` header downstream. Auth: `--username` present → HTTP Basic (Atlassian); otherwise
+`Authorization` header downstream. Auth: `--username` present → HTTP Basic for Atlassian; otherwise
 `Bearer` (`--token`, default admin; per-user from `GET /_meta/users`). Adding a source is one entry
 in `backlot/openapi.py`'s `SOURCE_PREFIXES` plus a thin launcher.
 
 **Notion and Atlassian** already have vendor-server launchers above, but they also work through the
-generic bridge (no vendor server) — run `_openapi_bridge.py` directly:
+generic bridge (no vendor server) — run `backlot mcp` directly:
 
 ```bash
-python examples/using-mcp-with-agents/_openapi_bridge.py --source notion    --base-url <url> --token <t>
-python examples/using-mcp-with-agents/_openapi_bridge.py --source atlassian --base-url <url> --token <t> --username svc@example.com
+backlot mcp --source notion    --url <url> --token <t>
+backlot mcp --source atlassian --url <url> --token <t> --username svc@example.com
 ```
 
 Atlassian authenticates with HTTP Basic (`--username` + Backlot token as the password), and its
@@ -210,7 +229,7 @@ sign each request), so it is absent from `/_meta/openapi/*`; use the vendor `s3.
 Linear and Fireflies are **GraphQL-only**, served at `POST /<source>/graphql` with
 `include_in_schema=False` — so there is no OpenAPI operation for the bridge above to slice, and
 `GET /_meta/openapi/linear` is a 404 by construction. What a GraphQL endpoint *does* publish is its
-schema, over standard introspection, so that is what `_graphql_bridge.py` reads. Same split as the
+schema, over standard introspection, so that is what `backlot mcp` reads. Same split as the
 OpenAPI bridge — the app does the schema work, the bridge is transport:
 
 - **`backlot/graphql/mcp_tools.py`** turns the introspection result into one tool per root `Query`

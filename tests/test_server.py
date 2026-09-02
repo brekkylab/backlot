@@ -251,3 +251,44 @@ def test_teardown_reaps_a_process_that_ignores_sigterm():
     )
     _terminate(proc, timeout=0.2)
     assert proc.poll() is not None
+
+
+# --------------------------------------------------------------------------- data_dir
+
+
+def test_serve_data_dir_serves_an_existing_build_as_it_stands(tmp_path):
+    """``backlot mcp`` puts the user's own corpus behind the tools this way: a data dir one
+    ``backlot import`` already built is served without re-importing, and nothing is written into
+    it — the server log goes to scratch, not beside the user's database."""
+    import json
+    import urllib.request
+
+    from backlot import cli
+
+    assert cli.main(["import", "--bundled", "--data-dir", str(tmp_path)]) == 0
+    before = sorted(p.name for p in tmp_path.iterdir())
+    with backlot.serve(data_dir=tmp_path) as s:
+        with urllib.request.urlopen(f"{s.base_url}/health") as r:
+            body = json.load(r)
+        assert body["documents"] and body["documents"] > 0
+        assert s.data_dir == tmp_path
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def test_serve_refuses_records_together_with_a_data_dir(tmp_path):
+    with pytest.raises(ValueError, match="not both"):
+        with backlot.serve([{"source_type": "slack"}], data_dir=tmp_path):
+            pass
+
+
+def test_serve_or_connect_reports_on_stderr_not_stdout(capsys):
+    """A caller may be an MCP stdio server whose stdout is the protocol stream; one stray line
+    there ends the session. Both messages — attached, and falling back — go to stderr."""
+    with backlot.serve() as remote:
+        with backlot.serve_or_connect(url=remote.base_url):
+            pass
+    with backlot.serve_or_connect(url="http://127.0.0.1:1"):
+        pass
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "using Backlot at" in err and "falling back to a local server" in err

@@ -586,3 +586,72 @@ def test_the_module_spellings_re_enter_the_same_cli(monkeypatch, spy_byo):
     CLI rather than parsing its own flags, so there is no second parser to drift."""
     assert cli.main(["import", "c.jsonl", "--append"]) == 0
     assert spy_byo["append"] is True
+
+
+# --------------------------------------------------------------------------- mcp
+
+
+def test_mcp_routes_its_options(monkeypatch, tmp_path):
+    """Every option reaches ``backlot.mcp.run`` interpreted, and --data-dir lands in the environment
+    before it does — ``attach`` reads the settings to find the corpus a started server serves."""
+    seen = {}
+
+    def fake_run(sources, *, url, token, username, depth):
+        seen.update(
+            sources=sources,
+            url=url,
+            token=token,
+            username=username,
+            depth=depth,
+            data_dir=os.environ.get("BACKLOT_DATA_DIR"),
+        )
+
+    monkeypatch.setattr(cli._mcp, "run", fake_run)
+    argv = [
+        "mcp",
+        "--source", "slack", "--source", "linear",
+        "--url", "http://127.0.0.1:9",
+        "--token", "usr-x",
+        "--username", "svc@example.com",
+        "--depth", "2",
+        "--data-dir", str(tmp_path),
+    ]  # fmt: skip
+    assert cli.main(argv) == 0
+    assert seen == {
+        "sources": ["slack", "linear"],
+        "url": "http://127.0.0.1:9",
+        "token": "usr-x",
+        "username": "svc@example.com",
+        "depth": 2,
+        "data_dir": str(tmp_path),
+    }
+
+
+def test_mcp_defaults_to_every_source(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cli._mcp, "run", lambda sources, **kw: seen.update(sources=sources, **kw))
+    assert cli.main(["mcp"]) == 0
+    assert seen == {"sources": None, "url": None, "token": None, "username": None, "depth": None}
+
+
+@pytest.mark.parametrize(
+    "argv, needle",
+    [
+        (["mcp", "--source", "s3"], "s3 is SigV4-signed and has no MCP bridge"),
+        (["mcp", "--source", "jira"], "'jira' is not one of github, slack"),
+        (["mcp", "--source", "slack", "--depth", "2"], "--depth applies to linear and fireflies"),
+        (["mcp", "--depth", "0"], "must be at least 1"),
+    ],
+    ids=["s3", "unknown-source", "depth-without-graphql", "depth-zero"],
+)
+def test_mcp_rejects_bad_options_before_touching_a_server(monkeypatch, capsys, argv, needle):
+    """Each refusal names what was wrong, and ``run`` is never reached — a rejected invocation
+    must not probe the network or start a server."""
+    monkeypatch.setattr(cli._mcp, "run", lambda *a, **kw: pytest.fail("run() was called"))
+    assert cli.main(argv) == 2
+    assert needle in plain(capsys.readouterr().err)
+
+
+def test_help_lists_mcp(capsys):
+    cli.main(["--help"])
+    assert " mcp " in plain(capsys.readouterr().out)

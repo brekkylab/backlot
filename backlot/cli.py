@@ -5,6 +5,7 @@
     backlot import --type enterpriserag-bench   # backlot.importer.erb, no options
     backlot export out/                 # the bench as a BYO artifact instead of a database
     backlot status                      # what the data dir currently holds
+    backlot mcp                         # every source as MCP tools over stdio (backlot.mcp)
 
 This module is the ONE place the command line is defined. Importers expose plain functions taking
 keyword arguments, and the flags that drive them are the parameters below, so ``backlot import
@@ -27,8 +28,12 @@ from typing import Annotated, Optional
 
 import typer
 
+from backlot import mcp as _mcp
+
 # The importers and uvicorn are imported inside each command, not here: `serve` must not pay for
-# `backlot.importer.erb` (2,400 lines) and `import` must not pull in uvicorn.
+# `backlot.importer.erb` (2,400 lines) and `import` must not pull in uvicorn. `backlot.mcp` is the
+# exception, imported for the source names its help text lists; it defers fastmcp and the GraphQL
+# derivation to the moment a server is built, so the import costs `serve` nothing it did not pay.
 
 # --type value -> the importer it selects. The bench is spelled out in full and has no short alias:
 # `erb` is what this codebase calls it among itself, and a caller reading `--type erb` learns nothing
@@ -506,6 +511,87 @@ def status(data_dir: DataDir = None) -> None:
         )
     else:
         typer.echo(f"tokens:   none ({settings.tokens_path.name} is missing)")
+
+
+# --------------------------------------------------------------------------- mcp
+
+
+@app.command()
+def mcp(
+    sources: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--source",
+            metavar="SOURCE",
+            help="serve only this source (repeatable); one of "
+            + ", ".join(_mcp.SOURCES)
+            + ". Without it every source is served, each tool namespaced as <source>_<tool>",
+        ),
+    ] = None,
+    url: Annotated[
+        Optional[str],
+        typer.Option(
+            "--url",
+            metavar="URL",
+            help="the Backlot server to bridge; without it, the one on 127.0.0.1:8000 if it "
+            "answers, else one started here over the data dir's corpus",
+        ),
+    ] = None,
+    token: Annotated[
+        Optional[str],
+        typer.Option(
+            "--token",
+            metavar="TOKEN",
+            help="authenticate every tool call as this user (a token from GET /_meta/users); "
+            "without it, the admin token, which sees everything",
+        ),
+    ] = None,
+    username: Annotated[
+        Optional[str],
+        typer.Option(
+            "--username",
+            metavar="USER",
+            help="switch Atlassian to HTTP Basic `USER:token`, the scheme mcp-atlassian speaks; "
+            "Backlot resolves the token and ignores the name",
+        ),
+    ] = None,
+    depth: Annotated[
+        Optional[int],
+        typer.Option(
+            "--depth",
+            metavar="N",
+            help="for linear and fireflies: how many object levels a tool's generated selection "
+            "set reaches; without it 1 for linear and 2 for fireflies",
+        ),
+    ] = None,
+    data_dir: DataDir = None,
+) -> None:
+    """Serve Backlot's sources as MCP tools over stdio, starting a server if none is running.
+
+    This is the command an MCP client runs: `claude mcp add backlot -- backlot mcp`. With no server at --url or on the default port, it starts one over the data dir's corpus (the bundled one when the data dir is empty) and stops it when the client disconnects. Every tool call carries the caller's token, so Backlot's per-document ACL applies.
+    """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
+    for source in sources or ():
+        if source == "s3":
+            # Named on its own because the reason differs: s3 is a real source, just not a
+            # bridgeable one — SigV4 signs each request, and a fixed header cannot.
+            raise typer.BadParameter(
+                "s3 is SigV4-signed and has no MCP bridge; point awslabs.aws-api-mcp-server at "
+                "<url>/s3 instead (examples/using-mcp-with-agents/s3.py)",
+                param_hint="'--source'",
+            )
+        if source not in _mcp.SOURCES:
+            raise typer.BadParameter(
+                f"{source!r} is not one of {', '.join(_mcp.SOURCES)}", param_hint="'--source'"
+            )
+    if depth is not None and sources and not set(sources) & set(_mcp.GRAPHQL_SOURCES):
+        raise typer.BadParameter(
+            f"--depth applies to {' and '.join(_mcp.GRAPHQL_SOURCES)}, and neither is selected",
+            param_hint="'--depth'",
+        )
+    if depth is not None and depth < 1:
+        raise typer.BadParameter("must be at least 1", param_hint="'--depth'")
+    _use_data_dir(data_dir)
+    _mcp.run(sources, url=url, token=token, username=username, depth=depth)
 
 
 def module_main(corpus_type: str, argv: list[str]) -> int:

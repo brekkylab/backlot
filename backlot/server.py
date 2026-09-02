@@ -96,7 +96,7 @@ class Server:
     data_dir: Path | None
 
 
-def _ensure_cert_bundle() -> None:
+def ensure_cert_bundle() -> None:
     # Talking to an HTTPS url (a deployment behind an ACM cert) can fail with
     # CERTIFICATE_VERIFY_FAILED on macOS, where Python's default SSL context has no CA bundle.
     # certifi ships with the [examples] extra; point OpenSSL at it unless already configured.
@@ -177,6 +177,16 @@ def _admin_token_from_meta_users(url: str, timeout: float = 10) -> str | None:
         return None
 
 
+def admin_token_for(url: str) -> str:
+    """The admin token for the already-running server at ``url``: fetched from its own
+    ``GET /_meta/users`` when ``url`` clears :func:`_trusted_for_token_fetch`, and the package
+    default as a GUESS otherwise — see ``Server.token``'s docstring for why the bar exists and when
+    the guess is wrong."""
+    if _trusted_for_token_fetch(url):
+        return _admin_token_from_meta_users(url) or TOKEN
+    return TOKEN
+
+
 def _healthy(url: str, timeout: float = 10) -> bool:
     # Default timeout suits a remote deployment; serve()'s local readiness poll passes a
     # much smaller one (see _LOCAL_HEALTH_TIMEOUT) since a local subprocess either answers almost
@@ -216,8 +226,15 @@ def _warm(url: str, timeout: float) -> bool:
 
 
 @contextlib.contextmanager
-def serve(records: list[dict] | None = None, host: str = "127.0.0.1"):
+def serve(
+    records: list[dict] | None = None, host: str = "127.0.0.1", *, data_dir: Path | None = None
+):
     """Serve ``records`` (or the bundled hello-world corpus) on a free local port.
+
+    ``data_dir`` serves an existing data dir as it stands — one ``backlot import`` already built —
+    instead of importing anything; it is what ``backlot mcp`` uses to put the user's own corpus
+    behind the tools. It cannot be combined with ``records``, which describe a corpus that does not
+    exist yet.
 
     ``host`` is the bind address. The default keeps the server off every interface but loopback;
     pass ``"0.0.0.0"`` (or ``"::"``) to reach it from somewhere the loopback address does not
@@ -225,13 +242,17 @@ def serve(records: list[dict] | None = None, host: str = "127.0.0.1"):
     resolves to the bridge address. A single interface's address works too. ``base_url`` follows:
     loopback for a wildcard bind, otherwise the address bound, since that is where the server
     answers."""
-    with tempfile.TemporaryDirectory() as data_dir:
-        if records is None:
-            corpus = HELLO_CORPUS
-        else:
-            corpus = Path(data_dir) / "corpus.jsonl"
-            corpus.write_text("\n".join(json.dumps(r) for r in records))
-        env = {**os.environ, "BACKLOT_DATA_DIR": data_dir}
+    if records is not None and data_dir is not None:
+        raise ValueError("serve() takes records to import or a data_dir already built, not both")
+    with tempfile.TemporaryDirectory() as scratch:
+        if data_dir is None:
+            data_dir = Path(scratch)
+            if records is None:
+                corpus = HELLO_CORPUS
+            else:
+                corpus = data_dir / "corpus.jsonl"
+                corpus.write_text("\n".join(json.dumps(r) for r in records))
+        env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir)}
         # Read with the SAME env + cwd the subprocess below inherits (only BACKLOT_DATA_DIR
         # differs, and that doesn't affect admin_token), so this resolves to whatever token the
         # server will actually enforce — a caller's BACKLOT_ADMIN_TOKEN env var or a .env in
@@ -239,20 +260,22 @@ def serve(records: list[dict] | None = None, host: str = "127.0.0.1"):
         # Server.token must track that: otherwise a caller's first authenticated call fails
         # with HTTP 200 / {"ok": false} (Slack fidelity), which reads as the caller's own mistake.
         token = Settings().admin_token
-        # `-m backlot` rather than the `backlot` script: same CLI, but resolved through THIS
-        # interpreter, so it works in an environment whose bin/ is not on PATH. No cwd= either —
-        # the package resolves from site-packages exactly as it does from a checkout.
-        subprocess.run(
-            [sys.executable, "-m", "backlot", "import", str(corpus)],
-            env=env,
-            check=True,
-            stdout=subprocess.DEVNULL,
-        )
+        if data_dir == Path(scratch):
+            # `-m backlot` rather than the `backlot` script: same CLI, but resolved through THIS
+            # interpreter, so it works in an environment whose bin/ is not on PATH. No cwd= either —
+            # the package resolves from site-packages exactly as it does from a checkout.
+            subprocess.run(
+                [sys.executable, "-m", "backlot", "import", str(corpus)],
+                env=env,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
         port = _free_port(host)
         base = f"http://{_dialable(host)}:{port}"
         # Captured to a file rather than subprocess.PIPE: a live pipe nobody drains can fill and
         # deadlock the child, and we only need the contents if uvicorn dies before serving.
-        log_path = Path(data_dir) / "server.log"
+        # In the scratch dir, not the data dir: a caller's own data dir is theirs to keep clean.
+        log_path = Path(scratch) / "server.log"
         with open(log_path, "wb") as log_f:
             proc = subprocess.Popen(
                 [
@@ -302,9 +325,11 @@ def serve_or_connect(
     local server; a reachable ``url`` is already bound however its own operator bound it."""
     url = (url or "").strip()
     if url:
-        _ensure_cert_bundle()
+        ensure_cert_bundle()
         if _healthy(url):
-            print(f"using Backlot at {url}")
+            # stderr, here and below: a caller may be an MCP stdio server whose stdout IS the
+            # protocol stream, and one stray line there ends the session.
+            print(f"using Backlot at {url}", file=sys.stderr)
             # Fetched, not guessed, when possible AND safe (see Server.token's docstring): GET
             # /_meta/users on the remote server reports its real admin_token. Gated by
             # _trusted_for_token_fetch — this is about not treating an unauthenticated plaintext
@@ -312,12 +337,9 @@ def serve_or_connect(
             # untrustworthy in general (we already talk to it either way). Falls back to the
             # Settings-default GUESS whenever the fetch doesn't happen at all: the endpoint
             # disabled (BACKLOT_EXPOSE_TOKENS=false) or the URL not clearing that bar.
-            token = TOKEN
-            if _trusted_for_token_fetch(url):
-                token = _admin_token_from_meta_users(url) or TOKEN
-            yield Server(base_url=url.rstrip("/"), token=token, data_dir=None)
+            yield Server(base_url=url.rstrip("/"), token=admin_token_for(url), data_dir=None)
             return
-        print(f"--url {url!r} is not reachable — falling back to a local server")
+        print(f"--url {url!r} is not reachable — falling back to a local server", file=sys.stderr)
     with serve(records, host=host) as s:
         yield s
 

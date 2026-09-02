@@ -2,9 +2,10 @@
 """Drive Backlot's Slack Web API as MCP tools via the generic OpenAPI→MCP bridge. Self-contained.
 
 No maintained Slack MCP server accepts a base-URL override (they hard-wire slack.com), so instead
-`_openapi_bridge.py` turns Backlot's typed `/openapi.json` into MCP tools: it slices to `/slack/api`,
-dedupes the GET/POST operation aliases, and serves them over stdio with a `Bearer <token>` header —
-so retrieval is ACL-scoped by the token (default admin; per-user from GET /_meta/users).
+`backlot mcp --source slack` turns Backlot's typed `/openapi.json` into MCP tools: it slices to
+`/slack/api`, dedupes the GET/POST operation aliases, and serves them over stdio with a
+`Bearer <token>` header — so retrieval is ACL-scoped by the token (default admin; per-user from
+GET /_meta/users).
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
@@ -15,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from mcp import StdioServerParameters
 
@@ -43,14 +43,15 @@ QUESTION = (
     "runbook message. Cite the channels."
 )
 
-_BRIDGE = str(Path(__file__).with_name("_openapi_bridge.py"))
-
 
 def build_params(base_url: str, token: str) -> StdioServerParameters:
-    """Run `_openapi_bridge.py --source slack` as a stdio MCP server pointed at Backlot."""
+    """Run `backlot mcp --source slack` as a stdio MCP server pointed at Backlot.
+
+    `-m backlot` through this interpreter rather than the `backlot` script, so it works in an
+    environment whose bin/ is not on PATH."""
     return StdioServerParameters(
         command=sys.executable,
-        args=[_BRIDGE, "--source", "slack", "--base-url", base_url.rstrip("/"), "--token", token],
+        args=["-m", "backlot", "mcp", "--source", "slack", "--url", base_url, "--token", token],
     )
 
 

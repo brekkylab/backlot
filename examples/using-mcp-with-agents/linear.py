@@ -6,7 +6,7 @@ with no base-URL override, so nothing local can be pointed at Backlot. The commu
 wire `https://api.linear.app` in source and take only a token, and they run as `npx` subprocesses,
 out of reach of the in-process URL rewrite backlot uses for the LlamaIndex Linear reader.
 
-So the tools come from Backlot's own schema instead: `_graphql_bridge.py` introspects
+So the tools come from Backlot's own schema instead: `backlot mcp --source linear` introspects
 `POST /linear/graphql` and serves each root `Query` field as a typed tool (`issues`, `issue`,
 `teams`, `comments`, `viewer`, the by-id relation roots …). That trade is worth stating plainly —
 this exercises *our* tool surface rather than the community tooling an agent meets in production,
@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from mcp import StdioServerParameters
 
@@ -84,19 +83,22 @@ QUESTION = (
     "assigned, and what did the comments say the cause was? Cite the issue identifiers."
 )
 
-_BRIDGE = str(Path(__file__).with_name("_graphql_bridge.py"))
-
 
 def build_params(base_url: str, token: str, depth: int = 1) -> StdioServerParameters:
-    """Run `_graphql_bridge.py --source linear` as a stdio MCP server pointed at Backlot."""
+    """Run `backlot mcp --source linear` as a stdio MCP server pointed at Backlot.
+
+    `-m backlot` through this interpreter rather than the `backlot` script, so it works in an
+    environment whose bin/ is not on PATH."""
     return StdioServerParameters(
         command=sys.executable,
         args=[
-            _BRIDGE,
+            "-m",
+            "backlot",
+            "mcp",
             "--source",
             "linear",
-            "--base-url",
-            base_url.rstrip("/"),
+            "--url",
+            base_url,
             "--token",
             token,
             "--depth",

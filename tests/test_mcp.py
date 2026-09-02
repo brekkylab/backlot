@@ -12,27 +12,38 @@ same tool, same object, different identity.
   object-at-a-time like the others): it just proves the server, pointed at Backlot via
   ``AWS_ENDPOINT_URL``, lists a bucket's objects through a real signed AWS CLI call.
 
-All require the ``mcp`` package. The stdio params below intentionally **duplicate** the wiring in
-the per-service example files (``examples/using-mcp-with-agents/{atlassian,notion,s3}.py``) rather
-than importing them — a test must not reach into ``examples/`` (no ``sys.path`` hacks); a little
-copied setup is the lesser evil.
+The other seven sources reach MCP through Backlot's own bridge, ``backlot.mcp`` — the code behind
+``backlot mcp`` — which is app code and so imported and driven in-process here, one source at a
+time. The stdio tests at the end run the command itself.
+
+All require the ``mcp`` package. The vendor-server params below intentionally **duplicate** the
+wiring in the per-service example files (``examples/using-mcp-with-agents/{atlassian,notion,s3}.py``)
+rather than importing them — a test must not reach into ``examples/`` (no ``sys.path`` hacks); a
+little copied setup is the lesser evil.
 """
 
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
+import os
+import re
 import shutil
+import socket
 import subprocess
+import sys
+import time
+import urllib.request
 
 import pytest
 import yaml
 
 pytest.importorskip("mcp")
 
+from backlot import mcp as backlot_mcp  # noqa: E402
 from backlot import store, synth  # noqa: E402
 from backlot.acl import Acl  # noqa: E402
-from backlot.graphql import mcp_tools  # noqa: E402
 
 
 def _docker_available() -> bool:
@@ -239,35 +250,19 @@ def test_mcp_s3_lists_objects(live_server):
     assert out, "expected the SAMPLE eng-artifacts/runbooks/oncall.md key in the listing"
 
 
-# ------------------------------------------------------ GitHub (generic OpenAPI→MCP bridge)
+# ------------------------------------------------------ the OpenAPI→MCP bridge (backlot.mcp)
 
 
 def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None) -> bool:
-    """Exercise the OpenAPI→MCP bridge path WITHOUT touching ``examples/``.
-
-    Fetches Backlot's MCP-ready spec (``GET /_meta/openapi/<source>`` — produced by ``backlot.openapi``,
-    which owns the slice/dedupe logic) and serves it via an in-memory FastMCP client over an auth'd
-    httpx2 client. That is the whole of what the example bridge does; the meaningful logic lives in
-    the app and is unit-tested in ``tests/test_openapi.py``. Returns ``ok_pred`` over the tool's
-    response text; a blocked/errored call is ``False``."""
-    import base64 as b64
-
-    import httpx2
-    from fastmcp import Client, FastMCP
-
-    spec = httpx2.get(f"{base}/_meta/openapi/{source}", timeout=10).json()
-    if username:  # Atlassian: Basic username:token (the api_token IS Backlot token)
-        header = {
-            "Authorization": "Basic " + b64.b64encode(f"{username}:{token}".encode()).decode()
-        }
-    else:
-        header = {"Authorization": f"Bearer {token}"}
+    """Exercise one source's bridge in-process: the same ``backlot.mcp.openapi_server`` that
+    ``backlot mcp`` serves over stdio, driven through fastmcp's in-memory client. The spec it
+    consumes is ``backlot.openapi``'s, unit-tested in ``tests/test_openapi.py``; what is proved
+    here is the transport — the credential travels with every call. Returns ``ok_pred`` over the
+    tool's response text; a blocked/errored call is ``False``."""
+    from fastmcp import Client
 
     async def _go():
-        # httpx2, not httpx: `from_openapi` takes an httpx2 client. A legacy httpx one is
-        # still accepted, under a deprecation warning that says it will stop being accepted.
-        client = httpx2.AsyncClient(base_url=base, headers=header, timeout=30)
-        server = FastMCP.from_openapi(openapi_spec=spec, client=client, validate_output=False)
+        server = backlot_mcp.openapi_server(base, token, source, username=username)
         async with Client(server) as c:
             tool = next(t for t in (await c.list_tools()) if tool_pred(t.name))
             res = await c.call_tool(tool.name, args)
@@ -401,53 +396,17 @@ def test_mcp_bridge_enforces_the_acl(
 
 
 def _graphql_bridge_call(base, source, token, *, tool_name, args, ok_pred, depth) -> bool:
-    """Exercise the GraphQL→MCP bridge path WITHOUT touching ``examples/``.
-
-    Introspects the endpoint, derives its tools, and serves the one under test through an
-    in-memory FastMCP client. Like ``_bridge_call`` above, this **duplicates** the example
-    bridge's transport wiring rather than importing it; the logic worth testing is the
-    derivation, which lives in the app. Returns ``ok_pred`` over the tool's response text."""
-    import httpx
-    from fastmcp import Client, FastMCP
-    from fastmcp.tools import Tool, ToolResult
-
-    endpoint = f"{base}/{source}/graphql"
-    headers = {"Authorization": f"Bearer {token}"}
-    intro = httpx.post(
-        endpoint, json={"query": mcp_tools.INTROSPECTION_QUERY}, headers=headers, timeout=30
-    ).json()
-    spec = next(t for t in mcp_tools.derive_tools(intro, depth=depth) if t.name == tool_name)
-
-    class _Passthrough(Tool):
-        document: str
-
-        async def run(self, arguments):
-            async with httpx.AsyncClient(timeout=30) as client:
-                r = await client.post(
-                    endpoint,
-                    json={
-                        "query": self.document,
-                        "variables": mcp_tools.with_page_default(spec, arguments),
-                    },
-                    headers=headers,
-                )
-            body = r.json()
-            failed = bool(body.get("errors")) and body.get("data") is None
-            return ToolResult(content=json.dumps(body), is_error=failed)
-
-    server = FastMCP()
-    server.add_tool(
-        _Passthrough(
-            name=spec.name,
-            description=spec.description,
-            parameters=spec.input_schema,
-            document=spec.document,
-        )
-    )
+    """Exercise one GraphQL source's bridge in-process: ``backlot.mcp.graphql_server``, the same
+    server ``backlot mcp`` runs over stdio, driven through fastmcp's in-memory client. The
+    derivation it serves is unit-tested in ``tests/test_graphql.py``; what is proved here is that
+    the tool posts its document with the caller's credential. Returns ``ok_pred`` over the tool's
+    response text."""
+    from fastmcp import Client
 
     async def _go():
+        server = backlot_mcp.graphql_server(base, token, source, depth=depth)
         async with Client(server) as c:
-            res = await c.call_tool(spec.name, args)
+            res = await c.call_tool(tool_name, args)
             return ok_pred("".join(getattr(b, "text", "") for b in res.content))
 
     try:
@@ -542,3 +501,148 @@ def test_mcp_hubspot_bridge_search_tool(live_server):
         },
         ok_pred=lambda t: '"total"' in t and "Acme Health" in t,
     )
+
+
+# ------------------------------------------------------------------ `backlot mcp` over stdio
+# The command an MCP client runs. The in-memory tests above prove each source's bridge; these prove
+# the process around it: the stdio transport, the per-source namespace, the server it starts when
+# none answers, and that the token on its command line is the one every tool call carries.
+
+
+def _mcp_params(*args, env=None):
+    from mcp import StdioServerParameters
+
+    # `-m backlot` through this interpreter, the way the examples and `backlot.server` run it.
+    return StdioServerParameters(
+        command=sys.executable, args=["-m", "backlot", "mcp", *args], env=env
+    )
+
+
+async def _tool_names(params, errlog=None) -> list[str]:
+    from mcp import ClientSession
+    from mcp.client.stdio import stdio_client
+
+    async with stdio_client(params, errlog=errlog or sys.stderr) as (r, w):
+        async with ClientSession(r, w) as sess:
+            await sess.initialize()
+            return [t.name for t in (await sess.list_tools()).tools]
+
+
+def _served_tool_ids(base: str, source: str) -> set[str]:
+    """The operationIds of one source's MCP-ready spec — by contract the tool names it yields."""
+    with urllib.request.urlopen(f"{base}/_meta/openapi/{source}", timeout=10) as r:
+        spec = json.load(r)
+    return {
+        op["operationId"]
+        for item in spec["paths"].values()
+        for method, op in item.items()
+        if isinstance(op, dict) and "operationId" in op
+    }
+
+
+def test_backlot_mcp_serves_one_source_under_its_own_tool_names(live_server):
+    """`--source slack` is the Slack bridge alone: every tool is one operation of the served spec,
+    under the name the spec gives it, with no namespace in front."""
+    base, _ = live_server
+    names = asyncio.run(_tool_names(_mcp_params("--source", "slack", "--url", base)))
+    assert set(names) == _served_tool_ids(base, "slack")
+    assert "search_messages" in names
+
+
+def test_backlot_mcp_serves_every_source_namespaced(live_server):
+    """No `--source` is all of them in one server, each tool prefixed with its source so two
+    vendors' same-named operations cannot collide — and none long enough for an MCP client's
+    64-character cap to truncate."""
+    base, _ = live_server
+    names = asyncio.run(_tool_names(_mcp_params("--url", base)))
+    by_source = collections.defaultdict(set)
+    for name in names:
+        source, _, tool = name.partition("_")
+        by_source[source].add(tool)
+    assert set(by_source) == set(backlot_mcp.SOURCES)
+    for source in backlot_mcp.OPENAPI_SOURCES:
+        assert by_source[source] == _served_tool_ids(base, source), source
+    assert {"issue", "issues", "teams", "comments"} <= by_source["linear"]
+    assert {"transcript", "transcripts", "user", "users"} <= by_source["fireflies"]
+    assert max(map(len, names)) <= 64, sorted(names, key=len)[-3:]
+
+
+def test_backlot_mcp_scopes_every_tool_call_to_the_token(live_server):
+    """Over the real command, the token on its command line is the one each call carries: the same
+    search finds the restricted message for the admin and not for a scoped user."""
+    base, settings = live_server
+    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+
+    def finds_it(token):
+        return asyncio.run(
+            _call(
+                _mcp_params("--source", "slack", "--url", base, "--token", token),
+                tool_pred=lambda n: n == "search_messages",
+                args={"query": "reorg"},  # the restricted people-confidential message
+                ok_pred=lambda t: "headcount" in t,  # a word only that message carries
+            )
+        )
+
+    assert finds_it(settings.admin_token)
+    assert not finds_it(user["token"])
+
+
+def test_backlot_mcp_starts_a_server_when_none_answers(tmp_path):
+    """The one-line install: no `--url` and nothing on the default port, so the command starts a
+    server itself — over the bundled corpus, the data dir being empty — says where on stderr, and
+    takes it down when the client hangs up."""
+    from mcp import ClientSession
+    from mcp.client.stdio import stdio_client
+
+    if backlot_mcp.is_backlot(backlot_mcp.DEFAULT_URL):
+        # On a developer machine with `backlot serve` up, the command would attach to that server
+        # instead — correct behaviour, but not the branch under test. CI never has the port taken.
+        pytest.skip(
+            f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"
+        )
+
+    errlog = tmp_path / "stderr.txt"
+    params = _mcp_params(
+        "--source", "slack", env={**os.environ, "BACKLOT_DATA_DIR": str(tmp_path / "data")}
+    )
+
+    async def _list_channels():
+        with open(errlog, "w") as f:
+            async with stdio_client(params, errlog=f) as (r, w):
+                async with ClientSession(r, w) as sess:
+                    await sess.initialize()
+                    res = await sess.call_tool("conversations_list", {})
+                    return "".join(getattr(c, "text", "") for c in res.content)
+
+    body = json.loads(asyncio.run(_list_channels()))
+    assert body["ok"] is True and body["channels"], body
+
+    err = errlog.read_text()
+    assert "bundled hello-world corpus" in err, err
+    up = re.search(r"Backlot is up at http://127\.0\.0\.1:(\d+)", err)
+    assert up, err
+    port = int(up.group(1))
+    # The started server goes with the session. uvicorn takes a moment to unwind, so poll rather
+    # than assert once — but not for long: a server still answering after this is a leak.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+        except OSError:
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail(f"the server backlot mcp started on port {port} is still listening")
+
+
+def test_backlot_mcp_refuses_an_unreachable_url():
+    """An explicit `--url` that does not answer is an error, not a fallback: the caller named a
+    server, and quietly serving a different corpus in its place would be the wrong kind of help."""
+    out = subprocess.run(
+        [sys.executable, "-m", "backlot", "mcp", "--url", "http://127.0.0.1:1"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 1, out
+    assert "no Backlot server answers at http://127.0.0.1:1" in out.stderr

@@ -26,10 +26,21 @@ def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
 
     GitHub only: Google does not go through `auth.require_bearer`, because its answer is not one
     status (403 on Drive/Sheets, 401 on the OAuth-only families) and it carries Google's own error
-    envelope, not `detail`. That surface is covered by the tests below."""
-    r = client.get("/github/orgs/acme")
-    assert r.status_code == 401
-    assert r.json()["detail"] == "Bad credentials"
+    envelope, not `detail`. That surface is covered by the tests below.
+
+    GitHub carries its own envelope too, and splits the 401 by cause the way real does: a request
+    with no usable credential is "Requires authentication", a credential that arrived and did not
+    resolve is "Bad credentials"."""
+    missing = client.get("/github/orgs/acme")
+    assert missing.status_code == 401
+    assert missing.json() == {
+        "message": "Requires authentication",
+        "documentation_url": "https://docs.github.com/rest",
+        "status": "401",
+    }
+    bad = client.get("/github/orgs/acme", headers={"Authorization": "Bearer nope"})
+    assert bad.status_code == 401
+    assert bad.json()["message"] == "Bad credentials"
 
 
 # --- ACL enforcement over HTTP --------------------------------------------------

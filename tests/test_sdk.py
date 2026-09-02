@@ -347,6 +347,37 @@ def github():
     sr = gh.search_issues(query="refill")
     check("GitHub", "search_issues")(lambda: f"{sr.totalCount} hits" if sr.totalCount else 1 / 0)
 
+    # The error path, which is load-bearing rather than decorative: PyGithub picks its exception
+    # CLASS off the body's `message`, so an error in FastAPI's `{"detail": …}` reaches the caller as
+    # a bare GithubException however right its status code is. Measured against api.github.com: against real,
+    # a wrong token is BadCredentialsException and a missing repo is UnknownObjectException; against
+    # a `detail` body both were GithubException. Deleting backlot.errors.github's envelope puts them
+    # back, which is what these two catch.
+    from github import BadCredentialsException, UnknownObjectException
+
+    def _wrong_token():
+        bad = Github(auth=Auth.Token("usr-not-a-real-token"), base_url=f"{BASE}/github")
+        try:
+            bad.get_repo("acme/gateway")
+        except BadCredentialsException as e:
+            return f"{e.data['message']}" if e.data.get("message") == "Bad credentials" else 1 / 0
+        raise AssertionError("a wrong token was accepted")
+
+    def _missing_repo():
+        try:
+            gh.get_repo("acme/no-such-repo")
+        except UnknownObjectException as e:
+            # ...and the documentation_url is this route's own, not a generic root
+            return (
+                "Not Found + route docs"
+                if e.data.get("documentation_url", "").endswith("repos/repos#get-a-repository")
+                else 1 / 0
+            )
+        raise AssertionError("a repo that is not there was answered")
+
+    check("GitHub", "wrong token -> BadCredentialsException")(_wrong_token)
+    check("GitHub", "missing repo -> UnknownObjectException")(_missing_repo)
+
 
 # ---------------------------------------------- Google OAuth client config
 def google_oauth():

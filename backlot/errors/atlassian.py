@@ -39,8 +39,10 @@ def http_body(path: str, exc) -> dict:
     return _body(exc.status_code, exc.detail)
 
 
-def validation_body(errors) -> dict:
+def validation_body(path: str, errors) -> tuple[int, dict]:
     """A 422 from FastAPI's own request validation, in the same envelope. The per-field detail
-    collapses to one sentence because that is the only part a client reads."""
+    collapses to one sentence because that is the only part a client reads.
+
+    ``path`` is unused, as in :func:`http_body`: one envelope covers every Atlassian route."""
     message = "; ".join(e.get("msg", "invalid request") for e in errors) or "Invalid request"
-    return _body(422, message)
+    return 422, _body(422, message)

@@ -43,6 +43,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Every extra at once, for CI and for a contributor who wants a zero-skip run. pip has no
+# --all-extras, so the aggregate is a SELF-reference: pip resolves `backlot[...]` here to the
+# local directory being installed, not to the release on PyPI (measured — the resolution
+# report names a `file://` url and marks it direct). `tests/test_packaging.py` holds this list
+# to the extras defined below, so the one place that decides what CI installs cannot fall out
+# of step with them.
+all = ["backlot[dev,examples,mcp,llamaindex,mirage,fsspec]"]
 dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.6",

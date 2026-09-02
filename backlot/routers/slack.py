@@ -298,6 +298,12 @@ def _channel_names(conn) -> list[str]:
     return [row["name"] for row in store.list_containers(conn, "slack")]
 
 
+def _handle(email: str) -> str:
+    """A corpus email as Slack's handle — the `name` a user object carries and the `user`
+    `auth.test` reports for the same person."""
+    return email.split("@")[0].replace(".", "")
+
+
 def _user_obj(conn, email: str) -> dict:
     u = store.get_user(conn, email)
     display = u["display_name"] if u else email.split("@")[0]
@@ -307,7 +313,7 @@ def _user_obj(conn, email: str) -> dict:
     return {
         "id": synth.slack_user_id(email),
         "team_id": TEAM_ID,
-        "name": email.split("@")[0].replace(".", ""),
+        "name": _handle(email),
         "real_name": display,
         "deleted": False,
         "is_bot": is_bot,
@@ -360,16 +366,29 @@ async def api_test(request: Request):
 
 @router.api_route("/auth.test", methods=["GET", "POST"])
 async def auth_test(request: Request):
+    """Who the token is, in the caller's own terms.
+
+    Slack's spec pins both fields at once: `slack_web_openapi_v2.json`,
+    `paths./auth.test.get.responses.200`, whose user-token example is `"user": "grace"` with
+    `"user_id": "W12345678"`. So `user` is the HANDLE, not an address — the same `name` a user
+    object carries for that person — and `user_id` is that caller's own id, the `U…` that
+    `users.list` reports and that a message in `conversations.history` names as its author.
+
+    A workspace constant can never match: "call auth.test, then match `user_id` against message
+    authors" is how a client finds its own messages, so the id is the field that costs.
+
+    The admin/service token has no corpus email, so it keeps the service identity: that caller is
+    not a person, and real Slack answers a bot token with the app's own id rather than a user's."""
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
-    who = "service-account" if caller.is_admin else caller.email
+    who = "service-account" if caller.is_admin else _handle(caller.email)
     return {
         "ok": True,
         "url": f"https://{get_settings().org_name}.slack.com/",
         "team": get_settings().org_name,
         "user": who,
-        "user_id": "USERVICE0",
+        "user_id": "USERVICE0" if caller.is_admin else synth.slack_user_id(caller.email),
         "team_id": TEAM_ID,
     }
 
@@ -886,7 +905,14 @@ async def search_all(request: Request):
 
 
 def _search_match(conn, row) -> dict:
-    """A search.messages `matches[]` entry for a slack row."""
+    """A search.messages `matches[]` entry for a slack row.
+
+    `username` is the author's handle, the same string `users.list` gives that person as `name` —
+    Slack's spec spells it that way in this method's own example (`slack_web_openapi_v2.json`,
+    `paths./search.messages.get.responses.200`, whose matches carry `"username": "roach"`). It goes
+    through `_handle` for that reason: a hit and a user object name one person, and a client that
+    reads the id off `user` and the handle off `username` must not get two spellings of them.
+    """
     ch = row["channel"]
     cid = synth.slack_channel_id(ch)
     text = row["content"]
@@ -900,7 +926,7 @@ def _search_match(conn, row) -> dict:
             "is_private": not store.container_has_public(conn, "slack", ch),
         },
         "user": synth.slack_user_id(row["author_email"]),
-        "username": row["author_email"].split("@")[0],
+        "username": _handle(row["author_email"]),
         "ts": ts,
         "text": text,
         "permalink": f"https://{get_settings().org_name}.slack.com/archives/{cid}/p{ts.replace('.', '')}",

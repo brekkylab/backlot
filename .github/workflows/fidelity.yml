@@ -18,12 +18,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-latest
-    # One run per source at a time. A `workflow_dispatch` fired while the nightly run is mid-
-    # comparison would have both halves search for an issue neither has created yet and create it
-    # twice — and GitHub indexes issue search asynchronously, so the second would not see the first
-    # even after it existed. Per job rather than per workflow, because `matrix` is only in context
-    # here; queued rather than cancelled, because a comparison that was going to report something
-    # should finish and report it.
+    # Two runs of one source would both create the issue: GitHub indexes issue search asynchronously.
     concurrency:
       group: fidelity-${{ matrix.source }}
       cancel-in-progress: false
@@ -70,11 +65,6 @@ jobs:
           echo "::warning::${{ matrix.source }}'s contract could not be read; no comparison ran."
           cat report.txt
 
-      # One issue per source, for the life of the repository, carrying the latest run's report in
-      # its body. Searching open issues alone files a fresh duplicate the morning after someone
-      # triages and closes one, and commenting unconditionally buries the morning a report changed
-      # under a year of identical ones — both of which are the alarm nobody reads by the third run,
-      # arriving through the tracker instead of the terminal.
       - name: Report the divergence on this source's issue
         if: steps.diff.outputs.status == '1'
         env:
@@ -83,9 +73,7 @@ jobs:
         run: |
           TITLE="Fidelity: $SOURCE diverges from its vendor"
           export TITLE
-          # Matched on the exact title AND on the issue being this workflow's own. `in:title` is a
-          # word search, so it can answer with something that merely shares the words, and an issue
-          # a person opened under this name must never have its body rewritten from under them.
+          # `in:title` is a word search, so the title is matched exactly; `is_bot` leaves a person's own issue alone.
           existing=$(gh issue list --state all --search "$TITLE in:title" \
             --json number,title,author,state \
             --jq 'first(.[] | select(.title == env.TITLE and .author.is_bot)) // empty')
@@ -93,10 +81,6 @@ jobs:
             "\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; a gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`. This body is the latest scheduled run's report, rewritten in place." \
             "$(cat report.txt)")
           if [ -z "$existing" ]; then
-            # `fidelity` is the repository's own label for "the vendor API defines the right
-            # answer; closing this needs a measurement against it", which is exactly what one of
-            # these is. Set once, at creation: a person who takes the label off has decided
-            # something about the issue, and a nightly run must not put it back every morning.
             gh issue create --title "$TITLE" --label fidelity --body "$body"
             exit 0
           fi
@@ -104,8 +88,6 @@ jobs:
           if [ "$(printf '%s' "$existing" | jq -r .state)" = "CLOSED" ]; then
             gh issue reopen "$number" --comment "Still diverging on the scheduled run, so this is open again."
           fi
-          # A comment only when the report is not the one already on the issue: reopening and a
-          # changed report are the two things worth a notification.
           if [ "$(gh issue view "$number" --json body --jq .body)" != "$body" ]; then
             gh issue edit "$number" --body "$body"
             gh issue comment "$number" --body "The divergences on \`$SOURCE\` changed. The issue body now carries the latest report."

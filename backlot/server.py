@@ -268,6 +268,7 @@ def serve(
                 [sys.executable, "-m", "backlot", "import", str(corpus)],
                 env=env,
                 check=True,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
             )
         port = _free_port(host)
@@ -291,6 +292,9 @@ def serve(
                     "warning",
                 ],
                 env=env,
+                # The server reads nothing from stdin, and must not inherit the caller's: when
+                # the caller is `backlot mcp`, that is the MCP protocol pipe.
+                stdin=subprocess.DEVNULL,
                 stdout=log_f,
                 stderr=subprocess.STDOUT,
             )

@@ -297,10 +297,16 @@ def run(
         sys.exit('backlot mcp needs the [mcp] extra:  pip install "backlot[mcp]"')
 
     signal.signal(signal.SIGTERM, _exit_on_signal)
-    with attach(url, token) as (base_url, resolved_token):
-        server = build_server(
-            base_url, resolved_token, sources or SOURCES, username=username, depth=depth
-        )
-        # No banner: fastmcp prints one to stderr, which is harmless to the protocol but noise in
-        # every MCP client's log.
-        server.run(transport="stdio", show_banner=False)
+    try:
+        with attach(url, token) as (base_url, resolved_token):
+            server = build_server(
+                base_url, resolved_token, sources or SOURCES, username=username, depth=depth
+            )
+            # No banner: fastmcp prints one to stderr, which is harmless to the protocol but noise
+            # in every MCP client's log.
+            server.run(transport="stdio", show_banner=False)
+    except RuntimeError as exc:
+        # `serve` raises this when the server it started died before answering — a corrupt corpus
+        # in the data dir is the common cause — carrying that server's own last words. They are
+        # the diagnosis; a traceback through contextlib would bury them.
+        sys.exit(str(exc))

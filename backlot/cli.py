@@ -64,7 +64,7 @@ class LogLevel(str, Enum):
 app = typer.Typer(
     name="backlot",
     # Bare `backlot` prints the command list instead of a usage error. A CLI whose whole surface is
-    # three commands has nothing to gain from making you type `--help` to see them.
+    # a handful of commands has nothing to gain from making you type `--help` to see them.
     no_args_is_help=True,
     add_completion=True,
     context_settings={"help_option_names": ["-h", "--help"]},

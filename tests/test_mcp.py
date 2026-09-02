@@ -635,6 +635,22 @@ def test_backlot_mcp_starts_a_server_when_none_answers(tmp_path):
         pytest.fail(f"the server backlot mcp started on port {port} is still listening")
 
 
+def test_backlot_mcp_reports_an_unusable_corpus_and_exits(tmp_path):
+    """When the data dir holds something that is not a corpus, the server the command starts dies
+    before answering. What reaches the terminal is that server's own diagnosis — which file, and
+    the `backlot import` that would fix it — as an exit, not a traceback through contextlib."""
+    (tmp_path / "db.sqlite").write_text("not a database")
+    out = subprocess.run(
+        [sys.executable, "-m", "backlot", "mcp", "--source", "slack", "--data-dir", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert out.returncode == 1, out
+    assert "no usable corpus" in out.stderr and "backlot import" in out.stderr, out.stderr
+    assert "Traceback" not in out.stderr, out.stderr
+
+
 def test_backlot_mcp_refuses_an_unreachable_url():
     """An explicit `--url` that does not answer is an error, not a fallback: the caller named a
     server, and quietly serving a different corpus in its place would be the wrong kind of help."""

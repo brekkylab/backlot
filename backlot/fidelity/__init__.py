@@ -17,7 +17,7 @@ schema loader, a spec fetcher, a path walker — would invite a caller to assemb
 hand and get a different answer than the command does.
 """
 
-from backlot.fidelity.errors import FidelityError
+from backlot.fidelity.errors import CredentialsMissing, FidelityError
 from backlot.fidelity.findings import BREAKING, GAP, Baseline, Finding
 from backlot.fidelity.comparisons import COMPARISONS, baseline_path, divergences
 
@@ -26,6 +26,7 @@ __all__ = [
     "GAP",
     "COMPARISONS",
     "Baseline",
+    "CredentialsMissing",
     "FidelityError",
     "Finding",
     "baseline_path",

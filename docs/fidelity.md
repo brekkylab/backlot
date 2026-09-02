@@ -64,8 +64,11 @@ unnoticed.
 Prefer the environment. A value passed on the command line is visible to any process that can run
 `ps`, and it lands in shell history.
 
-Exit codes are distinct on purpose: `1` is "the schemas disagree", `2` is "the vendor's schema
-could not be read". A vendor outage is not a fidelity finding.
+Exit codes are distinct on purpose: `1` is "the contracts disagree", `2` is "the vendor's contract
+could not be read", and `3` is "a credential this source declares is not set anywhere". A vendor
+outage is not a fidelity finding, and a credential nobody set is this repository's problem rather
+than either — the scheduled run fails on `3` for that reason, because warned about and left green
+it would leave the two introspection sources uncompared night after night.
 
 ## A published spec is weaker evidence than introspection
 
@@ -74,14 +77,17 @@ document only *describes* the contract, and it lags, omits paid tiers, and docum
 the server accepts two. Every `extra_operation` this has reported so far was the spec being
 incomplete rather than Backlot being wrong:
 
-- Slack's spec documents one verb per method and omits the search methods entirely. Measured against
-  slack.com, all fourteen answer `200/ok` over **both** GET and POST.
+- Slack's spec documents one verb per method, and of the search methods only `search.messages`:
+  `search.all` and `search.files` are absent. Measured against slack.com, all fourteen answer
+  `200/ok` over **both** GET and POST.
 - GitHub's spec describes neither `contents` without a path nor the legacy per-sha statuses read.
   Measured against api.github.com, both answer `200`.
-- Atlassian's published Confluence v1 document no longer describes **any** read at all: it retains
-  the write operations and `search`, and nothing else. The v1 reads are deprecated in favour of
-  Confluence REST v2, not documented as removed — so on that source this comparison currently
-  covers almost nothing, which the baseline notes say plainly.
+- Atlassian's published Confluence v1 document no longer describes the content and space reads
+  Backlot serves: `content`, `content/{id}` with its `child/page`, `child/comment` and `label`,
+  `space`, `space/{key}` and its `permission`. It still describes 65 reads — `content/search`,
+  `content/{id}/descendant`, `group`, `label` and `user/current` among them — and the writes. The
+  v1 reads Backlot serves are deprecated in favour of Confluence REST v2, not documented as
+  removed, so on that source this comparison currently covers almost nothing.
 
 So on a REST source, read `missing_*` as reliable and `extra_*` as *undocumented by the vendor —
 verify by hand*, never as proof of a bug. Those measurements are what the baseline notes carry.
@@ -199,7 +205,7 @@ each of those is compared, and a test fails if the two sets ever drift apart.
 | Confluence | published OpenAPI (v1) | none |
 | HubSpot | published OpenAPI, resolved through the API catalog | none |
 | Notion | published OpenAPI | none |
-| Amazon S3 | botocore service model, **probed** — see below | none |
+| Amazon S3 | botocore service model, **probed** — see [S3 is asked, not read](#s3-is-asked-not-read) | none |
 
 The credential column is measured, not read off a page: Linear's personal API keys go in bare, and
 sending Linear a `Bearer` prefix is answered **400**, not 401.

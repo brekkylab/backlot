@@ -8,98 +8,98 @@
       "severity": "breaking",
       "path": "GET /search.all",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "GET /search.files",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /api.test",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /auth.test",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /conversations.history",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /conversations.info",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /conversations.list",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /conversations.members",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /conversations.replies",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /search.all",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /search.files",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /search.messages",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /users.info",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "POST /users.list",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and omits the search methods entirely, so its silence is not evidence of absence."
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
       "kind": "missing_operation",

@@ -634,9 +634,16 @@ def diff(
 ) -> None:
     """Compare the schema Backlot serves against the vendor's own, in both directions.
 
-    Fidelity is measured, never assumed — and until this command a measurement only happened when someone went looking. Run on a schedule, it is what notices the vendor changing something in March. Divergences already read and accepted live in `fidelity/<source>.json`, so a run reports what is NEW; accepting one is a file change that goes through review. Exits 1 when anything is unacknowledged, 2 when the vendor's schema could not be read at all — a vendor outage is not a fidelity finding.
+    Fidelity is measured, never assumed — and until this command a measurement only happened when someone went looking. Run on a schedule, it is what notices the vendor changing something in March. Divergences already read and accepted live in `backlot/fidelity/baseline/<source>.json`, so a run reports what is NEW; accepting one is a file change that goes through review. Exits 1 when anything is unacknowledged, 2 when the vendor's contract could not be read at all — a vendor outage is not a fidelity finding — and 3 when a credential this source declares is not set anywhere, which is a configuration problem rather than either.
     """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
-    from backlot.fidelity import BREAKING, Baseline, FidelityError, baseline_path, divergences
+    from backlot.fidelity import (
+        BREAKING,
+        Baseline,
+        CredentialsMissing,
+        FidelityError,
+        baseline_path,
+        divergences,
+    )
     from backlot.fidelity import COMPARISONS as _SOURCES
 
     if source not in _SOURCES:
@@ -647,6 +654,11 @@ def diff(
     spec = _SOURCES[source]
     try:
         findings = divergences(spec, _credentials(credential))
+    except CredentialsMissing as e:
+        # Exit 3, not 2: a credential nobody set is this repository's misconfiguration, and
+        # answering it like a vendor outage leaves the source uncompared with the run green.
+        typer.echo(typer.style(f"🔑 {e}", fg="red", bold=True), err=True)
+        raise typer.Exit(3) from e
     except FidelityError as e:
         # Exit 2, distinct from a finding: a scheduled job must be able to tell "the vendor moved"
         # from "we could not ask", and only the first is this project's bug.

@@ -20,6 +20,12 @@ def fetch_json(url: str, *, timeout: float = 120.0) -> dict:
     if response.status_code != 200:
         raise FidelityError(f"{url} answered {response.status_code}")
     try:
-        return response.json()
+        document = response.json()
     except ValueError as e:
         raise FidelityError(f"{url} is not JSON: {e}") from e
+    # A 200 carrying valid JSON that is not an object used to reach the caller and fail deep in a
+    # parser as `AttributeError`, which `backlot diff` cannot catch: it left as a traceback with
+    # exit 1, the status that files an issue against Backlot for a vendor serving nonsense.
+    if not isinstance(document, dict):
+        raise FidelityError(f"{url} answered JSON {type(document).__name__}, not an object")
+    return document

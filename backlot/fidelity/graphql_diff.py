@@ -35,7 +35,9 @@ from graphql import (
     get_introspection_query,
     is_enum_type,
     is_input_object_type,
+    is_interface_type,
     is_object_type,
+    is_union_type,
     is_specified_scalar_type,
 )
 
@@ -127,9 +129,37 @@ def _diff_object(backlot_t, real_t, name: str) -> list[Finding]:
                     f"vendor: {real_type}, Backlot: {backlot_type}",
                 )
             )
-        # Input object fields carry no arguments; only object/interface fields do.
-        if is_object_type(backlot_t):
+        # Input object fields carry no arguments; object and interface fields do.
+        if is_object_type(backlot_t) or is_interface_type(backlot_t):
             out.extend(_diff_args(mock_f, real_f, f"{name}.{f}"))
+    return out
+
+
+def _diff_union(backlot_t, real_t, name: str) -> list[Finding]:
+    """Which types a union may resolve to. Nothing compared these until now: two unions of the same
+    name fell through every branch and matched on kind alone, so a member added or dropped on
+    either side went unreported."""
+    backlot_members = {t.name for t in backlot_t.types}
+    real_members = {t.name for t in real_t.types}
+    out: list[Finding] = []
+    for member in sorted(backlot_members - real_members):
+        out.append(
+            Finding(
+                "extra_union_member",
+                BREAKING,
+                f"{name}.{member}",
+                "the vendor's union does not resolve to this type",
+            )
+        )
+    for member in sorted(real_members - backlot_members):
+        out.append(
+            Finding(
+                "missing_union_member",
+                GAP,
+                f"{name}.{member}",
+                "the vendor's union resolves to this type; Backlot's does not",
+            )
+        )
     return out
 
 
@@ -170,8 +200,14 @@ def diff_schemas(backlot: GraphQLSchema, real: GraphQLSchema) -> list[Finding]:
             continue
         if is_enum_type(backlot_t) and is_enum_type(real_t):
             out.extend(_diff_enum(backlot_t, real_t, name))
-        elif (is_object_type(backlot_t) and is_object_type(real_t)) or (
-            is_input_object_type(backlot_t) and is_input_object_type(real_t)
+        elif is_union_type(backlot_t) and is_union_type(real_t):
+            out.extend(_diff_union(backlot_t, real_t, name))
+        elif (
+            (is_object_type(backlot_t) and is_object_type(real_t))
+            # An interface carries fields of its own, and a field declared only on the interface
+            # was invisible until it was walked: only the implementing object's copy was reported.
+            or (is_interface_type(backlot_t) and is_interface_type(real_t))
+            or (is_input_object_type(backlot_t) and is_input_object_type(real_t))
         ):
             out.extend(_diff_object(backlot_t, real_t, name))
         elif type(backlot_t) is not type(real_t):

@@ -7,8 +7,8 @@ a schedule.
 
 from __future__ import annotations
 
+import ast
 import json
-import re
 from pathlib import Path
 
 import httpx
@@ -34,9 +34,13 @@ from backlot.fidelity.comparisons import COMPARISONS, GOOGLE_DISCOVERY, GRAPHQL,
 from backlot.fidelity.graphql_diff import backlot_schema, diff_schemas
 
 VENDOR = """
-type Query { transcripts(limit: Int, keyword: String): [Transcript!] }
+type Query { transcripts(limit: Int, keyword: String): [Transcript!], origin: Origin }
 type Transcript { id: ID!, title: String, duration: Float, status: Status }
 enum Status { DONE, PROCESSING }
+interface Source { id: ID! }
+type Meeting implements Source { id: ID! }
+type Upload implements Source { id: ID! }
+union Origin = Meeting | Upload
 """
 
 
@@ -78,6 +82,15 @@ def _diff(backlot_sdl: str, vendor_sdl: str = VENDOR) -> list[Finding]:
             GAP,
             "Status.PROCESSING",
             VENDOR.replace("DONE, PROCESSING", "DONE"),
+        ),
+        # Two unions of one name used to match on kind alone, and an interface's own fields were
+        # never walked: only the implementing object's copy of them was ever reported.
+        ("missing_union_member", GAP, "Origin.Upload", VENDOR.replace(" | Upload", "")),
+        (
+            "extra_field",
+            BREAKING,
+            "Source.invented",
+            VENDOR.replace("{ id: ID! }", "{ id: ID!, invented: String }"),
         ),
     ],
 )
@@ -251,6 +264,7 @@ def test_the_package_exports_exactly_what_the_command_needs():
         "GAP",
         "COMPARISONS",
         "Baseline",
+        "CredentialsMissing",
         "FidelityError",
         "Finding",
         "baseline_path",
@@ -258,11 +272,13 @@ def test_the_package_exports_exactly_what_the_command_needs():
     }
     assert set(package.__all__) == surface
     assert all(hasattr(package, name) for name in surface)
-    imported = set()
-    for line in re.findall(
-        r"^\s*from backlot\.fidelity import (.+)$", Path(cli.__file__).read_text(), re.M
-    ):
-        imported |= {n.split(" as ")[0].strip() for n in line.split(",")}
+    imported = {
+        alias.name
+        for node in ast.walk(ast.parse(Path(cli.__file__).read_text()))
+        if isinstance(node, ast.ImportFrom) and node.module == "backlot.fidelity"
+        for alias in node.names
+    }
+    assert imported, "the command imports nothing from the package; the parse is wrong"
     assert imported <= surface, imported
 
 
@@ -400,7 +416,25 @@ S3_MODEL = {
         "GetObjectTagging": {"http": {"method": "GET", "requestUri": "/{Bucket}/{Key+}?tagging"}},
         "ListBuckets": {"http": {"method": "GET", "requestUri": "/"}},
         "PutBucketAcl": {"http": {"method": "PUT", "requestUri": "/{Bucket}?acl"}},
-    }
+        "ListParts": {
+            "http": {"method": "GET", "requestUri": "/{Bucket}/{Key+}"},
+            "input": {"shape": "ListPartsRequest"},
+        },
+        "GetObject": {
+            "http": {"method": "GET", "requestUri": "/{Bucket}/{Key+}"},
+            "input": {"shape": "GetObjectRequest"},
+        },
+    },
+    "shapes": {
+        "ListPartsRequest": {
+            "required": ["Bucket", "Key", "UploadId"],
+            "members": {"UploadId": {"location": "querystring", "locationName": "uploadId"}},
+        },
+        "GetObjectRequest": {
+            "required": ["Bucket", "Key"],
+            "members": {"VersionId": {"location": "querystring", "locationName": "versionId"}},
+        },
+    },
 }
 
 
@@ -410,6 +444,11 @@ def test_the_s3_model_yields_read_operations_keyed_by_what_selects_them():
     assert (found["GetBucketAcl"].target, found["GetBucketAcl"].query) == ("bucket", "acl")
     assert found["GetObjectTagging"].target == "object"
     assert found["ListBuckets"].query == ""
+    # ListParts shares GetObject's `/{Bucket}/{Key+}` and is selected by a REQUIRED querystring
+    # member, so read from the URI alone it came out bare, was skipped as "the bare form", and was
+    # never asked — while the server answers it with the object body.
+    assert found["ListParts"].query == "uploadId"
+    assert found["GetObject"].query == ""  # its `versionId` is optional, not another operation
     # `?analytics` is two operations; keyed on the request alone a baseline would silence one.
     shared = {
         "operations": {
@@ -632,3 +671,46 @@ def test_json_output_says_what_a_baseline_write_did(_vendor, tmp_path, capsys):
     )
     payload = json.loads(capsys.readouterr().out)
     assert payload["baseline"].endswith("fireflies.json") and payload["unacknowledged"] == []
+
+
+def test_a_document_that_is_json_but_not_an_object_is_not_a_divergence(monkeypatch, tmp_path):
+    """A 200 carrying valid non-object JSON used to fail deep in a parser as `AttributeError`,
+    which the command cannot catch: it left as a traceback with status 1, the status that means
+    the contracts disagree and files an issue against Backlot."""
+    for payload in (["not", "an", "object"], "just a string", 42):
+        monkeypatch.setattr(
+            "backlot.fidelity.fetch.httpx.get", lambda *a, **k: httpx.Response(200, json=payload)
+        )
+        with pytest.raises(FidelityError, match="not an object"):
+            comparisons.divergences(COMPARISONS["notion"])
+        assert cli.main(["diff", "-s", "notion", "--baseline-dir", str(tmp_path)]) == 2
+
+
+def test_a_credential_nobody_set_exits_three_not_two(monkeypatch, tmp_path, capsys):
+    """Its own status because it is not a vendor outage: reported as one and left green, the two
+    sources whose contract is introspection would go uncompared night after night."""
+    monkeypatch.delenv("FIREFLIES_API_KEY", raising=False)
+    assert cli.main(["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path)]) == 3
+    assert "FIREFLIES_API_KEY" in capsys.readouterr().err
+
+
+def test_the_probe_asks_with_the_timeout_it_was_given(monkeypatch):
+    """`timeout` reached the three set-up reads but not the probe requests, so the ones that
+    matter ran on this module's own default whatever the caller asked for."""
+    seen = []
+    listing = '<?xml version="1.0"?><ListBucketResult><Name>b</Name><Contents><Key>k</Key></Contents></ListBucketResult>'
+
+    def fake_get(url, headers=None, timeout=None):
+        if "_meta/users" in url:
+            creds = {"admin_s3_access_key_id": "AKIA", "admin_s3_secret_access_key": "sk"}
+            return httpx.Response(200, json=creds)
+        return httpx.Response(200, text=listing)
+
+    def fake_request(method, url, headers=None, timeout=None):
+        seen.append(timeout)
+        return httpx.Response(200, text=listing)
+
+    monkeypatch.setattr(s3_probe.httpx, "get", fake_get)
+    monkeypatch.setattr(s3_probe.httpx, "request", fake_request)
+    s3_probe.run("http://x", S3_MODEL, timeout=99.0)
+    assert seen and set(seen) == {99.0}

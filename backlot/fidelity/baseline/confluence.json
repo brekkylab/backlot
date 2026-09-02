@@ -8,56 +8,56 @@
       "severity": "breaking",
       "path": "GET /wiki/rest/api/content",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes ANY read: it retains only the write operations and `search`. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2 (`/wiki/api/v2/...`), not documented as removed. Read off the document on 2026-09-01; not measured against a live Confluence site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "GET /wiki/rest/api/content/{}",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes ANY read: it retains only the write operations and `search`. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2 (`/wiki/api/v2/...`), not documented as removed. Read off the document on 2026-09-01; not measured against a live Confluence site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "GET /wiki/rest/api/content/{}/child/comment",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes ANY read: it retains only the write operations and `search`. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2 (`/wiki/api/v2/...`), not documented as removed. Read off the document on 2026-09-01; not measured against a live Confluence site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "GET /wiki/rest/api/content/{}/child/page",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes ANY read: it retains only the write operations and `search`. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2 (`/wiki/api/v2/...`), not documented as removed. Read off the document on 2026-09-01; not measured against a live Confluence site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "GET /wiki/rest/api/content/{}/label",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes ANY read: it retains only the write operations and `search`. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2 (`/wiki/api/v2/...`), not documented as removed. Read off the document on 2026-09-01; not measured against a live Confluence site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "GET /wiki/rest/api/space",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes ANY read: it retains only the write operations and `search`. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2 (`/wiki/api/v2/...`), not documented as removed. Read off the document on 2026-09-01; not measured against a live Confluence site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "GET /wiki/rest/api/space/{}",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes ANY read: it retains only the write operations and `search`. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2 (`/wiki/api/v2/...`), not documented as removed. Read off the document on 2026-09-01; not measured against a live Confluence site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
       "kind": "extra_operation",
       "severity": "breaking",
       "path": "GET /wiki/rest/api/space/{}/permission",
       "detail": "the vendor's spec declares no such operation",
-      "note": "Atlassian's published v1 document no longer describes ANY read: it retains only the write operations and `search`. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2 (`/wiki/api/v2/...`), not documented as removed. Read off the document on 2026-09-01; not measured against a live Confluence site."
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
     },
     {
       "kind": "missing_operation",

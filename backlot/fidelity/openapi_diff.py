@@ -1,7 +1,7 @@
 """Comparing Backlot against an OpenAPI document its vendor publishes.
 
 Six vendors publish one, all of them public, which is what lets this run with no credential, no
-quota and no account — and on a fork's pull request. Where a document is found is not this
+quota and no account, and to be reproduced locally by anyone. Where a document is found is not this
 module's business: a comparison hands over a URL, or a hook that produces one.
 
 Response bodies are deliberately out of scope. A vendor's document describes them through deep

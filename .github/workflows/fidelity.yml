@@ -65,11 +65,21 @@ jobs:
           echo "::warning::${{ matrix.source }}'s contract could not be read; no comparison ran."
           cat report.txt
 
+      # Exit 3 is a credential nobody set. Red, because it is this repository's misconfiguration:
+      # warned about and left green, the two sources whose contract is introspection would go
+      # uncompared night after night while the run said nothing was wrong.
+      - name: Fail on a credential this repository has not set
+        if: steps.diff.outputs.status == '3'
+        run: |
+          cat report.txt
+          exit 1
+
       - name: Report the divergence on this source's issue
         if: steps.diff.outputs.status == '1'
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE: ${{ matrix.source }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           TITLE="Fidelity: $SOURCE diverges from its vendor"
           export TITLE
@@ -77,9 +87,19 @@ jobs:
           existing=$(gh issue list --state all --search "$TITLE in:title" \
             --json number,title,author,state \
             --jq 'first(.[] | select(.title == env.TITLE and .author.is_bot)) // empty')
+          # The API refuses a body over 65536 characters, and this step runs under `bash -e`, so
+          # that refusal takes the step down: the job would go red with no issue filed and the
+          # report only in the run log. A vendor restructuring its document turns a whole baseline
+          # into new findings at once — measured against an empty baseline, github's report is 135k
+          # characters and jira's 69k — so the report is capped well under the limit.
+          report=$(cat report.txt)
+          if [ "${#report}" -gt 55000 ]; then
+            report="$(printf '%s\n… truncated at 55000 of %d characters. The whole report is in the run log: %s' \
+              "$(printf '%s' "$report" | head -c 55000)" "${#report}" "$RUN_URL")"
+          fi
           body=$(printf '%s\n\n```\n%s\n```\n' \
             "\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; a gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`. This body is the latest scheduled run's report, rewritten in place." \
-            "$(cat report.txt)")
+            "$report")
           if [ -z "$existing" ]; then
             gh issue create --title "$TITLE" --label fidelity --body "$body"
             exit 0

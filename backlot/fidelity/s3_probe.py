@@ -17,9 +17,10 @@ nonsense — which is the exact failure this project exists to prevent, and it c
 document.
 
 An operation is judged indistinguishable when its response has the same status and the same XML
-root element as the same path carrying no query at all. Two operations legitimately answer that
-way — ListObjects and ListObjectsV2 really are what a bare bucket GET means — so those are
+root element as the same path carrying no query at all. ListObjectsV2 legitimately answers that way
+— ``?list-type=2`` selects the v2 form of what a bare bucket GET already means — so it is
 acknowledged in the baseline like any other reviewed divergence, rather than special-cased here.
+ListObjects is the bare form itself, so it carries no selector and is never asked.
 """
 
 from __future__ import annotations
@@ -69,12 +70,35 @@ class S3Operation:
         return f"{self.name}: {request}"
 
 
+def _required_query_member(shapes: Mapping[str, Any], op: Mapping[str, Any]) -> str:
+    """The querystring member that selects an operation whose ``requestUri`` carries no ``?``.
+
+    ListParts is the case, and the only one: botocore gives it the same ``/{Bucket}/{Key+}`` as
+    GetObject and selects it with a REQUIRED ``uploadId`` in the querystring. Read from the URI
+    alone it comes out bare, is skipped as "the bare form", and never asked — while the server
+    answers it with the object body, which is the silent fallthrough this module exists to catch.
+
+    Required only. GetObject's ``versionId`` and ListObjects' ``prefix`` are optional refinements
+    of the bare operation, not a different operation, and treating them as selectors would ask the
+    same request twice under two names.
+    """
+    shape = shapes.get((op.get("input") or {}).get("shape")) or {}
+    required = set(shape.get("required") or ())
+    selectors = sorted(
+        member.get("locationName") or name
+        for name, member in (shape.get("members") or {}).items()
+        if name in required and member.get("location") == "querystring"
+    )
+    return selectors[0] if selectors else ""
+
+
 def operations(model: Mapping[str, Any]) -> list[S3Operation]:
     """The read operations a botocore S3 service model declares.
 
     Writes are not probed: Backlot serves reads, and a write it refuses is the correct answer
     rather than a divergence worth listing ninety times.
     """
+    shapes = model.get("shapes") or {}
     out = []
     for name, op in (model.get("operations") or {}).items():
         http = op.get("http") or {}
@@ -83,6 +107,7 @@ def operations(model: Mapping[str, Any]) -> list[S3Operation]:
             continue
         uri = http.get("requestUri") or "/"
         path, _, query = urlsplit(uri).path, *uri.partition("?")[1:]
+        query = query or _required_query_member(shapes, op)
         if "{Key" in path:
             target = "object"
         elif "{Bucket" in path:
@@ -226,15 +251,18 @@ def run(base_url: str, model: Mapping[str, Any], timeout: float = 20.0) -> list[
     keys = re.findall(r"<Key>([^<]+)</Key>", read(f"/{bucket}", "list-type=2"))
     if not keys:
         raise FidelityError(f"bucket {bucket!r} holds no object, so the object probes cannot run")
-    return probe(base_url, access_key, secret, operations(model), bucket=bucket, key=keys[0])
+    return probe(
+        base_url, access_key, secret, operations(model), bucket=bucket, key=keys[0], timeout=timeout
+    )
 
 
 def divergences(source: "ProbeTarget", *, timeout: float = 120.0) -> list[Finding]:
     """This module's entry point: fetch the vendor model, start a server, and ask it.
 
-    Starting the server belongs here rather than in the registry. A second probe source may need a
-    different corpus, a different port, or no server at all, and the registry should not have to
-    learn that.
+    Fetching the model and starting the server happen here, which means they are shared by every
+    probe: :class:`ProbeComparison` routes through this module, so a source needing a different
+    corpus, a different port or no server at all would have to route somewhere else rather than
+    only supply a different ``run``.
     """
     import backlot
 

@@ -1,13 +1,15 @@
-"""Where each source's two contracts come from: Backlot's own, and the vendor's published one.
+"""Which comparison each source gets, and what it needs to run.
 
-Backlot's side reads the SDL file the server itself builds from — ``backlot.graphql.engine.from_sdl``
-loads that same path at import — so the comparison is against what is served, without starting a
-server or importing a corpus.
+Four kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
+Backlot's side is the SDL the server builds its engine from and the vendor's is a live introspection
+response, which needs a credential. For the eight document sources, Backlot's side is the app's own
+``app.openapi()`` and the vendor's is a document it publishes, which needs none. For S3, whose
+operations are selected by query string rather than by path, both sides are answers from a running
+server that ``backlot.serve()`` starts.
 
-The vendor side needs a credential. That is the whole reason this runs on a schedule and not on
-every pull request: a fork cannot see the token, and a vendor outage must not block a contributor.
-The no-credential half of drift detection — vendor-published OpenAPI and Google Discovery documents
-— is a separate surface and does not belong to this module.
+Nine of the eleven need no credential. All eleven run on a schedule and never on a pull request:
+drift is this project's bug, but it is never the bug of whichever pull request happens to be open
+when a vendor ships a change.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from backlot.fidelity import (
     openapi_diff,
     s3_probe,
 )
-from backlot.fidelity.errors import FidelityError
+from backlot.fidelity.errors import CredentialsMissing, FidelityError
 from backlot.fidelity.findings import Finding
 
 
@@ -48,7 +50,8 @@ class Credential:
 class OpenAPIComparison:
     """A source compared against the OpenAPI document its vendor publishes.
 
-    Public, which is what lets this kind gate a pull request: no credential, no quota, no account.
+    Public, so this kind needs no credential, no quota and no account: the scheduled job carries no
+    secret for it, and anyone can reproduce a finding locally.
 
     Most vendors publish the document at a stable URL. One does not, and ``resolve_url`` is for
     that: ``spec_url`` addresses an index, and the hook picks the entry out of it.
@@ -105,10 +108,9 @@ class GoogleDiscoveryComparison:
 class GraphQLComparison:
     """A source compared against the schema its vendor answers introspection with.
 
-    Introspection IS the contract, which is what separates this from the published documents the
-    published documents are compared against: a field absent from it is absent from the API, not
-    undocumented. The cost is a credential, and that is why these run on a schedule rather than on
-    a pull request.
+    Introspection IS the contract, which is what separates this from a published document: a field
+    absent from it is absent from the API, not merely undocumented. The cost is a credential, which
+    is why these two are the sources that go uncompared when one is not set.
     """
 
     name: str
@@ -137,10 +139,10 @@ class ProbeComparison:
     model is still the vendor's own — botocore's service definition, the same file every AWS SDK
     is generated from — but what it is compared against is a running Backlot's answers.
 
-    Note that AWS publishes a machine-readable model for S3 too, and this is still not a
-    :class:`SpecComparison`. What separates the two is not whether a document exists but whether it
-    enumerates operations as PATHS: everything the other class compares does, and S3 does not,
-    because it selects operations by query string.
+    Note that AWS publishes a machine-readable model for S3 too, and this is still neither an
+    :class:`OpenAPIComparison` nor a :class:`GoogleDiscoveryComparison`. What separates them is not
+    whether a document exists but whether it enumerates operations as PATHS: everything those two
+    compare does, and S3 does not, because it selects operations by query string.
     """
 
     name: str
@@ -156,7 +158,9 @@ class ProbeComparison:
         return self.spec_url
 
     # None: a probe asks Backlot, not the vendor, and signs with the corpus's own keys. A probe
-    # against a live vendor would declare what it needs here, and nothing else would change.
+    # against a live vendor would declare what it needs here. Note that `run` is the only part a
+    # probe supplies: fetching the model and starting the server are `s3_probe.divergences`, and
+    # every probe goes through it.
     credentials: tuple[Credential, ...] = ()
 
     def divergences(
@@ -281,7 +285,7 @@ def _resolve_credentials(
             missing.append(f"{name} ({credential.what}) — set {credential.env}")
         resolved[name] = value
     if missing:
-        raise FidelityError(
+        raise CredentialsMissing(
             f"no credential for {comparison.name}: " + "; ".join(missing) + ". "
             "Pass --credential <name>=<value>, or put it in the environment."
         )

@@ -27,7 +27,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
 
       - name: Install
-        run: pip install -e ".[dev,examples,mcp,llamaindex,mirage,fsspec]"
+        run: pip install -e ".[all]"
       - name: Install the HubSpot reader past its stale pin
         run: pip install --no-deps "llama-index-readers-hubspot<0.6"
       - name: Fetch the AWS MCP server the S3 test drives

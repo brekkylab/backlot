@@ -612,9 +612,12 @@ def test_github_blob_unknown_sha_404(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
     r = c.get(f"/github/repos/{gh_org}/codebase/git/blobs/{'0' * 40}", headers=gh_admin_h)
     assert r.status_code == 404
-    # matches the existing github 404 shape (backlot.main's shared exception handler wraps
-    # HTTPException(detail=...) as {"detail": ...} for every non-atlassian router)
-    assert r.json() == {"detail": "Not Found"}
+    # real's envelope, with this route's own documentation_url (see backlot.errors.github)
+    assert r.json() == {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/git/blobs#get-a-blob",
+        "status": "404",
+    }
 
 
 def test_github_lists_the_refs_a_client_enumerates_before_it_reads(gh_client, gh_admin_h, gh_org):
@@ -880,7 +883,7 @@ def test_github_code_search_text_matches_only_under_the_media_type(gh_client, gh
 def test_github_code_search_refuses_a_query_less_search(gh_client, gh_admin_h):
     """Real answers a `q`-less code search 422 in its own envelope, not FastAPI's `{"detail": …}`.
 
-    Unlike `/search/issues`, which Backlot lets serve an empty `q` as a listing.
+    `/search/issues` answers a blank `q` the same way; the test for that one sits beside it.
     """
     c, _ = gh_client
     r = c.get("/github/search/code", headers=gh_admin_h)
@@ -892,6 +895,241 @@ def test_github_code_search_refuses_a_query_less_search(gh_client, gh_admin_h):
         "status": "422",
     }
     assert c.get("/github/search/code", headers=gh_admin_h, params={"q": " "}).status_code == 422
+
+
+def test_github_issue_search_refuses_a_query_less_search(gh_client, gh_admin_h):
+    """The expensive half of the same rule. A `q`-less issue search used to answer 200 with every
+    issue and pull the caller could see, so a client that forgot its query got a plausible,
+    ACL-scoped result set here and a hard 422 in production — nothing in between said so.
+
+    Measured against api.github.com: `GET /search/issues` with no `q` at all is real's `Validation Failed`,
+    resource `Search`, field `q`, code `missing`. (`/search/code` differs on the missing-parameter
+    case only — real rejects that one at the query-string parser, `400 text/plain "Failed to
+    deserialize query string: missing field q"` — and answers the same 422 for `?q=`. Backlot
+    declares `q` with a default, so both routes see one case, and the 422 is the one to serve.)
+    """
+    c, _ = gh_client
+    for params in ({}, {"q": ""}, {"q": "   "}):
+        r = c.get("/github/search/issues", headers=gh_admin_h, params=params)
+        assert r.status_code == 422, params
+        assert r.json() == {
+            "message": "Validation Failed",
+            "documentation_url": "https://docs.github.com/v3/search",
+            "errors": [{"resource": "Search", "field": "q", "code": "missing"}],
+            "status": "422",
+        }
+    # ...and a real query still answers
+    assert (
+        c.get("/github/search/issues", headers=gh_admin_h, params={"q": "is:issue"}).status_code
+        == 200
+    )
+
+
+def test_github_errors_answer_githubs_envelope(gh_client, gh_admin_h, gh_org):
+    """`{"message", "documentation_url", "status"}`, not FastAPI's `{"detail": …}`.
+
+    PyGithub picks its exception CLASS off `message`, so `detail` cost a client the difference
+    between `BadCredentialsException` and a bare `GithubException` (pinned in `tests/test_sdk.py`).
+    The wording was already real's; only the shape around it was not.
+    """
+    c, _ = gh_client
+    r = c.get(f"/github/repos/{gh_org}/no-such-repo", headers=gh_admin_h)
+    assert r.status_code == 404
+    assert r.json() == {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/repos/repos#get-a-repository",
+        "status": "404",
+    }
+    assert "detail" not in r.json()
+    # a repo the caller cannot see answers the same as one that is not there, as it did before
+    assert c.get(f"/github/repos/{gh_org}/vault", headers=gh_admin_h).status_code == 200
+    # non-github paths keep FastAPI's default envelope
+    assert "detail" in c.get("/no-such-route").json()
+
+
+def test_github_401_says_which_credential_failed(gh_client, gh_admin_h, gh_org):
+    """Two causes, two messages, as real has them (measured against api.github.com):
+    a credential that arrived and did not resolve is "Bad credentials", and a request carrying none
+    is "Requires authentication". A client telling "I forgot the token" from "my token is wrong"
+    read one answer for both before this.
+
+    An `Authorization` real cannot parse is the second case, not the first: real ignores the header
+    and serves the request anonymously (`Basic …` and a scheme-less value both answer 200 on a
+    public repo), so the caller arrives with no credential rather than a rejected one.
+
+    Both carry the bare `https://docs.github.com/rest`, which is what real answers on the routes a
+    Backlot caller can meet a 401 on — a 404's route-specific anchor is not used here.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/codebase"
+    missing = c.get(url)
+    assert missing.status_code == 401
+    assert missing.json() == {
+        "message": "Requires authentication",
+        "documentation_url": "https://docs.github.com/rest",
+        "status": "401",
+    }
+    for unparseable in ("Basic Zm9vOmJhcg==", "just-a-value", "Bearer"):
+        r = c.get(url, headers={"Authorization": unparseable})
+        assert r.status_code == 401 and r.json()["message"] == "Requires authentication", (
+            unparseable
+        )
+    bad = c.get(url, headers={"Authorization": "Bearer usr-not-a-real-token"})
+    assert bad.status_code == 401
+    assert bad.json() == {
+        "message": "Bad credentials",
+        "documentation_url": "https://docs.github.com/rest",
+        "status": "401",
+    }
+
+
+def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admin_h, gh_org):
+    """Real's `documentation_url` is per-ENDPOINT — `/branches` names the list-branches anchor,
+    `/tags` the list-tags one — so a single root URL would be a divergence on every 404. The table
+    was measured by requesting each route shape against a repository that does not exist.
+
+    Every route the app serves needs an entry, which is what the first assertion holds: a route
+    added without one would answer the root and nobody would notice.
+    """
+    from backlot.errors import github as gh_errors
+
+    c, _ = gh_client
+    served = {p for p in c.get("/openapi.json").json()["paths"] if p.startswith("/github")}
+    assert set(gh_errors.ROUTE_DOCS) == served, (
+        "routes with no documentation_url: "
+        f"{sorted(served - set(gh_errors.ROUTE_DOCS))}; entries for routes that are gone: "
+        f"{sorted(set(gh_errors.ROUTE_DOCS) - served)}"
+    )
+
+    missing = f"/github/repos/{gh_org}/no-such-repo"
+    for path, expected in (
+        (f"{missing}/branches", "rest/branches/branches#list-branches"),
+        (f"{missing}/tags", "rest/repos/repos#list-repository-tags"),
+        (
+            f"{missing}/collaborators",
+            "rest/collaborators/collaborators#list-repository-collaborators",
+        ),
+        (f"{missing}/pulls/1/files", "rest/pulls/pulls#list-pull-requests-files"),
+        # the two routes that take the rest of the path as one parameter still resolve
+        (f"{missing}/git/ref/heads/release/2026-03", "rest/git/refs#get-a-reference"),
+        (
+            f"{missing}/contents/src/ingest/consumer.py",
+            "rest/repos/contents#get-repository-content",
+        ),
+    ):
+        r = c.get(path, headers=gh_admin_h)
+        assert r.status_code == 404, path
+        assert r.json()["documentation_url"] == f"https://docs.github.com/{expected}", path
+
+
+def test_github_tolerates_the_pagination_values_real_tolerates(gh_client, gh_admin_h, gh_org):
+    """Real refuses no pagination value at all. Measured on a public repository's issue listing:
+    `per_page=0`, `per_page=abc`, `page=0`, `page=-1` and `page=abc` are each a 200 with the
+    defaults applied, and a per_page above the cap is a 200 at the cap.
+
+    Backlot declared `ge=1` and an `int` annotation, so FastAPI answered its 422 before
+    `clamp_page` was reached and a paginator computing an edge value got a hard error where
+    production absorbs it. Both are gone: the parameter absorbs a value it cannot parse, and the
+    OpenAPI schema stays an integer, which is what real's own spec declares — the tolerance
+    belongs in the runtime where real has it, not in the contract where real does not.
+    """
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/codebase/issues"
+    full = c.get(base, headers=gh_admin_h).json()
+    for params in (
+        {"per_page": 0},
+        {"page": 0},
+        {"page": -1},
+        {"per_page": -5},
+        {"per_page": "abc"},
+        {"page": "abc"},
+        {"page": ""},
+    ):
+        r = c.get(base, headers=gh_admin_h, params=params)
+        assert r.status_code == 200, params
+        assert r.json() == full, params
+    # over the cap is still the cap, not an error
+    assert c.get(base, headers=gh_admin_h, params={"per_page": 100_000}).status_code == 200
+    # ...and the parameter is still declared an integer, as real's spec declares it
+    route = "/github/repos/{owner}/{repo}/issues"
+    spec = c.get("/openapi.json").json()["paths"][route]["get"]
+    page = next(p for p in spec["parameters"] if p["name"] == "page")
+    assert {"type": "integer"} in page["schema"]["anyOf"]
+
+
+def test_github_a_path_parameter_it_cannot_parse_is_the_route_s_404(gh_client, gh_admin_h, gh_org):
+    """Real has no route for `/issues/notanint`, so it answers the 404 that route's own anchor
+    names — measured: `Not Found`, `documentation_url: .../rest/issues/issues#get-an-issue`.
+
+    Backlot declares `number: int` and so matches the route and fails after, which is a difference
+    in how the two arrive rather than in what they answer. What it must not do is answer a 422:
+    `{"detail": [...]}` announced itself as the mock's own default, and an envelope does not — a
+    status real never sends would read as measured.
+    """
+    c, _ = gh_client
+    r = c.get(f"/github/repos/{gh_org}/codebase/issues/notanint", headers=gh_admin_h)
+    assert r.status_code == 404
+    assert r.json() == {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/issues/issues#get-an-issue",
+        "status": "404",
+    }
+
+
+def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
+    """Every route here declares GET, so a wrong method is refused by Starlette with
+    `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which answers a
+    wrong method per endpoint rather than uniformly (an unauthenticated `POST /repos/{owner}/{repo}`
+    is real's 401 Requires authentication, measured).
+
+    So it keeps FastAPI's `detail`, which says plainly that the mock is answering. The envelope is
+    for the errors whose wording was measured.
+    """
+    c, _ = gh_client
+    r = c.post(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h)
+    assert r.status_code == 405
+    assert r.json() == {"detail": "Method Not Allowed"}
+
+
+def test_github_a_path_failure_decides_the_answer_whatever_order_it_is_reported_in():
+    """A request can fail on a path and a query parameter at once, and it has one answer: the 404
+    the path failure earns. Reading the first error reported would make that answer depend on the
+    order FastAPI happens to list them in, which is not a rule anyone could rely on.
+
+    Unreachable on this surface today — the page parameters absorb and every other query parameter
+    is a `str` — so the function is called directly, with the pair in both orders.
+    """
+    from backlot.errors import github as gh_errors
+
+    path_err = {"loc": ("path", "number"), "msg": "not an integer"}
+    query_err = {"loc": ("query", "per_page"), "msg": "not an integer"}
+    route = "/github/repos/acme/codebase/issues/notanint"
+    for errors in ([path_err, query_err], [query_err, path_err]):
+        status, body = gh_errors.validation_body(route, errors)
+        assert status == 404, [e["loc"] for e in errors]
+        assert body["message"] == "Not Found"
+    # ...and a query failure on its own is still the 422
+    assert gh_errors.validation_body(route, [query_err])[0] == 422
+
+
+def test_github_a_validation_failure_names_the_route_it_failed_on(gh_org):
+    """One route answered two `documentation_url`s for its own 422: the hand-shaped q-less search
+    named `v3/search` while anything reaching FastAPI's validator named the bare root, because the
+    validation envelope was not given the path. It is now, so both halves agree.
+
+    Called directly because the pagination parameters absorb rather than refuse, which leaves no
+    query parameter on this surface that still reaches the validator.
+    """
+    from backlot.errors import github as gh_errors
+
+    status, body = gh_errors.validation_body(
+        "/github/search/issues", [{"loc": ("query", "per_page"), "msg": "nope"}]
+    )
+    assert status == 422
+    assert body["documentation_url"] == "https://docs.github.com/v3/search"
+    assert body["errors"] == [
+        {"resource": "Request", "field": "per_page", "code": "invalid", "message": "nope"}
+    ]
 
 
 def _link_rels(header: str) -> dict:
@@ -2180,13 +2418,13 @@ def test_github_list_issues_documents_state_param(client):
 
 
 def test_github_search_still_filters_by_q(client, admin_h):
-    body = client.get("/github/search/issues", params={"q": ""}, headers=admin_h).json()
+    body = client.get("/github/search/issues", params={"q": "is:issue"}, headers=admin_h).json()
     assert "items" in body and "total_count" in body
 
 
 def test_github_responses_unchanged_by_enrichment(client, admin_h):
     # Fidelity guard: the rich issue field set must survive query-param + response_model enrichment.
-    body = client.get("/github/search/issues", params={"q": ""}, headers=admin_h).json()
+    body = client.get("/github/search/issues", params={"q": "is:issue"}, headers=admin_h).json()
     assert body["items"], "SAMPLE should have github issues"
     item = body["items"][0]
     for key in (

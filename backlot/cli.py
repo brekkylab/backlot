@@ -34,6 +34,90 @@ import typer
 # `erb` is what this codebase calls it among itself, and a caller reading `--type erb` learns nothing
 # about what is being downloaded. The cost of the abbreviation lands on the person who did not write
 # the code, so it is not offered.
+# The sources `backlot diff` can compare, named here so `--help` lists them without importing
+# backlot.fidelity (and httpx's TLS stack) on every other command.
+FIDELITY_SOURCES = (
+    "confluence",
+    "fireflies",
+    "google_drive",
+    "github",
+    "gmail",
+    "hubspot",
+    "jira",
+    "linear",
+    "notion",
+    "s3",
+    "slack",
+)
+
+
+def _echo_findings(heading: str, findings: list, colour: str) -> None:
+    """A heading and its findings: what and where, then why, wrapped to the terminal.
+
+    Wrapped because a `detail` is a sentence, not a label — the S3 probe's runs past two hundred
+    characters — and forty of them unwrapped is a wall nobody reads to the end of.
+
+    Styling carries the same three jobs everywhere in this command: bold is identity (which source,
+    which field), colour is severity, dim is the supporting sentence. `typer.echo` strips the codes
+    when it is not writing to a terminal, so a redirected run stays plain text.
+
+    On stderr, like the summary that follows: a run that found something is reporting a problem,
+    and a caller redirecting stdout to a file still wants to see it.
+    """
+    import shutil
+    import textwrap
+
+    width = max(60, min(shutil.get_terminal_size((100, 24)).columns, 100))
+    typer.echo(typer.style(heading, fg=colour, bold=True), err=True)
+    for f in findings:
+        kind = typer.style(f.kind, fg=colour)
+        typer.echo(f"     {kind}  {typer.style(f.path, bold=True)}", err=True)
+        for line in textwrap.wrap(f.detail, width - 7) or [""]:
+            typer.echo(typer.style(f"       {line}", dim=True), err=True)
+
+
+def _emit_json(source: str, endpoint: str, findings: list, **groups) -> None:
+    """The same result as a JSON object on stdout, and nothing else there.
+
+    Nothing else, so the output pipes: the human form writes its findings to stderr and its summary
+    to stdout, which would put prose in the middle of a document a caller is parsing.
+    """
+    import json
+
+    payload = {
+        "source": source,
+        "endpoint": endpoint,
+        "total": len(findings),
+        **{name: [f.as_dict() for f in group] for name, group in groups.items() if name != "path"},
+    }
+    if "path" in groups:
+        payload["baseline"] = str(groups["path"])
+    typer.echo(json.dumps(payload, indent=2))
+
+
+def _credentials(pairs: "list[str] | None") -> dict[str, str]:
+    """``--credential NAME=VALUE`` repeated, as a mapping.
+
+    A value may itself contain `=` (a base64 secret routinely ends in one), so only the first
+    separator splits.
+    """
+    out = {}
+    for pair in pairs or ():
+        name, sep, value = pair.partition("=")
+        if not sep or not name.strip():
+            raise typer.BadParameter(
+                f"expected NAME=VALUE, got {pair!r}", param_hint="'--credential'"
+            )
+        out[name.strip()] = value
+    return out
+
+
+def _today() -> str:
+    from datetime import date
+
+    return date.today().isoformat()
+
+
 BYO, BENCH = "byo", "enterpriserag-bench"
 IMPORTER_TYPES = (BYO, BENCH)
 
@@ -506,6 +590,185 @@ def status(data_dir: DataDir = None) -> None:
         )
     else:
         typer.echo(f"tokens:   none ({settings.tokens_path.name} is missing)")
+
+
+# --------------------------------------------------------------------------- diff
+
+
+@app.command()
+def diff(
+    source: Annotated[
+        str,
+        typer.Option(
+            "--source", "-s", help=f"which source to compare: {', '.join(sorted(FIDELITY_SOURCES))}"
+        ),
+    ],
+    credential: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--credential",
+            metavar="NAME=VALUE",
+            help="a credential this source needs, repeatable; prefer the environment, which is "
+            "where each source looks by default and which `ps` does not show",
+        ),
+    ] = None,
+    baseline_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--baseline-dir",
+            metavar="DIR",
+            help="where the acknowledged divergences live [default: the one shipped in the package]",
+        ),
+    ] = None,
+    update_baseline: Annotated[
+        bool,
+        typer.Option("--update-baseline", help="rewrite the baseline to acknowledge what is found"),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="print the result as JSON on stdout and nothing else, for piping into something",
+        ),
+    ] = False,
+) -> None:
+    """Compare the schema Backlot serves against the vendor's own, in both directions.
+
+    Fidelity is measured, never assumed — and until this command a measurement only happened when someone went looking. Run on a schedule, it is what notices the vendor changing something in March. Divergences already read and accepted live in `backlot/fidelity/baseline/<source>.json`, so a run reports what is NEW; accepting one is a file change that goes through review. Exits 1 when anything is unacknowledged, 2 when the vendor's contract could not be read at all — a vendor outage is not a fidelity finding — and 3 when a credential this source declares is not set anywhere, which is a configuration problem rather than either.
+    """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
+    from backlot.fidelity import (
+        BREAKING,
+        Baseline,
+        CredentialsMissing,
+        FidelityError,
+        baseline_path,
+        divergences,
+    )
+    from backlot.fidelity import COMPARISONS as _SOURCES
+
+    if source not in _SOURCES:
+        raise typer.BadParameter(
+            f"no schema comparison for {source!r}; one of {sorted(_SOURCES)}",
+            param_hint="'--source'",
+        )
+    spec = _SOURCES[source]
+    try:
+        findings = divergences(spec, _credentials(credential))
+    except CredentialsMissing as e:
+        # Exit 3, not 2: a credential nobody set is this repository's misconfiguration, and
+        # answering it like a vendor outage leaves the source uncompared with the run green.
+        typer.echo(typer.style(f"🔑 {e}", fg="red", bold=True), err=True)
+        raise typer.Exit(3) from e
+    except FidelityError as e:
+        # Exit 2, distinct from a finding: a scheduled job must be able to tell "the vendor moved"
+        # from "we could not ask", and only the first is this project's bug.
+        typer.echo(f"could not read the vendor's schema: {e}", err=True)
+        raise typer.Exit(2) from e
+
+    path = (baseline_dir / f"{source}.json") if baseline_dir else baseline_path(source)
+    baseline = (
+        Baseline.load(path).identified_as(source, spec.endpoint)
+        if path.exists()
+        else Baseline.empty(source, spec.endpoint)
+    )
+    stale = baseline.resolved(findings)
+    fresh = baseline.unacknowledged(findings)
+    breaking = [f for f in fresh if f.severity == BREAKING]
+
+    if update_baseline:
+        # A `gap` is scope and is acknowledged freely. A `breaking` finding means Backlot
+        # contradicts the vendor, which is a bug by this project's own rule, so no flag here
+        # silences one: acknowledging it is a hand edit to the baseline file, where a reviewer sees
+        # the note explaining why the vendor's shape is not being matched. One already acknowledged
+        # that way stays acknowledged — this rewrites the file, it does not re-litigate it. That
+        # holds even when the vendor's shape has moved under the entry and the run is reporting it
+        # again: dropping it would delete the note, which is the record of the reasoning, so it
+        # stays in the file and stays reported until someone rewrites it by hand.
+        kept = [f for f in findings if f not in breaking or f.key in baseline.acknowledged]
+        baseline.write(path, kept, measured=_today())
+        if as_json:
+            _emit_json(
+                source,
+                spec.endpoint,
+                findings,
+                acknowledged=kept,
+                unacknowledged=breaking,
+                path=path,
+            )
+        else:
+            name = typer.style(path.name, bold=True)
+            typer.echo(
+                typer.style("📝 ", fg="green")
+                + f"{name} now acknowledges {len(kept)} divergence(s)"
+            )
+            typer.echo(typer.style(f"   {path}", dim=True))
+            if breaking:
+                typer.echo("")
+                _echo_findings(
+                    f"❌ left unacknowledged ({len(breaking)}) — each is a bug, not a gap",
+                    breaking,
+                    "red",
+                )
+                typer.echo(
+                    f"\n   Fix them, or add an entry to {path.name} by hand with a note saying why "
+                    f"the vendor's shape is not being matched.",
+                    err=True,
+                )
+        if breaking:
+            raise typer.Exit(1)
+        return
+
+    if as_json:
+        _emit_json(source, spec.endpoint, findings, new=fresh, resolved=stale)
+        if fresh:
+            raise typer.Exit(1)
+        return
+
+    typer.echo(
+        "🔍 " + typer.style(source, bold=True) + typer.style(f" · {spec.endpoint}", dim=True)
+    )
+    # The count that decides whether this run passed is the one worth colouring.
+    new_count = typer.style(f"{len(fresh)} new", fg="red" if fresh else "green", bold=True)
+    typer.echo(
+        typer.style(
+            f"   {len(findings)} divergence(s) · {len(findings) - len(fresh)} acknowledged · ",
+            dim=True,
+        )
+        + new_count
+    )
+    if stale:
+        typer.echo("")
+        typer.echo(
+            typer.style(
+                f"🧹 acknowledged but no longer diverging ({len(stale)}) — drop from the baseline",
+                fg="yellow",
+                bold=True,
+            )
+        )
+        for f in stale:
+            typer.echo(f"     {typer.style(f.path, bold=True)}")
+    if not fresh:
+        typer.echo("")
+        typer.echo(typer.style("✅ nothing new", fg="green", bold=True))
+        return
+
+    gaps = [f for f in fresh if f.severity != BREAKING]
+    if breaking:
+        typer.echo("")
+        _echo_findings(
+            f"❌ breaking ({len(breaking)}) — Backlot contradicts the vendor", breaking, "red"
+        )
+    if gaps:
+        typer.echo("")
+        _echo_findings(
+            f"⚠️  gap ({len(gaps)}) — the vendor has surface Backlot does not", gaps, "yellow"
+        )
+    typer.echo("")
+    typer.echo(
+        f"   {len(fresh)} new. Fix them, or run --update-baseline to acknowledge the gaps.",
+        err=True,
+    )
+    raise typer.Exit(1)
 
 
 def module_main(corpus_type: str, argv: list[str]) -> int:

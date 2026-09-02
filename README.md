@@ -102,6 +102,7 @@ The roadmap lives in [the tracking issue](https://github.com/brekkylab/backlot/i
 | Every source Backlot serves, and every endpoint of each | [docs/supported-sources.md](docs/supported-sources.md) |
 | Building a corpus, and public datasets | [docs/corpus.md](docs/corpus.md) |
 | Auth schemes and tokens | [docs/auth.md](docs/auth.md) |
+| Measuring Backlot against the real APIs | [docs/fidelity.md](docs/fidelity.md) |
 | Every `BACKLOT_*` setting | [docs/configuration.md](docs/configuration.md) |
 | Vendor names and trademarks | [NOTICE.md](NOTICE.md) |
 

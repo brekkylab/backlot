@@ -1,0 +1,14 @@
+{
+  "source": "s3",
+  "endpoint": "https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/s3/2006-03-01/service-2.json",
+  "measured": "2026-09-01",
+  "acknowledged": [
+    {
+      "kind": "silent_fallthrough",
+      "severity": "breaking",
+      "path": "ListObjectsV2: GET /{bucket}?list-type=2",
+      "detail": "ListObjectsV2 is answered 200 <ListBucketResult>, which is what the same path answers with no operation selected: Backlot neither implements it nor refuses it, so a caller parses another operation's body",
+      "note": "Not a fallthrough: a bare bucket GET is ListObjects, and `?list-type=2` selects its v2 form, so both correctly answer the same ListBucketResult."
+    }
+  ]
+}

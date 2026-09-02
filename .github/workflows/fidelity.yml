@@ -93,7 +93,11 @@ jobs:
             "\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; a gap gets a note and an entry via \`backlot diff --source $SOURCE --update-baseline\`. This body is the latest scheduled run's report, rewritten in place." \
             "$(cat report.txt)")
           if [ -z "$existing" ]; then
-            gh issue create --title "$TITLE" --body "$body"
+            # `fidelity` is the repository's own label for "the vendor API defines the right
+            # answer; closing this needs a measurement against it", which is exactly what one of
+            # these is. Set once, at creation: a person who takes the label off has decided
+            # something about the issue, and a nightly run must not put it back every morning.
+            gh issue create --title "$TITLE" --label fidelity --body "$body"
             exit 0
           fi
           number=$(printf '%s' "$existing" | jq -r .number)

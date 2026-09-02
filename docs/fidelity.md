@@ -175,6 +175,12 @@ but it is never the bug of whichever pull request happens to be open when a vend
 and a contributor fixing a typo must not be blocked by it. A new divergence opens an issue and
 turns the scheduled run red instead.
 
+A source has one issue for the life of the repository. It is opened under the `fidelity` label —
+the vendor API defines the right answer, so closing one needs a measurement against it — and found
+again on later runs whether it is open or closed, so triaging one does not produce a duplicate the
+next morning. Its body carries the latest run's report, and a comment is posted only when that
+report is not the one already there.
+
 ## Coverage
 
 Sources are named the way the rest of Backlot names them — the `source_type` a BYO record carries,

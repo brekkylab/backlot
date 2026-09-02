@@ -228,12 +228,26 @@ def real_schema(endpoint: str, authorization: str, *, timeout: float = 60.0) -> 
         raise FidelityError(f"{endpoint} unreachable: {e}") from e
     if response.status_code != 200:
         raise FidelityError(f"{endpoint} answered {response.status_code}")
-    body = response.json()
+    # A 200 does not mean the vendor answered. An endpoint behind a CDN answers a challenge page
+    # 200/text-html, and one behind a proxy that lost the upstream answers 200 with an error
+    # document, so the body has to be checked before it is trusted as an introspection result.
+    try:
+        body = response.json()
+    except ValueError as e:
+        raise FidelityError(f"{endpoint} answered 200 with something that is not JSON: {e}") from e
+    if not isinstance(body, dict):
+        raise FidelityError(f"{endpoint} answered 200 with {type(body).__name__}, not an object")
     if body.get("errors"):
         raise FidelityError(f"introspection refused: {body['errors']}")
     if not body.get("data"):
         raise FidelityError("introspection returned no data")
-    return build_client_schema(body["data"])
+    # Caught broadly because graphql-core raises TypeError, KeyError or GraphQLError depending on
+    # where the payload stops being an introspection result, and none of the three is a divergence:
+    # nothing was read, so there is nothing to compare against.
+    try:
+        return build_client_schema(body["data"])
+    except Exception as e:  # noqa: BLE001
+        raise FidelityError(f"{endpoint} answered no usable introspection result: {e}") from e
 
 
 def divergences(

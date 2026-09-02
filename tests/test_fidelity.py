@@ -192,8 +192,14 @@ def test_a_credential_pair_splits_on_its_first_equals(pairs, expected):
 
 def test_the_comparisons_are_exactly_the_sources_backlot_serves():
     """Fidelity does not get to invent a source: `store.SOURCE_TABLE` is the canonical list, and
-    the same `source_type` a BYO record carries."""
-    assert set(COMPARISONS) == set(store.SOURCE_TABLE)
+    the same `source_type` a BYO record carries.
+
+    `cli.FIDELITY_SOURCES` is held to the same list. It exists so `--help` can name the sources
+    without importing `backlot.fidelity` on every other command, and it is what a reader is told
+    the command takes — a source added to one and not the other leaves `--help` naming a set the
+    command does not validate against.
+    """
+    assert set(COMPARISONS) == set(store.SOURCE_TABLE) == set(cli.FIDELITY_SOURCES)
 
 
 def test_every_comparison_is_registered_once_as_the_class_its_registry_implies():
@@ -219,6 +225,15 @@ def test_every_comparison_ships_a_baseline_and_mounts_something_to_compare():
         assert Baseline.load(baseline_path(name)).source == name
         if comparison in {**OPENAPI, **GOOGLE_DISCOVERY}.values():
             assert any(p.startswith(m) for p in served for m in comparison.mount), name
+
+
+def test_every_acknowledged_breaking_divergence_carries_its_reasoning():
+    """No flag writes one: a breaking entry is a hand edit, and the note is what a reviewer reads
+    in the diff instead of a flag on a command nobody kept."""
+    for name in COMPARISONS:
+        for entry in json.loads(baseline_path(name).read_text())["acknowledged"]:
+            if entry["severity"] == BREAKING:
+                assert entry.get("note"), f"{name}: {entry['kind']} {entry['path']}"
 
 
 def test_a_kind_of_comparison_the_dispatcher_does_not_know_says_so():
@@ -432,6 +447,22 @@ def test_an_operation_answered_with_another_operations_body_is_breaking(monkeypa
     )
 
 
+def test_a_server_that_cannot_be_asked_is_not_a_divergence(monkeypatch):
+    """The probe's answers come from a server Backlot started, and one that does not answer means
+    no comparison ran. Left to escape as a `KeyError` it reaches `backlot diff` as status 1, the
+    status a scheduled run files a divergence for."""
+    monkeypatch.setattr(s3_probe.httpx, "get", lambda *a, **k: httpx.Response(503, text="warming"))
+    with pytest.raises(FidelityError, match="no S3 credentials"):
+        s3_probe.run("http://x", {"operations": {}})
+
+    def _boom(*a, **k):
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(s3_probe.httpx, "request", _boom)
+    with pytest.raises(FidelityError, match="went unanswered"):
+        s3_probe.probe("http://x", "ak", "sk", s3_probe.operations(S3_MODEL), bucket="b", key="k")
+
+
 def test_the_probe_signs_with_the_module_that_verifies_the_signature():
     headers = s3_probe._sign("GET", "http://localhost:8000/s3/b?acl", "AKIAEXAMPLE", "secret")
     parsed = sigv4.parse_authorization(headers["authorization"])
@@ -514,16 +545,43 @@ def test_a_breaking_finding_acknowledged_by_hand_survives_a_rewrite(_vendor, tmp
     kept = [e for e in json.loads(path.read_text())["acknowledged"] if e["severity"] == BREAKING]
     assert [e["note"] for e in kept] == ["deliberate"]
 
+    # The vendor moves again. The note was written about `vendor: Int`, and it says nothing about a
+    # vendor now serving String, so the acknowledgement stops covering what is reported — going on
+    # silencing it is the drift in March this command exists to catch. The entry stays in the file
+    # exactly as written, because deleting a reviewer's reasoning is not what a rewrite does.
+    _vendor(VENDOR.replace("Float", "String"))
+    assert cli.main(args) == 1
+    assert cli.main([*args, "--update-baseline"]) == 1
+    kept = [e for e in json.loads(path.read_text())["acknowledged"] if e["severity"] == BREAKING]
+    assert [(e["detail"], e["note"]) for e in kept] == [
+        ("vendor: Int, Backlot: Float", "deliberate")
+    ]
 
-def test_an_unreadable_vendor_exits_two_not_one(monkeypatch, tmp_path, capsys):
+
+@pytest.mark.parametrize(
+    "reply",
+    [None, (500, "nope"), (200, "<html>just a moment…</html>"), (200, {"data": {"__schema": {}}})],
+    ids=["unreachable", "server-error", "not-json", "not-an-introspection-result"],
+)
+def test_an_unreadable_vendor_exits_two_not_one(reply, monkeypatch, tmp_path, capsys):
     """A scheduled job has to tell "the vendor moved" from "we could not ask", or every outage
-    files a fidelity bug."""
+    files a fidelity bug against Backlot.
+
+    A 200 is not proof the vendor answered. A CDN challenge page and a proxy that lost its upstream
+    both come back 200 carrying something that is not a schema, and left to escape as a `ValueError`
+    the command dies on a traceback with status 1 — which is the status that means "the schemas
+    disagree".
+    """
     monkeypatch.setenv("FIREFLIES_API_KEY", "test-key")
 
-    def _down(*a, **k):
-        raise FidelityError("api.fireflies.ai unreachable")
+    def _post(*a, **k):
+        if reply is None:
+            raise httpx.ConnectError("no route to host")
+        status, body = reply
+        kw = {"json": body} if isinstance(body, dict) else {"text": body}
+        return httpx.Response(status, **kw)
 
-    monkeypatch.setattr("backlot.fidelity.graphql_diff.real_schema", _down)
+    monkeypatch.setattr("backlot.fidelity.graphql_diff.httpx.post", _post)
     assert cli.main(["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path)]) == 2
     assert "could not read" in capsys.readouterr().err
 

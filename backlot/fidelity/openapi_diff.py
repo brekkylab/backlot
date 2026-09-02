@@ -11,7 +11,7 @@ diff would report how two documents are written rather than how two servers answ
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.fetch import fetch_json
@@ -19,38 +19,12 @@ from backlot.fidelity.findings import Finding
 from backlot.fidelity.operations import (
     Operation,
     _METHODS,
+    _query_params,
+    _resolve,
     canonical,
     diff_operations,
     from_backlot,
 )
-
-
-def _resolve(node: Any, root: Mapping[str, Any]) -> Any:
-    """Follow a local ``$ref``. Vendor specs declare shared parameters once and point at them."""
-    seen = 0
-    while isinstance(node, dict) and "$ref" in node:
-        ref = node["$ref"]
-        if not ref.startswith("#/"):
-            return {}
-        seen += 1
-        if seen > 20:  # a spec that points at itself must not hang the comparison
-            return {}
-        node = root
-        for part in ref[2:].split("/"):
-            part = part.replace("~1", "/").replace("~0", "~")
-            if not isinstance(node, dict) or part not in node:
-                return {}
-            node = node[part]
-    return node
-
-
-def _query_params(entries: Iterable[Any], root: Mapping[str, Any]) -> set[str]:
-    out = set()
-    for entry in entries or ():
-        p = _resolve(entry, root)
-        if isinstance(p, dict) and p.get("in") == "query" and p.get("name"):
-            out.add(p["name"])
-    return out
 
 
 def from_openapi(spec: Mapping[str, Any]) -> dict[tuple[str, str], Operation]:

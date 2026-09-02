@@ -155,6 +155,15 @@ reviewer sees in the diff is the reasoning rather than a flag on a command nobod
 added that way survives later rewrites: `--update-baseline` rewrites the file, it does not
 re-litigate it.
 
+It stops covering a shape that moves, though. A `gap` is acknowledged by what it names — the vendor
+has surface Backlot does not, and the vendor restating it at a new type does not change what was
+accepted. A `breaking` entry is acknowledged by what it names **and** by its `detail`, because
+there the detail *is* the contradiction: an entry reading `vendor: Int, Backlot: Float` says
+nothing about a vendor now serving `String`, and going on silencing it is exactly the March drift
+this command exists to catch. Such an entry is reported again, and left in the file exactly as
+written — the note is the record of the reasoning, and a rewrite does not delete it — until someone
+reads the new shape and rewrites it by hand.
+
 A run also reports **resolved** entries: an acknowledged divergence the vendor no longer has. The
 baseline has gone stale, which is its own kind of drift.
 

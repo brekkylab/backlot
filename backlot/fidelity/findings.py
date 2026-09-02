@@ -76,11 +76,20 @@ class Baseline:
         )
 
     def write(self, path: Path, findings: Iterable[Finding], *, measured: str) -> None:
-        """Rewrite the file so it acknowledges exactly ``findings``, keeping existing notes."""
-        kept = [
-            replace(f, note=self.acknowledged[f.key].note) if f.key in self.acknowledged else f
-            for f in findings
-        ]
+        """Rewrite the file so it acknowledges exactly ``findings``, keeping existing notes.
+
+        A ``breaking`` entry is kept whole rather than refreshed. Its note was written about the
+        detail beside it — ``vendor: Int, Backlot: Float`` — so refreshing the detail alone would
+        leave prose explaining a divergence that is no longer the one recorded, and it would do it
+        under a flag that is documented never to acknowledge a breaking finding.
+        """
+        kept = []
+        for f in findings:
+            known = self.acknowledged.get(f.key)
+            if known is None:
+                kept.append(f)
+            else:
+                kept.append(known if known.severity == BREAKING else replace(f, note=known.note))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
@@ -105,7 +114,21 @@ class Baseline:
         return replace(self, source=source, endpoint=endpoint)
 
     def unacknowledged(self, findings: Iterable[Finding]) -> list[Finding]:
-        return [f for f in findings if f.key not in self.acknowledged]
+        """Findings this baseline does not already account for.
+
+        A ``gap`` is accounted for by identity alone: the vendor has surface Backlot does not, and
+        the vendor restating it at a new type does not change what was accepted. A ``breaking``
+        finding is accounted for by identity AND detail, because there the detail IS the
+        contradiction. An entry reading ``vendor: Int, Backlot: Float`` says nothing about a vendor
+        that now serves ``String``, and going on silencing it is how the vendor changing something
+        next March passes unread — which is the one outcome this whole command exists to prevent.
+        """
+        return [
+            f
+            for f in findings
+            if (known := self.acknowledged.get(f.key)) is None
+            or (f.severity == BREAKING and known.detail != f.detail)
+        ]
 
     def resolved(self, findings: Iterable[Finding]) -> list[Finding]:
         """Acknowledged divergences the vendor no longer has — the baseline is now stale."""

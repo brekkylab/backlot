@@ -142,9 +142,16 @@ def probe(
 
     def call(method: str, path: str, query: str) -> httpx.Response:
         url = f"{base_url.rstrip('/')}/s3{path}" + (f"?{query}" if query else "")
-        return httpx.request(
-            method, url, headers=_sign(method, url, access_key, secret), timeout=timeout
-        )
+        # A request that never got an answer is not an answer to classify. Left to propagate it
+        # would leave the command exiting 1, which a scheduled run reads as a divergence.
+        try:
+            return httpx.request(
+                method, url, headers=_sign(method, url, access_key, secret), timeout=timeout
+            )
+        except httpx.HTTPError as e:
+            raise FidelityError(
+                f"{method} {url} went unanswered, so nothing was probed: {e}"
+            ) from e
 
     # What each path answers with nothing selecting an operation. Anything matching it is being
     # served by the catch-all rather than by an implementation of the operation asked for.
@@ -188,13 +195,27 @@ def run(base_url: str, model: Mapping[str, Any], timeout: float = 20.0) -> list[
     second probe source is a new module and one more entry in the registry, with nothing to change
     here or there.
     """
-    credentials = httpx.get(f"{base_url}/_meta/users", timeout=timeout).json()
-    access_key = credentials["admin_s3_access_key_id"]
-    secret = credentials["admin_s3_secret_access_key"]
+    # Everything below talks to the server this just started, and a server that cannot be asked is
+    # the same class of outcome as a vendor that cannot be asked: no comparison ran, so `backlot
+    # diff` must exit 2 rather than let the failure surface as a divergence a scheduled run files a
+    # bug for.
+    try:
+        credentials = httpx.get(f"{base_url}/_meta/users", timeout=timeout).json()
+        access_key = credentials["admin_s3_access_key_id"]
+        secret = credentials["admin_s3_secret_access_key"]
+    except (httpx.HTTPError, ValueError, TypeError, KeyError) as e:
+        raise FidelityError(
+            f"{base_url}/_meta/users served no S3 credentials to probe with: {e}"
+        ) from e
 
     def read(path: str, query: str = "") -> str:
         url = f"{base_url}/s3{path}" + (f"?{query}" if query else "")
-        return httpx.get(url, headers=_sign("GET", url, access_key, secret), timeout=timeout).text
+        try:
+            return httpx.get(
+                url, headers=_sign("GET", url, access_key, secret), timeout=timeout
+            ).text
+        except httpx.HTTPError as e:
+            raise FidelityError(f"{url} could not be read to aim the probe: {e}") from e
 
     # Discovered through the API being probed, rather than out of the corpus: a bucket the probe
     # cannot reach as a client is a bucket the probe cannot ask questions about either.

@@ -668,8 +668,11 @@ def diff(
         # contradicts the vendor, which is a bug by this project's own rule, so no flag here
         # silences one: acknowledging it is a hand edit to the baseline file, where a reviewer sees
         # the note explaining why the vendor's shape is not being matched. One already acknowledged
-        # that way stays acknowledged — this rewrites the file, it does not re-litigate it.
-        kept = [f for f in findings if f not in breaking]
+        # that way stays acknowledged — this rewrites the file, it does not re-litigate it. That
+        # holds even when the vendor's shape has moved under the entry and the run is reporting it
+        # again: dropping it would delete the note, which is the record of the reasoning, so it
+        # stays in the file and stays reported until someone rewrites it by hand.
+        kept = [f for f in findings if f not in breaking or f.key in baseline.acknowledged]
         baseline.write(path, kept, measured=_today())
         if as_json:
             _emit_json(

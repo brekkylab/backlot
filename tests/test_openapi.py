@@ -6,6 +6,7 @@ lets an OpenAPI→MCP bridge consume Backlot's spec without operationId collisio
 
 from __future__ import annotations
 
+import re
 import warnings
 
 import pytest
@@ -165,24 +166,57 @@ def test_build_mcp_spec_rejects_unknown_source():
         openapi.build_mcp_spec(_doc(), "s3")  # SigV4 — intentionally no bridge
 
 
-def test_every_bridged_operation_id_names_its_own_method():
-    """The property a bridge actually consumes. ``dedupe_operations`` keeps the GET of a GET+POST
-    route, so the id it carries has to say ``_get`` — otherwise the tool a bridge exposes is a GET
-    called ``..._post``. With FastAPI's set-ordered default that was wrong for 14 operations on
-    roughly half of all boots."""
+def test_tool_name_inverts_unique_operation_id():
+    """The MCP spec names each tool for its route, and gets that name back out of the id
+    ``unique_operation_id`` built — for either method of a multi-method route, since FastAPI gives
+    both the one id. An id this module did not produce is refused rather than guessed at."""
+    from types import SimpleNamespace
+
+    route = SimpleNamespace(
+        name="conversations_history",
+        path_format="/slack/api/conversations.history",
+        methods={"POST", "GET"},
+    )
+    oid = openapi.unique_operation_id(route)
+    assert openapi.tool_name(oid, route.path_format, "get") == "conversations_history"
+    assert openapi.tool_name(oid, route.path_format, "post") == "conversations_history"
+    with pytest.raises(ValueError, match="not derived from"):
+        openapi.tool_name("someone_elses_id", "/slack/api/conversations.history", "get")
+
+
+def test_bridged_operation_ids_are_the_route_names():
+    """What a bridge exposes as a tool name is the operationId, so the served MCP spec carries the
+    route's own name (``search_messages``) rather than the path-and-method suffixed form
+    (``search_messages_slack_api_search_messages_get``): shorter for a model to read on every call,
+    and short enough that an MCP client's 64-character cap never truncates one even under the
+    ``<source>_`` namespace ``backlot mcp`` adds. The raw ``/openapi.json`` keeps the long,
+    deterministic ids; only the MCP slice renames."""
     warnings.filterwarnings("ignore")
     from backlot.main import app
 
     spec = app.openapi()
-    wrong = [
-        (source, path, method, item[method]["operationId"])
-        for source in openapi.SOURCE_PREFIXES
-        for path, item in openapi.build_mcp_spec(spec, source)["paths"].items()
-        for method in item
-        if method in ("get", "post", "put", "delete", "patch")
-        and not item[method]["operationId"].endswith("_" + method)
-    ]
-    assert wrong == []
+    for source in openapi.SOURCE_PREFIXES:
+        for path, item in openapi.build_mcp_spec(spec, source)["paths"].items():
+            for method, op in item.items():
+                if method not in openapi._METHODS:
+                    continue
+                oid = op["operationId"]
+                raw = spec["paths"][path][method]["operationId"]
+                assert oid == openapi.tool_name(raw, path, method), (source, raw, oid)
+                assert re.sub(r"\W", "_", path) not in oid, (source, oid)
+                assert len(source) + 1 + len(oid) <= 64, (source, oid)
+
+
+def test_build_mcp_spec_collapses_the_jira_version_aliases():
+    """Jira's ``/rest/api/2`` and ``/rest/api/3`` routes are one route under two paths, so under
+    route-name ids they share one and ``dedupe_operations`` keeps one — the v3 one, by its
+    greatest-path rule. Under the suffixed ids the pair survived as two tools apiece."""
+    warnings.filterwarnings("ignore")
+    from backlot.main import app
+
+    paths = openapi.build_mcp_spec(app.openapi(), "atlassian")["paths"]
+    assert not any("/rest/api/2/" in p for p in paths), sorted(paths)
+    assert any(p.endswith("/rest/api/3/issue/{key}") for p in paths), sorted(paths)
 
 
 def test_build_mcp_spec_resolves_all_real_collisions():

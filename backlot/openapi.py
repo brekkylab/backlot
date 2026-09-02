@@ -11,11 +11,14 @@ This can't be fixed with FastAPI's operationId hooks (``operation_id=`` / ``gene
 those run *per route* and return a single id for all of a route's methods — there is no per-method
 hook, so a GET+POST route is inherently one id. Splitting every such route into single-method routes
 would be invasive and still leave a redundant GET-tool + POST-tool pair. Instead this module keeps
-the fidelity-shaped routes as-is and, for MCP consumers, slices the spec to one source's paths and
-collapses each route's methods to one callable operation (prefer GET, then fewest path params, then
-the lexicographically greatest path). Served at ``GET /_meta/openapi/{source}`` so a bridge consumes
-it directly — no client-side spec surgery. S3 is intentionally absent: it is SigV4-signed, which a
-static bridge auth header can't produce.
+the fidelity-shaped routes as-is and, for MCP consumers, slices the spec to one source's paths,
+renames each operation to its route's own name (``search_messages``, not
+``search_messages_slack_api_search_messages_get`` — see :func:`tool_name`), and collapses the
+operations sharing a name to one (prefer GET, then fewest path params, then the lexicographically
+greatest path — so Jira's ``/rest/api/3`` alias survives over ``/rest/api/2``). Served at
+``GET /_meta/openapi/{source}`` so a bridge (``backlot.mcp``) consumes it directly — no client-side
+spec surgery. S3 is intentionally absent: it is SigV4-signed, which a static bridge auth header
+can't produce.
 """
 
 from __future__ import annotations
@@ -66,6 +69,28 @@ def unique_operation_id(route) -> str:
     return f"{ident}_{method.lower()}"
 
 
+def tool_name(operation_id: str, path: str, method: str) -> str:
+    """The route's own name, back out of the id :func:`unique_operation_id` built from it.
+
+    A bridge exposes each operation as a tool named by its operationId, and a model reads that name
+    on every call: ``conversations_history`` says what the tool does where
+    ``conversations_history_slack_api_conversations_history_get`` says it twice and then names the
+    HTTP method. Length is the other reason: MCP clients cap a tool name at 64 characters, and once
+    ``backlot mcp`` prefixes every tool with its source (``atlassian_``) the suffixed form crosses
+    it and is truncated — which can make two tools collide.
+
+    An exact inverse rather than a heuristic: the suffix is ``re.sub(r"\\W", "_", path)`` and then a
+    method by construction, so anything not shaped that way is not an id this module produced, and
+    says so. The method in the id is the route's *ranked* one, not necessarily the entry's own:
+    FastAPI gives every method of a route the same id, so the POST half of a Slack GET+POST route
+    also ends in ``_get`` — which is why ``method`` is not consulted here."""
+    ident = re.escape(re.sub(r"\W", "_", path))
+    m = re.fullmatch(rf"(.+){ident}_({'|'.join(_METHODS)})", operation_id)
+    if not m:
+        raise ValueError(f"{operation_id!r} was not derived from {method.upper()} {path}")
+    return m.group(1)
+
+
 def qp(
     name: str, typ: str = "string", required: bool = False, description: str | None = None
 ) -> dict:
@@ -79,8 +104,7 @@ def qp(
 
     ``description`` is worth spending on a parameter whose DEFAULT decides what comes back, because
     the spec is the whole of what a generated client knows: the OpenAPI slice is what
-    ``examples/using-mcp-with-agents/_openapi_bridge.py`` hands an agent as a tool, with no vendor
-    documentation behind it.
+    ``backlot mcp`` hands an agent as a tool, with no vendor documentation behind it.
     """
     p = {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
     if description:
@@ -97,6 +121,25 @@ def slice_spec(spec: dict, prefixes: list[str]) -> dict:
     }
     if not paths:
         raise ValueError(f"no paths matched {prefixes} — is the router enriched/mounted?")
+    return {**spec, "paths": paths}
+
+
+def name_operations(spec: dict) -> dict:
+    """Copy ``spec`` with every operationId replaced by its route name (:func:`tool_name`).
+
+    Run before :func:`dedupe_operations`, so that operations which are one route under two paths
+    — Jira's v2 and v3 aliases — share an id and collapse, which the suffixed ids never let them."""
+    paths = {
+        path: {
+            method: (
+                {**op, "operationId": tool_name(op["operationId"], path, method)}
+                if method in _METHODS and isinstance(op, dict) and "operationId" in op
+                else op
+            )
+            for method, op in item.items()
+        }
+        for path, item in spec.get("paths", {}).items()
+    }
     return {**spec, "paths": paths}
 
 
@@ -135,12 +178,13 @@ def _duplicate_operation_ids(spec: dict) -> list[str]:
 
 
 def build_mcp_spec(full_spec: dict, source: str) -> dict:
-    """The MCP-ready spec for ``source``: sliced to its paths, fidelity aliases collapsed.
+    """The MCP-ready spec for ``source``: sliced to its paths, operations named for their routes,
+    fidelity aliases collapsed.
 
     Raises ``KeyError`` for an unknown source and ``ValueError`` if any operationId collision
     survives (an invariant — dedupe should always resolve them)."""
     prefixes = SOURCE_PREFIXES[source]
-    spec = dedupe_operations(slice_spec(full_spec, prefixes))
+    spec = dedupe_operations(name_operations(slice_spec(full_spec, prefixes)))
     dupes = _duplicate_operation_ids(spec)
     if dupes:
         raise ValueError(f"unresolved duplicate operationIds for {source!r}: {dupes}")

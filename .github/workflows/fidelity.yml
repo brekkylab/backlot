@@ -10,13 +10,48 @@ on:
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
+    inputs:
+      source:
+        description: "One source to compare. Empty compares every one of them."
+        required: false
+        type: string
 
 permissions:
   contents: read
   issues: write
 
 jobs:
+  # The registry is the list, so adding a source does not also mean editing this file.
+  sources:
+    runs-on: ubuntu-latest
+    outputs:
+      names: ${{ steps.pick.outputs.names }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install -e .
+      - name: Decide which sources to compare
+        id: pick
+        env:
+          CHOSEN: ${{ inputs.source }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          from backlot.fidelity import COMPARISONS
+
+          chosen = os.environ.get("CHOSEN", "").strip()
+          if chosen and chosen not in COMPARISONS:
+              raise SystemExit(f"no comparison for {chosen!r}; one of {sorted(COMPARISONS)}")
+          print("names=" + json.dumps([chosen] if chosen else sorted(COMPARISONS)))
+          PY
+
   compare:
+    needs: sources
     runs-on: ubuntu-latest
     # Two runs of one source would both create the issue: GitHub indexes issue search asynchronously.
     concurrency:
@@ -25,18 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        source:
-          - slack
-          - gmail
-          - google_drive
-          - github
-          - jira
-          - confluence
-          - hubspot
-          - notion
-          - fireflies
-          - linear
-          - s3
+        source: ${{ fromJSON(needs.sources.outputs.names) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

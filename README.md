@@ -6,15 +6,7 @@
 
 Backlot is a local emulator for Slack, Gmail, Google Drive, GitHub, Jira, Notion, S3 and other enterprise APIs. It reproduces the response shapes, pagination, authentication, errors and per-document access controls an integration has to handle, over a deterministic corpus you control — so you build and test against the official vendor SDKs with no vendor account, no OAuth approval, no secrets in CI and no network.
 
-> Think LocalStack, but for the SaaS APIs your connectors and agents talk to.
-
 ![Connecting Slack to an app, two ways, side by side. On the left, the real Slack API: create a workspace, register an app, add a bot user, pick OAuth scopes, register a redirect URL, install to the workspace — then wait on an admin to approve it, with still zero API calls made. On the right, Backlot: pip install, backlot serve, and one changed base URL, after which a conversations.history response comes back with the same fields, pagination and per-document ACLs. A day gone, against seconds.](assets/demo.gif)
-
-- **You can't log in yet**. So you create a workspace, register an app, pick OAuth scopes and wait on an admin who has never heard of you. Zero API calls so far.
-- **Then you do it again**. Gmail. Jira. Google Drive. Every source starts over from nothing.
-- **So you mock it, and the test passes**. It passes because you wrote both sides of it. It always passes.
-
-Backlot is the side you didn't write. It behaves exactly like the real one.
 
 ## Try it in 60 seconds
 
@@ -33,7 +25,18 @@ slack = WebClient(token="admin-service-token", base_url="http://127.0.0.1:8000/s
 print(slack.conversations_list()["channels"])
 ```
 
-The same call targets Slack in production and Backlot in development. Backlot supplies the data and the credentials; your code keeps the vendor's request and response contract. From inside a test, `with backlot.serve() as s:` starts an isolated server on a free port and hands back `s.base_url` and `s.token`.
+The same call targets Slack in production and Backlot in development. Backlot supplies the data and the credentials; your code keeps the vendor's request and response contract.
+
+A test can run its own server instead, on a free port, with nothing to start or clean up:
+
+```python
+import backlot
+from slack_sdk import WebClient
+
+with backlot.serve() as s:  # no arguments: a tiny hello-world corpus
+    slack = WebClient(token=s.token, base_url=f"{s.base_url}/slack/api/")
+    channels = slack.conversations_list()["channels"]
+```
 
 ### Let your coding agent run Backlot instantly
 
@@ -52,7 +55,7 @@ and prompt like this:
 
 A hand-written mock returns the response your code already expects. Backlot implements the other side of the integration, so it exposes the assumptions a mock would repeat — it is for when the behavior of the API, not just the contents of one response, is what you need to test.
 
-| Hand-written mocks | Backlot |
+| ❌ Hand-written mocks | ✅ Backlot |
 |---|---|
 | Test-specific response dictionaries | Vendor-shaped responses served over HTTP |
 | Usually cover the happy path | Pagination, validation, auth and vendor-shaped errors |
@@ -63,7 +66,11 @@ A hand-written mock returns the response your code already expects. Backlot impl
 
 ## What it serves
 
-Every source on one local port, each behind the path prefix its own SDK expects, all reading one SQLite corpus. The corpus defines the facts — messages, files, issues, authors, timestamps, threads, comments, labels, readers — and Backlot derives stable ids, users, groups and tokens from them, so every run serves the same records, the same ACL-filtered views and the same pages. It emulates the documented subset of each API it supports, not every vendor endpoint: the [endpoint-by-endpoint matrix](docs/supported-sources.md) says which, and an implemented endpoint that diverges from the real API is a bug.
+Every source on one local port, each behind the path prefix its own SDK expects, all reading one SQLite corpus.
+
+The corpus defines the facts: messages, files, issues, authors, timestamps, threads, comments, labels, readers. Backlot derives stable ids, users, groups and tokens from them, so every run serves the same records, the same ACL-filtered views and the same pages.
+
+It emulates the documented subset of each API it supports, not every vendor endpoint. The [endpoint-by-endpoint matrix](docs/supported-sources.md) says which, and an implemented endpoint that diverges from the real API is a bug.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="assets/figures/architecture.png"><img alt="Your code on the left, calling the Slack and GitHub SDKs with only their base URL changed. In the middle, one local server on 127.0.0.1:8000, listing the services it answers as and the path prefix each is served under. On the right, the single SQLite corpus behind all of them." src="assets/figures/architecture-light.png"></picture>
 
@@ -105,9 +112,9 @@ backlot import my-corpus.jsonl && backlot serve
 
 Every imported identity gets deterministic credentials, listed at `GET /_meta/users`; send the same request with another user's token to test what that caller is allowed to see. [Preparing a corpus](docs/corpus.md) covers schemas, rosters, sharded corpora and public datasets, and [Auth and tokens](docs/auth.md) covers each service's authentication style.
 
-## Examples and documentation
+## Examples
 
-| | |
+| Point this at it | Runnable |
 |---|---|
 | 📦 Official vendor SDKs, one script per service | [`examples/using-official-sdk/`](examples/using-official-sdk/) |
 | 🔗 MCP servers, or Backlot's own OpenAPI→MCP and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](examples/using-mcp-with-agents/) |
@@ -115,6 +122,11 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 | 🐍 Read it with `pandas`, `pyarrow` or `dask`, over an [fsspec](https://filesystem-spec.readthedocs.io/) filesystem | [`examples/using-fsspec/`](examples/using-fsspec/) |
 | 🗂️ Read it with `ls`, `cat` and `grep`, over [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](examples/using-mirage/) |
 | 📥 Your own corpus, from a JSONL file | [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus/) |
+
+## Documentation
+
+| | |
+|---|---|
 | Every source Backlot serves, and every endpoint of each | [docs/supported-sources.md](docs/supported-sources.md) |
 | Building a corpus, and public datasets | [docs/corpus.md](docs/corpus.md) |
 | Auth schemes and tokens | [docs/auth.md](docs/auth.md) |

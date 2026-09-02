@@ -245,7 +245,7 @@ const BrandCard: React.FC<{
         opacity: taglineOpacity,
       }}
     >
-      Serve your own enterprise playground
+      Run enterprise SaaS APIs locally.
     </div>
     <div
       style={{

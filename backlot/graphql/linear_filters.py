@@ -654,7 +654,7 @@ def _labels_filter(spec: dict) -> tuple[str, list]:
     filter constrain nothing (``{or: [{}, {length: {eq: 2}}]}`` and ``{or: [{some: {}}, {length:
     {eq: 2}}]}`` each answered every issue), and so does an ``and`` / ``or`` with nothing left in
     it (``{and: [{}], length: {eq: 2}}``, ``{or: [{length: {eq: 2}}], and: []}``)."""
-    spec = {k: v for k, v in (spec or {}).items() if v is not None or k == "null"}
+    spec = {k: v for k, v in (spec or {}).items() if v is not None}
     for key in spec:
         if key not in _LABELS_PRECEDENCE and key != "null":
             raise GraphQLError(f"unsupported labels filter field {key!r}")
@@ -865,7 +865,14 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
     parts: list[str] = []
     params: list = []
     for key, sub in (spec or {}).items():
-        if sub is None and key != "null":
+        if sub is None:
+            # `null: null` included: on a relation it is no key at all, unlike on a comparator
+            # (see `_Comparator.render`). Measured 2026-09-03 with one assigned issue beside three
+            # unassigned: `assignee: {null: null}` answered all four where `null: true` answered
+            # the three and `null: false` the one, `{null: null, name: {eq: ME}}` the assigned one
+            # alone, `{null: null, name: {eq: "nobody"}}` none, and `{or: [{assignee: {null:
+            # null}}, {title: {eq: "no such title"}}]}` all four -- the branch left as `{}` is a
+            # key that constrains nothing, as `{assignee: {}}` is.
             continue
         if key in ("and", "or"):
             subs = [_sub_filter(conn, s, mapping) for s in sub]

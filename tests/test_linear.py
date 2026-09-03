@@ -1129,6 +1129,7 @@ _LABEL_CELLS = [
     ('{name: {eq: "bug"}}', {L2, L1}),
     ("{null: true}", set()),
     ("{null: false}", {L2, L1, U}),
+    ("{null: null}", {L2, L1, U}),
     ('{name: {neq: "bug"}}', {L2, U}),
     ('{name: {nin: ["bug"]}}', {L2, U}),
     ('{name: {eq: "bug", neq: "nope"}}', {L2, L1}),
@@ -1173,6 +1174,7 @@ _LABEL_CELLS = [
     ('{null: true, some: {name: {eq: "gateway"}}}', set()),
     ("{length: {eq: 1}, null: false}", {L1}),
     ("{null: true, length: {eq: 0}}", set()),
+    ("{null: null, length: {eq: 0}}", {U}),
     ("{null: false, length: {eq: 99}}", set()),
     ('{or: [{length: {eq: 1}}], some: {name: {eq: "gateway"}}}', {L1}),
     ('{some: {name: {eq: "gateway"}}, or: [{length: {eq: 1}}]}', {L1}),
@@ -1340,6 +1342,25 @@ _ISSUE_CELLS = [
     ("{title: {startsWith: null}}", EVERY),
     ("{title: {eqIgnoreCase: null}}", EVERY),
     ("{title: {neqIgnoreCase: null}}", EVERY),
+    # `null: null` on `null` itself: on a field it reads as `null: true`, beside a sibling too; on a
+    # relation and on the label collection it is no key at all, and what is left decides
+    ("{dueDate: {null: null}}", {U}),
+    ("{estimate: {null: null}}", {U}),
+    ("{completedAt: {null: null}}", EVERY),
+    ("{canceledAt: {null: null}}", EVERY),
+    ("{priority: {null: null}}", set()),
+    ("{priority: {null: null, eq: 4}}", set()),
+    ("{or: [{priority: {null: null}}, %s]}" % ONE, {L1}),
+    ("{or: [{dueDate: {null: null}}, %s]}" % NONE, {U}),
+    ("{assignee: {null: null}}", EVERY),
+    ("{project: {null: null}}", EVERY),
+    ("{creator: {null: null}}", EVERY),
+    ('{assignee: {null: null, name: {eq: "Bob Stone"}}}', {L2}),
+    ('{assignee: {null: null, name: {eq: "nobody"}}}', set()),
+    ("{or: [{assignee: {null: null}}, %s]}" % NONE, EVERY),
+    ('{or: [{assignee: {null: null, name: {eq: "nobody"}}}, %s]}' % NONE, set()),
+    ("{labels: {null: null}}", EVERY),
+    ("{labels: {null: null, length: {eq: 0}}}", {U}),
 ]
 
 

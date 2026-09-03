@@ -1476,6 +1476,33 @@ def test_a_uuid_without_an_rfc4122_variant_is_an_argument_validation_error(fclie
     assert err["extensions"]["code"] == "INVALID_INPUT"
 
 
+def test_a_malformed_project_id_is_refused_however_deep_the_filter_nests_it(fclient):
+    """`ProjectFilter` takes `and` / `or`, and `_sub_filter` follows them to the same lookup, so a
+    UUID refused at `{project: {id: …}}` has to be refused at `{project: {and: [{id: …}]}}` too --
+    this branch looked the nested one up and answered an empty page. The issue-id side already
+    recursed (`{and: [{id: {eq: "not-a-uuid"}}]}` is refused), so the two sides now agree."""
+    nil = "00000000-0000-0000-0000-000000000000"
+    for shape in (
+        '{project: {and: [{id: {eq: "%s"}}]}}',
+        '{project: {or: [{name: {eq: "runtime"}}, {id: {in: ["%s"]}}]}}',
+        '{project: {and: [{or: [{id: {neq: "%s"}}]}]}}',
+    ):
+        r = post(fclient, "{ issues(filter: %s) { nodes { identifier } } }" % (shape % nil))
+        assert r.status_code == 200, shape
+        err = r.json()["errors"][0]
+        assert err["message"] == "Argument Validation Error", shape
+        assert err["extensions"]["code"] == "INVALID_INPUT", shape
+    # a well-formed unknown stays an empty page at any depth, as at the top level
+    well_formed = "11111111-1111-1111-8111-111111111111"
+    assert ids(fclient, '{project: {and: [{id: {eq: "%s"}}]}}' % well_formed) == []
+    assert ids(
+        fclient, '{project: {or: [{id: {eq: "%s"}}, {name: {eq: "runtime"}}]}}' % well_formed
+    ) == [
+        "ENG-1",
+        "ENG-2",
+    ]
+
+
 def test_an_issue_id_of_neither_shape_is_an_argument_validation_error(fclient):
     """Measured 2026-09-03: `IssueFilter.id: {eq: "not-a-uuid"}` answers `Argument Validation Error`
     with code INVALID_INPUT as a 200 with `errors`, while an unknown but well-shaped identifier

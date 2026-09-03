@@ -239,6 +239,25 @@ def _refuse_malformed_uuids(spec: dict | None) -> None:
                 raise argument_validation_error()
 
 
+def _refuse_malformed_project_ids(spec: dict | None) -> None:
+    """:func:`_refuse_malformed_uuids` over every ``id`` a ``ProjectFilter`` reaches, the nested ones
+    included: ``_sub_filter`` follows ``and`` / ``or`` down to the same lookup, so a value refused at
+    the top level was quietly looked up (and matched nothing) one level down. The issue-id side,
+    ``_resolve_issue_ids``, already recurses this way."""
+    for sub in _through_and_or(spec):
+        _refuse_malformed_uuids(sub.get("id"))
+
+
+def _through_and_or(spec):
+    """``spec`` and every filter object nested under its ``and`` / ``or``, depth first."""
+    if not isinstance(spec, dict):
+        return
+    yield spec
+    for key in ("and", "or"):
+        for sub in spec.get(key) or []:
+            yield from _through_and_or(sub)
+
+
 # A comparator key -> how it becomes SQL, given a column expression and the value.
 # `%` / `_` in a LIKE needle are escaped so a user-supplied value stays literal.
 _LIKE_ESCAPE = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
@@ -603,7 +622,7 @@ def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, 
                 )
             )
         elif key == "project":
-            _refuse_malformed_uuids(spec.get("id"))
+            _refuse_malformed_project_ids(spec)
             add(
                 *_sub_filter(
                     conn,

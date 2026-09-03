@@ -1331,7 +1331,12 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
 
 @router.get("/repos/{owner}/{repo}/branches")
 async def list_branches(
-    owner: str, repo: str, request: Request, protected: str | None = Query(None)
+    owner: str,
+    repo: str,
+    request: Request,
+    protected: str | None = Query(None),
+    page: PageParam = None,
+    per_page: PageParam = None,
 ):
     """The repo's branches: the default branch, plus the refs its pulls advertise.
 
@@ -1354,6 +1359,11 @@ async def list_branches(
     All three answers are distinct for a repo whose `subtype: "repo"` record states which branches
     are protected. For one that does not, every branch is unprotected and real's last two coincide
     — a pull cannot imply protection, so an inferred listing has none (see :func:`_branch_rows`).
+
+    `?protected=` selects AHEAD of the page cut, so a page holds `per_page` of the branches that
+    survived it and the `Link` counts the pages of the selection: measured on fastapi/fastapi,
+    `?protected=false&per_page=1` answers one of the 21 unprotected branches and reports
+    `rel="last"` page 21, not the 22 pages of the whole listing.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -1362,16 +1372,30 @@ async def list_branches(
     rows = _branch_rows(conn, owner, repo, ids)
     if protected:  # an EMPTY value selects nothing, as an absent one does: real answers all 22
         rows = [b for b in rows if b["protected"] is _truthy(protected)]
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     sha = _repo_commit_sha(repo)
     url = f"{_api_base(request)}/repos/{owner}/{repo}/commits/{sha}"
-    return [
+    body = [
         {"name": b["name"], "commit": {"sha": sha, "url": url}, "protected": b["protected"]}
-        for b in rows
+        for b in rows[start : start + per_page]
     ]
+    # the selection rides on the page urls, and only when it was sent: real echoes `protected=false`
+    # and an empty `protected=` alike, and spells out neither for a parameter that was omitted
+    extra = {} if protected is None else {"protected": protected}
+    return _paged(request, len(rows), extra, body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/tags")
-async def list_tags(owner: str, repo: str, request: Request):
+async def list_tags(
+    owner: str,
+    repo: str,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     """The tags a `subtype: "repo"` record stated, or `[]` for a repo that stated none.
 
     Empty rather than absent for a repo with no tags. Real GitHub answers `[]` there —
@@ -1384,12 +1408,21 @@ async def list_tags(owner: str, repo: str, request: Request):
     `refs/tags/{name}`. Every tag resolves to the repo's one snapshot commit, as every branch does
     — Backlot keeps no commit history (see :func:`get_tree`), so a tag cannot point at a different
     one.
+
+    Paged like every other listing on this router: `?per_page=2` on psf/requests answers two tags
+    with `rel="next"` and a `rel="last"` counting all 161 (measured). The order is the one the repo
+    record stated, which is the order `rel="next"` walks.
     """
     conn = auth.conn(request)
     caller = _require(request)
     _require_repo(conn, repo, auth.visible_ids(request, caller))
+    names = _repo_tags(conn, repo)
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     ab, sha = _api_base(request), _repo_commit_sha(repo)
-    return [
+    body = [
         {
             "name": name,
             "commit": {"sha": sha, "url": f"{ab}/repos/{owner}/{repo}/commits/{sha}"},
@@ -1397,8 +1430,9 @@ async def list_tags(owner: str, repo: str, request: Request):
             "tarball_url": f"{ab}/repos/{owner}/{repo}/tarball/refs/tags/{name}",
             "node_id": synth.node_id("Ref", synth.github_number(f"{repo}:tags/{name}")),
         }
-        for name in _repo_tags(conn, repo)
+        for name in names[start : start + per_page]
     ]
+    return _paged(request, len(names), {}, body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/branches/{branch:path}")

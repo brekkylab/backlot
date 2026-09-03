@@ -255,17 +255,13 @@ def _paged(
 
 
 def _echo(request: Request, **params) -> dict:
-    """The filters a next-page url must spell out: the ones the CALLER sent, in `_paged`'s shape.
+    """The filters a next-page url spells out: the ones the CALLER sent, in `_paged`'s shape.
 
-    Real GitHub carries a listing's filter into its `Link` only when the request carried it.
-    Measured on psf/requests: `/pulls?per_page=1` links `per_page` and `page` alone where
-    `?state=open&per_page=1` links `state=open` beside them, the same on `/issues`, and
-    `/branches?protected=` on fastapi/fastapi echoes even an empty value. So what decides is
-    whether the parameter arrived, not whether it narrows anything.
-
-    A default the handler applied is not something the caller asked for: `state` defaults to
-    `open`, and echoing that gave a client paging every issue a `next` url saying `state=open`,
-    which drops the closed ones from page 2 on — a listing that changes shape as it is walked.
+    Real echoes a listing's filter only when the request carried it — `/pulls?per_page=1` links
+    `per_page` and `page` alone where `?state=open&per_page=1` links `state=open` too, and an empty
+    `?protected=` is echoed as well (measured on psf/requests and fastapi/fastapi). A default the
+    handler applied is not one the caller asked for: echoing `state`'s `open` narrows the url a
+    paginator follows, dropping the rows a `state=all` walk asked for.
     """
     return {k: v for k, v in params.items() if k in request.query_params}
 
@@ -1376,10 +1372,9 @@ async def list_branches(
     are protected. For one that does not, every branch is unprotected and real's last two coincide
     — a pull cannot imply protection, so an inferred listing has none (see :func:`_branch_rows`).
 
-    `?protected=` selects AHEAD of the page cut, so a page holds `per_page` of the branches that
-    survived it and the `Link` counts the pages of the selection: measured on fastapi/fastapi,
-    `?protected=false&per_page=1` answers one of the 21 unprotected branches and reports
-    `rel="last"` page 21, not the 22 pages of the whole listing.
+    `?protected=` selects AHEAD of the page cut, so the `Link` counts the pages of the selection:
+    `?protected=false&per_page=1` on fastapi/fastapi answers one of the 21 unprotected branches and
+    reports `rel="last"` page 21, not the 22 of the whole listing.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -1422,9 +1417,8 @@ async def list_tags(
     — Backlot keeps no commit history (see :func:`get_tree`), so a tag cannot point at a different
     one.
 
-    Paged like every other listing on this router: `?per_page=2` on psf/requests answers two tags
-    with `rel="next"` and a `rel="last"` counting all 161 (measured). The order is the one the repo
-    record stated, which is the order `rel="next"` walks.
+    Paged like the rest of the router, and real pages it too: `?per_page=2` there answers two tags
+    with a `rel="last"` counting all 161.
     """
     conn = auth.conn(request)
     caller = _require(request)

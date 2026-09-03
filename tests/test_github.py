@@ -869,13 +869,8 @@ def test_github_stated_protection_gives_protected_all_three_answers(gh_client, g
     single = c.get(f"{url}/trunk", headers=gh_admin_h).json()
     assert single["protected"] is True
 
-    # The selection happens AHEAD of the page cut, and the page url carries the selection back.
-    # Both measured on fastapi/fastapi, 22 branches with one protected: `?protected=false` at
-    # `per_page=1` answers one of the 21 unprotected branches and reports `rel="last"` page 21 —
-    # the pages of the filtered listing, not of all 22 minus the protected ones — with
-    # `protected=false` spelled out in both urls. An empty value is echoed the same way
-    # (`protected=&per_page=1&page=2`, last page 22), so what decides is whether the parameter was
-    # sent, not whether it selects.
+    # the selection happens ahead of the page cut, and a page url spells out only a parameter the
+    # caller sent, an empty value included (`list_branches` and `_echo` carry the measurements)
     paged = c.get(url, headers=gh_admin_h, params={"protected": "false", "per_page": 1})
     assert [b["name"] for b in paged.json()] == ["release/2026-03"]
     assert "Link" not in paged.headers, "one unprotected branch here is a single page"
@@ -892,12 +887,8 @@ def test_github_ref_listings_page_like_every_other_listing(
 ):
     """`/branches` and `/tags` honour `per_page` and send the `Link` the rest of the router sends.
 
-    Measured on api.github.com: `?per_page=2` answers two items on both routes with `rel="next"`
-    and `rel="last"`, and `last` counts the pages of the whole listing — `/tags?per_page=2` on
-    psf/requests reports page 81 for its 161 tags. Both routes ignored `per_page` outright, which
-    stayed invisible while the branch listing was a fixed one-element list: a client that pages
-    every repo-level listing by following `next` read the first page and never learned there was
-    no second page to ask for.
+    Neither listing reports a total, so `next` is the only way a client learns there is a second
+    page at all — the reason the header is not optional here.
     """
     c, _ = gh_client
     url = f"/github/repos/{gh_org}/stated-repo/{route}"
@@ -910,19 +901,15 @@ def test_github_ref_listings_page_like_every_other_listing(
     assert [x["name"] for x in second.json()] == names[1:]
     assert {"prev", "first"} <= set(_link_rels(second.headers["Link"]))
 
-    # a listing that fits one page carries no Link at all, as real sends none
+    # one page carries no Link at all, as real sends none
     assert "Link" not in c.get(url, headers=gh_admin_h).headers
 
 
 def test_github_a_page_url_echoes_only_the_filters_the_caller_sent(gh_client, gh_admin_h, gh_org):
-    """A next-page url spells out a listing's filter only when the request carried it.
+    """A next-page url spells out a listing's filter only when the request carried it (`_echo`).
 
-    Measured on psf/requests: `?per_page=1` links `per_page` and `page` alone on both `/issues` and
-    `/pulls`, and `?state=open&per_page=1` links `state=open` beside them — the same split
-    `/branches?protected=` makes, where even an empty value is echoed. `state` defaults to `open`,
-    so a handler that echoes its own default hands a paginator a url NARROWER than the one it
-    called: a client that asked for every issue and pages by following `next` would follow a link
-    saying `state=open` and lose the closed ones from page 2 on.
+    `state` defaults to `open`, so a url echoing it is narrower than the one the caller called: a
+    client walking `state=all` by following `next` would lose the closed rows from page 2 on.
     """
     c, _ = gh_client
     url = f"/github/repos/{gh_org}/diffable/pulls"

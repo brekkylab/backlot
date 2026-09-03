@@ -592,10 +592,14 @@ def _labels_filter(spec: dict) -> tuple[str, list]:
         elif key in ("and", "or"):
             subs = [_labels_filter(x) for x in sub]
             frags = [f for f, _ in subs if f]
-            for _, p in subs:
-                params.extend(p)
+            if key == "or" and len(frags) != len(sub):
+                # Measured 2026-09-03: as in `_label_predicate`, an `or` branch that constrains
+                # nothing makes the whole `or` constrain nothing -- `{or: [{}, {length: {eq: 99}}]}`
+                # answered every issue, where `length: {eq: 99}` alone answered none.
+                return "", []
             if frags:
                 parts.append("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
+                params.extend(x for _, sp in subs for x in sp)
         elif key == "length":
             add(*_Comparator(_LABEL_COUNT).render(sub))
         elif key == "null":

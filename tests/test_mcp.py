@@ -25,7 +25,10 @@ little copied setup is the lesser evil.
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
+import dataclasses
+import functools
 import json
 import os
 import re
@@ -389,6 +392,61 @@ def test_mcp_bridge_enforces_the_acl(live_server, source, where, tool_pred, buil
     )
 
 
+def test_auth_header_spells_each_source_the_way_its_client_speaks():
+    """Which scheme goes on the wire, asserted on the header rather than on an answer: Backlot's
+    Atlassian surface accepts Bearer too (``auth.require_basic_or_bearer``), so no round-trip can
+    tell the two apart. The reason the Basic branch exists is mcp-atlassian, which speaks
+    ``email:api_token`` and nothing else, so that is what has to be pinned."""
+    creds = backlot_mcp.Credentials(
+        token="usr-abc", email="ava@acme.com", s3_access_key_id="AKIA", s3_secret_access_key="s"
+    )
+    header = backlot_mcp._auth_header(creds, "atlassian")["Authorization"]
+    scheme, _, payload = header.partition(" ")
+    assert scheme == "Basic"
+    assert base64.b64decode(payload).decode() == "ava@acme.com:usr-abc"
+    for source in ("slack", "github", "notion", "linear"):
+        assert backlot_mcp._auth_header(creds, source) == {"Authorization": "Bearer usr-abc"}
+    # the admin has no email to put in a username, so Atlassian falls back to Bearer for them
+    admin = dataclasses.replace(creds, email=None)
+    assert backlot_mcp._auth_header(admin, "atlassian") == {"Authorization": "Bearer usr-abc"}
+
+
+def test_mcp_atlassian_bridge_authenticates_basic_for_the_resolved_user(live_server):
+    """The Atlassian case above only asserts a scoped user is BLOCKED from a restricted issue, and
+    `_bridge_call` reports a rejected credential the same way it reports a hidden document, so on
+    its own it stays green with the Basic header corrupted. Two positive reads close that.
+
+    The second one carries an email the corpus does not have, which is what pins the TOKEN: on
+    this surface `Basic <known-email>:<anything>` authenticates on the username alone
+    (``auth.resolve_basic``'s identity shortcut, measured — even an empty password answers 200), so
+    a read as the resolved user cannot tell a working token from a mangled one. With the username
+    unresolvable, only the password can have authenticated — which also catches the two being
+    swapped, since a token in the username position has no ``@`` for the shortcut to fire on."""
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    email = yaml.safe_load(settings.tokens_path.read_text())["users"][0]["email"]
+    creds = backlot_mcp.resolve(base, email)
+    conn = store.connect_ro(settings.db_path)
+    acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
+    vids = acl.visible_ids(conn, acl.resolve(creds.token))
+    row = next(
+        r
+        for r in conn.execute("SELECT * FROM jira_issues")
+        if store.get_document(conn, "jira", r["key"], visible_ids=vids) is not None
+    )
+    reads = functools.partial(
+        _bridge_call,
+        base,
+        "atlassian",
+        tool_pred=lambda n: n.startswith("jira_get_issue"),
+        args={"key": row["key"]},
+        ok_pred=lambda t: row["key"] in t and '"fields"' in t,
+    )
+    assert reads(creds), f"Basic {email}:<token> should read an issue that user can see"
+    anonymous = dataclasses.replace(creds, email="nobody@example.invalid")
+    assert reads(anonymous), "the token, not the username, has to be what authenticates"
+
+
 def test_mcp_s3_bridge_signs_for_the_resolved_user(live_server):
     """The S3 case above asserts a scoped user CANNOT read a restricted object, and `_bridge_call`
     reports a refused signature the same way it reports a hidden object — so on its own that
@@ -641,6 +699,17 @@ def test_backlot_mcp_scopes_every_tool_call_to_the_user(live_server):
 
     assert finds_it()
     assert not finds_it("--user", user["email"])
+
+
+def test_resolve_matches_an_email_case_insensitively(live_server):
+    """Atlassian and Google both treat an address case-insensitively, so an email copied in the
+    shape a Jira page displays it resolves to the same person — and carries the corpus's own
+    spelling onward, which is what Atlassian's Basic header sends."""
+    base, settings = live_server
+    email = yaml.safe_load(settings.tokens_path.read_text())["users"][0]["email"]
+    assert email == email.lower(), email
+    for spelling in (email, email.upper(), email.capitalize()):
+        assert backlot_mcp.resolve(base, spelling).email == email, spelling
 
 
 def test_backlot_mcp_refuses_an_email_the_corpus_does_not_know(live_server):

@@ -114,8 +114,12 @@ def resolve(base_url: str, user: str | None) -> Credentials:
                 s3_access_key_id=directory["admin_s3_access_key_id"],
                 s3_secret_access_key=directory["admin_s3_secret_access_key"],
             )
+        # Matched case-insensitively, the way Atlassian and Google both treat an address: an
+        # email copied out of the shape a Jira page displays it must not miss the person. The
+        # entry's OWN spelling is what goes into Credentials, so Atlassian's Basic header carries
+        # the corpus's.
         for entry in directory.get("users", ()):
-            if entry.get("email") == user:
+            if str(entry.get("email", "")).casefold() == user.casefold():
                 return Credentials(
                     token=entry["token"],
                     email=entry["email"],

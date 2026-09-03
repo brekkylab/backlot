@@ -657,9 +657,15 @@ def test_header_auth_skew_check_precedes_signature_check():
     assert err == "RequestTimeTooSkewed"
 
 
-def test_header_auth_accepts_current_date():
+# A `%3F` in the key decodes to a `?` that splits Starlette's rebuilt `request.url`, so the
+# canonical request has to come off the wire — see the comment in `resolve_sigv4`.
+SIGNED_PATHS = ["/s3/eng-artifacts", "/s3/eng-artifacts/q%3Fx.txt"]
+
+
+@pytest.mark.parametrize("path", SIGNED_PATHS)
+def test_header_auth_accepts_current_date(path):
     current = datetime.now(timezone.utc).strftime(AMZ_DATE_FORMAT)
-    req = _header_auth_request(current)
+    req = _header_auth_request(current, path=path)
     caller, err = auth.resolve_sigv4(req)
     assert err is None
     assert caller == Caller(email="ava@acme.com", is_admin=False)
@@ -673,25 +679,11 @@ def test_presigned_expired_is_access_denied():
     assert err == "AccessDenied"
 
 
-def test_presigned_unexpired_ok():
+@pytest.mark.parametrize("path", SIGNED_PATHS)
+def test_presigned_unexpired_ok(path):
     current = datetime.now(timezone.utc).strftime(AMZ_DATE_FORMAT)
-    req = _presigned_request(current, expires=3600)
+    req = _presigned_request(current, expires=3600, path=path)
     caller, err = auth.resolve_sigv4(req)
     assert err is None
     assert caller == Caller(email="ava@acme.com", is_admin=False)
 
-
-def test_canonical_query_is_the_wire_query_string_not_the_rebuilt_urls():
-    """A `%3F` in the path decodes to `?`, and Starlette's `request.url` is assembled from the
-    decoded path — so `url.query` for `/s3/eng-artifacts/q%3Fx.txt` is `x.txt`, a query the client
-    never sent or signed. The verifier has to canonicalise `scope["query_string"]`, the bytes that
-    were actually on the wire, the same way it already takes the path from `raw_path`. Both auth
-    forms, since both go through the same canonical request."""
-    current = datetime.now(timezone.utc).strftime(AMZ_DATE_FORMAT)
-    path = "/s3/eng-artifacts/q%3Fx.txt"
-    caller, err = auth.resolve_sigv4(_header_auth_request(current, path=path, query=""))
-    assert err is None
-    assert caller == Caller(email="ava@acme.com", is_admin=False)
-    caller, err = auth.resolve_sigv4(_presigned_request(current, expires=3600, path=path))
-    assert err is None
-    assert caller == Caller(email="ava@acme.com", is_admin=False)

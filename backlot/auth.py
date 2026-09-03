@@ -150,19 +150,26 @@ def resolve_api_key(request: Request) -> Caller | None:
 
 
 def resolve_basic(request: Request) -> Caller | None:
-    """Atlassian: resolve by the api_token (password); fall back to the username email."""
-    a = acl(request)
-    user, pw = basic_password(request)
-    caller = a.resolve(pw)
-    if caller is not None:
-        return caller
-    # allow username=email as an identity shortcut (a Backlot convenience)
-    if user and "@" in user:
-        from backlot import store
+    """Atlassian: the api_token is the password, and the username has to be its own account.
 
-        if store.get_user(conn(request), user):
-            return Caller(email=user, is_admin=False)
-    return None
+    Both halves, because that is what the real service requires. Measured against a real Atlassian
+    Cloud site (``GET /rest/api/3/myself``) with a user API token: ``email:token`` answers 200,
+    while an empty password, a wrong password, and a valid token under someone else's address all
+    answer 401. Matched case-insensitively, which is also measured: the same token under
+    ``AVA.CHEN@…`` and ``Ava.chen@…`` answers 200 as that same account.
+
+    The admin/service token is the one caller with no address — ``Acl.resolve`` gives it
+    ``Caller(email=None)`` — so there is nothing to match a username against and any username is
+    taken. It has no vendor analogue to be faithful to: it is Backlot's own full-crawl identity,
+    and it is what lets an Atlassian client send the placeholder username its config demands.
+    """
+    user, pw = basic_password(request)
+    caller = acl(request).resolve(pw)
+    if caller is None:
+        return None
+    if caller.email is None:
+        return caller
+    return caller if (user or "").casefold() == caller.email.casefold() else None
 
 
 def visible_ids(request: Request, caller: Caller) -> set[str] | None:

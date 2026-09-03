@@ -729,10 +729,22 @@ def test_null_comparator_on_a_nullable_number(fclient):
     assert ids(fclient, "{estimate: {null: false}}") == ["ENG-1", "ENG-2"]
 
 
-def test_neq_keeps_rows_whose_column_is_null(fclient):
-    """NULL never equals anything, so a bare `<> ?` would drop the rows a caller asking for
-    "not X" expects to see."""
-    assert "DES-1" in ids(fclient, "{estimate: {neq: 5}}")
+def test_neq_drops_null_rows_and_nin_keeps_them_as_linear_does(fclient):
+    """Measured 2026-09-03 over issues with a null estimate: `estimate: {neq: 99}` answers none of
+    them and `estimate: {nin: [99]}` answers all of them. DES-1 has no estimate."""
+    assert ids(fclient, "{estimate: {neq: 5}}") == ["ENG-1"]
+    assert ids(fclient, "{estimate: {nin: [5]}}") == ["DES-1", "ENG-1"]
+    assert ids(fclient, "{estimate: {neq: 5, null: true}}") == []
+
+
+def test_negated_relation_filter_keeps_issues_without_the_relation(fclient):
+    """Measured 2026-09-03: `project: {name: {neq: "zzz"}}`, `project: {name: {nin: ["zzz"]}}` and
+    `assignee: {name: {neq: "zzz"}}` all answer the issues that have no project / assignee. DES-1
+    has neither; ENG-2 has a project and no assignee."""
+    assert ids(fclient, '{project: {name: {neq: "runtime"}}}') == ["DES-1"]
+    assert ids(fclient, '{project: {name: {nin: ["runtime"]}}}') == ["DES-1"]
+    assert ids(fclient, '{assignee: {name: {neq: "Bob Stone"}}}') == ["DES-1", "ENG-2"]
+    assert ids(fclient, '{assignee: {email: {nin: ["bob@acme.com"]}}}') == ["DES-1", "ENG-2"]
 
 
 def test_empty_in_list_matches_nothing_and_empty_nin_matches_everything(fclient):
@@ -829,6 +841,19 @@ def test_a_date_operand_must_be_a_string(fclient):
     r = post(fclient, q, {"d": "not-a-date"})
     assert r.status_code == 400
     assert "Expected type 'DateTimeOrDuration'" in r.json()["errors"][0]["message"]
+    # The other scalar names itself `TimelessDate` and quotes the value (measured).
+    r = post(fclient, "{ issues(filter: {dueDate: {eq: 1}}) { nodes { identifier } } }")
+    assert r.status_code == 400
+    assert r.json()["errors"][0]["message"].endswith(
+        "Unable to parse literal value of kind 'IntValue'. TimelessDate supports only "
+        "'StringValue' ones"
+    )
+    q = "query($d: TimelessDateOrDuration) { issues(filter: {dueDate: {eq: $d}}) { nodes { id } } }"
+    r = post(fclient, q, {"d": 1})
+    assert r.status_code == 400
+    assert r.json()["errors"][0]["message"].endswith(
+        "Unable to parse value '1'. TimelessDate supports only string values"
+    )
 
 
 # --- nested object filters -------------------------------------------------------------
@@ -1300,7 +1325,8 @@ def test_date_comparators_take_in_and_nin(fclient):
         "ENG-1",
     ]
     assert ids(fclient, '{createdAt: {nin: ["2026-01-01T00:00:00Z"]}}') == ["DES-1", "ENG-2"]
-    assert ids(fclient, '{completedAt: {nin: ["2026"]}}') == []  # every completed_ts is NULL
+    assert ids(fclient, '{completedAt: {nin: ["2026"]}}') == ALL  # every completed_ts is NULL
+    assert ids(fclient, '{completedAt: {neq: "2026"}}') == []
     # `null` on a date comparator carries a Boolean, which must not go through the date scalar.
     assert ids(fclient, "{completedAt: {null: true}}") == ALL
     assert ids(fclient, "{completedAt: {null: false}}") == []
@@ -1308,17 +1334,22 @@ def test_date_comparators_take_in_and_nin(fclient):
 
 def test_due_date_is_compared_as_a_timeless_date(fclient, now_is_2026_03_01_noon):
     """`IssueFilter.dueDate` is a `NullableTimelessDateComparator` over `TimelessDateOrDuration`:
-    a full timestamp is read down to its day, a duration is relative to today, and the column is
-    the bare YYYY-MM-DD. ENG-1 is due 2026-03-15, ENG-2 2026-04-01, DES-1 has no due date."""
+    a full timestamp is read down to its UTC day, a duration is relative to today, and the column
+    is the bare YYYY-MM-DD. Each expectation is what api.linear.app answered on 2026-09-03 for an
+    issue due 2026-03-15. ENG-1 is due 2026-03-15, ENG-2 2026-04-01, DES-1 has no due date."""
     assert ids(fclient, '{dueDate: {eq: "2026-03-15"}}') == ["ENG-1"]
     assert ids(fclient, '{dueDate: {eq: "2026-03-15T23:59:59Z"}}') == ["ENG-1"]
-    assert ids(fclient, '{dueDate: {neq: "2026-03-15"}}') == ["DES-1", "ENG-2"]
+    assert ids(fclient, '{dueDate: {eq: "2026-03-16T02:00:00+09:00"}}') == ["ENG-1"]  # 15th UTC
+    assert ids(fclient, '{dueDate: {eq: "2026-03-15T23:59:59-05:00"}}') == []  # 16th UTC
+    assert ids(fclient, '{dueDate: {gte: "2026-03-15T12:00:00Z"}}') == ["ENG-1", "ENG-2"]
+    assert ids(fclient, '{dueDate: {gt: "2026-03-15T00:00:00Z"}}') == ["ENG-2"]
+    assert ids(fclient, '{dueDate: {neq: "2026-03-15"}}') == ["ENG-2"]  # null row dropped
     assert ids(fclient, '{dueDate: {lt: "2026-04-01"}}') == ["ENG-1"]
     assert ids(fclient, '{dueDate: {lte: "2026-04-01"}}') == ["ENG-1", "ENG-2"]
     assert ids(fclient, '{dueDate: {gt: "2026-03-15"}}') == ["ENG-2"]
     assert ids(fclient, '{dueDate: {gte: "2026-03"}}') == ["ENG-1", "ENG-2"]  # month shortcut
     assert ids(fclient, '{dueDate: {in: ["2026-03-15", "2026-04-01"]}}') == ["ENG-1", "ENG-2"]
-    assert ids(fclient, '{dueDate: {nin: ["2026-03-15"]}}') == ["ENG-2"]
+    assert ids(fclient, '{dueDate: {nin: ["2026-03-15"]}}') == ["DES-1", "ENG-2"]  # null kept
     assert ids(fclient, "{dueDate: {null: true}}") == ["DES-1"]
     assert ids(fclient, "{dueDate: {null: false}}") == ["ENG-1", "ENG-2"]
     assert ids(fclient, '{dueDate: {eq: "P14D"}}') == ["ENG-1"]  # 2026-03-01 + 14 days

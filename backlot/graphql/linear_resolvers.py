@@ -379,9 +379,9 @@ def _project(name: str | None, info) -> dict | None:
         "inProgressScopeHistory": [],
         # `FrequencyResolutionType!`, whose members are `daily` and `weekly`. "week" -- served
         # while the field was a bare String -- is not one of them, and would have been a
-        # serialization error the moment the enum was declared. Which of the two a project
-        # defaults to is not measurable here (the workspace the key reaches has no projects);
-        # weekly is the one Linear's update-reminder UI offers first.
+        # serialization error the moment the enum was declared. `weekly` is what a freshly created
+        # project answers (measured 2026-09-03 with `projectCreate`, alongside `health: null`,
+        # `priority: 0`, `startDateResolution: null`, `updateRemindersDay: null`).
         "frequencyResolution": "weekly",
         "slackIssueComments": False,
         "slackNewIssue": False,

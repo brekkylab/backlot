@@ -56,6 +56,18 @@ from backlot import synth
 # graphql-core (like graphql-js, which Linear runs) reports a GraphQLError from a scalar verbatim
 # but wraps any other exception as `Expected value of type 'DateTimeOrDuration', found "P"; <message>`
 # -- the envelope the measurement above shows.
+#
+# `TimelessDateOrDuration` (2026-09-03, against an issue due 2026-03-15 created for the purpose and
+# deleted after): the same grammar, read down to the UTC day. `eq` matched for "2026-03-15",
+# "2026-03-15T00:00:00Z", "2026-03-15T23:59:59Z" and "2026-03-16T02:00:00+09:00" (17:00Z on the
+# 15th); it did NOT match for "2026-03-15T23:59:59-05:00" (04:59Z on the 16th) or
+# "2026-03-15T02:00:00+09:00" (17:00Z on the 14th). `gte: "2026-03-15T12:00:00Z"` matched and
+# `gt: "2026-03-15T00:00:00Z"` did not, so the operand is truncated before the comparison rather
+# than compared as an instant. "2026-03" is the first of the month (`eq` misses, `gte` hits), a
+# duration is relative to today (`lt: "P0D"` hits a past due date). The scalar names itself
+# `TimelessDate` in its errors: `Unable to parse literal value of kind 'IntValue'. TimelessDate
+# supports only 'StringValue' ones`, and for a variable `Unable to parse value '1'. TimelessDate
+# supports only string values` (quoted, where DateTimeOrDuration prints the value bare).
 
 _DURATION = re.compile(
     r"^(?P<sign>[+-])?P"
@@ -92,13 +104,15 @@ def _from_duration(m: re.Match) -> _dt.datetime:
     )
 
 
-def parse_datetime_or_duration(value) -> _dt.datetime:
+def parse_datetime_or_duration(value, scalar: str = "DateTimeOrDuration") -> _dt.datetime:
     """One ``DateTimeOrDuration`` operand as an aware ``datetime``, or a ``ValueError`` whose
-    message is the one Linear's scalar produces (see the measurements above)."""
+    message is the one Linear's scalar produces (see the measurements above). ``scalar`` is the
+    name the message carries: ``TimelessDateOrDuration`` calls itself ``TimelessDate`` there."""
     if not isinstance(value, str):
-        raise ValueError(
-            f"Unable to parse value {value!r}. DateTimeOrDuration supports only string values"
-        )
+        # Measured: DateTimeOrDuration prints the value bare (`value 1700000000.`), TimelessDate
+        # quotes it (`value '1'.`).
+        shown = repr(value) if scalar == "DateTimeOrDuration" else f"'{value}'"
+        raise ValueError(f"Unable to parse value {shown}. {scalar} supports only string values")
     s = value.strip()
     m = _DURATION.match(s)
     if m is not None:
@@ -122,22 +136,21 @@ def parse_datetime_or_duration(value) -> _dt.datetime:
 
 def parse_timeless_date_or_duration(value) -> str:
     """One ``TimelessDateOrDuration`` operand as the bare ``YYYY-MM-DD`` the ``due_date`` column
-    holds. Linear documents the scalar with the same text as ``DateTimeOrDuration`` and accepts the
-    same spellings (measured: "2026", "2026-03", "2026-03-15", "2026-03-15T10:00:00Z" and "-P1D"
-    all validate on ``dueDate``), so the grammar is shared and the time of day is dropped. The day
-    is read in UTC: a timeless date has no zone of its own, and UTC is the zone every ``DateTime``
-    this schema serves is written in."""
-    return parse_datetime_or_duration(value).astimezone(_dt.timezone.utc).date().isoformat()
+    holds. Linear documents the scalar with the same text as ``DateTimeOrDuration``, accepts the
+    same spellings, and reads an operand that carries a time down to its UTC day (measured, see the
+    module comment: "2026-03-16T02:00:00+09:00" is the 15th, "2026-03-15T23:59:59-05:00" is not)."""
+    when = parse_datetime_or_duration(value, "TimelessDate")
+    return when.astimezone(_dt.timezone.utc).date().isoformat()
 
 
-def _parse_literal(parse, node, _variables=None):
+def _parse_literal(parse, scalar: str, node, _variables=None):
     """The literal half of a scalar's coercion. Linear's scalars take a string literal only, and
     say so: `Unable to parse literal value of kind 'IntValue'. DateTimeOrDuration supports only
-    'StringValue' ones` (measured 2026-09-03)."""
+    'StringValue' ones` (measured 2026-09-03; the other scalar says `TimelessDate`)."""
     if not isinstance(node, StringValueNode):
         raise ValueError(
             f"Unable to parse literal value of kind '{type(node).__name__.removesuffix('Node')}'. "
-            "DateTimeOrDuration supports only 'StringValue' ones"
+            f"{scalar} supports only 'StringValue' ones"
         )
     return parse(node.value)
 
@@ -149,13 +162,13 @@ SCALARS = {
     "DateTimeOrDuration": {
         "parse_value": parse_datetime_or_duration,
         "parse_literal": lambda node, variables=None: _parse_literal(
-            parse_datetime_or_duration, node, variables
+            parse_datetime_or_duration, "DateTimeOrDuration", node, variables
         ),
     },
     "TimelessDateOrDuration": {
         "parse_value": parse_timeless_date_or_duration,
         "parse_literal": lambda node, variables=None: _parse_literal(
-            parse_timeless_date_or_duration, node, variables
+            parse_timeless_date_or_duration, "TimelessDate", node, variables
         ),
     },
 }
@@ -195,12 +208,37 @@ def _like(value: str) -> str:
 
 
 class _Comparator:
-    """Renders one comparator object (``{eq: …, contains: …}``) against a column."""
+    """Renders one comparator object (``{eq: …, contains: …}``) against a column.
+
+    NULL under a negative operator follows what api.linear.app answered on 2026-09-03, over issues
+    whose ``estimate``, ``dueDate`` and ``completedAt`` were null:
+
+    * on a FIELD of the issue, ``neq`` DROPS the null rows (`estimate: {neq: 99}` over four null
+      estimates answered nothing) and ``nin`` KEEPS them (`estimate: {nin: [99]}` answered all four;
+      `dueDate: {nin: ["2026-03-15"]}` answered exactly the issues with no due date);
+    * on a RELATION (``project: {name: {neq: …}}``, ``assignee: {name: {neq: …}}``,
+      ``assignee: {id: {neq: …}}``, and ``nin`` alike) issues WITHOUT the relation are kept.
+
+    ``relation=True`` is the second rule, for the columns ``_sub_filter`` maps a nested filter onto.
+    Neither rule is SQL's own three-valued one (`<>` and `NOT IN` both drop nulls), so both are
+    spelled out here rather than left to the engine.
+    """
 
     def __init__(
-        self, col: str, *, text: bool = False, epoch: bool = False, timeless: bool = False
+        self,
+        col: str,
+        *,
+        text: bool = False,
+        epoch: bool = False,
+        timeless: bool = False,
+        relation: bool = False,
     ):
         self.col, self.text, self.epoch, self.timeless = col, text, epoch, timeless
+        self.relation = relation
+
+    def _not_equal(self, expr: str) -> str:
+        """``expr`` is a ``<>`` test; on a relation the absent rows pass it too."""
+        return f"({self.col} IS NULL OR {expr})" if self.relation else expr
 
     def _value(self, v):
         # A DateComparator's operand is a DateTimeOrDuration but the column is unix seconds; a
@@ -235,9 +273,7 @@ class _Comparator:
                 parts.append(f"{self.col} = ?")
                 params.append(v)
             elif op == "neq":
-                # NULL never equals anything, so a plain `<> ?` would silently drop NULL rows a
-                # caller asking "not X" expects to see.
-                parts.append(f"({self.col} IS NULL OR {self.col} <> ?)")
+                parts.append(self._not_equal(f"{self.col} <> ?"))
                 params.append(v)
             elif op == "lt":
                 parts.append(f"{self.col} < ?")
@@ -257,7 +293,12 @@ class _Comparator:
                     parts.append("0" if op == "in" else "1")
                     continue
                 marks = ",".join("?" for _ in vals)
-                parts.append(f"{self.col} {'IN' if op == 'in' else 'NOT IN'} ({marks})")
+                if op == "in":
+                    parts.append(f"{self.col} IN ({marks})")
+                else:
+                    # Null rows pass `nin` on a field and on a relation alike (measured; see the
+                    # class docstring), which a bare `NOT IN` would drop.
+                    parts.append(f"({self.col} IS NULL OR {self.col} NOT IN ({marks}))")
                 params += vals
             elif op == "contains":
                 parts.append(f"{self.col} LIKE ? ESCAPE '\\'")
@@ -277,7 +318,7 @@ class _Comparator:
                 parts.append(f"lower({self.col}) = lower(?)")
                 params.append(v)
             elif op == "neqIgnoreCase":
-                parts.append(f"({self.col} IS NULL OR lower({self.col}) <> lower(?))")
+                parts.append(self._not_equal(f"lower({self.col}) <> lower(?)"))
                 params.append(v)
             elif op == "null":
                 parts.append(f"{self.col} IS {'NULL' if raw else 'NOT NULL'}")
@@ -313,9 +354,11 @@ def _derived_in(conn, column: str, derive, spec: dict) -> tuple[str, list]:
     # Reuse the comparator machinery by testing each derived value against it in Python.
     matched = [n for n in names if _matches(derive(n), spec)]
     # A NEGATIVE predicate ("not this project") must keep rows whose column is NULL — they have
-    # no value, so they cannot be the excluded one. The SQL comparator's own `neq` already spells
-    # this out (`IS NULL OR <> ?`); an IN-list over distinct non-NULL names silently dropped them,
-    # so `project:{id:{neq:X}}` and `project:{name:{neq:X}}` disagreed on 24 real rows.
+    # no relation, so they cannot be the excluded one, and that is what Linear answers for
+    # `project: {name: {neq: …}}` (measured 2026-09-03; see the `_Comparator` docstring). The
+    # relation-mode comparator spells it out (`IS NULL OR <> ?`); an IN-list over distinct non-NULL
+    # names silently dropped them, so `project:{id:{neq:X}}` and `project:{name:{neq:X}}` disagreed
+    # on 24 real rows.
     negative = any(op in spec for op in ("neq", "nin", "neqIgnoreCase"))
     null_ok = f" OR {column} IS NULL" if negative else ""
     if not matched:
@@ -565,7 +608,7 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
         if target is None:
             raise GraphQLError(f"unsupported nested filter field {key!r}")
         if target[0] == "col":
-            frag, p = _Comparator(target[1]).render(sub)
+            frag, p = _Comparator(target[1], relation=True).render(sub)
         else:
             frag, p = _derived_in(conn, target[1], target[2], sub)
         if frag:

@@ -1085,7 +1085,7 @@ def _message(
         blocks = synth.slack_blocks(text, seed)
         if blocks:
             m["blocks"] = blocks
-    reactions = store.jcol(row, "reactions")
+    reactions = _reactions(row)
     if reactions:
         m["reactions"] = reactions
     files = store.jcol(row, "files")
@@ -1119,6 +1119,39 @@ def _message(
         elif row["thread_seq"] > 0 and parent_user_id:  # a reply
             m["parent_user_id"] = parent_user_id
     return m
+
+
+def _reactions(row) -> list[dict]:
+    """A message's ``reactions``, built from the addresses the corpus stated.
+
+    Not pass-through, and the vendor's own spec is why. `objs_reaction` requires `name`, `users`
+    and `count` together, and each entry of `users` is a `defs_user_id` (`^[UW][A-Z0-9]{2,}$`) —
+    which is `synth.slack_user_id` of a person, a value no corpus author can know. Writing it by
+    hand meant inventing ids for people the corpus already names by address everywhere else.
+
+    `count` is DERIVED rather than stated. Slack computes one from the other, so a corpus that
+    wrote both could put them in disagreement and produce a reaction the real API never sends; with
+    only `users` written down there is nothing for it to disagree with.
+
+    The address is not required to belong to a principal. `users.info` resolves a message AUTHOR's
+    id (see `_slack_author_by_uid`) and a reactor who never posted is not among them, so a reaction
+    by someone the corpus names nowhere else serves an id that resolves to nobody — the same
+    limitation `users.list` already carries for display-only speakers.
+
+    Field order is Slack's own: its `conversations.history` reference shows
+    `{"name": …, "users": [...], "count": N}`.
+    """
+    out = []
+    for reaction in store.jcol(row, "reactions"):
+        users = list(reaction.get("users") or [])
+        out.append(
+            {
+                "name": reaction.get("name"),
+                "users": [synth.slack_user_id(e) for e in users],
+                "count": len(users),
+            }
+        )
+    return out
 
 
 def _channel_name(conn, channel_id: str) -> str | None:

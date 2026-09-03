@@ -68,9 +68,30 @@
     "reactions": {
       "type": "array",
       "items": {
-        "type": "object"
+        "type": "object",
+        "description": "One reaction. Slack's own OpenAPI (`objs_reaction`) requires `name`, `users` and `count` together, and types each entry of `users` as a `defs_user_id` matching `^[UW][A-Z0-9]{2,}$` — a value a corpus author cannot know, since it is what `synth.slack_user_id` will make of an address. So the corpus writes the ADDRESS and the router renders the id, the same way `author_email` becomes a message's `user`.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The emoji name, without colons: `eyes`, `+1`, `tada`."
+          },
+          "users": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "format": "email"
+            },
+            "description": "Who reacted, by address. A reaction nobody made is not one Slack returns, so the list may not be empty."
+          }
+        },
+        "required": [
+          "name",
+          "users"
+        ]
       },
-      "description": "[{name, count, users:[U…]}]."
+      "description": "Reactions to this message, as `[{name, users: [<address>, …]}]`. `count` is derived from `users` rather than read, so the two can never disagree."
     },
     "files": {
       "type": "array",
@@ -129,9 +150,30 @@
           "reactions": {
             "type": "array",
             "items": {
-              "type": "object"
+              "type": "object",
+              "description": "One reaction. Slack's own OpenAPI (`objs_reaction`) requires `name`, `users` and `count` together, and types each entry of `users` as a `defs_user_id` matching `^[UW][A-Z0-9]{2,}$` — a value a corpus author cannot know, since it is what `synth.slack_user_id` will make of an address. So the corpus writes the ADDRESS and the router renders the id, the same way `author_email` becomes a message's `user`.",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The emoji name, without colons: `eyes`, `+1`, `tada`."
+                },
+                "users": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "description": "Who reacted, by address. A reaction nobody made is not one Slack returns, so the list may not be empty."
+                }
+              },
+              "required": [
+                "name",
+                "users"
+              ]
             },
-            "description": "[{name, count, users:[U…]}]."
+            "description": "Reactions to this message, as `[{name, users: [<address>, …]}]`. `count` is derived from `users` rather than read, so the two can never disagree."
           },
           "files": {
             "type": "array",

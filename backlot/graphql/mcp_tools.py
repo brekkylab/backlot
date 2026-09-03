@@ -9,7 +9,7 @@ and produces, for each root field, a tool name, a JSON Schema for its arguments,
 GraphQL document to send.
 
 Everything here is pure — a mapping in, :class:`Tool` objects out. No HTTP, no MCP: the transport
-is ``examples/using-mcp-with-agents/_graphql_bridge.py``, which posts ``tool.document`` with the
+is ``backlot.mcp`` (the ``backlot mcp`` command), which posts ``tool.document`` with the
 caller's own credential so Backlot's per-token ACL decides what comes back.
 
 **One tool per root field, not one ``graphql(query:)`` passthrough.** A passthrough is three lines

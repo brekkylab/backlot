@@ -210,11 +210,9 @@ async def meta_users():
     S3 doesn't use bearer tokens — it uses AWS SigV4 — so each user (and the admin) also
     carries an ``s3_access_key_id`` / ``s3_secret_access_key`` pair (derived from the token,
     which is what the SigV4 verifier resolves) to hand straight to boto3 / the AWS CLI.
-    Disable with ``BACKLOT_EXPOSE_TOKENS=false``. The admin/service token bypasses all filtering.
+    The admin/service token bypasses all filtering. Always served: ``backlot mcp --user <email>``
+    resolves a person to their whole credential set here.
     """
-    settings = get_settings()
-    if not settings.expose_tokens:
-        raise HTTPException(status_code=404, detail="Not Found")
     conn = app.state.conn
     acl = app.state.acl
     tok = acl.email_to_token()
@@ -254,12 +252,10 @@ async def meta_credentials(request: Request):
     ``token_uri``. ``token_uri`` points back at Backlot's ``/oauth2/token``, so the client's
     refresh / JWT-bearer exchange lands here. Impersonate a user with the service account by
     setting ``subject=<email>``; a bare service account (no subject) resolves to the
-    admin/service token. Backlot-only affordance; disable with ``BACKLOT_EXPOSE_TOKENS=false``. See
-    ``examples/using-official-sdk/gmail.py``.
+    admin/service token. Backlot-only affordance. See ``examples/using-official-sdk/gmail.py``.
     """
-    settings = get_settings()
     o = getattr(app.state, "oauth", None)
-    if not settings.expose_tokens or o is None:
+    if o is None:
         raise HTTPException(status_code=404, detail="Not Found")
     token_uri = f"{request.url.scheme}://{request.headers.get('host', 'localhost')}/oauth2/token"
     return {

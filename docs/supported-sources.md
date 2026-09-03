@@ -293,10 +293,10 @@ Not part of any vendor's API — Backlot's own.
 | Endpoint | Notes |
 |---|---|
 | `/health` | Liveness, plus two corpus counts: `documents` is the root rows served, `source_documents` is what the corpus offered — smaller, because parsing turns one Slack transcript into many messages |
-| `/_meta/users` | Every generated user with their token and groups, in `data/tokens.yaml`'s shape, plus an `s3_access_key_id` / `s3_secret_access_key` pair each, since S3 authenticates with SigV4 rather than a bearer token. Pick a token, send it to any service, and see that user's ACL-filtered view |
+| `/_meta/users` | Every generated user with their token and groups, in `data/tokens.yaml`'s shape, plus an `s3_access_key_id` / `s3_secret_access_key` pair each, since S3 authenticates with SigV4 rather than a bearer token. Pick a token, send it to any service, and see that user's ACL-filtered view. This is also what `backlot mcp --user <email>` resolves a person through, so it is always served |
 | `/_meta/credentials` | The shared Google-style OAuth client and the org service account, for connectors that configure with an OAuth client instead of a raw token. No per-user data — a user's refresh token is their bearer token from `/_meta/users` |
-| `/_meta/openapi/{source}` | One source's slice of `/openapi.json`, with the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each, ready to hand to `FastMCP.from_openapi()`. S3 is absent by design: SigV4 signs each request, which a static `Authorization` header cannot do |
+| `/_meta/openapi/{source}` | One source's slice of `/openapi.json`, with each operation named for its route and the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each, ready to hand to `FastMCP.from_openapi()`. HEAD is dropped: a response with no body cannot answer the question that called it. S3 is here too — SigV4 signs each request, so the bridge signs rather than holding a fixed header |
 | `/openapi.json` | FastAPI's own typed spec for the whole server |
 
-`/_meta/users` and `/_meta/credentials` hand out working credentials in the clear, so both 404 when
-`BACKLOT_EXPOSE_TOKENS=false` — see [auth.md](auth.md) and [configuration.md](configuration.md).
+`/_meta/users` and `/_meta/credentials` hand out working credentials in the clear — which is what
+they are for on a server whose whole corpus is a fixture. See [auth.md](auth.md).

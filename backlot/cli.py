@@ -5,6 +5,7 @@
     backlot import --type enterpriserag-bench   # backlot.importer.erb, no options
     backlot export out/                 # the bench as a BYO artifact instead of a database
     backlot status                      # what the data dir currently holds
+    backlot mcp                         # every source as MCP tools over stdio (backlot.mcp)
 
 This module is the ONE place the command line is defined. Importers expose plain functions taking
 keyword arguments, and the flags that drive them are the parameters below, so ``backlot import
@@ -27,8 +28,12 @@ from typing import Annotated, Optional
 
 import typer
 
+from backlot import mcp as _mcp
+
 # The importers and uvicorn are imported inside each command, not here: `serve` must not pay for
-# `backlot.importer.erb` (2,400 lines) and `import` must not pull in uvicorn.
+# `backlot.importer.erb` (2,400 lines) and `import` must not pull in uvicorn. `backlot.mcp` is the
+# exception, imported for the source names its help text lists; it defers fastmcp and the GraphQL
+# derivation to the moment a server is built, so the import costs `serve` nothing it did not pay.
 
 # --type value -> the importer it selects. The bench is spelled out in full and has no short alias:
 # `erb` is what this codebase calls it among itself, and a caller reading `--type erb` learns nothing
@@ -143,7 +148,7 @@ class LogLevel(str, Enum):
 app = typer.Typer(
     name="backlot",
     # Bare `backlot` prints the command list instead of a usage error. A CLI whose whole surface is
-    # three commands has nothing to gain from making you type `--help` to see them.
+    # a handful of commands has nothing to gain from making you type `--help` to see them.
     no_args_is_help=True,
     add_completion=True,
     context_settings={"help_option_names": ["-h", "--help"]},
@@ -590,6 +595,70 @@ def status(data_dir: DataDir = None) -> None:
         )
     else:
         typer.echo(f"tokens:   none ({settings.tokens_path.name} is missing)")
+
+
+# --------------------------------------------------------------------------- mcp
+
+
+@app.command()
+def mcp(
+    sources: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--source",
+            metavar="SOURCE",
+            help="serve only this source (repeatable); one of "
+            + ", ".join(_mcp.SOURCES)
+            + ". Without it every source is served, each tool namespaced as <source>_<tool>",
+        ),
+    ] = None,
+    url: Annotated[
+        Optional[str],
+        typer.Option(
+            "--url",
+            metavar="URL",
+            help="the Backlot server to bridge; without it, the one on 127.0.0.1:8000 if it "
+            "answers, else one started here over the data dir's corpus",
+        ),
+    ] = None,
+    user: Annotated[
+        Optional[str],
+        typer.Option(
+            "--user",
+            metavar="EMAIL",
+            help="answer every tool call as this person, so Backlot's per-document ACL applies "
+            "(an email from GET /_meta/users); without it, the admin, who sees everything",
+        ),
+    ] = None,
+    depth: Annotated[
+        Optional[int],
+        typer.Option(
+            "--depth",
+            metavar="N",
+            help="for linear and fireflies: how many object levels a tool's generated selection "
+            "set reaches; without it 1 for linear and 2 for fireflies",
+        ),
+    ] = None,
+    data_dir: DataDir = None,
+) -> None:
+    """Serve Backlot's sources as MCP tools over stdio, starting a server if none is running.
+
+    This is the command an MCP client runs: `claude mcp add backlot -- backlot mcp`. It bridges the server at --url, which must answer; without --url, the one on the default port if a Backlot server is there, else one it starts over the data dir's corpus (the bundled one when the data dir is empty) and stops when the client disconnects. `--user` resolves one person's credentials for every source at once — bearer token, Atlassian's Basic spelling, S3's signing keys — so the per-document ACL decides each answer.
+    """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
+    for source in sources or ():
+        if source not in _mcp.SOURCES:
+            raise typer.BadParameter(
+                f"{source!r} is not one of {', '.join(_mcp.SOURCES)}", param_hint="'--source'"
+            )
+    if depth is not None and sources and not set(sources) & set(_mcp.GRAPHQL_SOURCES):
+        raise typer.BadParameter(
+            f"--depth applies to {' and '.join(_mcp.GRAPHQL_SOURCES)}, and neither is selected",
+            param_hint="'--depth'",
+        )
+    if depth is not None and depth < 1:
+        raise typer.BadParameter("must be at least 1", param_hint="'--depth'")
+    _use_data_dir(data_dir)
+    _mcp.run(sources, url=url, user=user, depth=depth)
 
 
 # --------------------------------------------------------------------------- diff

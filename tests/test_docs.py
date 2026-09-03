@@ -182,3 +182,32 @@ def test_documented_graphql_paths_are_mounted(client):
         assert client.post(path, json={}).status_code != 404, (
             f"{path} is documented but not mounted"
         )
+
+
+def test_configuration_page_names_exactly_the_settings():
+    """`docs/configuration.md` claims to be all of them, so it has to be.
+
+    Nothing else compares that page to `Settings`, which is how a removed setting can leave a row
+    behind and how the count in its opening sentence can go stale. Both are asserted: the names,
+    and the number the prose promises."""
+    from backlot.config import Settings
+
+    page = (REPO / "docs" / "configuration.md").read_text()
+    expected = {f"BACKLOT_{name.upper()}" for name in Settings.model_fields}
+    assert set(re.findall(r"BACKLOT_[A-Z_]+", page)) == expected
+    assert len(re.findall(r"^\| `BACKLOT_", page, re.M)) == len(expected)
+    stated = re.search(r"There are (\w+), and this page is all of them", page)
+    assert stated, "the page no longer says how many settings there are"
+    words = "zero one two three four five six seven eight nine ten eleven twelve".split()
+    assert stated.group(1) == words[len(expected)], stated.group(1)
+
+
+def test_env_example_names_only_real_settings():
+    """`.env.example` may leave a setting out — it is a starting point, not the reference — but a
+    name it lists that `Settings` does not have is a leftover, and a reader who copies the file
+    gets a var the server ignores."""
+    from backlot.config import Settings
+
+    listed = set(re.findall(r"BACKLOT_[A-Z_]+", (REPO / ".env.example").read_text()))
+    real = {f"BACKLOT_{name.upper()}" for name in Settings.model_fields}
+    assert listed <= real, sorted(listed - real)

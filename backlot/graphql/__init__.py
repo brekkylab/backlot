@@ -8,5 +8,5 @@ convention used by the REST sources.
 
 ``mcp_tools`` is vendor-agnostic too, and is the GraphQL answer to :mod:`backlot.openapi`: it turns
 an introspection result into one MCP tool per root ``Query`` field, so a GraphQL-only source can be
-reached by an agent at all. ``examples/using-mcp-with-agents/_graphql_bridge.py`` is its transport.
+reached by an agent at all. ``backlot.mcp`` is its transport.
 """

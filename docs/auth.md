@@ -33,8 +33,9 @@ curl -s localhost:8000/_meta/credentials   # for a Google client that wants a co
   "service_account": { "type": "service_account", "client_email": "…", "private_key": "…" } }
 ```
 
-Both serve working credentials in the clear, so `BACKLOT_EXPOSE_TOKENS=false` closes them (404).
-The same values are in `data/tokens.yaml`.
+Both serve working credentials in the clear, and always answer: `backlot mcp --user <email>`
+resolves a person to their credentials through `/_meta/users`, so a switch that closed it would
+take that command's only credential input with it. The same values are in `data/tokens.yaml`.
 
 ## The three identities used below
 

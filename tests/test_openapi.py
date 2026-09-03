@@ -6,6 +6,7 @@ lets an OpenAPI→MCP bridge consume Backlot's spec without operationId collisio
 
 from __future__ import annotations
 
+import re
 import warnings
 
 import pytest
@@ -33,6 +34,15 @@ def test_operation_id_picks_the_method_deterministically():
     # single-method routes are unaffected
     one = SimpleNamespace(name="search", path_format="/notion/v1/search", methods={"POST"})
     assert openapi.unique_operation_id(one) == "search_notion_v1_search_post"
+
+    # HEAD ranks last, so a route serving both still names GET — the id S3's object route has
+    # carried since before `head` joined _METHODS, and which must not move.
+    both = SimpleNamespace(
+        name="object_get", path_format="/s3/{bucket}/{key}", methods={"GET", "HEAD"}
+    )
+    assert openapi.unique_operation_id(both) == "object_get_s3__bucket___key__get"
+    only = SimpleNamespace(name="head_bucket", path_format="/s3/{bucket}", methods={"HEAD"})
+    assert openapi.unique_operation_id(only) == "head_bucket_s3__bucket__head"
 
     # a method _METHOD_RANK does not know still yields a stable answer
     odd = SimpleNamespace(name="x", path_format="/x", methods={"TRACE", "OPTIONS"})
@@ -162,27 +172,60 @@ def test_dedupe_prefers_fewer_path_params():
 
 def test_build_mcp_spec_rejects_unknown_source():
     with pytest.raises(KeyError):
-        openapi.build_mcp_spec(_doc(), "s3")  # SigV4 — intentionally no bridge
+        openapi.build_mcp_spec(_doc(), "dropbox")
 
 
-def test_every_bridged_operation_id_names_its_own_method():
-    """The property a bridge actually consumes. ``dedupe_operations`` keeps the GET of a GET+POST
-    route, so the id it carries has to say ``_get`` — otherwise the tool a bridge exposes is a GET
-    called ``..._post``. With FastAPI's set-ordered default that was wrong for 14 operations on
-    roughly half of all boots."""
+def test_tool_name_inverts_unique_operation_id():
+    """The MCP spec names each tool for its route, and gets that name back out of the id
+    ``unique_operation_id`` built — for either method of a multi-method route, since FastAPI gives
+    both the one id. An id this module did not produce is refused rather than guessed at."""
+    from types import SimpleNamespace
+
+    route = SimpleNamespace(
+        name="conversations_history",
+        path_format="/slack/api/conversations.history",
+        methods={"POST", "GET"},
+    )
+    oid = openapi.unique_operation_id(route)
+    assert openapi.tool_name(oid, route.path_format, "get") == "conversations_history"
+    assert openapi.tool_name(oid, route.path_format, "post") == "conversations_history"
+    with pytest.raises(ValueError, match="not derived from"):
+        openapi.tool_name("someone_elses_id", "/slack/api/conversations.history", "get")
+
+
+def test_bridged_operation_ids_are_the_route_names():
+    """What a bridge exposes as a tool name is the operationId, so the served MCP spec carries the
+    route's own name (``search_messages``) rather than the path-and-method suffixed form
+    (``search_messages_slack_api_search_messages_get``): shorter for a model to read on every call,
+    and short enough that an MCP client's 64-character cap never truncates one even under the
+    ``<source>_`` namespace ``backlot mcp`` adds. The raw ``/openapi.json`` keeps the long,
+    deterministic ids; only the MCP slice renames."""
     warnings.filterwarnings("ignore")
     from backlot.main import app
 
     spec = app.openapi()
-    wrong = [
-        (source, path, method, item[method]["operationId"])
-        for source in openapi.SOURCE_PREFIXES
-        for path, item in openapi.build_mcp_spec(spec, source)["paths"].items()
-        for method in item
-        if method in ("get", "post", "put", "delete", "patch")
-        and not item[method]["operationId"].endswith("_" + method)
-    ]
-    assert wrong == []
+    for source in openapi.SOURCE_PREFIXES:
+        for path, item in openapi.build_mcp_spec(spec, source)["paths"].items():
+            for method, op in item.items():
+                if method not in openapi._METHODS:
+                    continue
+                oid = op["operationId"]
+                raw = spec["paths"][path][method]["operationId"]
+                assert oid == openapi.tool_name(raw, path, method), (source, raw, oid)
+                assert re.sub(r"\W", "_", path) not in oid, (source, oid)
+                assert len(source) + 1 + len(oid) <= 64, (source, oid)
+
+
+def test_build_mcp_spec_collapses_the_jira_version_aliases():
+    """Jira's ``/rest/api/2`` and ``/rest/api/3`` routes are one route under two paths, so under
+    route-name ids they share one and ``dedupe_operations`` keeps one — the v3 one, by its
+    greatest-path rule. Under the suffixed ids the pair survived as two tools apiece."""
+    warnings.filterwarnings("ignore")
+    from backlot.main import app
+
+    paths = openapi.build_mcp_spec(app.openapi(), "atlassian")["paths"]
+    assert not any("/rest/api/2/" in p for p in paths), sorted(paths)
+    assert any(p.endswith("/rest/api/3/issue/{key}") for p in paths), sorted(paths)
 
 
 def test_build_mcp_spec_resolves_all_real_collisions():
@@ -195,3 +238,98 @@ def test_build_mcp_spec_resolves_all_real_collisions():
     for source in openapi.SOURCE_PREFIXES:
         spec = openapi.build_mcp_spec(full, source)  # raises ValueError if a collision survives
         assert spec["paths"], f"{source} sliced to empty"
+
+
+def test_build_mcp_spec_collapses_exactly_the_known_aliases():
+    """Per source, tools == routes minus the aliases Backlot serves on purpose, and this is the
+    whole list. Route-name ids are what let the GET/POST and v2/v3 pairs collapse, and the same
+    rule would fold two DISTINCT routes into one tool if a handler ever shared a name with another
+    in its source — silently, since `dedupe_operations` resolves every collision before
+    `build_mcp_spec`'s own check can see one. The table is the snapshot that turns that into a
+    failing test: each id that names more than one route, with how many routes it absorbs."""
+    warnings.filterwarnings("ignore")
+    import collections
+
+    from backlot.main import app
+
+    full = app.openapi()
+    expected = {
+        # Slack serves each method as GET and POST, the way slack.com does
+        "slack": dict.fromkeys(
+            [
+                "api_test",
+                "auth_test",
+                "conversations_history",
+                "conversations_info",
+                "conversations_list",
+                "conversations_members",
+                "conversations_replies",
+                "search_all",
+                "search_files",
+                "search_messages",
+                "users_info",
+                "users_list",
+            ],
+            1,
+        ),  # fmt: skip
+        # Jira's /rest/api/2 aliases /rest/api/3; search is also GET+POST, so it folds three
+        "atlassian": {
+            "jira_server_info": 1,
+            "jira_search": 3,
+            "jira_get_issue": 1,
+            "jira_issue_comments": 1,
+            "jira_fields": 1,
+        },  # fmt: skip
+        # ListBuckets answers at both `/s3` and `/s3/`
+        "s3": {"list_buckets": 1},
+    }
+    for source, prefixes in openapi.SOURCE_PREFIXES.items():
+        routes = openapi.name_operations(
+            openapi.drop_head_operations(openapi.slice_spec(full, prefixes))
+        )
+        by_id = collections.Counter(
+            op["operationId"]
+            for item in routes["paths"].values()
+            for method, op in item.items()
+            if method in openapi._METHODS and isinstance(op, dict) and "operationId" in op
+        )
+        collapsed = {oid: n - 1 for oid, n in by_id.items() if n > 1}
+        assert collapsed == expected.get(source, {}), source
+        tools = sum(
+            1
+            for item in openapi.build_mcp_spec(full, source)["paths"].values()
+            for method, op in item.items()
+            if method in openapi._METHODS and isinstance(op, dict) and "operationId" in op
+        )
+        assert tools == sum(by_id.values()) - sum(collapsed.values()), source
+
+
+def test_build_mcp_spec_drops_head_operations():
+    """S3 is the only source serving HEAD, and none of it reaches the bridged spec. A HEAD answers
+    with headers alone, so a tool built from one returns an empty body on every call. Dropping it
+    before the rename is also what keeps S3's object route — GET and HEAD under one operationId —
+    from shipping as `object_get` plus an un-renamed `object_get_s3__bucket___key__get`."""
+    warnings.filterwarnings("ignore")
+    from backlot.main import app
+
+    spec = app.openapi()
+    assert "head" in spec["paths"]["/s3/{bucket}/{key}"], "the raw spec still describes HEAD"
+
+    paths = openapi.build_mcp_spec(spec, "s3")["paths"]
+    assert not any("head" in item for item in paths.values()), sorted(paths)
+    assert sorted(paths["/s3/{bucket}/{key}"]) == ["get"]
+    assert paths["/s3/{bucket}/{key}"]["get"]["operationId"] == "object_get"
+
+
+def test_drop_head_operations_drops_a_path_it_empties():
+    """A path whose only operation was HEAD goes with it, rather than lingering as an entry with
+    no operation. Synthetic, because no real source has such a path — every ``@router.head``
+    shares its path with a GET — so nothing else can cover the guard."""
+    spec = {
+        "paths": {
+            "/only-head": {"head": {"operationId": "h"}},
+            "/both": {"head": {"operationId": "b"}, "get": {"operationId": "b"}},
+            "/params-only": {"parameters": [], "head": {"operationId": "p"}},
+        }
+    }
+    assert openapi.drop_head_operations(spec)["paths"] == {"/both": {"get": {"operationId": "b"}}}

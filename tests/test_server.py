@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 import backlot
+import backlot.server
 from tests._helpers import complete
 from backlot.server import _terminate
 
@@ -159,30 +160,31 @@ def test_serve_or_connect_fetches_a_remote_servers_real_admin_token(monkeypatch)
                 assert json.load(r)["ok"] is True
 
 
-def test_serve_or_connect_does_not_fetch_the_token_over_plain_http_to_a_non_loopback_host(
-    monkeypatch,
-):
-    """Hardening: fetching a credential from an unauthenticated plaintext response is the wrong
-    default once the host isn't loopback. Only https or loopback should trigger the
-    GET /_meta/users fetch at all — a plain-http non-loopback URL must fall back to the guess
-    WITHOUT the fetch ever being attempted. Asserted by spying on
-    `_admin_token_from_meta_users` and requiring it was never called, which is a stronger claim
-    than just checking the returned token (that could coincidentally match)."""
+def test_meta_users_is_strict_where_admin_token_for_is_lenient():
+    """The two readers of ``GET /_meta/users`` answer different questions, so they fail
+    differently. ``meta_users`` backs ``backlot mcp --user``, which names a person and cannot be
+    satisfied by a guess — a silent fallback would serve the admin's unfiltered view of the corpus
+    under that person's name. ``admin_token_for`` only asks who the admin is, and a server that
+    won't say still serves every fallback an example needs, so it guesses rather than refusing to
+    connect."""
     import backlot.server as server_mod
 
-    monkeypatch.setattr(server_mod, "_healthy", lambda url, timeout=10: True)
+    dead = "http://127.0.0.1:1"
+    with pytest.raises(Exception):  # noqa: B017 — urllib's own error, whatever it is
+        server_mod.meta_users(dead, timeout=2)
+    assert server_mod.admin_token_for(dead) == server_mod.TOKEN
 
-    calls = []
-    monkeypatch.setattr(
-        server_mod,
-        "_admin_token_from_meta_users",
-        lambda url, timeout=10: calls.append(url) or "should-never-be-used",
-    )
 
-    with backlot.serve_or_connect(url="http://example.com:8000") as s:
-        assert s.token == server_mod.TOKEN
-
-    assert calls == [], f"token fetch must not run against a plain-http non-loopback host: {calls}"
+def test_meta_users_reports_a_real_servers_own_credentials():
+    """Against a live server it is the directory ``backlot mcp --user`` resolves through: the
+    admin's token and access-key pair, and one entry per user carrying the same."""
+    with backlot.serve() as s:
+        directory = backlot.server.meta_users(s.base_url)
+    assert directory["admin_token"] == s.token
+    assert directory["admin_s3_access_key_id"].startswith("AKIA")
+    assert directory["users"], directory
+    one = directory["users"][0]
+    assert {"email", "token", "s3_access_key_id", "s3_secret_access_key"} <= one.keys()
 
 
 @pytest.mark.parametrize("host, answers_off_loopback", [("127.0.0.1", False), ("0.0.0.0", True)])
@@ -251,3 +253,72 @@ def test_teardown_reaps_a_process_that_ignores_sigterm():
     )
     _terminate(proc, timeout=0.2)
     assert proc.poll() is not None
+
+
+# --------------------------------------------------------------------------- data_dir
+
+
+def test_served_subprocesses_do_not_inherit_stdin(monkeypatch):
+    """Both children `serve` starts — the `import` that builds the corpus and the `serve` that
+    answers — get `stdin=DEVNULL`. Under `backlot mcp` the inherited handle would be the MCP
+    protocol pipe, and a child reading from it corrupts a live session while every test that only
+    watches the server's answers stays green. Asserted on the call, since that is the only place
+    the choice is visible from outside the child."""
+    import backlot.server as server_mod
+
+    seen = []
+    real_popen, real_run = server_mod.subprocess.Popen, server_mod.subprocess.run
+
+    class Popen(real_popen):
+        def __init__(self, *args, **kwargs):
+            seen.append(("Popen", kwargs.get("stdin")))
+            super().__init__(*args, **kwargs)
+
+    def run(*args, **kwargs):
+        seen.append(("run", kwargs.get("stdin")))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(server_mod.subprocess, "Popen", Popen)
+    monkeypatch.setattr(server_mod.subprocess, "run", run)
+    with backlot.serve() as s:
+        assert s.base_url
+    assert seen and all(stdin is subprocess.DEVNULL for _, stdin in seen), seen
+    assert {kind for kind, _ in seen} == {"Popen", "run"}, seen
+
+
+def test_serve_data_dir_serves_an_existing_build_as_it_stands(tmp_path):
+    """``backlot mcp`` puts the user's own corpus behind the tools this way: a data dir one
+    ``backlot import`` already built is served without re-importing, and nothing is written into
+    it — the server log goes to scratch, not beside the user's database."""
+    import json
+    import urllib.request
+
+    from backlot import cli
+
+    assert cli.main(["import", "--bundled", "--data-dir", str(tmp_path)]) == 0
+    before = sorted(p.name for p in tmp_path.iterdir())
+    with backlot.serve(data_dir=tmp_path) as s:
+        with urllib.request.urlopen(f"{s.base_url}/health") as r:
+            body = json.load(r)
+        assert body["documents"] and body["documents"] > 0
+        assert s.data_dir == tmp_path
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def test_serve_refuses_records_together_with_a_data_dir(tmp_path):
+    with pytest.raises(ValueError, match="not both"):
+        with backlot.serve([{"source_type": "slack"}], data_dir=tmp_path):
+            pass
+
+
+def test_serve_or_connect_reports_on_stderr_not_stdout(capsys):
+    """A caller may be an MCP stdio server whose stdout is the protocol stream; one stray line
+    there ends the session. Both messages — attached, and falling back — go to stderr."""
+    with backlot.serve() as remote:
+        with backlot.serve_or_connect(url=remote.base_url):
+            pass
+    with backlot.serve_or_connect(url="http://127.0.0.1:1"):
+        pass
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "using Backlot at" in err and "falling back to a local server" in err

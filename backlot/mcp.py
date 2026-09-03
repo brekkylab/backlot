@@ -461,23 +461,37 @@ def attach(url: str | None = None) -> Iterator[str]:
             "corpus (`backlot import <corpus.jsonl>` to serve your own)"
         )
         started = backlot_server.serve()
+    global _started
     with started as s:
         _stderr(f"Backlot is up at {s.base_url}")
-        yield s.base_url
+        _started = started
+        try:
+            yield s.base_url
+        finally:
+            _started = None
 
 
-class _Signalled(SystemExit):
-    """Raised by the signal handler so ``run`` can tell a signal from any other exit."""
+# The `serve()` context `attach` entered when it started a server itself, while that server is up.
+# The signal handler closes it directly rather than by raising through the stack: an exception
+# raised out of a signal handler has to cross fastmcp's stdio transport on the way up, and there it
+# can be held waiting on the stdin reader thread — non-daemon, blocked in a read nobody will end —
+# so the exit is late or never (measured: with stdin held open, two of four SIGHUP runs in CI were
+# still alive 20s later; SIGTERM alone used to wait until stdin closed). Closing the context here
+# and leaving with `os._exit` depends on nothing above the handler.
+_started: contextlib.AbstractContextManager | None = None
 
 
 def _exit_on_signal(signum: int, frame: object) -> None:
     # A terminating signal's default disposition ends the process without unwinding, which would
-    # leave the server `attach` started running with no client. Raising instead runs the context
-    # managers' cleanup, the same path a closed stdin takes. Installed for SIGINT and SIGHUP as well
-    # as SIGTERM: a terminal's Ctrl-C or hangup reaches the whole process group, uvicorn included,
-    # but a supervisor that signals only its direct child does not — measured, `kill -INT` alone
-    # left the server listening, and `kill -HUP` ended this process by default and orphaned it.
-    raise _Signalled(128 + signum)
+    # leave the server `attach` started running with no client. Installed for SIGINT and SIGHUP as
+    # well as SIGTERM: a terminal's Ctrl-C or hangup reaches the whole process group, uvicorn
+    # included, but a supervisor that signals only its direct child does not — measured, `kill -INT`
+    # alone left the server listening, and `kill -HUP` ended this process by default and orphaned it.
+    started = _started
+    if started is not None:
+        started.__exit__(None, None, None)  # `serve()`'s finally: SIGTERM the server, then wait
+    sys.stderr.flush()
+    os._exit(128 + signum)
 
 
 # The signals a supervisor or terminal sends to end a stdio server. SIGHUP does not exist on Windows.
@@ -508,13 +522,6 @@ def run(
             # No banner: fastmcp prints one to stderr, which is harmless to the protocol but noise
             # in every MCP client's log.
             server.run(transport="stdio", show_banner=False)
-    except _Signalled as exc:
-        # The `with` above has unwound by now, so the server this started is down. What is left is
-        # the stdio reader thread fastmcp runs, non-daemon and still blocked on a stdin nobody will
-        # close — a normal interpreter exit waits for it, so a supervisor that signalled and waited
-        # would hang (measured: SIGTERM alone left the process alive until stdin closed). Leave now.
-        sys.stderr.flush()
-        os._exit(exc.code)
     except RuntimeError as exc:
         # `serve` raises this when the server it started died before answering — a corrupt corpus
         # in the data dir is the common cause — carrying that server's own last words. They are

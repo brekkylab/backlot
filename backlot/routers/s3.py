@@ -58,9 +58,11 @@ _ERR_STATUS = {
 # each as its own operation — `GetBucketVersioning: GET /{Bucket}?versioning`, `GetObjectTagging:
 # GET /{Bucket}/{Key+}?tagging` — and `backlot diff --source s3` asks a running server every one.
 # Real S3 dispatches on exactly these keys and ignores any other query key (measured against a
-# general purpose bucket: `?foo=bar` and the AWS SDK for JavaScript's `?x-id=ListObjects`
-# both answer the listing, the match is case-sensitive so `?Versioning` lists too, and the value is
-# ignored so `?versioning=1` is still GetBucketVersioning). So the refusal is keyed on this set
+# general purpose bucket: `?foo=bar` and `?x-id=ListObjects` both answer the listing, the match is
+# case-sensitive so `?Versioning` lists too, and the value is ignored so `?versioning=1` is still
+# GetBucketVersioning). The `x-id` key is what the AWS SDK for JavaScript adds to name the operation
+# where several share a path — `?x-id=GetObject`, `?analytics&x-id=GetBucketAnalyticsConfiguration`
+# — and it must stay ignorable here as it is there. So the refusal is keyed on this set
 # rather than on an allow-list of the listing's own parameters, which would refuse what real S3
 # ignores.
 #
@@ -152,8 +154,8 @@ def _conflict(selected: list[str], resource: str) -> Response:
 def _not_implemented(selector: str, resource: str) -> Response:
     """Refuse an operation Backlot does not implement, instead of answering it with another's body.
 
-    ``NotImplemented`` is the S3 error code for functionality the service will not perform, and 501
-    is not a status botocore retries, so a boto3 caller gets one ``ClientError`` straight away.
+    ``NotImplemented`` is the S3 error code for "functionality that is not implemented" (the API
+    reference's Error code table), and 501 is not a status botocore retries, so a boto3 caller gets one ``ClientError`` straight away.
     What the catch-all used to answer was worse in both directions: a bucket sub-resource got the
     listing, which botocore parsed as an empty result (``get_bucket_versioning`` -> ``{}``), and an
     object sub-resource got the object's bytes, which botocore could not parse as XML and reported

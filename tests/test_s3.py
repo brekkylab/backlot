@@ -508,8 +508,8 @@ def test_an_unimplemented_object_subresource_is_refused_not_answered_with_the_ob
 def test_the_listing_location_and_object_still_answer_and_an_unknown_key_is_ignored(live_server):
     base_url, settings = live_server
     token = settings.admin_token
-    # A bare bucket GET is ListObjects and `?list-type=2` its v2 form; `?foo=bar` and the AWS SDK
-    # for JavaScript's `?x-id=` are not selectors; `?Versioning` is not `?versioning`; and
+    # A bare bucket GET is ListObjects and `?list-type=2` its v2 form; `?foo=bar` and an `x-id` key
+    # (the AWS SDK for JavaScript names the operation with one) are not selectors; `?Versioning` is not `?versioning`; and
     # `?session` (CreateSession, directory buckets only) lists on a general purpose bucket.
     for query in ("", "?list-type=2", "?foo=bar", "?x-id=ListObjects", "?Versioning", "?session"):
         root = _get_xml(base_url, f"/s3/eng-artifacts{query}", token)

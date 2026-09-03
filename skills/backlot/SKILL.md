@@ -32,7 +32,7 @@ anything: a corpus that already holds what the task needs makes steps 2-5 unnece
 
 | The task | The corpus |
 |---|---|
-| a demo, or "what shape does this API answer" | `backlot import --bundled` — 136 records covering every source |
+| a demo, or "what shape does this API answer" | `backlot import --bundled` — covers every source, and prints the per-source breakdown as it loads |
 | exercising a connector against real content | the user's own documents, as BYO-JSONL |
 | reproducing one behaviour (a paginated edge case, an odd MIME type, an empty thread) | records you write for exactly that |
 | a large public corpus | `backlot import --type enterpriserag-bench` |

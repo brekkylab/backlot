@@ -425,6 +425,7 @@ def test_schema_files_are_valid_json_schemas():
 # One value each pattern in backlot/schemas/ accepts. Asserted to COVER every patterned field
 # below, so adding a pattern without a sample fails here rather than going untested.
 PATTERN_SAMPLES = {
+    ("github", "head_repo"): "outsider/gateway",
     ("github", "repo"): "gateway",
     ("hubspot", "record_id"): "12345",
     ("jira", "key"): "PAY-1",
@@ -1147,7 +1148,7 @@ def test_a_validation_error_names_the_record_it_is_about():
 
     anonymous = record_errors({"source_type": "github", "content": "c"})
     assert anonymous and all(e.startswith("<root>: ") for e in anonymous)
-    assert "<root>: 'title' is a required property" in anonymous
+    assert "<root>: 'repo' is a required property" in anonymous
 
 
 def test_a_label_cannot_be_mistaken_for_the_field_path():
@@ -1156,12 +1157,12 @@ def test_a_label_cannot_be_mistaken_for_the_field_path():
     neither as the record — so the path is bracketed. The path's own spelling is untouched:
     the slash form is what the rest of this suite pins."""
     assert record_errors(complete("github", title="subtype", content="c", subtype=9)) == [
-        "subtype [subtype]: 9 is not one of ['issue', 'pull_request', 'file']"
+        "subtype [subtype]: 9 is not one of ['issue', 'pull_request', 'file', 'repo']"
     ]
 
     # A record-wide error has no path, so it gains no brackets either.
-    assert record_errors(complete("github", _omit={"title"}, content="c", doc_id="d")) == [
-        "d: 'title' is a required property"
+    assert record_errors(complete("github", _omit={"repo"}, content="c", doc_id="d")) == [
+        "d: 'repo' is a required property"
     ]
 
     # A nameless record marks its path as a path, so an unbracketed head is always the record:
@@ -1174,8 +1175,8 @@ def test_a_label_cannot_be_mistaken_for_the_field_path():
 def test_the_condition_clause_is_omitted_rather_than_guessed():
     """An unconditional rule gets no clause, and a condition shape the renderer does not
     recognise gets none either — a wrong "when" is worse than no "when"."""
-    plain = record_errors(complete("github", _omit={"title"}, content="c", doc_id="d"))
-    assert plain == ["d: 'title' is a required property"]
+    plain = record_errors(complete("github", _omit={"repo"}, content="c", doc_id="d"))
+    assert plain == ["d: 'repo' is a required property"]
     assert (
         validation._when_clause(
             {"allOf": [{"then": {"required": ["x"]}}]},
@@ -1255,7 +1256,8 @@ def test_a_negated_predicate_still_names_its_condition():
     )
     # and the rules the shipped schemas state in those shapes, end to end
     assert record_errors(complete("github", doc_id="gh-1", subtype="issue", _omit={"state"})) == [
-        "gh-1: 'state' is a required property when subtype is not \"file\" (or absent)"
+        "gh-1: 'state' is a required property when subtype is not one of "
+        '["file", "repo"] (or absent)'
     ]
     assert record_errors(complete("fireflies", doc_id="ff-1", _omit={"author_email"})) == [
         "ff-1: 'author_email' is a required property when host_email is absent"

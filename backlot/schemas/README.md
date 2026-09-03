@@ -117,7 +117,7 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   and notion's `updated`, hubspot's `properties`, a fireflies meeting's `duration`, a github
   issue's or pull's `state`. A child row states its own `author_email` and its own second; a
   fireflies sentence states its text and `start_time` (no author: the vendor's `Sentence` carries
-  no email, and an unnamed speaker is what diarization produces). Also the `visibility` enum, per-service `subtype` enums (e.g. github `issue|pull_request`,
+  no email, and an unnamed speaker is what diarization produces). Also the `visibility` enum, per-service `subtype` enums (e.g. github `issue|pull_request|file|repo`,
   drive `document|spreadsheet|presentation|pdf`, confluence `page|blogpost`, notion
   `page|database`), the child-row object shapes (see *Child rows are named per source* above —
   each array is accepted only on the source it belongs to), and `additionalProperties: false` (an
@@ -128,7 +128,8 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   `issuelinks`, `reviews`, `changelog`, …), which the loader stores as JSON without a fixed shape.
   Each is a declared field of the source that has it: there is no free-form object, so a key no
   schema names is a validation error rather than a value read and dropped.
-- **Timestamps** — `created` is required everywhere and takes epoch seconds or ISO 8601. So is a
+- **Timestamps** — `created` is required of every DOCUMENT (a `subtype: "repo"` record states
+  a repository, not a document, and dates nothing) and takes epoch seconds or ISO 8601. So is a
   child row's own second (`created_ts` on a comment, `created` on a slack reply or a gmail thread
   message): a time nobody wrote is a time nobody can check, and the server sorts and filters on it.
   `updated` is required only where the vendor always reports one (drive, notion) and optional

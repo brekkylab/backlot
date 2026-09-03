@@ -192,9 +192,9 @@ def _not_implemented(selector: str, resource: str) -> Response:
     as a 500 after retrying.
 
     Real S3 answers each of these operations rather than refusing it — measured against a general
-    purpose bucket, ``?versioning`` is an empty ``<VersioningConfiguration>`` and
-    ``?tagging`` is ``NoSuchTagSet`` — so every refusal here is a gap the S3 baseline records, with
-    the answer real S3 gives written beside it.
+    purpose bucket, ``?versioning`` is an empty ``<VersioningConfiguration>``, a bucket's
+    ``?tagging`` is ``NoSuchTagSet`` and an object's an empty ``<Tagging>`` — so every refusal here
+    is a gap the S3 baseline records, with the answer real S3 gives written beside it.
     """
     return _error(
         "NotImplemented",

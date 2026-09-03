@@ -46,7 +46,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,12 +54,9 @@ from backlot.config import Settings
 
 HELLO_CORPUS = Path(__file__).resolve().parent / "data" / "hello.jsonl"
 # Settings default; per-user tokens are in <data_dir>/tokens.yaml. Used only as the LAST-RESORT
-# fallback in serve_or_connect()'s remote branch, when the real token can't be fetched — either
-# GET /_meta/users is disabled (BACKLOT_EXPOSE_TOKENS=false, a legitimate configuration) or the
-# URL doesn't clear _trusted_for_token_fetch's bar (plain HTTP to a non-loopback host: treating an
-# unauthenticated plaintext response as a credential there is the wrong default, not merely
-# unavailable). serve() itself never falls back to this: it reads the real value via
-# Settings() below.
+# fallback in serve_or_connect()'s remote branch, when GET /_meta/users can't be read at all — a
+# network failure, or a server too old to serve it. serve() itself never falls back to this: it
+# reads the real value via Settings() below.
 TOKEN = "admin-service-token"
 
 # How long serve()'s local readiness poll waits for each attempt, and how many attempts it
@@ -82,13 +78,9 @@ class Server:
     (``serve_or_connect``'s remote-``url`` branch), it is fetched from that server's own
     ``GET /_meta/users`` — a Backlot-only affordance (``backlot/main.py``) that already serves
     ``admin_token`` for exactly this purpose (``examples/using-official-sdk/s3.py`` tells users to
-    get credentials from that endpoint for a remote server they didn't start) — but only when
-    ``url`` clears ``_trusted_for_token_fetch`` (``https``, or a loopback host): a plaintext
-    response from an arbitrary non-loopback host is never treated as a credential, independent of
-    whether the endpoint would have answered. In either case the fetch doesn't happen — the
-    endpoint disabled (``BACKLOT_EXPOSE_TOKENS=false``) or the URL not meeting that bar — ``token``
-    falls back to the ``Settings`` default as a GUESS, wrong if that server's operator also
-    overrode ``BACKLOT_ADMIN_TOKEN``.
+    get credentials from that endpoint for a remote server they didn't start). When that read
+    fails, ``token`` falls back to the ``Settings`` default as a GUESS, wrong if that server's
+    operator also overrode ``BACKLOT_ADMIN_TOKEN``.
     """
 
     base_url: str
@@ -141,50 +133,39 @@ def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
         proc.wait()
 
 
-def _trusted_for_token_fetch(url: str) -> bool:
-    """Whether it's safe to treat a plaintext ``GET /_meta/users`` response from ``url`` as a
-    credential.
+def meta_users(url: str, timeout: float = 10) -> dict:
+    """The directory a Backlot server publishes at ``GET /_meta/users``: every user's email and
+    token, each one's S3 access-key pair, and the admin's own.
 
-    Gates the token FETCH in ``serve_or_connect``'s remote branch only — not the connection
-    itself; we already talk to whatever ``--url`` the caller passes, that's the whole feature. But
-    fetching a token turns that response into this process's own credential, so it gets a higher
-    bar than merely being reachable: ``https`` (transport-protected) or a loopback host (this
-    project's two real remote callers, ``http://localhost:8000`` and
-    ``https://backlot.brekkylab.com``, both already clear it). Parses the host with
-    :mod:`urllib.parse` rather than string-matching, so ``https://evil.example/?x=localhost``
-    can't slip through by merely containing the substring.
+    Raises when it cannot be read or is not a directory at all; a directory missing the
+    individual fields a caller needs is :func:`backlot.mcp.resolve`'s to report. Strict either
+    way, because a caller naming a user
+    (``backlot mcp --user``) cannot be satisfied by a guess — a resolution that silently became the
+    admin would answer with the admin's unfiltered view. :func:`admin_token_for` is the lenient
+    wrapper ``serve_or_connect`` wants instead.
     """
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme == "https":
-        return True
-    return parsed.hostname in ("localhost", "127.0.0.1", "::1")
-
-
-def _admin_token_from_meta_users(url: str, timeout: float = 10) -> str | None:
-    """Fetch the real admin token from a remote server's own ``GET /_meta/users`` — the same
-    affordance ``examples/using-official-sdk/s3.py`` already points users at for a remote
-    server's credentials. Returns None (not raises) if the endpoint 404s
-    (``BACKLOT_EXPOSE_TOKENS=false``, a legitimate configuration, not an error) or the response
-    is otherwise unusable, so the caller can fall back to a guess rather than fail the connect."""
-    try:
-        with urllib.request.urlopen(f"{url.rstrip('/')}/_meta/users", timeout=timeout) as r:
-            if r.status != 200:
-                return None
-            data = json.loads(r.read())
-        token = data.get("admin_token")
-        return token if isinstance(token, str) else None
-    except Exception:  # noqa: BLE001
-        return None
+    with urllib.request.urlopen(f"{url.rstrip('/')}/_meta/users", timeout=timeout) as r:
+        if r.status != 200:
+            raise RuntimeError(f"{url}/_meta/users answered HTTP {r.status}")
+        data = json.loads(r.read())
+    if not isinstance(data, dict) or not isinstance(data.get("admin_token"), str):
+        raise RuntimeError(f"{url}/_meta/users did not answer a user directory")
+    return data
 
 
 def admin_token_for(url: str) -> str:
     """The admin token for the already-running server at ``url``: fetched from its own
-    ``GET /_meta/users`` when ``url`` clears :func:`_trusted_for_token_fetch`, and the package
-    default as a GUESS otherwise — see ``Server.token``'s docstring for why the bar exists and when
-    the guess is wrong."""
-    if _trusted_for_token_fetch(url):
-        return _admin_token_from_meta_users(url) or TOKEN
-    return TOKEN
+    ``GET /_meta/users``, and the package default as a GUESS when that read fails — see
+    ``Server.token``'s docstring for when the guess is wrong.
+
+    Lenient where :func:`meta_users` is strict: a server that won't say who its admin is still
+    serves every fallback an example needs, so refusing to connect would break a working session
+    over a credential the caller may never use.
+    """
+    try:
+        return meta_users(url)["admin_token"]
+    except Exception:  # noqa: BLE001 — unreachable, 404, or not a directory: all mean "guess"
+        return TOKEN
 
 
 def _healthy(url: str, timeout: float = 10) -> bool:
@@ -334,13 +315,9 @@ def serve_or_connect(
             # stderr, here and below: a caller may be an MCP stdio server whose stdout IS the
             # protocol stream, and one stray line there ends the session.
             print(f"using Backlot at {url}", file=sys.stderr)
-            # Fetched, not guessed, when possible AND safe (see Server.token's docstring): GET
-            # /_meta/users on the remote server reports its real admin_token. Gated by
-            # _trusted_for_token_fetch — this is about not treating an unauthenticated plaintext
-            # response from an arbitrary host as a credential, NOT about `url`'s server being
-            # untrustworthy in general (we already talk to it either way). Falls back to the
-            # Settings-default GUESS whenever the fetch doesn't happen at all: the endpoint
-            # disabled (BACKLOT_EXPOSE_TOKENS=false) or the URL not clearing that bar.
+            # Fetched, not guessed, when the server will say (see Server.token's docstring): GET
+            # /_meta/users on the remote server reports its real admin_token. Falls back to the
+            # Settings-default GUESS when that read fails at all.
             yield Server(base_url=url.rstrip("/"), token=admin_token_for(url), data_dir=None)
             return
         print(f"--url {url!r} is not reachable — falling back to a local server", file=sys.stderr)

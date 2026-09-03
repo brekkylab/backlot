@@ -25,7 +25,9 @@ little copied setup is the lesser evil.
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
+import dataclasses
 import json
 import os
 import re
@@ -253,16 +255,17 @@ def test_mcp_s3_lists_objects(live_server):
 # ------------------------------------------------------ the OpenAPI→MCP bridge (backlot.mcp)
 
 
-def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None) -> bool:
+def _bridge_call(base, source, creds, *, tool_pred, args, ok_pred) -> bool:
     """Exercise one source's bridge in-process: the same ``backlot.mcp.openapi_server`` that
     ``backlot mcp`` serves over stdio, driven through fastmcp's in-memory client. The spec it
     consumes is ``backlot.openapi``'s, unit-tested in ``tests/test_openapi.py``; what is proved
-    here is the transport — the credential travels with every call. Returns ``ok_pred`` over the
-    tool's response text; a blocked/errored call is ``False``."""
+    here is the transport — the credential travels with every call, in whichever spelling the
+    source authenticates with. Returns ``ok_pred`` over the tool's response text; a
+    blocked/errored call is ``False``."""
     from fastmcp import Client
 
     async def _go():
-        server = backlot_mcp.openapi_server(base, token, source, username=username)
+        server = backlot_mcp.openapi_server(base, creds, source)
         async with Client(server) as c:
             tool = next(t for t in (await c.list_tools()) if tool_pred(t.name))
             res = await c.call_tool(tool.name, args)
@@ -299,7 +302,6 @@ _BRIDGE_CASES = [
             "number": row["number"],
         },
         lambda t, row: '"number"' in t and '"title"' in t,
-        None,
         id="github",
     ),
     pytest.param(
@@ -308,7 +310,6 @@ _BRIDGE_CASES = [
         lambda n: n.startswith("get_object"),
         lambda row, st: {"object_type": row["object_type"], "record_id": row["id"]},
         lambda t, row: '"properties"' in t and row["id"] in t,
-        None,
         id="hubspot",
     ),
     pytest.param(
@@ -317,7 +318,6 @@ _BRIDGE_CASES = [
         lambda n: n.startswith("search_messages"),
         lambda row, st: {"query": "reorg"},  # the restricted people-confidential message
         lambda t, row: "headcount" in t,  # a word only that message carries
-        None,
         id="slack-search",
     ),
     pytest.param(
@@ -326,7 +326,6 @@ _BRIDGE_CASES = [
         lambda n: n.startswith("gmail_messages_get"),
         lambda row, st: {"user_id": "me", "msg_id": row["id"], "format": "full"},
         lambda t, row: '"payload"' in t or '"snippet"' in t,
-        None,
         id="gmail",
     ),
     pytest.param(
@@ -335,7 +334,6 @@ _BRIDGE_CASES = [
         lambda n: n.startswith("drive_files_get"),
         lambda row, st: {"file_id": row["id"]},
         lambda t, row: '"name"' in t and '"mimeType"' in t,
-        None,
         id="google_drive",
     ),
     pytest.param(
@@ -344,7 +342,6 @@ _BRIDGE_CASES = [
         lambda n: n.startswith("get_page"),
         lambda row, st: {"page_id": row["id"]},
         lambda t, row: '"object": "page"' in t or '"object":"page"' in t,
-        None,
         id="notion",
     ),
     pytest.param(
@@ -353,17 +350,28 @@ _BRIDGE_CASES = [
         lambda n: n.startswith("jira_get_issue"),
         lambda row, st: {"key": row["key"]},
         lambda t, row: '"key"' in t and '"fields"' in t,
-        "svc@example.com",  # this bridge authenticates with basic auth
+        # nothing to pass: Basic for the resolved user, Bearer for the admin, both run below
         id="atlassian",
+    ),
+    pytest.param(
+        "s3",
+        None,
+        lambda n: n.startswith("object_get"),
+        lambda row, st: {"bucket": row["bucket"], "key": row["key"]},
+        # the object's own body, which S3 returns verbatim rather than in an envelope
+        lambda t, row: row["content"][:40] in t,
+        id="s3",
     ),
 ]
 
 
-@pytest.mark.parametrize("source, where, tool_pred, build_args, ok, username", _BRIDGE_CASES)
-def test_mcp_bridge_enforces_the_acl(
-    live_server, source, where, tool_pred, build_args, ok, username
-):
-    """A document the admin reads through the bridge's own tool is not-found for a scoped user."""
+@pytest.mark.parametrize("source, where, tool_pred, build_args, ok", _BRIDGE_CASES)
+def test_mcp_bridge_enforces_the_acl(live_server, source, where, tool_pred, build_args, ok):
+    """A document the admin reads through the bridge's own tool is not-found for a scoped user.
+
+    The credentials come from ``backlot.mcp.resolve``, the same email-to-credentials step
+    ``backlot mcp --user`` runs, so what is exercised is the resolution as well as the transport —
+    including S3, whose calls are signed rather than bearer-authenticated."""
     pytest.importorskip("fastmcp")
     base, settings = live_server
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
@@ -372,19 +380,93 @@ def test_mcp_bridge_enforces_the_acl(
     assert row is not None, f"no {doc_source} document is ACL-restricted from {email} in SAMPLE"
     args = build_args(row, settings)
 
-    def reads(token):
+    def reads(creds):
         return _bridge_call(
-            base,
-            source,
-            token,
-            username=username,
-            tool_pred=tool_pred,
-            args=args,
-            ok_pred=lambda t: ok(t, row),
+            base, source, creds, tool_pred=tool_pred, args=args, ok_pred=lambda t: ok(t, row)
         )
 
-    assert reads(settings.admin_token), f"admin should read the {doc_source} document"
-    assert not reads(user["token"]), f"{email} should be blocked from the {doc_source} document"
+    assert reads(backlot_mcp.resolve(base, None)), f"admin should read the {doc_source} document"
+    assert not reads(backlot_mcp.resolve(base, email)), (
+        f"{email} should be blocked from the {doc_source} document"
+    )
+
+
+def test_auth_header_spells_each_source_the_way_its_client_speaks():
+    """Which scheme goes on the wire, asserted on the header rather than on an answer: Backlot's
+    Atlassian surface accepts Bearer too (``auth.require_basic_or_bearer``), so no round-trip can
+    tell the two apart. The reason the Basic branch exists is mcp-atlassian, which speaks
+    ``email:api_token`` and nothing else, so that is what has to be pinned."""
+    creds = backlot_mcp.Credentials(
+        token="usr-abc", email="ava@acme.com", s3_access_key_id="AKIA", s3_secret_access_key="s"
+    )
+    header = backlot_mcp._auth_header(creds, "atlassian")["Authorization"]
+    scheme, _, payload = header.partition(" ")
+    assert scheme == "Basic"
+    assert base64.b64decode(payload).decode() == "ava@acme.com:usr-abc"
+    for source in ("slack", "github", "notion", "linear"):
+        assert backlot_mcp._auth_header(creds, source) == {"Authorization": "Bearer usr-abc"}
+    # the admin has no email to put in a username, so Atlassian falls back to Bearer for them
+    admin = dataclasses.replace(creds, email=None)
+    assert backlot_mcp._auth_header(admin, "atlassian") == {"Authorization": "Bearer usr-abc"}
+
+
+def test_mcp_atlassian_bridge_authenticates_basic_for_the_resolved_user(live_server):
+    """The Atlassian case above only asserts a scoped user is BLOCKED from a restricted issue, and
+    `_bridge_call` reports a rejected credential the same way it reports a hidden document, so on
+    its own it stays green with the Basic header corrupted. This is the positive half.
+
+    What it cannot show is WHICH half of `email:token` authenticated, because on this surface
+    ``auth.resolve_basic`` accepts the username alone when the password does not resolve — measured,
+    an empty password answers 200, which real Atlassian refuses. The header itself is asserted in
+    ``test_auth_header_spells_each_source_the_way_its_client_speaks`` instead, which is where a
+    mangled or swapped credential is caught without depending on that behaviour."""
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    email = yaml.safe_load(settings.tokens_path.read_text())["users"][0]["email"]
+    creds = backlot_mcp.resolve(base, email)
+    conn = store.connect_ro(settings.db_path)
+    acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
+    vids = acl.visible_ids(conn, acl.resolve(creds.token))
+    row = next(
+        r
+        for r in conn.execute("SELECT * FROM jira_issues")
+        if store.get_document(conn, "jira", r["key"], visible_ids=vids) is not None
+    )
+    assert _bridge_call(
+        base,
+        "atlassian",
+        creds,
+        tool_pred=lambda n: n.startswith("jira_get_issue"),
+        args={"key": row["key"]},
+        ok_pred=lambda t: row["key"] in t and '"fields"' in t,
+    ), f"Basic {email}:<token> should read an issue that user can see"
+
+
+def test_mcp_s3_bridge_signs_for_the_resolved_user(live_server):
+    """The S3 case above asserts a scoped user CANNOT read a restricted object, and `_bridge_call`
+    reports a refused signature the same way it reports a hidden object — so on its own that
+    assertion would stay green if per-user key derivation broke. This is the other half: the same
+    user's own keys sign a readable object successfully, so the refusal above is the ACL's."""
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    email = yaml.safe_load(settings.tokens_path.read_text())["users"][0]["email"]
+    creds = backlot_mcp.resolve(base, email)
+    conn = store.connect_ro(settings.db_path)
+    acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
+    vids = acl.visible_ids(conn, acl.resolve(creds.token))
+    row = next(
+        r
+        for r in conn.execute("SELECT * FROM s3_objects")
+        if store.get_document(conn, "s3", r["bucket"], r["key"], visible_ids=vids) is not None
+    )
+    assert _bridge_call(
+        base,
+        "s3",
+        creds,
+        tool_pred=lambda n: n.startswith("object_get"),
+        args={"bucket": row["bucket"], "key": row["key"]},
+        ok_pred=lambda t: row["content"][:40] in t,
+    ), f"{email}'s own access keys should sign a readable object"
 
 
 # ------------------------------------------ Linear + Fireflies (GraphQL→MCP bridge)
@@ -395,7 +477,7 @@ def test_mcp_bridge_enforces_the_acl(
 # the tool carries the caller's credential, so Backlot's ACL decides what comes back.
 
 
-def _graphql_bridge_call(base, source, token, *, tool_name, args, ok_pred, depth) -> bool:
+def _graphql_bridge_call(base, source, creds, *, tool_name, args, ok_pred, depth) -> bool:
     """Exercise one GraphQL source's bridge in-process: ``backlot.mcp.graphql_server``, the same
     server ``backlot mcp`` runs over stdio, driven through fastmcp's in-memory client. The
     derivation it serves is unit-tested in ``tests/test_graphql.py``; what is proved here is that
@@ -404,7 +486,7 @@ def _graphql_bridge_call(base, source, token, *, tool_name, args, ok_pred, depth
     from fastmcp import Client
 
     async def _go():
-        server = backlot_mcp.graphql_server(base, token, source, depth=depth)
+        server = backlot_mcp.graphql_server(base, creds, source, depth=depth)
         async with Client(server) as c:
             res = await c.call_tool(tool_name, args)
             return ok_pred("".join(getattr(b, "text", "") for b in res.content))
@@ -432,19 +514,21 @@ def test_mcp_graphql_bridge_enforces_the_acl(live_server, source, tool_name, dep
     row, email = _restricted_doc(settings, user["token"], source)
     assert row is not None, f"no {source} document is ACL-restricted from {email} in SAMPLE"
 
-    def reads(token):
+    def reads(creds):
         return _graphql_bridge_call(
             base,
             source,
-            token,
+            creds,
             tool_name=tool_name,
             args={"id": row["id"]},
             ok_pred=lambda t: row["title"] in t,
             depth=depth,
         )
 
-    assert reads(settings.admin_token), f"admin should read the {source} document"
-    assert not reads(user["token"]), f"{email} should be blocked from the {source} document"
+    assert reads(backlot_mcp.resolve(base, None)), f"admin should read the {source} document"
+    assert not reads(backlot_mcp.resolve(base, email)), (
+        f"{email} should be blocked from the {source} document"
+    )
 
 
 def test_mcp_graphql_bridge_round_trips_a_nested_filter(live_server):
@@ -475,7 +559,7 @@ def test_mcp_graphql_bridge_round_trips_a_nested_filter(live_server):
     assert _graphql_bridge_call(
         base,
         "linear",
-        settings.admin_token,
+        backlot_mcp.resolve(base, None),
         tool_name="issues",
         args={"filter": {"title": {"containsIgnoreCase": word}}, "first": 5},
         ok_pred=ok,
@@ -491,7 +575,7 @@ def test_mcp_hubspot_bridge_search_tool(live_server):
     assert _bridge_call(
         base,
         "hubspot",
-        settings.admin_token,
+        backlot_mcp.resolve(base, None),
         tool_pred=lambda n: n.startswith("search_objects"),
         args={
             "object_type": "companies",
@@ -506,7 +590,7 @@ def test_mcp_hubspot_bridge_search_tool(live_server):
 # ------------------------------------------------------------------ `backlot mcp` over stdio
 # The command an MCP client runs. The in-memory tests above prove each source's bridge; these prove
 # the process around it: the stdio transport, the per-source namespace, the server it starts when
-# none answers, and that the token on its command line is the one every tool call carries.
+# none answers, and that the person named on its command line is the one every tool call answers as.
 
 
 def _mcp_params(*args, env=None):
@@ -518,14 +602,22 @@ def _mcp_params(*args, env=None):
     )
 
 
-async def _tool_names(params, errlog=None) -> list[str]:
+async def _tools_and_instructions(params, errlog=None) -> tuple[list[str], str | None]:
+    """The tool names a session lists, and the ``instructions`` it advertised alongside them — a
+    client feeds the latter to the model, so the two have to agree about which sources exist."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
     async with stdio_client(params, errlog=errlog or sys.stderr) as (r, w):
         async with ClientSession(r, w) as sess:
-            await sess.initialize()
-            return [t.name for t in (await sess.list_tools()).tools]
+            init = await sess.initialize()
+            names = [t.name for t in (await sess.list_tools()).tools]
+            return names, init.instructions
+
+
+async def _tool_names(params, errlog=None) -> list[str]:
+    names, _ = await _tools_and_instructions(params, errlog=errlog)
+    return names
 
 
 def _served_tool_ids(base: str, source: str) -> set[str]:
@@ -564,27 +656,69 @@ def test_backlot_mcp_serves_every_source_namespaced(live_server):
         assert by_source[source] == _served_tool_ids(base, source), source
     assert {"issue", "issues", "teams", "comments"} <= by_source["linear"]
     assert {"transcript", "transcripts", "user", "users"} <= by_source["fireflies"]
+    assert {"list_buckets", "bucket_get", "object_get"} == by_source["s3"]
     assert max(map(len, names)) <= 64, sorted(names, key=len)[-3:]
 
 
-def test_backlot_mcp_scopes_every_tool_call_to_the_token(live_server):
-    """Over the real command, the token on its command line is the one each call carries: the same
-    search finds the restricted message for the admin and not for a scoped user."""
+def test_backlot_mcp_advertises_only_the_sources_it_mounted(live_server):
+    """`instructions` is derived from what was mounted. A fixed list would tell the model that a
+    `--source` run's missing sources are there to call, and it would read every tool-not-found as
+    its own mistake."""
+    base, _ = live_server
+    names, instructions = asyncio.run(
+        _tools_and_instructions(_mcp_params("--source", "slack", "--source", "s3", "--url", base))
+    )
+    assert {n.partition("_")[0] for n in names} == {"slack", "s3"}
+    assert "slack_*" in instructions and "s3_*" in instructions
+    for absent in ("gmail_*", "notion_*", "linear_*", "atlassian_*"):
+        assert absent not in instructions, instructions
+    # the note about Atlassian's two products is part of that list, so it goes too
+    assert "Confluence" not in instructions, instructions
+
+
+def test_backlot_mcp_scopes_every_tool_call_to_the_user(live_server):
+    """Over the real command, `--user` is who each call answers as: the same search finds the
+    restricted message for the admin (no --user) and not for the person named."""
     base, settings = live_server
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
 
-    def finds_it(token):
+    def finds_it(*who):
         return asyncio.run(
             _call(
-                _mcp_params("--source", "slack", "--url", base, "--token", token),
+                _mcp_params("--source", "slack", "--url", base, *who),
                 tool_pred=lambda n: n == "search_messages",
                 args={"query": "reorg"},  # the restricted people-confidential message
                 ok_pred=lambda t: "headcount" in t,  # a word only that message carries
             )
         )
 
-    assert finds_it(settings.admin_token)
-    assert not finds_it(user["token"])
+    assert finds_it()
+    assert not finds_it("--user", user["email"])
+
+
+def test_resolve_matches_an_email_case_insensitively(live_server):
+    """Atlassian and Google both treat an address case-insensitively, so an email copied in the
+    shape a Jira page displays it resolves to the same person — and carries the corpus's own
+    spelling onward, which is what Atlassian's Basic header sends."""
+    base, settings = live_server
+    email = yaml.safe_load(settings.tokens_path.read_text())["users"][0]["email"]
+    assert email == email.lower(), email
+    for spelling in (email, email.upper(), email.capitalize()):
+        assert backlot_mcp.resolve(base, spelling).email == email, spelling
+
+
+def test_backlot_mcp_refuses_an_email_the_corpus_does_not_know(live_server):
+    """A name that resolves to nobody is refused, not quietly promoted to the admin — whose
+    unfiltered view is exactly what a caller naming a person did not ask for."""
+    base, _ = live_server
+    out = subprocess.run(
+        [sys.executable, "-m", "backlot", "mcp", "--url", base, "--user", "nobody@example.com"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert out.returncode == 1, out
+    assert "nobody@example.com" in out.stderr and "not one of the" in out.stderr, out.stderr
 
 
 def test_backlot_mcp_starts_a_server_when_none_answers(tmp_path):

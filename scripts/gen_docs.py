@@ -14,8 +14,8 @@ Why a mapping lives here instead of being derived: nothing in the app answers "w
 belongs to which source_type". ``jira`` and ``confluence`` both sit under ``/atlassian``; one
 ``google_drive`` spans ``/drive``, ``/docs``, ``/sheets`` and ``/slides``; and ``/batch``,
 ``/oauth2``, ``/health`` and ``/_meta`` are not sources at all. ``backlot.openapi.SOURCE_PREFIXES``
-cannot stand in — it is scoped to the MCP bridge, so it omits S3 deliberately and merges Jira with
-Confluence.
+cannot stand in — it is scoped to the MCP bridge, so it merges Jira with Confluence under
+``atlassian`` and knows ``google_drive`` as ``gdrive``.
 
 Route introspection is out too: FastAPI wraps an included router in a ``_IncludedRouter`` exposing
 neither ``.path`` nor ``.routes``, so walking ``app.routes`` would depend on FastAPI internals.
@@ -114,9 +114,9 @@ def _slice_key(prefixes: tuple[str, ...]) -> str | None:
     """The key `/_meta/openapi/<key>` wants for a source served under `prefixes`, or None.
 
     That endpoint is keyed on ``openapi.SOURCE_PREFIXES``, which is the MCP bridge's namespace and
-    not ``source_type``: Jira and Confluence share ``atlassian``, ``google_drive`` answers to
-    ``gdrive``, and S3 has no entry at all. Derived by prefix overlap rather than restated, so the
-    two namespaces cannot drift apart in the skill's routing table.
+    not ``source_type``: Jira and Confluence share ``atlassian`` and ``google_drive`` answers to
+    ``gdrive``. Derived by prefix overlap rather than restated, so the two namespaces cannot drift
+    apart in the skill's routing table.
     """
     keys = [
         key

@@ -621,22 +621,13 @@ def mcp(
             "answers, else one started here over the data dir's corpus",
         ),
     ] = None,
-    token: Annotated[
+    user: Annotated[
         Optional[str],
         typer.Option(
-            "--token",
-            metavar="TOKEN",
-            help="authenticate every tool call as this user (a token from GET /_meta/users); "
-            "without it, the admin token, which sees everything",
-        ),
-    ] = None,
-    username: Annotated[
-        Optional[str],
-        typer.Option(
-            "--username",
-            metavar="USER",
-            help="switch Atlassian to HTTP Basic `USER:token`, the scheme mcp-atlassian speaks; "
-            "Backlot resolves the token and ignores the name",
+            "--user",
+            metavar="EMAIL",
+            help="answer every tool call as this person, so Backlot's per-document ACL applies "
+            "(an email from GET /_meta/users); without it, the admin, who sees everything",
         ),
     ] = None,
     depth: Annotated[
@@ -652,17 +643,9 @@ def mcp(
 ) -> None:
     """Serve Backlot's sources as MCP tools over stdio, starting a server if none is running.
 
-    This is the command an MCP client runs: `claude mcp add backlot -- backlot mcp`. With no server at --url or on the default port, it starts one over the data dir's corpus (the bundled one when the data dir is empty) and stops it when the client disconnects. Every tool call carries the caller's token, so Backlot's per-document ACL applies.
+    This is the command an MCP client runs: `claude mcp add backlot -- backlot mcp`. It bridges the server at --url, which must answer; without --url, the one on the default port if a Backlot server is there, else one it starts over the data dir's corpus (the bundled one when the data dir is empty) and stops when the client disconnects. `--user` resolves one person's credentials for every source at once — bearer token, Atlassian's Basic spelling, S3's signing keys — so the per-document ACL decides each answer.
     """  # noqa: E501 — see the note on `serve`: a paragraph must be one source line.
     for source in sources or ():
-        if source == "s3":
-            # Named on its own because the reason differs: s3 is a real source, just not a
-            # bridgeable one — SigV4 signs each request, and a fixed header cannot.
-            raise typer.BadParameter(
-                "s3 is SigV4-signed and has no MCP bridge; point awslabs.aws-api-mcp-server at "
-                "<url>/s3 instead (examples/using-mcp-with-agents/s3.py)",
-                param_hint="'--source'",
-            )
         if source not in _mcp.SOURCES:
             raise typer.BadParameter(
                 f"{source!r} is not one of {', '.join(_mcp.SOURCES)}", param_hint="'--source'"
@@ -675,7 +658,7 @@ def mcp(
     if depth is not None and depth < 1:
         raise typer.BadParameter("must be at least 1", param_hint="'--depth'")
     _use_data_dir(data_dir)
-    _mcp.run(sources, url=url, token=token, username=username, depth=depth)
+    _mcp.run(sources, url=url, user=user, depth=depth)
 
 
 # --------------------------------------------------------------------------- diff

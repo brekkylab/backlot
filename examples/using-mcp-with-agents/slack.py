@@ -4,12 +4,12 @@
 No maintained Slack MCP server accepts a base-URL override (they hard-wire slack.com), so instead
 `backlot mcp --source slack` turns Backlot's typed `/openapi.json` into MCP tools: it slices to
 `/slack/api`, dedupes the GET/POST operation aliases, and serves them over stdio with a
-`Bearer <token>` header — so retrieval is ACL-scoped by the token (default admin; per-user from
-GET /_meta/users).
+`Bearer <token>` header — so retrieval is ACL-scoped by `--user` (default: the admin; any email
+from GET /_meta/users).
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
-    ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/slack.py [--url … --token … --agent openai]
+    ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/slack.py [--url … --user … --agent openai]
 """
 
 from __future__ import annotations
@@ -44,15 +44,16 @@ QUESTION = (
 )
 
 
-def build_params(base_url: str, token: str) -> StdioServerParameters:
+def build_params(base_url: str, user: str | None = None) -> StdioServerParameters:
     """Run `backlot mcp --source slack` as a stdio MCP server pointed at Backlot.
 
     `-m backlot` through this interpreter rather than the `backlot` script, so it works in an
-    environment whose bin/ is not on PATH."""
-    return StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "backlot", "mcp", "--source", "slack", "--url", base_url, "--token", token],
-    )
+    environment whose bin/ is not on PATH. Without `--user` the command answers as the admin, so
+    there is nothing to pass for the default."""
+    args = ["-m", "backlot", "mcp", "--source", "slack", "--url", base_url]
+    if user:
+        args += ["--user", user]
+    return StdioServerParameters(command=sys.executable, args=args)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -63,9 +64,10 @@ def _parse_args() -> argparse.Namespace:
         "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
     )
     p.add_argument(
-        "--token",
-        help="Backlot bearer token from GET /_meta/users "
-        "(default: the admin token, which sees everything)",
+        "--user",
+        metavar="EMAIL",
+        help="answer as this person, from GET /_meta/users "
+        "(default: the admin, who sees everything)",
     )
     p.add_argument(
         "--agent",
@@ -79,7 +81,7 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     with serve_or_connect(CORPUS, url=args.url) as s:
-        if args.token:
-            print("authenticating with --token → retrieval is ACL-filtered to that user")
-        params = build_params(s.base_url, args.token or s.token)
+        if args.user:
+            print(f"answering as {args.user} → retrieval is ACL-filtered to that person")
+        params = build_params(s.base_url, args.user)
         run_agent(args.agent, params, QUESTION)

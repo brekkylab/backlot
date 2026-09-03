@@ -40,7 +40,7 @@ with backlot.serve() as s:  # no arguments: a tiny hello-world corpus
 
 ### Let your coding agent run Backlot instantly
 
-This repo is its own plugin marketplace, so the [agent skill](skills/backlot/SKILL.md) installs with no clone and no `pip install` first. Or hand the agent every source as MCP tools: `backlot mcp` starts a server if none is running and serves them all over stdio.
+This repo is its own plugin marketplace, so the [agent skill](skills/backlot/SKILL.md) installs with no clone and no `pip install` first. Or hand the agent every source as MCP tools: `backlot mcp` starts a server if none is running and serves them all over stdio, with `--user <email>` answering as that person.
 
 ```bash
 claude plugin marketplace add brekkylab/backlot && claude plugin install backlot@brekkylab

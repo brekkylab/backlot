@@ -596,12 +596,11 @@ def test_mcp_routes_its_options(monkeypatch, tmp_path):
     before it does — ``attach`` reads the settings to find the corpus a started server serves."""
     seen = {}
 
-    def fake_run(sources, *, url, token, username, depth):
+    def fake_run(sources, *, url, user, depth):
         seen.update(
             sources=sources,
             url=url,
-            token=token,
-            username=username,
+            user=user,
             depth=depth,
             data_dir=os.environ.get("BACKLOT_DATA_DIR"),
         )
@@ -611,8 +610,7 @@ def test_mcp_routes_its_options(monkeypatch, tmp_path):
         "mcp",
         "--source", "slack", "--source", "linear",
         "--url", "http://127.0.0.1:9",
-        "--token", "usr-x",
-        "--username", "svc@example.com",
+        "--user", "ava.chen@acme.com",
         "--depth", "2",
         "--data-dir", str(tmp_path),
     ]  # fmt: skip
@@ -620,8 +618,7 @@ def test_mcp_routes_its_options(monkeypatch, tmp_path):
     assert seen == {
         "sources": ["slack", "linear"],
         "url": "http://127.0.0.1:9",
-        "token": "usr-x",
-        "username": "svc@example.com",
+        "user": "ava.chen@acme.com",
         "depth": 2,
         "data_dir": str(tmp_path),
     }
@@ -631,18 +628,28 @@ def test_mcp_defaults_to_every_source(monkeypatch):
     seen = {}
     monkeypatch.setattr(cli._mcp, "run", lambda sources, **kw: seen.update(sources=sources, **kw))
     assert cli.main(["mcp"]) == 0
-    assert seen == {"sources": None, "url": None, "token": None, "username": None, "depth": None}
+    assert seen == {"sources": None, "url": None, "user": None, "depth": None}
+
+
+def test_mcp_serves_s3_like_any_other_source(monkeypatch):
+    """s3 is an ordinary --source: SigV4 signs each request, and the bridge signs rather than
+    holding a header, so nothing about it needs handling here."""
+    seen = {}
+    monkeypatch.setattr(cli._mcp, "run", lambda sources, **kw: seen.update(sources=sources))
+    assert cli.main(["mcp", "--source", "s3"]) == 0
+    assert seen == {"sources": ["s3"]}
 
 
 @pytest.mark.parametrize(
     "argv, needle",
     [
-        (["mcp", "--source", "s3"], "s3 is SigV4-signed and has no MCP bridge"),
         (["mcp", "--source", "jira"], "'jira' is not one of github, slack"),
         (["mcp", "--source", "slack", "--depth", "2"], "--depth applies to linear and fireflies"),
         (["mcp", "--depth", "0"], "must be at least 1"),
+        (["mcp", "--token", "usr-x"], "No such option"),
+        (["mcp", "--username", "svc@example.com"], "No such option"),
     ],
-    ids=["s3", "unknown-source", "depth-without-graphql", "depth-zero"],
+    ids=["unknown-source", "depth-without-graphql", "depth-zero", "no-token", "no-username"],
 )
 def test_mcp_rejects_bad_options_before_touching_a_server(monkeypatch, capsys, argv, needle):
     """Each refusal names what was wrong, and ``run`` is never reached — a rejected invocation

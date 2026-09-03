@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 import backlot
+import backlot.server
 from tests._helpers import complete
 from backlot.server import _terminate
 
@@ -159,30 +160,31 @@ def test_serve_or_connect_fetches_a_remote_servers_real_admin_token(monkeypatch)
                 assert json.load(r)["ok"] is True
 
 
-def test_serve_or_connect_does_not_fetch_the_token_over_plain_http_to_a_non_loopback_host(
-    monkeypatch,
-):
-    """Hardening: fetching a credential from an unauthenticated plaintext response is the wrong
-    default once the host isn't loopback. Only https or loopback should trigger the
-    GET /_meta/users fetch at all — a plain-http non-loopback URL must fall back to the guess
-    WITHOUT the fetch ever being attempted. Asserted by spying on
-    `_admin_token_from_meta_users` and requiring it was never called, which is a stronger claim
-    than just checking the returned token (that could coincidentally match)."""
+def test_meta_users_is_strict_where_admin_token_for_is_lenient():
+    """The two readers of ``GET /_meta/users`` answer different questions, so they fail
+    differently. ``meta_users`` backs ``backlot mcp --user``, which names a person and cannot be
+    satisfied by a guess — a silent fallback would serve the admin's unfiltered view of the corpus
+    under that person's name. ``admin_token_for`` only asks who the admin is, and a server that
+    won't say still serves every fallback an example needs, so it guesses rather than refusing to
+    connect."""
     import backlot.server as server_mod
 
-    monkeypatch.setattr(server_mod, "_healthy", lambda url, timeout=10: True)
+    dead = "http://127.0.0.1:1"
+    with pytest.raises(Exception):  # noqa: B017 — urllib's own error, whatever it is
+        server_mod.meta_users(dead, timeout=2)
+    assert server_mod.admin_token_for(dead) == server_mod.TOKEN
 
-    calls = []
-    monkeypatch.setattr(
-        server_mod,
-        "_admin_token_from_meta_users",
-        lambda url, timeout=10: calls.append(url) or "should-never-be-used",
-    )
 
-    with backlot.serve_or_connect(url="http://example.com:8000") as s:
-        assert s.token == server_mod.TOKEN
-
-    assert calls == [], f"token fetch must not run against a plain-http non-loopback host: {calls}"
+def test_meta_users_reports_a_real_servers_own_credentials():
+    """Against a live server it is the directory ``backlot mcp --user`` resolves through: the
+    admin's token and access-key pair, and one entry per user carrying the same."""
+    with backlot.serve() as s:
+        directory = backlot.server.meta_users(s.base_url)
+    assert directory["admin_token"] == s.token
+    assert directory["admin_s3_access_key_id"].startswith("AKIA")
+    assert directory["users"], directory
+    one = directory["users"][0]
+    assert {"email", "token", "s3_access_key_id", "s3_secret_access_key"} <= one.keys()
 
 
 @pytest.mark.parametrize("host, answers_off_loopback", [("127.0.0.1", False), ("0.0.0.0", True)])

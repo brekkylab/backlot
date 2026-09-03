@@ -14,10 +14,19 @@ the DB are bound explicitly.
 
 from __future__ import annotations
 
+import re
+import unicodedata
+
 from graphql import GraphQLError
 
 from backlot import pagination, store, synth
-from backlot.graphql.linear_filters import compile_comment_filter, compile_issue_filter
+from backlot.graphql.linear_filters import (
+    SCALARS,
+    UUID_SHAPE,
+    argument_validation_error,
+    compile_comment_filter,
+    compile_issue_filter,
+)
 
 # Linear's own page defaults: 50 per page, hard-capped at 250.
 PAGE_DEFAULT = 50
@@ -125,21 +134,43 @@ def _page(rows: list, limit: int) -> tuple[list, bool]:
 # which is the silent-wrong-answer this schema promises not to give.
 
 
-def _match_string(value, spec: dict | None) -> bool:
-    """A ``StringComparator`` against one Python value; mirrors the SQL comparator in
-    backlot/graphql/linear_filters.py, operator for operator."""
+def _fold_accents(text: str) -> str:
+    """``containsIgnoreCaseAndAccent``'s normalisation: case folded, combining marks stripped, so
+    "Réunion" contains "reunion"."""
+    decomposed = unicodedata.normalize("NFKD", text.casefold())
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+def _match_string(value, spec: dict | None, *, absent_matches_nothing: bool = False) -> bool:
+    """A string comparator against one Python value. Covers the operators the SQL comparator in
+    backlot/graphql/linear_filters.py renders, plus the negated / case-insensitive / accent-
+    insensitive ones ``SourceTypeComparator`` declares — that comparator is only ever evaluated
+    here, over an issue's own attachments, so it is declared in full.
+
+    A ``None`` value follows what api.linear.app answered on 2026-09-03 for an attachment with no
+    subtitle: ``null: true`` selects it, ``nin`` keeps it, and every other operator — ``eq`` (even
+    ``eq: ""``), ``neq``, ``neqIgnoreCase``, ``notContains`` — drops it. The same field rule the SQL
+    comparator applies to a null number or date. ``absent_matches_nothing`` is the stricter rule
+    Linear applied to an attachment's ``sourceType`` when no source is recorded: ``neq``, ``nin``,
+    ``notContains`` and ``eq: ""`` all answered nothing, ``nin`` included."""
     if not spec:
         return True
-    v = "" if value is None else str(value)
     known = (
+        "null",
         "eq",
         "neq",
         "in",
         "nin",
         "contains",
         "containsIgnoreCase",
+        "containsIgnoreCaseAndAccent",
+        "notContains",
+        "notContainsIgnoreCase",
         "startsWith",
+        "startsWithIgnoreCase",
+        "notStartsWith",
         "endsWith",
+        "notEndsWith",
         "eqIgnoreCase",
         "neqIgnoreCase",
     )
@@ -148,6 +179,16 @@ def _match_string(value, spec: dict | None) -> bool:
             continue
         if op not in known:
             raise GraphQLError(f"unsupported comparator {op!r}")
+        if op == "null":
+            if (value is None) != bool(raw):
+                return False
+            continue
+        if value is None:
+            if absent_matches_nothing or op != "nin":
+                return False
+            continue
+        v = str(value)
+        needle = str(raw)
         if op == "eq" and v != raw:
             return False
         if op == "neq" and v == raw:
@@ -156,36 +197,49 @@ def _match_string(value, spec: dict | None) -> bool:
             return False
         if op == "nin" and v in raw:
             return False
-        if op == "contains" and str(raw) not in v:
+        if op == "contains" and needle not in v:
             return False
-        if op == "containsIgnoreCase" and str(raw).lower() not in v.lower():
+        if op == "containsIgnoreCase" and needle.lower() not in v.lower():
             return False
-        if op == "startsWith" and not v.startswith(str(raw)):
+        if op == "containsIgnoreCaseAndAccent" and _fold_accents(needle) not in _fold_accents(v):
             return False
-        if op == "endsWith" and not v.endswith(str(raw)):
+        if op == "notContains" and needle in v:
             return False
-        if op == "eqIgnoreCase" and v.lower() != str(raw).lower():
+        if op == "notContainsIgnoreCase" and needle.lower() in v.lower():
             return False
-        if op == "neqIgnoreCase" and v.lower() == str(raw).lower():
+        if op == "startsWith" and not v.startswith(needle):
+            return False
+        if op == "startsWithIgnoreCase" and not v.lower().startswith(needle.lower()):
+            return False
+        if op == "notStartsWith" and v.startswith(needle):
+            return False
+        if op == "endsWith" and not v.endswith(needle):
+            return False
+        if op == "notEndsWith" and v.endswith(needle):
+            return False
+        if op == "eqIgnoreCase" and v.lower() != needle.lower():
+            return False
+        if op == "neqIgnoreCase" and v.lower() == needle.lower():
             return False
     return True
 
 
-def _match_fields(spec: dict | None, fields: dict) -> bool:
-    """A filter object whose keys map to already-computed values, plus ``and`` / ``or``."""
+def _match_fields(spec: dict | None, fields: dict, strict: frozenset[str] = frozenset()) -> bool:
+    """A filter object whose keys map to already-computed values, plus ``and`` / ``or``. ``strict``
+    names the keys whose absent value matches nothing (see ``_match_string``)."""
     if not spec:
         return True
     for key, sub in spec.items():
         if sub is None:
             continue
         if key == "and":
-            if not all(_match_fields(x, fields) for x in sub):
+            if not all(_match_fields(x, fields, strict) for x in sub):
                 return False
         elif key == "or":
-            if not any(_match_fields(x, fields) for x in sub):
+            if not any(_match_fields(x, fields, strict) for x in sub):
                 return False
         elif key in fields:
-            if not _match_string(fields[key], sub):
+            if not _match_string(fields[key], sub, absent_matches_nothing=key in strict):
                 return False
         else:
             raise GraphQLError(f"unsupported filter field {key!r}")
@@ -221,6 +275,9 @@ def _match_label(node: dict, spec) -> bool:
 
 
 def _match_attachment(node: dict, spec) -> bool:
+    # `sourceType` is filtered on what the corpus recorded, not on the served value: Linear serves
+    # "unknown" for an attachment with no source and yet no `sourceType` predicate matches it,
+    # `nin` included (measured 2026-09-03), so the raw column is what the comparator sees.
     return _match_fields(
         spec,
         {
@@ -228,13 +285,16 @@ def _match_attachment(node: dict, spec) -> bool:
             "title": node["title"],
             "url": node["url"],
             "subtitle": node["subtitle"],
-            "sourceType": node["sourceType"],
+            "sourceType": node["_source_type"],
         },
+        strict=frozenset({"sourceType"}),
     )
 
 
 def _match_release(node: dict, spec) -> bool:
-    return _match_fields(spec, {"id": node["id"], "name": node["name"], "slugId": node["slugId"]})
+    # `id` and `name` only: Linear's `ReleaseFilter` has no `slugId` (measured 2026-09-03), so one
+    # was declared and evaluated here that no client written against Linear could send.
+    return _match_fields(spec, {"id": node["id"], "name": node["name"]})
 
 
 # --- shared shapes ------------------------------------------------------------------
@@ -331,7 +391,9 @@ def _project(name: str | None, info) -> dict | None:
         "icon": None,
         "state": "started",
         "status": {"id": synth.linear_project_id("status:" + name)},
-        "priority": 0.0,
+        # `Int!` in Linear (a real project answers `priority: 0`, measured 2026-09-03), not the
+        # `Float!` the SDK's TypeScript `number` once suggested.
+        "priority": 0,
         "priorityLabel": "No priority",
         "progress": 0.0,
         "scope": 0.0,
@@ -343,7 +405,12 @@ def _project(name: str | None, info) -> dict | None:
         "scopeHistory": [],
         "completedScopeHistory": [],
         "inProgressScopeHistory": [],
-        "frequencyResolution": "week",
+        # `FrequencyResolutionType!`, whose members are `daily` and `weekly`. "week" -- served
+        # while the field was a bare String -- is not one of them, and would have been a
+        # serialization error the moment the enum was declared. `weekly` is what a freshly created
+        # project answers (measured 2026-09-03 with `projectCreate`, alongside `health: null`,
+        # `priority: 0`, `startDateResolution: null`, `updateRemindersDay: null`).
+        "frequencyResolution": "weekly",
         "slackIssueComments": False,
         "slackNewIssue": False,
         "slackIssueStatuses": False,
@@ -453,7 +520,10 @@ def _attachment(row, info) -> dict:
         "title": row["title"],
         "url": row["url"],
         "subtitle": row["subtitle"],
-        "sourceType": row["source_type"],
+        # "unknown", not null, when the corpus records no source: what Linear served for an
+        # attachment created with a bare url and title (measured 2026-09-03).
+        "sourceType": row["source_type"] or "unknown",
+        "_source_type": row["source_type"],  # not a schema field: what `sourceType` filters on
         "metadata": {},
         "source": None,
         "bodyData": None,
@@ -484,7 +554,13 @@ def _relation(row, info) -> dict:
 def _release(name: str | None, info) -> dict | None:
     """A ``Release``. The corpus knows a release only by name, so the fields Linear declares
     non-null take neutral values — empty progress, zero issueCount — rather than invented
-    burndown data, exactly as ``_project`` does."""
+    burndown data, exactly as ``_project`` does.
+
+    ``stage`` and ``pipeline`` are NON-null in Linear (`ReleaseStage!` / `ReleasePipeline!`): every
+    release belongs to exactly one of each, so a null there is not "no such data" but a shape the
+    real API never produces, and under the non-null declaration it would void the whole
+    ``release`` result. Each is an id-only stub keyed off the release name — the one thing the
+    corpus knows — so the two ids are stable across calls and distinct per release."""
     if not name:
         return None
     slug = synth.hnum("linear-release:" + name, 0, 8).__format__("08x")
@@ -494,7 +570,7 @@ def _release(name: str | None, info) -> dict | None:
         "name": name,
         "slugId": slug,
         "url": f"https://linear.app/{_org(info)}/release/{slug}",
-        "issueCount": 0.0,
+        "issueCount": 0,  # `Int!` in Linear
         "currentProgress": {},
         "progressHistory": {},
         "createdAt": created,
@@ -511,8 +587,8 @@ def _release(name: str | None, info) -> dict | None:
         "autoArchivedAt": None,
         "archivedAt": None,
         "releaseNotes": [],
-        "stage": None,
-        "pipeline": None,
+        "stage": {"id": synth.linear_release_stage_id(name)},
+        "pipeline": {"id": synth.linear_release_pipeline_id(name)},
         "creator": None,
     }
 
@@ -547,6 +623,8 @@ def _team(container: str, info) -> dict:
         "createdAt": created,
         "updatedAt": created,
         "timezone": "Etc/UTC",
+        # `TeamVisibility!`: public | restricted | private. Nothing in a corpus marks a team
+        # restricted, and `private: False` below says the same thing.
         "visibility": "public",
         "private": False,
         "inviteHash": synth.hnum("linear-team:" + container, 0, 12).__format__("012x"),
@@ -575,7 +653,7 @@ def _team(container: str, info) -> dict:
         "requirePriorityToLeaveTriage": False,
         "triageEnabled": False,
         "groupIssueHistory": True,
-        "ledInitiativeCount": 0.0,
+        "ledInitiativeCount": 0,  # `Int!` in Linear, like `issueCount`
         "aiDiscussionSummariesEnabled": False,
         "aiThreadSummariesEnabled": False,
         "slackIssueComments": False,
@@ -651,7 +729,7 @@ def _issue(row, info) -> dict:
         "reactions": [],
         "integrationSourceType": None,
         "previousIdentifiers": [],
-        "customerTicketCount": 0.0,
+        "customerTicketCount": 0,  # `Int!` in Linear (a real issue answers 0, measured 2026-09-03)
         "inheritsSharedAccess": False,
         "boardOrder": 0.0,
         "sortOrder": 0.0,
@@ -668,13 +746,14 @@ def _issue(row, info) -> dict:
         "slaHighRiskAt": None,
         "slaMediumRiskAt": None,
         "slaType": None,
-        # NOT null, and not a stub by choice: `@linear/sdk` builds `new IssueSharedAccess(...)`
-        # unconditionally, so a null here is a TypeError inside the client rather than an empty
-        # field. The values are also simply true — nothing in a document corpus is shared with an
-        # external viewer — so the honest answer and the working one coincide.
+        # `IssueSharedAccess!` -- non-null in Linear's own schema, and `@linear/sdk` builds
+        # `new IssueSharedAccess(...)` unconditionally, so a null here is a TypeError inside the
+        # client rather than an empty field. The values are also simply true — nothing in a
+        # document corpus is shared with an external viewer — so the honest answer and the working
+        # one coincide. A real issue answers exactly this object (measured 2026-09-03).
         "sharedAccess": {
             "isShared": False,
-            "sharedWithCount": 0.0,
+            "sharedWithCount": 0,  # `Int!`
             "sharedWithUsers": [],
             "viewerHasOnlySharedAccess": False,
             "disallowedIssueFields": [],
@@ -738,6 +817,11 @@ def _comment(row, info) -> dict:
 # --- Query roots ---------------------------------------------------------------------
 
 
+# Linear's own identifier shape: a key in either case and a numeric suffix. Measured 2026-09-03:
+# `BRE-1`, `bre-1` and `B2E-1` are looked up, `BRE-x`, `BRE-`, `BRE1` and `not-a-uuid` are refused.
+_LINEAR_IDENTIFIER_SHAPE = re.compile(r"^[A-Za-z0-9]+-\d+$")
+
+
 def _resolve_one_issue_id(conn, value: str) -> str:
     """Translate one filter value -- a served UUID or a human identifier -- to an issue id. A miss
     returns the sentinel ``"\\x00none"``, which matches no row, so the filter narrows to nothing
@@ -748,11 +832,23 @@ def _resolve_one_issue_id(conn, value: str) -> str:
     ``count_linear_issues``) apply ``visible_ids`` to the real query, so a value that resolves to
     an issue the caller cannot see still gets filtered out there -- translating it here to
     anything other than its real id would just make an invisible-issue filter behave
-    differently from every other predicate instead of consistently answering empty."""
+    differently from every other predicate instead of consistently answering empty.
+
+    A MISS of neither shape is Linear's `Argument Validation Error` (code `INVALID_INPUT`, a 200
+    with `errors`) rather than the sentinel: that is what `{eq: "not-a-uuid"}` and the nil UUID
+    answer there (a UUID counts only with an RFC 4122 variant, see ``linear_filters.UUID_SHAPE``),
+    where a well-shaped unknown (`ZZZ-404`, a variant-8 UUID) is an empty page. The lookup comes first because the corpus
+    schema lets an identifier's suffix be any text, so an identifier Backlot actually serves
+    (`ENG-abc`) is found before the shape is judged, and only a value that names nothing is held to
+    Linear's rule."""
     row = store.linear_by_id(conn, value)
     if row is None:
         row = store.linear_issue_by_identifier(conn, value)
-    return row["id"] if row else "\x00none"
+    if row is not None:
+        return row["id"]
+    if not (UUID_SHAPE.match(value) or _LINEAR_IDENTIFIER_SHAPE.match(value)):
+        raise argument_validation_error()
+    return "\x00none"
 
 
 def _resolve_issue_ids(info, flt):
@@ -924,19 +1020,38 @@ def resolve_comments(
     return _connection([_comment(r, info) for r in rows], offset, has_next)
 
 
+def _sorted_users(users: list[dict], sort) -> list[dict]:
+    """``users(sort:)`` — Linear's ``UserSortInput``, of which Backlot declares ``name``
+    (``UserNameSort``: ``order`` and ``nulls``, the latter defaulting to ``last`` exactly as the
+    vendor's input does). Evaluated, not accepted-and-ignored: an ignored sort answers a client
+    asking for Z→A with A→Z, which is a wrong result rather than an error. Sorts the SERVED
+    ``name`` — the value the client reads back — which ``_user`` always derives, so ``nulls`` is
+    accepted and has nothing to place. The keys are applied last-to-first over a stable sort, so
+    the first entry is the primary key. Codepoint order, which is the order Linear answered for
+    ``["Linear", "nuri", "김해준"]`` (measured 2026-09-03)."""
+    for entry in reversed(sort or []):
+        for key, opts in (entry or {}).items():
+            if key != "name":
+                raise GraphQLError(f"unsupported user sort key {key!r}")
+            users.sort(key=lambda u: u["name"], reverse=(opts or {}).get("order") == "Descending")
+    return users
+
+
 def resolve_users(
-    _root, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+    _root, info, first=None, after=None, last=None, before=None, filter=None, sort=None, **_ignored
 ) -> dict:
     ctx = _ctx(info)
     offset, limit, floor = _slice(first, after, last, before)
-    rows = [r for r in store.list_users(ctx["conn"]) if _match_user(r, filter)]
-    offset = _from_end(offset, limit, floor, len(rows))
-    page = rows[offset : offset + limit]
-    return _connection(
-        [_user(r["email"], r["display_name"], info) for r in page],
-        offset,
-        offset + limit < len(rows),
+    users = _sorted_users(
+        [
+            _user(r["email"], r["display_name"], info)
+            for r in store.list_users(ctx["conn"])
+            if _match_user(r, filter)
+        ],
+        sort,
     )
+    offset = _from_end(offset, limit, floor, len(users))
+    return _connection(users[offset : offset + limit], offset, offset + limit < len(users))
 
 
 # --- by-id roots for the SDK's lazy relation accessors ------------------------------------
@@ -1190,17 +1305,18 @@ def _issue_by_id(info, issue_id):
 
 
 def resolve_issue_attachments(
-    issue, info, first=None, after=None, last=None, before=None, url=None, filter=None, **_ignored
+    issue, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
 ) -> dict:
+    """No ``url`` argument: Linear's ``Issue.attachments`` takes none (measured 2026-09-03 — the
+    real API answers `Unknown argument "url" on field "Issue.attachments"`). A client narrows by
+    url through ``filter: {url: {eq: …}}``, which ``_match_attachment`` evaluates."""
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
     offset, limit, floor = _slice(first, after, last, before)
     issue_id = issue["_row"]["id"]
     nodes = [
         _attachment(r, info)
-        for r in store.linear_attachments(
-            conn, issue_id, visible_ids=visible, limit=PAGE_MAX, url=url
-        )
+        for r in store.linear_attachments(conn, issue_id, visible_ids=visible, limit=PAGE_MAX)
     ]
     nodes = [n for n in nodes if _match_attachment(n, filter)]
     offset = _from_end(offset, limit, floor, len(nodes))
@@ -1271,10 +1387,12 @@ RESOLVERS = {
 
 
 def build_engine():
-    """The Linear engine, over the SDL beside this module."""
+    """The Linear engine, over the SDL beside this module. ``SCALARS`` binds Linear's date-operand
+    grammar onto ``DateTimeOrDuration`` / ``TimelessDateOrDuration``, so a malformed filter value is
+    a validation error (a 400) exactly where the real API makes it one."""
     from backlot.graphql import engine
 
-    return engine.from_sdl(__file__, "linear", RESOLVERS)
+    return engine.from_sdl(__file__, "linear", RESOLVERS, SCALARS)
 
 
 __all__ = ["RESOLVERS", "build_engine", "PAGE_DEFAULT", "PAGE_MAX"]

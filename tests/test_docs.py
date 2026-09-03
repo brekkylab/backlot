@@ -85,6 +85,52 @@ def test_readme_states_no_source_count():
     )
 
 
+# A count OF THE BUNDLED CORPUS, in prose: "136 records", "138 source documents". Two nouns
+# either side, because the offending sentences were written both ways round.
+_CORPUS_COUNT_RE = re.compile(
+    r"\b(\d[\d,]*)\s+(?:source\s+)?(?:records?|documents?|rows?|lines?)\b", re.I
+)
+# The line has to be ABOUT the bundled corpus for a number on it to be one of its counts. Without
+# this, `examples/import-enterpriserag-bench/README.md`'s "511,962 documents" — the size of an
+# external dataset, which this repo does not control and cannot restate — reads as an offence.
+_BUNDLED_RE = re.compile(r"--bundled|hello\.jsonl|hello-world|bundled corpus|demo corpus", re.I)
+
+
+def test_no_markdown_states_the_bundled_corpus_size():
+    """`hello.jsonl` grows whenever a source or a behaviour needs a record, and every number
+    written about it goes stale on that commit — both of the two that existed already had.
+
+    Two ways a line is caught, because a count goes stale in two directions. A line that NAMES the
+    corpus may not put a number next to `records`/`documents` at all, whatever the number. And any
+    line may not state today's count, even without naming the corpus — which is what makes this
+    fire when the number is written, at the one moment it is still correct, rather than at some
+    later commit when it is not.
+
+    What to write instead is what `docs/corpus.md` already writes: "covers every source", and
+    `backlot import` prints the per-source breakdown as it loads. `/health` reports both totals for
+    a corpus that is actually loaded — `source_documents` offered, `documents` served.
+    """
+    corpus = REPO / "backlot" / "data" / "hello.jsonl"
+    records = str(sum(1 for line in corpus.read_text().splitlines() if line.strip()))
+    offenders = []
+    for path in sorted(REPO.rglob("*.md")):
+        # Filtered on the path RELATIVE to the repo, never the absolute one: a checkout can itself
+        # live under a directory this list names — a git worktree under `.claude/worktrees/` does —
+        # and matching against the absolute parts then skips every file in the repo, passing this
+        # test by finding nothing. It did.
+        rel = path.relative_to(REPO)
+        if {".git", ".venv", ".pytest_cache", ".claude"} & set(rel.parts):
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+            for match in _CORPUS_COUNT_RE.finditer(line):
+                if _BUNDLED_RE.search(line) or match.group(1).replace(",", "") == records:
+                    offenders.append(f"{rel}:{lineno}: {match.group(0)!r}")
+    assert not offenders, (
+        "these state the bundled corpus's size, which goes stale the next time a record is added "
+        "to backlot/data/hello.jsonl:\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_generated_docs_are_current():
     """`scripts/gen_docs.py --check` is the single gate on docs/supported-sources.md going stale.
 

@@ -21,7 +21,7 @@ uv pip install -e ".[dev]"               # or: pip install -e ".[dev]"
 ```
 
 That puts the `backlot` command on PATH. The server needs no API keys, but it does need a
-corpus — the bundled hello-world one (136 records covering every source) is enough to get a
+corpus — the bundled hello-world one covers every source and is enough to get a
 live server:
 
 ```bash

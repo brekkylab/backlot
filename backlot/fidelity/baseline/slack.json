@@ -1,0 +1,1221 @@
+{
+  "source": "slack",
+  "endpoint": "https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json",
+  "measured": "2026-09-01",
+  "acknowledged": [
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /search.all",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /search.files",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /api.test",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /auth.test",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /conversations.history",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /conversations.info",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /conversations.list",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /conversations.members",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /conversations.replies",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /search.all",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /search.files",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /search.messages",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /users.info",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /users.list",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.apps.approved.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.apps.requests.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.apps.restricted.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.conversations.ekm.listOriginalConnectedChannelInfo",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.conversations.getConversationPrefs",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.conversations.getTeams",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.conversations.restrictAccess.listGroups",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.conversations.search",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.emoji.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.inviteRequests.approved.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.inviteRequests.denied.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.inviteRequests.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.teams.admins.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.teams.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.teams.owners.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.teams.settings.info",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.usergroups.listChannels",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /admin.users.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /api.test?error",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /api.test?foo",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.event.authorizations.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.info",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.request",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.resources.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.scopes.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.users.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.users.request",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.uninstall",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /auth.revoke",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /bots.info",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /calls.info",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /chat.getPermalink",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /chat.scheduledMessages.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.history?token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.info?include_locale",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.info?token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.list?exclude_archived",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.list?token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.members?cursor",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.members?limit",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.members?token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.replies?cursor",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.replies?inclusive",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.replies?latest",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.replies?limit",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.replies?oldest",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /conversations.replies?token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /dialog.open",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /dnd.info",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /dnd.teamInfo",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /emoji.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /files.info",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /files.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /files.remote.info",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /files.remote.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /files.remote.share",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /migration.exchange",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /oauth.access",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /oauth.token",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /oauth.v2.access",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /pins.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /reactions.get",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /reactions.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /reminders.info",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /reminders.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /rtm.connect",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /search.messages?highlight",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /search.messages?token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /stars.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /team.accessLogs",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /team.billableInfo",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /team.info",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /team.integrationLogs",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /team.profile.get",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /usergroups.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /usergroups.users.list",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /users.conversations",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /users.getPresence",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /users.identity",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /users.info?include_locale",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /users.info?token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /users.list?include_locale",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /users.list?token",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /users.lookupByEmail",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /users.profile.get",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /views.open",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /views.publish",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /views.push",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /views.update",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /workflows.stepCompleted",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /workflows.stepFailed",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /workflows.updateStep",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.apps.approve",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.apps.restrict",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.archive",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.convertToPrivate",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.create",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.delete",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.disconnectShared",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.invite",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.rename",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.restrictAccess.addGroup",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.restrictAccess.removeGroup",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.setConversationPrefs",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.setTeams",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.unarchive",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.emoji.add",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.emoji.addAlias",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.emoji.remove",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.emoji.rename",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.inviteRequests.approve",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.inviteRequests.deny",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.create",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.settings.setDefaultChannels",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.settings.setDescription",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.settings.setDiscoverability",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.settings.setIcon",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.settings.setName",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.usergroups.addChannels",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.usergroups.addTeams",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.usergroups.removeChannels",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.assign",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.invite",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.remove",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.session.invalidate",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.session.reset",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.setAdmin",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.setExpiration",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.setOwner",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.setRegular",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /calls.add",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /calls.end",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /calls.participants.add",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /calls.participants.remove",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /calls.update",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.delete",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.deleteScheduledMessage",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.meMessage",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.postEphemeral",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.postMessage",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.scheduleMessage",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.unfurl",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.update",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.archive",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.close",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.create",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.invite",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.join",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.kick",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.leave",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.mark",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.open",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.rename",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.setPurpose",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.setTopic",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.unarchive",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /dnd.endDnd",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /dnd.endSnooze",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /dnd.setSnooze",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.comments.delete",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.delete",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.remote.add",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.remote.remove",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.remote.update",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.revokePublicURL",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.sharedPublicURL",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.upload",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /pins.add",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /pins.remove",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /reactions.add",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /reactions.remove",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /reminders.add",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /reminders.complete",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /reminders.delete",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /stars.add",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /stars.remove",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /usergroups.create",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /usergroups.disable",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /usergroups.enable",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /usergroups.update",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /usergroups.users.update",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /users.deletePhoto",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /users.profile.set",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /users.setActive",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /users.setPhoto",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /users.setPresence",
+      "detail": "the vendor serves it; Backlot does not"
+    }
+  ]
+}

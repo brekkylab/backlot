@@ -1,85 +1,138 @@
 # Backlot
 
-[![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml)
-[![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/brekkylab/backlot/blob/main/LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R)
-[![X](https://img.shields.io/badge/Tweet-000000?logo=x&logoColor=white)](https://x.com/brekkylab)
+[![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml) [![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/brekkylab/backlot/blob/main/LICENSE) [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R) [![X](https://img.shields.io/badge/Tweet-000000?logo=x&logoColor=white)](https://x.com/brekkylab)
 
-**Serve your own enterprise playground**
+**Run enterprise SaaS APIs locally.**
 
-Backlot is a local emulator for enterprise SaaS APIs. Test your Slack, Gmail, Google Drive and the rest of your integrations.
+Backlot is a local emulator for Slack, Gmail, Google Drive, GitHub, Jira, Notion, S3 and other enterprise APIs. It reproduces the response shapes, pagination, authentication, errors and per-document access controls an integration has to handle, over a deterministic corpus you control — so you build and test against the official vendor SDKs with **no vendor account**, **no OAuth approval**, **no secrets in CI** and **no network**.
 
-**No account. No token. No network.**
-
-Why would you need that? Because right now:
-
-- **You can't log in yet**. So you create a workspace, register an app, pick OAuth scopes and wait on an admin who has never heard of you. Zero API calls so far.
-- **Then you do it again**. Gmail. Jira. Google Drive. Every source starts over from nothing.
-- **So you mock it, and the test passes**. It passes because you wrote both sides of it. It always passes.
-
-Backlot is the side you didn't write. It behaves exactly like the real one.
-
-## Quickstart
+## Try it in 60 seconds
 
 ```bash
 pip install backlot
 backlot import --bundled   # a corpus ships with the package; nothing to fetch or write
-backlot serve              # http://127.0.0.1:8000
+backlot serve              # every supported API, at http://127.0.0.1:8000
 ```
 
-Or run one programmatically on a free port:
+Point an official SDK at it by changing one base URL:
+
+```python
+from slack_sdk import WebClient  # pip install slack_sdk
+
+slack = WebClient(token="admin-service-token", base_url="http://127.0.0.1:8000/slack/api/")
+print(slack.conversations_list()["channels"])
+```
+
+The same call targets Slack in production and Backlot in development. Backlot supplies the data and the credentials; your code keeps the vendor's request and response contract.
+
+A test can run its own server instead, on a free port, with nothing to start or clean up:
 
 ```python
 import backlot
-from slack_sdk import WebClient                        # pip install slack_sdk
+from slack_sdk import WebClient
 
-with backlot.serve() as s:                             # no arguments: a tiny hello-world corpus
+with backlot.serve() as s:  # no arguments: a tiny hello-world corpus
     slack = WebClient(token=s.token, base_url=f"{s.base_url}/slack/api/")
-    print(slack.conversations_list()["channels"])
+    channels = slack.conversations_list()["channels"]
 ```
 
-The only change from talking to the live service is the base URL.
+### Let your coding agent run Backlot instantly
+
+This repo is its own plugin marketplace, so the [agent skill](https://github.com/brekkylab/backlot/blob/main/skills/backlot/SKILL.md) installs with no clone and no `pip install` first:
+
+```bash
+claude plugin marketplace add brekkylab/backlot && claude plugin install backlot@brekkylab
+codex plugin marketplace add brekkylab/backlot && codex plugin add backlot@brekkylab
+```
+
+and prompt like this:
+
+> Mock our Slack workspace with three messages in an #incidents channel, get a server running, then show me what `conversations.history` actually returns for that channel.
+
+## Why not use mocks?
+
+A hand-written mock returns the response your code already expects. Backlot implements the other side of the integration, so it exposes the assumptions a mock would repeat — it is for when the behavior of the API, not just the contents of one response, is what you need to test.
+
+| ❌ Hand-written mocks | ✅ Backlot |
+|---|---|
+| Test-specific response dictionaries | Vendor-shaped responses served over HTTP |
+| Usually cover the happy path | Pagination, validation, auth and vendor-shaped errors |
+| Custom test helpers | Official vendor SDKs and ordinary HTTP clients |
+| Little or no identity model | Generated users, tokens, groups and document ACLs |
+| Fixtures drift between tests | One deterministic corpus, shared locally and in CI |
+| Each API mocked differently | Every API served from one process |
 
 ## What it serves
 
-Every source on one local port, each behind the path prefix its own SDK expects.
+Every source on one local port, each behind the path prefix its own SDK expects, all reading one SQLite corpus.
 
-| Service | Base path |
+The corpus defines the facts: messages, files, issues, authors, timestamps, threads, comments, labels, readers. Backlot derives stable ids, users, groups and tokens from them, so every run serves the same records, the same ACL-filtered views and the same pages.
+
+It emulates the documented subset of each API it supports, not every vendor endpoint. The [endpoint-by-endpoint matrix](https://github.com/brekkylab/backlot/blob/main/docs/supported-sources.md) says which, and an implemented endpoint that diverges from the real API is a bug.
+
+| Service | Base path | Example, on the official SDK |
+|---|---|---|
+| Slack | `/slack/api` | [`slack.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/slack.py) |
+| Gmail | `/gmail/v1` | [`gmail.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/gmail.py) |
+| Google Drive (Docs, Sheets, Slides) | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | [`gdrive.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/gdrive.py) |
+| GitHub | `/github` | [`github.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/github.py) |
+| Jira | `/atlassian/rest/api` | [`jira.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/jira.py) |
+| Confluence | `/atlassian/wiki/rest/api` | [`confluence.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/confluence.py) |
+| Notion | `/notion/v1` | [`notion.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/notion.py) |
+| Linear | `/linear/graphql` | [`linear/`](https://github.com/brekkylab/backlot/tree/main/examples/using-official-sdk/linear/) |
+| HubSpot | `/hubspot` | [`hubspot.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/hubspot.py) |
+| Fireflies | `/fireflies/graphql` | [`fireflies.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/fireflies.py) |
+| Amazon S3 | `/s3` | [`s3.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/s3.py) |
+
+The roadmap lives in [the tracking issue](https://github.com/brekkylab/backlot/issues/89) — ask there for the source you need.
+
+## When you need this
+
+- 🔌 **Building or upgrading an integration**. The cursors, page shapes and error bodies the real API returns, without an account to get them from.
+- 🧪 **Testing it, and keeping it tested**. One fixture on your laptop and in CI, with no secrets and nothing to flake. Every user in the corpus gets a token, so you can also assert that one caller's documents never reach another.
+- 🤖 **Evaluating a RAG pipeline or an agent**. The same corpus, the same ids and the same answers on every run, so a score that moves means your code moved.
+- 🐛 **Reproducing a bug in data you can't see**. A document inside someone else's workspace breaks your parser. Write one shaped like it, serve it, and keep the failing test.
+
+## Bring your own corpus
+
+The bundled corpus covers every supported service, but the main workflow is to serve your own test world: a JSONL file, one source document per line.
+
+```jsonl
+{"source_type":"slack","channel":"incidents","author_email":"bob@acme.com","created":"2026-02-10T18:00:00Z","content":"Anyone seeing 502s from the gateway?","replies":[{"content":"Looking now.","author_email":"ava@acme.com","created":"2026-02-10T18:00:40Z"}]}
+```
+
+```bash
+backlot import my-corpus.jsonl --dry-run   # validate against each service's schema, touch nothing
+backlot import my-corpus.jsonl && backlot serve
+```
+
+Every imported identity gets deterministic credentials, listed at `GET /_meta/users`; send the same request with another user's token to test what that caller is allowed to see. [Preparing a corpus](https://github.com/brekkylab/backlot/blob/main/docs/corpus.md) covers schemas, rosters, sharded corpora and public datasets, and [Auth and tokens](https://github.com/brekkylab/backlot/blob/main/docs/auth.md) covers each service's authentication style.
+
+## Examples
+
+| Point this at it | Runnable |
 |---|---|
-| Slack | `/slack/api` |
-| Gmail | `/gmail/v1` |
-| Google Drive (Docs, Sheets, Slides) | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` |
-| GitHub | `/github` |
-| Jira | `/atlassian/rest/api` |
-| Confluence | `/atlassian/wiki/rest/api` |
-| Notion | `/notion/v1` |
-| Linear | `/linear/graphql` |
-| HubSpot | `/hubspot` |
-| Fireflies | `/fireflies/graphql` |
-| Amazon S3 | `/s3` |
-
-Responses carry the shapes, pagination, auth and per-document ACLs the real ones have, over a corpus you supply. Every user in the corpus gets a token, so you can assert that one caller's documents never reach another.
+| 📦 Official vendor SDKs, one script per service | [`examples/using-official-sdk/`](https://github.com/brekkylab/backlot/tree/main/examples/using-official-sdk/) |
+| 🔗 MCP servers, or Backlot's own OpenAPI→MCP and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](https://github.com/brekkylab/backlot/tree/main/examples/using-mcp-with-agents/) |
+| 🦙 Load it as documents, with the official [LlamaIndex](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/) readers | [`examples/using-llamaindex-readers/`](https://github.com/brekkylab/backlot/tree/main/examples/using-llamaindex-readers/) |
+| 🐍 Read it with `pandas`, `pyarrow` or `dask`, over an [fsspec](https://filesystem-spec.readthedocs.io/) filesystem | [`examples/using-fsspec/`](https://github.com/brekkylab/backlot/tree/main/examples/using-fsspec/) |
+| 🗂️ Read it with `ls`, `cat` and `grep`, over [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](https://github.com/brekkylab/backlot/tree/main/examples/using-mirage/) |
+| 📥 Your own corpus, from a JSONL file | [`examples/bring-your-own-corpus/`](https://github.com/brekkylab/backlot/tree/main/examples/bring-your-own-corpus/) |
 
 ## Documentation
 
 | | |
 |---|---|
-| Every source Backlot serves, and every endpoint of each | [supported-sources.md](https://github.com/brekkylab/backlot/blob/main/docs/supported-sources.md) |
-| Building a corpus, and public datasets | [corpus.md](https://github.com/brekkylab/backlot/blob/main/docs/corpus.md) |
-| Auth schemes and tokens | [auth.md](https://github.com/brekkylab/backlot/blob/main/docs/auth.md) |
-| Every `BACKLOT_*` setting | [configuration.md](https://github.com/brekkylab/backlot/blob/main/docs/configuration.md) |
+| Every source Backlot serves, and every endpoint of each | [docs/supported-sources.md](https://github.com/brekkylab/backlot/blob/main/docs/supported-sources.md) |
+| Building a corpus, and public datasets | [docs/corpus.md](https://github.com/brekkylab/backlot/blob/main/docs/corpus.md) |
+| Auth schemes and tokens | [docs/auth.md](https://github.com/brekkylab/backlot/blob/main/docs/auth.md) |
+| Measuring Backlot against the real APIs | [docs/fidelity.md](https://github.com/brekkylab/backlot/blob/main/docs/fidelity.md) |
+| Every `BACKLOT_*` setting, and Docker | [docs/configuration.md](https://github.com/brekkylab/backlot/blob/main/docs/configuration.md) |
+| Vendor names and trademarks | [NOTICE.md](https://github.com/brekkylab/backlot/blob/main/NOTICE.md) |
 
-One runnable script per service, driving the vendor's own SDK, plus MCP, LlamaIndex and mirage
-walkthroughs: [examples/](https://github.com/brekkylab/backlot/tree/main/examples).
+## Contributing
 
-## Trademarks
-
-Backlot is an independent project, **not affiliated with, endorsed by, or sponsored by** any of the
-vendors whose APIs it imitates. Slack, Gmail, Google Drive, Google Docs, Google Sheets, Google
-Slides, GitHub, Jira, Confluence, Notion, Amazon S3, HubSpot, Linear and Fireflies are trademarks of
-their respective owners, named here only to identify the APIs Backlot serves a compatible subset of.
-Backlot ships no vendor logo, wordmark or brand asset.
+See [CONTRIBUTING.md](https://github.com/brekkylab/backlot/blob/main/CONTRIBUTING.md). Fidelity to the real APIs is the point, so a divergence is a bug — measure against the real service, and bring a test that fails without your fix.
 
 ## License
 

@@ -469,18 +469,24 @@ def _label_predicate(spec: dict) -> tuple[str, list]:
         elif key in ("and", "or"):
             subs = [_label_predicate(x) for x in sub]
             frags = [f for f, _ in subs if f]
-            for _, sp in subs:
-                params.extend(sp)
             if key == "or" and sub == []:
                 # Measured 2026-09-03: a literally empty `or` is a predicate every label satisfies,
                 # and the quantifier still applies -- `some: {or: []}` and `every: {or: []}` both
-                # answered exactly the issues with at least one label. An empty `and`, and an `or`
-                # whose branches are themselves empty (`or: [{}]`), are no predicate at all: every
-                # issue answered, label-less ones included, which the empty fragment below gives.
-                frags = ["1"]
+                # answered exactly the issues with at least one label.
+                frags, sub_params = ["1"], []
+            elif key == "or" and len(frags) != len(sub):
+                # Measured 2026-09-03: an `or` BRANCH that constrains nothing makes the WHOLE `or`
+                # constrain nothing -- `some: {or: [{}, {name: {eq: A}}]}` and
+                # `every: {or: [{}, {name: {eq: A}}]}` each answered every issue, label-less ones
+                # included, where the surviving branch alone answers only the labelled ones. An
+                # empty `and` branch is dropped instead: `some: {and: [{}, {name: {eq: A}}]}`
+                # answered none.
+                frags, sub_params = [], []
+            else:
+                sub_params = [x for _, sp in subs for x in sp]
             frag, p = (
                 (("(" + (" AND " if key == "and" else " OR ").join(frags) + ")") if frags else ""),
-                [],
+                sub_params,
             )
         else:
             raise GraphQLError(f"unsupported label filter field {key!r}")

@@ -788,9 +788,9 @@ def _comment(row, info) -> dict:
 
 
 _UUID_SHAPE = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
-_IDENTIFIER_SHAPE = re.compile(
-    r"^[A-Z0-9]+-\S+$"
-)  # `identifier` in backlot/schemas/linear.schema.json
+# The corpus schema's identifier shape (`identifier` in backlot/schemas/linear.schema.json), with
+# the prefix in either case: Linear resolved `bre-1` to `BRE-1` (measured 2026-09-03).
+_IDENTIFIER_SHAPE = re.compile(r"^[A-Za-z0-9]+-\S+$")
 
 
 def _resolve_one_issue_id(conn, value: str) -> str:
@@ -807,9 +807,10 @@ def _resolve_one_issue_id(conn, value: str) -> str:
 
     A value that is neither shape is refused before the lookup: Linear answers
     `IssueFilter.id: {eq: "not-a-uuid"}` with `Argument Validation Error` (code `INVALID_INPUT`, a
-    200 with `errors`), where `{eq: "BRE-1"}` and a UUID are simply looked up (measured 2026-09-03).
-    The identifier shape checked is the corpus schema's own (`PREFIX-anything`), wider than
-    Linear's digits-only suffix, so nothing Backlot itself serves is refused."""
+    200 with `errors`), where `{eq: "BRE-1"}`, `{eq: "bre-1"}` and a UUID are simply looked up
+    (measured 2026-09-03; Linear also refuses `BRE-x`, `BRE-` and `BRE1`). The identifier shape
+    checked is the corpus schema's own (`PREFIX-anything`), wider than Linear's digits-only suffix,
+    so nothing Backlot itself serves is refused: `BRE-x` is an empty page here, not an error."""
     if not (_UUID_SHAPE.match(value) or _IDENTIFIER_SHAPE.match(value)):
         raise GraphQLError("Argument Validation Error", extensions={"code": "INVALID_INPUT"})
     row = store.linear_by_id(conn, value)

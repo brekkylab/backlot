@@ -123,6 +123,16 @@ def test_linear_issue_by_uuid_and_by_identifier(client, admin_h, ro_conn):
     assert by_uuid.json()["data"]["issue"]["identifier"] == "ENG-101"
 
 
+def test_linear_issue_by_identifier_is_case_insensitive(client, admin_h):
+    """Linear resolved `bre-1` to `BRE-1` (measured 2026-09-03): the identifier's case is not part
+    of the lookup. The as-written spelling is tried first, so a corpus identifier with a mixed-case
+    suffix is still reachable exactly."""
+    r = gql(client, '{ issue(id: "eng-101") { identifier } }', admin_h).json()
+    assert r["data"]["issue"]["identifier"] == "ENG-101"
+    miss = gql(client, '{ issue(id: "eng-999") { identifier } }', admin_h).json()
+    assert "Entity not found" in miss["errors"][0]["message"]
+
+
 def test_linear_issue_url_is_the_real_vendor_domain(client, admin_h):
     """A rename's blind substitution can turn every served `url` field into
     `linear.backlot`. Asserted on the parsed host (no trailing slash) rather than a URL literal,
@@ -771,6 +781,7 @@ def test_issue_filter_by_id_resolves_both_key_spaces_and_a_bogus_id_matches_noth
     assert ids(fclient, '{id: {eq: "ENG-1"}}') == ["ENG-1"]  # identifier form
     assert ids(fclient, '{id: {eq: "%s"}}' % uuid) == ["ENG-1"]  # served UUID form
     assert ids(fclient, '{id: {eq: "ZZZ-404"}}') == []  # sentinel: matches nothing
+    assert ids(fclient, '{id: {eq: "eng-1"}}') == ["ENG-1"]  # case-insensitive, as Linear's is
     assert ids(fclient, '{id: {in: ["%s", "ENG-2", "ZZZ-9"]}}' % uuid) == ["ENG-1", "ENG-2"]
 
 
@@ -847,13 +858,31 @@ def test_a_date_operand_must_be_a_string(fclient):
 
 @pytest.mark.parametrize(
     "literal",
-    ['"20210305T100000"', '"2021-W10"', '"P9999Y"', '"-P3000Y"', '"P99999999999D"'],
-    ids=["basic-with-time", "iso-week", "years-past-9999", "years-before-1", "days-overflow"],
+    [
+        '"2021-03-05T10"',
+        '"PT"',
+        '"20210305T100000"',
+        '"2021-W10"',
+        '"P9999Y"',
+        '"-P3000Y"',
+        '"P99999999999D"',
+    ],
+    ids=[
+        "hour-only-time",
+        "empty-time-duration",
+        "basic-with-time",
+        "iso-week",
+        "years-past-9999",
+        "years-before-1",
+        "days-overflow",
+    ],
 )
-def test_forms_pythons_parser_takes_but_linear_does_not_are_refused(fclient, literal):
-    """Linear rejected the basic form "20210305" (measured), so the basic and week forms
-    `datetime.fromisoformat` accepts are refused before it sees them; a duration that leaves the
-    calendar answers the scalar's message, not the interpreter's ("year must be in 1..9999")."""
+def test_forms_outside_the_measured_grammar_are_refused(fclient, literal):
+    """The first two are measured rejections (2026-09-03: `"2021-03-05T10"` and `"PT"` are 400s from
+    api.linear.app). The basic and week forms follow from the measured rejection of `"20210305"`:
+    `datetime.fromisoformat` would take them, so they are refused before it sees them. A duration
+    that leaves the calendar is not measurable against a vendor that has no such date either; it
+    answers the scalar's message rather than the interpreter's ("year must be in 1..9999")."""
     r = post(
         fclient, "{ issues(filter: {createdAt: {gt: %s}}) { nodes { identifier } } }" % literal
     )
@@ -1355,8 +1384,9 @@ def test_date_comparators_take_in_and_nin(fclient):
 def test_due_date_is_compared_as_a_timeless_date(fclient, now_is_2026_03_01_noon):
     """`IssueFilter.dueDate` is a `NullableTimelessDateComparator` over `TimelessDateOrDuration`:
     a full timestamp is read down to its UTC day, a duration is relative to today, and the column
-    is the bare YYYY-MM-DD. Each expectation is what api.linear.app answered on 2026-09-03 for an
-    issue due 2026-03-15. ENG-1 is due 2026-03-15, ENG-2 2026-04-01, DES-1 has no due date."""
+    is the bare YYYY-MM-DD. Each RULE below is one api.linear.app answered on 2026-09-03 for an
+    issue due 2026-03-15 (the module comment in linear_filters.py lists the operands); the corpus
+    here is ENG-1 due 2026-03-15, ENG-2 2026-04-01, DES-1 with no due date."""
     assert ids(fclient, '{dueDate: {eq: "2026-03-15"}}') == ["ENG-1"]
     assert ids(fclient, '{dueDate: {eq: "2026-03-15T23:59:59Z"}}') == ["ENG-1"]
     assert ids(fclient, '{dueDate: {eq: "2026-03-16T02:00:00+09:00"}}') == ["ENG-1"]  # 15th UTC

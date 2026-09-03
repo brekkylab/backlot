@@ -1310,11 +1310,20 @@ def linear_by_id(conn, issue_id, visible_ids=None) -> sqlite3.Row | None:
 def linear_issue_by_identifier(conn, identifier, visible_ids=None) -> sqlite3.Row | None:
     """Resolve a human identifier (``ENG-123``) to its issue. Identifiers are not unique (5,055
     repeat in one real corpus), so this deliberately returns the first by ``id`` rather than pretending
-    the lookup is unambiguous — the UUID form of ``issue(id:)`` is the exact one."""
+    the lookup is unambiguous — the UUID form of ``issue(id:)`` is the exact one.
+
+    Case-insensitive the way Linear's is: ``bre-1`` resolved to ``BRE-1`` there (measured
+    2026-09-03). Two indexed equality probes, the value as written and then upper-cased, rather than
+    a ``COLLATE NOCASE`` that would put the identifier index aside on every lookup. A corpus may
+    write a mixed-case suffix (the schema leaves everything after the hyphen opaque), which is why
+    the as-written probe comes first."""
     sql = "SELECT * FROM linear_issues WHERE identifier = ?"
-    params: list = [identifier]
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
-    return conn.execute(sql + clause + " ORDER BY id LIMIT 1", params + cparams).fetchone()
+    for candidate in dict.fromkeys((identifier, str(identifier).upper())):
+        row = conn.execute(sql + clause + " ORDER BY id LIMIT 1", [candidate] + cparams).fetchone()
+        if row is not None:
+            return row
+    return None
 
 
 def list_linear_comments(

@@ -75,6 +75,7 @@ _DURATION = re.compile(
     r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?$"
 )
 _DURATION_PARTS = ("years", "months", "weeks", "days", "hours", "minutes", "seconds")
+_TIME = re.compile(r"[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}(?::?\d{2})?)?")
 
 
 def _now() -> _dt.datetime:
@@ -126,10 +127,14 @@ def parse_datetime_or_duration(value, scalar: str = "DateTimeOrDuration") -> _dt
         return _from_duration(m, value)
     # The extended (hyphenated) form only: a year ("2021", and Linear also takes "1"), a
     # year-month, or a full date with an optional time after `T` or a space. Linear rejected the
-    # basic form "20210305" (measured), so the basic and week forms Python's parser would accept
-    # ("20210305T100000", "2021-W10") are refused before it sees them, as is an epoch.
+    # basic form "20210305" and the hour-only time "2021-03-05T10" (measured), so those and the week
+    # form Python's parser would accept ("20210305T100000", "2021-W10") are refused before it sees
+    # them, as is an epoch. A time is at least HH:MM; seconds, a fraction, `Z` or an offset
+    # ("2021-03-05T10:00:00+09:00" was accepted) may follow.
     date = re.fullmatch(r"(\d{1,4})(?:-(\d{2})(?:-(\d{2}))?)?(.*)", s, re.S)
-    if date is None or (date.group(4) and not (date.group(3) and date.group(4)[0] in "T ")):
+    if date is None:
+        raise ValueError(f"Unable to parse value {value!r} into a valid date")
+    if date.group(4) and not (date.group(3) and _TIME.fullmatch(date.group(4))):
         raise ValueError(f"Unable to parse value {value!r} into a valid date")
     if date.group(2) is None:
         s = f"{int(date.group(1)):04d}-01-01"

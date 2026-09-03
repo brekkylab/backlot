@@ -23,6 +23,7 @@ from typing import Any, Callable, Mapping
 
 from graphql import (
     GraphQLError,
+    GraphQLScalarType,
     GraphQLSchema,
     assert_valid_schema,
     build_schema,
@@ -32,6 +33,12 @@ from graphql import (
 )
 
 Resolver = Callable[..., Any]
+
+# One custom scalar's coercion: ``parse_value`` takes a variable's JSON value, ``parse_literal`` an
+# AST node. graphql-core runs both BEFORE any resolver, so a scalar that rejects an operand turns a
+# malformed filter value into a validation error naming the scalar — the envelope the real servers
+# produce — rather than into a field error from whichever resolver first tried to use it.
+Scalar = Mapping[str, Callable[..., Any]]
 
 
 @dataclass(frozen=True)
@@ -55,12 +62,12 @@ def _client_error(message: str) -> Result:
     return _request_error([GraphQLError(message)])
 
 
-def from_sdl(module_file: str, name: str, resolvers) -> "Engine":
+def from_sdl(module_file: str, name: str, resolvers, scalars=None) -> "Engine":
     """An :class:`Engine` over the ``<name>.graphql`` sitting beside ``module_file``.
 
     Each vendor's resolver module keeps its SDL as a sibling file, so this is the one place that
     knows how the two are paired."""
-    return Engine((Path(module_file).parent / f"{name}.graphql").read_text(), resolvers)
+    return Engine((Path(module_file).parent / f"{name}.graphql").read_text(), resolvers, scalars)
 
 
 class Engine:
@@ -72,11 +79,26 @@ class Engine:
     what is emitted.
     """
 
-    def __init__(self, sdl: str, resolvers: Mapping[str, Mapping[str, Resolver]] | None = None):
+    def __init__(
+        self,
+        sdl: str,
+        resolvers: Mapping[str, Mapping[str, Resolver]] | None = None,
+        scalars: Mapping[str, Scalar] | None = None,
+    ):
         self.schema: GraphQLSchema = build_schema(sdl)
         # validate() would do this on the first request otherwise, surfacing a vendor's broken
         # SDL as a 500 rather than as an import-time failure.
         assert_valid_schema(self.schema)
+        for scalar_name, coercion in (scalars or {}).items():
+            scalar = self.schema.type_map.get(scalar_name)
+            # Same rule as an unknown resolver target below: a misspelt scalar would leave the SDL's
+            # pass-through coercion in place and the operand check silently absent.
+            if not isinstance(scalar, GraphQLScalarType):
+                raise ValueError(f"scalar map references unknown scalar {scalar_name}")
+            for hook, fn in coercion.items():
+                if hook not in ("serialize", "parse_value", "parse_literal"):
+                    raise ValueError(f"scalar {scalar_name} has no coercion hook {hook!r}")
+                setattr(scalar, hook, fn)
         for type_name, fields in (resolvers or {}).items():
             gql_type = self.schema.type_map.get(type_name)
             # A typo in a resolver map would otherwise bind nothing and fail silently at

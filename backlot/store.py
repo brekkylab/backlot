@@ -1195,19 +1195,30 @@ def list_hubspot_objects(
 # offset by one and a mid-crawl cursor silently re-reads a row. `id` breaks ties into a
 # total order either way, which offset paging requires.
 LINEAR_DEFAULT_ORDER_BY = "createdAt"
-LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": "COALESCE(updated_ts, created_ts)"}
+
+# `Issue.updatedAt` is non-null in Linear; an issue with no recorded edit reports its creation
+# time, and this is the expression the field is served with. Every comparison and sort over the
+# field reads the SAME expression, so a client crawling "newest first until older than X" sees a
+# monotonic sequence, and `updatedAt: {eq: <the value it just read>}` finds the issue. A raw
+# `updated_ts` in the filter left an issue with a NULL column out of `eq`/`gte`/`lt` and -- once
+# `neq` compared the field directly -- out of `neq` too, where Linear's non-null field can never
+# drop a row. The index in the DDL is on this expression.
+LINEAR_UPDATED_EXPR = "COALESCE(updated_ts, created_ts)"
+LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": LINEAR_UPDATED_EXPR}
 
 
-# `IssueSortInput` key -> the column it sorts on. `updatedAt` uses the same COALESCE the field
-# itself is served with (an issue with no recorded edit reports its creation time), so a client
-# crawling "newest first until older than X" sees a monotonic sequence rather than one that
-# disagrees with the `updatedAt` it is reading.
+# `IssueSortInput` key -> the column it sorts on.
+# `Issue.priority` is served as 0 when the column is NULL (Linear's own "no priority", and the
+# field is non-null there), so every comparison and sort over it has to see the same 0 -- a raw
+# `priority` put an unset issue outside `priority: {eq: 0}` and after every other row in a sort.
+LINEAR_PRIORITY_EXPR = "COALESCE(priority, 0)"
+
 LINEAR_SORT_COLUMNS = {
     "title": "title",
-    "priority": "priority",
+    "priority": LINEAR_PRIORITY_EXPR,
     "estimate": "estimate",
     "createdAt": "created_ts",
-    "updatedAt": "COALESCE(updated_ts, created_ts)",
+    "updatedAt": LINEAR_UPDATED_EXPR,
 }
 
 
@@ -1305,11 +1316,24 @@ def linear_by_id(conn, issue_id, visible_ids=None) -> sqlite3.Row | None:
 def linear_issue_by_identifier(conn, identifier, visible_ids=None) -> sqlite3.Row | None:
     """Resolve a human identifier (``ENG-123``) to its issue. Identifiers are not unique (5,055
     repeat in one real corpus), so this deliberately returns the first by ``id`` rather than pretending
-    the lookup is unambiguous — the UUID form of ``issue(id:)`` is the exact one."""
+    the lookup is unambiguous — the UUID form of ``issue(id:)`` is the exact one.
+
+    Case-insensitive on the team KEY, the way Linear's is: ``bre-1`` resolved to ``BRE-1`` there
+    (measured 2026-09-03). The key is the only half of a Linear identifier that carries letters --
+    the suffix is a number -- so it is the half that is folded. The corpus schema leaves the suffix
+    opaque (``ENG-1a`` is a legal identifier here), so the suffix is compared as written and a
+    spelling that differs only there (``ENG-1A``) names a different string. Three indexed equality
+    probes -- as written, key upper-cased, the whole value upper-cased -- rather than a
+    ``COLLATE NOCASE`` that would put the identifier index aside on every lookup."""
     sql = "SELECT * FROM linear_issues WHERE identifier = ?"
-    params: list = [identifier]
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
-    return conn.execute(sql + clause + " ORDER BY id LIMIT 1", params + cparams).fetchone()
+    text = str(identifier)
+    key, sep, suffix = text.partition("-")
+    for candidate in dict.fromkeys((text, f"{key.upper()}{sep}{suffix}", text.upper())):
+        row = conn.execute(sql + clause + " ORDER BY id LIMIT 1", [candidate] + cparams).fetchone()
+        if row is not None:
+            return row
+    return None
 
 
 def list_linear_comments(
@@ -1388,17 +1412,16 @@ def linear_relations(
 
 
 def linear_attachments(
-    conn, issue_id, *, visible_ids=None, limit=50, offset=0, url=None, prefilter=None
+    conn, issue_id, *, visible_ids=None, limit=50, offset=0, prefilter=None
 ) -> list[sqlite3.Row]:
     """An issue's attachments. Visibility is the parent issue's — an attachment carries no grant
-    of its own — so the ACL is applied through a join, as it is for comments. ``url`` is Linear's
-    own exact-match argument on this connection."""
+    of its own — so the ACL is applied through a join, as it is for comments. No ``url`` argument:
+    an earlier version took one and called it Linear's own, but Linear's ``Issue.attachments``
+    accepts no such argument (measured against api.linear.app 2026-09-03); a url match is an
+    ``AttachmentFilter`` predicate, evaluated by the resolver."""
     join = "" if visible_ids is None else " JOIN linear_issues i ON i.id = a.issue_id"
     sql = f"SELECT a.* FROM linear_attachments a{join} WHERE a.issue_id = ?"
     params: list = [issue_id]
-    if url is not None:
-        sql += " AND a.url = ?"
-        params.append(url)
     if prefilter:
         frag, fparams = prefilter
         sql += f" AND {frag}"

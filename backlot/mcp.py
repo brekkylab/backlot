@@ -44,7 +44,9 @@ import hashlib
 import json
 import os
 import signal
+import socket
 import sys
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Iterator, Sequence
@@ -488,9 +490,9 @@ def attach(url: str | None = None) -> Iterator[str]:
 _started: contextlib.AbstractContextManager | None = None
 
 
-def _exit_on_signal(signum: int, frame: object) -> None:
+def _exit_for(signum: int) -> None:
     # A terminating signal's default disposition ends the process without unwinding, which would
-    # leave the server `attach` started running with no client. Installed for SIGINT and SIGHUP as
+    # leave the server `attach` started running with no client. Handled for SIGINT and SIGHUP as
     # well as SIGTERM: a terminal's Ctrl-C or hangup reaches the whole process group, uvicorn
     # included, but a supervisor that signals only its direct child does not — measured, `kill -INT`
     # alone left the server listening, and `kill -HUP` ended this process by default and orphaned it.
@@ -513,6 +515,49 @@ _TERMINATING_SIGNALS = tuple(
 )
 
 
+def _exit_on_signals() -> None:
+    """Have every terminating signal end this process through `_exit_for`, whichever thread the
+    kernel hands it to.
+
+    A Python-level handler runs only on the main thread, and only once that thread is back in the
+    interpreter. Here the main thread is fastmcp's event loop, asleep in ``select`` with nothing
+    to wake it — asyncio sets no wakeup fd unless someone registers a loop signal handler, and
+    nothing here does — so when the kernel delivers the signal to another thread (the stdin reader,
+    a worker), the main thread never learns of it: measured with ``pthread_kill`` to a sidecar
+    thread, SIGTERM and SIGHUP alike left the process alive indefinitely, while the same signals
+    to the main thread ended it at once. Which thread gets a process-directed signal is the
+    kernel's choice, which is what made the CI failures intermittent and per-run.
+
+    The C-level handler, by contrast, runs on whichever thread received the signal and writes the
+    signal number to the wakeup fd from there. So the work is done by a thread that reads that fd,
+    and the Python-level handler is installed only for that side effect. Socket pair rather than
+    a pipe: ``set_wakeup_fd`` wants a socket on Windows and takes either on POSIX."""
+    global _wakeup
+    reader, writer = _wakeup = socket.socketpair()  # kept for the life of the process: a
+    # collected socket closes its fd, which would end the reader with EOF and free the number
+    # `set_wakeup_fd` still holds for whatever file opens next
+    writer.setblocking(False)  # `set_wakeup_fd` requires it; a full buffer drops, not blocks
+    signal.set_wakeup_fd(writer.fileno(), warn_on_full_buffer=False)
+    for sig in _TERMINATING_SIGNALS:
+        signal.signal(sig, _on_signal_do_nothing_here)
+
+    def drain() -> None:
+        signum = reader.recv(1)[0]  # one byte per signal: its number
+        _exit_for(signum)
+
+    threading.Thread(target=drain, name="backlot-mcp-signals", daemon=True).start()
+
+
+_wakeup: tuple[socket.socket, socket.socket] | None = None
+
+
+def _on_signal_do_nothing_here(signum: int, frame: object) -> None:
+    # Installing any Python handler is what makes the C-level handler write to the wakeup fd; the
+    # exit itself happens on the thread reading it (see `_exit_on_signals`), never here, so the
+    # two cannot race.
+    pass
+
+
 def run(
     sources: Sequence[str] | None = None,
     *,
@@ -526,8 +571,7 @@ def run(
     except ImportError:
         sys.exit('backlot mcp needs the [mcp] extra:  pip install "backlot[mcp]"')
 
-    for sig in _TERMINATING_SIGNALS:
-        signal.signal(sig, _exit_on_signal)
+    _exit_on_signals()
     try:
         with attach(url) as base_url:
             creds = resolve(base_url, user)

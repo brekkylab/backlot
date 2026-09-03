@@ -900,6 +900,49 @@ def test_backlot_mcp_exits_on_a_signal_with_stdin_still_open(live_server, signam
     assert code == 128 + sig, (code, proc.stderr.read()[-500:])
 
 
+# `backlot mcp` in which a sidecar thread delivers the named signal to ITSELF with `pthread_kill`,
+# once the server is up: the case a process-directed `kill` produces whenever the kernel picks a
+# thread other than the main one, made deterministic. Nothing in backlot is patched.
+_MCP_SIGNALLED_ON_ANOTHER_THREAD = """
+import signal, sys, threading, time
+import backlot.mcp as mcp
+
+def sidecar():
+    time.sleep(1.0)
+    signal.pthread_kill(threading.get_ident(), getattr(signal, sys.argv[1]))
+    time.sleep(60)
+
+threading.Thread(target=sidecar, daemon=True).start()
+mcp.run(["slack"], url=sys.argv[2])
+"""
+
+
+@pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT", "SIGHUP"])
+def test_backlot_mcp_exits_when_the_signal_lands_on_another_thread(live_server, signame):
+    """A Python-level handler runs on the main thread only, once that thread is back in the
+    interpreter — and the main thread here is the event loop, asleep in select with nothing to wake
+    it. When the kernel hands the signal to another thread, that never happens: measured, the
+    process stayed alive indefinitely, which is what the intermittent CI timeouts were. The exit
+    must not depend on which thread the signal reaches."""
+    base, _ = live_server
+    sig = getattr(signal, signame)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _MCP_SIGNALLED_ON_ANOTHER_THREAD, signame, base],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        code = proc.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        pytest.fail(f"still running 20s after {signame} was delivered to a non-main thread")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert code == 128 + sig, (code, proc.stderr.read()[-500:])
+
+
 def test_backlot_mcp_takes_its_server_down_on_sighup(tmp_path):
     """The server `attach` starts goes with the process on a signal too, not only when stdin
     closes — SIGHUP is the one whose default disposition would have ended this process instantly

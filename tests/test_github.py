@@ -740,6 +740,9 @@ def test_github_lists_the_refs_a_client_enumerates_before_it_reads(gh_client, gh
     assert [b["name"] for b in body] == [repo["default_branch"]]
     assert body[0]["protected"] is False
     assert set(body[0]["commit"]) == {"sha", "url"}
+    # those three and nothing else: real's item carries none of the `_links`, `protection` and
+    # `protection_url` the single-branch route does (psf/requests, `?per_page=1` against `/3.0`)
+    assert set(body[0]) == {"name", "commit", "protected"}
     # the one branch is the one `/branches/{branch}` already serves, down to the commit
     single = c.get(f"/github/repos/{gh_org}/codebase/branches/main", headers=gh_admin_h).json()
     assert body[0]["commit"]["sha"] == single["commit"]["sha"]
@@ -841,13 +844,20 @@ def test_github_a_stated_branch_listing_replaces_the_inferred_one(gh_client, gh_
     assert c.get(f"{base}/branches/trunk", headers=gh_admin_h).status_code == 200
 
 
-def test_github_stated_protection_gives_protected_all_three_answers(gh_client, gh_admin_h, gh_org):
-    """`?protected=` selects for real once a corpus states which branches are protected.
+def test_github_stated_protection_decides_the_filter_and_the_protection_object(
+    gh_client, gh_admin_h, gh_org
+):
+    """`?protected=` selects for real once a corpus states which branches are protected, and the
+    same stated bit decides `protection.enabled` on the branch object.
 
     Real is three-valued — a truthy value selects the protected branches, `false`/`0` the
     unprotected ones, an absent or empty parameter all of them (measured on fastapi/fastapi: 22
     branches, one protected, answering 1 / 21 / 22). Until a corpus could say so, every branch was
     unprotected and the last two answers coincided; they no longer have to.
+
+    `protection.enabled` reports CLASSIC protection where `protected` covers any mechanism, and a
+    stated bit is read as the classic one — measured 2026-09-03, see
+    :func:`backlot.routers.github.get_branch`.
     """
     c, _ = gh_client
     url = f"/github/repos/{gh_org}/stated-repo/branches"
@@ -863,8 +873,55 @@ def test_github_stated_protection_gives_protected_all_three_answers(gh_client, g
     assert names(None) == ["release/2026-03", "trunk"]
     # and the flag rides on the entry itself, in both listings
     assert [b["protected"] for b in c.get(url, headers=gh_admin_h).json()] == [False, True]
+
+    # real's six members on EVERY branch, protected or not, and PyGithub's `Branch` declares the
+    # three this used to omit
     single = c.get(f"{url}/trunk", headers=gh_admin_h).json()
-    assert single["protected"] is True
+    slashed = c.get(f"{url}/release/2026-03", headers=gh_admin_h).json()
+    keys = {"name", "commit", "_links", "protected", "protection", "protection_url"}
+    assert set(single) == keys and set(slashed) == keys
+    assert single["protected"] is True and single["protection"]["enabled"] is True
+    assert slashed["protected"] is False and slashed["protection"]["enabled"] is False
+    # real's empty block either way: a corpus records no CI
+    empty = {"enforcement_level": "off", "contexts": [], "checks": []}
+    assert single["protection"] == {"enabled": True, "required_status_checks": empty}
+    assert slashed["protection"] == {"enabled": False, "required_status_checks": empty}
+
+    # a slash stays a slash in all three urls, unescaped, as real spells them
+    self_url = slashed["_links"]["self"]
+    assert self_url.split("testserver", 1)[1] == f"{url}/release/2026-03"
+    assert slashed["protection_url"] == f"{self_url}/protection"
+    assert slashed["_links"]["html"] == (
+        f"https://github.com/{gh_org}/stated-repo/tree/release/2026-03"
+    )
+    # `self` resolves to this same object, which is the point of serving it
+    assert c.get(self_url.split("testserver", 1)[1], headers=gh_admin_h).json() == slashed
+
+    # `protection_url` reaches a route, and that route answers real's 404 for a caller without
+    # repo-admin rights (psf/requests `main` and `3.0`). The slashed name pins the route ORDER:
+    # real reads the trailing `/protection` as the route even after a slashed name
+    # (`/branches/bug/5671/protection` answers this anchor, and `bug/5671` is a branch).
+    for name in ("trunk", "release/2026-03"):
+        r = c.get(f"{url}/{name}/protection", headers=gh_admin_h)
+        assert r.status_code == 404, name
+        assert r.json() == {
+            "message": "Not Found",
+            "documentation_url": (
+                "https://docs.github.com/rest/branches/branch-protection#get-branch-protection"
+            ),
+            "status": "404",
+        }, name
+
+    # that handler resolves nothing, so the router-wide dependencies are what answer for the
+    # credential, the owner and the version — an unauthenticated 404 would confirm the route
+    prot = f"{url}/trunk/protection"
+    bad_token = {"Authorization": "Bearer usr-not-a-real-token"}
+    old_version = {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}
+    wrong_owner = "/github/repos/not-the-owner/stated-repo/branches/trunk/protection"
+    assert c.get(prot).status_code == 401
+    assert c.get(prot, headers=bad_token).status_code == 401
+    assert c.get(prot, headers=old_version).status_code == 400
+    assert c.get(wrong_owner, headers=gh_admin_h).status_code == 404
 
 
 def test_github_a_stated_repo_serves_its_tags(gh_client, gh_admin_h, gh_org):

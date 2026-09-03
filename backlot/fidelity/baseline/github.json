@@ -3110,12 +3110,6 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "GET /repos/{}/{}/branches/{}/protection",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
       "path": "GET /repos/{}/{}/branches/{}/protection/enforce_admins",
       "detail": "the vendor serves it; Backlot does not"
     },

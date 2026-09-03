@@ -35,6 +35,15 @@ def test_operation_id_picks_the_method_deterministically():
     one = SimpleNamespace(name="search", path_format="/notion/v1/search", methods={"POST"})
     assert openapi.unique_operation_id(one) == "search_notion_v1_search_post"
 
+    # HEAD ranks last, so a route serving both still names GET — the id S3's object route has
+    # carried since before `head` joined _METHODS, and which must not move.
+    both = SimpleNamespace(
+        name="object_get", path_format="/s3/{bucket}/{key}", methods={"GET", "HEAD"}
+    )
+    assert openapi.unique_operation_id(both) == "object_get_s3__bucket___key__get"
+    only = SimpleNamespace(name="head_bucket", path_format="/s3/{bucket}", methods={"HEAD"})
+    assert openapi.unique_operation_id(only) == "head_bucket_s3__bucket__head"
+
     # a method _METHOD_RANK does not know still yields a stable answer
     odd = SimpleNamespace(name="x", path_format="/x", methods={"TRACE", "OPTIONS"})
     assert openapi.unique_operation_id(odd) == openapi.unique_operation_id(
@@ -163,7 +172,7 @@ def test_dedupe_prefers_fewer_path_params():
 
 def test_build_mcp_spec_rejects_unknown_source():
     with pytest.raises(KeyError):
-        openapi.build_mcp_spec(_doc(), "s3")  # SigV4 — intentionally no bridge
+        openapi.build_mcp_spec(_doc(), "dropbox")
 
 
 def test_tool_name_inverts_unique_operation_id():
@@ -229,3 +238,34 @@ def test_build_mcp_spec_resolves_all_real_collisions():
     for source in openapi.SOURCE_PREFIXES:
         spec = openapi.build_mcp_spec(full, source)  # raises ValueError if a collision survives
         assert spec["paths"], f"{source} sliced to empty"
+
+
+def test_build_mcp_spec_drops_head_operations():
+    """S3 is the only source serving HEAD, and none of it reaches the bridged spec. A HEAD answers
+    with headers alone, so a tool built from one returns an empty body on every call. Dropping it
+    before the rename is also what keeps S3's object route — GET and HEAD under one operationId —
+    from shipping as `object_get` plus an un-renamed `object_get_s3__bucket___key__get`."""
+    warnings.filterwarnings("ignore")
+    from backlot.main import app
+
+    spec = app.openapi()
+    assert "head" in spec["paths"]["/s3/{bucket}/{key}"], "the raw spec still describes HEAD"
+
+    paths = openapi.build_mcp_spec(spec, "s3")["paths"]
+    assert not any("head" in item for item in paths.values()), sorted(paths)
+    assert sorted(paths["/s3/{bucket}/{key}"]) == ["get"]
+    assert paths["/s3/{bucket}/{key}"]["get"]["operationId"] == "object_get"
+
+
+def test_drop_head_operations_drops_a_path_it_empties():
+    """A path whose only operation was HEAD goes with it, rather than lingering as an entry with
+    no operation. Synthetic, because no real source has such a path — every ``@router.head``
+    shares its path with a GET — so nothing else can cover the guard."""
+    spec = {
+        "paths": {
+            "/only-head": {"head": {"operationId": "h"}},
+            "/both": {"head": {"operationId": "b"}, "get": {"operationId": "b"}},
+            "/params-only": {"parameters": [], "head": {"operationId": "p"}},
+        }
+    }
+    assert openapi.drop_head_operations(spec)["paths"] == {"/both": {"get": {"operationId": "b"}}}

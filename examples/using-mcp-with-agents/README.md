@@ -70,15 +70,18 @@ pip install -e ".[mcp]"          # mcp + openai-agents + anthropic[mcp]
 # prove retrieval + ACL end-to-end through the real MCP servers — no API key needed.
 # One test per service (each skips if its runtime — Docker / npx / uvx — is absent):
 python -m pytest tests/test_mcp.py
-#   Atlassian: admin reads an ACL-restricted Jira issue, a user token is blocked
+#   Atlassian: admin reads an ACL-restricted Jira issue, a scoped user is blocked
 #   Notion:    admin reads an ACL-restricted page, an outsider is blocked
-#   S3:        admin lists bucket objects through a signed AWS CLI call
-#   GitHub:    admin reads an ACL-restricted issue via the bridge, a user token is blocked
+#   S3:        admin lists bucket objects through a signed AWS CLI call, and again through the
+#              bridge's own SigV4 signing, where a scoped user cannot read the restricted object
+#   GitHub:    admin reads an ACL-restricted issue via the bridge, a scoped user is blocked
 #   Slack:     admin search surfaces a restricted-channel message via the bridge, a user can't
-#   HubSpot:   admin reads an ACL-restricted CRM record via the bridge, a user token is blocked;
+#   HubSpot:   admin reads an ACL-restricted CRM record via the bridge, a scoped user is blocked;
 #              the polymorphic search tool round-trips filterGroups and returns `total`
 #   Linear/Fireflies: same via the GraphQL bridge — admin reads an ACL-restricted issue/transcript
-#              and a user token cannot; a nested `IssueFilter` round-trips and `pageInfo` comes back
+#              and a scoped user cannot; a nested `IssueFilter` round-trips and `pageInfo` comes back
+#   backlot mcp: over real stdio — every source namespaced, `--user` scoping each call, an unknown
+#              email refused, and the server it starts gone when the client hangs up
 
 # drive it with an LLM agent (needs an API key). --agent defaults to anthropic; add --agent openai.
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/atlassian.py
@@ -92,20 +95,25 @@ ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/linear.py    # via t
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/fireflies.py # via the GraphQL→MCP bridge
 ```
 
-**Auth is per-service.** Retrieval is ACL-scoped by the identity you pass:
+**Retrieval is ACL-scoped by the identity you pass**, and how you pass it depends on who is doing
+the authenticating:
 
-- **Atlassian / Notion** use a Backlot **token**: default is the admin token (sees everything); pass
-  `--token` a per-user token from `GET /_meta/users` to scope it (the token, not the username,
-  authenticates).
-- **S3** uses an AWS **access-key/secret pair** (not a token): pass `--access-key` / `--secret-key`
-  — **required with `--url`** (real AWS keys, or a pair from `GET <url>/_meta/users`, where each
-  user and the admin has an `s3_access_key_id` / `s3_secret_access_key`). Without `--url` the local
-  throwaway server uses its own admin keypair.
+- **The seven `backlot mcp` launchers** (`github`, `slack`, `gmail`, `gdrive`, `hubspot`, `linear`,
+  `fireflies`) take `--user <email>` — one flag, because the command resolves that person's whole
+  credential set and spells it per source. Default is the admin, who sees everything.
+- **The vendor-server launchers** take the credential shape their vendor's own server accepts, since
+  Backlot is not the one parsing the flag: `atlassian.py` and `notion.py` take a Backlot **token**
+  (`--token` a per-user token from `GET /_meta/users`; the token, not the username, authenticates),
+  and `s3.py` takes an AWS **access-key/secret pair** — `--access-key` / `--secret-key`, **required
+  with `--url`** (real AWS keys, or a pair from `GET <url>/_meta/users`, where each user and the
+  admin has an `s3_access_key_id` / `s3_secret_access_key`). Without `--url` the local throwaway
+  server uses its own admin keypair.
 
 - **Local** — `--url http://localhost:PORT`.
-- **Remote** — `--url https://host` plus the service's credentials. Grab them from
-  `GET /_meta/users` (don't reuse the built-in admin token/keys against someone else's server).
-  `atlassian.py` additionally **requires** `--username` for a remote target (see below).
+- **Remote** — `--url https://host` plus the identity. For the seven above that is an email the
+  remote corpus knows; for the vendor-server launchers, credentials from `GET /_meta/users` (don't
+  reuse the built-in admin token/keys against someone else's server). `atlassian.py` additionally
+  **requires** `--username` for a remote target (see below).
 
 ## How `atlassian.py` connects
 
@@ -180,13 +188,21 @@ this directory:
 pip install "backlot[mcp]" && claude mcp add backlot -- backlot mcp
 ```
 
-With no `--source` it serves every bridgeable source from one process, each tool namespaced
+With no `--source` it serves every source from one process, each tool namespaced
 `<source>_<tool>` (`slack_search_messages`, `atlassian_jira_get_issue`); `--source slack` serves one
-source under its plain tool names. It bridges the server at `--url`, else the one on `127.0.0.1:8000`
-if a Backlot server answers there, else **starts one itself** over the data dir's corpus (the bundled
-corpus when the data dir is empty) and stops it when the client disconnects — which is what makes
-the install a single line. `--token` scopes every call to one user; `--username` switches Atlassian
-to the Basic scheme; `--depth` is the GraphQL selection depth. The code is `backlot/mcp.py`.
+source under its plain tool names. Given `--url` it bridges that server and fails if nothing answers
+there — naming a server and getting a different corpus would be the wrong kind of help. Without
+`--url` it takes the one on `127.0.0.1:8000` if a Backlot server is there, else **starts one itself**
+over the data dir's corpus (the bundled corpus when the data dir is empty) and stops it when the
+client disconnects — which is what makes the install a single line.
+
+**One credential flag.** `--user <email>` answers every call as that person, so Backlot's
+per-document ACL decides each answer; without it, the admin, who sees everything. The command
+resolves that email through the server's own `GET /_meta/users` and spells the credential the way
+each source authenticates — `Bearer` for most, HTTP Basic `email:token` for Atlassian, a SigV4
+signature per request for S3 — so there is nothing per-service to pass. An email the corpus does not
+know is refused before a single tool exists. `--depth` is the GraphQL selection depth. The code is
+`backlot/mcp.py`.
 
 ## How the OpenAPI→MCP bridge connects (`github.py` / `slack.py` / `gmail.py` / `gdrive.py` / `hubspot.py`)
 
@@ -203,26 +219,32 @@ Backlot does the spec work:
   an MCP tool set can't have). This lives in `backlot/openapi.py`, so there is nothing to clean up
   client-side;
 - the bridge just fetches that spec and serves it over stdio via `FastMCP.from_openapi()` on an
-  `httpx.AsyncClient` whose base URL is Backlot and whose **`Authorization`** header is Backlot
-  token — so Backlot resolves the token to a user and **enforces that user's ACL** on every call.
+  `httpx2.AsyncClient` (what `from_openapi` takes — a legacy `httpx` one is accepted only under a
+  deprecation warning) whose base URL is Backlot and which carries the credential `--user` resolved
+  — so Backlot resolves it to a user and **enforces that user's ACL** on every call.
 
 stdio (not streamable-HTTP): FastMCP's HTTP mode has a known bug forwarding the client's
-`Authorization` header downstream. Auth: `--username` present → HTTP Basic for Atlassian; otherwise
-`Bearer` (`--token`, default admin; per-user from `GET /_meta/users`). Adding a source is one entry
-in `backlot/openapi.py`'s `SOURCE_PREFIXES` plus a thin launcher.
+`Authorization` header downstream. Adding a source is one entry in `backlot/openapi.py`'s
+`SOURCE_PREFIXES` plus a thin launcher.
 
 **Notion and Atlassian** already have vendor-server launchers above, but they also work through the
 generic bridge (no vendor server) — run `backlot mcp` directly:
 
 ```bash
-backlot mcp --source notion    --url <url> --token <t>
-backlot mcp --source atlassian --url <url> --token <t> --username svc@example.com
+backlot mcp --source notion    --url <url> --user someone@acme.com
+backlot mcp --source atlassian --url <url> --user someone@acme.com
 ```
 
-Atlassian authenticates with HTTP Basic (`--username` + Backlot token as the password), and its
-`SOURCE_PREFIXES` entry covers both the `/atlassian` (Jira) and `/wiki` (Confluence) path roots.
-**S3 is the one source with no bridge** — it is SigV4-signed (a static `Authorization` header can't
-sign each request), so it is absent from `/_meta/openapi/*`; use the vendor `s3.py` example.
+Atlassian authenticates with HTTP Basic, the resolved user's own email as the username and their
+Backlot token as the password, and its `SOURCE_PREFIXES` entry covers both the `/atlassian` (Jira)
+and `/wiki` (Confluence) path roots.
+
+**S3 goes through the same path, signed rather than bearer-authenticated.** SigV4 signs each
+request, so a fixed `Authorization` header cannot serve it — the bridge signs every call with
+`backlot/sigv4.py`, the module the S3 router verifies inbound signatures with, using the access-key
+pair `--user` resolved. Its three tools are `list_buckets`, `bucket_get` and `object_get`, named for
+Backlot's own routes rather than the `aws s3api …` surface a vendor CLI gives; `s3.py` below still
+drives awslabs' server, because pointing a real vendor client at Backlot is its own thing to show.
 
 ## How the GraphQL→MCP bridge connects (`linear.py` / `fireflies.py`)
 

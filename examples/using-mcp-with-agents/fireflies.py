@@ -24,7 +24,7 @@ meeting's utterances. So the agent searches, then reads the transcript it picked
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
-    ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/fireflies.py [--url … --token … --agent openai]
+    ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/fireflies.py [--url … --user … --agent openai]
 """
 
 from __future__ import annotations
@@ -101,12 +101,17 @@ QUESTION = (
 )
 
 
-def build_params(base_url: str, token: str, depth: int | None = None) -> StdioServerParameters:
+def build_params(
+    base_url: str, user: str | None = None, depth: int | None = None
+) -> StdioServerParameters:
     """Run `backlot mcp --source fireflies` as a stdio MCP server pointed at Backlot.
 
     `-m backlot` through this interpreter rather than the `backlot` script, so it works in an
-    environment whose bin/ is not on PATH."""
-    args = ["-m", "backlot", "mcp", "--source", "fireflies", "--url", base_url, "--token", token]
+    environment whose bin/ is not on PATH. Without `--user` the command answers as the admin, so
+    there is nothing to pass for the default."""
+    args = ["-m", "backlot", "mcp", "--source", "fireflies", "--url", base_url]
+    if user:
+        args += ["--user", user]
     if depth is not None:
         args += ["--depth", str(depth)]
     return StdioServerParameters(command=sys.executable, args=args)
@@ -120,9 +125,10 @@ def _parse_args() -> argparse.Namespace:
         "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
     )
     p.add_argument(
-        "--token",
-        help="Backlot bearer token from GET /_meta/users "
-        "(default: the admin token, which sees everything)",
+        "--user",
+        metavar="EMAIL",
+        help="answer as this person, from GET /_meta/users "
+        "(default: the admin, who sees everything)",
     )
     p.add_argument(
         "--depth",
@@ -143,7 +149,7 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     with serve_or_connect(CORPUS, url=args.url) as s:
-        if args.token:
-            print("authenticating with --token → retrieval is ACL-filtered to that user")
-        params = build_params(s.base_url, args.token or s.token, args.depth)
+        if args.user:
+            print(f"answering as {args.user} → retrieval is ACL-filtered to that person")
+        params = build_params(s.base_url, args.user, args.depth)
         run_agent(args.agent, params, QUESTION)

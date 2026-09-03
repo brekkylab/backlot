@@ -12,11 +12,17 @@ this module finds (or starts) a Backlot server and serves that server's APIs as 
   each root ``Query`` field as a typed tool. ``backlot.graphql.mcp_tools`` owns that derivation —
   tool names, argument schemas, generated selection sets — and this module is its transport.
 
-S3 is the one source with no bridge: it is SigV4-signed, so a fixed ``Authorization`` header cannot
-sign each request. ``examples/using-mcp-with-agents/s3.py`` drives it through awslabs' server.
+S3 comes through the same OpenAPI path, but signed rather than bearer-authenticated: SigV4 signs
+each request, so instead of a fixed ``Authorization`` header the client signs every call with
+``backlot.sigv4`` — the module the S3 router verifies inbound signatures with, so the two cannot
+drift apart. ``examples/using-mcp-with-agents/s3.py`` still drives awslabs' server, because
+pointing a real vendor client at Backlot is its own thing to show.
 
-Every tool call carries the caller's credential, so Backlot's per-token ACL decides what comes back —
-pass ``--token`` a per-user token from ``GET /_meta/users`` to see what that user sees.
+**One credential input.** ``--user <email>`` names a person, and this module resolves that person's
+whole credential set from the server's own ``GET /_meta/users`` — bearer token, and the S3
+access-key pair. Each source is then spelled the way it authenticates: Bearer, Atlassian's Basic
+``email:token``, S3's SigV4. Every tool call carries it, so Backlot's per-document ACL decides what
+comes back. Without ``--user`` the admin sees everything.
 
 **Which server.** ``--url`` when given; otherwise the default local port if a Backlot server already
 answers there; otherwise one started here, as a subprocess over the data dir's corpus (or the
@@ -33,14 +39,18 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import json
 import signal
 import sys
 import urllib.error
 import urllib.request
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
+from backlot import sigv4
 from backlot.openapi import SOURCE_PREFIXES
 
 OPENAPI_SOURCES: tuple[str, ...] = tuple(SOURCE_PREFIXES)
@@ -59,17 +69,107 @@ DEFAULT_URL = "http://127.0.0.1:8000"
 DEPTH: dict[str, int] = {"linear": 1}
 
 
+# Backlot's verifier reads the region out of the client's own credential scope, so any value
+# validates; this is boto3's default.
+S3_REGION = "us-east-1"
+
+
 def _stderr(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
-def _auth_header(token: str, username: str | None = None) -> dict[str, str]:
-    # Basic `username:token` is Atlassian's scheme, where the api_token IS the Backlot token; Backlot
-    # resolves it to a user and ignores the username once it has. Everything else is Bearer.
-    if username:
-        raw = f"{username}:{token}".encode()
+@dataclass(frozen=True)
+class Credentials:
+    """One caller's whole credential set, as the server itself reports it.
+
+    ``email`` is None for the admin, the one caller ``GET /_meta/users`` does not list as a person,
+    which is also why Atlassian falls back to Bearer for them: Basic needs a username.
+    """
+
+    token: str
+    email: str | None
+    s3_access_key_id: str
+    s3_secret_access_key: str
+
+
+def resolve(base_url: str, user: str | None) -> Credentials:
+    """The credentials for ``user`` (an email), or the admin's when ``user`` is None.
+
+    An email the corpus does not know is refused, not silently promoted to the admin — a caller who
+    named a person and got the admin's unfiltered view would have no way to tell.
+    """
+    from backlot import server as backlot_server
+
+    try:
+        directory = backlot_server.meta_users(base_url)
+    except Exception as exc:  # noqa: BLE001 — unreachable, non-200, or not a directory
+        sys.exit(f"cannot read {base_url}/_meta/users, so --user cannot be resolved: {exc}")
+    # A field the directory does not carry is reported, not raised: an unhandled KeyError here
+    # leaves the client with nothing but "Connection closed" (see `_fetch_json`).
+    try:
+        if user is None:
+            return Credentials(
+                token=directory["admin_token"],
+                email=None,
+                s3_access_key_id=directory["admin_s3_access_key_id"],
+                s3_secret_access_key=directory["admin_s3_secret_access_key"],
+            )
+        for entry in directory.get("users", ()):
+            if entry.get("email") == user:
+                return Credentials(
+                    token=entry["token"],
+                    email=entry["email"],
+                    s3_access_key_id=entry["s3_access_key_id"],
+                    s3_secret_access_key=entry["s3_secret_access_key"],
+                )
+    except KeyError as exc:
+        sys.exit(f"{base_url}/_meta/users is missing {exc} — it is not a Backlot user directory")
+    known = len(directory.get("users", ()))
+    sys.exit(
+        f"{user!r} is not one of the {known} users this corpus has "
+        f"(GET {base_url}/_meta/users lists them)"
+    )
+
+
+def _auth_header(creds: Credentials, source: str) -> dict[str, str]:
+    # Basic `email:token` is Atlassian's scheme, where the api_token IS the Backlot token, and the
+    # email is what mcp-atlassian sends. S3 has no header here at all: `_sign_sigv4` signs it.
+    if source == "atlassian" and creds.email:
+        raw = f"{creds.email}:{creds.token}".encode()
         return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
-    return {"Authorization": f"Bearer {token}"}
+    return {"Authorization": f"Bearer {creds.token}"}
+
+
+def _sign_sigv4(creds: Credentials, request) -> None:
+    """Sign one httpx request for Backlot's S3 surface, in place, with :mod:`backlot.sigv4` — the
+    module the S3 router verifies with, so the canonical request cannot be built two different
+    ways. S3 signs the wire path VERBATIM, which is why the raw path is used, not the decoded one.
+    """
+    now = datetime.now(timezone.utc)
+    amz_date = now.strftime(sigv4.AMZ_DATE_FORMAT)
+    date_stamp = amz_date[:8]
+    payload_hash = hashlib.sha256(request.content or b"").hexdigest()
+    request.headers["x-amz-date"] = amz_date
+    request.headers["x-amz-content-sha256"] = payload_hash
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    raw_path, _, _ = request.url.raw_path.partition(b"?")
+    signature = sigv4.expected_signature(
+        creds.s3_secret_access_key,
+        request.method,
+        raw_path.decode("ascii"),
+        request.url.query.decode("ascii"),
+        {k.lower(): v for k, v in request.headers.items()},
+        signed_headers,
+        payload_hash,
+        amz_date,
+        date_stamp,
+        S3_REGION,
+    )
+    scope = f"{date_stamp}/{S3_REGION}/s3/aws4_request"
+    request.headers["Authorization"] = (
+        f"{sigv4.ALGORITHM} Credential={creds.s3_access_key_id}/{scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
 
 
 def _fetch_json(
@@ -110,18 +210,31 @@ def is_backlot(url: str) -> bool:
 # --------------------------------------------------------------------------- one source
 
 
-def openapi_server(base_url: str, token: str, source: str, *, username: str | None = None):
-    """A FastMCP server for one REST source: the MCP-ready spec, served over an authenticated
-    client whose base URL is Backlot. ``username`` switches Atlassian to Basic auth."""
+def openapi_server(base_url: str, creds: Credentials, source: str):
+    """A FastMCP server for one REST source: the MCP-ready spec, served over a client whose base
+    URL is Backlot and which carries ``creds`` on every call — as a header for the bearer sources,
+    as a per-request signature for S3."""
     import httpx2
     from fastmcp import FastMCP
 
     spec = _fetch_json(f"{base_url}/_meta/openapi/{source}")
+
+    class _SigV4(httpx2.Auth):
+        # An auth flow, not a header: it is the hook that sees each request in its final form.
+        # `requires_request_body` is what guarantees `request.content` is readable by then.
+        requires_request_body = True
+
+        def auth_flow(self, request):
+            _sign_sigv4(creds, request)
+            yield request
+
+    signed = source == "s3"
     # httpx2, not httpx: `from_openapi` takes an httpx2 client. A legacy httpx one is still
     # accepted, under a deprecation warning that says it will stop being accepted.
     client = httpx2.AsyncClient(
         base_url=base_url,
-        headers=_auth_header(token, username if source == "atlassian" else None),
+        headers={} if signed else _auth_header(creds, source),
+        auth=_SigV4() if signed else None,
         timeout=30,
     )
     # validate_output=False: Backlot's responses are the source of truth; a passthrough must never
@@ -131,7 +244,7 @@ def openapi_server(base_url: str, token: str, source: str, *, username: str | No
     )
 
 
-def graphql_server(base_url: str, token: str, source: str, *, depth: int | None = None):
+def graphql_server(base_url: str, creds: Credentials, source: str, *, depth: int | None = None):
     """A FastMCP server for one GraphQL source: one tool per root ``Query`` field, derived from the
     endpoint's own introspection, each posting a fixed document with the caller's arguments as
     variables. ``depth`` is how many object levels the generated selection sets reach."""
@@ -142,7 +255,7 @@ def graphql_server(base_url: str, token: str, source: str, *, depth: int | None 
     from backlot.graphql import mcp_tools
 
     endpoint = f"{base_url}/{source}/graphql"
-    headers = _auth_header(token)
+    headers = _auth_header(creds, source)
     # The introspection request carries the credential, so a bad token fails here, before a single
     # tool exists, with the endpoint's own error body.
     introspection = _fetch_json(
@@ -196,36 +309,39 @@ def graphql_server(base_url: str, token: str, source: str, *, depth: int | None 
 
 def build_server(
     base_url: str,
-    token: str,
+    creds: Credentials,
     sources: Sequence[str],
     *,
-    username: str | None = None,
     depth: int | None = None,
 ):
     """One FastMCP server over ``sources``.
 
-    A single source is served as itself, so its tools keep the names the vendor's spec gives them
-    (``search_messages``, ``get_issue``). Several are mounted under the source's own name as a
+    A single source is served as itself, so its tools keep the names Backlot's own routes give them
+    (``search_messages``, ``jira_get_issue``). Several are mounted under the source's own name as a
     namespace — ``slack_search_messages``, ``github_get_issue`` — because two vendors can and do
     name an operation the same way."""
     from fastmcp import FastMCP
 
     servers = {
         source: (
-            graphql_server(base_url, token, source, depth=depth)
+            graphql_server(base_url, creds, source, depth=depth)
             if source in GRAPHQL_SOURCES
-            else openapi_server(base_url, token, source, username=username)
+            else openapi_server(base_url, creds, source)
         )
         for source in sources
     }
     if len(servers) == 1:
         return next(iter(servers.values()))
-    root = FastMCP(
-        name="backlot",
-        instructions="Backlot serves these enterprise SaaS APIs over a local corpus. Tools are "
-        "namespaced by source: slack_*, github_*, gmail_*, gdrive_*, notion_*, atlassian_* "
-        "(Jira and Confluence), hubspot_*, linear_*, fireflies_*.",
+    # Listed from what was mounted: a client feeds `instructions` to the model as the server's
+    # description, and a fixed list would advertise the sources a `--source` run left out.
+    namespaces = ", ".join(f"{source}_*" for source in servers)
+    instructions = (
+        "Backlot serves these enterprise SaaS APIs over a local corpus. Tools are namespaced "
+        f"by source: {namespaces}."
     )
+    if "atlassian" in servers:
+        instructions += " atlassian_* covers both Jira and Confluence."
+    root = FastMCP(name="backlot", instructions=instructions)
     for source, server in servers.items():
         root.mount(server, namespace=source)
     return root
@@ -235,14 +351,12 @@ def build_server(
 
 
 @contextlib.contextmanager
-def attach(url: str | None = None, token: str | None = None) -> Iterator[tuple[str, str]]:
-    """Yield ``(base_url, token)`` for the server to bridge: the one at ``url``, else the one on the
+def attach(url: str | None = None) -> Iterator[str]:
+    """Yield the ``base_url`` of the server to bridge: the one at ``url``, else the one on the
     default local port, else one started here for as long as the block runs.
 
     An explicit ``url`` that does not answer is an error rather than a fallback — the caller named
     a server, and quietly serving a different corpus in its place is the wrong kind of helpful.
-    The token, when not given, is the server's real admin token where that can be learned
-    (``backlot.server.admin_token_for``) and the package default otherwise.
     """
     from backlot import server as backlot_server
 
@@ -251,11 +365,11 @@ def attach(url: str | None = None, token: str | None = None) -> Iterator[tuple[s
         backlot_server.ensure_cert_bundle()
         if not is_backlot(url):
             sys.exit(f"no Backlot server answers at {url}")
-        yield url, token or backlot_server.admin_token_for(url)
+        yield url
         return
     if is_backlot(DEFAULT_URL):
         _stderr(f"using the Backlot server at {DEFAULT_URL}")
-        yield DEFAULT_URL, token or backlot_server.admin_token_for(DEFAULT_URL)
+        yield DEFAULT_URL
         return
 
     from backlot.config import get_settings
@@ -272,7 +386,7 @@ def attach(url: str | None = None, token: str | None = None) -> Iterator[tuple[s
         started = backlot_server.serve()
     with started as s:
         _stderr(f"Backlot is up at {s.base_url}")
-        yield s.base_url, token or s.token
+        yield s.base_url
 
 
 def _exit_on_signal(signum: int, frame: object) -> None:
@@ -286,8 +400,7 @@ def run(
     sources: Sequence[str] | None = None,
     *,
     url: str | None = None,
-    token: str | None = None,
-    username: str | None = None,
+    user: str | None = None,
     depth: int | None = None,
 ) -> None:
     """Serve ``sources`` (default: all of them) as MCP tools over stdio until the client hangs up."""
@@ -298,10 +411,9 @@ def run(
 
     signal.signal(signal.SIGTERM, _exit_on_signal)
     try:
-        with attach(url, token) as (base_url, resolved_token):
-            server = build_server(
-                base_url, resolved_token, sources or SOURCES, username=username, depth=depth
-            )
+        with attach(url) as base_url:
+            creds = resolve(base_url, user)
+            server = build_server(base_url, creds, sources or SOURCES, depth=depth)
             # No banner: fastmcp prints one to stderr, which is harmless to the protocol but noise
             # in every MCP client's log.
             server.run(transport="stdio", show_banner=False)

@@ -17,8 +17,7 @@ renames each operation to its route's own name (``search_messages``, not
 operations sharing a name to one (prefer GET, then fewest path params, then the lexicographically
 greatest path — so Jira's ``/rest/api/3`` alias survives over ``/rest/api/2``). Served at
 ``GET /_meta/openapi/{source}`` so a bridge (``backlot.mcp``) consumes it directly — no client-side
-spec surgery. S3 is intentionally absent: it is SigV4-signed, which a static bridge auth header
-can't produce.
+spec surgery. HEAD goes first, before anything is renamed (:func:`drop_head_operations`).
 """
 
 from __future__ import annotations
@@ -41,6 +40,7 @@ SOURCE_PREFIXES: dict[str, list[str]] = {
     "notion": ["/notion/v1"],
     "atlassian": ["/atlassian", "/wiki"],
     "hubspot": ["/hubspot"],
+    "s3": ["/s3"],
 }
 
 _METHODS = ("get", "post", "put", "delete", "patch")
@@ -124,6 +124,22 @@ def slice_spec(spec: dict, prefixes: list[str]) -> dict:
     return {**spec, "paths": paths}
 
 
+def drop_head_operations(spec: dict) -> dict:
+    """Copy ``spec`` without its HEAD operations, and without any path left with no operation.
+
+    Two reasons, and S3 is the only source with HEAD routes to hit either. A HEAD answers with
+    headers alone, so the tool a bridge derives from one returns an empty body on every call —
+    measured. And ``head`` is not in ``_METHODS``, so a HEAD left here is renamed by neither pass:
+    S3's object route, GET and HEAD under one operationId, would ship as ``object_get`` beside an
+    un-renamed ``object_get_s3__bucket___key__get`` hitting the same route."""
+    paths = {}
+    for path, item in spec.get("paths", {}).items():
+        kept = {m: op for m, op in item.items() if m != "head"}
+        if any(m in _METHODS for m in kept):
+            paths[path] = kept
+    return {**spec, "paths": paths}
+
+
 def name_operations(spec: dict) -> dict:
     """Copy ``spec`` with every operationId replaced by its route name (:func:`tool_name`).
 
@@ -178,13 +194,13 @@ def _duplicate_operation_ids(spec: dict) -> list[str]:
 
 
 def build_mcp_spec(full_spec: dict, source: str) -> dict:
-    """The MCP-ready spec for ``source``: sliced to its paths, operations named for their routes,
-    fidelity aliases collapsed.
+    """The MCP-ready spec for ``source``: sliced to its paths, HEAD dropped, operations named for
+    their routes, fidelity aliases collapsed.
 
     Raises ``KeyError`` for an unknown source and ``ValueError`` if any operationId collision
     survives (an invariant — dedupe should always resolve them)."""
     prefixes = SOURCE_PREFIXES[source]
-    spec = dedupe_operations(name_operations(slice_spec(full_spec, prefixes)))
+    spec = dedupe_operations(name_operations(drop_head_operations(slice_spec(full_spec, prefixes))))
     dupes = _duplicate_operation_ids(spec)
     if dupes:
         raise ValueError(f"unresolved duplicate operationIds for {source!r}: {dupes}")

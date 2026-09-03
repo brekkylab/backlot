@@ -19,23 +19,39 @@
 # Everything else the SDK's fragments demand (`botActor`, `syncedWith`, `favorite`, the SLA
 # timestamps, the board/sort orders) resolves to null or an empty list: declared so real SDK
 # documents validate, not backed by a corpus. Fields are never silently faked — a null here means
-# "no such data here", which is a legal Linear response. The one deliberate exception is
-# `Issue.sharedAccess`, which is NON-null because the SDK constructs it unconditionally and a null
-# crashes the client; its values ("nothing is shared") are accurate anyway.
+# "no such data here", which is a legal Linear response. Where Linear declares a field NON-null
+# (`Issue.sharedAccess`, `Release.stage`, `Release.pipeline`) it is non-null here too and the
+# resolver produces a value: an empty shared-access record, an id-only stage / pipeline.
+#
+# DRIFT. Linear does not version its API, and `@linear/sdk` v88's documents are where this file
+# started; the two had drifted in 47 places by 2026-09-01 (issue #101), every one a type this file
+# declared differently from what `api.linear.app` answers introspection with. Each is fixed below to
+# the vendor's shape as measured on 2026-09-03; `backlot diff --source linear` is what notices the
+# next one. Where a type is Backlot's own choice rather than the vendor's, the comment beside it
+# says so.
 #
 # OUT OF SCOPE (deliberate): mutations — there is no Mutation type, so introspection reports
 # `mutationType: null` rather than advertising writes that would fail. Also attachments,
 # webhooks, roadmaps/initiatives and `documents` as first-class queries.
 
 # --- custom scalars ---------------------------------------------------------------
-# Linear's own scalar names. graphql-core passes them through unchanged, which is what we
-# want: `DateTime` is an ISO-8601 string, `TimelessDate` a bare `YYYY-MM-DD`, and the JSON
+# Linear's own scalar names. graphql-core passes the output scalars through unchanged, which is
+# what we want: `DateTime` is an ISO-8601 string, `TimelessDate` a bare `YYYY-MM-DD`, and the JSON
 # scalars carry already-shaped objects.
 scalar DateTime
 scalar TimelessDate
 scalar JSON
 scalar JSONObject
 scalar UUID
+
+# The two INPUT scalars every date comparator takes. Linear's own description: "Represents a date
+# and time in ISO 8601 format. Accepts shortcuts like `2021` to represent midnight Fri Jan 01 2021.
+# Also accepts ISO 8601 durations strings which are added to the current date to create the
+# represented date (e.g '-P2W1D' represents the date that was two weeks and 1 day ago)". These two
+# are NOT pass-through: `linear_filters.SCALARS` binds that grammar onto them, so a malformed
+# operand is a validation error naming the scalar, which is what the real API answers.
+scalar DateTimeOrDuration
+scalar TimelessDateOrDuration
 
 # --- root -------------------------------------------------------------------------
 # Read-only: Linear's mutations are out of scope, so there is no Mutation type at all
@@ -119,8 +135,12 @@ input IssueSortInput {
   updatedAt: UpdatedAtSort
 }
 
-input UserSortInput { name: NameSort, createdAt: CreatedAtSort, updatedAt: UpdatedAtSort }
-input NameSort { nulls: PaginationNulls, order: PaginationSortOrder }
+"""The user sort keys Backlot can order by. Linear's `UserSortInput` carries `name` and
+`displayName` and nothing else — no `createdAt` / `updatedAt` (measured 2026-09-03: the real API
+answers `Field "createdAt" is not defined by type "UserSortInput"`)."""
+input UserSortInput { name: UserNameSort }
+"""Linear's own input for sorting users by name; `nulls` defaults to `last` exactly as upstream."""
+input UserNameSort { nulls: PaginationNulls = last, order: PaginationSortOrder }
 
 # --- filter inputs --------------------------------------------------------------------
 # Linear's filter inputs are enormous (every field crossed with every comparator). These
@@ -128,6 +148,16 @@ input NameSort { nulls: PaginationNulls, order: PaginationSortOrder }
 # back as a GraphQL validation error naming the field, instead of being accepted and quietly
 # ignored — which would hand a client a full, wrong result set.
 input IDComparator { eq: ID, neq: ID, in: [ID!], nin: [ID!] }
+"""Linear's comparator for `IssueFilter.id`: the same four operators as `IDComparator`, under the
+name the vendor uses there. The values are resolved as `issue(id:)` resolves them — a served UUID
+or a human identifier (`ENG-123`)."""
+input IssueIDComparator { eq: ID, neq: ID, in: [ID!], nin: [ID!] }
+"""Linear's comparator for `NullableProjectFilter.id`. Upstream it "accepts UUIDs and human-readable
+identifiers (e.g. "PROJ-123")"; a Backlot project has only the served UUID (the corpus names a
+project and gives it no identifier), so that is the one spelling that matches here. A value that
+matches nothing answers an empty page, not an error, which is what Linear answered for `"PROJ-1"`,
+`"not-a-uuid"` and an unknown UUID (measured 2026-09-03)."""
+input EntityIdentifierIDComparator { eq: ID, neq: ID, in: [ID!], nin: [ID!] }
 
 input StringComparator {
   eq: String, neq: String, in: [String!], nin: [String!]
@@ -155,11 +185,51 @@ input NullableNumberComparator {
   null: Boolean
 }
 
-input DateComparator { eq: DateTime, neq: DateTime, lt: DateTime, lte: DateTime, gt: DateTime, gte: DateTime }
+"""Linear's comparator for `IssueFilter.estimate`: a nullable number comparator that also nests
+plain ones under `and` / `or`."""
+input EstimateComparator {
+  eq: Float, neq: Float, lt: Float, lte: Float, gt: Float, gte: Float
+  in: [Float!], nin: [Float!]
+  null: Boolean
+  and: [NullableNumberComparator!]
+  or: [NullableNumberComparator!]
+}
+
+# Operands are `DateTimeOrDuration`, not `DateTime`: Linear takes `"-P2W1D"` and `"2021"` here as
+# well as a full timestamp (see the scalar above).
+input DateComparator {
+  eq: DateTimeOrDuration, neq: DateTimeOrDuration
+  lt: DateTimeOrDuration, lte: DateTimeOrDuration, gt: DateTimeOrDuration, gte: DateTimeOrDuration
+  in: [DateTimeOrDuration!], nin: [DateTimeOrDuration!]
+}
 
 input NullableDateComparator {
-  eq: DateTime, neq: DateTime, lt: DateTime, lte: DateTime, gt: DateTime, gte: DateTime
+  eq: DateTimeOrDuration, neq: DateTimeOrDuration
+  lt: DateTimeOrDuration, lte: DateTimeOrDuration, gt: DateTimeOrDuration, gte: DateTimeOrDuration
+  in: [DateTimeOrDuration!], nin: [DateTimeOrDuration!]
   null: Boolean
+}
+
+"""Linear's comparator for a nullable `TimelessDate` field (`IssueFilter.dueDate`). Operands are
+`TimelessDateOrDuration` — the same grammar as `DateTimeOrDuration`, read down to the day."""
+input NullableTimelessDateComparator {
+  eq: TimelessDateOrDuration, neq: TimelessDateOrDuration
+  lt: TimelessDateOrDuration, lte: TimelessDateOrDuration
+  gt: TimelessDateOrDuration, gte: TimelessDateOrDuration
+  in: [TimelessDateOrDuration!], nin: [TimelessDateOrDuration!]
+  null: Boolean
+}
+
+"""Linear's comparator for `AttachmentFilter.sourceType`, declared in full: it is evaluated in
+memory over one issue's attachments (`linear_resolvers._match_string`), where every operator costs
+the same, and it has no `null` — a `sourceType` filter never asks for the absent ones."""
+input SourceTypeComparator {
+  eq: String, neq: String, in: [String!], nin: [String!]
+  eqIgnoreCase: String, neqIgnoreCase: String
+  startsWith: String, startsWithIgnoreCase: String, notStartsWith: String
+  endsWith: String, notEndsWith: String
+  contains: String, containsIgnoreCase: String, containsIgnoreCaseAndAccent: String
+  notContains: String, notContainsIgnoreCase: String
 }
 
 input WorkflowStateFilter {
@@ -199,7 +269,7 @@ input TeamFilter {
 }
 
 input NullableProjectFilter {
-  id: IDComparator
+  id: EntityIdentifierIDComparator
   name: StringComparator
   null: Boolean
   and: [NullableProjectFilter!]
@@ -227,15 +297,15 @@ input AttachmentFilter {
   title: StringComparator
   subtitle: NullableStringComparator
   url: StringComparator
-  sourceType: NullableStringComparator
+  sourceType: SourceTypeComparator
   and: [AttachmentFilter!]
   or: [AttachmentFilter!]
 }
 
+# No `slugId`: Linear's `ReleaseFilter` has no such field (measured 2026-09-03).
 input ReleaseFilter {
   id: IDComparator
   name: StringComparator
-  slugId: StringComparator
   and: [ReleaseFilter!]
   or: [ReleaseFilter!]
 }
@@ -249,21 +319,26 @@ input CommentFilter {
   or: [CommentFilter!]
 }
 
+# No `branchName`: Linear's `IssueFilter` has no such field (measured 2026-09-03 — the real API
+# answers `Field "branchName" is not defined by type "IssueFilter"`), so a predicate over it was one
+# no client written against Linear could send.
 input IssueFilter {
-  id: IDComparator
+  id: IssueIDComparator
   title: StringComparator
   description: NullableStringComparator
-  branchName: StringComparator
   priority: NullableNumberComparator
-  estimate: NullableNumberComparator
-  dueDate: NullableDateComparator
+  estimate: EstimateComparator
+  dueDate: NullableTimelessDateComparator
   createdAt: DateComparator
   updatedAt: DateComparator
   completedAt: NullableDateComparator
   canceledAt: NullableDateComparator
   state: WorkflowStateFilter
   assignee: NullableUserFilter
-  creator: UserFilter
+  # `NullableUserFilter`, as upstream: `creator: {null: …}` is a legal predicate there, and the
+  # column it reads (`author_email`) is NOT NULL in Backlot, so `null: true` matches nothing and
+  # `null: false` everything — the honest answer for a corpus whose every issue names its creator.
+  creator: NullableUserFilter
   team: TeamFilter
   project: NullableProjectFilter
   labels: IssueLabelCollectionFilter
@@ -272,11 +347,54 @@ input IssueFilter {
 }
 
 # --- types generated from @linear/sdk's own documents (see PROVENANCE above) ----------
-# Two fields needed a hand correction the SDK's TypeScript cannot express:
-#   * IssueSharedAccess.disallowedIssueFields is a LIST (`…DisallowedField[]`), fixed below.
-#   * Team.visibility / Issue.integrationSourceType / ExternalEntityInfo.service are enums
-#     upstream and stay `String` here — an enum name is a JSON string on the wire either way,
-#     and a partial enum would reject a value Backlot has no member list for.
+# Two things the SDK's TypeScript could not express and were corrected against introspection:
+#   * `Int!` vs `Float!`. TypeScript has one `number`, so every count came out `Float!`. Linear
+#     types the eight counts below (`Issue.customerTicketCount`, `Team.issueCount`, …) `Int!`, and a
+#     real issue answers `customerTicketCount: 0`, not `0.0` (measured 2026-09-03).
+#   * Enums. Eleven fields are enums upstream and were served as bare `String`. Each enum below
+#     carries the vendor's FULL member list as introspection reports it (2026-09-03), so a served
+#     value is checked against the same set the real API would check it against, and
+#     `backlot diff` compares the two lists member for member.
+
+"""Linear's `ExternalSyncService`: the service that syncs an external entity to Linear."""
+enum ExternalSyncService { jira github slack }
+
+"""Linear's `IntegrationService`: every integration an issue can carry as its
+`integrationSourceType`. The full list as introspected on 2026-09-03; Backlot serves null for the
+field (a corpus does not say which integration created an issue), the members are here so a client
+switching on the enum sees the same member set."""
+enum IntegrationService {
+  airbyte discord figma figmaPlugin front github gong githubEnterpriseServer githubCommit
+  githubImport githubPersonal githubCodeAccessPersonal gitlab googleCalendarPersonal googleSheets
+  intercom jira jiraPersonal launchDarkly launchDarklyPersonal loom notion opsgenie pagerDuty
+  salesforce slack slackAsks asksWeb slackCustomViewNotifications slackOrgProjectUpdatesPost
+  slackOrgInitiativeUpdatesPost slackPersonal slackPost slackProjectPost slackProjectUpdatesPost
+  slackInitiativePost sentry zendesk email mcpServerPersonal mcpServer microsoftTeams
+  microsoftPersonal microsoftTeamsProjectPost
+}
+
+"""Issue update fields that are disallowed for users with only shared access."""
+enum IssueSharedAccessDisallowedField { projectId teamId cycleId projectMilestoneId }
+
+"""By which resolution is frequency defined."""
+enum FrequencyResolutionType { daily weekly }
+
+"""The health type when the project update is created."""
+enum ProjectUpdateHealthType { onTrack atRisk offTrack }
+
+"""By which resolution is a date defined."""
+enum DateResolutionType { month quarter halfYear year }
+
+"""The day of the week."""
+enum Day { Sunday Monday Tuesday Wednesday Thursday Friday Saturday }
+
+"""The generation status of a release note's body content."""
+enum ReleaseNoteGenerationStatus { pending completed }
+
+"""The visibility of a team. A team can be public, private, or restricted within an enclosing
+private-team boundary."""
+enum TeamVisibility { public restricted private }
+
 type ActorBot {
   avatarUrl: String
   subType: String
@@ -302,6 +420,7 @@ type Attachment {
   url: String!
   bodyData: String
   updatedAt: DateTime!
+  # "unknown" when the corpus records no source, as Linear serves it (measured 2026-09-03).
   sourceType: String
   archivedAt: DateTime
   createdAt: DateTime!
@@ -405,8 +524,10 @@ type DocumentContent {
 }
 
 type ExternalEntityInfo {
-  service: String!
-  id: ID!
+  service: ExternalSyncService!
+  # `String!`, not `ID!`: upstream it is "the unique identifier of the entity in the EXTERNAL
+  # system (e.g., the Jira issue ID, GitHub issue node ID, or Slack message timestamp)".
+  id: String!
   metadata: ExternalEntityInfoMetadata
 }
 
@@ -433,12 +554,12 @@ type Issue {
   trashed: Boolean
   reactionData: JSONObject!
   labelIds: [String!]!
-  integrationSourceType: String
+  integrationSourceType: IntegrationService
   url: String!
   identifier: String!
   priorityLabel: String!
   previousIdentifiers: [String!]!
-  customerTicketCount: Float!
+  customerTicketCount: Int!
   branchName: String!
   dueDate: TimelessDate
   estimate: Float
@@ -472,7 +593,7 @@ type Issue {
   id: ID!
   inheritsSharedAccess: Boolean!
   reactions: [Reaction!]!
-  sharedAccess: IssueSharedAccess
+  sharedAccess: IssueSharedAccess!
   delegate: User
   botActor: ActorBot
   sourceComment: Comment
@@ -497,7 +618,9 @@ type Issue {
   relations(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): IssueRelationConnection!
   inverseRelations(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): IssueRelationConnection!
   children(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: IssueFilter): IssueConnection!
-  attachments(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, url: String, filter: AttachmentFilter): AttachmentConnection!
+  # No `url:` argument — Linear's `Issue.attachments` takes none (measured 2026-09-03: `Unknown
+  # argument "url" on field "Issue.attachments"`); narrow by url through `filter: {url: {eq: …}}`.
+  attachments(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: AttachmentFilter): AttachmentConnection!
   releases(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: ReleaseFilter): ReleaseConnection!
 }
 
@@ -544,9 +667,8 @@ type IssueRelationConnection {
 }
 
 type IssueSharedAccess {
-  # A LIST of enum values upstream (`IssueSharedAccessDisallowedField[]`).
-  disallowedIssueFields: [String!]!
-  sharedWithCount: Float!
+  disallowedIssueFields: [IssueSharedAccessDisallowedField!]!
+  sharedWithCount: Int!
   viewerHasOnlySharedAccess: Boolean!
   isShared: Boolean!
   sharedWithUsers: [User!]!
@@ -565,7 +687,7 @@ type Project {
   microsoftTeamsChannelId: String
   slackChannelId: String
   labelIds: [String!]!
-  updateRemindersDay: String
+  updateRemindersDay: Day
   targetDate: TimelessDate
   startDate: TimelessDate
   updateReminderFrequency: Float
@@ -577,17 +699,17 @@ type Project {
   completedScopeHistory: [Float!]!
   completedIssueCountHistory: [Float!]!
   inProgressScopeHistory: [Float!]!
-  health: String
+  health: ProjectUpdateHealthType
   progress: Float!
   scope: Float!
   priorityLabel: String!
-  priority: Float!
+  priority: Int!
   color: String!
   content: String
   slugId: String!
-  targetDateResolution: String
-  startDateResolution: String
-  frequencyResolution: String!
+  targetDateResolution: DateResolutionType
+  startDateResolution: DateResolutionType
+  frequencyResolution: FrequencyResolutionType!
   description: String!
   prioritySortOrder: Float!
   sortOrder: Float!
@@ -634,7 +756,7 @@ type Reaction {
 
 type Release {
   trashed: Boolean
-  issueCount: Float!
+  issueCount: Int!
   commitSha: String
   url: String!
   currentProgress: JSONObject!
@@ -654,8 +776,10 @@ type Release {
   id: ID!
   version: String
   releaseNotes: [ReleaseNote!]!
-  stage: ReleaseStage
-  pipeline: ReleasePipeline
+  # Non-null, as upstream: a release always sits in one stage of one pipeline. The resolver
+  # serves an id-only stub for each (see `linear_resolvers._release`).
+  stage: ReleaseStage!
+  pipeline: ReleasePipeline!
   creator: User
 }
 
@@ -665,10 +789,10 @@ type ReleaseConnection {
 }
 
 type ReleaseNote {
-  generationStatus: String
+  generationStatus: ReleaseNoteGenerationStatus
   url: String!
   updatedAt: DateTime!
-  releaseCount: Float!
+  releaseCount: Int!
   slugId: String!
   archivedAt: DateTime
   createdAt: DateTime!
@@ -677,7 +801,7 @@ type ReleaseNote {
   documentContent: DocumentContent
   firstRelease: Release
   lastRelease: Release
-  pipeline: ReleasePipeline
+  pipeline: ReleasePipeline!
 }
 
 type SyncedExternalThread {
@@ -712,7 +836,7 @@ type Team {
   issueEstimationType: String!
   updatedAt: DateTime!
   displayName: String!
-  ledInitiativeCount: Float!
+  ledInitiativeCount: Int!
   color: String
   description: String
   name: String!
@@ -721,9 +845,9 @@ type Team {
   createdAt: DateTime!
   retiredAt: DateTime
   timezone: String!
-  issueCount: Float!
+  issueCount: Int!
   id: ID!
-  visibility: String!
+  visibility: TeamVisibility!
   defaultIssueEstimate: Float!
   setIssueSortOrderOnStateChange: String!
   allMembersCanJoin: Boolean
@@ -773,7 +897,7 @@ type TeamConnection {
 type User {
   description: String
   avatarUrl: String
-  createdIssueCount: Float!
+  createdIssueCount: Int!
   avatarBackgroundColor: String!
   statusUntilAt: DateTime
   statusEmoji: String

@@ -395,7 +395,7 @@ CREATE TABLE IF NOT EXISTS github_items (
     repo TEXT NOT NULL, number INTEGER NOT NULL, author_email TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL,
     kind TEXT, state TEXT, labels TEXT, assignees TEXT,
-    merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, reactions TEXT,
+    merged_at TEXT, head_ref TEXT, base_ref TEXT, head_repo TEXT, reviews TEXT, reactions TEXT,
     created_ts INTEGER NOT NULL, updated_ts INTEGER,
     closed_ts INTEGER, closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT,
     owner_display TEXT, path TEXT, changed_paths TEXT, ref TEXT,
@@ -760,7 +760,15 @@ CREATE INDEX IF NOT EXISTS idx_fireflies_sentences_doc ON fireflies_sentences(tr
 CREATE TABLE IF NOT EXISTS slack_channels    (channel TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS gmail_mailboxes   (mailbox TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS gdrive_folders    (folder  TEXT PRIMARY KEY, group_id TEXT);
-CREATE TABLE IF NOT EXISTS github_repos      (repo    TEXT PRIMARY KEY, group_id TEXT);
+-- `default_branch`, `branches` and `tags` are the repo's own refs, stated by a
+-- `subtype: "repo"` record. Container-level facts on the container's own row, for the same reason
+-- `jira_projects.key` and `linear_teams.served_key` are: one row per repo, and no document owns
+-- them. NULL is "the corpus did not say", which is not the same as an empty list — an unstated
+-- branch set is inferred from the repo's pulls, a stated empty one is a repo with no branches.
+CREATE TABLE IF NOT EXISTS github_repos (
+    repo TEXT PRIMARY KEY, group_id TEXT,
+    default_branch TEXT, branches TEXT, tags TEXT
+);
 -- `key` is the project's own key (`PAY`) -- the prefix every one of its issue keys carries, which
 -- real Jira guarantees IS the project's key. A container-level fact, one row per project, so it
 -- belongs on the container's own row for the same reason `linear_teams.served_key` does.
@@ -2515,10 +2523,23 @@ def github_pull_refs(conn, repo, visible_ids=None) -> list[sqlite3.Row]:
     """
     clause, cp = _acl_clause("github", visible_ids=visible_ids)
     return conn.execute(
-        "SELECT repo, number, COALESCE(state, 'open') AS state, merged_at, head_ref, base_ref"
+        "SELECT repo, number, COALESCE(state, 'open') AS state, merged_at,"
+        " head_ref, base_ref, head_repo"
         f" FROM github_items WHERE repo = ? AND kind = 'pull_request'{clause}",
         [repo, *cp],
     ).fetchall()
+
+
+def github_repo_meta(conn, repo) -> sqlite3.Row | None:
+    """The repo's own row — its stated `default_branch`, `branches` and `tags`, any of which may
+    be NULL for a corpus that stated none.
+
+    Not ACL-scoped, and it does not need to be: a `subtype: "repo"` record carries no document and
+    no grant, so this row reveals nothing a caller could not already see. Whether the repo exists
+    FOR a caller is decided by its documents, which is `routers.github._require_repo` and is
+    unchanged by a repo record being present.
+    """
+    return conn.execute("SELECT * FROM github_repos WHERE repo = ?", [repo]).fetchone()
 
 
 def github_file_refs(conn, repo, visible_ids=None) -> list[str]:

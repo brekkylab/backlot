@@ -382,14 +382,17 @@ def test_github_filesystem_enumerates_the_repos_refs(github_fs):
     picks what to read. Each is one of the two ref listings and nothing else, so a repo they cannot
     answer for is one such a client cannot get started on.
 
-    `bob/export-resume` is the head of the bundled corpus's open pull on this repo, and a ref
-    picker built this way is the client the branch listing exists for: it offers what the repo's
-    pulls are actually against, not the default branch alone.
+    A ref picker built this way is the client these listings exist for, and the bundled corpus
+    states both halves of what it offers: `pipeline` carries a `subtype: "repo"` record naming its
+    branches (including `bob/export-resume`, the head of its open pull) and its tags. Answering
+    `["main"]` and `[]` for every repo left such a picker with one entry and no way to reach the
+    rest of the repo.
     """
-    branches = ["bob/export-resume", "main"]
+    branches = ["bob/export-resume", "main", "release/2026-03"]
+    tags = ["v0.9.0", "v1.0.0"]
     assert github_fs.branches == branches
-    assert github_fs.tags == []
-    assert github_fs.refs == {"tags": [], "branches": branches}
+    assert github_fs.tags == tags
+    assert github_fs.refs == {"tags": tags, "branches": branches}
 
 
 def test_github_filesystem_never_addresses_the_real_github(github_fs, monkeypatch):

@@ -385,6 +385,7 @@ def _service_columns(
             "merged_at": ex.get("merged_at"),
             "head_ref": ex.get("head"),
             "base_ref": ex.get("base"),
+            "head_repo": ex.get("head_repo"),
             "reviews": _j(ex.get("reviews")),
             "reactions": _j(ex.get("reactions")),
             "created_ts": created,
@@ -799,11 +800,18 @@ def _github_pairing_errors(rec: dict) -> list[str]:
     subtype = rec.get("subtype")
     is_pull = subtype == "pull_request"
     msgs = []
+    for field in ("default_branch", "branches", "tags"):
+        if rec.get(field) is not None and subtype != "repo":
+            msgs.append(f"{field} is for subtype='repo' only (this is {subtype or 'issue'!r})")
     if rec.get("ref") is not None and subtype != "file":
         # `ref` says WHICH SNAPSHOT of a path this row is, so it means nothing off a file. Every
         # reader of the column is scoped to kind='file', so an unchecked one would be stored and
         # serve nothing -- the same silent no-op `changed_paths` is checked for below.
         msgs.append(f"ref is for subtype='file' only (this is {subtype or 'issue'!r})")
+    if rec.get("head_repo") is not None and not is_pull:
+        msgs.append(
+            f"head_repo is for subtype='pull_request' only (this is {subtype or 'issue'!r})"
+        )
     if rec.get("changed_paths") is not None:
         if not is_pull:
             msgs.append(
@@ -1281,6 +1289,7 @@ class _Loader:
         self.closed = closed
         # Skipped only for records this repo generated itself — see load_records.
         self.containers = {}  # (source_type, name) -> group_id
+        self.repo_meta = {}  # repo -> the refs a `subtype: "repo"` record stated
         self.users = {}  # email -> display name
         self.groups = set()
         self.memberships = set()  # (group_id, email)
@@ -1564,6 +1573,31 @@ class _Loader:
         # get a pull-only field onto an issue correctly than a hand-written one.
         if src == "github" and (bad := _github_pairing_errors(rec)):
             raise SystemExit(f"{where}: " + "; ".join(bad))
+        gcol = store.grouping_col(src)
+        container = str(rec[gcol])  # channel / mailbox / folder / repo / project / space
+        # An explicit `"group": null` means the container owns NO ACL group — which is a real
+        # state, not a missing value: a Gmail mailbox has no group scope (a thread is private to
+        # its participants), so inferring one from the mailbox name would invent a grantable
+        # principal. Only an ABSENT `group` falls back to the container slug.
+        group = rec["group"] if "group" in rec else (slugify(container) or src)
+        group = str(group) if group is not None else None
+        containers[(src, container)] = group
+        if group:
+            groups.add(group)
+
+        # A `subtype: "repo"` record is a statement ABOUT the repo, not a document in it: no
+        # author, no body, no grant, and no `doc_id` to hash out of a body it does not have. It
+        # writes the container's own row in `write_containers`, with every other container, and
+        # stops here. Its `group` is read like any record's, so a corpus can name the repo's owning
+        # group without also having to state a document in it.
+        if src == "github" and rec.get("subtype") == "repo":
+            self.repo_meta[container] = {
+                "default_branch": rec.get("default_branch"),
+                "branches": rec.get("branches"),
+                "tags": rec.get("tags"),
+            }
+            return
+
         # Slack messages have no title, and a hubspot note has no name -- the one source whose
         # title is optional (see its schema).
         title = rec.get("title") or ""
@@ -1613,17 +1647,6 @@ class _Loader:
         # has four such pairs (three across sources, one within jira); skipping the repeat instead
         # would keep the earlier document and diverge.
         seen.add((src, doc_id))
-        gcol = store.grouping_col(src)
-        container = str(rec[gcol])  # channel / mailbox / folder / repo / project / space
-        # An explicit `"group": null` means the container owns NO ACL group — which is a real
-        # state, not a missing value: a Gmail mailbox has no group scope (a thread is private to
-        # its participants), so inferring one from the mailbox name would invent a grantable
-        # principal. Only an ABSENT `group` falls back to the container slug.
-        group = rec["group"] if "group" in rec else (slugify(container) or src)
-        group = str(group) if group is not None else None
-        containers[(src, container)] = group
-        if group:
-            groups.add(group)
 
         def register(email: str | None, name: str | None = None) -> None:
             # With a closed roster the principal set is the sidecar's, so a record's emails are
@@ -1695,6 +1718,7 @@ class _Loader:
             "merged_at",
             "head",
             "base",
+            "head_repo",
             "reviews",
             "status",
             "issuetype",
@@ -2454,6 +2478,24 @@ class _Loader:
                     "group_id=excluded.group_id, served_id=excluded.served_id, "
                     "served_key=excluded.served_key",
                     (name, group_id, synth.linear_team_id(name), self._linear_team_key(name)),
+                )
+            elif src == "github":
+                # The repo's own refs, from the `subtype: "repo"` record if the corpus wrote one.
+                # `_j(None)` stays NULL, which is what tells "the corpus did not say" (infer the
+                # branches from the pulls) apart from a stated empty list (a repo with none).
+                meta = self.repo_meta.get(name, {})
+                self.conn.execute(
+                    f"INSERT INTO {gtable}({gcol}, group_id, default_branch, branches, tags) "
+                    f"VALUES (?,?,?,?,?) ON CONFLICT({gcol}) DO UPDATE SET "
+                    "group_id=excluded.group_id, default_branch=excluded.default_branch, "
+                    "branches=excluded.branches, tags=excluded.tags",
+                    (
+                        name,
+                        group_id,
+                        meta.get("default_branch"),
+                        _j(meta.get("branches")),
+                        _j(meta.get("tags")),
+                    ),
                 )
             elif src == "jira":
                 # The project's own key -- the prefix its issue keys carry. `resolve_jira_keys`

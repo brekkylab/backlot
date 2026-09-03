@@ -98,6 +98,8 @@ See `sample_corpus.jsonl` for a fully-populated record of every source type.
   things, and only the latter has recipients and a Message-ID of its own. A message's `content`
   may be empty — a header-only auto-ack is still a message, and dropping it would renumber the
   rest of the thread.
+- **GitHub repositories:** a `subtype: "repo"` record states facts about the repository rather than about a document in it — `default_branch`, `branches` (each `{"name", "protected"}`) and `tags`. Stated `branches` are the repo's answer for itself: `GET /branches` serves exactly them, `?protected=` selects on the flag, and the pulls are not consulted. Without such a record the branch set is inferred from the pulls — the default branch, every pull's `base`, and an open pull's `head` — which is right for an open pull and cannot know that a closed pull's branch was deleted. The record carries no author, body or ACL: the repo stays visible exactly when one of its documents is.
+- **GitHub forks:** a `pull_request` from a fork states `head_repo` as the full `owner/name` — the one place a corpus writes an owner, since a fork's owner is what differs. Its `head.repo.full_name` and `head.label` carry that owner, and its head is a branch of the fork, so `/branches` does not list it.
 - **GitHub pull changesets:** a `pull_request` record may carry `changed_paths` — the `path` values
   of `subtype: "file"` records in the same repo — and that becomes the pull's changed-file list
   (`GET /pulls/{n}/files`, and the diff served for `Accept: application/vnd.github.diff`). Only

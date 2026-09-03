@@ -501,12 +501,76 @@ _GH_DIFF_DOCS = (
 )
 
 
+# A repo that STATES its own refs, and a pull whose head lives in a fork. Both are facts about a
+# repository rather than about a document in it, which is what `subtype: "repo"` exists to carry.
+_GH_REPO_DOCS = [
+    {
+        "source_type": "github",
+        "subtype": "repo",
+        "repo": "stated-repo",
+        "default_branch": "trunk",
+        # One protected and one not, so `?protected=` has all three of real's answers to give.
+        "branches": [{"name": "trunk", "protected": True}, {"name": "release/2026-03"}],
+        "tags": ["v1.0", "v1.1"],
+    },
+    {
+        "source_type": "github",
+        "doc_id": "gh-stated-file",
+        "repo": "stated-repo",
+        "subtype": "file",
+        "path": "main.py",
+        "title": "main.py",
+        "content": "print('hi')\n",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
+    {
+        # OPEN, and its head is a name the repo record does not list: a stated listing is the
+        # repo's own answer, so this head does not add itself to it.
+        "source_type": "github",
+        "doc_id": "gh-stated-pr",
+        "repo": "stated-repo",
+        "subtype": "pull_request",
+        "title": "Work on a branch the repo record does not list",
+        "content": "body",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+        "state": "open",
+        "head": "never-listed",
+        "base": "trunk",
+    },
+    {
+        # A pull from a FORK of `diffable`: its head is a branch of someone else's repo, so it is
+        # not a branch of this one however open the pull is.
+        "source_type": "github",
+        "doc_id": "gh-diff-pr-forked",
+        "repo": "diffable",
+        "subtype": "pull_request",
+        "title": "Fix the argv handling, from a fork",
+        "content": "body",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+        "state": "open",
+        "head": "fix/from-a-fork",
+        "head_repo": "outsider/diffable",
+        "base": "main",
+    },
+]
+
+
 @pytest.fixture(scope="module")
 def gh_client(tmp_path_factory):
     from tests.conftest import SAMPLE
 
     settings = build_corpus(
-        tmp_path_factory.mktemp("gh_sample"), SAMPLE + _GH_FILE_DOCS + _GH_DIFF_DOCS
+        tmp_path_factory.mktemp("gh_sample"),
+        SAMPLE + _GH_FILE_DOCS + _GH_DIFF_DOCS + _GH_REPO_DOCS,
     )
     with client_for(settings) as c:
         yield c, settings
@@ -703,7 +767,11 @@ def test_github_branch_listing_holds_the_refs_its_pulls_advertise(gh_client, gh_
     assert listing.status_code == 200
     body = listing.json()
     names = [b["name"] for b in body]
-    advertised = {"main"} | {p[end]["ref"] for p in pulls for end in ("head", "base")}
+    # A fork's head is a branch of the fork, not of this repo, so only a same-repo head counts.
+    same_repo = [p for p in pulls if p["head"]["repo"]["full_name"] == f"{gh_org}/diffable"]
+    advertised = (
+        {"main"} | {p["head"]["ref"] for p in same_repo} | {p["base"]["ref"] for p in pulls}
+    )
     assert names == sorted(advertised)
     # an entry stays real's SHORT branch, whatever the listing now holds
     assert all(set(b["commit"]) == {"sha", "url"} and b["protected"] is False for b in body)
@@ -729,6 +797,98 @@ def test_github_branch_listing_holds_the_refs_its_pulls_advertise(gh_client, gh_
     for value, kept in (("true", 0), ("1", 0), ("false", len(names)), ("", len(names))):
         r = c.get(f"{base}/branches", headers=gh_admin_h, params={"protected": value})
         assert r.status_code == 200 and len(r.json()) == kept, f"?protected={value!r}"
+
+
+def test_github_a_stated_branch_listing_replaces_the_inferred_one(gh_client, gh_admin_h, gh_org):
+    """A `subtype: "repo"` record answers for the repo's refs, and the pulls stop being consulted.
+
+    Which branches a repo has is a fact about the repository, and inferring it from pulls is only
+    the best available answer when nothing states it — it is right for an open pull's head and
+    wrong about 1 time in 5 for a closed one (6 of 28 closed-unmerged heads still exist, measured
+    on api.github.com 2026-09-03). A corpus that states the set is not overruled by that guess:
+    the open pull below heads a branch the record omits, and the listing omits it too, exactly as
+    real does for a pull whose branch was deleted under it.
+    """
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/stated-repo"
+    listing = c.get(f"{base}/branches", headers=gh_admin_h).json()
+    assert [b["name"] for b in listing] == ["release/2026-03", "trunk"]
+
+    pull = c.get(f"{base}/pulls", headers=gh_admin_h, params={"state": "all"}).json()[0]
+    assert pull["head"]["ref"] == "never-listed"
+    assert c.get(f"{base}/branches/never-listed", headers=gh_admin_h).status_code == 404
+
+    # the repo object reports the stated default branch, not the hardcoded `main`
+    assert c.get(base, headers=gh_admin_h).json()["default_branch"] == "trunk"
+    assert c.get(f"{base}/branches/trunk", headers=gh_admin_h).status_code == 200
+
+
+def test_github_stated_protection_gives_protected_all_three_answers(gh_client, gh_admin_h, gh_org):
+    """`?protected=` selects for real once a corpus states which branches are protected.
+
+    Real is three-valued — a truthy value selects the protected branches, `false`/`0` the
+    unprotected ones, an absent or empty parameter all of them (measured on fastapi/fastapi: 22
+    branches, one protected, answering 1 / 21 / 22). Until a corpus could say so, every branch was
+    unprotected and the last two answers coincided; they no longer have to.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/stated-repo/branches"
+
+    def names(params):
+        return [b["name"] for b in c.get(url, headers=gh_admin_h, params=params).json()]
+
+    assert names({"protected": "true"}) == ["trunk"]
+    assert names({"protected": "1"}) == ["trunk"]
+    assert names({"protected": "false"}) == ["release/2026-03"]
+    assert names({"protected": "0"}) == ["release/2026-03"]
+    assert names({"protected": ""}) == ["release/2026-03", "trunk"]
+    assert names(None) == ["release/2026-03", "trunk"]
+    # and the flag rides on the entry itself, in both listings
+    assert [b["protected"] for b in c.get(url, headers=gh_admin_h).json()] == [False, True]
+    single = c.get(f"{url}/trunk", headers=gh_admin_h).json()
+    assert single["protected"] is True
+
+
+def test_github_a_stated_repo_serves_its_tags(gh_client, gh_admin_h, gh_org):
+    """`/tags` answers what the corpus states rather than `[]`.
+
+    Real's item carries `name`, `commit: {sha, url}`, `zipball_url`, `tarball_url` and `node_id`,
+    with the archive urls spelling the ref out as `refs/tags/{name}` (measured on psf/requests).
+    A tag also becomes a ref: `git/ref/tags/{name}` resolves one that exists.
+    """
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/stated-repo"
+    tags = c.get(f"{base}/tags", headers=gh_admin_h).json()
+    assert [t["name"] for t in tags] == ["v1.0", "v1.1"]
+    assert set(tags[0]) == {"name", "commit", "zipball_url", "tarball_url", "node_id"}
+    assert set(tags[0]["commit"]) == {"sha", "url"}
+    assert tags[0]["zipball_url"].endswith("/zipball/refs/tags/v1.0")
+    assert c.get(f"{base}/git/ref/tags/v1.0", headers=gh_admin_h).status_code == 200
+    assert c.get(f"{base}/git/ref/tags/v9.9", headers=gh_admin_h).status_code == 404
+    # a repo that states none still answers [], which is what real gives a repo with no tags
+    assert c.get(f"/github/repos/{gh_org}/diffable/tags", headers=gh_admin_h).json() == []
+
+
+def test_github_a_forked_pulls_head_is_not_a_branch_of_the_base_repo(gh_client, gh_admin_h, gh_org):
+    """A pull from a fork names a branch of the FORK, so the base repo does not list it.
+
+    Real spells the difference in the pull itself: `head.repo.full_name` is the fork and
+    `head.label` carries the fork's owner, not the base repo's — measured on pydantic/pydantic,
+    where an outside pull reports `chenlichao:fix/…` against `head.repo.full_name`
+    `chenlichao/pydantic`. Without a way to state that, every pull looked same-repo and its head
+    became a branch here.
+    """
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/diffable"
+    pulls = c.get(f"{base}/pulls", headers=gh_admin_h, params={"state": "all"}).json()
+    forked = next(p for p in pulls if p["head"]["ref"] == "fix/from-a-fork")
+    assert forked["head"]["repo"]["full_name"] == "outsider/diffable"
+    assert forked["head"]["label"] == "outsider:fix/from-a-fork"
+    assert forked["base"]["label"] == f"{gh_org}:main"  # the base is still this repo's
+
+    names = [b["name"] for b in c.get(f"{base}/branches", headers=gh_admin_h).json()]
+    assert "fix/from-a-fork" not in names
+    assert c.get(f"{base}/branches/fix/from-a-fork", headers=gh_admin_h).status_code == 404
 
 
 def test_github_branch_listing_omits_a_merged_pulls_head_ref(client, admin_h, org):
@@ -943,6 +1103,7 @@ def test_github_code_search_returns_only_a_paths_head_snapshot(gh_client, gh_adm
                 ("diffable", "README.md"),
                 ("diffable", "app.py"),
                 ("history-repo", "README.md"),
+                ("stated-repo", "main.py"),
             ],
         ),
         (

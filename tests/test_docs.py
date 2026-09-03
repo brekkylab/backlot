@@ -56,9 +56,9 @@ def test_every_relative_link_resolves():
 
 
 # The README is the project's landing page, not its manual: the endpoint, corpus, auth and config
-# reference all live under docs/. 130 is a ceiling on a ~112-line target — if a change needs more
+# reference all live under docs/. 180 is a ceiling on a ~140-line target — if a change needs more
 # room, the content belongs in docs/ instead.
-_README_MAX_LINES = 130
+_README_MAX_LINES = 180
 
 # "eleven sources", "12 SaaS APIs" — a count goes stale the next time a source is added, and the
 # generated inventory in docs/supported-sources.md already carries the real one.

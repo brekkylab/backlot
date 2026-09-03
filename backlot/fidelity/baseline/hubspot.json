@@ -1,0 +1,91 @@
+{
+  "source": "hubspot",
+  "endpoint": "https://api.hubspot.com/public/api/spec/v1/specs",
+  "measured": "2026-09-01",
+  "acknowledged": [
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /crm/v3/objects/{}/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /crm/v3/objects/{}/{}?associations",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /crm/v3/objects/{}/{}?idProperty",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /crm/v3/objects/{}/{}?propertiesWithHistory",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /crm/v3/objects/{}?associations",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /crm/v3/objects/{}?propertiesWithHistory",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PATCH /crm/v3/objects/{}/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v3/objects/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v3/objects/{}/batch/archive",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v3/objects/{}/batch/create",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "POST /crm/v3/objects/{}/batch/read?archived",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v3/objects/{}/batch/update",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v3/objects/{}/batch/upsert",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /crm/v3/objects/{}/merge",
+      "detail": "the vendor serves it; Backlot does not"
+    }
+  ]
+}

@@ -58,7 +58,7 @@ export const T = {
   // from emptying in between is `headingIn`, not the lanes, so this can wait.
   lanesIn: 40,
   gates: [66, 90, 114, 138, 162, 186],
-  steps: [72, 108, 144],
+  steps: [72, 96, 120, 144],
   connected: 174,
   fields: 188,
   wall: 240,

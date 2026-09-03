@@ -41,6 +41,7 @@ const GATES: { text: string; note?: string }[] = [
 
 const STEPS: { text: React.ReactNode; note?: string }[] = [
   { text: "pip install backlot" },
+  { text: "backlot import --bundled" },
   { text: "backlot serve" },
   {
     // The value in mint, as it is for every source in the second act: the colour marks the one
@@ -48,7 +49,7 @@ const STEPS: { text: React.ReactNode; note?: string }[] = [
     text: (
       <>
         base_url=
-        <span style={{ color: C.mint }}>&quot;http://localhost:8000/slack/api/&quot;</span>
+        <span style={{ color: C.mint }}>&quot;http://127.0.0.1:8000/slack/api/&quot;</span>
       </>
     ),
     note: "the only line that changes",
@@ -245,7 +246,7 @@ const BrandCard: React.FC<{
         opacity: taglineOpacity,
       }}
     >
-      Serve your own enterprise playground
+      Run enterprise SaaS APIs locally.
     </div>
     <div
       style={{

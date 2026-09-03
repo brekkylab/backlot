@@ -1,0 +1,105 @@
+{
+  "source": "fireflies",
+  "endpoint": "https://api.fireflies.ai/graphql",
+  "measured": "2026-09-01",
+  "acknowledged": [
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.active_meetings",
+      "detail": "vendor serves active_meetings: [ActiveMeeting!]; Backlot does not",
+      "note": "Meetings in progress right now. Backlot serves a fixed corpus, so there is no live state to report."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.analytics",
+      "detail": "vendor serves analytics: Analytics!; Backlot does not",
+      "note": "Workspace-wide meeting analytics. Per-meeting MeetingAnalytics IS served on Transcript; the aggregate rollup is not modelled."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.apps",
+      "detail": "vendor serves apps: Apps; Backlot does not",
+      "note": "Third-party app outputs. No corpus carries them; the Apps wrapper is served on Transcript because Fireflies serves it even when empty."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.askfred_thread",
+      "detail": "vendor serves askfred_thread: AskFredThread; Backlot does not",
+      "note": "AskFred is Fireflies' own LLM assistant. Serving it would mean generating answers, which Backlot deliberately does not."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.askfred_threads",
+      "detail": "vendor serves askfred_threads: [AskFredThreadSummary!]; Backlot does not",
+      "note": "AskFred is Fireflies' own LLM assistant. Serving it would mean generating answers, which Backlot deliberately does not."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.auditEvents",
+      "detail": "vendor serves auditEvents: AuditEventsResponse!; Backlot does not",
+      "note": "Workspace audit log \u2014 account administration, not meeting content."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.bite",
+      "detail": "vendor serves bite: Bite; Backlot does not",
+      "note": "Bites are user-authored clips of a transcript, a write product. Backlot's data enters through `backlot import`."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.bites",
+      "detail": "vendor serves bites: [Bite!]!; Backlot does not",
+      "note": "Bites are user-authored clips of a transcript, a write product. Backlot's data enters through `backlot import`."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.channel",
+      "detail": "vendor serves channel: Channel; Backlot does not",
+      "note": "Channel is served as a type; the by-id root is not, because no corpus states channel membership."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.channels",
+      "detail": "vendor serves channels: [Channel!]!; Backlot does not",
+      "note": "Channel is served as a type; the root listing is not, because no corpus states channel membership."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.contacts",
+      "detail": "vendor serves contacts: [Contact!]!; Backlot does not",
+      "note": "CRM contacts synced into Fireflies from an external system, which is a different source's corpus."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.live_action_items",
+      "detail": "vendor serves live_action_items: [LiveActionItem!]!; Backlot does not",
+      "note": "Action items extracted from a meeting in progress. Same reason as active_meetings."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.rule_executions_by_meeting",
+      "detail": "vendor serves rule_executions_by_meeting: RuleExecutionsByMeetingResponse!; Backlot does not",
+      "note": "Automation-rule run history. Backlot runs no automations."
+    },
+    {
+      "kind": "missing_field",
+      "severity": "gap",
+      "path": "Query.user_groups",
+      "detail": "vendor serves user_groups: [UserGroup!]; Backlot does not",
+      "note": "Account membership state. Backlot's ACL groups are a permission mechanism and are deliberately not served under this name."
+    }
+  ]
+}

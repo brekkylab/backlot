@@ -1,0 +1,897 @@
+{
+  "source": "confluence",
+  "endpoint": "https://developer.atlassian.com/cloud/confluence/swagger.v3.json",
+  "measured": "2026-09-01",
+  "acknowledged": [
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /wiki/rest/api/content",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /wiki/rest/api/content/{}",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /wiki/rest/api/content/{}/child/comment",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /wiki/rest/api/content/{}/child/page",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /wiki/rest/api/content/{}/label",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /wiki/rest/api/space",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /wiki/rest/api/space/{}",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /wiki/rest/api/space/{}/permission",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Atlassian's published v1 document no longer describes the content and space reads Backlot serves; it still describes 65 reads and the writes. These v1 reads are deprecated in favour of Confluence REST v2, not documented as removed. Read off the document on 2026-09-01; not measured against a live site."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/content/{}/label",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/content/{}/label/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/content/{}/pageTree",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/content/{}/restriction",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/content/{}/restriction/byOperation/{}/byGroupId/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/content/{}/restriction/byOperation/{}/user",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/content/{}/state",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/content/{}/version/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/group/by-id",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/group/userByGroupId",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/relation/{}/from/{}/{}/to/{}/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/settings/lookandfeel/custom",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/space/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/space/{}/label",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/space/{}/permission/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/space/{}/theme",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/template/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/user/watch/content/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/user/watch/label/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/user/watch/space/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/api/user/{}/property/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "DELETE /wiki/rest/atlassian-connect/1/app/module/dynamic",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/analytics/content/{}/viewers",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/analytics/content/{}/views",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/audit",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/audit/export",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/audit/retention",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/audit/since",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content-states",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/search",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/child/attachment/{}/download",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/descendant",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/descendant/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/history/{}/macro/id/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/history/{}/macro/id/{}/convert/async/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/history/{}/macro/id/{}/convert/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/notification/child-created",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/notification/created",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/restriction",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/restriction/byOperation/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/restriction/byOperation/{}/byGroupId/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/restriction/byOperation/{}/user",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/restriction/byOperation?expand",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/state",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/content/{}/state/available",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/contentbody/convert/async/bulk/tasks",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/contentbody/convert/async/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/group",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/group/by-id",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/group/picker",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/group/{}/membersByGroupId",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/label",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/longtask",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/longtask/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/relation/{}/from/{}/{}/to/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/relation/{}/from/{}/{}/to/{}/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/relation/{}/to/{}/{}/from/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/search/user",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/search?_",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/search?cqlcontext",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/search?cursor",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/search?excerpt",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/search?excludeCurrentSpaces",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/search?expand",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/search?includeArchivedSpaces",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/search?next",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/search?prev",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_param",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/search?sitePermissionTypeFilter",
+      "detail": "the vendor accepts it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/settings/lookandfeel",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/settings/systemInfo",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/settings/theme",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/settings/theme/selected",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/settings/theme/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/space/{}/label",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/space/{}/settings",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/space/{}/state",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/space/{}/state/content",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/space/{}/state/settings",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/space/{}/theme",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/space/{}/watch",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/template/blueprint",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/template/page",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/template/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user/anonymous",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user/bulk",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user/current",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user/email",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user/email/bulk",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user/memberof",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user/watch/content/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user/watch/label/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user/watch/space/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user/{}/property",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/api/user/{}/property/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /wiki/rest/atlassian-connect/1/app/module/dynamic",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/audit",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/content/archive",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/content/blueprint/instance/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/content/{}/child/attachment",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/content/{}/child/attachment/{}/data",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/content/{}/copy",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/content/{}/label",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/content/{}/pagehierarchy/copy",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/content/{}/permission/check",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/content/{}/restriction",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/content/{}/version",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/contentbody/convert/async/bulk/tasks",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/contentbody/convert/async/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/group",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/group/userByGroupId",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/settings/lookandfeel/custom",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/space",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/space/_private",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/space/{}/label",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/space/{}/permission",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/space/{}/permission/custom-content",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/template",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/user/watch/content/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/user/watch/label/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/user/watch/space/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/api/user/{}/property/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /wiki/rest/atlassian-connect/1/app/module/dynamic",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/audit/retention",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/content/blueprint/instance/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/content/{}/child/attachment",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/content/{}/child/attachment/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/content/{}/move/{}/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/content/{}/restriction",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/content/{}/restriction/byOperation/{}/byGroupId/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/content/{}/restriction/byOperation/{}/user",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/content/{}/state",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/relation/{}/from/{}/{}/to/{}/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/settings/lookandfeel",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/space/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/space/{}/settings",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/space/{}/theme",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/template",
+      "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "PUT /wiki/rest/api/user/{}/property/{}",
+      "detail": "the vendor serves it; Backlot does not"
+    }
+  ]
+}

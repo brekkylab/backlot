@@ -88,7 +88,7 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `repos/{o}/{r}/contents[/{path}]` | |
 | `repos/{o}/{r}/git/trees/{ref}` | |
 | `repos/{o}/{r}/git/blobs/{sha}` | |
-| `repos/{o}/{r}/git/ref/{ref}` | Takes the ref as a trailing path, so a branch named `release/2026-03` resolves; `heads/` and `pull/{n}/head` only |
+| `repos/{o}/{r}/git/ref/{ref}` | Takes the ref as a trailing path, so a branch named `release/2026-03` resolves. `heads/`, `tags/` and `pull/{n}/head` or `/merge` only, and not the fully-qualified `refs/heads/…` — real 404s that here |
 | `repos/{o}/{r}/branches[/{branch}]` | What a `subtype: "repo"` record states, else the default branch plus the refs the repo's pulls name; a name it omits is a 404. `protected`: selects, on the flag that record carries |
 | `repos/{o}/{r}/tags` | What a `subtype: "repo"` record states; empty for a repo that states none |
 | `repos/{o}/{r}/commits/{sha}` | Takes a branch name too; a ref naming no commit is real's 422 |

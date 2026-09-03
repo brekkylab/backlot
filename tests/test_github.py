@@ -970,6 +970,36 @@ def test_github_git_ref_resolves_a_pulls_own_ref(gh_client, gh_admin_h, gh_org):
     assert c.get(f"{base}/git/ref/tags/v1", headers=gh_admin_h).status_code == 404
 
 
+def test_github_a_ref_check_reads_the_repos_pulls_once(gh_client, gh_admin_h, gh_org):
+    """The routes that ask whether a ref exists read the pulls behind that answer once.
+
+    `_commit_ish` is the branch names and the commit shas together, and both are derived from the
+    same rows — so fetching them separately ran the ACL-joined pull scan twice for every
+    `/commits`, `git/trees`, `/statuses` and `?ref=` request. Counted rather than described,
+    because nothing else in the suite fails when it doubles.
+
+    The pull scan only; the repo's own row is a primary-key lookup and is not what this counts.
+    """
+    c, _ = gh_client
+    conn = c.app.state.conn
+    base = f"/github/repos/{gh_org}/diffable"
+
+    def pull_scans(path, **kw) -> int:
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        try:
+            assert c.get(base + path, headers=gh_admin_h, **kw).status_code == 200
+        finally:
+            conn.set_trace_callback(None)
+        return sum("kind = 'pull_request'" in q for q in statements)
+
+    assert pull_scans("/branches") == 1
+    assert pull_scans("/commits/main") == 1
+    assert pull_scans("/git/trees/main") == 1
+    assert pull_scans("/statuses/main") == 1
+    assert pull_scans("/contents/app.py", params={"ref": "main"}) == 1
+
+
 def test_github_branch_and_commit_resolve_tree(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
     branch = c.get(f"/github/repos/{gh_org}/codebase/branches/main", headers=gh_admin_h).json()
@@ -1926,6 +1956,14 @@ def test_github_git_ref_resolves_a_ref_to_a_commit(gh_client, gh_admin_h, gh_org
     # the sha it hands back is usable as a git/trees ref, which is what a pinning client does next
     tree = c.get(f"{base}/git/trees/{slashed['object']['sha']}", headers=gh_admin_h)
     assert tree.status_code == 200
+
+    # `refs/heads/main` is the FULLY-QUALIFIED spelling, and this route does not take it: real
+    # answers 404 with the get-a-reference endpoint's own body (measured on psf/requests —
+    # `{"message": "Not Found", "documentation_url": ".../git/refs#get-a-reference"}`, a missing
+    # ref rather than a missing route). Accepting it let a client that sends the git spelling pass
+    # here and 404 in production. The ref this route ANSWERS with is still fully qualified, which
+    # is what the assertions above pin.
+    assert c.get(f"{base}/git/ref/refs/heads/main", headers=gh_admin_h).status_code == 404
 
     unknown = c.get(f"/github/repos/{gh_org}/no-such-repo/git/ref/heads/main", headers=gh_admin_h)
     assert unknown.status_code == 404

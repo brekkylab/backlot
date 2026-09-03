@@ -1063,15 +1063,17 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
       to branches would 404 a ref real resolves.
     - ``tags/{name}`` for a tag the repo states. One it does not state has nothing to resolve to,
       which is the same answer ``/tags`` gives for it.
-    - Nothing else.
+    - Nothing else — ``refs/heads/main``, the fully-qualified git spelling, included. Real takes
+      ``heads/main`` here and 404s the qualified form with the get-a-reference endpoint's own body
+      (measured on psf/requests), so it is a missing ref rather than a missing route. This used to
+      be stripped and accepted, which let a client sending the git spelling pass here and 404 in
+      production. The ref this route ANSWERS with is still fully qualified, as real's is.
     """
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
     ref = ref.strip("/")
-    if ref.startswith("refs/"):  # real API takes `heads/main`; tolerate the fully-qualified form
-        ref = ref[len("refs/") :]
     if not _ref_exists(conn, repo, ref, ids):
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
@@ -1591,7 +1593,7 @@ def _repo_tags(conn, repo: str) -> list[str]:
     return json.loads(meta["tags"]) if meta and meta["tags"] else []
 
 
-def _branch_rows(conn, repo: str, ids) -> list[dict]:
+def _branch_rows(conn, repo: str, ids, pulls=None) -> list[dict]:
     """The repo's branches, each with its `protected` flag, ascending by name.
 
     **Stated wins.** A `subtype: "repo"` record naming `branches` is the repo answering for itself,
@@ -1625,12 +1627,12 @@ def _branch_rows(conn, repo: str, ids) -> list[dict]:
     """
     meta = store.github_repo_meta(conn, repo)
     default = (meta["default_branch"] if meta else None) or _DEFAULT_BRANCH
-    if meta is not None and meta["branches"] is not None:
+    if meta is not None and meta["branches"] is not None:  # stated: the pulls are not read at all
         protection = {b["name"]: bool(b.get("protected")) for b in json.loads(meta["branches"])}
         protection.setdefault(default, False)
         return [{"name": n, "protected": protection[n]} for n in sorted(protection)]
     names = {default}
-    for row in store.github_pull_refs(conn, repo, ids):
+    for row in store.github_pull_refs(conn, repo, ids) if pulls is None else pulls:
         names.add(row["base_ref"] or default)
         if row["state"] == "open" and not row["merged_at"] and not row["head_repo"]:
             names.add(row["head_ref"] or _UNSTATED_HEAD_REF)
@@ -1641,15 +1643,18 @@ def _branch_names(conn, repo: str, ids) -> list[str]:
     return [b["name"] for b in _branch_rows(conn, repo, ids)]
 
 
-def _commit_shas(conn, repo: str, ids) -> set[str]:
+def _commit_shas(repo: str, pulls) -> set[str]:
     """Every sha this server hands the caller AS A COMMIT of `repo`.
 
     The repo's one snapshot commit, plus the head and base shas each visible pull reports — those
     are advertised in the pull object, in `/pulls/{n}/commits` and in the `commits_url` a client
     follows, so a `/commits/{sha}` that rejected them would 422 a link this same server printed.
+
+    Takes the pull rows rather than reading them, so :func:`_commit_ish` can derive both halves of
+    its answer from one scan.
     """
     shas = {_repo_commit_sha(repo)}
-    for row in store.github_pull_refs(conn, repo, ids):
+    for row in pulls:
         head = hashlib.sha1(_seed(row).encode()).hexdigest()
         shas.update((head, head[::-1]))  # the pull's head and its base, as `_pr_obj` derives them
     return shas
@@ -1657,8 +1662,15 @@ def _commit_shas(conn, repo: str, ids) -> set[str]:
 
 def _commit_ish(conn, repo: str, ids) -> set[str]:
     """What may stand in for a commit: a branch name or a commit sha, real GitHub's own rule for
-    the `{ref}` of `/commits` and `git/trees`."""
-    return set(_branch_names(conn, repo, ids)) | _commit_shas(conn, repo, ids)
+    the `{ref}` of `/commits` and `git/trees`.
+
+    One read of the repo's pulls, shared by both halves: the branch names and the commit shas come
+    from the same rows, and fetching them separately ran that ACL-joined scan twice on every route
+    that asks whether a ref exists.
+    """
+    pulls = store.github_pull_refs(conn, repo, ids)
+    branches = _branch_rows(conn, repo, ids, pulls=pulls)
+    return {b["name"] for b in branches} | _commit_shas(repo, pulls)
 
 
 def _no_commit_for_sha(sha: str) -> HTTPException:

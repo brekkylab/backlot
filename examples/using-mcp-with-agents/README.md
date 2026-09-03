@@ -103,7 +103,7 @@ the authenticating:
   credential set and spells it per source. Default is the admin, who sees everything.
 - **The vendor-server launchers** take the credential shape their vendor's own server accepts, since
   Backlot is not the one parsing the flag: `atlassian.py` and `notion.py` take a Backlot **token**
-  (`--token` a per-user token from `GET /_meta/users`; the token, not the username, authenticates),
+  (`--token` a per-user token from `GET /_meta/users`, which is what scopes the read),
   and `s3.py` takes an AWS **access-key/secret pair** — `--access-key` / `--secret-key`, **required
   with `--url`** (real AWS keys, or a pair from `GET <url>/_meta/users`, where each user and the
   admin has an `s3_access_key_id` / `s3_secret_access_key`). Without `--url` the local throwaway

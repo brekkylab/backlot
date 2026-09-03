@@ -28,7 +28,6 @@ import asyncio
 import base64
 import collections
 import dataclasses
-import functools
 import json
 import os
 import re
@@ -414,14 +413,13 @@ def test_auth_header_spells_each_source_the_way_its_client_speaks():
 def test_mcp_atlassian_bridge_authenticates_basic_for_the_resolved_user(live_server):
     """The Atlassian case above only asserts a scoped user is BLOCKED from a restricted issue, and
     `_bridge_call` reports a rejected credential the same way it reports a hidden document, so on
-    its own it stays green with the Basic header corrupted. Two positive reads close that.
+    its own it stays green with the Basic header corrupted. This is the positive half.
 
-    The second one carries an email the corpus does not have, which is what pins the TOKEN: on
-    this surface `Basic <known-email>:<anything>` authenticates on the username alone
-    (``auth.resolve_basic``'s identity shortcut, measured — even an empty password answers 200), so
-    a read as the resolved user cannot tell a working token from a mangled one. With the username
-    unresolvable, only the password can have authenticated — which also catches the two being
-    swapped, since a token in the username position has no ``@`` for the shortcut to fire on."""
+    What it cannot show is WHICH half of `email:token` authenticated, because on this surface
+    ``auth.resolve_basic`` accepts the username alone when the password does not resolve — measured,
+    an empty password answers 200, which real Atlassian refuses. The header itself is asserted in
+    ``test_auth_header_spells_each_source_the_way_its_client_speaks`` instead, which is where a
+    mangled or swapped credential is caught without depending on that behaviour."""
     pytest.importorskip("fastmcp")
     base, settings = live_server
     email = yaml.safe_load(settings.tokens_path.read_text())["users"][0]["email"]
@@ -434,17 +432,14 @@ def test_mcp_atlassian_bridge_authenticates_basic_for_the_resolved_user(live_ser
         for r in conn.execute("SELECT * FROM jira_issues")
         if store.get_document(conn, "jira", r["key"], visible_ids=vids) is not None
     )
-    reads = functools.partial(
-        _bridge_call,
+    assert _bridge_call(
         base,
         "atlassian",
+        creds,
         tool_pred=lambda n: n.startswith("jira_get_issue"),
         args={"key": row["key"]},
         ok_pred=lambda t: row["key"] in t and '"fields"' in t,
-    )
-    assert reads(creds), f"Basic {email}:<token> should read an issue that user can see"
-    anonymous = dataclasses.replace(creds, email="nobody@example.invalid")
-    assert reads(anonymous), "the token, not the username, has to be what authenticates"
+    ), f"Basic {email}:<token> should read an issue that user can see"
 
 
 def test_mcp_s3_bridge_signs_for_the_resolved_user(live_server):

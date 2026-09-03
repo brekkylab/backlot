@@ -221,22 +221,115 @@ def _label_predicate(spec: dict) -> tuple[str, list]:
     return _join(parts, "AND"), params
 
 
-def _labels_predicate(spec: dict, *, every: bool) -> tuple[str, list]:
-    """``labels: {some|every: {…}}`` over the JSON ``labels`` column.
+# The operators that read as a negation. What the quantifier does with an issue that has NO labels
+# depends on this (see `_labels_predicate`), so a compound predicate has to carry a polarity too:
+# `and` is negative when every branch is, `or` when any branch is, and a comparator when every
+# operator in it is -- `{eq: A, neq: B}` reads positive (measured 2026-09-03, see the test matrix).
+_NEGATIVE_OPS = frozenset(
+    {
+        "neq",
+        "nin",
+        "neqIgnoreCase",
+        "notContains",
+        "notContainsIgnoreCase",
+        "notStartsWith",
+        "notEndsWith",
+    }
+)
+_LABEL_COUNT = "json_array_length(COALESCE(labels, '[]'))"
+_LABEL_EACH = "json_each(COALESCE(labels, '[]'))"
 
-    ``some`` is an EXISTS over ``json_each``; ``every`` is "no element fails", which also holds
-    for an issue with no labels — the same semantics Linear's collection filters use."""
+
+def _reads_as_negation(spec: dict | None) -> bool:
+    """Whether an ``IssueLabelFilter`` is a negative predicate, by the rule above."""
+    parts = []
+    for key, sub in (spec or {}).items():
+        if sub is None:
+            continue
+        if key == "name":
+            ops = [op for op, v in sub.items() if v is not None]
+            parts.append(bool(ops) and all(op in _NEGATIVE_OPS for op in ops))
+        elif key == "and":
+            parts.append(bool(sub) and all(_reads_as_negation(x) for x in sub))
+        elif key == "or":
+            parts.append(any(_reads_as_negation(x) for x in sub))
+    return bool(parts) and all(parts)
+
+
+def _labels_predicate(spec: dict, *, every: bool) -> tuple[str, list]:
+    """``labels: {some|every: {…}}`` over the JSON ``labels`` column, the way api.linear.app answers
+    it (measured 2026-09-03 against two labelled issues, ``[a, b]`` and ``[a]``, beside four with
+    no labels -- the full matrix is ``tests/test_linear.py::test_labels_quantifiers_answer_as_linear``).
+
+    Linear's quantifiers are not the textbook ones. The polarity of the predicate decides what an
+    issue with NO labels answers:
+
+    * ``some`` with a positive predicate (``eq``, ``in``, ``contains``, …) is an EXISTS: an issue
+      with no labels never matches.
+    * ``every`` with a positive predicate is a NON-vacuous "all": the issue has to have at least one
+      label, and every one of them satisfies the predicate. ``every: {name: {eq: A}}`` answered the
+      ``[a]`` issue alone -- not the label-less ones, which a vacuous "all" would include.
+    * ``some`` with a NEGATIVE predicate (``neq``, ``nin``, ``notContains``, …) is the complement of
+      that: the issue has no labels, OR one of its labels satisfies it. ``some: {name: {neq: A}}``
+      answered ``[a, b]`` and every label-less issue, and not ``[a]``.
+    * ``every`` with a negative predicate is the textbook, vacuously true "all": no label fails it,
+      and an issue with no labels qualifies. ``every: {name: {neq: A}}`` answered the label-less
+      issues alone.
+
+    So each negative form is the negation of the positive form of the other quantifier -- Linear
+    pushes the ``not`` outside the quantifier -- and :func:`_reads_as_negation` says which form a
+    compound predicate takes. An empty predicate (``some: {}``) constrains nothing there: every
+    issue answered, label-less ones included, so it compiles to nothing here too."""
     inner, params = _label_predicate(spec)
     if not inner:
-        # An empty inner predicate must NOT silently vanish: dropping it turns a narrowing filter
-        # into a full-corpus answer. Nothing legitimate produces one, so it is a client error.
-        raise GraphQLError("a labels filter must constrain something (e.g. labels.some.name)")
+        return "", []
+    negative = _reads_as_negation(spec)
     if every:
+        no_label_fails = f"NOT EXISTS (SELECT 1 FROM {_LABEL_EACH} WHERE NOT {inner})"
         return (
-            f"NOT EXISTS (SELECT 1 FROM json_each(COALESCE(labels, '[]')) WHERE NOT {inner})",
-            params,
-        )
-    return (f"EXISTS (SELECT 1 FROM json_each(COALESCE(labels, '[]')) WHERE {inner})", params)
+            no_label_fails if negative else f"({_LABEL_COUNT} > 0 AND {no_label_fails})"
+        ), params
+    a_label_matches = f"EXISTS (SELECT 1 FROM {_LABEL_EACH} WHERE {inner})"
+    return (f"({_LABEL_COUNT} = 0 OR {a_label_matches})" if negative else a_label_matches), params
+
+
+def _labels_filter(spec: dict) -> tuple[str, list]:
+    """One ``IssueLabelCollectionFilter``. Besides the two quantifiers, measured on 2026-09-03:
+    ``and`` / ``or`` compose collection filters; ``length`` is a ``NumberComparator`` over the
+    label count (``{eq: 0}`` answered the label-less issues, ``{eq: 2}`` the two-label one);
+    ``null: true`` answered NOTHING -- an issue's label collection is never null, not even an empty
+    one -- and ``null: false`` everything; a bare ``name`` at this level answered as ``some`` does;
+    and an empty object constrains nothing."""
+    parts: list[str] = []
+    params: list = []
+
+    def add(frag, p):
+        if frag:
+            parts.append(frag)
+            params.extend(p)
+
+    for key, sub in (spec or {}).items():
+        if sub is None and key != "null":
+            continue
+        if key in ("some", "every"):
+            add(*_labels_predicate(sub, every=key == "every"))
+        elif key in ("and", "or"):
+            subs = [_labels_filter(x) for x in sub]
+            frags = [f for f, _ in subs if f]
+            for _, p in subs:
+                params.extend(p)
+            if frags:
+                parts.append("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
+        elif key == "length":
+            add(*_Comparator(_LABEL_COUNT).render(sub))
+        elif key == "null":
+            if sub:
+                parts.append("0")
+        elif key == "name":
+            add(*_labels_predicate({"name": sub}, every=False))
+        else:
+            raise GraphQLError(f"unsupported labels filter field {key!r}")
+    return _join(parts, "AND"), params
 
 
 # field name on IssueFilter -> how it compiles.
@@ -360,18 +453,7 @@ def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, 
                 )
             )
         elif key == "labels":
-            for sub, every in (("some", False), ("every", True)):
-                if sub in spec and spec[sub] is not None:
-                    add(*_labels_predicate(spec[sub], every=every))
-            for sub in ("and", "or"):
-                if spec.get(sub):
-                    raise GraphQLError(
-                        f"labels.{sub} is not supported by Backlot; use labels.some / labels.every"
-                    )
-            # Key PRESENCE, not truthiness: `some: {}` is present-but-empty and deserves the
-            # more precise "must constrain something" from _labels_predicate, not this one.
-            if not any(k in spec for k in ("some", "every")):
-                raise GraphQLError("a labels filter needs `some` or `every`")
+            add(*_labels_filter(spec))
         else:
             raise GraphQLError(f"unsupported issue filter field {key!r}")
     return _join(parts, "AND"), params

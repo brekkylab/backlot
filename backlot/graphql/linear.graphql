@@ -212,9 +212,19 @@ input IssueLabelFilter {
   or: [IssueLabelFilter!]
 }
 
+"""
+Linear's quantifiers over a collection are not the textbook ones: `every` with a positive predicate
+needs at least one label, and `some` with a negative one (`neq`, `nin`, …) also answers an issue with
+no labels -- see `linear_filters._labels_predicate` for the measured rule. `length` counts the
+labels; `null: true` matches nothing, since an issue's label collection is never null; a bare
+`name` reads as `some`.
+"""
 input IssueLabelCollectionFilter {
   some: IssueLabelFilter
   every: IssueLabelFilter
+  name: StringComparator
+  length: NumberComparator
+  null: Boolean
   and: [IssueLabelCollectionFilter!]
   or: [IssueLabelCollectionFilter!]
 }

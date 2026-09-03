@@ -1,7 +1,7 @@
 {
   "source": "linear",
   "endpoint": "https://api.linear.app/graphql",
-  "measured": "2026-09-01",
+  "measured": "2026-09-03",
   "acknowledged": [
     {
       "kind": "missing_field",
@@ -1862,24 +1862,6 @@
       "severity": "gap",
       "path": "IssueLabelCollectionFilter.isGroup",
       "detail": "vendor serves isGroup: BooleanComparator; Backlot does not"
-    },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "IssueLabelCollectionFilter.length",
-      "detail": "vendor serves length: NumberComparator; Backlot does not"
-    },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "IssueLabelCollectionFilter.name",
-      "detail": "vendor serves name: StringComparator; Backlot does not"
-    },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "IssueLabelCollectionFilter.null",
-      "detail": "vendor serves null: Boolean; Backlot does not"
     },
     {
       "kind": "missing_field",

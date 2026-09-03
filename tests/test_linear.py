@@ -806,8 +806,10 @@ def test_negated_derived_filter_keeps_null_column_rows(fclient):
 def test_labels_some_and_every(fclient):
     assert ids(fclient, '{labels: {some: {name: {eq: "gateway"}}}}') == ["ENG-1"]
     assert ids(fclient, '{labels: {some: {name: {eq: "bug"}}}}') == ["ENG-1", "ENG-2"]
-    # `every` also holds for an issue with no labels, as Linear's collection filters do
-    assert ids(fclient, '{labels: {every: {name: {eq: "bug"}}}}') == ["DES-1", "ENG-2"]
+    # `every` over a positive predicate needs at least one label on Linear (measured 2026-09-03:
+    # `every: {name: {eq: A}}` answered the `[a]` issue alone, not the label-less ones), so DES-1,
+    # which has no labels, is out. The full rule is `test_labels_quantifiers_answer_as_linear`.
+    assert ids(fclient, '{labels: {every: {name: {eq: "bug"}}}}') == ["ENG-2"]
 
 
 def test_labels_some_is_not_every(fclient):
@@ -898,11 +900,98 @@ def test_comment_filter_by_the_served_id_round_trips(fclient):
     assert [n["body"] for n in got["data"]["comments"]["nodes"]] == [first["body"]]
 
 
-def test_an_empty_labels_predicate_is_an_error_not_a_no_op(fclient):
-    """`labels: {some: {}}` constrains nothing. Compiling it to an empty fragment would drop the
-    whole filter and answer with the full corpus, so it is rejected instead."""
-    assert "must constrain something" in err(fclient, "{labels: {some: {}}}")
-    assert "needs `some` or `every`" in err(fclient, "{labels: {}}")
+def test_an_empty_labels_predicate_constrains_nothing_as_it_does_on_linear(fclient):
+    """`labels: {}`, `labels: {some: {}}`, `labels: {every: {}}` and `labels: {some: {name: {}}}` each
+    answered every issue on api.linear.app (measured 2026-09-03), the label-less ones included. They
+    used to be refused here as "constrains nothing"; the vendor's answer is that an empty predicate
+    is no predicate, so they compile to nothing now."""
+    everything = ids(fclient, "{}")
+    for literal in (
+        "{labels: {}}",
+        "{labels: {some: {}}}",
+        "{labels: {every: {}}}",
+        "{labels: {some: {name: {}}}}",
+    ):
+        assert ids(fclient, literal) == everything, literal
+
+
+# The labels filter, cell by cell, as api.linear.app answered it on 2026-09-03 over two labelled
+# issues -- `[zz-a, zz-zzz]` and `[zz-a]`, created for the measurement and deleted after -- beside
+# four with no labels. The fixture has the same shape: ENG-1 carries `[bug, gateway]`, ENG-2 `[bug]`,
+# DES-1 nothing; `bug` stands for `zz-a`, `gateway` for `zz-zzz`, `nope` for a label nobody has.
+L2, L1, U = "ENG-1", "ENG-2", "DES-1"
+_LABEL_CELLS = [
+    # some, positive predicate: EXISTS -- a label-less issue never matches
+    ('{some: {name: {eq: "bug"}}}', {L2, L1}),
+    ('{some: {name: {eq: "gateway"}}}', {L2}),
+    ('{some: {name: {eq: "nope"}}}', set()),
+    ('{some: {name: {in: ["bug", "nope"]}}}', {L2, L1}),
+    ('{some: {name: {in: ["bug", "gateway"]}}}', {L2, L1}),
+    ('{some: {name: {contains: "g"}}}', {L2, L1}),
+    ('{some: {name: {contains: ""}}}', {L2, L1}),
+    ('{some: {name: {eqIgnoreCase: "BUG"}}}', {L2, L1}),
+    ('{some: {or: [{name: {eq: "gateway"}}, {name: {eq: "nope"}}]}}', {L2}),
+    # some, negative predicate: no labels, OR a label satisfies it (`[a]` is the one left out)
+    ('{some: {name: {neq: "bug"}}}', {L2, U}),
+    ('{some: {name: {neq: "gateway"}}}', {L2, L1, U}),
+    ('{some: {name: {neq: "nope"}}}', {L2, L1, U}),
+    ('{some: {name: {nin: ["bug"]}}}', {L2, U}),
+    ('{some: {name: {nin: ["gateway"]}}}', {L2, L1, U}),
+    ('{some: {name: {nin: ["nope"]}}}', {L2, L1, U}),
+    ('{some: {name: {neqIgnoreCase: "BUG"}}}', {L2, U}),
+    ('{some: {and: [{name: {neq: "bug"}}, {name: {neq: "nope"}}]}}', {L2, U}),
+    # polarity of a compound: `and` is negative only when every branch is, `or` when any is
+    ('{some: {and: [{name: {eq: "bug"}}, {name: {neq: "nope"}}]}}', {L2, L1}),
+    ('{some: {and: [{name: {eq: "bug"}}, {name: {neq: "gateway"}}]}}', {L2, L1}),
+    ('{some: {name: {eq: "bug", neq: "nope"}}}', {L2, L1}),
+    ('{some: {or: [{name: {neq: "bug"}}, {name: {eq: "nope"}}]}}', {L2, U}),
+    ('{some: {or: [{name: {eq: "gateway"}}, {name: {neq: "bug"}}]}}', {L2, U}),
+    # every, positive predicate: at least one label, and all of them satisfy it
+    ('{every: {name: {eq: "bug"}}}', {L1}),
+    ('{every: {name: {eq: "gateway"}}}', set()),
+    ('{every: {name: {eq: "nope"}}}', set()),
+    ('{every: {name: {in: ["bug", "nope"]}}}', {L1}),
+    ('{every: {name: {in: ["bug", "gateway"]}}}', {L2, L1}),
+    ('{every: {name: {contains: "g"}}}', {L2, L1}),
+    ('{every: {name: {contains: ""}}}', {L2, L1}),
+    ('{every: {or: [{name: {eq: "gateway"}}, {name: {eq: "nope"}}]}}', set()),
+    ('{every: {and: [{name: {eq: "bug"}}, {name: {neq: "nope"}}]}}', {L1}),
+    # every, negative predicate: no label fails it, and no labels at all qualifies
+    ('{every: {name: {neq: "bug"}}}', {U}),
+    ('{every: {name: {neq: "gateway"}}}', {L1, U}),
+    ('{every: {name: {neq: "nope"}}}', {L2, L1, U}),
+    ('{every: {name: {nin: ["bug"]}}}', {U}),
+    ('{every: {name: {nin: ["gateway"]}}}', {L1, U}),
+    ('{every: {name: {nin: ["nope"]}}}', {L2, L1, U}),
+    ('{every: {name: {neqIgnoreCase: "BUG"}}}', {U}),
+    ('{every: {and: [{name: {neq: "bug"}}, {name: {neq: "nope"}}]}}', {U}),
+    ('{every: {or: [{name: {eq: "gateway"}}, {name: {neq: "bug"}}]}}', {U}),
+    # the collection-level fields
+    ("{length: {eq: 0}}", {U}),
+    ("{length: {eq: 1}}", {L1}),
+    ("{length: {eq: 2}}", {L2}),
+    ("{length: {gt: 0}}", {L2, L1}),
+    ("{length: {lt: 2}}", {L1, U}),
+    ("{length: {neq: 0}}", {L2, L1}),
+    ("{length: {in: [0, 2]}}", {L2, U}),
+    ("{length: {nin: [0]}}", {L2, L1}),
+    ("{length: {gte: 1, lte: 1}}", {L1}),
+    ('{or: [{length: {eq: 0}}, {every: {name: {eq: "bug"}}}]}', {L1, U}),
+    ('{some: {name: {eq: "bug"}}, every: {name: {eq: "bug"}}}', {L1}),
+    ('{name: {eq: "bug"}}', {L2, L1}),
+    ("{null: true}", set()),
+    ("{null: false}", {L2, L1, U}),
+]
+
+
+@pytest.mark.parametrize("literal,expected", _LABEL_CELLS, ids=[c[0] for c in _LABEL_CELLS])
+def test_labels_quantifiers_answer_as_linear(fclient, literal, expected):
+    """Linear pushes a negation outside the quantifier: `some` over a negative predicate is the
+    complement of `every` over its positive form, so it answers an issue with no labels; and `every`
+    over a positive predicate needs at least one label, so it does not. Backlot compiled the textbook
+    EXISTS / NOT EXISTS, which answered the opposite on both counts (#112). Each cell here is one
+    measured answer; the mapping to the fixture is above `_LABEL_CELLS`."""
+    assert ids(fclient, "{labels: %s}" % literal) == sorted(expected)
 
 
 # --- response-shape assertions (were tests/test_fidelity.py) --------------------------------

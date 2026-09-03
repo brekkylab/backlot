@@ -6,7 +6,7 @@ with no base-URL override, so nothing local can be pointed at Backlot. The commu
 wire `https://api.linear.app` in source and take only a token, and they run as `npx` subprocesses,
 out of reach of the in-process URL rewrite backlot uses for the LlamaIndex Linear reader.
 
-So the tools come from Backlot's own schema instead: `_graphql_bridge.py` introspects
+So the tools come from Backlot's own schema instead: `backlot mcp --source linear` introspects
 `POST /linear/graphql` and serves each root `Query` field as a typed tool (`issues`, `issue`,
 `teams`, `comments`, `viewer`, the by-id relation roots …). That trade is worth stating plainly —
 this exercises *our* tool surface rather than the community tooling an agent meets in production,
@@ -20,14 +20,13 @@ multiply across every issue. Depth 1 still returns `state`, `assignee`, `team`, 
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
-    ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/linear.py [--url … --token … --agent openai]
+    ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/linear.py [--url … --user … --agent openai]
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from mcp import StdioServerParameters
 
@@ -84,25 +83,17 @@ QUESTION = (
     "assigned, and what did the comments say the cause was? Cite the issue identifiers."
 )
 
-_BRIDGE = str(Path(__file__).with_name("_graphql_bridge.py"))
 
+def build_params(base_url: str, user: str | None = None, depth: int = 1) -> StdioServerParameters:
+    """Run `backlot mcp --source linear` as a stdio MCP server pointed at Backlot.
 
-def build_params(base_url: str, token: str, depth: int = 1) -> StdioServerParameters:
-    """Run `_graphql_bridge.py --source linear` as a stdio MCP server pointed at Backlot."""
-    return StdioServerParameters(
-        command=sys.executable,
-        args=[
-            _BRIDGE,
-            "--source",
-            "linear",
-            "--base-url",
-            base_url.rstrip("/"),
-            "--token",
-            token,
-            "--depth",
-            str(depth),
-        ],
-    )
+    `-m backlot` through this interpreter rather than the `backlot` script, so it works in an
+    environment whose bin/ is not on PATH. Without `--user` the command answers as the admin, so
+    there is nothing to pass for the default."""
+    args = ["-m", "backlot", "mcp", "--source", "linear", "--url", base_url]
+    if user:
+        args += ["--user", user]
+    return StdioServerParameters(command=sys.executable, args=args + ["--depth", str(depth)])
 
 
 def _parse_args() -> argparse.Namespace:
@@ -113,9 +104,10 @@ def _parse_args() -> argparse.Namespace:
         "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
     )
     p.add_argument(
-        "--token",
-        help="Backlot token from GET /_meta/users "
-        "(default: the admin token, which sees everything). Linear accepts it bare or as Bearer",
+        "--user",
+        metavar="EMAIL",
+        help="answer as this person, from GET /_meta/users "
+        "(default: the admin, who sees everything)",
     )
     p.add_argument(
         "--depth",
@@ -136,7 +128,7 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     with serve_or_connect(CORPUS, url=args.url) as s:
-        if args.token:
-            print("authenticating with --token → retrieval is ACL-filtered to that user")
-        params = build_params(s.base_url, args.token or s.token, args.depth)
+        if args.user:
+            print(f"answering as {args.user} → retrieval is ACL-filtered to that person")
+        params = build_params(s.base_url, args.user, args.depth)
         run_agent(args.agent, params, QUESTION)

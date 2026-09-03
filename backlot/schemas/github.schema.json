@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/brekkylab/backlot/schemas/github.schema.json",
   "title": "BYO corpus record — github",
-  "description": "A GitHub issue or pull request. Title -> title, content -> body markdown. `container` is the repo name.",
+  "description": "A GitHub issue, pull request, file, or the repository itself. Title -> title, content -> body markdown. `container` is the repo name.",
   "type": "object",
   "properties": {
     "source_type": {
@@ -70,9 +70,10 @@
       "enum": [
         "issue",
         "pull_request",
-        "file"
+        "file",
+        "repo"
       ],
-      "description": "Issue vs PR vs file (default: issue)."
+      "description": "Issue vs PR vs file vs the repo itself (default: issue). A `repo` record states facts about the REPOSITORY rather than about a document in it — its refs and its default branch — so it carries no author, body or ACL of its own; the repo stays visible to a scoped caller exactly when one of its documents is, and to the admin as soon as the record itself exists."
     },
     "path": {
       "type": "string",
@@ -265,15 +266,49 @@
       "type": "integer",
       "minimum": 1,
       "description": "Issue/PR number as the corpus writes it. Stored and served verbatim. An omitted number is synthesized from the doc_id at serve time, and a provided one claims that number ahead of every synthesized one in the same repository — so a corpus need only write the numbers its documents actually cite. Ignored on subtype: file rows."
+    },
+    "default_branch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "subtype='repo' only: the branch a repo object reports as `default_branch` and every ref falls back to. Defaults to `main`."
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "protected": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "description": "subtype='repo' only: the repo's branches, which REPLACE the set otherwise inferred from its pulls — a repo that states them is answering for itself, so an open pull heading a branch this omits does not add it back (real does the same for a pull whose branch was deleted under it). `protected` is per branch because `?protected=` selects on it; it defaults to false. The default branch is listed even when this omits it."
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "subtype='repo' only: the repo's tags. A repo that states none serves `[]`, which is what real answers for a repo with no tags."
+    },
+    "head_repo": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+      "description": "PR only: the repo the head branch lives in, as the FULL `owner/name` — the one place a corpus writes an owner, because a fork's owner is what differs from `repo` and a bare name cannot express it. Stating it makes the pull a fork's: `head.repo.full_name` and `head.label` carry that owner, and the head ref is a branch of the fork rather than of this repo, so `/branches` does not list it. Omitted, the head is a branch of `repo`."
     }
   },
   "required": [
-    "author_email",
-    "content",
-    "created",
     "repo",
-    "source_type",
-    "title"
+    "source_type"
   ],
   "allOf": [
     {
@@ -298,7 +333,10 @@
         "properties": {
           "subtype": {
             "not": {
-              "const": "file"
+              "enum": [
+                "file",
+                "repo"
+              ]
             }
           }
         }
@@ -306,6 +344,25 @@
       "then": {
         "required": [
           "state"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "subtype": {
+            "not": {
+              "const": "repo"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "author_email",
+          "content",
+          "created",
+          "title"
         ]
       }
     }

@@ -26,6 +26,7 @@ from xml.sax.saxutils import escape
 from fastapi import APIRouter, Request, Response
 
 from backlot import auth, store, synth
+from backlot.openapi import qp
 
 router = APIRouter(prefix="/s3", tags=["s3"])
 # A signed S3 request's canonical path is exact; letting Starlette 307-redirect a bare "/s3" ->
@@ -37,6 +38,35 @@ router = APIRouter(prefix="/s3", tags=["s3"])
 
 NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 _MAX_KEYS = 1000
+
+# Read off the raw request rather than through FastAPI signatures, so each has to be declared by
+# hand (see openapi.qp). Only what _list_objects_v2 and bucket_get actually read: `list-type` is
+# absent because Backlot answers the V2 shape whether or not a caller asks for it, and advertising
+# a parameter that changes nothing is worse than not offering it.
+_P_BUCKET_GET = [
+    qp("prefix"),
+    qp(
+        "delimiter",
+        description="roll keys sharing a prefix up to this separator into CommonPrefixes; "
+        "unset lists every key flat",
+    ),
+    qp("start-after", description="seeds the FIRST page only; continuation-token wins over it"),
+    qp(
+        "max-keys",
+        "integer",
+        description=f"keys per page, capped at {_MAX_KEYS}, which is also the default",
+    ),
+    qp(
+        "continuation-token",
+        description="NextContinuationToken from a listing whose IsTruncated was true — the only "
+        "way to reach a later page",
+    ),
+    qp(
+        "location",
+        description="present, at any value: answer the bucket's LocationConstraint "
+        "instead of a listing",
+    ),
+]
 _ERR_STATUS = {
     "MissingSecurityHeader": 403,
     "AuthorizationHeaderMalformed": 400,
@@ -238,6 +268,10 @@ def _decode_token(token: str) -> tuple[str, str] | None:
 @router.get("")
 @router.get("/")
 async def list_buckets(request: Request):
+    """ListBuckets — every bucket the caller can see.
+
+    A bucket is visible when any object in it is, so a caller with no readable object in a bucket
+    does not learn the bucket exists."""
     caller, visible, err = _auth(request)
     if err:
         return err
@@ -260,6 +294,10 @@ async def list_buckets(request: Request):
 
 @router.head("/{bucket}")
 async def head_bucket(request: Request, bucket: str):
+    """HeadBucket — 200 if the caller can see this bucket, 404 if they cannot, and the signature's
+    own status (403, or 400 for a malformed header) when the request does not authenticate at all.
+
+    Headers alone in every case, which is why it carries no MCP tool (see ``backlot.openapi``)."""
     caller, visible, err = _auth(request)
     if err:
         return Response(status_code=err.status_code)
@@ -273,8 +311,14 @@ async def head_bucket(request: Request, bucket: str):
     return Response(status_code=200, headers={"x-amz-bucket-region": "us-east-1"})
 
 
-@router.get("/{bucket}")
+@router.get("/{bucket}", openapi_extra={"parameters": _P_BUCKET_GET})
 async def bucket_get(request: Request, bucket: str):
+    """ListObjectsV2 — one page of the keys in this bucket that the caller can read.
+
+    Filtered by ``prefix``, rolled up by ``delimiter``, and bounded by ``max-keys``; a page whose
+    ``IsTruncated`` is true carries a ``NextContinuationToken`` to pass back as
+    ``continuation-token``. With ``location`` present it answers GetBucketLocation instead, S3's
+    other GET on this same path."""
     caller, visible, err = _auth(request)
     if err:
         return err
@@ -417,6 +461,11 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
 
 @router.api_route("/{bucket}/{key:path}", methods=["GET", "HEAD"])
 async def object_get(request: Request, bucket: str, key: str):
+    """GetObject — the object's bytes, or its metadata headers alone for a HEAD.
+
+    ``key`` is a whole path, slashes and all. A ``Range`` header returns 206 over that slice; an
+    object the caller cannot read is NoSuchKey, not AccessDenied, so a listing and a read agree
+    about what exists."""
     caller, visible, err = _auth(request)
     if err:
         return err if request.method == "GET" else Response(status_code=err.status_code)

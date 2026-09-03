@@ -17,7 +17,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 |---|---|---|---|---|---|
 | `confluence` | Confluence | `/atlassian/wiki/rest/api` | 10 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one `POST`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
-| `github` | GitHub | `/github` | 31 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue or pull request. |
+| `github` | GitHub | `/github` | 31 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
 | `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 11 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
@@ -88,10 +88,10 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `repos/{o}/{r}/contents[/{path}]` | |
 | `repos/{o}/{r}/git/trees/{ref}` | |
 | `repos/{o}/{r}/git/blobs/{sha}` | |
-| `repos/{o}/{r}/git/ref/{ref}` | Takes the ref as a trailing path, so `heads/release/2026-03` resolves |
-| `repos/{o}/{r}/branches[/{branch}]` | `protected`: selects, and nothing here is protected |
-| `repos/{o}/{r}/tags` | Empty: a corpus states a repo's files, never its tags |
-| `repos/{o}/{r}/commits/{sha}` | |
+| `repos/{o}/{r}/git/ref/{ref}` | Takes the ref as a trailing path, so a branch named `release/2026-03` resolves. `heads/`, `tags/` and `pull/{n}/head` or `/merge` only, and not the fully-qualified `refs/heads/…` — real 404s that here |
+| `repos/{o}/{r}/branches[/{branch}]` | What a `subtype: "repo"` record states, else the default branch plus the refs the repo's pulls name; a name it omits is a 404. `protected`: selects, on the flag that record carries |
+| `repos/{o}/{r}/tags` | What a `subtype: "repo"` record states; empty for a repo that states none |
+| `repos/{o}/{r}/commits/{sha}` | Takes a branch name too; a ref naming no commit is real's 422 |
 | `repos/{o}/{r}/statuses/{sha}` | |
 | `repos/{o}/{r}/collaborators` | |
 | `repos/{o}/{r}/teams` | |
@@ -299,10 +299,10 @@ Not part of any vendor's API — Backlot's own.
 | Endpoint | Notes |
 |---|---|
 | `/health` | Liveness, plus two corpus counts: `documents` is the root rows served, `source_documents` is what the corpus offered — smaller, because parsing turns one Slack transcript into many messages |
-| `/_meta/users` | Every generated user with their token and groups, in `data/tokens.yaml`'s shape, plus an `s3_access_key_id` / `s3_secret_access_key` pair each, since S3 authenticates with SigV4 rather than a bearer token. Pick a token, send it to any service, and see that user's ACL-filtered view |
+| `/_meta/users` | Every generated user with their token and groups, in `data/tokens.yaml`'s shape, plus an `s3_access_key_id` / `s3_secret_access_key` pair each, since S3 authenticates with SigV4 rather than a bearer token. Pick a token, send it to any service, and see that user's ACL-filtered view. This is also what `backlot mcp --user <email>` resolves a person through, so it is always served |
 | `/_meta/credentials` | The shared Google-style OAuth client and the org service account, for connectors that configure with an OAuth client instead of a raw token. No per-user data — a user's refresh token is their bearer token from `/_meta/users` |
-| `/_meta/openapi/{source}` | One source's slice of `/openapi.json`, with the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each, ready to hand to `FastMCP.from_openapi()`. S3 is absent by design: SigV4 signs each request, which a static `Authorization` header cannot do |
+| `/_meta/openapi/{source}` | One source's slice of `/openapi.json`, with each operation named for its route and the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each, ready to hand to `FastMCP.from_openapi()`. HEAD is dropped: a response with no body cannot answer the question that called it. S3 is here too — SigV4 signs each request, so the bridge signs rather than holding a fixed header |
 | `/openapi.json` | FastAPI's own typed spec for the whole server |
 
-`/_meta/users` and `/_meta/credentials` hand out working credentials in the clear, so both 404 when
-`BACKLOT_EXPOSE_TOKENS=false` — see [auth.md](auth.md) and [configuration.md](configuration.md).
+`/_meta/users` and `/_meta/credentials` hand out working credentials in the clear — which is what
+they are for on a server whose whole corpus is a fixture. See [auth.md](auth.md).

@@ -85,6 +85,57 @@ def test_readme_states_no_source_count():
     )
 
 
+# A count OF THE BUNDLED CORPUS, in prose: a number against `records` or `documents`, and against
+# `rows` or `lines` too, because the offending sentences were written every one of those ways. No
+# example of one here: this file is scanned like any other, and an example would be a count.
+_CORPUS_COUNT_RE = re.compile(
+    r"\b(\d[\d,]*)\s+(?:source\s+)?(?:records?|documents?|rows?|lines?)\b", re.I
+)
+# The line has to be ABOUT the bundled corpus for a number on it to be one of its counts. Without
+# this, `examples/import-enterpriserag-bench/README.md`'s "511,962 documents" — the size of an
+# external dataset, which this repo does not control and cannot restate — reads as an offence.
+_BUNDLED_RE = re.compile(r"--bundled|hello\.jsonl|hello-world|bundled corpus|demo corpus", re.I)
+
+
+def test_no_prose_states_the_bundled_corpus_size():
+    """`hello.jsonl` grows whenever a source or a behaviour needs a record, and every number
+    written about it goes stale on that commit — as the three that existed did on the commit that
+    added a repo record to it.
+
+    Two ways a line is caught, because a count goes stale in two directions. A line that NAMES the
+    corpus may not put a number next to `records`/`documents` at all, whatever the number. And any
+    line may not state today's count, even without naming the corpus — which is what makes this
+    fire when the number is written, at the one moment it is still correct, rather than at some
+    later commit when it is not.
+
+    What to write instead is what `docs/corpus.md` already writes: "covers every source", and
+    `backlot import` prints the per-source breakdown as it loads. `/health` reports both totals for
+    a corpus that is actually loaded — `source_documents` offered, `documents` served.
+    """
+    corpus = REPO / "backlot" / "data" / "hello.jsonl"
+    records = str(sum(1 for line in corpus.read_text().splitlines() if line.strip()))
+    offenders = []
+    # `.py` as well as `.md`: the count this test was written for lived in three places, and the
+    # third was `backlot/server.py`'s module docstring, which a markdown-only sweep walked past.
+    # A docstring describing the corpus is documentation wherever it is stored.
+    for path in sorted([*REPO.rglob("*.md"), *REPO.rglob("*.py")]):
+        # Filtered on the path RELATIVE to the repo, never the absolute one: a checkout can itself
+        # live under a directory this list names — a git worktree under `.claude/worktrees/` does —
+        # and matching against the absolute parts then skips every file in the repo, passing this
+        # test by finding nothing. It did.
+        rel = path.relative_to(REPO)
+        if {".git", ".venv", ".pytest_cache", ".claude"} & set(rel.parts):
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+            for match in _CORPUS_COUNT_RE.finditer(line):
+                if _BUNDLED_RE.search(line) or match.group(1).replace(",", "") == records:
+                    offenders.append(f"{rel}:{lineno}: {match.group(0)!r}")
+    assert not offenders, (
+        "these state the bundled corpus's size, which goes stale the next time a record is added "
+        "to backlot/data/hello.jsonl:\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_generated_docs_are_current():
     """`scripts/gen_docs.py --check` is the single gate on docs/supported-sources.md going stale.
 
@@ -131,3 +182,32 @@ def test_documented_graphql_paths_are_mounted(client):
         assert client.post(path, json={}).status_code != 404, (
             f"{path} is documented but not mounted"
         )
+
+
+def test_configuration_page_names_exactly_the_settings():
+    """`docs/configuration.md` claims to be all of them, so it has to be.
+
+    Nothing else compares that page to `Settings`, which is how a removed setting can leave a row
+    behind and how the count in its opening sentence can go stale. Both are asserted: the names,
+    and the number the prose promises."""
+    from backlot.config import Settings
+
+    page = (REPO / "docs" / "configuration.md").read_text()
+    expected = {f"BACKLOT_{name.upper()}" for name in Settings.model_fields}
+    assert set(re.findall(r"BACKLOT_[A-Z_]+", page)) == expected
+    assert len(re.findall(r"^\| `BACKLOT_", page, re.M)) == len(expected)
+    stated = re.search(r"There are (\w+), and this page is all of them", page)
+    assert stated, "the page no longer says how many settings there are"
+    words = "zero one two three four five six seven eight nine ten eleven twelve".split()
+    assert stated.group(1) == words[len(expected)], stated.group(1)
+
+
+def test_env_example_names_only_real_settings():
+    """`.env.example` may leave a setting out — it is a starting point, not the reference — but a
+    name it lists that `Settings` does not have is a leftover, and a reader who copies the file
+    gets a var the server ignores."""
+    from backlot.config import Settings
+
+    listed = set(re.findall(r"BACKLOT_[A-Z_]+", (REPO / ".env.example").read_text()))
+    real = {f"BACKLOT_{name.upper()}" for name in Settings.model_fields}
+    assert listed <= real, sorted(listed - real)

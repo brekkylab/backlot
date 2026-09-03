@@ -9,16 +9,20 @@ Pass ``records`` (BYO-JSONL dicts) to serve your own corpus instead. ``serve_or_
 an already-running server when one is reachable, which is what lets an example run against the
 hosted deployment or a local one without changing code.
 
-The bundled hello-world corpus (``HELLO_CORPUS``) is 136 records covering EVERY served source, with
-several containers each (4 Slack channels, 3 Gmail mailboxes, 3 Drive folders, 2 repos, 2 Jira
-projects, 2 Confluence spaces, 2 Notion teamspaces, 2 buckets, 2 Linear teams, 2 Fireflies
-channels, 4 HubSpot object types) so a listing has more than one of anything to page through.
+The bundled hello-world corpus (``HELLO_CORPUS``) covers EVERY served source, with several
+containers each — channels, mailboxes, folders, repos, projects, spaces, teamspaces, buckets, teams
+and object types — so a listing always has more than one of anything to page through. ``backlot
+import`` prints the per-source breakdown as it loads; no count is written down here, because the
+corpus grows whenever a source or a behaviour needs a record and a written one goes stale on that
+commit.
 
-Two counts, and they differ on purpose. ``source_documents`` is 136 — what the corpus offered.
-``/health``'s ``documents`` is 167, because parsing promotes structure into rows of the same table:
-Slack ``replies`` and Gmail ``messages`` are messages in their own right. Child rows in the
-per-vendor comment tables (Jira/Confluence/GitHub/Notion/Linear comments, and Fireflies sentences)
-are in neither number — ``documents`` sums root documents only.
+Two counts, and they differ on purpose. ``source_documents`` is what the corpus OFFERED;
+``/health``'s ``documents`` is what is SERVED, and it is larger for two reasons. Parsing promotes
+structure into rows of the same table: Slack ``replies`` and Gmail ``messages`` are messages in
+their own right. And a record is not always a document — a ``subtype: "repo"`` record states a
+repository's refs and becomes no row in the document table at all, so it is counted as offered and
+never as served. Child rows in the per-vendor comment tables (Jira/Confluence/GitHub/Notion/Linear
+comments, and Fireflies sentences) are in neither number — ``documents`` sums root documents only.
 
 It is a demo corpus, not a fixture: assert on shapes and relationships, not on these totals. It also
 leaves optional fields out on purpose — to see what a record MAY carry, read
@@ -46,7 +50,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,12 +58,9 @@ from backlot.config import Settings
 
 HELLO_CORPUS = Path(__file__).resolve().parent / "data" / "hello.jsonl"
 # Settings default; per-user tokens are in <data_dir>/tokens.yaml. Used only as the LAST-RESORT
-# fallback in serve_or_connect()'s remote branch, when the real token can't be fetched — either
-# GET /_meta/users is disabled (BACKLOT_EXPOSE_TOKENS=false, a legitimate configuration) or the
-# URL doesn't clear _trusted_for_token_fetch's bar (plain HTTP to a non-loopback host: treating an
-# unauthenticated plaintext response as a credential there is the wrong default, not merely
-# unavailable). serve() itself never falls back to this: it reads the real value via
-# Settings() below.
+# fallback in serve_or_connect()'s remote branch, when GET /_meta/users can't be read at all — a
+# network failure, or a server too old to serve it. serve() itself never falls back to this: it
+# reads the real value via Settings() below.
 TOKEN = "admin-service-token"
 
 # How long serve()'s local readiness poll waits for each attempt, and how many attempts it
@@ -82,13 +82,9 @@ class Server:
     (``serve_or_connect``'s remote-``url`` branch), it is fetched from that server's own
     ``GET /_meta/users`` — a Backlot-only affordance (``backlot/main.py``) that already serves
     ``admin_token`` for exactly this purpose (``examples/using-official-sdk/s3.py`` tells users to
-    get credentials from that endpoint for a remote server they didn't start) — but only when
-    ``url`` clears ``_trusted_for_token_fetch`` (``https``, or a loopback host): a plaintext
-    response from an arbitrary non-loopback host is never treated as a credential, independent of
-    whether the endpoint would have answered. In either case the fetch doesn't happen — the
-    endpoint disabled (``BACKLOT_EXPOSE_TOKENS=false``) or the URL not meeting that bar — ``token``
-    falls back to the ``Settings`` default as a GUESS, wrong if that server's operator also
-    overrode ``BACKLOT_ADMIN_TOKEN``.
+    get credentials from that endpoint for a remote server they didn't start). When that read
+    fails, ``token`` falls back to the ``Settings`` default as a GUESS, wrong if that server's
+    operator also overrode ``BACKLOT_ADMIN_TOKEN``.
     """
 
     base_url: str
@@ -96,7 +92,7 @@ class Server:
     data_dir: Path | None
 
 
-def _ensure_cert_bundle() -> None:
+def ensure_cert_bundle() -> None:
     # Talking to an HTTPS url (a deployment behind an ACM cert) can fail with
     # CERTIFICATE_VERIFY_FAILED on macOS, where Python's default SSL context has no CA bundle.
     # certifi ships with the [examples] extra; point OpenSSL at it unless already configured.
@@ -141,40 +137,58 @@ def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
         proc.wait()
 
 
-def _trusted_for_token_fetch(url: str) -> bool:
-    """Whether it's safe to treat a plaintext ``GET /_meta/users`` response from ``url`` as a
-    credential.
+# Every server `serve()` has started and not yet stopped. Between `Popen` returning and the context
+# manager yielding, the child is alive but nothing above this module can reach it: the context is
+# not entered yet, so there is no `finally` for a `with` (or an ExitStack) to unwind, and that is
+# exactly where a client that gives up on a slow start sends its signal. `stop_children` is the
+# way out of that window; the normal path stays the context manager's own `finally`.
+_CHILDREN: list[subprocess.Popen] = []
 
-    Gates the token FETCH in ``serve_or_connect``'s remote branch only — not the connection
-    itself; we already talk to whatever ``--url`` the caller passes, that's the whole feature. But
-    fetching a token turns that response into this process's own credential, so it gets a higher
-    bar than merely being reachable: ``https`` (transport-protected) or a loopback host (this
-    project's two real remote callers, ``http://localhost:8000`` and
-    ``https://backlot.brekkylab.com``, both already clear it). Parses the host with
-    :mod:`urllib.parse` rather than string-matching, so ``https://evil.example/?x=localhost``
-    can't slip through by merely containing the substring.
+
+def stop_children() -> None:
+    """Terminate and reap every server ``serve()`` started that is still running.
+
+    For a caller ending the process without unwinding — ``backlot mcp``'s signal handler — where a
+    server may have been spawned but not yet yielded. Safe to call when ``serve()``'s own
+    ``finally`` is already at work on the same child: terminating an exited process is a no-op."""
+    for proc in list(_CHILDREN):
+        _terminate(proc)
+        if proc in _CHILDREN:
+            _CHILDREN.remove(proc)
+
+
+def meta_users(url: str, timeout: float = 10) -> dict:
+    """The directory a Backlot server publishes at ``GET /_meta/users``: every user's email and
+    token, each one's S3 access-key pair, and the admin's own.
+
+    Raises when it cannot be read or is not a directory at all; a directory that is one but lacks
+    the individual fields a caller needs is :func:`backlot.mcp.resolve`'s to report. Strict because
+    a caller naming a user (``backlot mcp --user``) cannot be satisfied by a guess — a resolution
+    that silently became the admin would answer with the admin's unfiltered view.
+    :func:`admin_token_for` is the lenient wrapper ``serve_or_connect`` wants instead.
     """
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme == "https":
-        return True
-    return parsed.hostname in ("localhost", "127.0.0.1", "::1")
+    with urllib.request.urlopen(f"{url.rstrip('/')}/_meta/users", timeout=timeout) as r:
+        if r.status != 200:
+            raise RuntimeError(f"{url}/_meta/users answered HTTP {r.status}")
+        data = json.loads(r.read())
+    if not isinstance(data, dict) or not isinstance(data.get("admin_token"), str):
+        raise RuntimeError(f"{url}/_meta/users did not answer a user directory")
+    return data
 
 
-def _admin_token_from_meta_users(url: str, timeout: float = 10) -> str | None:
-    """Fetch the real admin token from a remote server's own ``GET /_meta/users`` — the same
-    affordance ``examples/using-official-sdk/s3.py`` already points users at for a remote
-    server's credentials. Returns None (not raises) if the endpoint 404s
-    (``BACKLOT_EXPOSE_TOKENS=false``, a legitimate configuration, not an error) or the response
-    is otherwise unusable, so the caller can fall back to a guess rather than fail the connect."""
+def admin_token_for(url: str) -> str:
+    """The admin token for the already-running server at ``url``: fetched from its own
+    ``GET /_meta/users``, and the package default as a GUESS when that read fails — see
+    ``Server.token``'s docstring for when the guess is wrong.
+
+    Lenient where :func:`meta_users` is strict: a server that won't say who its admin is still
+    serves every fallback an example needs, so refusing to connect would break a working session
+    over a credential the caller may never use.
+    """
     try:
-        with urllib.request.urlopen(f"{url.rstrip('/')}/_meta/users", timeout=timeout) as r:
-            if r.status != 200:
-                return None
-            data = json.loads(r.read())
-        token = data.get("admin_token")
-        return token if isinstance(token, str) else None
-    except Exception:  # noqa: BLE001
-        return None
+        return meta_users(url)["admin_token"]
+    except Exception:  # noqa: BLE001 — unreachable, 404, or not a directory: all mean "guess"
+        return TOKEN
 
 
 def _healthy(url: str, timeout: float = 10) -> bool:
@@ -216,8 +230,15 @@ def _warm(url: str, timeout: float) -> bool:
 
 
 @contextlib.contextmanager
-def serve(records: list[dict] | None = None, host: str = "127.0.0.1"):
+def serve(
+    records: list[dict] | None = None, host: str = "127.0.0.1", *, data_dir: Path | None = None
+):
     """Serve ``records`` (or the bundled hello-world corpus) on a free local port.
+
+    ``data_dir`` serves an existing data dir as it stands — one ``backlot import`` already built —
+    instead of importing anything; it is what ``backlot mcp`` uses to put the user's own corpus
+    behind the tools. It cannot be combined with ``records``, which describe a corpus that does not
+    exist yet.
 
     ``host`` is the bind address. The default keeps the server off every interface but loopback;
     pass ``"0.0.0.0"`` (or ``"::"``) to reach it from somewhere the loopback address does not
@@ -225,13 +246,17 @@ def serve(records: list[dict] | None = None, host: str = "127.0.0.1"):
     resolves to the bridge address. A single interface's address works too. ``base_url`` follows:
     loopback for a wildcard bind, otherwise the address bound, since that is where the server
     answers."""
-    with tempfile.TemporaryDirectory() as data_dir:
-        if records is None:
-            corpus = HELLO_CORPUS
-        else:
-            corpus = Path(data_dir) / "corpus.jsonl"
-            corpus.write_text("\n".join(json.dumps(r) for r in records))
-        env = {**os.environ, "BACKLOT_DATA_DIR": data_dir}
+    if records is not None and data_dir is not None:
+        raise ValueError("serve() takes records to import or a data_dir already built, not both")
+    with tempfile.TemporaryDirectory() as scratch:
+        if data_dir is None:
+            data_dir = Path(scratch)
+            if records is None:
+                corpus = HELLO_CORPUS
+            else:
+                corpus = data_dir / "corpus.jsonl"
+                corpus.write_text("\n".join(json.dumps(r) for r in records))
+        env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir)}
         # Read with the SAME env + cwd the subprocess below inherits (only BACKLOT_DATA_DIR
         # differs, and that doesn't affect admin_token), so this resolves to whatever token the
         # server will actually enforce — a caller's BACKLOT_ADMIN_TOKEN env var or a .env in
@@ -239,20 +264,23 @@ def serve(records: list[dict] | None = None, host: str = "127.0.0.1"):
         # Server.token must track that: otherwise a caller's first authenticated call fails
         # with HTTP 200 / {"ok": false} (Slack fidelity), which reads as the caller's own mistake.
         token = Settings().admin_token
-        # `-m backlot` rather than the `backlot` script: same CLI, but resolved through THIS
-        # interpreter, so it works in an environment whose bin/ is not on PATH. No cwd= either —
-        # the package resolves from site-packages exactly as it does from a checkout.
-        subprocess.run(
-            [sys.executable, "-m", "backlot", "import", str(corpus)],
-            env=env,
-            check=True,
-            stdout=subprocess.DEVNULL,
-        )
+        if data_dir == Path(scratch):
+            # `-m backlot` rather than the `backlot` script: same CLI, but resolved through THIS
+            # interpreter, so it works in an environment whose bin/ is not on PATH. No cwd= either —
+            # the package resolves from site-packages exactly as it does from a checkout.
+            subprocess.run(
+                [sys.executable, "-m", "backlot", "import", str(corpus)],
+                env=env,
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+            )
         port = _free_port(host)
         base = f"http://{_dialable(host)}:{port}"
         # Captured to a file rather than subprocess.PIPE: a live pipe nobody drains can fill and
         # deadlock the child, and we only need the contents if uvicorn dies before serving.
-        log_path = Path(data_dir) / "server.log"
+        # In the scratch dir, not the data dir: a caller's own data dir is theirs to keep clean.
+        log_path = Path(scratch) / "server.log"
         with open(log_path, "wb") as log_f:
             proc = subprocess.Popen(
                 [
@@ -268,9 +296,13 @@ def serve(records: list[dict] | None = None, host: str = "127.0.0.1"):
                     "warning",
                 ],
                 env=env,
+                # The server reads nothing from stdin, and must not inherit the caller's: when
+                # the caller is `backlot mcp`, that is the MCP protocol pipe.
+                stdin=subprocess.DEVNULL,
                 stdout=log_f,
                 stderr=subprocess.STDOUT,
             )
+        _CHILDREN.append(proc)
         try:
             for _ in range(_LOCAL_HEALTH_ATTEMPTS):
                 if proc.poll() is not None:
@@ -287,6 +319,8 @@ def serve(records: list[dict] | None = None, host: str = "127.0.0.1"):
             yield Server(base_url=base, token=token, data_dir=Path(data_dir))
         finally:
             _terminate(proc)
+            if proc in _CHILDREN:
+                _CHILDREN.remove(proc)
 
 
 @contextlib.contextmanager
@@ -302,22 +336,17 @@ def serve_or_connect(
     local server; a reachable ``url`` is already bound however its own operator bound it."""
     url = (url or "").strip()
     if url:
-        _ensure_cert_bundle()
+        ensure_cert_bundle()
         if _healthy(url):
-            print(f"using Backlot at {url}")
-            # Fetched, not guessed, when possible AND safe (see Server.token's docstring): GET
-            # /_meta/users on the remote server reports its real admin_token. Gated by
-            # _trusted_for_token_fetch — this is about not treating an unauthenticated plaintext
-            # response from an arbitrary host as a credential, NOT about `url`'s server being
-            # untrustworthy in general (we already talk to it either way). Falls back to the
-            # Settings-default GUESS whenever the fetch doesn't happen at all: the endpoint
-            # disabled (BACKLOT_EXPOSE_TOKENS=false) or the URL not clearing that bar.
-            token = TOKEN
-            if _trusted_for_token_fetch(url):
-                token = _admin_token_from_meta_users(url) or TOKEN
-            yield Server(base_url=url.rstrip("/"), token=token, data_dir=None)
+            # stderr, here and below: a caller may be an MCP stdio server whose stdout IS the
+            # protocol stream, and one stray line there ends the session.
+            print(f"using Backlot at {url}", file=sys.stderr)
+            # Fetched, not guessed, when the server will say (see Server.token's docstring): GET
+            # /_meta/users on the remote server reports its real admin_token. Falls back to the
+            # Settings-default GUESS when that read fails at all.
+            yield Server(base_url=url.rstrip("/"), token=admin_token_for(url), data_dir=None)
             return
-        print(f"--url {url!r} is not reachable — falling back to a local server")
+        print(f"--url {url!r} is not reachable — falling back to a local server", file=sys.stderr)
     with serve(records, host=host) as s:
         yield s
 

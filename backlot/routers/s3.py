@@ -7,6 +7,11 @@ bearer token; the admin/service token's key sees everything, a user's key is ACL
 Responses are S3 XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw object bytes;
 errors use the S3 ``<Error>`` envelope.
 
+S3 dispatches on the query string: ``?acl``, ``?versioning``, ``?tagging`` and the rest each select a
+different operation at the same path. The ones Backlot does not implement are refused with
+``NotImplemented`` (501) rather than answered with the listing or the object's bytes, so a caller
+gets an error to handle instead of another operation's body to parse.
+
 Object model: a bucket is the grouping/ACL unit (``s3_buckets``); an object is one doc
 (``s3_objects``), ``key`` is its address and ``content`` its verbatim body. "Folders" are pure
 key-prefix convention surfaced via ListObjectsV2's ``delimiter``/``CommonPrefixes``.
@@ -43,7 +48,60 @@ _ERR_STATUS = {
     "NoSuchKey": 404,
     "InvalidRange": 416,
     "InvalidArgument": 400,
+    # "A header you provided implies functionality that is not implemented. HTTP Status Code: 501"
+    # — S3 API reference, the Error data type's code table.
+    "NotImplemented": 501,
 }
+
+# The query keys that select an operation other than the listing at a bucket's path, and other
+# than the object's bytes at an object's path. botocore's S3 service model (2006-03-01) declares
+# each as its own operation — `GetBucketVersioning: GET /{Bucket}?versioning`, `GetObjectTagging:
+# GET /{Bucket}/{Key+}?tagging` — and `backlot diff --source s3` asks a running server every one.
+# Real S3 dispatches on exactly these keys and ignores any other query key (measured against a
+# general purpose bucket: `?foo=bar` and the AWS SDK for JavaScript's `?x-id=ListObjects`
+# both answer the listing, the match is case-sensitive so `?Versioning` lists too, and the value is
+# ignored so `?versioning=1` is still GetBucketVersioning). So the refusal is keyed on this set
+# rather than on an allow-list of the listing's own parameters, which would refuse what real S3
+# ignores.
+#
+# `session` is absent on purpose: CreateSession exists for directory buckets only, and real S3
+# answers `GET /{bucket}?session` on a general purpose bucket with the listing (same measurement),
+# so the listing IS the faithful answer. `location` is implemented below; it is in the set so that
+# pairing it with another selector conflicts the way real S3 conflicts it.
+_BUCKET_SELECTORS = frozenset(
+    {
+        "abac",
+        "accelerate",
+        "acl",
+        "analytics",
+        "cors",
+        "encryption",
+        "intelligent-tiering",
+        "inventory",
+        "lifecycle",
+        "location",
+        "logging",
+        "metadataConfiguration",
+        "metadataTable",
+        "metrics",
+        "notification",
+        "object-lock",
+        "ownershipControls",
+        "policy",
+        "policyStatus",
+        "publicAccessBlock",
+        "replication",
+        "requestPayment",
+        "tagging",
+        "uploads",
+        "versioning",
+        "versions",
+        "website",
+    }
+)
+_OBJECT_SELECTORS = frozenset(
+    {"acl", "annotation", "attributes", "legal-hold", "retention", "tagging", "torrent", "uploadId"}
+)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -66,6 +124,52 @@ def _error(
         f"<Resource>{escape(resource)}</Resource>{extra}</Error>"
     )
     return _xml(body, status=_ERR_STATUS.get(code, 400), headers=headers)
+
+
+def _selected(q, selectors: frozenset[str]) -> list[str]:
+    """The sub-resource selectors a query string carries, in the order real S3 names them.
+
+    Sorted, because real S3 refuses a request carrying two with an ``InvalidArgument`` that names
+    them alphabetically whatever order they were sent in — ``?versioning&acl`` is "Conflicting
+    query string parameters: acl, versioning" — and reports the first as the ``ArgumentValue``.
+    """
+    return sorted(k for k in q.keys() if k in selectors)
+
+
+def _conflict(selected: list[str], resource: str) -> Response:
+    """Two selectors at once, refused as real S3 refuses them (measured)."""
+    return _error(
+        "InvalidArgument",
+        "Conflicting query string parameters: " + ", ".join(selected),
+        resource,
+        extra=(
+            "<ArgumentName>ResourceType</ArgumentName>"
+            f"<ArgumentValue>{escape(selected[0])}</ArgumentValue>"
+        ),
+    )
+
+
+def _not_implemented(selector: str, resource: str) -> Response:
+    """Refuse an operation Backlot does not implement, instead of answering it with another's body.
+
+    ``NotImplemented`` is the S3 error code for functionality the service will not perform, and 501
+    is not a status botocore retries, so a boto3 caller gets one ``ClientError`` straight away.
+    What the catch-all used to answer was worse in both directions: a bucket sub-resource got the
+    listing, which botocore parsed as an empty result (``get_bucket_versioning`` -> ``{}``), and an
+    object sub-resource got the object's bytes, which botocore could not parse as XML and reported
+    as a 500 after retrying.
+
+    Real S3 answers each of these operations rather than refusing it — measured against a general
+    purpose bucket, ``?versioning`` is an empty ``<VersioningConfiguration>`` and
+    ``?tagging`` is ``NoSuchTagSet`` — so every refusal here is a gap the S3 baseline records, with
+    the answer real S3 gives written beside it.
+    """
+    return _error(
+        "NotImplemented",
+        "A query string parameter you provided selects an operation that is not implemented: "
+        + selector,
+        resource,
+    )
 
 
 def _auth(request: Request):
@@ -160,6 +264,10 @@ async def head_bucket(request: Request, bucket: str):
     conn = auth.conn(request)
     if not _bucket_visible(conn, bucket, visible):
         return Response(status_code=404)
+    if _selected(request.query_params, _BUCKET_SELECTORS):
+        # No sub-resource has a HEAD form: real S3 answers `HEAD /{bucket}?versioning` with a bare
+        # 405 (measured).
+        return Response(status_code=405)
     return Response(status_code=200, headers={"x-amz-bucket-region": "us-east-1"})
 
 
@@ -171,10 +279,14 @@ async def bucket_get(request: Request, bucket: str):
     conn = auth.conn(request)
     if not _bucket_visible(conn, bucket, visible):
         return _error("NoSuchBucket", "The specified bucket does not exist", bucket)
-    q = request.query_params
-    if "location" in q:
+    selected = _selected(request.query_params, _BUCKET_SELECTORS)
+    if len(selected) > 1:
+        return _conflict(selected, f"/{bucket}")
+    if selected == ["location"]:
         # us-east-1 is represented by an *empty* LocationConstraint element on real S3.
         return _xml(f'<LocationConstraint xmlns="{NS}"></LocationConstraint>')
+    if selected:
+        return _not_implemented(selected[0], f"/{bucket}")
     return _list_objects_v2(request, conn, bucket, visible)
 
 
@@ -305,11 +417,27 @@ async def object_get(request: Request, bucket: str, key: str):
     if err:
         return err if request.method == "GET" else Response(status_code=err.status_code)
     conn = auth.conn(request)
+    selected = _selected(request.query_params, _OBJECT_SELECTORS)
+    if selected and request.method == "HEAD":
+        # No sub-resource has a HEAD form: real S3 answers `HEAD /{key}?acl` with a bare 405
+        # (measured).
+        return Response(status_code=405)
+    if len(selected) > 1:
+        return _conflict(selected, f"/{bucket}/{key}")
+    if selected == ["uploadId"]:
+        # ListParts is about an upload, not about the object under the key: real S3 answers
+        # `NoSuchUpload` for a key that does not exist, not `NoSuchKey` (measured), so the refusal
+        # comes before the key is looked up.
+        return _not_implemented("uploadId", f"/{bucket}/{key}")
     row = _object_row(conn, bucket, key, visible)
     if row is None:
         if request.method == "HEAD":
             return Response(status_code=404)
         return _error("NoSuchKey", "The specified key does not exist.", f"/{bucket}/{key}")
+    if selected:
+        # The key exists, so the sub-resource is what is being refused — real S3 checks the key
+        # first too: `GET /{missing}?acl` is NoSuchKey (same measurement).
+        return _not_implemented(selected[0], f"/{bucket}/{key}")
 
     data = row["content"].encode("utf-8")
     total = len(data)

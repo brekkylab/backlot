@@ -32,8 +32,9 @@ from tests._helpers import complete, client_for
 # ------------------------------------------------------------------------ S3 (SigV4/404/416 edges)
 
 
-def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None):
-    """Return (url, headers) for a SigV4-signed GET, using botocore (the real signer)."""
+def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None, method="GET"):
+    """Return (url, headers) for a SigV4-signed GET (or ``method``), using botocore (the real
+    signer)."""
     pytest.importorskip("botocore")
     from botocore.auth import S3SigV4Auth
     from botocore.awsrequest import AWSRequest
@@ -53,7 +54,7 @@ def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None):
     ak = synth.s3_access_key_id(token)
     sk = synth.s3_secret_access_key(token)
     url = f"{base_url}{path}"
-    req = AWSRequest(method="GET", url=url, headers=dict(extra_headers or {}))
+    req = AWSRequest(method=method, url=url, headers=dict(extra_headers or {}))
     req.headers["x-amz-content-sha256"] = "UNSIGNED-PAYLOAD"
     S3SigV4Auth(Credentials(ak, sk), "s3", "us-east-1").add_auth(req)
     headers = dict(req.headers)
@@ -419,6 +420,188 @@ def test_list_objects_v2_delimiter_common_prefixes(live_server):
     root = _get_xml(base_url, "/s3/eng-artifacts?list-type=2&delimiter=/", settings.admin_token)
     prefixes = {cp.findtext(f"{NS}Prefix") for cp in root.iter(f"{NS}CommonPrefixes")}
     assert {"runbooks/", "design/"} <= prefixes
+
+
+# ------------------------------------------------------------ sub-resources Backlot does not serve
+# S3 dispatches on the query string: `?versioning`, `?acl`, `?tagging` and the rest each select an
+# operation of their own at a bucket's or an object's path. Backlot implements none of them and used
+# to answer every one with the listing or the object's bytes under a 200. Every claim about real
+# S3 below was measured against a general purpose bucket: each selector is answered as its own
+# operation, an unknown key (`?foo=bar`, `?x-id=…`) is ignored, the match is
+# case-sensitive, two selectors conflict, and HEAD with a selector is 405.
+
+BUCKET_SUBRESOURCES = [
+    "abac",
+    "accelerate",
+    "acl",
+    "analytics",
+    "cors",
+    "encryption",
+    "intelligent-tiering",
+    "inventory",
+    "lifecycle",
+    "logging",
+    "metadataConfiguration",
+    "metadataTable",
+    "metrics",
+    "notification",
+    "object-lock",
+    "ownershipControls",
+    "policy",
+    "policyStatus",
+    "publicAccessBlock",
+    "replication",
+    "requestPayment",
+    "tagging",
+    "uploads",
+    "versioning",
+    "versions",
+    "website",
+]
+OBJECT_SUBRESOURCES = [
+    "acl",
+    "annotation",
+    "attributes",
+    "legal-hold",
+    "retention",
+    "tagging",
+    "torrent",
+    "uploadId=abc123",  # ListParts: selected by a required querystring member, not a bare key
+]
+OBJECT_PATH = "/s3/eng-artifacts/runbooks/oncall.md"
+OBJECT_TEXT = b"Check dashboards, roll back, page on-call."
+
+
+def _refused(base_url, path, token, method="GET") -> urllib.error.HTTPError:
+    url, headers = _sign_get(base_url, path, token, method=method)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(urllib.request.Request(url, headers=headers, method=method))
+    return e.value
+
+
+@pytest.mark.parametrize("selector", BUCKET_SUBRESOURCES)
+def test_an_unimplemented_bucket_subresource_is_refused_not_answered_with_the_listing(
+    live_server, selector
+):
+    base_url, settings = live_server
+    err = _refused(base_url, f"/s3/eng-artifacts?{selector}", settings.admin_token)
+    body = err.read()
+    assert err.code == 501
+    assert b"<Code>NotImplemented</Code>" in body
+    assert b"ListBucketResult" not in body
+    assert err.headers.get("Content-Type") == "application/xml"
+
+
+@pytest.mark.parametrize("selector", OBJECT_SUBRESOURCES)
+def test_an_unimplemented_object_subresource_is_refused_not_answered_with_the_object(
+    live_server, selector
+):
+    base_url, settings = live_server
+    err = _refused(base_url, f"{OBJECT_PATH}?{selector}", settings.admin_token)
+    body = err.read()
+    assert err.code == 501
+    assert b"<Code>NotImplemented</Code>" in body
+    assert OBJECT_TEXT not in body
+    assert err.headers.get("Content-Type") == "application/xml"
+
+
+def test_the_listing_location_and_object_still_answer_and_an_unknown_key_is_ignored(live_server):
+    base_url, settings = live_server
+    token = settings.admin_token
+    # A bare bucket GET is ListObjects and `?list-type=2` its v2 form; `?foo=bar` and the AWS SDK
+    # for JavaScript's `?x-id=` are not selectors; `?Versioning` is not `?versioning`; and
+    # `?session` (CreateSession, directory buckets only) lists on a general purpose bucket.
+    for query in ("", "?list-type=2", "?foo=bar", "?x-id=ListObjects", "?Versioning", "?session"):
+        root = _get_xml(base_url, f"/s3/eng-artifacts{query}", token)
+        assert root.tag == f"{NS}ListBucketResult", query
+    assert _get_xml(base_url, "/s3/eng-artifacts?location", token).tag == f"{NS}LocationConstraint"
+    for query in ("", "?x-id=GetObject", "?foo=bar"):
+        url, headers = _sign_get(base_url, f"{OBJECT_PATH}{query}", token)
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers)) as r:
+            assert r.status == 200 and r.read() == OBJECT_TEXT, query
+
+
+def test_two_subresources_at_once_conflict_the_way_real_s3_conflicts_them(live_server):
+    base_url, settings = live_server
+    # Named alphabetically whatever order they were sent in, and the first is the ArgumentValue.
+    for path in ("/s3/eng-artifacts?versioning&acl", "/s3/eng-artifacts?acl&versioning"):
+        err = _refused(base_url, path, settings.admin_token)
+        body = err.read()
+        assert err.code == 400
+        assert b"<Code>InvalidArgument</Code>" in body
+        assert b"<Message>Conflicting query string parameters: acl, versioning</Message>" in body
+        assert (
+            b"<ArgumentName>ResourceType</ArgumentName><ArgumentValue>acl</ArgumentValue>" in body
+        )
+    # `location`, the one bucket sub-resource Backlot serves, conflicts like any other.
+    err = _refused(base_url, "/s3/eng-artifacts?location&versioning", settings.admin_token)
+    assert err.code == 400 and b"location, versioning" in err.read()
+    err = _refused(base_url, f"{OBJECT_PATH}?tagging&acl", settings.admin_token)
+    assert err.code == 400 and b"acl, tagging" in err.read()
+
+
+def test_what_does_not_exist_is_reported_before_the_subresource_except_for_list_parts(live_server):
+    base_url, settings = live_server
+    token = settings.admin_token
+    err = _refused(base_url, "/s3/no-such-bucket?versioning", token)
+    assert err.code == 404 and b"NoSuchBucket" in err.read()
+    err = _refused(base_url, "/s3/eng-artifacts/no/such.md?acl", token)
+    assert err.code == 404 and b"NoSuchKey" in err.read()
+    # ListParts is about an upload, not the object under the key: real S3 answers NoSuchUpload for
+    # a missing key rather than NoSuchKey, so Backlot refuses it before looking the key up.
+    err = _refused(base_url, "/s3/eng-artifacts/no/such.md?uploadId=abc123", token)
+    assert err.code == 501 and b"NotImplemented" in err.read()
+
+
+def test_head_with_a_subresource_is_405_and_a_bare_head_still_answers(live_server):
+    base_url, settings = live_server
+    token = settings.admin_token
+    for path in ("/s3/eng-artifacts?versioning", f"{OBJECT_PATH}?acl", f"{OBJECT_PATH}?uploadId=x"):
+        err = _refused(base_url, path, token, method="HEAD")
+        assert err.code == 405 and err.read() == b"", path
+    for path in ("/s3/eng-artifacts", OBJECT_PATH):
+        url, headers = _sign_get(base_url, path, token, method="HEAD")
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers, method="HEAD")
+        ) as r:
+            assert r.status == 200, path
+
+
+def test_boto3_gets_one_client_error_instead_of_an_empty_answer_or_a_retried_500(live_server):
+    """The issue's own reproduction. Before the fix `get_bucket_versioning` returned `{}` and
+    `get_bucket_policy` returned the XML listing as the policy string, because botocore parsed the
+    listing as each operation's output; `get_object_tagging` and `list_parts` surfaced as a 500
+    after botocore's retries, because botocore's `_handle_200_error` could not parse the object's bytes
+    as XML. 501 is not a status botocore retries, so each is now one ClientError, at once."""
+    boto3 = pytest.importorskip("boto3")
+    from botocore.config import Config
+    from botocore.exceptions import ClientError
+
+    base_url, settings = live_server
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=f"{base_url}/s3",
+        aws_access_key_id=synth.s3_access_key_id(settings.admin_token),
+        aws_secret_access_key=synth.s3_secret_access_key(settings.admin_token),
+        region_name="us-east-1",
+        config=Config(s3={"addressing_style": "path"}),
+    )
+    bucket, key = "eng-artifacts", "runbooks/oncall.md"
+    for call in (
+        lambda: s3.get_bucket_versioning(Bucket=bucket),
+        lambda: s3.get_bucket_policy(Bucket=bucket),
+        lambda: s3.get_bucket_tagging(Bucket=bucket),
+        lambda: s3.get_object_tagging(Bucket=bucket, Key=key),
+        lambda: s3.list_parts(Bucket=bucket, Key=key, UploadId="abc123"),
+    ):
+        with pytest.raises(ClientError) as e:
+            call()
+        assert e.value.response["Error"]["Code"] == "NotImplemented"
+        assert e.value.response["ResponseMetadata"]["HTTPStatusCode"] == 501
+        assert e.value.response["ResponseMetadata"]["RetryAttempts"] == 0
+    assert s3.get_bucket_location(Bucket=bucket)["LocationConstraint"] is None  # us-east-1
+    assert key in {o["Key"] for o in s3.list_objects_v2(Bucket=bucket)["Contents"]}
+    assert s3.get_object(Bucket=bucket, Key=key)["Body"].read() == OBJECT_TEXT
 
 
 # --- the SigV4 verifier (backlot/sigv4.py) — S3 is its only caller ------------------------------------

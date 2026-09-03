@@ -637,8 +637,11 @@ CORPUS = [
             {
                 "url": "https://acme.slack.com/archives/C1/p1",
                 "title": "Réunion notes",
+                "subtitle": "sub",
                 "sourceType": "slack-équipe",
             },
+            # Neither a subtitle nor a source, for the null rules.
+            {"url": "https://acme.test/spec", "title": "Spec"},
         ],
     },
     {
@@ -1491,6 +1494,40 @@ def test_source_type_comparator_evaluates_every_operator(fclient):
     assert titles('{sourceType: {containsIgnoreCaseAndAccent: "EQUIPE"}}') == ["Réunion notes"]
     assert titles('{sourceType: {contains: "equipe"}}') == []  # plain contains is exact
     assert titles('{sourceType: {in: ["github", "slack-équipe"]}}') == ["CI run", "Réunion notes"]
+
+
+def test_attachment_string_fields_follow_linears_null_rules(fclient):
+    """Measured 2026-09-03 against an attachment with no subtitle and no source: `subtitle:
+    {null: true}` selects it, `nin` keeps it, and `neq` / `neqIgnoreCase` / `notContains` / `eq: ""`
+    drop it; its `sourceType` is served as "unknown" and no `sourceType` predicate matches it, `nin`
+    included. "Spec" is that attachment here."""
+
+    def titles(filter_literal):
+        q = (
+            '{ issue(id: "ENG-1") { attachments(filter: %s) { nodes { title } } } }'
+            % filter_literal
+        )
+        body = post(fclient, q).json()
+        assert "errors" not in body, body.get("errors")
+        return sorted(n["title"] for n in body["data"]["issue"]["attachments"]["nodes"])
+
+    served = post(
+        fclient, '{ issue(id: "ENG-1") { attachments { nodes { title subtitle sourceType } } } }'
+    )
+    spec = next(
+        n for n in served.json()["data"]["issue"]["attachments"]["nodes"] if n["title"] == "Spec"
+    )
+    assert spec == {"title": "Spec", "subtitle": None, "sourceType": "unknown"}
+    assert titles("{subtitle: {null: true}}") == ["CI run", "Spec"]
+    assert titles("{subtitle: {null: false}}") == ["Réunion notes"]
+    assert titles('{subtitle: {neq: "zzz"}}') == ["Réunion notes"]
+    assert titles('{subtitle: {neqIgnoreCase: "zzz"}}') == ["Réunion notes"]
+    assert titles('{subtitle: {nin: ["zzz"]}}') == ["CI run", "Réunion notes", "Spec"]
+    assert titles('{subtitle: {eq: ""}}') == []
+    assert titles('{sourceType: {neq: "zzz"}}') == ["CI run", "Réunion notes"]
+    assert titles('{sourceType: {nin: ["zzz"]}}') == ["CI run", "Réunion notes"]
+    assert titles('{sourceType: {notContains: "zzz"}}') == ["CI run", "Réunion notes"]
+    assert titles('{sourceType: {eq: "unknown"}}') == []
 
 
 # --- Linear -----------------------------------------------------------------------

@@ -420,6 +420,7 @@ type Attachment {
   url: String!
   bodyData: String
   updatedAt: DateTime!
+  # "unknown" when the corpus records no source, as Linear serves it (measured 2026-09-03).
   sourceType: String
   archivedAt: DateTime
   createdAt: DateTime!

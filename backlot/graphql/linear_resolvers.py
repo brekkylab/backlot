@@ -135,15 +135,22 @@ def _fold_accents(text: str) -> str:
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
-def _match_string(value, spec: dict | None) -> bool:
+def _match_string(value, spec: dict | None, *, absent_matches_nothing: bool = False) -> bool:
     """A string comparator against one Python value. Covers the operators the SQL comparator in
     backlot/graphql/linear_filters.py renders, plus the negated / case-insensitive / accent-
     insensitive ones ``SourceTypeComparator`` declares — that comparator is only ever evaluated
-    here, over an issue's own attachments, so it is declared in full."""
+    here, over an issue's own attachments, so it is declared in full.
+
+    A ``None`` value follows what api.linear.app answered on 2026-09-03 for an attachment with no
+    subtitle: ``null: true`` selects it, ``nin`` keeps it, and every other operator — ``eq`` (even
+    ``eq: ""``), ``neq``, ``neqIgnoreCase``, ``notContains`` — drops it. The same field rule the SQL
+    comparator applies to a null number or date. ``absent_matches_nothing`` is the stricter rule
+    Linear applied to an attachment's ``sourceType`` when no source is recorded: ``neq``, ``nin``,
+    ``notContains`` and ``eq: ""`` all answered nothing, ``nin`` included."""
     if not spec:
         return True
-    v = "" if value is None else str(value)
     known = (
+        "null",
         "eq",
         "neq",
         "in",
@@ -166,6 +173,15 @@ def _match_string(value, spec: dict | None) -> bool:
             continue
         if op not in known:
             raise GraphQLError(f"unsupported comparator {op!r}")
+        if op == "null":
+            if (value is None) != bool(raw):
+                return False
+            continue
+        if value is None:
+            if absent_matches_nothing or op != "nin":
+                return False
+            continue
+        v = str(value)
         needle = str(raw)
         if op == "eq" and v != raw:
             return False
@@ -202,21 +218,22 @@ def _match_string(value, spec: dict | None) -> bool:
     return True
 
 
-def _match_fields(spec: dict | None, fields: dict) -> bool:
-    """A filter object whose keys map to already-computed values, plus ``and`` / ``or``."""
+def _match_fields(spec: dict | None, fields: dict, strict: frozenset[str] = frozenset()) -> bool:
+    """A filter object whose keys map to already-computed values, plus ``and`` / ``or``. ``strict``
+    names the keys whose absent value matches nothing (see ``_match_string``)."""
     if not spec:
         return True
     for key, sub in spec.items():
         if sub is None:
             continue
         if key == "and":
-            if not all(_match_fields(x, fields) for x in sub):
+            if not all(_match_fields(x, fields, strict) for x in sub):
                 return False
         elif key == "or":
-            if not any(_match_fields(x, fields) for x in sub):
+            if not any(_match_fields(x, fields, strict) for x in sub):
                 return False
         elif key in fields:
-            if not _match_string(fields[key], sub):
+            if not _match_string(fields[key], sub, absent_matches_nothing=key in strict):
                 return False
         else:
             raise GraphQLError(f"unsupported filter field {key!r}")
@@ -252,6 +269,9 @@ def _match_label(node: dict, spec) -> bool:
 
 
 def _match_attachment(node: dict, spec) -> bool:
+    # `sourceType` is filtered on what the corpus recorded, not on the served value: Linear serves
+    # "unknown" for an attachment with no source and yet no `sourceType` predicate matches it,
+    # `nin` included (measured 2026-09-03), so the raw column is what the comparator sees.
     return _match_fields(
         spec,
         {
@@ -259,8 +279,9 @@ def _match_attachment(node: dict, spec) -> bool:
             "title": node["title"],
             "url": node["url"],
             "subtitle": node["subtitle"],
-            "sourceType": node["sourceType"],
+            "sourceType": node["_source_type"],
         },
+        strict=frozenset({"sourceType"}),
     )
 
 
@@ -493,7 +514,10 @@ def _attachment(row, info) -> dict:
         "title": row["title"],
         "url": row["url"],
         "subtitle": row["subtitle"],
-        "sourceType": row["source_type"],
+        # "unknown", not null, when the corpus records no source: what Linear served for an
+        # attachment created with a bare url and title (measured 2026-09-03).
+        "sourceType": row["source_type"] or "unknown",
+        "_source_type": row["source_type"],  # not a schema field: what `sourceType` filters on
         "metadata": {},
         "source": None,
         "bodyData": None,

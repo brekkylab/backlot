@@ -1456,6 +1456,16 @@ def test_an_issue_id_of_neither_shape_is_an_argument_validation_error(fclient):
     assert err["extensions"]["code"] == "INVALID_INPUT"
     assert ids(fclient, '{id: {eq: "ENG-999"}}') == []
     assert ids(fclient, '{id: {in: ["ENG-1", "ZZZ-1"]}}') == ["ENG-1"]
+    # Linear also refuses a non-numeric suffix (`BRE-x`, measured); Backlot does so only for a value
+    # that names no issue, because the corpus schema lets a served identifier carry one.
+    r = post(fclient, '{ issues(filter: {id: {eq: "ENG-x"}}) { nodes { identifier } } }')
+    assert r.json()["errors"][0]["message"] == "Argument Validation Error"
+    r = post(
+        fclient, '{ issues(filter: {id: {in: ["ENG-1", "not-a-uuid"]}}) { nodes { identifier } } }'
+    )
+    assert (
+        r.json()["errors"][0]["message"] == "Argument Validation Error"
+    )  # one bad value fails the list
 
 
 def test_source_type_comparator_evaluates_every_operator(fclient):

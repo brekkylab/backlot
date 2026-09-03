@@ -788,9 +788,9 @@ def _comment(row, info) -> dict:
 
 
 _UUID_SHAPE = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
-# The corpus schema's identifier shape (`identifier` in backlot/schemas/linear.schema.json), with
-# the prefix in either case: Linear resolved `bre-1` to `BRE-1` (measured 2026-09-03).
-_IDENTIFIER_SHAPE = re.compile(r"^[A-Za-z0-9]+-\S+$")
+# Linear's own identifier shape: a key in either case and a numeric suffix. Measured 2026-09-03:
+# `BRE-1`, `bre-1` and `B2E-1` are looked up, `BRE-x`, `BRE-`, `BRE1` and `not-a-uuid` are refused.
+_LINEAR_IDENTIFIER_SHAPE = re.compile(r"^[A-Za-z0-9]+-\d+$")
 
 
 def _resolve_one_issue_id(conn, value: str) -> str:
@@ -805,18 +805,20 @@ def _resolve_one_issue_id(conn, value: str) -> str:
     anything other than its real id would just make an invisible-issue filter behave
     differently from every other predicate instead of consistently answering empty.
 
-    A value that is neither shape is refused before the lookup: Linear answers
-    `IssueFilter.id: {eq: "not-a-uuid"}` with `Argument Validation Error` (code `INVALID_INPUT`, a
-    200 with `errors`), where `{eq: "BRE-1"}`, `{eq: "bre-1"}` and a UUID are simply looked up
-    (measured 2026-09-03; Linear also refuses `BRE-x`, `BRE-` and `BRE1`). The identifier shape
-    checked is the corpus schema's own (`PREFIX-anything`), wider than Linear's digits-only suffix,
-    so nothing Backlot itself serves is refused: `BRE-x` is an empty page here, not an error."""
-    if not (_UUID_SHAPE.match(value) or _IDENTIFIER_SHAPE.match(value)):
-        raise GraphQLError("Argument Validation Error", extensions={"code": "INVALID_INPUT"})
+    A MISS of neither shape is Linear's `Argument Validation Error` (code `INVALID_INPUT`, a 200
+    with `errors`) rather than the sentinel: that is what `{eq: "not-a-uuid"}` answers there, where
+    a well-shaped unknown (`ZZZ-404`) is an empty page. The lookup comes first because the corpus
+    schema lets an identifier's suffix be any text, so an identifier Backlot actually serves
+    (`ENG-abc`) is found before the shape is judged, and only a value that names nothing is held to
+    Linear's rule."""
     row = store.linear_by_id(conn, value)
     if row is None:
         row = store.linear_issue_by_identifier(conn, value)
-    return row["id"] if row else "\x00none"
+    if row is not None:
+        return row["id"]
+    if not (_UUID_SHAPE.match(value) or _LINEAR_IDENTIFIER_SHAPE.match(value)):
+        raise GraphQLError("Argument Validation Error", extensions={"code": "INVALID_INPUT"})
+    return "\x00none"
 
 
 def _resolve_issue_ids(info, flt):

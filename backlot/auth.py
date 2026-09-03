@@ -178,8 +178,8 @@ def resolve_sigv4(request: Request) -> tuple[Caller | None, str | None]:
     order is parse -> resolve access key -> time validity -> signature match, so a bogus access
     key is reported before any time error, and a stale-but-correctly-signed request is reported
     as a time error rather than a signature mismatch. The region is taken from the client's own
-    credential scope, so any region validates. The canonical URI is the raw wire path (S3 signs
-    it verbatim)."""
+    credential scope, so any region validates. The canonical URI and query are the raw wire path
+    and query string (S3 signs the path verbatim)."""
     hdrs = {k.lower(): v for k, v in request.headers.items()}
     qs = request.query_params
     authz = hdrs.get("authorization", "")
@@ -221,13 +221,18 @@ def resolve_sigv4(request: Request) -> tuple[Caller | None, str | None]:
             return None, "AccessDenied"
     elif sigv4.is_skewed(request_time, now):
         return None, "RequestTimeTooSkewed"
+    # Both halves of the canonical request come off the wire, not off `request.url`: Starlette
+    # rebuilds that URL from the DECODED path, so a key containing `%3F` turns into a `?` that
+    # splits it — `/q%3Fx.txt` reads back as path `/q` with query `x.txt`, a query the client never
+    # signed. `raw_path` and `query_string` are the bytes uvicorn received.
     raw = request.scope.get("raw_path")
     path = raw.decode("ascii") if raw else request.url.path
+    query = request.scope.get("query_string", b"").decode("ascii")
     expected = sigv4.expected_signature(
         secret,
         request.method,
         path,
-        request.url.query,
+        query,
         hdrs,
         signed_headers,
         payload_hash,

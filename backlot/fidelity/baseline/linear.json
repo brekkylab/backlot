@@ -378,18 +378,6 @@
     {
       "kind": "missing_field",
       "severity": "gap",
-      "path": "DateComparator.in",
-      "detail": "vendor serves in: [DateTimeOrDuration!]; Backlot does not"
-    },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "DateComparator.nin",
-      "detail": "vendor serves nin: [DateTimeOrDuration!]; Backlot does not"
-    },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
       "path": "Document.archivedAt",
       "detail": "vendor serves archivedAt: DateTime; Backlot does not"
     },
@@ -2060,18 +2048,6 @@
       "severity": "gap",
       "path": "IssueSortInput.workflowState",
       "detail": "vendor serves workflowState: WorkflowStateSort; Backlot does not"
-    },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "NullableDateComparator.in",
-      "detail": "vendor serves in: [DateTimeOrDuration!]; Backlot does not"
-    },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "NullableDateComparator.nin",
-      "detail": "vendor serves nin: [DateTimeOrDuration!]; Backlot does not"
     },
     {
       "kind": "missing_field",

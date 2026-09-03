@@ -16,34 +16,246 @@ Two design rules make the result trustworthy rather than merely convenient:
 - **Derived fields are expanded, not faked.** ``state.type`` and ``team.key`` have no column:
   both are pure functions of a column whose distinct values are a handful of rows, so they
   compile to an ``IN`` over the names that satisfy the predicate. That is exact, not approximate.
+
+The date comparators take Linear's ``DateTimeOrDuration`` / ``TimelessDateOrDuration`` scalars, whose
+grammar (ISO 8601, year and year-month shortcuts, and ISO 8601 durations relative to now) is
+implemented at the top of this module and bound onto the scalars themselves, so a bad operand is
+the same validation error Linear answers.
 """
 
 from __future__ import annotations
 
+import calendar
 import datetime as _dt
+import re
 
 from graphql import GraphQLError
+from graphql.language import StringValueNode
 
-from backlot import synth
+from backlot import store, synth
+
+# --- the date operands: Linear's `DateTimeOrDuration` and `TimelessDateOrDuration` ------------
+# Every date comparator in Linear's schema takes one of these two scalars, not a plain `DateTime`.
+# Linear's own description of `DateTimeOrDuration`: "Represents a date and time in ISO 8601 format.
+# Accepts shortcuts like `2021` to represent midnight Fri Jan 01 2021. Also accepts ISO 8601
+# durations strings which are added to the current date to create the represented date (e.g
+# '-P2W1D' represents the date that was two weeks and 1 day ago)". `TimelessDate` carries the
+# identical description.
+#
+# Measured against api.linear.app on 2026-09-03, `createdAt: {gt: X}` for each X:
+#   accepted  "2021"  "2021-03"  "2021-03-05 10:00"  "2026-09-01"  "2026-09-01T05:30:31.786Z"
+#             "1"  "P1D"  "-P1D"  "PT1H"  "-PT1H"  "P1M"  "-P1Y2M3W4DT5H6M7S"
+#   rejected  "1700000000"  "20210305"  "P"  "2021-13-01"  ""   -- each a 400 validation error:
+#             `Expected value of type "DateTimeOrDuration", found "P"; Unable to parse value 'P'
+#             into a valid date`
+#   rejected  a non-string, literal or variable -- `DateTimeOrDuration supports only string values`
+# So a bare epoch is NOT accepted (an earlier version of this module took one), digits alone are a
+# YEAR, and the rejection happens at validation, before any resolver runs. The parsers below are
+# wired in as the scalars' own coercion (``SCALARS``, bound by ``linear_resolvers.build_engine``) so
+# a bad operand is the same 400 here. They raise ``ValueError``, not ``GraphQLError``, on purpose:
+# graphql-core (like graphql-js, which Linear runs) reports a GraphQLError from a scalar verbatim
+# but wraps any other exception as `Expected value of type 'DateTimeOrDuration', found "P"; <message>`
+# -- the envelope the measurement above shows.
+#
+# `TimelessDateOrDuration` (2026-09-03, against an issue due 2026-03-15 created for the purpose and
+# deleted after): the same grammar, read down to the UTC day. `eq` matched for "2026-03-15",
+# "2026-03-15T00:00:00Z", "2026-03-15T23:59:59Z" and "2026-03-16T02:00:00+09:00" (17:00Z on the
+# 15th); it did NOT match for "2026-03-15T23:59:59-05:00" (04:59Z on the 16th) or
+# "2026-03-15T02:00:00+09:00" (17:00Z on the 14th). `gte: "2026-03-15T12:00:00Z"` matched and
+# `gt: "2026-03-15T00:00:00Z"` did not, so the operand is truncated before the comparison rather
+# than compared as an instant. "2026-03" is the first of the month (`eq` misses, `gte` hits), a
+# duration is relative to today (`lt: "P0D"` hits a past due date). The scalar names itself
+# `TimelessDate` in its errors: `Unable to parse literal value of kind 'IntValue'. TimelessDate
+# supports only 'StringValue' ones`, and for a variable `Unable to parse value '1'. TimelessDate
+# supports only string values` (quoted, where DateTimeOrDuration prints the value bare).
+
+_DURATION = re.compile(
+    r"^(?P<sign>[+-])?P"
+    r"(?:(?P<years>\d+)Y)?(?:(?P<months>\d+)M)?(?:(?P<weeks>\d+)W)?(?:(?P<days>\d+)D)?"
+    r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?$"
+)
+_DURATION_PARTS = ("years", "months", "weeks", "days", "hours", "minutes", "seconds")
+_TIME = re.compile(r"[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}(?::?\d{2})?)?")
 
 
-def _to_epoch(value) -> int | None:
-    """An ISO-8601 ``DateTime`` operand -> unix seconds, to compare against a ``*_ts`` column.
-    Deliberately NOT an importer's own date coercion: that exists to salvage a corpus's messy
-    human date strings and would drag the whole importer into the serving path. A filter operand
-    comes from a GraphQL client, so ISO-8601 (or a bare epoch) is the whole contract."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return int(value)
-    s = str(value).strip()
-    if s.isdigit():
-        return int(s)
+def _now() -> _dt.datetime:
+    """The instant a duration operand is relative to. A function, so a test can pin it."""
+    return _dt.datetime.now(_dt.timezone.utc)
+
+
+def _add_months(when: _dt.datetime, months: int) -> _dt.datetime:
+    """Calendar months, clamping the day the way every date library does (Jan 31 + 1M = Feb 28)."""
+    index = when.year * 12 + (when.month - 1) + months
+    year, month = divmod(index, 12)
+    month += 1
+    day = min(when.day, calendar.monthrange(year, month)[1])
+    return when.replace(year=year, month=month, day=day)
+
+
+def _from_duration(m: re.Match, value: str) -> _dt.datetime:
+    sign = -1 if m.group("sign") == "-" else 1
+    part = {k: float(m.group(k) or 0) for k in _DURATION_PARTS}
+    try:
+        when = _add_months(_now(), sign * int(part["years"] * 12 + part["months"]))
+        return when + sign * _dt.timedelta(
+            weeks=part["weeks"],
+            days=part["days"],
+            hours=part["hours"],
+            minutes=part["minutes"],
+            seconds=part["seconds"],
+        )
+    except (ValueError, OverflowError):
+        # A duration that leaves the calendar ("P9999Y", "P99999999999D") is not a date either;
+        # the answer is the scalar's own message, not the interpreter's.
+        raise ValueError(f"Unable to parse value {value!r} into a valid date") from None
+
+
+def parse_datetime_or_duration(value, scalar: str = "DateTimeOrDuration") -> _dt.datetime:
+    """One ``DateTimeOrDuration`` operand as an aware ``datetime``, or a ``ValueError`` whose
+    message is the one Linear's scalar produces (see the measurements above). ``scalar`` is the
+    name the message carries: ``TimelessDateOrDuration`` calls itself ``TimelessDate`` there."""
+    if not isinstance(value, str):
+        # Measured: DateTimeOrDuration prints the value bare (`value 1700000000.`), TimelessDate
+        # quotes it (`value '1'.`).
+        shown = repr(value) if scalar == "DateTimeOrDuration" else f"'{value}'"
+        raise ValueError(f"Unable to parse value {shown}. {scalar} supports only string values")
+    s = value.strip()
+    m = _DURATION.match(s)
+    if m is not None:
+        if not any(m.group(k) for k in _DURATION_PARTS):
+            raise ValueError(f"Unable to parse value {value!r} into a valid date")  # bare "P"
+        return _from_duration(m, value)
+    # The extended (hyphenated) form only: a year ("2021", and Linear also takes "1"), a
+    # year-month, or a full date with an optional time after `T` or a space. Linear rejected the
+    # basic form "20210305" and the hour-only time "2021-03-05T10" (measured), so those and the week
+    # form Python's parser would accept ("20210305T100000", "2021-W10") are refused before it sees
+    # them, as is an epoch. A time is at least HH:MM; seconds, a fraction, `Z` or an offset
+    # ("2021-03-05T10:00:00+09:00" was accepted) may follow.
+    date = re.fullmatch(r"(\d{1,4})(?:-(\d{2})(?:-(\d{2}))?)?(.*)", s, re.S)
+    if date is None:
+        raise ValueError(f"Unable to parse value {value!r} into a valid date")
+    if date.group(4) and not (date.group(3) and _TIME.fullmatch(date.group(4))):
+        raise ValueError(f"Unable to parse value {value!r} into a valid date")
+    if date.group(2) is None:
+        s = f"{int(date.group(1)):04d}-01-01"
+    elif date.group(3) is None:
+        s = s + "-01"
     try:
         dt = _dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
-        raise GraphQLError(f"{value!r} is not a valid ISO-8601 DateTime") from None
-    return int((dt if dt.tzinfo else dt.replace(tzinfo=_dt.timezone.utc)).timestamp())
+        raise ValueError(f"Unable to parse value {value!r} into a valid date") from None
+    return dt if dt.tzinfo else dt.replace(tzinfo=_dt.timezone.utc)
+
+
+def parse_timeless_date_or_duration(value) -> str:
+    """One ``TimelessDateOrDuration`` operand as the bare ``YYYY-MM-DD`` the ``due_date`` column
+    holds. Linear documents the scalar with the same text as ``DateTimeOrDuration``, accepts the
+    same spellings, and reads an operand that carries a time down to its UTC day (measured, see the
+    module comment: "2026-03-16T02:00:00+09:00" is the 15th, "2026-03-15T23:59:59-05:00" is not)."""
+    when = parse_datetime_or_duration(value, "TimelessDate")
+    return when.astimezone(_dt.timezone.utc).date().isoformat()
+
+
+def _parse_literal(parse, scalar: str, node, _variables=None):
+    """The literal half of a scalar's coercion. Linear's scalars take a string literal only, and
+    say so: `Unable to parse literal value of kind 'IntValue'. DateTimeOrDuration supports only
+    'StringValue' ones` (measured 2026-09-03; the other scalar says `TimelessDate`)."""
+    if not isinstance(node, StringValueNode):
+        raise ValueError(
+            f"Unable to parse literal value of kind '{type(node).__name__.removesuffix('Node')}'. "
+            f"{scalar} supports only 'StringValue' ones"
+        )
+    return parse(node.value)
+
+
+# What ``linear_resolvers.build_engine`` binds onto the two scalars: parse the operand up front, so
+# a filter reaches the compiler below carrying a ``datetime`` / a ``YYYY-MM-DD`` string, and a bad
+# operand never reaches it at all.
+SCALARS = {
+    "DateTimeOrDuration": {
+        "parse_value": parse_datetime_or_duration,
+        "parse_literal": lambda node, variables=None: _parse_literal(
+            parse_datetime_or_duration, "DateTimeOrDuration", node, variables
+        ),
+    },
+    "TimelessDateOrDuration": {
+        "parse_value": parse_timeless_date_or_duration,
+        "parse_literal": lambda node, variables=None: _parse_literal(
+            parse_timeless_date_or_duration, "TimelessDate", node, variables
+        ),
+    },
+}
+
+
+def _to_epoch(value) -> int | None:
+    """A ``DateTimeOrDuration`` operand -> unix seconds, to compare against a ``*_ts`` column.
+    Normally already a ``datetime`` (the scalar coerced it); a string is parsed the same way, for a
+    caller that hands this module a filter without going through the schema."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, _dt.datetime):
+        try:
+            value = parse_datetime_or_duration(value)
+        except ValueError as e:
+            raise GraphQLError(str(e)) from None
+    return int(value.timestamp())
+
+
+def _to_timeless(value) -> str | None:
+    """A ``TimelessDateOrDuration`` operand -> the ``YYYY-MM-DD`` the column holds."""
+    if value is None or value == "":
+        return None
+    try:
+        return parse_timeless_date_or_duration(value)
+    except ValueError as e:
+        raise GraphQLError(str(e)) from None
+
+
+# A UUID as Linear's id comparators validate it: 8-4-4-4-12 hex with an RFC 4122 variant nibble
+# (8, 9, a or b). Measured 2026-09-03 on both `IssueFilter.id` and `NullableProjectFilter.id`: the nil
+# UUID, `1111…1111` (variant 1) and `ffff…ffff` (variant f) answer `Argument Validation Error`
+# (code INVALID_INPUT), while `…-4111-8111-…` (v4), `…-1111-8111-…` (v1) and `…-5111-9111-…` (v5)
+# are looked up -- so the version nibble is not checked, the variant is. Every id Backlot serves is
+# a v4 with variant 8-b (`synth._uuid_from`), so nothing of its own is refused.
+UUID_SHAPE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+)
+_UUID_LIKE = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
+
+
+def argument_validation_error() -> GraphQLError:
+    """The error Linear's id comparators answer for a value they refuse: a 200 whose `errors` carry
+    `Argument Validation Error` with code INVALID_INPUT (measured 2026-09-03)."""
+    return GraphQLError("Argument Validation Error", extensions={"code": "INVALID_INPUT"})
+
+
+def _refuse_malformed_uuids(spec: dict | None) -> None:
+    """`EntityIdentifierIDComparator` (``project.id``): any string is looked up -- `"PROJ-1"`,
+    `"not-a-uuid"` and an unknown UUID each answered an empty page -- EXCEPT something shaped like a
+    UUID with a variant Linear's validator rejects, which is refused before the lookup."""
+    for op, raw in (spec or {}).items():
+        for value in raw if isinstance(raw, list) else [raw]:
+            if isinstance(value, str) and _UUID_LIKE.match(value) and not UUID_SHAPE.match(value):
+                raise argument_validation_error()
+
+
+def _refuse_malformed_project_ids(spec: dict | None) -> None:
+    """:func:`_refuse_malformed_uuids` over every ``id`` a ``ProjectFilter`` reaches, the nested ones
+    included: ``_sub_filter`` follows ``and`` / ``or`` down to the same lookup, so a value refused at
+    the top level was quietly looked up (and matched nothing) one level down. The issue-id side,
+    ``_resolve_issue_ids``, already recurses this way."""
+    for sub in _through_and_or(spec):
+        _refuse_malformed_uuids(sub.get("id"))
+
+
+def _through_and_or(spec):
+    """``spec`` and every filter object nested under its ``and`` / ``or``, depth first."""
+    if not isinstance(spec, dict):
+        return
+    yield spec
+    for key in ("and", "or"):
+        for sub in spec.get(key) or []:
+            yield from _through_and_or(sub)
 
 
 # A comparator key -> how it becomes SQL, given a column expression and the value.
@@ -56,14 +268,46 @@ def _like(value: str) -> str:
 
 
 class _Comparator:
-    """Renders one comparator object (``{eq: …, contains: …}``) against a column."""
+    """Renders one comparator object (``{eq: …, contains: …}``) against a column.
 
-    def __init__(self, col: str, *, text: bool = False, epoch: bool = False):
-        self.col, self.text, self.epoch = col, text, epoch
+    NULL under a negative operator follows what api.linear.app answered on 2026-09-03, over issues
+    whose ``estimate``, ``dueDate`` and ``completedAt`` were null:
+
+    * on a FIELD of the issue, ``neq`` DROPS the null rows (`estimate: {neq: 99}` over four null
+      estimates answered nothing) and ``nin`` KEEPS them (`estimate: {nin: [99]}` answered all four;
+      `dueDate: {nin: ["2026-03-15"]}` answered exactly the issues with no due date);
+    * on a RELATION (``project: {name: {neq: …}}``, ``assignee: {name: {neq: …}}``,
+      ``assignee: {id: {neq: …}}``, and ``nin`` alike) issues WITHOUT the relation are kept.
+
+    ``relation=True`` is the second rule, for the columns ``_sub_filter`` maps a nested filter onto.
+    Neither rule is SQL's own three-valued one (`<>` and `NOT IN` both drop nulls), so both are
+    spelled out here rather than left to the engine.
+    """
+
+    def __init__(
+        self,
+        col: str,
+        *,
+        text: bool = False,
+        epoch: bool = False,
+        timeless: bool = False,
+        relation: bool = False,
+    ):
+        self.col, self.text, self.epoch, self.timeless = col, text, epoch, timeless
+        self.relation = relation
+
+    def _not_equal(self, expr: str) -> str:
+        """``expr`` is a ``<>`` test; on a relation the absent rows pass it too."""
+        return f"({self.col} IS NULL OR {expr})" if self.relation else expr
 
     def _value(self, v):
-        # A DateComparator's operand is an ISO-8601 string but the column is unix seconds.
-        return _to_epoch(v) if self.epoch else v
+        # A DateComparator's operand is a DateTimeOrDuration but the column is unix seconds; a
+        # NullableTimelessDateComparator's is a TimelessDateOrDuration and the column a YYYY-MM-DD.
+        if self.epoch:
+            return _to_epoch(v)
+        if self.timeless:
+            return _to_timeless(v)
+        return v
 
     def render(self, spec: dict) -> tuple[str, list]:
         parts: list[str] = []
@@ -71,14 +315,25 @@ class _Comparator:
         for op, raw in spec.items():
             if raw is None and op != "null":
                 continue
-            v = self._value(raw)
+            if op in ("and", "or"):
+                # `EstimateComparator` nests plain comparators under `and` / `or`. Each is
+                # rendered against the same column; an empty list constrains nothing.
+                subs = [self.render(x) for x in raw]
+                frags = [f for f, _ in subs if f]
+                for _, p in subs:
+                    params.extend(p)
+                if frags:
+                    parts.append("(" + (" AND " if op == "and" else " OR ").join(frags) + ")")
+                continue
+            # `in` / `nin` carry a list and coerce per element below, and `null` carries a
+            # Boolean; running either through a date operand's coercion hands the scalar something
+            # that is not a date (the old code did, so `completedAt: {null: true}` was an error).
+            v = raw if op in ("in", "nin", "null") else self._value(raw)
             if op == "eq":
                 parts.append(f"{self.col} = ?")
                 params.append(v)
             elif op == "neq":
-                # NULL never equals anything, so a plain `<> ?` would silently drop NULL rows a
-                # caller asking "not X" expects to see.
-                parts.append(f"({self.col} IS NULL OR {self.col} <> ?)")
+                parts.append(self._not_equal(f"{self.col} <> ?"))
                 params.append(v)
             elif op == "lt":
                 parts.append(f"{self.col} < ?")
@@ -98,7 +353,12 @@ class _Comparator:
                     parts.append("0" if op == "in" else "1")
                     continue
                 marks = ",".join("?" for _ in vals)
-                parts.append(f"{self.col} {'IN' if op == 'in' else 'NOT IN'} ({marks})")
+                if op == "in":
+                    parts.append(f"{self.col} IN ({marks})")
+                else:
+                    # Null rows pass `nin` on a field and on a relation alike (measured; see the
+                    # class docstring), which a bare `NOT IN` would drop.
+                    parts.append(f"({self.col} IS NULL OR {self.col} NOT IN ({marks}))")
                 params += vals
             elif op == "contains":
                 parts.append(f"{self.col} LIKE ? ESCAPE '\\'")
@@ -118,7 +378,7 @@ class _Comparator:
                 parts.append(f"lower({self.col}) = lower(?)")
                 params.append(v)
             elif op == "neqIgnoreCase":
-                parts.append(f"({self.col} IS NULL OR lower({self.col}) <> lower(?))")
+                parts.append(self._not_equal(f"lower({self.col}) <> lower(?)"))
                 params.append(v)
             elif op == "null":
                 parts.append(f"{self.col} IS {'NULL' if raw else 'NOT NULL'}")
@@ -154,9 +414,11 @@ def _derived_in(conn, column: str, derive, spec: dict) -> tuple[str, list]:
     # Reuse the comparator machinery by testing each derived value against it in Python.
     matched = [n for n in names if _matches(derive(n), spec)]
     # A NEGATIVE predicate ("not this project") must keep rows whose column is NULL — they have
-    # no value, so they cannot be the excluded one. The SQL comparator's own `neq` already spells
-    # this out (`IS NULL OR <> ?`); an IN-list over distinct non-NULL names silently dropped them,
-    # so `project:{id:{neq:X}}` and `project:{name:{neq:X}}` disagreed on 24 real rows.
+    # no relation, so they cannot be the excluded one, and that is what Linear answers for
+    # `project: {name: {neq: …}}` (measured 2026-09-03; see the `_Comparator` docstring). The
+    # relation-mode comparator spells it out (`IS NULL OR <> ?`); an IN-list over distinct non-NULL
+    # names silently dropped them, so `project:{id:{neq:X}}` and `project:{name:{neq:X}}` disagreed
+    # on 24 real rows.
     negative = any(op in spec for op in ("neq", "nin", "neqIgnoreCase"))
     null_ok = f" OR {column} IS NULL" if negative else ""
     if not matched:
@@ -384,18 +646,29 @@ def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, 
             add(*_Comparator("title").render(spec))
         elif key == "description":
             add(*_Comparator("content").render(spec))
-        elif key == "branchName":
-            add(*_Comparator("branch_name").render(spec))
+        # No `branchName`: Linear's `IssueFilter` has no such field (measured 2026-09-03 -- the
+        # real API answers `Field "branchName" is not defined by type "IssueFilter"`), so this
+        # compiled a predicate no client written against Linear could ever send.
         elif key == "priority":
-            add(*_Comparator("priority").render(spec))
+            # Against the COALESCE the field is served with, so `priority: {eq: 0}` finds an issue
+            # whose column is NULL and `Issue.priority` reads 0 (see store.LINEAR_PRIORITY_EXPR).
+            add(*_Comparator(store.LINEAR_PRIORITY_EXPR).render(spec))
         elif key == "estimate":
+            # `EstimateComparator`: the number comparators plus `and` / `or` over them.
             add(*_Comparator("estimate").render(spec))
         elif key == "dueDate":
-            add(*_Comparator("due_date").render(spec))
+            # `NullableTimelessDateComparator`: operands are TimelessDateOrDuration, the column a
+            # bare YYYY-MM-DD, so the comparison is lexical over the ISO date.
+            add(*_Comparator("due_date", timeless=True).render(spec))
         elif key in ("createdAt", "updatedAt", "completedAt", "canceledAt"):
             col = {
                 "createdAt": "created_ts",
-                "updatedAt": "updated_ts",
+                # Against the COALESCE the field is served with, as `priority` above: Linear's
+                # `updatedAt` is non-null, so an issue with no recorded edit has to be found at
+                # the creation time it reports, and `neq` must not drop it (see
+                # store.LINEAR_UPDATED_EXPR). `completedAt` / `canceledAt` are nullable in Linear
+                # too (`NullableDateComparator`), so the raw column is right for them.
+                "updatedAt": store.LINEAR_UPDATED_EXPR,
                 "completedAt": "completed_ts",
                 "canceledAt": "canceled_ts",
             }[key]
@@ -450,6 +723,7 @@ def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, 
                 )
             )
         elif key == "project":
+            _refuse_malformed_project_ids(spec)
             add(
                 *_sub_filter(
                     conn,
@@ -492,7 +766,7 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
         if target is None:
             raise GraphQLError(f"unsupported nested filter field {key!r}")
         if target[0] == "col":
-            frag, p = _Comparator(target[1]).render(sub)
+            frag, p = _Comparator(target[1], relation=True).render(sub)
         else:
             frag, p = _derived_in(conn, target[1], target[2], sub)
         if frag:

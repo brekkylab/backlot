@@ -1642,6 +1642,10 @@ def _branch_rows(conn, owner: str, repo: str, ids, pulls=None) -> list[dict]:
       lives in a fork, contradicting `head.repo.full_name` in the same pull.
     - A MERGED pull's head ref is not — 0 of 54 across ten repos, GitHub's "automatically delete
       head branches" at work. This is the one place the listing must not hold what a pull says.
+    - A CLOSED-but-unmerged pull's head ref is left out with it, and that one is a coin toss rather
+      than a rule: 6 of 28 such heads still exist. Neither answer is right often enough to be
+      right, which is what a repo record exists to settle — a corpus that knows says so, and this
+      inference stops guessing for it.
     - A FORK's head ref is not either: it is a branch of the fork. `head_repo` is how a corpus says
       so — a `head_repo` naming THIS repo is not a fork — and without it every pull looked
       same-repo.

@@ -2125,46 +2125,57 @@ def test_github_validates_the_owner_segment(gh_client, gh_admin_h, gh_org):
     assert c.get("/github/orgs/not-the-org/repos", headers=gh_admin_h).status_code == 404
 
 
-def test_github_answers_the_canonical_owner_whatever_case_was_asked_for(
-    gh_client, gh_admin_h, gh_org
+def test_github_answers_the_corpus_spelling_whatever_case_was_asked_for(
+    gh_client, gh_admin_h, gh_org, gh_user_tokens
 ):
-    """A url Backlot answers names the org as the corpus spells it, not as the caller typed it.
+    """A url Backlot answers names the org and the repo as the corpus spells them, not as the
+    caller typed them — and a repo asked for in another case resolves rather than 404ing.
 
-    Real normalizes: `GET /repos/PSF/REQUESTS` answers `full_name: psf/requests` with every url
-    and template lowercase, `/orgs/PSF` answers `login: psf` and `url: .../orgs/psf`, and an issue
-    item's `url`, `repository_url` and `html_url` are lowercase too — measured on api.github.com
-    2026-09-03, 200 each with no redirect, so the normalization is in the body rather than in a
-    `Location`. Echoing the caller's spelling gives one resource two identities: a client keying a
-    cache on the url it got back stores both, and `/orgs/ACME` and `/orgs/acme` reported different
-    `id`s, since the id is synthesized from the name it was asked with.
+    Real normalizes both segments and 404s neither: `GET /repos/PSF/REQUESTS` answers
+    `name: requests`, `full_name: psf/requests` and every url, template and git url lowercase,
+    `/orgs/PSF` answers `login: psf` and `url: .../orgs/psf`, and an issue item's `url`,
+    `repository_url` and `html_url` are lowercase too — measured on api.github.com 2026-09-03,
+    200 each with no redirect, so the normalization is in the body rather than in a `Location`.
+    Echoing the caller's spelling gives one resource two identities: a client keying a cache on the
+    url it got back stores both, and `/orgs/ACME` and `/orgs/acme` reported different `id`s, since
+    the id is synthesized from the name it was asked with.
+
+    Resolving the repo case-insensitively must not widen what a scoped token sees, which is the
+    last two assertions: the name is canonicalized before the visibility check, never instead of
+    it.
     """
     c, _ = gh_client
-    shout = gh_org.upper()
+    shout, shout_repo = gh_org.upper(), "CODEBASE"
     assert shout != gh_org, "this asserts nothing unless the org has a case to get wrong"
 
-    def urls(body):
-        """Every string in the response that names an owner, at any depth."""
+    def shouted(body):
+        """Every string in the response carrying a spelling the corpus does not use."""
         if isinstance(body, dict):
-            return [u for v in body.values() for u in urls(v)]
+            return [u for v in body.values() for u in shouted(v)]
         if isinstance(body, list):
-            return [u for v in body for u in urls(v)]
-        return [body] if isinstance(body, str) and shout in body else []
+            return [u for v in body for u in shouted(v)]
+        if not isinstance(body, str):
+            return []
+        return [body] if shout in body or shout_repo in body else []
 
     for path in ("", "/branches/main", "/issues", "/pulls", "/readme", "/tags", "/collaborators"):
-        r = c.get(f"/github/repos/{shout}/codebase{path}", headers=gh_admin_h)
+        r = c.get(f"/github/repos/{shout}/{shout_repo}{path}", headers=gh_admin_h)
         assert r.status_code == 200, path
-        assert urls(r.json()) == [], f"{path} echoed the caller's spelling: {urls(r.json())}"
+        assert shouted(r.json()) == [], f"{path} echoed the caller's: {shouted(r.json())}"
 
-    branch = c.get(f"/github/repos/{shout}/codebase/branches/main", headers=gh_admin_h).json()
+    base = f"/github/repos/{shout}/{shout_repo}"
+    branch = c.get(f"{base}/branches/main", headers=gh_admin_h).json()
     assert branch["_links"]["self"].endswith(f"/repos/{gh_org}/codebase/branches/main")
     assert branch["_links"]["html"] == f"https://github.com/{gh_org}/codebase/tree/main"
     assert branch["protection_url"] == f"{branch['_links']['self']}/protection"
     assert f"/repos/{gh_org}/codebase/" in branch["commit"]["url"]
 
-    repo = c.get(f"/github/repos/{shout}/codebase", headers=gh_admin_h).json()
-    assert repo["full_name"] == f"{gh_org}/codebase"
+    repo = c.get(base, headers=gh_admin_h).json()
+    assert repo["name"] == "codebase" and repo["full_name"] == f"{gh_org}/codebase"
     assert repo["html_url"] == f"https://github.com/{gh_org}/codebase"
     assert repo["owner"]["login"] == gh_org
+    # the same object either spelling reaches it by, ids and templates included
+    assert repo == c.get(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h).json()
 
     # `/orgs/{org}` is held to the same rule, and the synthesized `id` is the sharp end of it:
     # derived from the name, it forked into two values for one org.
@@ -2172,6 +2183,22 @@ def test_github_answers_the_canonical_owner_whatever_case_was_asked_for(
     assert org == c.get(f"/github/orgs/{gh_org}", headers=gh_admin_h).json()
     assert org["login"] == gh_org and org["html_url"] == f"https://github.com/{gh_org}"
     assert org["url"].endswith(f"/orgs/{gh_org}") and org["repos_url"].endswith("/repos")
+
+    # A `repo:` qualifier resolves the same way, on both search routes: real answers the same
+    # 4,173 issues for `repo:PSF/Requests` as for `repo:psf/requests`, with `repository_url`
+    # canonical (measured). A qualifier that resolved only in one case would narrow to nothing and
+    # read as "that repo has no matches" rather than as a spelling this server would not take.
+    for route, named in (("issues", "gateway"), ("code", "codebase")):
+        url = f"/github/search/{route}"
+        loud = c.get(url, headers=gh_admin_h, params={"q": f"repo:{named.upper()}"})
+        quiet = c.get(url, headers=gh_admin_h, params={"q": f"repo:{named}"})
+        assert loud.status_code == 200 and quiet.json()["total_count"] > 0, route
+        assert loud.json() == quiet.json(), route
+
+    # 'vault' is invisible to bob, in whatever case he asks for it
+    bob = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}
+    assert c.get(f"/github/repos/{gh_org}/VAULT", headers=bob).status_code == 404
+    assert c.get(f"/github/repos/{gh_org}/VAULT", headers=gh_admin_h).status_code == 200
 
 
 # --- X-GitHub-Api-Version negotiation -----------------------------------------

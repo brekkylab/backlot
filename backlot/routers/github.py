@@ -168,12 +168,36 @@ async def _validate_path_owner(request: Request) -> None:
     request.path_params[key] = canonical
 
 
+async def _canonical_path_repo(request: Request) -> None:
+    """Hand the handlers the corpus's spelling of ``{repo}``, whatever case it was asked for.
+
+    Real resolves the name case-insensitively and answers in its own spelling — `/repos/PSF/Requests`
+    is 200 with `name: requests` (measured 2026-09-03) — where a case-sensitive container lookup
+    404'd it. Canonicalized, not merely matched, for the reason :func:`_validate_path_owner` gives.
+
+    A NAME and nothing else: whether the caller may SEE the repo stays :func:`_require_repo`'s
+    answer, taken afterwards on this name, so a repo hidden from a scoped token is a 404 in every
+    spelling.
+    """
+    repo = request.path_params.get("repo")
+    if repo is None:
+        return
+    spelled = store.container_spelling(auth.conn(request), "github", repo)
+    if spelled is not None:
+        request.path_params["repo"] = spelled
+
+
 router = APIRouter(
     prefix="/github",
     tags=["github"],
     # Order is the answering order: an unsupported API version is a malformed request and real
-    # refuses it before authenticating or routing, so it is declared first.
-    dependencies=[Depends(_validate_api_version), Depends(_validate_path_owner)],
+    # refuses it before authenticating or routing, so it is declared first. The repo's spelling is
+    # resolved last, and so never for a request that fails the version or the credential.
+    dependencies=[
+        Depends(_validate_api_version),
+        Depends(_validate_path_owner),
+        Depends(_canonical_path_repo),
+    ],
 )
 
 
@@ -363,9 +387,12 @@ async def search_issues(
     free, quals = _parse_q(q, _GH_ISSUE_QUALS)
     container = None  # a repo: qualifier narrows to one repo
     for v in quals.get("repo", []):
-        name = v.split("/")[-1]
-        if store.get_container(conn, "github", name) is not None:
-            container = name
+        # Any case, as real takes it: `repo:PSF/Requests` answers the same 4,173 issues as
+        # `repo:psf/requests` (measured 2026-09-03). An unresolved name leaves `container` None,
+        # which widens to the whole corpus — a spelling this refused answered other repos' issues.
+        spelled = store.container_spelling(conn, "github", v.split("/")[-1])
+        if spelled is not None:
+            container = spelled
     if free:
         cand = store.search_documents(conn, free, "github", ids, limit=10_000, container=container)
     else:
@@ -469,8 +496,11 @@ def _code_repos(conn, quals: dict, org: str) -> set[str] | None:
         owner, _, name = v.rpartition("/")
         if owner and owner.lower() != org.lower():
             continue
-        if store.get_container(conn, "github", name) is not None:
-            names.add(name)
+        # The corpus's spelling, from a qualifier in any case — as the owner half is already
+        # compared (see :func:`store.container_spelling` for what real answers).
+        spelled = store.container_spelling(conn, "github", name)
+        if spelled is not None:
+            names.add(spelled)
     return names
 
 

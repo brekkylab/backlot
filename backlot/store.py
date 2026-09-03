@@ -2881,6 +2881,29 @@ def get_container(conn, source_type, name) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def container_spelling(conn, source_type, name) -> str | None:
+    """The corpus's spelling of a container named in any case, or None for one it does not hold.
+
+    Only the GitHub router resolves a container this way, because only GitHub is measured to:
+    `/repos/PSF/Requests` answers 200 with `name: requests` (2026-09-03). A Slack channel or a
+    Drive folder would each need their own measurement, which is why this is separate from
+    :func:`get_container` the way :func:`jira_project_by_key` is separate from exact key lookup.
+
+    An EXACT match wins, and is tried first so the common request stays on the column's index.
+    With no exact match and more than one candidate there is nothing to prefer, so this reports
+    None and the caller 404s — real cannot present that case, a BYO corpus can. ``NOCASE`` folds
+    ASCII, which is the whole of a GitHub repository name.
+    """
+    if get_container(conn, source_type, name) is not None:
+        return name
+    gtable, gcol = grouping_table(source_type), grouping_col(source_type)
+    rows = conn.execute(
+        f"SELECT {gcol} AS name FROM {gtable} WHERE {gcol} = ? COLLATE NOCASE ORDER BY {gcol}",
+        (name,),
+    ).fetchall()
+    return rows[0]["name"] if len(rows) == 1 else None
+
+
 def linear_team_by_served_id(conn, served_id) -> str | None:
     """Resolve a team UUID (`synth.linear_team_id`) to its container name. Unique-indexed, so a
     plain column lookup."""

@@ -97,6 +97,10 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `repos/{o}/{r}/collaborators` | |
 | `repos/{o}/{r}/teams` | |
 
+**`{o}` and `{r}` match in any case**, and every url in the answer names them as the corpus spells
+them — as real does, which resolves `/repos/PSF/REQUESTS` to `psf/requests` rather than 404ing it.
+A `repo:` search qualifier resolves the same way.
+
 **Media types are honoured.** `Accept: application/vnd.github.raw` on `contents`/`readme`/`git/blobs`
 returns the file's bytes; `…diff`/`…patch` on a pull returns a real unified diff / `git am` mbox; and
 `…text-match+json` on `search/code` adds each hit's `text_matches` fragment.

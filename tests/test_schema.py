@@ -725,6 +725,27 @@ def test_fireflies_record_with_neither_sentences_nor_content_is_rejected(tmp_pat
     assert "'content' is a required property" in str(e.value)
 
 
+def test_slack_reaction_refuses_the_ids_a_corpus_cannot_know():
+    """Slack's own OpenAPI types every entry of a reaction's `users` as a `defs_user_id`
+    (`^[UW][A-Z0-9]{2,}$`), which is `synth.slack_user_id` of a person — a value whoever writes the
+    corpus has no way to compute. A record names the reactor by address instead, and the old
+    spelling is REFUSED rather than read as an address that resolves to nobody, which is the one
+    outcome a corpus author would not notice.
+    """
+    old = complete("slack", content="c", reactions=[{"name": "eyes", "count": 2, "users": ["U01"]}])
+    assert record_errors(old) == ["<root> [reactions/0/users/0]: 'U01' is not a 'email'"]
+
+
+def test_slack_reaction_needs_someone_who_made_it():
+    """A reaction with nobody behind it is not one Slack returns: its `count` would be 0."""
+    assert record_errors(
+        complete("slack", content="c", reactions=[{"name": "eyes", "users": []}])
+    ) == ["<root> [reactions/0/users]: [] should be non-empty"]
+    assert record_errors(complete("slack", content="c", reactions=[{"users": ["a@x.com"]}])) == [
+        "<root> [reactions/0]: 'name' is a required property"
+    ]
+
+
 def test_fireflies_schema_rejects_the_slack_replies_array():
     """`replies` is Slack's child-row array. A transcript's child rows are `sentences`, so writing
     `replies` on a transcript is a mistake worth catching rather than silently ignoring."""

@@ -1396,3 +1396,49 @@ def test_slack_one_person_has_one_handle_across_the_surface(tmp_path):
         assert hit["user"] == member["id"]  # the id already agreed
         assert hit["username"] == member["name"] == "avachen"
         assert "." not in hit["username"], "a handle drops the dot the address carries"
+
+
+def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
+    """The corpus names the reactors; the response carries what Slack carries.
+
+    `count` is derived rather than stored, so it cannot disagree with `users` — and the ids are
+    `synth.slack_user_id` of each address, which is the same value `users.list` and a message's
+    own `user` report for that person, so a client that groups a reaction's users against message
+    authors gets one answer rather than two.
+    """
+    import re
+
+    from backlot.routers.slack import _message
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "inc",
+                "content": "gateway is flapping",
+                "author_email": "ava@x.com",
+                "visibility": "public",
+                "reactions": [
+                    {"name": "eyes", "users": ["ava@x.com", "bo@x.com"]},
+                    # A `count` a record still carries is ignored. Deriving it is what keeps the
+                    # served pair from disagreeing, whatever the record says.
+                    {"name": "+1", "users": ["bo@x.com"], "count": 9},
+                ],
+            }
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    row = store.list_slack_top_level(conn, "inc")[0]
+    reactions = _message(row)["reactions"]
+
+    assert reactions == [
+        {
+            "name": "eyes",
+            "users": [synth.slack_user_id("ava@x.com"), synth.slack_user_id("bo@x.com")],
+            "count": 2,
+        },
+        {"name": "+1", "users": [synth.slack_user_id("bo@x.com")], "count": 1},
+    ]
+    # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
+    assert all(re.fullmatch(r"[UW][A-Z0-9]{2,}", u) for r in reactions for u in r["users"])

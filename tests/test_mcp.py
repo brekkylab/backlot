@@ -932,6 +932,83 @@ def test_backlot_mcp_takes_its_server_down_on_sighup(tmp_path):
         pytest.fail(f"the server backlot mcp started on port {port} is still listening")
 
 
+# `backlot mcp` with the readiness poll held: `serve()` has spawned its server but not yielded, so
+# `attach` has nothing to close yet. The child's pid goes to stderr as it is spawned, so the test
+# can signal the parent inside that window without guessing at timing, and can check on the child
+# afterwards. Patches the *driver* process only; `backlot.mcp.run` and `serve()` are the real ones.
+_MCP_HELD_BEFORE_READY = """
+import subprocess, sys, time
+import backlot.server as server
+import backlot.mcp as mcp
+
+_Popen = subprocess.Popen
+
+class Announcing(_Popen):
+    def __init__(self, args, *a, **k):
+        super().__init__(args, *a, **k)
+        if "serve" in args:
+            print(f"SPAWNED {self.pid}", file=sys.stderr, flush=True)
+
+subprocess.Popen = Announcing
+_warm, _since = server._warm, None
+
+def held_warm(url, timeout):
+    global _since
+    _since = _since or time.monotonic()
+    return time.monotonic() - _since > 10 and _warm(url, timeout)
+
+server._warm = held_warm
+mcp.run(["slack"])
+"""
+
+
+def test_backlot_mcp_takes_down_a_server_it_spawned_but_had_not_yet_yielded(tmp_path):
+    """A signal between `serve()`'s Popen and its yield must still end the server. `_started`
+    is not set until the yield, and a client that gives up on a slow start signals exactly then —
+    the handler used to go straight to `os._exit`, leaving the uvicorn child alive on its port."""
+    if backlot_mcp.is_backlot(backlot_mcp.DEFAULT_URL):
+        pytest.skip(
+            f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"
+        )
+    env = {**os.environ, "BACKLOT_DATA_DIR": str(tmp_path / "data")}
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _MCP_HELD_BEFORE_READY],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    child = None
+    try:
+        deadline = time.monotonic() + 60
+        while child is None:
+            ready, _, _ = select.select([proc.stderr], [], [], max(deadline - time.monotonic(), 0))
+            assert ready, "no SPAWNED line within 60s"
+            line = proc.stderr.readline().decode()
+            if not line:
+                pytest.fail(f"backlot mcp ended before spawning a server, code {proc.poll()}")
+            if line.startswith("SPAWNED "):
+                child = int(line.split()[1])
+        proc.send_signal(signal.SIGTERM)
+        code = proc.wait(timeout=30)
+        err = proc.stderr.read().decode()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert code == 128 + signal.SIGTERM, (code, err[-500:])
+    assert "Backlot is up" not in err, "the signal missed the window it was meant to land in"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.2)
+    else:
+        os.kill(child, signal.SIGKILL)
+        pytest.fail(f"the server backlot mcp spawned (pid {child}) outlived it")
+
+
 def test_backlot_mcp_advertises_only_the_sources_it_mounted(live_server):
     """`instructions` is derived from what was mounted. A fixed list would tell the model that a
     `--source` run's missing sources are there to call, and it would read every tool-not-found as

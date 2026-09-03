@@ -133,6 +133,26 @@ def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
         proc.wait()
 
 
+# Every server `serve()` has started and not yet stopped. Between `Popen` returning and the context
+# manager yielding, the child is alive but nothing above this module can reach it: the context is
+# not entered yet, so there is no `finally` for a `with` (or an ExitStack) to unwind, and that is
+# exactly where a client that gives up on a slow start sends its signal. `stop_children` is the
+# way out of that window; the normal path stays the context manager's own `finally`.
+_CHILDREN: list[subprocess.Popen] = []
+
+
+def stop_children() -> None:
+    """Terminate and reap every server ``serve()`` started that is still running.
+
+    For a caller ending the process without unwinding — ``backlot mcp``'s signal handler — where a
+    server may have been spawned but not yet yielded. Safe to call when ``serve()``'s own
+    ``finally`` is already at work on the same child: terminating an exited process is a no-op."""
+    for proc in list(_CHILDREN):
+        _terminate(proc)
+        if proc in _CHILDREN:
+            _CHILDREN.remove(proc)
+
+
 def meta_users(url: str, timeout: float = 10) -> dict:
     """The directory a Backlot server publishes at ``GET /_meta/users``: every user's email and
     token, each one's S3 access-key pair, and the admin's own.
@@ -278,6 +298,7 @@ def serve(
                 stdout=log_f,
                 stderr=subprocess.STDOUT,
             )
+        _CHILDREN.append(proc)
         try:
             for _ in range(_LOCAL_HEALTH_ATTEMPTS):
                 if proc.poll() is not None:
@@ -294,6 +315,8 @@ def serve(
             yield Server(base_url=base, token=token, data_dir=Path(data_dir))
         finally:
             _terminate(proc)
+            if proc in _CHILDREN:
+                _CHILDREN.remove(proc)
 
 
 @contextlib.contextmanager

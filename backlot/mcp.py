@@ -478,6 +478,13 @@ def attach(url: str | None = None) -> Iterator[str]:
 # so the exit is late or never (measured: with stdin held open, two of four SIGHUP runs in CI were
 # still alive 20s later; SIGTERM alone used to wait until stdin closed). Closing the context here
 # and leaving with `os._exit` depends on nothing above the handler.
+#
+# It is None until `serve()` has yielded, and `serve()` spawns its uvicorn child several hundred
+# milliseconds before that — the readiness poll sits in between, longer over a real corpus. A
+# signal in that window used to find None here and go straight to `os._exit`, orphaning the child
+# with its port — and a client that gives up on a slow start signals in exactly that window. The
+# context manager cannot cover it, since nothing has been entered yet; `server.stop_children`
+# reaches the child directly, through the registry `serve()` appends to right after `Popen`.
 _started: contextlib.AbstractContextManager | None = None
 
 
@@ -490,6 +497,12 @@ def _exit_on_signal(signum: int, frame: object) -> None:
     started = _started
     if started is not None:
         started.__exit__(None, None, None)  # `serve()`'s finally: SIGTERM the server, then wait
+    # `sys.modules` rather than an import: if the signal lands while the main thread is itself
+    # importing the module, a second import here would meet its own lock — and with the module
+    # not yet imported, no server can have been spawned.
+    backlot_server = sys.modules.get("backlot.server")
+    if backlot_server is not None:
+        backlot_server.stop_children()  # the child spawned before `serve()` yielded, if any
     sys.stderr.flush()
     os._exit(128 + signum)
 

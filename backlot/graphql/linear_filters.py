@@ -316,16 +316,20 @@ class _Comparator:
             if raw is None and op in ("and", "or"):
                 continue
             if raw is None and op == "null":
-                # Measured 2026-09-03: an explicit null operand on `null` itself reads as
-                # `null: true`, not as `false` and not as the condition-nothing-passes below.
-                # `dueDate: {null: null}` answered every issue over four with no due date (so not
-                # "nothing passes"), `priority: {null: null}` none over four that all carry a
-                # priority, and `{or: [{priority: {null: null}}, {title: {eq: T}}]}` the title
-                # match alone (so not a vacuous key either).
+                # Measured 2026-09-03: on a comparator, an explicit null operand on `null` itself
+                # reads as `null: true`, not as `false` and not as the condition-nothing-passes
+                # below. `dueDate: {null: null}` answered every issue over four with no due date
+                # (so not "nothing passes"), `priority: {null: null}` none over four that all carry
+                # a priority, and `{or: [{priority: {null: null}}, {title: {eq: T}}]}` the title
+                # match alone (so not a vacuous key either). Beside a sibling it still reads as
+                # true: `priority: {null: null, eq: 0}` answered none over those four, as
+                # `{null: true, eq: 0}` does and `{null: false, eq: 0}` (all four) does not. This
+                # is the comparator's rule only -- on a relation (`_sub_filter`) and on the label
+                # collection (`_labels_filter`) the same key is dropped.
                 raw = True
             if raw is None and op != "null":
                 # A null operand is a condition, not an absent one. Measured against
-                # api.linear.app: a comparison with null (`eq`, `neq`, `lt`, `lte`, `gt`, `gte`)
+                # api.linear.app on 2026-09-03: a comparison with null (`eq`, `neq`, `lt`, `lte`, `gt`, `gte`)
                 # matches nothing, on a nullable field too -- `dueDate: {eq: null}` answered none
                 # over issues with no due date, `estimate: {gte: null}` none -- while a string or
                 # list operator with null (`contains`, `startsWith`, `eqIgnoreCase`, `in`, `nin`,
@@ -495,8 +499,8 @@ def _label_predicate(spec: dict) -> tuple[str, list, str]:
     issue on api.linear.app, label-less ones included, so ``_labels_predicate`` compiles them to
     nothing. Inside an ``and`` it is right too: ``some: {and: [{}, {name: {eq: A}}]}`` and
     ``some: {and: [{name: {}}, {name: {eq: A}}]}`` each answered exactly what ``{name: {eq: A}}``
-    does. Inside an ``or`` it is wrong, and which way depends on WHY the branch is empty, measured
-    over two labelled issues (``[a, z]``, ``[a]``) beside four with no labels:
+    does. Inside an ``or`` it is wrong, and which way depends on WHY the branch is empty, measured on
+    2026-09-03 over two labelled issues (``[a, z]``, ``[a]``) beside four with no labels:
 
     * a branch that constrains nothing (``{name: {}}``, ``{and: [{}]}``) makes the WHOLE ``or``
       constrain nothing: ``every: {or: [{name: {}}, {name: {eq: z}}]}`` answered every issue.
@@ -552,10 +556,10 @@ def _label_branches(key: str, sub: list) -> tuple[str, list, str]:
 # The operators that read as a negation. What the quantifier does with an issue that has NO labels
 # depends on this (see `_labels_predicate`), so a compound predicate has to carry a polarity too:
 # `and` is negative when every branch is, `or` when any branch is, and a comparator when every
-# operator in it is -- `{eq: A, neq: B}` reads positive (measured; see the test matrix). "Every
-# operator of none" is true, so an empty branch reads as negative and `or: [{}, P]` is P read
-# negatively, while `or: []` (any branch of none) reads positive -- both measured, see
-# `_label_predicate`. A null operand keeps its operator's polarity: `{neqIgnoreCase: null}` under
+# operator in it is -- `{eq: A, neq: B}` reads positive (measured 2026-09-03; see the test matrix).
+# "Every operator of none" is true, so an empty branch reads as negative and `or: [{}, P]` is P
+# read negatively, while `or: []` (any branch of none) reads positive -- both measured the same
+# day, see `_label_predicate`. A null operand keeps its operator's polarity: `{neqIgnoreCase: null}` under
 # `some` answered every issue (a negative predicate every label passes), `{eq: null}` none.
 _NEGATIVE_OPS = frozenset(
     {
@@ -589,8 +593,8 @@ def _reads_as_negation(spec: dict | None) -> bool:
 
 def _labels_predicate(spec: dict, *, every: bool) -> tuple[str, list]:
     """``labels: {some|every: {…}}`` over the JSON ``labels`` column, the way api.linear.app answers
-    it (measured against two labelled issues, ``[a, b]`` and ``[a]``, beside four with no labels --
-    the full matrix is ``tests/test_linear.py::test_labels_quantifiers_answer_as_linear``).
+    it (measured 2026-09-03 against two labelled issues, ``[a, b]`` and ``[a]``, beside four with
+    no labels -- the full matrix is ``tests/test_linear.py::test_labels_quantifiers_answer_as_linear``).
 
     Linear's quantifiers are not the textbook ones. The polarity of the predicate decides what an
     issue with NO labels answers:
@@ -634,8 +638,8 @@ _LABELS_PRECEDENCE = ("and", "or", "length", "every", "some", "name")
 
 
 def _labels_filter(spec: dict) -> tuple[str, list]:
-    """One ``IssueLabelCollectionFilter``, the way api.linear.app answers it over two labelled
-    issues (``[a, z]``, ``[a]``) beside four with no labels.
+    """One ``IssueLabelCollectionFilter``, the way api.linear.app answered it on 2026-09-03 over
+    two labelled issues (``[a, z]``, ``[a]``) beside four with no labels.
 
     Its keys do not AND together. ``and`` answers if present, else ``or``, else the first present of
     ``length``, ``every``, ``some``, ``name``, and the others are ignored whatever their order:
@@ -646,6 +650,9 @@ def _labels_filter(spec: dict) -> tuple[str, list]:
     key that does AND is ``null``, and only beside those four: ``null: true`` answers nothing (an
     issue's label collection is never null, not even an empty one), ``null: false`` everything, and
     ``{or: [{length: {eq: 0}}], null: true}`` answered the label-less four -- the ``or`` alone.
+    ``null: null`` is no key at all, here as on a relation: ``{null: null}`` answered every issue
+    and ``{null: null, length: {eq: 0}}`` the label-less four (measured 2026-09-03; a comparator
+    reads the same operand as ``null: true``, see ``_Comparator.render``).
 
     ``length`` is a ``NumberComparator`` over the label count (``{eq: 0}`` answered the label-less
     issues, ``{eq: 2}`` the two-label one); a bare ``name`` answers as ``some`` does; an empty

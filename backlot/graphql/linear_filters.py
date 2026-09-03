@@ -313,7 +313,18 @@ class _Comparator:
         parts: list[str] = []
         params: list = []
         for op, raw in spec.items():
+            if raw is None and op in ("and", "or"):
+                continue
             if raw is None and op != "null":
+                # A null operand is a condition, not an absent one. Measured against
+                # api.linear.app: a comparison with null (`eq`, `neq`, `lt`, `lte`, `gt`, `gte`)
+                # matches nothing, on a nullable field too -- `dueDate: {eq: null}` answered none
+                # over issues with no due date, `estimate: {gte: null}` none -- while a string or
+                # list operator with null (`contains`, `startsWith`, `eqIgnoreCase`, `in`, `nin`,
+                # ...) is a condition every row passes: `title: {contains: null}` answered every
+                # issue, and `labels: {some: {name: {contains: null}}}` the labelled ones only,
+                # which is what tells a passing condition from no condition (`{}`) at all.
+                parts.append("0" if op in _NULL_IS_FALSE else "1")
                 continue
             if op in ("and", "or"):
                 # `EstimateComparator` nests plain comparators under `and` / `or`. Each is
@@ -387,6 +398,11 @@ class _Comparator:
         return _join(parts, "AND"), params
 
 
+# The comparison operators, which a null operand turns into a condition nothing passes (see
+# `_Comparator.render`); every other operator with a null operand is one every row passes.
+_NULL_IS_FALSE = frozenset({"eq", "neq", "lt", "lte", "gt", "gte"})
+
+
 def _join(parts: list[str], op: str) -> str:
     parts = [p for p in parts if p]
     if not parts:
@@ -454,52 +470,85 @@ def _matches(value: str, spec: dict) -> bool:
     return True
 
 
-def _label_predicate(spec: dict) -> tuple[str, list]:
+# What one `IssueLabelFilter` compiles to, besides a fragment. Four kinds, because Linear answers
+# them differently and the difference only shows inside an `and` / `or` (see `_label_predicate`):
+_NONE = "none"  # nothing here: `{}`, `and: []`, every key null -- dropped from any list
+_QUANT = "quant"  # `or: []`: no condition, but a predicate -- the quantifier still asks for a label
+_VACUOUS = "vacuous"  # a key that constrains nothing (`name: {}`) -- makes the whole `or` constrain nothing
+_REAL = "real"  # a condition
+
+
+def _label_predicate(spec: dict) -> tuple[str, list, str]:
     """One ``IssueLabelFilter`` against the ``value`` column of a ``json_each`` row, INCLUDING its
-    ``and`` / ``or``. Reading only ``name`` makes a nested and/or compile to nothing, and an empty
-    fragment drops the WHOLE filter — ``labels:{some:{and:[{name:{eq:"nonexistent"}}]}}`` would
-    return the unfiltered corpus, the silent wrong answer this module exists to prevent."""
+    ``and`` / ``or``. Returns ``(fragment, params, kind)``; the kind is one of the four above.
+
+    An empty fragment is right in two places and wrong in a third, which is what the kind is for.
+    At the top of a quantifier it is right: ``some: {}`` and ``some: {name: {}}`` each answered every
+    issue on api.linear.app, label-less ones included, so ``_labels_predicate`` compiles them to
+    nothing. Inside an ``and`` it is right too: ``some: {and: [{}, {name: {eq: A}}]}`` and
+    ``some: {and: [{name: {}}, {name: {eq: A}}]}`` each answered exactly what ``{name: {eq: A}}``
+    does. Inside an ``or`` it is wrong, and which way depends on WHY the branch is empty, measured
+    over two labelled issues (``[a, z]``, ``[a]``) beside four with no labels:
+
+    * a branch that constrains nothing (``{name: {}}``, ``{and: [{}]}``) makes the WHOLE ``or``
+      constrain nothing: ``every: {or: [{name: {}}, {name: {eq: z}}]}`` answered every issue.
+    * a branch with nothing in it (``{}``, ``{and: []}``) is dropped, and the ``or`` reads as a
+      NEGATIVE predicate (see ``_reads_as_negation``): ``some: {or: [{}, {name: {eq: z}}]}``
+      answered ``[a, z]`` and the four label-less issues, ``every: {or: [{}, {name: {eq: z}}]}``
+      the label-less four alone -- the answers ``some`` / ``every: {name: {neq: a}}`` give.
+    * a branch that is a literally empty ``or`` is dropped too, and reads POSITIVE:
+      ``some: {or: [{or: []}, {name: {eq: z}}]}`` answered ``[a, z]`` alone.
+    * a literally empty ``or`` at the top is a predicate every label satisfies, and the quantifier
+      still asks for one: ``some: {or: []}`` and ``every: {or: []}`` answered the labelled issues.
+    * an ``or`` whose every branch is dropped (``or: [{}]``) constrains nothing.
+    """
     parts: list[str] = []
     params: list = []
+    kinds: list[str] = []
     for key, sub in (spec or {}).items():
         if sub is None:
             continue
         if key == "name":
             frag, p = _Comparator("value").render(sub)
+            kind = _REAL if frag else _VACUOUS
         elif key in ("and", "or"):
-            subs = [_label_predicate(x) for x in sub]
-            frags = [f for f, _ in subs if f]
-            if key == "or" and sub == []:
-                # Measured 2026-09-03: a literally empty `or` is a predicate every label satisfies,
-                # and the quantifier still applies -- `some: {or: []}` and `every: {or: []}` both
-                # answered exactly the issues with at least one label.
-                frags, sub_params = ["1"], []
-            elif key == "or" and len(frags) != len(sub):
-                # Measured 2026-09-03: an `or` BRANCH that constrains nothing makes the WHOLE `or`
-                # constrain nothing -- `some: {or: [{}, {name: {eq: A}}]}` and
-                # `every: {or: [{}, {name: {eq: A}}]}` each answered every issue, label-less ones
-                # included, where the surviving branch alone answers only the labelled ones. An
-                # empty `and` branch is dropped instead: `some: {and: [{}, {name: {eq: A}}]}`
-                # answered none.
-                frags, sub_params = [], []
-            else:
-                sub_params = [x for _, sp in subs for x in sp]
-            frag, p = (
-                (("(" + (" AND " if key == "and" else " OR ").join(frags) + ")") if frags else ""),
-                sub_params,
-            )
+            frag, p, kind = _label_branches(key, sub)
         else:
             raise GraphQLError(f"unsupported label filter field {key!r}")
-        if frag:
+        kinds.append(kind)
+        if kind == _REAL:
             parts.append(frag)
             params.extend(p)
-    return _join(parts, "AND"), params
+    if parts:
+        return _join(parts, "AND"), params, _REAL
+    for kind in (_QUANT, _VACUOUS):
+        if kind in kinds:
+            return "", [], kind
+    return "", [], _NONE
+
+
+def _label_branches(key: str, sub: list) -> tuple[str, list, str]:
+    """The ``and`` / ``or`` of an ``IssueLabelFilter``, by the rules in ``_label_predicate``."""
+    if not sub:
+        return "", [], _QUANT if key == "or" else _NONE
+    subs = [_label_predicate(x) for x in sub]
+    if key == "or" and any(kind == _VACUOUS for _, _, kind in subs):
+        return "", [], _VACUOUS
+    real = [(f, p) for f, p, kind in subs if kind == _REAL]
+    if not real:
+        return "", [], _VACUOUS
+    frag = "(" + (" AND " if key == "and" else " OR ").join(f for f, _ in real) + ")"
+    return frag, [x for _, p in real for x in p], _REAL
 
 
 # The operators that read as a negation. What the quantifier does with an issue that has NO labels
 # depends on this (see `_labels_predicate`), so a compound predicate has to carry a polarity too:
 # `and` is negative when every branch is, `or` when any branch is, and a comparator when every
-# operator in it is -- `{eq: A, neq: B}` reads positive (measured 2026-09-03, see the test matrix).
+# operator in it is -- `{eq: A, neq: B}` reads positive (measured; see the test matrix). "Every
+# operator of none" is true, so an empty branch reads as negative and `or: [{}, P]` is P read
+# negatively, while `or: []` (any branch of none) reads positive -- both measured, see
+# `_label_predicate`. A null operand keeps its operator's polarity: `{neqIgnoreCase: null}` under
+# `some` answered every issue (a negative predicate every label passes), `{eq: null}` none.
 _NEGATIVE_OPS = frozenset(
     {
         "neq",
@@ -522,19 +571,18 @@ def _reads_as_negation(spec: dict | None) -> bool:
         if sub is None:
             continue
         if key == "name":
-            ops = [op for op, v in sub.items() if v is not None]
-            parts.append(bool(ops) and all(op in _NEGATIVE_OPS for op in ops))
+            parts.append(all(op in _NEGATIVE_OPS for op in sub))
         elif key == "and":
-            parts.append(bool(sub) and all(_reads_as_negation(x) for x in sub))
+            parts.append(all(_reads_as_negation(x) for x in sub))
         elif key == "or":
             parts.append(any(_reads_as_negation(x) for x in sub))
-    return bool(parts) and all(parts)
+    return all(parts)
 
 
 def _labels_predicate(spec: dict, *, every: bool) -> tuple[str, list]:
     """``labels: {some|every: {…}}`` over the JSON ``labels`` column, the way api.linear.app answers
-    it (measured 2026-09-03 against two labelled issues, ``[a, b]`` and ``[a]``, beside four with
-    no labels -- the full matrix is ``tests/test_linear.py::test_labels_quantifiers_answer_as_linear``).
+    it (measured against two labelled issues, ``[a, b]`` and ``[a]``, beside four with no labels --
+    the full matrix is ``tests/test_linear.py::test_labels_quantifiers_answer_as_linear``).
 
     Linear's quantifiers are not the textbook ones. The polarity of the predicate decides what an
     issue with NO labels answers:
@@ -553,12 +601,15 @@ def _labels_predicate(spec: dict, *, every: bool) -> tuple[str, list]:
 
     So each negative form is the negation of the positive form of the other quantifier -- Linear
     pushes the ``not`` outside the quantifier -- and :func:`_reads_as_negation` says which form a
-    compound predicate takes. An empty predicate (``some: {}``, ``some: {and: []}``) constrains
-    nothing there: every issue answered, label-less ones included, so it compiles to nothing here
-    too. The one exception is a literally empty ``or`` (see :func:`_label_predicate`)."""
-    inner, params = _label_predicate(spec)
-    if not inner:
+    compound predicate takes. A predicate that constrains nothing (``some: {}``, ``some: {and: []}``,
+    ``some: {name: {}}``) is no predicate: every issue answered, label-less ones included, so it
+    compiles to nothing here too. A literally empty ``or`` is a predicate every label satisfies
+    (see :func:`_label_predicate`), so the quantifier still applies to it."""
+    inner, params, kind = _label_predicate(spec)
+    if kind in (_NONE, _VACUOUS):
         return "", []
+    if kind == _QUANT:
+        inner = "1"
     negative = _reads_as_negation(spec)
     if every:
         no_label_fails = f"NOT EXISTS (SELECT 1 FROM {_LABEL_EACH} WHERE NOT {inner})"
@@ -569,47 +620,69 @@ def _labels_predicate(spec: dict, *, every: bool) -> tuple[str, list]:
     return (f"({_LABEL_COUNT} = 0 OR {a_label_matches})" if negative else a_label_matches), params
 
 
+# The keys of an `IssueLabelCollectionFilter` are not ANDed: one of them answers and the rest are
+# ignored, in this order (see `_labels_filter`).
+_LABELS_PRECEDENCE = ("and", "or", "length", "every", "some", "name")
+
+
 def _labels_filter(spec: dict) -> tuple[str, list]:
-    """One ``IssueLabelCollectionFilter``. Besides the two quantifiers, measured on 2026-09-03:
-    ``and`` / ``or`` compose collection filters; ``length`` is a ``NumberComparator`` over the
-    label count (``{eq: 0}`` answered the label-less issues, ``{eq: 2}`` the two-label one);
-    ``null: true`` answered NOTHING -- an issue's label collection is never null, not even an empty
-    one -- and ``null: false`` everything; a bare ``name`` at this level answered as ``some`` does;
-    and an empty object constrains nothing."""
+    """One ``IssueLabelCollectionFilter``, the way api.linear.app answers it over two labelled
+    issues (``[a, z]``, ``[a]``) beside four with no labels.
+
+    Its keys do not AND together. ``and`` answers if present, else ``or``, else the first present of
+    ``length``, ``every``, ``some``, ``name``, and the others are ignored whatever their order:
+    ``{and: [{length: {eq: 2}}], or: [{length: {eq: 1}}]}`` answered ``[a, z]`` (an AND would be
+    empty), ``{or: [{length: {eq: 0}}], length: {eq: 2}}`` the four label-less issues,
+    ``{length: {eq: 1}, some: {name: {eq: z}}}`` ``[a]``, ``{some: {name: {eq: z}}, every: {name:
+    {eq: a}}}`` ``[a]``, and ``{name: {eq: z}, some: {name: {eq: a}}}`` both labelled issues. The one
+    key that does AND is ``null``, and only beside those four: ``null: true`` answers nothing (an
+    issue's label collection is never null, not even an empty one), ``null: false`` everything, and
+    ``{or: [{length: {eq: 0}}], null: true}`` answered the label-less four -- the ``or`` alone.
+
+    ``length`` is a ``NumberComparator`` over the label count (``{eq: 0}`` answered the label-less
+    issues, ``{eq: 2}`` the two-label one); a bare ``name`` answers as ``some`` does; an empty
+    object constrains nothing. Inside ``and`` a branch that constrains nothing is dropped
+    (``{and: [{}, {length: {eq: 2}}]}`` answered ``[a, z]``); inside ``or`` it makes the whole
+    filter constrain nothing (``{or: [{}, {length: {eq: 2}}]}`` and ``{or: [{some: {}}, {length:
+    {eq: 2}}]}`` each answered every issue), and so does an ``and`` / ``or`` with nothing left in
+    it (``{and: [{}], length: {eq: 2}}``, ``{or: [{length: {eq: 2}}], and: []}``)."""
+    spec = {k: v for k, v in (spec or {}).items() if v is not None or k == "null"}
+    for key in spec:
+        if key not in _LABELS_PRECEDENCE and key != "null":
+            raise GraphQLError(f"unsupported labels filter field {key!r}")
+    for key in ("and", "or"):
+        if key in spec:
+            return _labels_branches(key, spec[key])
     parts: list[str] = []
     params: list = []
-
-    def add(frag, p):
+    if spec.get("null"):
+        parts.append("0")
+    for key in ("length", "every", "some", "name"):
+        if key not in spec:
+            continue
+        if key == "length":
+            frag, p = _Comparator(_LABEL_COUNT).render(spec[key])
+        elif key == "name":
+            frag, p = _labels_predicate({"name": spec[key]}, every=False)
+        else:
+            frag, p = _labels_predicate(spec[key], every=key == "every")
         if frag:
             parts.append(frag)
             params.extend(p)
-
-    for key, sub in (spec or {}).items():
-        if sub is None and key != "null":
-            continue
-        if key in ("some", "every"):
-            add(*_labels_predicate(sub, every=key == "every"))
-        elif key in ("and", "or"):
-            subs = [_labels_filter(x) for x in sub]
-            frags = [f for f, _ in subs if f]
-            if key == "or" and len(frags) != len(sub):
-                # Measured 2026-09-03: as in `_label_predicate`, an `or` branch that constrains
-                # nothing makes the whole `or` constrain nothing -- `{or: [{}, {length: {eq: 99}}]}`
-                # answered every issue, where `length: {eq: 99}` alone answered none.
-                return "", []
-            if frags:
-                parts.append("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
-                params.extend(x for _, sp in subs for x in sp)
-        elif key == "length":
-            add(*_Comparator(_LABEL_COUNT).render(sub))
-        elif key == "null":
-            if sub:
-                parts.append("0")
-        elif key == "name":
-            add(*_labels_predicate({"name": sub}, every=False))
-        else:
-            raise GraphQLError(f"unsupported labels filter field {key!r}")
+        break
     return _join(parts, "AND"), params
+
+
+def _labels_branches(key: str, sub: list) -> tuple[str, list]:
+    """The ``and`` / ``or`` of an ``IssueLabelCollectionFilter``, by the rules in ``_labels_filter``."""
+    subs = [_labels_filter(x) for x in sub]
+    if key == "or" and any(not f for f, _ in subs):
+        return "", []
+    kept = [(f, p) for f, p in subs if f]
+    if not kept:
+        return "", []
+    frag = "(" + (" AND " if key == "and" else " OR ").join(f for f, _ in kept) + ")"
+    return frag, [x for _, p in kept for x in p]
 
 
 # field name on IssueFilter -> how it compiles.
@@ -624,13 +697,37 @@ def compile_issue_filter(
 
 
 def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, list]:
+    frag, params, _ = _issue_parts(conn, flt, team_keys)
+    return frag, params
+
+
+def _issue_parts(conn, flt: dict, team_keys: dict | None) -> tuple[str, list, bool]:
+    """``(fragment, params, vacuous)`` for one ``IssueFilter`` object.
+
+    ``vacuous`` is whether a key of this object constrains nothing -- a field with an empty
+    comparator (``title: {}``), a nested filter that compiles to nothing (``labels: {}``,
+    ``labels: {some: {}}``, ``state: {name: {}}``), or an ``and`` / ``or`` with branches but no
+    condition left (``or: [{}]``). It matters inside an ``or``, where api.linear.app answers a
+    vacuous branch by making the WHOLE ``or`` constrain nothing, its other keys and branches
+    included: ``{or: [{labels: {}}, {title: {eq: T}}]}`` and ``{or: [{labels: {}, title: {eq:
+    "no such title"}}, {title: {eq: T}}]}`` each answered every issue, where the ``title`` branch
+    alone answers one. A branch with nothing in it is dropped instead -- ``{or: [{}, {title: {eq:
+    T}}]}``, ``{or: [{and: []}, …]}``, ``{or: [{or: []}, …]}`` and ``{or: [{title: null}, …]}`` each
+    answered the title match alone -- and inside an ``and`` a vacuous branch is dropped too:
+    ``{and: [{labels: {}}, {title: {eq: T}}]}`` answered the title match, ``{or: [{and: [{labels:
+    {}}, {title: {eq: "no such title"}}]}, {title: {eq: T}}]}`` the same. The flag is how the
+    empty fragment of a dropped branch is told from the empty fragment of a vacuous one."""
     parts: list[str] = []
     params: list = []
+    vacuous = False
 
     def add(frag, p):
+        nonlocal vacuous
         if frag:
             parts.append(frag)
             params.extend(p)
+        else:
+            vacuous = True
 
     for key, spec in (flt or {}).items():
         if spec is None:
@@ -639,12 +736,16 @@ def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, 
             # `team_keys` rides down the recursion: without it a `team.key` nested under and/or
             # compiled against the name-derived key while the same filter at top level compiled
             # against the corpus's, so the two spellings of one query disagreed.
-            subs = [_issue_filter(conn, s, team_keys) for s in spec]
-            frags = [f for f, _ in subs if f]
-            for _, p in subs:
-                params.extend(p)
-            if frags:
-                parts.append("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
+            subs = [_issue_parts(conn, s, team_keys) for s in spec]
+            if key == "or" and any(v for _, _, v in subs):
+                vacuous = True
+                continue
+            kept = [(f, p) for f, p, _ in subs if f]
+            if not kept:
+                vacuous = vacuous or bool(spec)
+                continue
+            parts.append("(" + (" AND " if key == "and" else " OR ").join(f for f, _ in kept) + ")")
+            params.extend(x for _, p in kept for x in p)
             continue
         if key == "id":
             # The filter speaks a Linear UUID or a human identifier; the column is the issue
@@ -748,7 +849,7 @@ def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, 
             add(*_labels_filter(spec))
         else:
             raise GraphQLError(f"unsupported issue filter field {key!r}")
-    return _join(parts, "AND"), params
+    return _join(parts, "AND"), params, vacuous
 
 
 def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:

@@ -1062,11 +1062,12 @@ def test_an_empty_labels_predicate_constrains_nothing_as_it_does_on_linear(fclie
         assert ids(fclient, literal) == everything, literal
 
 
-# The labels filter, cell by cell, as api.linear.app answered it on 2026-09-03 over two labelled
-# issues -- `[zz-a, zz-zzz]` and `[zz-a]`, created for the measurement and deleted after -- beside
-# four with no labels. The fixture has the same shape: ENG-1 carries `[bug, gateway]`, ENG-2 `[bug]`,
-# DES-1 nothing; `bug` stands for `zz-a`, `gateway` for `zz-zzz`, `nope` for a label nobody has.
+# The labels filter, cell by cell, as api.linear.app answered it over two labelled issues --
+# `[zz-a, zz-zzz]` and `[zz-a]`, created for the measurement and deleted after -- beside four with
+# no labels. The fixture has the same shape: ENG-1 carries `[bug, gateway]`, ENG-2 `[bug]`, DES-1
+# nothing; `bug` stands for `zz-a`, `gateway` for `zz-zzz`, `nope` for a label nobody has.
 L2, L1, U = "ENG-1", "ENG-2", "DES-1"
+EVERY = {L2, L1, U}
 _LABEL_CELLS = [
     # some, positive predicate: EXISTS -- a label-less issue never matches
     ('{some: {name: {eq: "bug"}}}', {L2, L1}),
@@ -1153,6 +1154,100 @@ _LABEL_CELLS = [
     ("{every: {or: []}}", {L2, L1}),
     ("{some: {or: [{}]}}", {L2, L1, U}),
     ('{some: {or: [], name: {neq: "bug"}}}', {L2}),
+    # the keys of the collection filter do not AND: `and`, else `or`, else the first of `length`,
+    # `every`, `some`, `name`, whatever the order; `null` is the one that ANDs, and only with those
+    ('{some: {name: {eq: "gateway"}}, every: {name: {eq: "bug"}}}', {L1}),
+    ('{every: {name: {eq: "bug"}}, some: {name: {eq: "gateway"}}}', {L1}),
+    ('{some: {name: {neq: "bug"}}, every: {name: {eq: "bug"}}}', {L1}),
+    ('{length: {eq: 1}, some: {name: {eq: "gateway"}}}', {L1}),
+    ('{some: {name: {eq: "gateway"}}, length: {eq: 1}}', {L1}),
+    ('{length: {eq: 2}, every: {name: {eq: "bug"}}}', {L2}),
+    ('{every: {name: {eq: "bug"}}, length: {eq: 2}}', {L2}),
+    ('{name: {eq: "gateway"}, some: {name: {eq: "bug"}}}', {L2, L1}),
+    ('{some: {name: {eq: "bug"}}, name: {eq: "gateway"}}', {L2, L1}),
+    ('{every: {name: {eq: "bug"}}, name: {eq: "gateway"}}', {L1}),
+    ('{name: {eq: "gateway"}, every: {name: {eq: "bug"}}}', {L1}),
+    ('{length: {eq: 1}, name: {eq: "gateway"}}', {L1}),
+    ('{name: {eq: "gateway"}, length: {eq: 1}}', {L1}),
+    ('{null: false, some: {name: {eq: "gateway"}}}', {L2}),
+    ('{null: true, some: {name: {eq: "gateway"}}}', set()),
+    ("{length: {eq: 1}, null: false}", {L1}),
+    ("{null: true, length: {eq: 0}}", set()),
+    ("{null: false, length: {eq: 99}}", set()),
+    ('{or: [{length: {eq: 1}}], some: {name: {eq: "gateway"}}}', {L1}),
+    ('{some: {name: {eq: "gateway"}}, or: [{length: {eq: 1}}]}', {L1}),
+    ('{and: [{length: {eq: 2}}], every: {name: {eq: "bug"}}}', {L2}),
+    ("{or: [{length: {eq: 0}}], length: {eq: 2}}", {U}),
+    ("{length: {eq: 2}, or: [{length: {eq: 0}}]}", {U}),
+    ("{or: [{length: {eq: 0}}], null: true}", {U}),
+    ("{and: [{length: {eq: 2}}], null: true}", {L2}),
+    ("{and: [{length: {eq: 2}}], or: [{length: {eq: 1}}]}", {L2}),
+    ("{or: [{length: {eq: 1}}], and: [{length: {eq: 2}}]}", {L2}),
+    ("{and: [{length: {eq: 1}}], or: [{length: {eq: 2}}]}", {L1}),
+    ("{or: [{length: {eq: 2}}], and: [{length: {eq: 1}}]}", {L1}),
+    ("{and: [{length: {eq: 2}}], or: [{length: {eq: 1}}], length: {eq: 0}}", {L2}),
+    ("{and: [{length: {eq: 2}}, {length: {eq: 1}}]}", set()),
+    ("{or: [{length: {eq: 2}}, {length: {eq: 1}}]}", {L2, L1}),
+    (
+        '{and: [{or: [{length: {eq: 2}}, {length: {eq: 1}}]}, {some: {name: {eq: "bug"}}}]}',
+        {L2, L1},
+    ),
+    # inside `and` a branch that constrains nothing is dropped; inside `or` it makes the whole filter
+    # constrain nothing, and so does an `and` / `or` with nothing left in it
+    ("{and: [{}, {length: {eq: 2}}]}", {L2}),
+    ("{or: [{}, {length: {eq: 2}}]}", EVERY),
+    ("{or: [{some: {}}, {length: {eq: 2}}]}", EVERY),
+    ("{or: [{null: false}, {length: {eq: 99}}]}", EVERY),
+    ("{and: [{}], length: {eq: 2}}", EVERY),
+    ("{and: [{length: {eq: 2}}], or: [{}]}", {L2}),
+    ("{and: [{}], or: [{length: {eq: 2}}]}", EVERY),
+    ("{or: [{length: {eq: 1}}], and: [{}]}", EVERY),
+    ("{or: [{length: {eq: 2}}], and: []}", EVERY),
+    ("{or: [], length: {eq: 99}}", EVERY),
+    ("{and: [], length: {eq: 99}}", EVERY),
+    ("{or: [{}], length: {eq: 99}}", EVERY),
+    # inside a predicate's `or`: a branch with nothing in it (`{}`, `and: []`) is dropped and the
+    # `or` reads as negative, an empty `or` branch is dropped and reads positive, a branch that
+    # constrains nothing (`name: {}`, `and: [{}]`) makes the whole predicate constrain nothing
+    ('{some: {or: [{}, {name: {eq: "gateway"}}]}}', {L2, U}),
+    ('{every: {or: [{}, {name: {eq: "gateway"}}]}}', {U}),
+    ('{some: {or: [{}, {}, {name: {eq: "gateway"}}]}}', {L2, U}),
+    ('{some: {or: [{and: []}, {name: {eq: "gateway"}}]}}', {L2, U}),
+    ('{some: {or: [{}, {name: {neq: "gateway"}}]}}', EVERY),
+    ('{every: {or: [{}, {name: {neq: "gateway"}}]}}', {L1, U}),
+    ('{every: {and: [{or: [{}, {name: {eq: "gateway"}}]}]}}', {U}),
+    ('{some: {or: [{or: []}, {name: {eq: "gateway"}}]}}', {L2}),
+    ('{some: {or: [{name: {}}, {name: {eq: "gateway"}}]}}', EVERY),
+    ('{every: {or: [{name: {}}, {name: {eq: "gateway"}}]}}', EVERY),
+    ('{some: {or: [{and: [{}]}, {name: {eq: "gateway"}}]}}', EVERY),
+    ('{some: {and: [{}, {name: {eq: "gateway"}}]}}', {L2}),
+    ('{some: {and: [{name: {}}, {name: {eq: "gateway"}}]}}', {L2}),
+    ('{some: {and: [{and: []}, {name: {eq: "gateway"}}]}}', {L2}),
+    ("{some: {and: [{}]}}", EVERY),
+    ("{some: {or: [{and: []}]}}", EVERY),
+    ('{some: {name: {eq: "gateway"}, or: [{}]}}', {L2}),
+    ('{some: {name: {eq: "gateway"}, or: [{}, {name: {eq: "bug"}}]}}', set()),
+    # a null operand: a comparison with null matches no label, a string or list operator with null
+    # is a condition every label passes, and the operator keeps its polarity
+    ("{some: {name: {eq: null}}}", set()),
+    ("{every: {name: {eq: null}}}", set()),
+    ("{some: {name: {neq: null}}}", {U}),
+    ("{every: {name: {neq: null}}}", {U}),
+    ("{some: {name: {contains: null}}}", {L2, L1}),
+    ("{every: {name: {contains: null}}}", {L2, L1}),
+    ("{some: {name: {startsWith: null}}}", {L2, L1}),
+    ("{some: {name: {endsWith: null}}}", {L2, L1}),
+    ("{some: {name: {eqIgnoreCase: null}}}", {L2, L1}),
+    ("{some: {name: {containsIgnoreCase: null}}}", {L2, L1}),
+    ("{some: {name: {in: null}}}", {L2, L1}),
+    ("{every: {name: {in: null}}}", {L2, L1}),
+    ("{some: {name: {neqIgnoreCase: null}}}", EVERY),
+    ("{every: {name: {nin: null}}}", EVERY),
+    ('{some: {name: {eq: "bug", contains: null}}}', {L2, L1}),
+    ('{some: {or: [{name: {contains: null}}, {name: {eq: "gateway"}}]}}', {L2, L1}),
+    ("{length: {eq: null}}", set()),
+    ("{length: {neq: null}}", set()),
+    ("{length: {eq: 2, lt: null}}", set()),
 ]
 
 
@@ -1165,6 +1260,97 @@ def test_labels_quantifiers_answer_as_linear(fclient, literal, expected):
     issues. Each cell here is one measured answer; the mapping to the fixture is above
     `_LABEL_CELLS`."""
     assert ids(fclient, "{labels: %s}" % literal) == sorted(expected)
+
+
+# The whole `IssueFilter`, where an `or` branch that constrains nothing is the case that matters:
+# api.linear.app answers it by making the whole `or` constrain nothing, where dropping the branch
+# would narrow the answer to the other branches. Same fixture and stand-ins as `_LABEL_CELLS`;
+# `ONE` is a branch that answers ENG-2 alone, `NONE` one that answers nothing.
+ONE, NONE = "{labels: {length: {eq: 1}}}", "{labels: {length: {eq: 99}}}"
+_ISSUE_CELLS = [
+    # a branch with nothing in it is dropped
+    ("{or: [{}, %s]}" % ONE, {L1}),
+    ("{or: [{and: []}, %s]}" % ONE, {L1}),
+    ("{or: [{or: []}, %s]}" % ONE, {L1}),
+    ("{or: [{title: null}, %s]}" % ONE, {L1}),
+    ("{or: [%s]}" % ONE, {L1}),
+    ("{or: []}", EVERY),
+    ("{and: []}", EVERY),
+    ("{or: [{}]}", EVERY),
+    # a branch with a key that constrains nothing makes the whole `or` constrain nothing, its other
+    # keys included
+    ("{or: [{labels: {}}, %s]}" % ONE, EVERY),
+    ("{or: [{labels: {some: {}}}, %s]}" % ONE, EVERY),
+    ("{or: [{labels: {every: {}}}, %s]}" % ONE, EVERY),
+    ("{or: [{labels: {null: false}}, %s]}" % ONE, EVERY),
+    ("{or: [{labels: {and: []}}, %s]}" % ONE, EVERY),
+    ("{or: [{labels: {some: {name: {}}}}, %s]}" % ONE, EVERY),
+    ("{or: [{labels: {or: [{}, {length: {eq: 99}}]}}, %s]}" % ONE, EVERY),
+    ("{or: [{labels: {some: null}}, %s]}" % NONE, EVERY),
+    ("{or: [{labels: {some: {name: null}}}, %s]}" % NONE, EVERY),
+    ("{or: [{labels: {null: null}}, %s]}" % NONE, EVERY),
+    ("{or: [{title: {}}, %s]}" % ONE, EVERY),
+    ("{or: [{priority: {}}, %s]}" % NONE, EVERY),
+    ("{or: [{estimate: {}}, %s]}" % NONE, EVERY),
+    ("{or: [{state: {}}, %s]}" % NONE, EVERY),
+    ("{or: [{state: {name: {}}}, %s]}" % NONE, EVERY),
+    ('{or: [{labels: {}, title: {eq: "no such title"}}, %s]}' % ONE, EVERY),
+    ('{or: [{title: {eq: "no such title"}, labels: {}}, %s]}' % ONE, EVERY),
+    ("{or: [{title: {eq: null}, labels: {}}, %s]}" % NONE, EVERY),
+    ("{or: [{or: [{labels: {}}, %s]}, %s]}" % (NONE, ONE), EVERY),
+    ("{or: [{or: [{}]}, %s]}" % ONE, EVERY),
+    ("{or: [{and: [{}]}, %s]}" % NONE, EVERY),
+    ("{or: [{and: [{labels: {}}]}, %s]}" % NONE, EVERY),
+    # inside an `and`, a branch that constrains nothing is dropped, and it does not make the `and`
+    # a branch that constrains nothing
+    ("{and: [{}, %s]}" % ONE, {L1}),
+    ("{and: [{labels: {}}, %s]}" % ONE, {L1}),
+    ("{and: [{or: [{}]}, %s]}" % ONE, {L1}),
+    ("{and: [{or: [{}]}, %s]}" % NONE, set()),
+    ("{and: [{title: {}}, %s]}" % NONE, set()),
+    ("{and: [{title: {contains: null}}, %s]}" % NONE, set()),
+    ("{or: [{and: [{labels: {}}, %s]}, %s]}" % (NONE, ONE), {L1}),
+    ("{or: [{and: [{}, %s]}, %s]}" % (NONE, NONE), set()),
+    ('{labels: {}, title: {eq: "no such title"}}', set()),
+    # a labels branch that DOES constrain answers as itself
+    ("{or: [%s, %s]}" % (NONE, ONE), {L1}),
+    ('{or: [{labels: {some: {name: {eq: "gateway"}}}}, %s]}' % NONE, {L2}),
+    ('{or: [{labels: {some: {or: [{}, {name: {eq: "gateway"}}]}}}, %s]}' % NONE, {L2, U}),
+    ("{or: [{labels: {or: [{length: {eq: 0}}], length: {eq: 2}}}, %s]}" % NONE, {U}),
+    ("{or: [{labels: {some: {name: {contains: null}}}}, %s]}" % NONE, {L2, L1}),
+    # a null operand on an issue field: a comparison with null matches nothing, a string or list
+    # operator with null is a condition every issue passes -- in an `or` and on its own
+    ("{or: [{title: {eq: null}}, %s]}" % ONE, {L1}),
+    ("{or: [{title: {eq: null, neq: null}}, %s]}" % NONE, set()),
+    ("{or: [{dueDate: {eq: null}}, %s]}" % NONE, set()),
+    ("{or: [{labels: {some: {name: {eq: null}}}}, %s]}" % NONE, set()),
+    ("{or: [{labels: {length: {eq: null}}}, %s]}" % NONE, set()),
+    ("{or: [{title: {contains: null}}, %s]}" % NONE, EVERY),
+    ("{or: [{title: {neqIgnoreCase: null}}, %s]}" % NONE, EVERY),
+    ("{title: {eq: null}}", set()),
+    ("{title: {neq: null}}", set()),
+    ("{dueDate: {eq: null}}", set()),
+    ("{dueDate: {neq: null}}", set()),
+    ("{estimate: {eq: null}}", set()),
+    ("{estimate: {gte: null}}", set()),
+    ("{priority: {eq: null}}", set()),
+    ("{title: {contains: null}}", EVERY),
+    ("{title: {in: null}}", EVERY),
+    ("{title: {nin: null}}", EVERY),
+    ("{title: {startsWith: null}}", EVERY),
+    ("{title: {eqIgnoreCase: null}}", EVERY),
+    ("{title: {neqIgnoreCase: null}}", EVERY),
+]
+
+
+@pytest.mark.parametrize("literal,expected", _ISSUE_CELLS, ids=[c[0] for c in _ISSUE_CELLS])
+def test_issue_filter_or_answers_a_vacuous_branch_as_linear(fclient, literal, expected):
+    """An `or` branch that constrains nothing is not dropped by api.linear.app: it makes the whole
+    `or` constrain nothing, so `{or: [{labels: {}}, X]}` answers every issue where X alone answers
+    a few. Dropping it, which the empty fragment invites, is a refusal turned into a quietly
+    narrower answer. A branch with nothing in it IS dropped, and a null operand is a condition of
+    its own. Each cell is one measured answer; the stand-ins are above `_ISSUE_CELLS`."""
+    assert ids(fclient, literal) == sorted(expected)
 
 
 # --- response-shape assertions (were tests/test_fidelity.py) --------------------------------

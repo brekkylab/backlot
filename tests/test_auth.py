@@ -1,8 +1,9 @@
 """Unit tests for the shared credential resolvers in :mod:`backlot.auth`.
 
 The bearer/basic resolvers are covered end-to-end by the per-source endpoint tests; this
-file covers the ones with a contract worth pinning on their own — currently the API-key
-scheme, whose whole point is that it must accept a header with *no* auth scheme on it.
+file covers the ones with a contract worth pinning on their own: the API-key scheme, whose whole
+point is that it must accept a header with *no* auth scheme on it, and Atlassian's Basic, which
+authenticates the email and the token as a pair.
 """
 
 from __future__ import annotations
@@ -129,3 +130,61 @@ def test_resolve_api_key_resolves_a_bearer_admin_token(acl, sample_settings):
 
 def test_resolve_api_key_rejects_an_unknown_key(acl):
     assert auth.resolve_api_key(_request("lin_api_nope", app=_app(acl))) is None
+
+
+# --- resolve_basic: the pair, not either half -------------------------------------
+# Measured against a real Atlassian Cloud site (brekkylab.atlassian.net,
+# GET /rest/api/3/myself) with a user API token:
+#
+#   email + real token      -> 200, authenticated as that account
+#   email + empty password  -> 401
+#   email + wrong password  -> 401
+#   unknown email + token   -> 401
+#
+# So neither half authenticates on its own: the password must resolve AND the username must be
+# that account's own address. The one case with no vendor analogue is Backlot's admin/service
+# token, which resolves to `Caller(email=None)` — there is no address to match it against, so it
+# is accepted under any username.
+
+
+def _basic(user: str, pw: str) -> str:
+    return "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode()
+
+
+def test_resolve_basic_accepts_the_token_with_its_own_email(acl, tokens):
+    caller = auth.resolve_basic(
+        _request(_basic("ava@acme.com", tokens["ava@acme.com"]), app=_app(acl))
+    )
+    assert caller is not None and caller.email == "ava@acme.com"
+
+
+@pytest.mark.parametrize(
+    "user, pw_key, needle",
+    [
+        ("ava@acme.com", None, "an empty password"),
+        ("ava@acme.com", "wrong", "a password that resolves to nobody"),
+        ("nobody@example.invalid", "ava@acme.com", "a username that is not the token's account"),
+    ],
+    ids=["empty-password", "wrong-password", "mismatched-username"],
+)
+def test_resolve_basic_refuses_a_half_credential(acl, tokens, user, pw_key, needle):
+    pw = "" if pw_key is None else ("not-a-token" if pw_key == "wrong" else tokens[pw_key])
+    assert auth.resolve_basic(_request(_basic(user, pw), app=_app(acl))) is None, needle
+
+
+def test_resolve_basic_matches_the_email_case_insensitively(acl, tokens):
+    """Atlassian treats an address case-insensitively, so a username copied in the shape a page
+    displays it still pairs with its own token."""
+    caller = auth.resolve_basic(
+        _request(_basic("AVA@ACME.COM", tokens["ava@acme.com"]), app=_app(acl))
+    )
+    assert caller is not None and caller.email == "ava@acme.com"
+
+
+def test_resolve_basic_takes_the_admin_token_under_any_username(acl, sample_settings):
+    """The service token is Backlot's own identity and resolves to no address, so there is nothing
+    to match a username against — the placeholder every Atlassian client has to send goes through."""
+    caller = auth.resolve_basic(
+        _request(_basic("svc@example.com", sample_settings.admin_token), app=_app(acl))
+    )
+    assert caller is not None and caller.is_admin is True

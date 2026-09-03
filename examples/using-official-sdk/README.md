@@ -94,8 +94,8 @@ python examples/using-official-sdk/s3.py --url http://localhost:8000 \
 
 The response then contains only what that identity is allowed to read. Grab tokens / emails /
 S3 keypairs from the running server's [`GET /_meta/users`](../../README.md#auth--tokens) directory.
-For Jira/Confluence either `--password <token>` or `--username <email>` alone identifies the user
-(Backlot resolves by the api token, falling back to the username email). Pair
+For Jira/Confluence the two go together, as the real service requires: `--username <email>` is the
+address `--password`/`--token` belongs to, and neither half alone identifies anyone. Pair
 `--user`/`--token`/`--password`/`--access-key`+`--secret-key` with `--url` so the identity exists
 on the server you're querying. (Each example declares its own options — see `python <file> --help`.)
 
@@ -120,16 +120,18 @@ library's own token exchange runs against Backlot's `POST /oauth2/token` in both
 |---|---|---|
 | Slack | `slack_sdk` | `WebClient(token=T, base_url="http://localhost:8000/slack/api/")` |
 | GitHub | `PyGithub` | `Github(auth=Auth.Token(T), base_url="http://localhost:8000/github")` |
-| Jira | `atlassian-python-api` | `Jira(url="http://localhost:8000/atlassian", username="svc@x", password=T)` |
-| Confluence | `atlassian-python-api` | `Confluence(url="http://localhost:8000/atlassian/wiki", username="svc@x", password=T)` |
+| Jira | `atlassian-python-api` | `Jira(url="http://localhost:8000/atlassian", username=EMAIL, password=T)` |
+| Confluence | `atlassian-python-api` | `Confluence(url="http://localhost:8000/atlassian/wiki", username=EMAIL, password=T)` |
 | Gmail | `google-api-python-client` | `build("gmail","v1", …, client_options=ClientOptions(api_endpoint="http://localhost:8000"))` |
 | Google Drive | `google-api-python-client` | `build("drive","v3", …, client_options=ClientOptions(api_endpoint="http://localhost:8000/drive/v3"))` |
 | Notion | `notion-client` | `Client(auth=T, base_url="http://localhost:8000/notion")` (SDK appends `/v1/`) |
 | S3 | `boto3` | `client("s3", endpoint_url="http://localhost:8000/s3", config=Config(s3={"addressing_style":"path"}))` |
 
 (`T` is a token from `data/tokens.yaml` — the admin token sees everything; a per-user token is
-scoped to that user's ACL. For Google, credentials come from a service account issued by
-`/_meta/credentials`; pass `static_discovery=True`. A raw `Credentials(token=T)` also still works.)
+scoped to that user's ACL. Atlassian authenticates the PAIR, as the real service does, so `EMAIL`
+is the address `T` belongs to; the admin token has no address and takes any username. For Google,
+credentials come from a service account issued by `/_meta/credentials`; pass
+`static_discovery=True`. A raw `Credentials(token=T)` also still works.)
 
 ## Coverage
 

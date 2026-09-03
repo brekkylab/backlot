@@ -1,14 +1,308 @@
 {
   "source": "s3",
   "endpoint": "https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/s3/2006-03-01/service-2.json",
-  "measured": "2026-09-01",
+  "measured": "2026-09-03",
   "acknowledged": [
+    {
+      "kind": "silent_fallthrough",
+      "severity": "breaking",
+      "path": "CreateSession: GET /{bucket}?session",
+      "detail": "CreateSession is answered 200 <ListBucketResult>, which is what the same path answers with no operation selected: Backlot neither implements it nor refuses it, so a caller parses another operation's body",
+      "note": "Not a fallthrough Backlot chose: CreateSession exists for directory buckets only, and real S3 answers `GET /{bucket}?session` on a general purpose bucket with the ListBucketResult too (measured), so the listing is the faithful answer and `session` is deliberately not a selector Backlot refuses."
+    },
     {
       "kind": "silent_fallthrough",
       "severity": "breaking",
       "path": "ListObjectsV2: GET /{bucket}?list-type=2",
       "detail": "ListObjectsV2 is answered 200 <ListBucketResult>, which is what the same path answers with no operation selected: Backlot neither implements it nor refuses it, so a caller parses another operation's body",
       "note": "Not a fallthrough: a bare bucket GET is ListObjects, and `?list-type=2` selects its v2 form, so both correctly answer the same ListBucketResult."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketAbac: GET /{bucket}?abac",
+      "detail": "GetBucketAbac is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <AbacStatus> with Status Disabled (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketAccelerateConfiguration: GET /{bucket}?accelerate",
+      "detail": "GetBucketAccelerateConfiguration is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <AccelerateConfiguration/>, empty (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketAcl: GET /{bucket}?acl",
+      "detail": "GetBucketAcl is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <AccessControlPolicy> with the bucket owner (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketAnalyticsConfiguration: GET /{bucket}?analytics",
+      "detail": "GetBucketAnalyticsConfiguration is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 NoSuchConfiguration for an `id` that is not configured; the bare `?analytics` the probe sends is the List form (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketCors: GET /{bucket}?cors",
+      "detail": "GetBucketCors is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 NoSuchCORSConfiguration (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketEncryption: GET /{bucket}?encryption",
+      "detail": "GetBucketEncryption is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <ServerSideEncryptionConfiguration> with one Rule, BucketKeyEnabled true (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketIntelligentTieringConfiguration: GET /{bucket}?intelligent-tiering",
+      "detail": "GetBucketIntelligentTieringConfiguration is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 NoSuchConfiguration for an `id` that is not configured; the bare `?intelligent-tiering` the probe sends is the List form (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketInventoryConfiguration: GET /{bucket}?inventory",
+      "detail": "GetBucketInventoryConfiguration is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 NoSuchConfiguration for an `id` that is not configured; the bare `?inventory` the probe sends is the List form (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketLifecycle: GET /{bucket}?lifecycle",
+      "detail": "GetBucketLifecycle is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 NoSuchLifecycleConfiguration (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketLifecycleConfiguration: GET /{bucket}?lifecycle",
+      "detail": "GetBucketLifecycleConfiguration is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 NoSuchLifecycleConfiguration (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketLogging: GET /{bucket}?logging",
+      "detail": "GetBucketLogging is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <BucketLoggingStatus> with no LoggingEnabled (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketMetadataConfiguration: GET /{bucket}?metadataConfiguration",
+      "detail": "GetBucketMetadataConfiguration is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 MetadataConfigurationNotFound, \"The metadata configuration was not found\" (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketMetadataTableConfiguration: GET /{bucket}?metadataTable",
+      "detail": "GetBucketMetadataTableConfiguration is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 405 V1APIsNotAllowed, \"The V1 GetBucketMetadataTableConfiguration API operation isn't available for this account\" (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketMetricsConfiguration: GET /{bucket}?metrics",
+      "detail": "GetBucketMetricsConfiguration is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 NoSuchConfiguration for an `id` that is not configured; the bare `?metrics` the probe sends is the List form (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketNotification: GET /{bucket}?notification",
+      "detail": "GetBucketNotification is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <NotificationConfiguration/>, empty (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketNotificationConfiguration: GET /{bucket}?notification",
+      "detail": "GetBucketNotificationConfiguration is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <NotificationConfiguration/>, empty (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketOwnershipControls: GET /{bucket}?ownershipControls",
+      "detail": "GetBucketOwnershipControls is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <OwnershipControls> with ObjectOwnership BucketOwnerEnforced (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketPolicy: GET /{bucket}?policy",
+      "detail": "GetBucketPolicy is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 NoSuchBucketPolicy (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketPolicyStatus: GET /{bucket}?policyStatus",
+      "detail": "GetBucketPolicyStatus is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 NoSuchBucketPolicy (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketReplication: GET /{bucket}?replication",
+      "detail": "GetBucketReplication is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 ReplicationConfigurationNotFoundError (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketRequestPayment: GET /{bucket}?requestPayment",
+      "detail": "GetBucketRequestPayment is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <RequestPaymentConfiguration> with Payer BucketOwner (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketTagging: GET /{bucket}?tagging",
+      "detail": "GetBucketTagging is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 NoSuchTagSet, \"The TagSet does not exist\" (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketVersioning: GET /{bucket}?versioning",
+      "detail": "GetBucketVersioning is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <VersioningConfiguration/>, empty (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetBucketWebsite: GET /{bucket}?website",
+      "detail": "GetBucketWebsite is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 NoSuchWebsiteConfiguration (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetObjectAcl: GET /{object}?acl",
+      "detail": "GetObjectAcl is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the object's bytes. Real S3 answers 200 <AccessControlPolicy> with the object owner (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetObjectAnnotation: GET /{object}?annotation",
+      "detail": "GetObjectAnnotation is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the object's bytes. Real S3 answers 200 <ListObjectAnnotationsOutput> with empty Annotations; the bare `?annotation` the probe sends is the List form (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetObjectAttributes: GET /{object}?attributes",
+      "detail": "GetObjectAttributes is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the object's bytes. Real S3 answers 400 InvalidRequest, \"The x-amz-object-attributes header specifying the attributes to be retrieved is either missing or empty\" (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetObjectLegalHold: GET /{object}?legal-hold",
+      "detail": "GetObjectLegalHold is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the object's bytes. Real S3 answers 400 InvalidRequest, \"Bucket is missing Object Lock Configuration\" (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetObjectLockConfiguration: GET /{bucket}?object-lock",
+      "detail": "GetObjectLockConfiguration is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 404 ObjectLockConfigurationNotFoundError (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetObjectRetention: GET /{object}?retention",
+      "detail": "GetObjectRetention is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the object's bytes. Real S3 answers 400 InvalidRequest, \"Bucket is missing Object Lock Configuration\" (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetObjectTagging: GET /{object}?tagging",
+      "detail": "GetObjectTagging is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the object's bytes. Real S3 answers 200 <Tagging> with an empty TagSet (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetObjectTorrent: GET /{object}?torrent",
+      "detail": "GetObjectTorrent is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the object's bytes. Real S3 answers 405 RequestTorrentNotSupportedInRegion (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GetPublicAccessBlock: GET /{bucket}?publicAccessBlock",
+      "detail": "GetPublicAccessBlock is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <PublicAccessBlockConfiguration> with BlockPublicAcls true (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "ListBucketAnalyticsConfigurations: GET /{bucket}?analytics",
+      "detail": "ListBucketAnalyticsConfigurations is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <ListBucketAnalyticsConfigurationsResult>, empty (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "ListBucketIntelligentTieringConfigurations: GET /{bucket}?intelligent-tiering",
+      "detail": "ListBucketIntelligentTieringConfigurations is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <ListIntelligentTieringConfigurationsResult>, empty (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "ListBucketInventoryConfigurations: GET /{bucket}?inventory",
+      "detail": "ListBucketInventoryConfigurations is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <ListInventoryConfigurationsResult>, empty (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "ListBucketMetricsConfigurations: GET /{bucket}?metrics",
+      "detail": "ListBucketMetricsConfigurations is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <ListMetricsConfigurationsResult>, empty (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "ListMultipartUploads: GET /{bucket}?uploads",
+      "detail": "ListMultipartUploads is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <ListMultipartUploadsResult> (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "ListObjectAnnotations: GET /{object}?annotation",
+      "detail": "ListObjectAnnotations is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the object's bytes. Real S3 answers 200 <ListObjectAnnotationsOutput> with empty Annotations (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "ListObjectVersions: GET /{bucket}?versions",
+      "detail": "ListObjectVersions is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the listing. Real S3 answers 200 <ListVersionsResult> (measured against a general purpose bucket with none of this configured)."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "ListParts: GET /{object}?uploadId",
+      "detail": "ListParts is refused (501), which is an honest answer for an operation Backlot does not serve",
+      "note": "Refused with NotImplemented (501) rather than answered with the object's bytes. Real S3 answers 404 NoSuchUpload for an upload id that does not exist, whether or not the key does, so Backlot refuses it before looking the key up (measured against a general purpose bucket with none of this configured)."
     }
   ]
 }

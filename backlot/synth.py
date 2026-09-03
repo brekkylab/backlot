@@ -646,6 +646,18 @@ def linear_release_id(name: str) -> str:
     return _uuid_from("linear-release:" + (name or ""))
 
 
+def linear_release_pipeline_id(name: str) -> str:
+    """The pipeline a release belongs to. Linear declares ``Release.pipeline`` non-null, and the
+    corpus names a release and nothing above it, so the pipeline is keyed off the release name --
+    one per release, stable, and never presented as more than an id."""
+    return _uuid_from("linear-release-pipeline:" + (name or ""))
+
+
+def linear_release_stage_id(name: str) -> str:
+    """The stage a release is in; same reasoning as :func:`linear_release_pipeline_id`."""
+    return _uuid_from("linear-release-stage:" + (name or ""))
+
+
 def linear_team_key(container: str) -> str:
     """A team's short key — the prefix its issue identifiers carry (``ENG-123``).
 

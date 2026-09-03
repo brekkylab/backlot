@@ -10,13 +10,15 @@ not merely that it filters something.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import pytest
-from graphql import build_client_schema, parse, validate
+from graphql import build_client_schema, is_enum_type, parse, validate
 
 from backlot import synth
-from backlot.graphql import mcp_tools
+from backlot.fidelity.graphql_diff import backlot_schema
+from backlot.graphql import linear_filters, mcp_tools
 from tests._helpers import (
     build_corpus,
     client_for,
@@ -502,11 +504,24 @@ def test_linear_attachments_from_both_bench_shapes(client, admin_h):
     assert got["artifacts.zip"] == "https://ci.acme.test/builds/4821/artifacts.zip"  # derived
 
 
-def test_linear_attachments_url_argument_and_filter(client, admin_h):
-    one = gql(
+def test_linear_attachments_take_no_url_argument_and_filter_by_url_instead(client, admin_h):
+    """Linear's `Issue.attachments` has no `url:` argument -- the real API answers
+    `Unknown argument "url" on field "Issue.attachments"` (measured 2026-09-03). Backlot accepted one
+    and called it Linear's own; a client narrows by url through the filter."""
+    r = gql(
         client,
         '{ issue(id: "ENG-102") { attachments(url: "https://conf.acme.test/design/'
         'batching") { nodes { title } } } }',
+        admin_h,
+    )
+    assert r.status_code == 400 and "data" not in r.json()
+    assert r.json()["errors"][0]["message"] == (
+        "Unknown argument 'url' on field 'Issue.attachments'."
+    )
+    one = gql(
+        client,
+        '{ issue(id: "ENG-102") { attachments(filter: {url: {eq: "https://conf.acme.test/design/'
+        'batching"}}) { nodes { title } } } }',
         admin_h,
     )
     assert [n["title"] for n in one.json()["data"]["issue"]["attachments"]["nodes"]] == [
@@ -599,10 +614,21 @@ CORPUS = [
         "labels": ["bug", "gateway"],
         "project": "runtime",
         "cycle": "2026-W01",
+        "dueDate": "2026-03-15",
         "assignee": "bob@acme.com",
         "assigneeName": "Bob Stone",
         "created": "2026-01-01T00:00:00Z",
         "comments": [{"content": "first note", "author_email": "bob@acme.com"}],
+        # Two attachments with a `sourceType`, for the `SourceTypeComparator` operators. The
+        # accented one is what `containsIgnoreCaseAndAccent` is about.
+        "attachments": [
+            {"url": "https://ci.acme.test/run/1", "title": "CI run", "sourceType": "github"},
+            {
+                "url": "https://acme.slack.com/archives/C1/p1",
+                "title": "Réunion notes",
+                "sourceType": "slack-équipe",
+            },
+        ],
     },
     {
         "source_type": "linear",
@@ -620,6 +646,8 @@ CORPUS = [
         "estimate": 5,
         "labels": ["bug"],
         "project": "runtime",
+        "release": "runtime-1.19",
+        "dueDate": "2026-04-01",
         "created": "2026-02-01T00:00:00Z",
         "comments": [{"content": "second note", "author_email": "ava@acme.com"}],
     },
@@ -667,6 +695,16 @@ def err(fclient, filter_literal, root="issues") -> str:
     ).json()
     assert "errors" in body, f"expected an error, got {body}"
     return body["errors"][0]["message"]
+
+
+def post(fclient, query: str, variables: dict | None = None):
+    """The raw response, for the tests that assert on the status code and the envelope."""
+    body: dict = {"query": query}
+    if variables is not None:
+        body["variables"] = variables
+    return fclient.post(
+        "/linear/graphql", json=body, headers={"Authorization": fclient.__dict__["_admin"]}
+    )
 
 
 ALL = ["DES-1", "ENG-1", "ENG-2"]
@@ -756,8 +794,41 @@ def test_date_comparators_coerce_iso8601_to_the_stored_epoch(fclient):
     assert ids(fclient, '{createdAt: {gte: "2026-02-01T00:00:00Z"}}') == ["DES-1", "ENG-2"]
 
 
-def test_a_malformed_date_is_an_error_not_a_silent_mismatch(fclient):
-    assert "ISO-8601" in err(fclient, '{createdAt: {gt: "not-a-date"}}')
+@pytest.mark.parametrize(
+    "literal",
+    ['"not-a-date"', '"1700000000"', '"20210305"', '"P"', '"2021-13-01"', '""'],
+    ids=["text", "bare-epoch", "basic-format", "empty-duration", "month-13", "empty"],
+)
+def test_a_malformed_date_is_the_validation_error_linear_answers(fclient, literal):
+    """Measured 2026-09-03: each of these is a 400 from api.linear.app, the error made by the
+    `DateTimeOrDuration` scalar itself -- `Expected value of type "DateTimeOrDuration", found "P";
+    Unable to parse value 'P' into a valid date` -- with no `data` key. A bare epoch is in the list
+    on purpose: an earlier Backlot accepted one, which real Linear never did."""
+    r = post(
+        fclient, "{ issues(filter: {createdAt: {gt: %s}}) { nodes { identifier } } }" % literal
+    )
+    assert r.status_code == 400
+    body = r.json()
+    assert "data" not in body
+    message = body["errors"][0]["message"]
+    assert message.startswith("Expected value of type 'DateTimeOrDuration', found ")
+    assert message.endswith("into a valid date")
+
+
+def test_a_date_operand_must_be_a_string(fclient):
+    """Linear: `Unable to parse literal value of kind 'IntValue'. DateTimeOrDuration supports only
+    'StringValue' ones` for a literal, and `... supports only string values` for a variable."""
+    r = post(fclient, "{ issues(filter: {createdAt: {gt: 1700000000}}) { nodes { identifier } } }")
+    assert r.status_code == 400
+    assert "supports only 'StringValue' ones" in r.json()["errors"][0]["message"]
+    q = "query($d: DateTimeOrDuration) { issues(filter: {createdAt: {gt: $d}}) { nodes { id } } }"
+    r = post(fclient, q, {"d": 1700000000})
+    assert r.status_code == 400
+    assert r.json()["errors"][0]["message"].startswith("Variable '$d' got invalid value 1700000000")
+    assert "supports only string values" in r.json()["errors"][0]["message"]
+    r = post(fclient, q, {"d": "not-a-date"})
+    assert r.status_code == 400
+    assert "Expected type 'DateTimeOrDuration'" in r.json()["errors"][0]["message"]
 
 
 # --- nested object filters -------------------------------------------------------------
@@ -911,6 +982,408 @@ def test_an_empty_labels_predicate_is_an_error_not_a_no_op(fclient):
 def _linear_client(tmp_path):
     """``with _linear_client(p) as (client, settings):`` over LINEAR_CORPUS."""
     return corpus_client(tmp_path, LINEAR_CORPUS)
+
+
+# --- schema drift against api.linear.app (issue #101) --------------------------------------------
+# Every type below is what introspection of https://api.linear.app/graphql reported on 2026-09-03,
+# copied here as literals so the suite runs offline; `backlot diff --source linear` is the live
+# re-measurement and `backlot/fidelity/baseline/linear.json` the record of the gaps it accepts.
+# Each entry was a `breaking` finding in #101: Backlot declared the same name at a different type,
+# or declared a name the vendor does not have. The behaviour tests after the tables pin that the
+# resolvers PRODUCE the corrected types -- a changed declaration on its own is not a fix.
+
+# field path -> the type Linear declares it at
+LINEAR_TYPES = {
+    # date comparators take DateTimeOrDuration, not DateTime
+    **{
+        f"DateComparator.{op}": "DateTimeOrDuration"
+        for op in ("eq", "neq", "lt", "lte", "gt", "gte")
+    },
+    **{
+        f"NullableDateComparator.{op}": "DateTimeOrDuration"
+        for op in ("eq", "neq", "lt", "lte", "gt", "gte")
+    },
+    # enums that were served as a bare String
+    "ExternalEntityInfo.id": "String!",
+    "ExternalEntityInfo.service": "ExternalSyncService!",
+    "Issue.integrationSourceType": "IntegrationService",
+    "IssueSharedAccess.disallowedIssueFields": "[IssueSharedAccessDisallowedField!]!",
+    "Project.frequencyResolution": "FrequencyResolutionType!",
+    "Project.health": "ProjectUpdateHealthType",
+    "Project.startDateResolution": "DateResolutionType",
+    "Project.targetDateResolution": "DateResolutionType",
+    "Project.updateRemindersDay": "Day",
+    "ReleaseNote.generationStatus": "ReleaseNoteGenerationStatus",
+    "Team.visibility": "TeamVisibility!",
+    # counts typed Int!, not Float!
+    "Issue.customerTicketCount": "Int!",
+    "IssueSharedAccess.sharedWithCount": "Int!",
+    "Project.priority": "Int!",
+    "Release.issueCount": "Int!",
+    "ReleaseNote.releaseCount": "Int!",
+    "Team.issueCount": "Int!",
+    "Team.ledInitiativeCount": "Int!",
+    "User.createdIssueCount": "Int!",
+    # filter and sort inputs at the vendor's comparator type
+    "AttachmentFilter.sourceType": "SourceTypeComparator",
+    "IssueFilter.creator": "NullableUserFilter",
+    "IssueFilter.dueDate": "NullableTimelessDateComparator",
+    "IssueFilter.estimate": "EstimateComparator",
+    "IssueFilter.id": "IssueIDComparator",
+    "NullableProjectFilter.id": "EntityIdentifierIDComparator",
+    "UserSortInput.name": "UserNameSort",
+    # non-null where Backlot was nullable
+    "Issue.sharedAccess": "IssueSharedAccess!",
+    "Release.pipeline": "ReleasePipeline!",
+    "Release.stage": "ReleaseStage!",
+    "ReleaseNote.pipeline": "ReleasePipeline!",
+}
+# surface Backlot declared that the vendor has no member for
+LINEAR_HAS_NO_FIELD = [
+    "IssueFilter.branchName",
+    "ReleaseFilter.slugId",
+    "UserSortInput.createdAt",
+    "UserSortInput.updatedAt",
+]
+# enum name -> its members, in introspection order
+LINEAR_ENUMS = {
+    "ExternalSyncService": ["jira", "github", "slack"],
+    "IntegrationService": [
+        "airbyte",
+        "discord",
+        "figma",
+        "figmaPlugin",
+        "front",
+        "github",
+        "gong",
+        "githubEnterpriseServer",
+        "githubCommit",
+        "githubImport",
+        "githubPersonal",
+        "githubCodeAccessPersonal",
+        "gitlab",
+        "googleCalendarPersonal",
+        "googleSheets",
+        "intercom",
+        "jira",
+        "jiraPersonal",
+        "launchDarkly",
+        "launchDarklyPersonal",
+        "loom",
+        "notion",
+        "opsgenie",
+        "pagerDuty",
+        "salesforce",
+        "slack",
+        "slackAsks",
+        "asksWeb",
+        "slackCustomViewNotifications",
+        "slackOrgProjectUpdatesPost",
+        "slackOrgInitiativeUpdatesPost",
+        "slackPersonal",
+        "slackPost",
+        "slackProjectPost",
+        "slackProjectUpdatesPost",
+        "slackInitiativePost",
+        "sentry",
+        "zendesk",
+        "email",
+        "mcpServerPersonal",
+        "mcpServer",
+        "microsoftTeams",
+        "microsoftPersonal",
+        "microsoftTeamsProjectPost",
+    ],  # fmt: skip
+    "IssueSharedAccessDisallowedField": ["projectId", "teamId", "cycleId", "projectMilestoneId"],
+    "FrequencyResolutionType": ["daily", "weekly"],
+    "ProjectUpdateHealthType": ["onTrack", "atRisk", "offTrack"],
+    "DateResolutionType": ["month", "quarter", "halfYear", "year"],
+    "Day": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+    "ReleaseNoteGenerationStatus": ["pending", "completed"],
+    "TeamVisibility": ["public", "restricted", "private"],
+}
+
+
+@pytest.fixture(scope="module")
+def served_schema():
+    """The schema Backlot serves, built from the SDL exactly as `backlot diff` builds it."""
+    return backlot_schema("linear")
+
+
+@pytest.mark.parametrize("path,expected", sorted(LINEAR_TYPES.items()))
+def test_declared_type_is_the_one_linear_declares(served_schema, path, expected):
+    type_name, field = path.split(".")
+    assert str(served_schema.type_map[type_name].fields[field].type) == expected
+
+
+@pytest.mark.parametrize("path", LINEAR_HAS_NO_FIELD)
+def test_a_field_linear_does_not_have_is_not_declared(served_schema, path):
+    type_name, field = path.split(".")
+    assert field not in served_schema.type_map[type_name].fields
+
+
+def test_attachments_declares_no_url_argument(served_schema):
+    assert "url" not in served_schema.type_map["Issue"].fields["attachments"].args
+
+
+@pytest.mark.parametrize("name,members", sorted(LINEAR_ENUMS.items()))
+def test_enum_carries_linears_full_member_list(served_schema, name, members):
+    """A partial enum would reject a value the real API serves; `backlot diff` compares the two
+    lists member for member, so the declared list is the vendor's whole one."""
+    t = served_schema.type_map[name]
+    assert is_enum_type(t)
+    assert list(t.values) == members
+
+
+def test_user_name_sort_defaults_nulls_to_last_as_linear_does(fclient):
+    fields = post(
+        fclient, '{ __type(name: "UserNameSort") { inputFields { name defaultValue } } }'
+    ).json()["data"]["__type"]["inputFields"]
+    assert {f["name"]: f["defaultValue"] for f in fields} == {"nulls": "last", "order": None}
+
+
+# --- the resolvers produce the corrected types -------------------------------------------------
+
+
+def test_counts_are_served_as_json_integers(fclient):
+    """`Int!` on the wire is `0`, not `0.0` -- what a real issue answers for `customerTicketCount`
+    (measured 2026-09-03). Seven of the eight retyped counts are reachable from an issue;
+    `ReleaseNote.releaseCount` is not, because no corpus produces a release note."""
+    r = post(
+        fclient,
+        """{ issue(id: "ENG-2") {
+            customerTicketCount
+            sharedAccess { sharedWithCount }
+            project { priority }
+            team { issueCount ledInitiativeCount }
+            creator { createdIssueCount }
+            releases { nodes { issueCount } }
+        } }""",
+    ).json()
+    assert "errors" not in r, r.get("errors")
+    d = r["data"]["issue"]
+    counts = {
+        "Issue.customerTicketCount": d["customerTicketCount"],
+        "IssueSharedAccess.sharedWithCount": d["sharedAccess"]["sharedWithCount"],
+        "Project.priority": d["project"]["priority"],
+        "Team.issueCount": d["team"]["issueCount"],
+        "Team.ledInitiativeCount": d["team"]["ledInitiativeCount"],
+        "User.createdIssueCount": d["creator"]["createdIssueCount"],
+        "Release.issueCount": d["releases"]["nodes"][0]["issueCount"],
+    }
+    not_int = {k: v for k, v in counts.items() if type(v) is not int}
+    assert not not_int, not_int
+
+
+def test_enum_fields_serve_a_member_of_the_vendors_enum(fclient):
+    """`frequencyResolution` used to be served as "week", which is not a `FrequencyResolutionType`
+    member; under the enum declaration that is a serialization error, not a string."""
+    r = post(
+        fclient,
+        """{ issue(id: "ENG-2") {
+            integrationSourceType
+            team { visibility }
+            project { frequencyResolution health startDateResolution targetDateResolution
+                      updateRemindersDay }
+            sharedAccess { disallowedIssueFields }
+        } }""",
+    ).json()
+    assert "errors" not in r, r.get("errors")
+    d = r["data"]["issue"]
+    assert d["team"]["visibility"] == "public"
+    assert d["project"]["frequencyResolution"] in LINEAR_ENUMS["FrequencyResolutionType"]
+    # nullable enums with nothing behind them stay null rather than inventing a member
+    assert d["integrationSourceType"] is None
+    assert d["project"]["health"] is None
+    assert d["project"]["updateRemindersDay"] is None
+    assert d["sharedAccess"]["disallowedIssueFields"] == []
+
+
+def test_release_stage_and_pipeline_are_non_null_and_stable(fclient):
+    """`Release.stage` / `Release.pipeline` are `ReleaseStage!` / `ReleasePipeline!` upstream; a
+    null would void the whole `release` result under that declaration. Each is an id-only stub
+    keyed off the release name, so the two ids differ and the by-id root agrees with the connection."""
+    q = '{ issue(id: "ENG-2") { releases { nodes { id stage { id } pipeline { id } } } } }'
+    node = post(fclient, q).json()["data"]["issue"]["releases"]["nodes"][0]
+    assert node["stage"]["id"] and node["pipeline"]["id"]
+    assert node["stage"]["id"] != node["pipeline"]["id"] != node["id"]
+    again = post(
+        fclient, "{ release(id: %s) { stage { id } pipeline { id } } }" % lit(node["id"])
+    ).json()["data"]["release"]
+    assert again == {"stage": node["stage"], "pipeline": node["pipeline"]}
+
+
+@pytest.mark.parametrize(
+    "query,message",
+    [
+        (
+            '{ issues(filter: {branchName: {eq: "x"}}) { nodes { id } } }',
+            "Field 'branchName' is not defined by type 'IssueFilter'.",
+        ),
+        (
+            '{ issue(id: "ENG-2") { releases(filter: {slugId: {eq: "x"}}) { nodes { id } } } }',
+            "Field 'slugId' is not defined by type 'ReleaseFilter'.",
+        ),
+        (
+            "{ users(sort: [{createdAt: {order: Descending}}]) { nodes { id } } }",
+            "Field 'createdAt' is not defined by type 'UserSortInput'.",
+        ),
+        (
+            "{ users(sort: [{updatedAt: {order: Descending}}]) { nodes { id } } }",
+            "Field 'updatedAt' is not defined by type 'UserSortInput'.",
+        ),
+    ],
+    ids=[
+        "IssueFilter.branchName",
+        "ReleaseFilter.slugId",
+        "UserSortInput.createdAt",
+        "UserSortInput.updatedAt",
+    ],
+)
+def test_surface_linear_rejects_is_a_400_here_too(fclient, query, message):
+    """Measured 2026-09-03: each of these is a validation error from api.linear.app (`Field
+    "branchName" is not defined by type "IssueFilter"`), so accepting it here let a filter compile
+    that no client written against Linear could send."""
+    r = post(fclient, query)
+    assert r.status_code == 400 and "data" not in r.json()
+    assert message in [e["message"] for e in r.json()["errors"]]
+
+
+def test_users_sort_by_name_is_applied_in_both_directions(fclient):
+    """`users(sort:)` was declared and ignored. A sort that is accepted and dropped answers a client
+    asking for Z->A with A->Z: a wrong result, not an error."""
+    q = "{ users(sort: [{name: {order: %s}}]) { nodes { name } } }"
+    asc = [n["name"] for n in post(fclient, q % "Ascending").json()["data"]["users"]["nodes"]]
+    desc = [n["name"] for n in post(fclient, q % "Descending").json()["data"]["users"]["nodes"]]
+    assert len(asc) > 1
+    assert asc == sorted(asc)
+    assert desc == sorted(asc, reverse=True)
+
+
+# --- the date operands: DateTimeOrDuration / TimelessDateOrDuration -----------------------------
+
+
+@pytest.fixture
+def now_is_2026_03_01_noon(monkeypatch):
+    """Pins the instant a duration is relative to. DES-1 was created at exactly 2026-03-01T00:00Z,
+    so `-PT12H` lands on its boundary and `-P1M` between ENG-2 (Feb 1) and DES-1."""
+    pinned = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(linear_filters, "_now", lambda: pinned)
+    return pinned
+
+
+def test_duration_operands_are_relative_to_now(fclient, now_is_2026_03_01_noon):
+    """Linear: a duration "is added to the current date to create the represented date (e.g
+    '-P2W1D' represents the date that was two weeks and 1 day ago)"."""
+    assert ids(fclient, '{createdAt: {gt: "-P1M"}}') == ["DES-1"]  # Feb 1 12:00 < Mar 1
+    assert ids(fclient, '{createdAt: {lt: "-P1M"}}') == ["ENG-1", "ENG-2"]
+    assert ids(fclient, '{createdAt: {gte: "-P2M1D"}}') == ALL  # Dec 31 12:00
+    assert ids(fclient, '{createdAt: {gte: "-PT12H"}}') == ["DES-1"]  # exactly its createdAt
+    assert ids(fclient, '{createdAt: {gt: "-PT12H"}}') == []
+    assert ids(fclient, '{createdAt: {lt: "P1D"}}') == ALL  # a positive duration is the future
+    assert ids(fclient, '{createdAt: {gte: "-P1Y2M3W4DT5H6M7S"}}') == ALL  # every component
+
+
+def test_year_and_month_shortcuts_are_the_first_instant(fclient):
+    """Linear: "Accepts shortcuts like `2021` to represent midnight Fri Jan 01 2021"; `2026-02`
+    validates too (measured). ENG-1 sits exactly on 2026-01-01T00:00Z."""
+    assert ids(fclient, '{createdAt: {gte: "2026"}}') == ALL
+    assert ids(fclient, '{createdAt: {gt: "2026"}}') == ["DES-1", "ENG-2"]
+    assert ids(fclient, '{createdAt: {gte: "2026-02"}}') == ["DES-1", "ENG-2"]
+    assert ids(fclient, '{createdAt: {lt: "2026-02"}}') == ["ENG-1"]
+
+
+def test_date_comparators_take_in_and_nin(fclient):
+    """`in` / `nin` were gaps on both date comparators; the operands go through the same scalar."""
+    assert ids(fclient, '{createdAt: {in: ["2026-01-01T00:00:00Z", "2026-03-01"]}}') == [
+        "DES-1",
+        "ENG-1",
+    ]
+    assert ids(fclient, '{createdAt: {nin: ["2026-01-01T00:00:00Z"]}}') == ["DES-1", "ENG-2"]
+    assert ids(fclient, '{completedAt: {nin: ["2026"]}}') == []  # every completed_ts is NULL
+    # `null` on a date comparator carries a Boolean, which must not go through the date scalar.
+    assert ids(fclient, "{completedAt: {null: true}}") == ALL
+    assert ids(fclient, "{completedAt: {null: false}}") == []
+
+
+def test_due_date_is_compared_as_a_timeless_date(fclient, now_is_2026_03_01_noon):
+    """`IssueFilter.dueDate` is a `NullableTimelessDateComparator` over `TimelessDateOrDuration`:
+    a full timestamp is read down to its day, a duration is relative to today, and the column is
+    the bare YYYY-MM-DD. ENG-1 is due 2026-03-15, ENG-2 2026-04-01, DES-1 has no due date."""
+    assert ids(fclient, '{dueDate: {eq: "2026-03-15"}}') == ["ENG-1"]
+    assert ids(fclient, '{dueDate: {eq: "2026-03-15T23:59:59Z"}}') == ["ENG-1"]
+    assert ids(fclient, '{dueDate: {neq: "2026-03-15"}}') == ["DES-1", "ENG-2"]
+    assert ids(fclient, '{dueDate: {lt: "2026-04-01"}}') == ["ENG-1"]
+    assert ids(fclient, '{dueDate: {lte: "2026-04-01"}}') == ["ENG-1", "ENG-2"]
+    assert ids(fclient, '{dueDate: {gt: "2026-03-15"}}') == ["ENG-2"]
+    assert ids(fclient, '{dueDate: {gte: "2026-03"}}') == ["ENG-1", "ENG-2"]  # month shortcut
+    assert ids(fclient, '{dueDate: {in: ["2026-03-15", "2026-04-01"]}}') == ["ENG-1", "ENG-2"]
+    assert ids(fclient, '{dueDate: {nin: ["2026-03-15"]}}') == ["ENG-2"]
+    assert ids(fclient, "{dueDate: {null: true}}") == ["DES-1"]
+    assert ids(fclient, "{dueDate: {null: false}}") == ["ENG-1", "ENG-2"]
+    assert ids(fclient, '{dueDate: {eq: "P14D"}}') == ["ENG-1"]  # 2026-03-01 + 14 days
+    assert ids(fclient, '{dueDate: {gte: "P1M"}}') == ["ENG-2"]  # 2026-04-01, inclusive
+    assert ids(fclient, '{dueDate: {gt: "P1M"}}') == []
+    r = post(fclient, '{ issues(filter: {dueDate: {eq: "nope"}}) { nodes { id } } }')
+    assert r.status_code == 400
+    assert r.json()["errors"][0]["message"].startswith(
+        "Expected value of type 'TimelessDateOrDuration', found "
+    )
+
+
+# --- the retyped filter inputs ----------------------------------------------------------------
+
+
+def test_estimate_comparator_nests_and_or(fclient):
+    """`EstimateComparator` is the nullable number comparator plus `and` / `or` over plain ones."""
+    assert ids(fclient, "{estimate: {or: [{eq: 1}, {eq: 5}]}}") == ["ENG-1", "ENG-2"]
+    assert ids(fclient, "{estimate: {and: [{gte: 1}, {lt: 5}]}}") == ["ENG-1"]
+    assert ids(fclient, "{estimate: {or: [{null: true}, {gt: 4}]}}") == ["DES-1", "ENG-2"]
+    assert ids(fclient, "{estimate: {and: []}}") == ALL  # an empty compound constrains nothing
+    assert ids(fclient, "{estimate: {lte: 1, or: [{eq: 1}, {eq: 5}]}}") == ["ENG-1"]  # siblings AND
+
+
+def test_creator_filter_is_nullable_as_linears(fclient):
+    """`IssueFilter.creator` is a `NullableUserFilter` upstream. Every issue here names its creator
+    (`author_email` is NOT NULL), so `null: true` is honestly empty and `null: false` everything."""
+    assert ids(fclient, "{creator: {null: true}}") == []
+    assert ids(fclient, "{creator: {null: false}}") == ALL
+    assert ids(fclient, '{creator: {null: false, email: {eq: "mia@acme.com"}}}') == ["DES-1"]
+
+
+def test_issue_id_and_project_id_comparators_keep_their_operators(fclient):
+    """The renamed comparators (`IssueIDComparator`, `EntityIdentifierIDComparator`) carry the same
+    four operators; an issue id still resolves either key space, a project id the served UUID."""
+    assert ids(fclient, '{id: {in: ["ENG-1", "DES-1"]}}') == ["DES-1", "ENG-1"]
+    assert ids(fclient, '{id: {nin: ["ENG-1"]}}') == ["DES-1", "ENG-2"]
+    pid = lit(synth.linear_project_id("runtime"))
+    assert ids(fclient, "{project: {id: {eq: %s}}}" % pid) == ["ENG-1", "ENG-2"]
+    assert ids(fclient, "{project: {id: {neq: %s}}}" % pid) == ["DES-1"]
+
+
+def test_source_type_comparator_evaluates_every_operator(fclient):
+    """`AttachmentFilter.sourceType` is a `SourceTypeComparator`: the string operators plus their
+    negations, case-insensitive and accent-insensitive forms. ENG-1 carries `github` and
+    `slack-équipe`."""
+
+    def titles(filter_literal):
+        q = (
+            '{ issue(id: "ENG-1") { attachments(filter: %s) { nodes { title } } } }'
+            % filter_literal
+        )
+        body = post(fclient, q).json()
+        assert "errors" not in body, body.get("errors")
+        return sorted(n["title"] for n in body["data"]["issue"]["attachments"]["nodes"])
+
+    assert titles('{sourceType: {eq: "github"}}') == ["CI run"]
+    assert titles('{sourceType: {notContains: "hub"}}') == ["Réunion notes"]
+    assert titles('{sourceType: {notContainsIgnoreCase: "GIT"}}') == ["Réunion notes"]
+    assert titles('{sourceType: {startsWithIgnoreCase: "SL"}}') == ["Réunion notes"]
+    assert titles('{sourceType: {notStartsWith: "sl"}}') == ["CI run"]
+    assert titles('{sourceType: {notEndsWith: "quipe"}}') == ["CI run"]
+    assert titles('{sourceType: {containsIgnoreCaseAndAccent: "EQUIPE"}}') == ["Réunion notes"]
+    assert titles('{sourceType: {contains: "equipe"}}') == []  # plain contains is exact
+    assert titles('{sourceType: {in: ["github", "slack-équipe"]}}') == ["CI run", "Réunion notes"]
 
 
 # --- Linear -----------------------------------------------------------------------

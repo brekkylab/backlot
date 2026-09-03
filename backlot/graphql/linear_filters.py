@@ -16,34 +16,173 @@ Two design rules make the result trustworthy rather than merely convenient:
 - **Derived fields are expanded, not faked.** ``state.type`` and ``team.key`` have no column:
   both are pure functions of a column whose distinct values are a handful of rows, so they
   compile to an ``IN`` over the names that satisfy the predicate. That is exact, not approximate.
+
+The date comparators take Linear's ``DateTimeOrDuration`` / ``TimelessDateOrDuration`` scalars, whose
+grammar (ISO 8601, year and year-month shortcuts, and ISO 8601 durations relative to now) is
+implemented at the top of this module and bound onto the scalars themselves, so a bad operand is
+the same validation error Linear answers.
 """
 
 from __future__ import annotations
 
+import calendar
 import datetime as _dt
+import re
 
 from graphql import GraphQLError
+from graphql.language import StringValueNode
 
 from backlot import synth
 
+# --- the date operands: Linear's `DateTimeOrDuration` and `TimelessDateOrDuration` ------------
+# Every date comparator in Linear's schema takes one of these two scalars, not a plain `DateTime`.
+# Linear's own description of `DateTimeOrDuration`: "Represents a date and time in ISO 8601 format.
+# Accepts shortcuts like `2021` to represent midnight Fri Jan 01 2021. Also accepts ISO 8601
+# durations strings which are added to the current date to create the represented date (e.g
+# '-P2W1D' represents the date that was two weeks and 1 day ago)". `TimelessDate` carries the
+# identical description.
+#
+# Measured against api.linear.app on 2026-09-03, `createdAt: {gt: X}` for each X:
+#   accepted  "2021"  "2021-03"  "2021-03-05 10:00"  "2026-09-01"  "2026-09-01T05:30:31.786Z"
+#             "1"  "P1D"  "-P1D"  "PT1H"  "-PT1H"  "P1M"  "-P1Y2M3W4DT5H6M7S"
+#   rejected  "1700000000"  "20210305"  "P"  "2021-13-01"  ""   -- each a 400 validation error:
+#             `Expected value of type "DateTimeOrDuration", found "P"; Unable to parse value 'P'
+#             into a valid date`
+#   rejected  a non-string, literal or variable -- `DateTimeOrDuration supports only string values`
+# So a bare epoch is NOT accepted (an earlier version of this module took one), digits alone are a
+# YEAR, and the rejection happens at validation, before any resolver runs. The parsers below are
+# wired in as the scalars' own coercion (``SCALARS``, bound by ``linear_resolvers.build_engine``) so
+# a bad operand is the same 400 here. They raise ``ValueError``, not ``GraphQLError``, on purpose:
+# graphql-core (like graphql-js, which Linear runs) reports a GraphQLError from a scalar verbatim
+# but wraps any other exception as `Expected value of type 'DateTimeOrDuration', found "P"; <message>`
+# -- the envelope the measurement above shows.
 
-def _to_epoch(value) -> int | None:
-    """An ISO-8601 ``DateTime`` operand -> unix seconds, to compare against a ``*_ts`` column.
-    Deliberately NOT an importer's own date coercion: that exists to salvage a corpus's messy
-    human date strings and would drag the whole importer into the serving path. A filter operand
-    comes from a GraphQL client, so ISO-8601 (or a bare epoch) is the whole contract."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return int(value)
-    s = str(value).strip()
+_DURATION = re.compile(
+    r"^(?P<sign>[+-])?P"
+    r"(?:(?P<years>\d+)Y)?(?:(?P<months>\d+)M)?(?:(?P<weeks>\d+)W)?(?:(?P<days>\d+)D)?"
+    r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?$"
+)
+_DURATION_PARTS = ("years", "months", "weeks", "days", "hours", "minutes", "seconds")
+
+
+def _now() -> _dt.datetime:
+    """The instant a duration operand is relative to. A function, so a test can pin it."""
+    return _dt.datetime.now(_dt.timezone.utc)
+
+
+def _add_months(when: _dt.datetime, months: int) -> _dt.datetime:
+    """Calendar months, clamping the day the way every date library does (Jan 31 + 1M = Feb 28)."""
+    index = when.year * 12 + (when.month - 1) + months
+    year, month = divmod(index, 12)
+    month += 1
+    day = min(when.day, calendar.monthrange(year, month)[1])
+    return when.replace(year=year, month=month, day=day)
+
+
+def _from_duration(m: re.Match) -> _dt.datetime:
+    sign = -1 if m.group("sign") == "-" else 1
+    part = {k: float(m.group(k) or 0) for k in _DURATION_PARTS}
+    when = _add_months(_now(), sign * int(part["years"] * 12 + part["months"]))
+    return when + sign * _dt.timedelta(
+        weeks=part["weeks"],
+        days=part["days"],
+        hours=part["hours"],
+        minutes=part["minutes"],
+        seconds=part["seconds"],
+    )
+
+
+def parse_datetime_or_duration(value) -> _dt.datetime:
+    """One ``DateTimeOrDuration`` operand as an aware ``datetime``, or a ``ValueError`` whose
+    message is the one Linear's scalar produces (see the measurements above)."""
+    if not isinstance(value, str):
+        raise ValueError(
+            f"Unable to parse value {value!r}. DateTimeOrDuration supports only string values"
+        )
+    s = value.strip()
+    m = _DURATION.match(s)
+    if m is not None:
+        if not any(m.group(k) for k in _DURATION_PARTS):
+            raise ValueError(f"Unable to parse value {value!r} into a valid date")  # bare "P"
+        return _from_duration(m)
+    # Digits alone are a year ("2021", and Linear also takes "1"); a longer run of digits is
+    # neither a year nor, per the measurement, a basic-format date or an epoch.
     if s.isdigit():
-        return int(s)
+        if len(s) > 4:
+            raise ValueError(f"Unable to parse value {value!r} into a valid date")
+        s = f"{int(s):04d}-01-01"
+    elif re.fullmatch(r"\d{4}-\d{2}", s):
+        s = s + "-01"
     try:
         dt = _dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
-        raise GraphQLError(f"{value!r} is not a valid ISO-8601 DateTime") from None
-    return int((dt if dt.tzinfo else dt.replace(tzinfo=_dt.timezone.utc)).timestamp())
+        raise ValueError(f"Unable to parse value {value!r} into a valid date") from None
+    return dt if dt.tzinfo else dt.replace(tzinfo=_dt.timezone.utc)
+
+
+def parse_timeless_date_or_duration(value) -> str:
+    """One ``TimelessDateOrDuration`` operand as the bare ``YYYY-MM-DD`` the ``due_date`` column
+    holds. Linear documents the scalar with the same text as ``DateTimeOrDuration`` and accepts the
+    same spellings (measured: "2026", "2026-03", "2026-03-15", "2026-03-15T10:00:00Z" and "-P1D"
+    all validate on ``dueDate``), so the grammar is shared and the time of day is dropped. The day
+    is read in UTC: a timeless date has no zone of its own, and UTC is the zone every ``DateTime``
+    this schema serves is written in."""
+    return parse_datetime_or_duration(value).astimezone(_dt.timezone.utc).date().isoformat()
+
+
+def _parse_literal(parse, node, _variables=None):
+    """The literal half of a scalar's coercion. Linear's scalars take a string literal only, and
+    say so: `Unable to parse literal value of kind 'IntValue'. DateTimeOrDuration supports only
+    'StringValue' ones` (measured 2026-09-03)."""
+    if not isinstance(node, StringValueNode):
+        raise ValueError(
+            f"Unable to parse literal value of kind '{type(node).__name__.removesuffix('Node')}'. "
+            "DateTimeOrDuration supports only 'StringValue' ones"
+        )
+    return parse(node.value)
+
+
+# What ``linear_resolvers.build_engine`` binds onto the two scalars: parse the operand up front, so
+# a filter reaches the compiler below carrying a ``datetime`` / a ``YYYY-MM-DD`` string, and a bad
+# operand never reaches it at all.
+SCALARS = {
+    "DateTimeOrDuration": {
+        "parse_value": parse_datetime_or_duration,
+        "parse_literal": lambda node, variables=None: _parse_literal(
+            parse_datetime_or_duration, node, variables
+        ),
+    },
+    "TimelessDateOrDuration": {
+        "parse_value": parse_timeless_date_or_duration,
+        "parse_literal": lambda node, variables=None: _parse_literal(
+            parse_timeless_date_or_duration, node, variables
+        ),
+    },
+}
+
+
+def _to_epoch(value) -> int | None:
+    """A ``DateTimeOrDuration`` operand -> unix seconds, to compare against a ``*_ts`` column.
+    Normally already a ``datetime`` (the scalar coerced it); a string is parsed the same way, for a
+    caller that hands this module a filter without going through the schema."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, _dt.datetime):
+        try:
+            value = parse_datetime_or_duration(value)
+        except ValueError as e:
+            raise GraphQLError(str(e)) from None
+    return int(value.timestamp())
+
+
+def _to_timeless(value) -> str | None:
+    """A ``TimelessDateOrDuration`` operand -> the ``YYYY-MM-DD`` the column holds."""
+    if value is None or value == "":
+        return None
+    try:
+        return parse_timeless_date_or_duration(value)
+    except ValueError as e:
+        raise GraphQLError(str(e)) from None
 
 
 # A comparator key -> how it becomes SQL, given a column expression and the value.
@@ -58,12 +197,19 @@ def _like(value: str) -> str:
 class _Comparator:
     """Renders one comparator object (``{eq: …, contains: …}``) against a column."""
 
-    def __init__(self, col: str, *, text: bool = False, epoch: bool = False):
-        self.col, self.text, self.epoch = col, text, epoch
+    def __init__(
+        self, col: str, *, text: bool = False, epoch: bool = False, timeless: bool = False
+    ):
+        self.col, self.text, self.epoch, self.timeless = col, text, epoch, timeless
 
     def _value(self, v):
-        # A DateComparator's operand is an ISO-8601 string but the column is unix seconds.
-        return _to_epoch(v) if self.epoch else v
+        # A DateComparator's operand is a DateTimeOrDuration but the column is unix seconds; a
+        # NullableTimelessDateComparator's is a TimelessDateOrDuration and the column a YYYY-MM-DD.
+        if self.epoch:
+            return _to_epoch(v)
+        if self.timeless:
+            return _to_timeless(v)
+        return v
 
     def render(self, spec: dict) -> tuple[str, list]:
         parts: list[str] = []
@@ -71,7 +217,20 @@ class _Comparator:
         for op, raw in spec.items():
             if raw is None and op != "null":
                 continue
-            v = self._value(raw)
+            if op in ("and", "or"):
+                # `EstimateComparator` nests plain comparators under `and` / `or`. Each is
+                # rendered against the same column; an empty list constrains nothing.
+                subs = [self.render(x) for x in raw]
+                frags = [f for f, _ in subs if f]
+                for _, p in subs:
+                    params.extend(p)
+                if frags:
+                    parts.append("(" + (" AND " if op == "and" else " OR ").join(frags) + ")")
+                continue
+            # `in` / `nin` carry a list and coerce per element below, and `null` carries a
+            # Boolean; running either through a date operand's coercion hands the scalar something
+            # that is not a date (the old code did, so `completedAt: {null: true}` was an error).
+            v = raw if op in ("in", "nin", "null") else self._value(raw)
             if op == "eq":
                 parts.append(f"{self.col} = ?")
                 params.append(v)
@@ -283,14 +442,18 @@ def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, 
             add(*_Comparator("title").render(spec))
         elif key == "description":
             add(*_Comparator("content").render(spec))
-        elif key == "branchName":
-            add(*_Comparator("branch_name").render(spec))
+        # No `branchName`: Linear's `IssueFilter` has no such field (measured 2026-09-03 -- the
+        # real API answers `Field "branchName" is not defined by type "IssueFilter"`), so this
+        # compiled a predicate no client written against Linear could ever send.
         elif key == "priority":
             add(*_Comparator("priority").render(spec))
         elif key == "estimate":
+            # `EstimateComparator`: the number comparators plus `and` / `or` over them.
             add(*_Comparator("estimate").render(spec))
         elif key == "dueDate":
-            add(*_Comparator("due_date").render(spec))
+            # `NullableTimelessDateComparator`: operands are TimelessDateOrDuration, the column a
+            # bare YYYY-MM-DD, so the comparison is lexical over the ISO date.
+            add(*_Comparator("due_date", timeless=True).render(spec))
         elif key in ("createdAt", "updatedAt", "completedAt", "canceledAt"):
             col = {
                 "createdAt": "created_ts",

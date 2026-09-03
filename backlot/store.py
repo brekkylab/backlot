@@ -1388,17 +1388,16 @@ def linear_relations(
 
 
 def linear_attachments(
-    conn, issue_id, *, visible_ids=None, limit=50, offset=0, url=None, prefilter=None
+    conn, issue_id, *, visible_ids=None, limit=50, offset=0, prefilter=None
 ) -> list[sqlite3.Row]:
     """An issue's attachments. Visibility is the parent issue's — an attachment carries no grant
-    of its own — so the ACL is applied through a join, as it is for comments. ``url`` is Linear's
-    own exact-match argument on this connection."""
+    of its own — so the ACL is applied through a join, as it is for comments. No ``url`` argument:
+    an earlier version took one and called it Linear's own, but Linear's ``Issue.attachments``
+    accepts no such argument (measured against api.linear.app 2026-09-03); a url match is an
+    ``AttachmentFilter`` predicate, evaluated by the resolver."""
     join = "" if visible_ids is None else " JOIN linear_issues i ON i.id = a.issue_id"
     sql = f"SELECT a.* FROM linear_attachments a{join} WHERE a.issue_id = ?"
     params: list = [issue_id]
-    if url is not None:
-        sql += " AND a.url = ?"
-        params.append(url)
     if prefilter:
         frag, fparams = prefilter
         sql += f" AND {frag}"

@@ -997,18 +997,25 @@ async def pull_commits(owner: str, repo: str, number: int, request: Request):
     ]
 
 
-@router.get("/repos/{owner}/{repo}/statuses/{sha}")
+@router.get("/repos/{owner}/{repo}/statuses/{sha:path}")
 async def commit_statuses(owner: str, repo: str, sha: str, request: Request):
     """Statuses for a commit: always empty, and empty is the honest answer rather than a stub.
 
     A corpus records no CI, and real GitHub answers `[]` for a sha nobody reported a status on — so
     this is a shape a client will meet in production, not a Backlot-only degenerate case. It exists
     because a pull's ``statuses_url`` and ``_links.statuses`` name it.
+
+    Empty is the answer for a ref that EXISTS. One that names nothing is a 404, as on real, where
+    `/statuses/main` answers `[]` and `/statuses/totally-made-up` 404s (measured on psf/requests) —
+    the same question :func:`_commit_ish` answers for `/commits` and `git/trees`. The ref is the
+    trailing path for the same reason it is there: `/statuses/bug/5671` resolves on real.
     """
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)  # a repo this caller cannot see must not answer for its shas
+    if sha.strip("/") not in _commit_ish(conn, repo, ids):
+        raise HTTPException(status_code=404, detail="Not Found")
     return []
 
 
@@ -1045,11 +1052,17 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     ``/branches/{branch}``: a branch name containing a slash does not fit in one path segment, so
     without this route such a branch cannot be pinned to a commit at all.
 
-    Any ref resolves to the repo's snapshot commit, as ``/branches`` and ``git/trees`` already do —
-    Backlot keeps no COMMIT history and the schema carries no branch list, so ref EXISTENCE is not
-    knowable here. (A file's own snapshots are a separate axis, reachable on ``/contents`` — see
-    :func:`get_tree`.) That is the documented no-history simplification (see :func:`get_tree`), not the
-    unvalidated-segment bug that the owner check fixes: an owner IS knowable.
+    A ref that exists resolves to the repo's snapshot commit, since Backlot keeps no commit
+    history (see :func:`get_tree`). WHICH refs exist is knowable, and real 404s the rest:
+
+    - ``heads/{name}`` for a name :func:`_branch_names` holds. `heads/totally-made-up` is a 404 on
+      psf/requests, and answering it here made "which branches does this repo have" resolve one
+      way through ``/branches`` and another through this route.
+    - ``pull/{n}/head`` and ``pull/{n}/merge`` for a pull that exists — real serves both
+      (pydantic/pydantic #13686) and 404s a number that does not (#999999). Restricting this route
+      to branches would 404 a ref real resolves.
+    - Nothing else, ``tags/`` included: a corpus states no tags and ``/tags`` says so, so a tag ref
+      has nothing to resolve to.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -1058,7 +1071,7 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     ref = ref.strip("/")
     if ref.startswith("refs/"):  # real API takes `heads/main`; tolerate the fully-qualified form
         ref = ref[len("refs/") :]
-    if not ref:
+    if not _ref_exists(conn, repo, ref, ids):
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
     sha = _repo_commit_sha(repo)
@@ -1074,7 +1087,23 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     }
 
 
-@router.get("/repos/{owner}/{repo}/git/trees/{ref}")
+def _ref_exists(conn, repo: str, ref: str, ids) -> bool:
+    """Whether `ref` — already stripped of any `refs/` prefix — names something in this repo. The
+    namespaces are :func:`get_git_ref`'s; a pull's number is checked against the pulls the CALLER
+    can see, so a ref is not a way to learn a restricted pull exists."""
+    head, _, name = ref.partition("/")
+    if head == "heads":
+        return bool(name) and name in _branch_names(conn, repo, ids)
+    if head == "pull":
+        number, _, kind = name.partition("/")
+        if kind not in ("head", "merge") or not number.isdigit():
+            return False
+        row = store.github_by_number(conn, repo, int(number), ids)
+        return row is not None and row["kind"] == "pull_request"
+    return False
+
+
+@router.get("/repos/{owner}/{repo}/git/trees/{ref:path}")
 async def get_tree(
     owner: str, repo: str, ref: str, request: Request, recursive: str | None = Query(None)
 ):
@@ -1088,14 +1117,15 @@ async def get_tree(
     root's entries under the child's name, so listing `src` yields `src/src` and `src/config` and a
     recursive walk descends until it runs out of stack.
 
-    Two places it stops being exactly the real API, both quiet. A 40-hex sha naming no tree in this
-    repo answers the root with the ROOT's sha rather than 404 — the fallback below is deliberate
-    (it is what keeps a commit sha and a git/ref sha working), and it cannot tell those apart from
-    a sha that means nothing. And a subtree sha resolves PER CALLER, because the entries it is
-    matched against are already `visible_ids`-scoped: a token that can see nothing inside a folder
-    does not find that folder's sha and gets its own root instead. No content crosses the ACL —
-    the answer holds only what that token could already read — but the tree it names is not the
-    one asked for.
+    Everything else `ref` may be is a commit-ish resolving to the ROOT tree — a branch name, or a
+    sha this server hands out as a commit (see :func:`_commit_ish`). A ref that is none of those is
+    a 404, as on real, where both `totally-made-up` and a 40-hex sha naming no object answer 404
+    (measured on psf/requests). This route used to answer the root for any of them, which made a
+    name no branch listing held resolve to a tree.
+
+    A subtree sha resolves PER CALLER, because the entries it is matched against are already
+    `visible_ids`-scoped: a token that can see nothing inside a folder does not find that folder's
+    sha, and gets a 404 where a wider token gets the folder. No content crosses the ACL.
 
     **A tree keeps no history**, so every other `ref` — a branch name, or a sha from /branches,
     /commits or git/ref — resolves to the repo's CURRENT root. FILES themselves do have history: a
@@ -1112,15 +1142,21 @@ async def get_tree(
       snapshot rather than diffed from it (see :func:`_pr_files`) — which is also why a file the
       changeset reports as `removed` is still present here.
 
+    The ref is the trailing PATH, as on `git/ref`: a branch name may contain a slash and real
+    resolves one here (`git/trees/bug/5671` on psf/requests answers that branch's tree).
+
     `truncated` follows the real caps (:data:`TREE_MAX_ENTRIES` / :data:`TREE_MAX_BYTES`)."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
+    ref = ref.strip("/")
     ab = _api_base(request)
     rows = store.list_repo_files(conn, repo, ids)
     entries = _tree_from_paths(owner, repo, rows, ab)
     subtree = _subtree_path(repo, ref, entries)
+    if subtree is None and ref != _repo_tree_sha(repo) and ref not in _commit_ish(conn, repo, ids):
+        raise HTTPException(status_code=404, detail="Not Found")
     if subtree is not None:
         prefix = subtree + "/"
         entries = [
@@ -1179,6 +1215,7 @@ async def _contents_response(
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
+    _require_ref(conn, repo, ref, ids)
     ab = _api_base(request)
     path = path.strip("/")
     if path:
@@ -1196,6 +1233,20 @@ async def _contents_response(
         raise HTTPException(status_code=404, detail="Not Found")
     children = [e for e in entries if _dirname(e["path"]) == path]
     return [_contents_child(owner, repo, e, ab) for e in children]
+
+
+def _require_ref(conn, repo: str, ref: str | None, ids) -> None:
+    """404 unless `ref` names something on this repo, which real does for a ref it has no object
+    for (`?ref=totally-made-up` on psf/requests).
+
+    Wider than the branch listing by one set: a corpus NAMES the snapshots of a file it states
+    (`store.github_file_refs`), and those refs are how an older revision is addressable at all.
+    They are refs without being branches, so they resolve here and are absent from `/branches`.
+    """
+    if ref is None or ref in _commit_ish(conn, repo, ids):
+        return
+    if ref not in store.github_file_refs(conn, repo, ids):
+        raise HTTPException(status_code=404, detail="Not Found")
 
 
 @router.get("/repos/{owner}/{repo}/contents")
@@ -1251,8 +1302,10 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
 async def list_branches(
     owner: str, repo: str, request: Request, protected: str | None = Query(None)
 ):
-    """The repo's branches — one, the branch the corpus snapshots and the `default_branch` a repo
-    object reports.
+    """The repo's branches: the default branch, plus the refs its pulls advertise.
+
+    Which refs those are, and why, is :func:`_branch_names` — including the caller scoping, since
+    the listing is built from pulls and pulls are ACL-filtered.
 
     A listed branch is real's SHORT branch, not the object :func:`get_branch` serves below: on
     api.github.com an item's `commit` carries `sha` and `url` and stops there, where the
@@ -1260,14 +1313,16 @@ async def list_branches(
     both would hand a client a field real GitHub never sends here.
 
     `?protected=` selects, so it is honoured rather than ignored: a client that asked for the
-    protected branches and got an unprotected one back would read this branch as push-guarded.
+    protected branches and got an unprotected one back would read that branch as push-guarded.
     Real has three answers — only protected branches for a true value, only unprotected ones for
     `false`, and all of them when the parameter is omitted — and parses the value the way
     `?recursive=` is parsed, every non-empty value but `false`/`0` reading true. Measured on
     fastapi/fastapi (22 branches, one of them protected): `true`/`1`/`TRUE`/`yes`/`banana` answer
-    1, `false`/`0` answer 21, an empty value and an omitted one answer 22. The single branch here
-    is unprotected, which collapses real's last two answers into the same list, so :func:`_truthy`
-    covers every value.
+    1, `false`/`0` answer 21, an empty value and an omitted one answer 22.
+
+    Real's last two answers coincide here, and go on coinciding however long the listing grows:
+    nothing in a corpus states protection, so every branch is unprotected and the true-value case
+    is the only one that selects. :func:`_truthy` is that split and not the whole rule above.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -1276,15 +1331,10 @@ async def list_branches(
     if _truthy(protected):
         return []
     sha = _repo_commit_sha(repo)
+    url = f"{_api_base(request)}/repos/{owner}/{repo}/commits/{sha}"
     return [
-        {
-            "name": "main",
-            "commit": {
-                "sha": sha,
-                "url": f"{_api_base(request)}/repos/{owner}/{repo}/commits/{sha}",
-            },
-            "protected": False,
-        }
+        {"name": name, "commit": {"sha": sha, "url": url}, "protected": False}
+        for name in _branch_names(conn, repo, ids)
     ]
 
 
@@ -1302,12 +1352,22 @@ async def list_tags(owner: str, repo: str, request: Request):
     return []
 
 
-@router.get("/repos/{owner}/{repo}/branches/{branch}")
+@router.get("/repos/{owner}/{repo}/branches/{branch:path}")
 async def get_branch(owner: str, repo: str, branch: str, request: Request):
+    """One branch, if the listing holds it — 404 otherwise, as real answers for a name no branch
+    has (measured on psf/requests).
+
+    The name is the trailing PATH because a branch name may contain a slash and real serves it
+    whole: `/branches/bug/5671` on psf/requests answers that branch, where a single path segment
+    could only 404 it.
+    """
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
+    branch = branch.strip("/")
+    if branch not in _branch_names(conn, repo, ids):
+        raise HTTPException(status_code=404, detail="Branch not found")
     ab = _api_base(request)
     commit_sha, tree_sha = _repo_commit_sha(repo), _repo_tree_sha(repo)
     return {
@@ -1321,12 +1381,23 @@ async def get_branch(owner: str, repo: str, branch: str, request: Request):
     }
 
 
-@router.get("/repos/{owner}/{repo}/commits/{sha}")
+@router.get("/repos/{owner}/{repo}/commits/{sha:path}")
 async def get_commit(owner: str, repo: str, sha: str, request: Request):
+    """One commit, by sha or by a ref standing for one — real takes a branch name here and answers
+    that branch's head (`/commits/main` and `git/trees/main` report the same sha on psf/requests),
+    a slashed one included, which is why the ref is the trailing path.
+
+    A ref naming no commit is real's 422 rather than a 404 (see :func:`_no_commit_for_sha`). This
+    route used to echo any string back as a sha with a 200, so a client that pinned to a name it
+    had misspelled read a commit that does not exist.
+    """
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
+    sha = sha.strip("/")
+    if sha not in _commit_ish(conn, repo, ids):
+        raise _no_commit_for_sha(sha)
     ab = _api_base(request)
     tree_sha = _repo_tree_sha(repo)
     return {
@@ -1351,6 +1422,7 @@ async def get_readme(owner: str, repo: str, request: Request, ref: str | None = 
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
+    _require_ref(conn, repo, ref, ids)
     ab = _api_base(request)
     row = store.get_repo_file(conn, repo, "README.md", ids, ref=ref) or store.get_repo_file(
         conn, repo, "readme.md", ids, ref=ref
@@ -1459,6 +1531,12 @@ async def list_repo_teams(owner: str, repo: str, request: Request):
 # --- repo file tree / contents / blobs ------------------------------------------
 
 
+# The refs a pull advertises when the corpus states neither. `_pr_obj` serves these and
+# `_branch_names` lists them: a corpus that names no branches must still not contradict itself.
+_DEFAULT_BRANCH = "main"
+_UNSTATED_HEAD_REF = "feature"
+
+
 def _truthy(v: str | None) -> bool:
     """GitHub's `?recursive=` accepts any non-empty, non-'0'/'false' value as true."""
     return v is not None and v.lower() not in ("", "0", "false")
@@ -1474,6 +1552,68 @@ def _repo_tree_sha(repo: str) -> str:
 
 def _repo_commit_sha(repo: str) -> str:
     return hashlib.sha1(f"commit:{repo}".encode()).hexdigest()
+
+
+def _branch_names(conn, repo: str, ids) -> list[str]:
+    """The repo's branches: the default branch, plus the refs its own pulls advertise.
+
+    Measured on api.github.com (2026-09-03), which is what makes this a listing rather than the
+    literal `["main"]` it used to be:
+
+    - An OPEN pull's same-repo head ref is a branch — 27 of 27 across seven repos. Omitting it
+      told a client that reads a pull and then resolves its head here that the branch was deleted
+      or lives in a fork, contradicting `head.repo.full_name` in the same pull.
+    - A MERGED pull's head ref is not — 0 of 54 across ten repos, GitHub's "automatically delete
+      head branches" at work. This is the one place the listing must not hold what a pull says.
+    - A `base.ref` is, always, whether or not it is the default branch (pydantic/pydantic lists
+      its non-default base `pure-annotation-schema-cache`). A base outlives the pull on it.
+
+    A pull the corpus states no refs for still advertises the fallbacks below, so they are listed
+    for the same reason a stated ref is: the listing has to hold what the pulls say.
+
+    Scoped to `ids`: pulls are ACL-filtered, so the branches are too. Deliberate, and the same
+    answer `/user/repos` already gives — a caller who cannot see the pull is not told its branch
+    exists — rather than a side effect of where the material happens to live.
+    """
+    names = {_DEFAULT_BRANCH}
+    for row in store.github_pull_refs(conn, repo, ids):
+        names.add(row["base_ref"] or _DEFAULT_BRANCH)
+        if row["state"] == "open" and not row["merged_at"]:
+            names.add(row["head_ref"] or _UNSTATED_HEAD_REF)
+    return sorted(names)
+
+
+def _commit_shas(conn, repo: str, ids) -> set[str]:
+    """Every sha this server hands the caller AS A COMMIT of `repo`.
+
+    The repo's one snapshot commit, plus the head and base shas each visible pull reports — those
+    are advertised in the pull object, in `/pulls/{n}/commits` and in the `commits_url` a client
+    follows, so a `/commits/{sha}` that rejected them would 422 a link this same server printed.
+    """
+    shas = {_repo_commit_sha(repo)}
+    for row in store.github_pull_refs(conn, repo, ids):
+        head = hashlib.sha1(_seed(row).encode()).hexdigest()
+        shas.update((head, head[::-1]))  # the pull's head and its base, as `_pr_obj` derives them
+    return shas
+
+
+def _commit_ish(conn, repo: str, ids) -> set[str]:
+    """What may stand in for a commit: a branch name or a commit sha, real GitHub's own rule for
+    the `{ref}` of `/commits` and `git/trees`."""
+    return set(_branch_names(conn, repo, ids)) | _commit_shas(conn, repo, ids)
+
+
+def _no_commit_for_sha(sha: str) -> HTTPException:
+    """Real's answer for a `/commits/{ref}` naming nothing — a 422, not the 404 every other ref
+    route gives, and with the ref echoed in the message (measured on psf/requests for both a
+    made-up name and a 40-hex sha naming no commit)."""
+    exc = HTTPException(status_code=422, detail="Unprocessable Entity")
+    exc.github_body = {
+        "message": f"No commit found for SHA: {sha}",
+        "documentation_url": "https://docs.github.com/rest/commits/commits#get-a-commit",
+        "status": "422",
+    }
+    return exc
 
 
 def _dir_sha(repo: str, dirpath: str) -> str:
@@ -1662,7 +1802,7 @@ def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
         "created_at": synth.rfc3339(ts),
         "updated_at": synth.rfc3339(ts + 3600),
         "pushed_at": synth.rfc3339(ts + 7200),
-        "default_branch": "main",
+        "default_branch": _DEFAULT_BRANCH,
         "issues_url": f"{repo_url}/issues{{/number}}",
         "pulls_url": f"{repo_url}/pulls{{/number}}",
         "issue_comment_url": f"{repo_url}/issues/comments{{/number}}",
@@ -1877,16 +2017,16 @@ def _pr_obj(
             "requested_reviewers": reviewers,
             "requested_teams": [],
             "head": {
-                "ref": row["head_ref"] or "feature",
+                "ref": row["head_ref"] or _UNSTATED_HEAD_REF,
                 "sha": sha,
-                "label": f"{owner}:{row['head_ref'] or 'feature'}",
+                "label": f"{owner}:{row['head_ref'] or _UNSTATED_HEAD_REF}",
                 "user": obj["user"],
                 "repo": {"full_name": f"{owner}/{repo}"},
             },
             "base": {
-                "ref": row["base_ref"] or "main",
+                "ref": row["base_ref"] or _DEFAULT_BRANCH,
                 "sha": sha[::-1],
-                "label": f"{owner}:{row['base_ref'] or 'main'}",
+                "label": f"{owner}:{row['base_ref'] or _DEFAULT_BRANCH}",
                 "user": obj["user"],
                 "repo": {"full_name": f"{owner}/{repo}"},
             },

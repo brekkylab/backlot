@@ -380,10 +380,16 @@ def test_github_filesystem_reads_a_file(github_fs):
 def test_github_filesystem_enumerates_the_repos_refs(github_fs):
     """`.branches`, `.tags` and `.refs` are how a client that was handed a repo rather than a sha
     picks what to read. Each is one of the two ref listings and nothing else, so a repo they cannot
-    answer for is one such a client cannot get started on."""
-    assert github_fs.branches == ["main"]
+    answer for is one such a client cannot get started on.
+
+    `bob/export-resume` is the head of the bundled corpus's open pull on this repo, and a ref
+    picker built this way is the client the branch listing exists for: it offers what the repo's
+    pulls are actually against, not the default branch alone.
+    """
+    branches = ["bob/export-resume", "main"]
+    assert github_fs.branches == branches
     assert github_fs.tags == []
-    assert github_fs.refs == {"tags": [], "branches": ["main"]}
+    assert github_fs.refs == {"tags": [], "branches": branches}
 
 
 def test_github_filesystem_never_addresses_the_real_github(github_fs, monkeypatch):

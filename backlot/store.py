@@ -2505,6 +2505,38 @@ def github_by_number(conn, repo, number, visible_ids=None) -> sqlite3.Row | None
     ).fetchone()
 
 
+def github_pull_refs(conn, repo, visible_ids=None) -> list[sqlite3.Row]:
+    """The refs every pull in `repo` names, with what the caller needs to tell a live branch from a
+    deleted one — `state` and `merged_at` — and the `number` its synthesized shas are seeded from.
+
+    `kind='pull_request'` only: a `file` row shares this table and carries neither ref, and an
+    issue is not a pull. ACL-scoped like any other read, so the branch listing built from this is
+    the branch listing for THIS caller.
+    """
+    clause, cp = _acl_clause("github", visible_ids=visible_ids)
+    return conn.execute(
+        "SELECT repo, number, COALESCE(state, 'open') AS state, merged_at, head_ref, base_ref"
+        f" FROM github_items WHERE repo = ? AND kind = 'pull_request'{clause}",
+        [repo, *cp],
+    ).fetchall()
+
+
+def github_file_refs(conn, repo, visible_ids=None) -> list[str]:
+    """The refs a corpus NAMED on this repo's file snapshots (see :func:`_file_head_clause`).
+
+    These are refs without being branches — a corpus states one to identify a snapshot, not to
+    claim the repo has a branch by that name — so they are addressable on `?ref=` and absent from
+    the branch listing.
+    """
+    clause, cp = _acl_clause("github", visible_ids=visible_ids)
+    rows = conn.execute(
+        "SELECT DISTINCT ref FROM github_items"
+        f" WHERE repo = ? AND kind = 'file' AND ref IS NOT NULL{clause}",
+        [repo, *cp],
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
 def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
     """One issue by the key the API reports, whole. A unique-indexed column lookup — the key is
     composed at import (see importer.byo's ``resolve_jira_keys``) and stored, so serving it needs

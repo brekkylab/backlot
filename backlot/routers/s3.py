@@ -267,9 +267,9 @@ async def head_bucket(request: Request, bucket: str):
     if not _bucket_visible(conn, bucket, visible):
         return Response(status_code=404)
     if _selected(request.query_params, _BUCKET_SELECTORS):
-        # No sub-resource has a HEAD form: real S3 answers `HEAD /{bucket}?versioning` with a bare
-        # 405 (measured).
-        return Response(status_code=405)
+        # No sub-resource has a HEAD form: real S3 answers `HEAD /{bucket}?versioning` 405 with an
+        # empty application/xml body (measured).
+        return Response(status_code=405, media_type="application/xml")
     return Response(status_code=200, headers={"x-amz-bucket-region": "us-east-1"})
 
 
@@ -279,11 +279,13 @@ async def bucket_get(request: Request, bucket: str):
     if err:
         return err
     conn = auth.conn(request)
-    if not _bucket_visible(conn, bucket, visible):
-        return _error("NoSuchBucket", "The specified bucket does not exist", bucket)
     selected = _selected(request.query_params, _BUCKET_SELECTORS)
     if len(selected) > 1:
+        # Before the bucket is looked up: real S3 reports the conflict for a bucket that does not
+        # exist too (measured).
         return _conflict(selected, f"/{bucket}")
+    if not _bucket_visible(conn, bucket, visible):
+        return _error("NoSuchBucket", "The specified bucket does not exist", bucket)
     if selected == ["location"]:
         # us-east-1 is represented by an *empty* LocationConstraint element on real S3.
         return _xml(f'<LocationConstraint xmlns="{NS}"></LocationConstraint>')
@@ -421,9 +423,9 @@ async def object_get(request: Request, bucket: str, key: str):
     conn = auth.conn(request)
     selected = _selected(request.query_params, _OBJECT_SELECTORS)
     if selected and request.method == "HEAD":
-        # No sub-resource has a HEAD form: real S3 answers `HEAD /{key}?acl` with a bare 405
-        # (measured).
-        return Response(status_code=405)
+        # No sub-resource has a HEAD form: real S3 answers `HEAD /{key}?acl` 405 with an empty
+        # application/xml body, whether or not the key exists (measured).
+        return Response(status_code=405, media_type="application/xml")
     if len(selected) > 1:
         return _conflict(selected, f"/{bucket}/{key}")
     if selected == ["uploadId"]:

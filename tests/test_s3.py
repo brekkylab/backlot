@@ -538,6 +538,11 @@ def test_two_subresources_at_once_conflict_the_way_real_s3_conflicts_them(live_s
     assert err.code == 400 and b"location, versioning" in err.read()
     err = _refused(base_url, f"{OBJECT_PATH}?tagging&acl", settings.admin_token)
     assert err.code == 400 and b"acl, tagging" in err.read()
+    # The conflict is reported before the bucket or the key is looked up.
+    err = _refused(base_url, "/s3/no-such-bucket?acl&versioning", settings.admin_token)
+    assert err.code == 400 and b"InvalidArgument" in err.read()
+    err = _refused(base_url, "/s3/eng-artifacts/no/such.md?acl&tagging", settings.admin_token)
+    assert err.code == 400 and b"InvalidArgument" in err.read()
 
 
 def test_what_does_not_exist_is_reported_before_the_subresource_except_for_list_parts(live_server):
@@ -556,9 +561,15 @@ def test_what_does_not_exist_is_reported_before_the_subresource_except_for_list_
 def test_head_with_a_subresource_is_405_and_a_bare_head_still_answers(live_server):
     base_url, settings = live_server
     token = settings.admin_token
-    for path in ("/s3/eng-artifacts?versioning", f"{OBJECT_PATH}?acl", f"{OBJECT_PATH}?uploadId=x"):
+    for path in (
+        "/s3/eng-artifacts?versioning",
+        f"{OBJECT_PATH}?acl",
+        f"{OBJECT_PATH}?uploadId=x",
+        "/s3/eng-artifacts/no/such.md?acl",  # before the key is looked up, as on real S3
+    ):
         err = _refused(base_url, path, token, method="HEAD")
         assert err.code == 405 and err.read() == b"", path
+        assert err.headers.get("Content-Type") == "application/xml"
     for path in ("/s3/eng-artifacts", OBJECT_PATH):
         url, headers = _sign_get(base_url, path, token, method="HEAD")
         with urllib.request.urlopen(

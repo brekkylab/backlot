@@ -259,6 +259,12 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `GetObject` | `Range` |
 | `HeadObject` | |
 
+Any other sub-resource — `?versioning`, `?acl`, `?tagging`, `?uploadId` and the rest of what botocore
+declares at a bucket's or an object's path — is refused with `NotImplemented` (501), so a client gets
+an error to handle rather than the listing or the object's bytes parsed as something else. Two
+sub-resources at once are `InvalidArgument`, as on real S3, and an unknown query key is ignored, as
+on real S3.
+
 Every call is SigV4-signed; see [auth.md](auth.md).
 
 ### Slack — `/slack/api`

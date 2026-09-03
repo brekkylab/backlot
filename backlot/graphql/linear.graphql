@@ -154,7 +154,9 @@ or a human identifier (`ENG-123`)."""
 input IssueIDComparator { eq: ID, neq: ID, in: [ID!], nin: [ID!] }
 """Linear's comparator for `NullableProjectFilter.id`. Upstream it "accepts UUIDs and human-readable
 identifiers (e.g. "PROJ-123")"; a Backlot project has only the served UUID (the corpus names a
-project and gives it no identifier), so that is the one spelling that matches here."""
+project and gives it no identifier), so that is the one spelling that matches here. A value that
+matches nothing answers an empty page, not an error, which is what Linear answered for `"PROJ-1"`,
+`"not-a-uuid"` and an unknown UUID (measured 2026-09-03)."""
 input EntityIdentifierIDComparator { eq: ID, neq: ID, in: [ID!], nin: [ID!] }
 
 input StringComparator {

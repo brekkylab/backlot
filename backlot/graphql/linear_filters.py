@@ -32,7 +32,7 @@ import re
 from graphql import GraphQLError
 from graphql.language import StringValueNode
 
-from backlot import synth
+from backlot import store, synth
 
 # --- the date operands: Linear's `DateTimeOrDuration` and `TimelessDateOrDuration` ------------
 # Every date comparator in Linear's schema takes one of these two scalars, not a plain `DateTime`.
@@ -91,17 +91,22 @@ def _add_months(when: _dt.datetime, months: int) -> _dt.datetime:
     return when.replace(year=year, month=month, day=day)
 
 
-def _from_duration(m: re.Match) -> _dt.datetime:
+def _from_duration(m: re.Match, value: str) -> _dt.datetime:
     sign = -1 if m.group("sign") == "-" else 1
     part = {k: float(m.group(k) or 0) for k in _DURATION_PARTS}
-    when = _add_months(_now(), sign * int(part["years"] * 12 + part["months"]))
-    return when + sign * _dt.timedelta(
-        weeks=part["weeks"],
-        days=part["days"],
-        hours=part["hours"],
-        minutes=part["minutes"],
-        seconds=part["seconds"],
-    )
+    try:
+        when = _add_months(_now(), sign * int(part["years"] * 12 + part["months"]))
+        return when + sign * _dt.timedelta(
+            weeks=part["weeks"],
+            days=part["days"],
+            hours=part["hours"],
+            minutes=part["minutes"],
+            seconds=part["seconds"],
+        )
+    except (ValueError, OverflowError):
+        # A duration that leaves the calendar ("P9999Y", "P99999999999D") is not a date either;
+        # the answer is the scalar's own message, not the interpreter's.
+        raise ValueError(f"Unable to parse value {value!r} into a valid date") from None
 
 
 def parse_datetime_or_duration(value, scalar: str = "DateTimeOrDuration") -> _dt.datetime:
@@ -118,14 +123,17 @@ def parse_datetime_or_duration(value, scalar: str = "DateTimeOrDuration") -> _dt
     if m is not None:
         if not any(m.group(k) for k in _DURATION_PARTS):
             raise ValueError(f"Unable to parse value {value!r} into a valid date")  # bare "P"
-        return _from_duration(m)
-    # Digits alone are a year ("2021", and Linear also takes "1"); a longer run of digits is
-    # neither a year nor, per the measurement, a basic-format date or an epoch.
-    if s.isdigit():
-        if len(s) > 4:
-            raise ValueError(f"Unable to parse value {value!r} into a valid date")
-        s = f"{int(s):04d}-01-01"
-    elif re.fullmatch(r"\d{4}-\d{2}", s):
+        return _from_duration(m, value)
+    # The extended (hyphenated) form only: a year ("2021", and Linear also takes "1"), a
+    # year-month, or a full date with an optional time after `T` or a space. Linear rejected the
+    # basic form "20210305" (measured), so the basic and week forms Python's parser would accept
+    # ("20210305T100000", "2021-W10") are refused before it sees them, as is an epoch.
+    date = re.fullmatch(r"(\d{1,4})(?:-(\d{2})(?:-(\d{2}))?)?(.*)", s, re.S)
+    if date is None or (date.group(4) and not (date.group(3) and date.group(4)[0] in "T ")):
+        raise ValueError(f"Unable to parse value {value!r} into a valid date")
+    if date.group(2) is None:
+        s = f"{int(date.group(1)):04d}-01-01"
+    elif date.group(3) is None:
         s = s + "-01"
     try:
         dt = _dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
@@ -489,7 +497,9 @@ def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, 
         # real API answers `Field "branchName" is not defined by type "IssueFilter"`), so this
         # compiled a predicate no client written against Linear could ever send.
         elif key == "priority":
-            add(*_Comparator("priority").render(spec))
+            # Against the COALESCE the field is served with, so `priority: {eq: 0}` finds an issue
+            # whose column is NULL and `Issue.priority` reads 0 (see store.LINEAR_PRIORITY_EXPR).
+            add(*_Comparator(store.LINEAR_PRIORITY_EXPR).render(spec))
         elif key == "estimate":
             # `EstimateComparator`: the number comparators plus `and` / `or` over them.
             add(*_Comparator("estimate").render(spec))

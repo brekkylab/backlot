@@ -1202,9 +1202,14 @@ LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": "COALESCE(update
 # itself is served with (an issue with no recorded edit reports its creation time), so a client
 # crawling "newest first until older than X" sees a monotonic sequence rather than one that
 # disagrees with the `updatedAt` it is reading.
+# `Issue.priority` is served as 0 when the column is NULL (Linear's own "no priority", and the
+# field is non-null there), so every comparison and sort over it has to see the same 0 -- a raw
+# `priority` put an unset issue outside `priority: {eq: 0}` and after every other row in a sort.
+LINEAR_PRIORITY_EXPR = "COALESCE(priority, 0)"
+
 LINEAR_SORT_COLUMNS = {
     "title": "title",
-    "priority": "priority",
+    "priority": LINEAR_PRIORITY_EXPR,
     "estimate": "estimate",
     "createdAt": "created_ts",
     "updatedAt": "COALESCE(updated_ts, created_ts)",

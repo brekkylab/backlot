@@ -14,6 +14,7 @@ the DB are bound explicitly.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 from graphql import GraphQLError
@@ -786,6 +787,12 @@ def _comment(row, info) -> dict:
 # --- Query roots ---------------------------------------------------------------------
 
 
+_UUID_SHAPE = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
+_IDENTIFIER_SHAPE = re.compile(
+    r"^[A-Z0-9]+-\S+$"
+)  # `identifier` in backlot/schemas/linear.schema.json
+
+
 def _resolve_one_issue_id(conn, value: str) -> str:
     """Translate one filter value -- a served UUID or a human identifier -- to an issue id. A miss
     returns the sentinel ``"\\x00none"``, which matches no row, so the filter narrows to nothing
@@ -796,7 +803,15 @@ def _resolve_one_issue_id(conn, value: str) -> str:
     ``count_linear_issues``) apply ``visible_ids`` to the real query, so a value that resolves to
     an issue the caller cannot see still gets filtered out there -- translating it here to
     anything other than its real id would just make an invisible-issue filter behave
-    differently from every other predicate instead of consistently answering empty."""
+    differently from every other predicate instead of consistently answering empty.
+
+    A value that is neither shape is refused before the lookup: Linear answers
+    `IssueFilter.id: {eq: "not-a-uuid"}` with `Argument Validation Error` (code `INVALID_INPUT`, a
+    200 with `errors`), where `{eq: "BRE-1"}` and a UUID are simply looked up (measured 2026-09-03).
+    The identifier shape checked is the corpus schema's own (`PREFIX-anything`), wider than
+    Linear's digits-only suffix, so nothing Backlot itself serves is refused."""
+    if not (_UUID_SHAPE.match(value) or _IDENTIFIER_SHAPE.match(value)):
+        raise GraphQLError("Argument Validation Error", extensions={"code": "INVALID_INPUT"})
     row = store.linear_by_id(conn, value)
     if row is None:
         row = store.linear_issue_by_identifier(conn, value)
@@ -972,23 +987,21 @@ def resolve_comments(
     return _connection([_comment(r, info) for r in rows], offset, has_next)
 
 
-def _sorted_users(rows: list, sort) -> list:
+def _sorted_users(users: list[dict], sort) -> list[dict]:
     """``users(sort:)`` — Linear's ``UserSortInput``, of which Backlot declares ``name``
     (``UserNameSort``: ``order`` and ``nulls``, the latter defaulting to ``last`` exactly as the
     vendor's input does). Evaluated, not accepted-and-ignored: an ignored sort answers a client
-    asking for Z→A with A→Z, which is a wrong result rather than an error. The keys are applied
-    last-to-first over a stable sort, so the first entry is the primary key; the nulls position is
-    independent of the direction, as it is in SQL."""
+    asking for Z→A with A→Z, which is a wrong result rather than an error. Sorts the SERVED
+    ``name`` — the value the client reads back — which ``_user`` always derives, so ``nulls`` is
+    accepted and has nothing to place. The keys are applied last-to-first over a stable sort, so
+    the first entry is the primary key. Codepoint order, which is the order Linear answered for
+    ``["Linear", "nuri", "김해준"]`` (measured 2026-09-03)."""
     for entry in reversed(sort or []):
         for key, opts in (entry or {}).items():
             if key != "name":
                 raise GraphQLError(f"unsupported user sort key {key!r}")
-            opts = opts or {}
-            named = [r for r in rows if r["display_name"] is not None]
-            unnamed = [r for r in rows if r["display_name"] is None]
-            named.sort(key=lambda r: r["display_name"], reverse=opts.get("order") == "Descending")
-            rows = unnamed + named if opts.get("nulls") == "first" else named + unnamed
-    return rows
+            users.sort(key=lambda u: u["name"], reverse=(opts or {}).get("order") == "Descending")
+    return users
 
 
 def resolve_users(
@@ -996,14 +1009,16 @@ def resolve_users(
 ) -> dict:
     ctx = _ctx(info)
     offset, limit, floor = _slice(first, after, last, before)
-    rows = _sorted_users([r for r in store.list_users(ctx["conn"]) if _match_user(r, filter)], sort)
-    offset = _from_end(offset, limit, floor, len(rows))
-    page = rows[offset : offset + limit]
-    return _connection(
-        [_user(r["email"], r["display_name"], info) for r in page],
-        offset,
-        offset + limit < len(rows),
+    users = _sorted_users(
+        [
+            _user(r["email"], r["display_name"], info)
+            for r in store.list_users(ctx["conn"])
+            if _match_user(r, filter)
+        ],
+        sort,
     )
+    offset = _from_end(offset, limit, floor, len(users))
+    return _connection(users[offset : offset + limit], offset, offset + limit < len(users))
 
 
 # --- by-id roots for the SDK's lazy relation accessors ------------------------------------

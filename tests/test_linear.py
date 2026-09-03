@@ -21,6 +21,7 @@ from backlot.fidelity.graphql_diff import backlot_schema
 from backlot.graphql import linear_filters, mcp_tools
 from tests._helpers import (
     build_corpus,
+    complete,
     client_for,
     corpus_client,
     db_count,
@@ -758,9 +759,10 @@ def test_empty_in_list_matches_nothing_and_empty_nin_matches_everything(fclient)
 def test_issue_filter_by_id_resolves_both_key_spaces_and_a_bogus_id_matches_nothing(fclient):
     """`IssueFilter.id` accepts the same two spellings `issue(id:)` does: a served UUID, or
     the human identifier. `_resolve_issue_ids` translates a filter's `id` values to issue ids
-    before the query runs, so both must resolve -- and a value that resolves to NEITHER must
-    substitute the sentinel `"\\x00none"`, matching nothing, rather than being dropped (which
-    would silently turn the filter into "match everything")."""
+    before the query runs, so both must resolve -- and a well-shaped value that resolves to
+    NEITHER must substitute the sentinel `"\\x00none"`, matching nothing, rather than being dropped
+    (which would silently turn the filter into "match everything"). A value of neither shape is
+    the vendor's `Argument Validation Error` instead; see the test below."""
     uuid = fclient.post(
         "/linear/graphql",
         json={"query": '{ issue(id: "ENG-1") { id } }'},
@@ -768,8 +770,8 @@ def test_issue_filter_by_id_resolves_both_key_spaces_and_a_bogus_id_matches_noth
     ).json()["data"]["issue"]["id"]
     assert ids(fclient, '{id: {eq: "ENG-1"}}') == ["ENG-1"]  # identifier form
     assert ids(fclient, '{id: {eq: "%s"}}' % uuid) == ["ENG-1"]  # served UUID form
-    assert ids(fclient, '{id: {eq: "totally-bogus-id"}}') == []  # sentinel: matches nothing
-    assert ids(fclient, '{id: {in: ["%s", "ENG-2", "nope"]}}' % uuid) == ["ENG-1", "ENG-2"]
+    assert ids(fclient, '{id: {eq: "ZZZ-404"}}') == []  # sentinel: matches nothing
+    assert ids(fclient, '{id: {in: ["%s", "ENG-2", "ZZZ-9"]}}' % uuid) == ["ENG-1", "ENG-2"]
 
 
 # --- string comparators --------------------------------------------------------------
@@ -841,6 +843,24 @@ def test_a_date_operand_must_be_a_string(fclient):
     r = post(fclient, q, {"d": "not-a-date"})
     assert r.status_code == 400
     assert "Expected type 'DateTimeOrDuration'" in r.json()["errors"][0]["message"]
+
+
+@pytest.mark.parametrize(
+    "literal",
+    ['"20210305T100000"', '"2021-W10"', '"P9999Y"', '"-P3000Y"', '"P99999999999D"'],
+    ids=["basic-with-time", "iso-week", "years-past-9999", "years-before-1", "days-overflow"],
+)
+def test_forms_pythons_parser_takes_but_linear_does_not_are_refused(fclient, literal):
+    """Linear rejected the basic form "20210305" (measured), so the basic and week forms
+    `datetime.fromisoformat` accepts are refused before it sees them; a duration that leaves the
+    calendar answers the scalar's message, not the interpreter's ("year must be in 1..9999")."""
+    r = post(
+        fclient, "{ issues(filter: {createdAt: {gt: %s}}) { nodes { identifier } } }" % literal
+    )
+    assert r.status_code == 400
+    message = r.json()["errors"][0]["message"]
+    assert message.startswith("Expected value of type 'DateTimeOrDuration', found ")
+    assert message.endswith("into a valid date"), message
     # The other scalar names itself `TimelessDate` and quotes the value (measured).
     r = post(fclient, "{ issues(filter: {dueDate: {eq: 1}}) { nodes { identifier } } }")
     assert r.status_code == 400
@@ -1390,6 +1410,22 @@ def test_issue_id_and_project_id_comparators_keep_their_operators(fclient):
     pid = lit(synth.linear_project_id("runtime"))
     assert ids(fclient, "{project: {id: {eq: %s}}}" % pid) == ["ENG-1", "ENG-2"]
     assert ids(fclient, "{project: {id: {neq: %s}}}" % pid) == ["DES-1"]
+    # A project value of any shape that matches nothing is an empty page, as measured.
+    assert ids(fclient, '{project: {id: {eq: "PROJ-1"}}}') == []
+    assert ids(fclient, '{project: {id: {eq: "not-a-uuid"}}}') == []
+
+
+def test_an_issue_id_of_neither_shape_is_an_argument_validation_error(fclient):
+    """Measured 2026-09-03: `IssueFilter.id: {eq: "not-a-uuid"}` answers `Argument Validation Error`
+    with code INVALID_INPUT as a 200 with `errors`, while an unknown but well-shaped identifier
+    answers an empty page."""
+    r = post(fclient, '{ issues(filter: {id: {eq: "not-a-uuid"}}) { nodes { identifier } } }')
+    assert r.status_code == 200
+    err = r.json()["errors"][0]
+    assert err["message"] == "Argument Validation Error"
+    assert err["extensions"]["code"] == "INVALID_INPUT"
+    assert ids(fclient, '{id: {eq: "ENG-999"}}') == []
+    assert ids(fclient, '{id: {in: ["ENG-1", "ZZZ-1"]}}') == ["ENG-1"]
 
 
 def test_source_type_comparator_evaluates_every_operator(fclient):
@@ -1445,6 +1481,49 @@ def _linear_identifiers(client, authorization):
     """``authorization`` verbatim, not a Bearer-wrapped token — these tests assert on the scheme."""
     r = gql(client, "{ issues { nodes { identifier } } }", {"Authorization": authorization})
     return r.status_code, r.json()
+
+
+def test_an_unset_priority_filters_and_sorts_as_the_zero_it_is_served_as(tmp_path):
+    """`Issue.priority` is non-null in Linear and reads 0 for "no priority"; Backlot serves 0 for a
+    NULL column. The filter and the sort have to see that same 0, or `priority: {eq: 0}` misses the
+    issue a client just read `priority: 0` from, `nin: [0]` returns it, and `null: true` answers a
+    field that is never null."""
+    records = [
+        complete(
+            "linear", doc_id="np", identifier="ENG-1", title="unset", created="2026-01-01T00:00:00Z"
+        ),
+        complete(
+            "linear",
+            doc_id="p2",
+            identifier="ENG-2",
+            title="two",
+            priority=2,
+            created="2026-01-02T00:00:00Z",
+        ),
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+
+        def ids_for(filter_literal):
+            body = gql(
+                client, "{ issues(filter: %s) { nodes { identifier } } }" % filter_literal, h
+            )
+            return sorted(n["identifier"] for n in body.json()["data"]["issues"]["nodes"])
+
+        served = gql(client, "{ issues { nodes { identifier priority } } }", h).json()["data"]
+        assert {n["identifier"]: n["priority"] for n in served["issues"]["nodes"]} == {
+            "ENG-1": 0,
+            "ENG-2": 2,
+        }
+        assert ids_for("{priority: {eq: 0}}") == ["ENG-1"]
+        assert ids_for("{priority: {lt: 1}}") == ["ENG-1"]
+        assert ids_for("{priority: {nin: [0]}}") == ["ENG-2"]
+        assert ids_for("{priority: {neq: 0}}") == ["ENG-2"]
+        assert ids_for("{priority: {null: true}}") == []
+        asc = gql(
+            client, "{ issues(sort: [{priority: {order: Ascending}}]) { nodes { identifier } } }", h
+        ).json()["data"]["issues"]["nodes"]
+        assert [n["identifier"] for n in asc] == ["ENG-1", "ENG-2"]
 
 
 def test_linear_accepts_a_bare_api_key_with_no_scheme(tmp_path):

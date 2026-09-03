@@ -240,6 +240,70 @@ def test_build_mcp_spec_resolves_all_real_collisions():
         assert spec["paths"], f"{source} sliced to empty"
 
 
+def test_build_mcp_spec_collapses_exactly_the_known_aliases():
+    """Per source, tools == routes minus the aliases Backlot serves on purpose, and this is the
+    whole list. Route-name ids are what let the GET/POST and v2/v3 pairs collapse, and the same
+    rule would fold two DISTINCT routes into one tool if a handler ever shared a name with another
+    in its source — silently, since `dedupe_operations` resolves every collision before
+    `build_mcp_spec`'s own check can see one. The table is the snapshot that turns that into a
+    failing test: each id that names more than one route, with how many routes it absorbs."""
+    warnings.filterwarnings("ignore")
+    import collections
+
+    from backlot.main import app
+
+    full = app.openapi()
+    expected = {
+        # Slack serves each method as GET and POST, the way slack.com does
+        "slack": dict.fromkeys(
+            [
+                "api_test",
+                "auth_test",
+                "conversations_history",
+                "conversations_info",
+                "conversations_list",
+                "conversations_members",
+                "conversations_replies",
+                "search_all",
+                "search_files",
+                "search_messages",
+                "users_info",
+                "users_list",
+            ],
+            1,
+        ),  # fmt: skip
+        # Jira's /rest/api/2 aliases /rest/api/3; search is also GET+POST, so it folds three
+        "atlassian": {
+            "jira_server_info": 1,
+            "jira_search": 3,
+            "jira_get_issue": 1,
+            "jira_issue_comments": 1,
+            "jira_fields": 1,
+        },  # fmt: skip
+        # ListBuckets answers at both `/s3` and `/s3/`
+        "s3": {"list_buckets": 1},
+    }
+    for source, prefixes in openapi.SOURCE_PREFIXES.items():
+        routes = openapi.name_operations(
+            openapi.drop_head_operations(openapi.slice_spec(full, prefixes))
+        )
+        by_id = collections.Counter(
+            op["operationId"]
+            for item in routes["paths"].values()
+            for method, op in item.items()
+            if method in openapi._METHODS and isinstance(op, dict) and "operationId" in op
+        )
+        collapsed = {oid: n - 1 for oid, n in by_id.items() if n > 1}
+        assert collapsed == expected.get(source, {}), source
+        tools = sum(
+            1
+            for item in openapi.build_mcp_spec(full, source)["paths"].values()
+            for method, op in item.items()
+            if method in openapi._METHODS and isinstance(op, dict) and "operationId" in op
+        )
+        assert tools == sum(by_id.values()) - sum(collapsed.values()), source
+
+
 def test_build_mcp_spec_drops_head_operations():
     """S3 is the only source serving HEAD, and none of it reaches the bridged spec. A HEAD answers
     with headers alone, so a tool built from one returns an empty body on every call. Dropping it

@@ -258,6 +258,34 @@ def test_teardown_reaps_a_process_that_ignores_sigterm():
 # --------------------------------------------------------------------------- data_dir
 
 
+def test_served_subprocesses_do_not_inherit_stdin(monkeypatch):
+    """Both children `serve` starts — the `import` that builds the corpus and the `serve` that
+    answers — get `stdin=DEVNULL`. Under `backlot mcp` the inherited handle would be the MCP
+    protocol pipe, and a child reading from it corrupts a live session while every test that only
+    watches the server's answers stays green. Asserted on the call, since that is the only place
+    the choice is visible from outside the child."""
+    import backlot.server as server_mod
+
+    seen = []
+    real_popen, real_run = server_mod.subprocess.Popen, server_mod.subprocess.run
+
+    class Popen(real_popen):
+        def __init__(self, *args, **kwargs):
+            seen.append(("Popen", kwargs.get("stdin")))
+            super().__init__(*args, **kwargs)
+
+    def run(*args, **kwargs):
+        seen.append(("run", kwargs.get("stdin")))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(server_mod.subprocess, "Popen", Popen)
+    monkeypatch.setattr(server_mod.subprocess, "run", run)
+    with backlot.serve() as s:
+        assert s.base_url
+    assert seen and all(stdin is subprocess.DEVNULL for _, stdin in seen), seen
+    assert {kind for kind, _ in seen} == {"Popen", "run"}, seen
+
+
 def test_serve_data_dir_serves_an_existing_build_as_it_stands(tmp_path):
     """``backlot mcp`` puts the user's own corpus behind the tools this way: a data dir one
     ``backlot import`` already built is served without re-importing, and nothing is written into

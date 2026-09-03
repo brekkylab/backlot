@@ -38,9 +38,11 @@ header.
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import contextlib
 import hashlib
 import json
+import os
 import signal
 import sys
 import urllib.error
@@ -60,6 +62,20 @@ SOURCES: tuple[str, ...] = OPENAPI_SOURCES + GRAPHQL_SOURCES
 # Where `backlot serve` listens by default, and so the one place worth probing before starting a
 # server of our own.
 DEFAULT_URL = "http://127.0.0.1:8000"
+
+# How long `is_backlot` waits for `/health`. The speculative probe of the default port gets 2s: it
+# runs on every start and nothing is lost by a miss but a local server the caller did not name. A
+# server the caller NAMED with --url gets the budget `backlot.server._healthy` reserves for a remote,
+# possibly trans-continental hop; the hosted deployment answers `/health` in 0.8–1.0s, so 2s reads a
+# merely slow server as absent. Measured: a `/health` that answers after 3s is False at 2s and True
+# at 10s.
+PROBE_TIMEOUT = 2
+NAMED_SERVER_TIMEOUT = 10
+
+# The prefix a source's route handlers carry to stay unique inside one module (`routers/google.py`
+# holds Gmail and Drive together), which under the `<source>_` namespace would be said twice:
+# `gmail_gmail_messages_list`, `gdrive_drive_files_list`. `mounted_name` folds it into the namespace.
+_HANDLER_PREFIX: dict[str, str] = {"gmail": "gmail", "gdrive": "drive"}
 
 # The one per-source knob, measured (figures in examples/using-mcp-with-agents/README.md). Linear
 # runs at 1: `Team`, `Project` and `Cycle` each carry dozens of configuration leaves that a second
@@ -198,14 +214,16 @@ def _fetch_json(
         sys.exit(f"cannot reach {url}: {exc.reason}")
 
 
-def is_backlot(url: str) -> bool:
+def is_backlot(url: str, timeout: float = PROBE_TIMEOUT) -> bool:
     """Whether a *Backlot* server answers at ``url`` — not merely something with a ``/health``.
 
     The default port is shared with every other local dev server, and a 200 from one of those would
     send every tool call into 404s. Backlot's ``/health`` body always carries ``documents``
-    (``null`` while the caches warm), which is enough to tell it apart."""
+    (``null`` while the caches warm), which is enough to tell it apart. ``timeout`` is the probe's
+    budget: the default suits the speculative look at the default port, and a caller who named a
+    server passes ``NAMED_SERVER_TIMEOUT``."""
     try:
-        with urllib.request.urlopen(f"{url.rstrip('/')}/health", timeout=2) as r:
+        with urllib.request.urlopen(f"{url.rstrip('/')}/health", timeout=timeout) as r:
             return r.status == 200 and "documents" in json.load(r)
     except Exception:  # noqa: BLE001 — refused, timed out, not JSON: all mean "not here"
         return False
@@ -214,14 +232,20 @@ def is_backlot(url: str) -> bool:
 # --------------------------------------------------------------------------- one source
 
 
-def openapi_server(base_url: str, creds: Credentials, source: str):
+def openapi_spec(base_url: str, source: str) -> dict:
+    """The MCP-ready spec ``base_url`` serves for ``source`` — its operationIds are the tool names."""
+    return _fetch_json(f"{base_url}/_meta/openapi/{source}")
+
+
+def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict | None = None):
     """A FastMCP server for one REST source: the MCP-ready spec, served over a client whose base
     URL is Backlot and which carries ``creds`` on every call — as a header for the bearer sources,
-    as a per-request signature for S3."""
+    as a per-request signature for S3. ``spec`` is that spec when the caller already fetched it."""
     import httpx2
     from fastmcp import FastMCP
 
-    spec = _fetch_json(f"{base_url}/_meta/openapi/{source}")
+    if spec is None:
+        spec = openapi_spec(base_url, source)
 
     class _SigV4(httpx2.Auth):
         # An auth flow, not a header: it is the hook that sees each request in its final form.
@@ -246,6 +270,18 @@ def openapi_server(base_url: str, creds: Credentials, source: str):
     return FastMCP.from_openapi(
         openapi_spec=spec, client=client, name=f"{source}-bridge", validate_output=False
     )
+
+
+def graphql_outcome(body: dict) -> tuple[str, bool]:
+    """``(content, is_error)`` for one GraphQL response envelope.
+
+    The envelope goes through untouched, on the same principle as ``validate_output=False`` in
+    :func:`openapi_server`. What is added is the MCP error flag, so a caller can tell a refusal from
+    an answer — raised only when there is no ``data`` at all (a rejected document, or a non-null
+    field the ACL hid), not for a field error that came back beside partial data: under the wider
+    rule an agent would throw away a mostly-complete answer."""
+    failed = bool(body.get("errors")) and body.get("data") is None
+    return json.dumps(body), failed
 
 
 def graphql_server(base_url: str, creds: Credentials, source: str, *, depth: int | None = None):
@@ -286,14 +322,8 @@ def graphql_server(base_url: str, creds: Credentials, source: str, *, depth: int
             r = await client.post(
                 endpoint, json={"query": self.spec.document, "variables": variables}
             )
-            body = r.json()
-            # The GraphQL envelope goes through untouched, on the same principle as
-            # `validate_output=False` above. What is added is the MCP error flag, so a caller can
-            # tell a refusal from an answer — raised only when there is no `data` at all (a
-            # rejected document, or a non-null field the ACL hid), not for a field error that came
-            # back beside partial data.
-            failed = bool(body.get("errors")) and body.get("data") is None
-            return ToolResult(content=json.dumps(body), is_error=failed)
+            content, failed = graphql_outcome(r.json())
+            return ToolResult(content=content, is_error=failed)
 
     server = FastMCP(name=f"{source}-graphql-bridge")
     for tool in tools:
@@ -326,14 +356,22 @@ def build_server(
     name an operation the same way."""
     from fastmcp import FastMCP
 
-    servers = {
-        source: (
-            graphql_server(base_url, creds, source, depth=depth)
-            if source in GRAPHQL_SOURCES
-            else openapi_server(base_url, creds, source)
-        )
-        for source in sources
-    }
+    def build(source: str):
+        if source in GRAPHQL_SOURCES:
+            return graphql_server(base_url, creds, source, depth=depth), None
+        spec = openapi_spec(base_url, source)
+        return openapi_server(base_url, creds, source, spec=spec), spec
+
+    # Each source costs one round trip to the server before its tools exist (a spec fetch or an
+    # introspection), and the default run has ten of them. Serially that is ten round trips before
+    # the MCP handshake completes — about 10s against a hosted deployment answering in ~1s — and
+    # some MCP clients give a server less than that to come up. Built concurrently it is about one.
+    # A failure inside a worker (`_fetch_json` exits with the server's own error) surfaces here on
+    # iteration, as it would have inline.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(sources)) as pool:
+        built = dict(zip(sources, pool.map(build, sources)))
+    servers = {source: server for source, (server, _) in built.items()}
+    specs = {source: spec for source, (_, spec) in built.items() if spec is not None}
     if len(servers) == 1:
         return next(iter(servers.values()))
     # Listed from what was mounted: a client feeds `instructions` to the model as the server's
@@ -347,8 +385,33 @@ def build_server(
         instructions += " atlassian_* covers both Jira and Confluence."
     root = FastMCP(name="backlot", instructions=instructions)
     for source, server in servers.items():
-        root.mount(server, namespace=source)
+        # `tool_names` renames a tool before the namespace is prefixed, so what goes in is the
+        # tail `mounted_name` wants after `<source>_`. Only the tools whose default name would
+        # stutter need an entry; their operationIds are the spec's.
+        renamed = {
+            op["operationId"]: mounted_name(source, op["operationId"])[len(source) + 1 :]
+            for item in specs.get(source, {}).get("paths", {}).values()
+            for method, op in item.items()
+            if isinstance(op, dict)
+            and "operationId" in op
+            and mounted_name(source, op["operationId"]) != f"{source}_{op['operationId']}"
+        }
+        root.mount(server, namespace=source, tool_names=renamed or None)
     return root
+
+
+def mounted_name(source: str, tool: str) -> str:
+    """``tool``'s name under the ``<source>_`` namespace of the composite server.
+
+    ``<source>_<tool>``, except that a prefix the route name already carries to stay unique inside
+    its module is folded into the namespace rather than repeated: Gmail's ``gmail_messages_list``
+    stays ``gmail_messages_list`` and Drive's ``drive_files_list`` becomes ``gdrive_files_list``,
+    where mounting alone would say ``gmail_gmail_messages_list`` and ``gdrive_drive_files_list`` to a
+    model that reads the name on every call."""
+    prefix = _HANDLER_PREFIX.get(source)
+    if prefix and tool.startswith(prefix + "_"):
+        return f"{source}_{tool[len(prefix) + 1 :]}"
+    return f"{source}_{tool}"
 
 
 # --------------------------------------------------------------------------- which server
@@ -367,12 +430,22 @@ def attach(url: str | None = None) -> Iterator[str]:
     url = (url or "").strip().rstrip("/")
     if url:
         backlot_server.ensure_cert_bundle()
-        if not is_backlot(url):
+        if not is_backlot(url, timeout=NAMED_SERVER_TIMEOUT):
             sys.exit(f"no Backlot server answers at {url}")
         yield url
         return
     if is_backlot(DEFAULT_URL):
         _stderr(f"using the Backlot server at {DEFAULT_URL}")
+        # A data dir names a corpus the way --url names a server, and this branch cannot honour
+        # it: whatever is on the default port serves the corpus its own operator gave it. Said
+        # rather than silently dropped — the caller would otherwise read that server's answers as
+        # their own corpus's.
+        if os.environ.get("BACKLOT_DATA_DIR"):
+            _stderr(
+                f"(--data-dir is not used: that server serves whatever corpus its own operator gave "
+                f"it; pass --url to name a server, or free the port to have one started over "
+                f"{os.environ['BACKLOT_DATA_DIR']})"
+            )
         yield DEFAULT_URL
         return
 
@@ -393,11 +466,24 @@ def attach(url: str | None = None) -> Iterator[str]:
         yield s.base_url
 
 
+class _Signalled(SystemExit):
+    """Raised by the signal handler so ``run`` can tell a signal from any other exit."""
+
+
 def _exit_on_signal(signum: int, frame: object) -> None:
-    # SIGTERM's default disposition ends the process without unwinding, which would leave the server
-    # `attach` started running with no client. Raising instead runs the context managers' cleanup,
-    # the same path a closed stdin takes.
-    raise SystemExit(128 + signum)
+    # A terminating signal's default disposition ends the process without unwinding, which would
+    # leave the server `attach` started running with no client. Raising instead runs the context
+    # managers' cleanup, the same path a closed stdin takes. Installed for SIGINT and SIGHUP as well
+    # as SIGTERM: a terminal's Ctrl-C or hangup reaches the whole process group, uvicorn included,
+    # but a supervisor that signals only its direct child does not — measured, `kill -INT` alone
+    # left the server listening, and `kill -HUP` ended this process by default and orphaned it.
+    raise _Signalled(128 + signum)
+
+
+# The signals a supervisor or terminal sends to end a stdio server. SIGHUP does not exist on Windows.
+_TERMINATING_SIGNALS = tuple(
+    getattr(signal, name) for name in ("SIGTERM", "SIGINT", "SIGHUP") if hasattr(signal, name)
+)
 
 
 def run(
@@ -413,7 +499,8 @@ def run(
     except ImportError:
         sys.exit('backlot mcp needs the [mcp] extra:  pip install "backlot[mcp]"')
 
-    signal.signal(signal.SIGTERM, _exit_on_signal)
+    for sig in _TERMINATING_SIGNALS:
+        signal.signal(sig, _exit_on_signal)
     try:
         with attach(url) as base_url:
             creds = resolve(base_url, user)
@@ -421,6 +508,13 @@ def run(
             # No banner: fastmcp prints one to stderr, which is harmless to the protocol but noise
             # in every MCP client's log.
             server.run(transport="stdio", show_banner=False)
+    except _Signalled as exc:
+        # The `with` above has unwound by now, so the server this started is down. What is left is
+        # the stdio reader thread fastmcp runs, non-daemon and still blocked on a stdin nobody will
+        # close — a normal interpreter exit waits for it, so a supervisor that signalled and waited
+        # would hang (measured: SIGTERM alone left the process alive until stdin closed). Leave now.
+        sys.stderr.flush()
+        os._exit(exc.code)
     except RuntimeError as exc:
         # `serve` raises this when the server it started died before answering — a corrupt corpus
         # in the data dir is the common cause — carrying that server's own last words. They are

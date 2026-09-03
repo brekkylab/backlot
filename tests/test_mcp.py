@@ -28,13 +28,17 @@ import asyncio
 import base64
 import collections
 import dataclasses
+import http.server
 import json
 import os
 import re
+import select
 import shutil
+import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
@@ -653,11 +657,279 @@ def test_backlot_mcp_serves_every_source_namespaced(live_server):
         by_source[source].add(tool)
     assert set(by_source) == set(backlot_mcp.SOURCES)
     for source in backlot_mcp.OPENAPI_SOURCES:
-        assert by_source[source] == _served_tool_ids(base, source), source
+        expected = {
+            backlot_mcp.mounted_name(source, op)[len(source) + 1 :]
+            for op in _served_tool_ids(base, source)
+        }
+        assert by_source[source] == expected, source
     assert {"issue", "issues", "teams", "comments"} <= by_source["linear"]
     assert {"transcript", "transcripts", "user", "users"} <= by_source["fireflies"]
     assert {"list_buckets", "bucket_get", "object_get"} == by_source["s3"]
+    # the Gmail and Drive handlers carry a module-local prefix; the namespace folds it in
+    assert {"gmail_messages_list", "gmail_labels", "gdrive_files_list", "gdrive_about"} <= set(
+        names
+    )
+    stutters = [n for n in names if n.split("_")[0] in n.split("_")[1:2]]
+    assert not stutters, stutters
     assert max(map(len, names)) <= 64, sorted(names, key=len)[-3:]
+
+
+def test_mounted_name_folds_a_handler_prefix_into_the_namespace():
+    assert backlot_mcp.mounted_name("slack", "search_messages") == "slack_search_messages"
+    assert backlot_mcp.mounted_name("gmail", "gmail_messages_list") == "gmail_messages_list"
+    assert backlot_mcp.mounted_name("gdrive", "drive_files_list") == "gdrive_files_list"
+    # a Drive-slice tool without the handler prefix is namespaced like any other
+    assert backlot_mcp.mounted_name("gdrive", "docs_get") == "gdrive_docs_get"
+
+
+class _Health(threading.Thread):
+    """An HTTP server answering `/health` with `body` after `delay` seconds — something that is
+    not Backlot, or a Backlot that is slow, depending on what the test hands it."""
+
+    def __init__(self, body: bytes, delay: float = 0):
+        super().__init__(daemon=True)
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                time.sleep(outer.delay)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(outer.body)
+
+            def log_message(self, *a):  # quiet
+                pass
+
+        self.body, self.delay = body, delay
+        self.httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def run(self):
+        self.httpd.serve_forever()
+
+    def stop(self):
+        self.httpd.shutdown()
+
+
+def test_is_backlot_wants_the_documents_key_not_just_a_200():
+    """The default port is shared with every other local dev server. A 200 from a `/health` whose
+    body has no `documents` is one of those, and attaching to it would send every tool call into
+    404s — so a 200 alone is not enough."""
+    other = _Health(b'{"status": "ok"}')
+    other.start()
+    try:
+        assert not backlot_mcp.is_backlot(other.url)
+    finally:
+        other.stop()
+    ours = _Health(b'{"status": "ok", "documents": null}')
+    ours.start()
+    try:
+        assert backlot_mcp.is_backlot(ours.url)
+    finally:
+        ours.stop()
+
+
+def test_a_named_server_gets_the_remote_budget_the_default_port_probe_does_not():
+    """The 2s probe suits a speculative look at the default port. A server the caller NAMED with
+    --url may be a remote hop; measured, a Backlot whose `/health` takes 3s reads as absent at the
+    probe's budget and present at the named-server one — and `attach` passes the latter."""
+    slow = _Health(b'{"documents": 12}', delay=3)
+    slow.start()
+    try:
+        assert not backlot_mcp.is_backlot(slow.url)
+        assert backlot_mcp.is_backlot(slow.url, timeout=backlot_mcp.NAMED_SERVER_TIMEOUT)
+        with backlot_mcp.attach(slow.url) as base:
+            assert base == slow.url
+    finally:
+        slow.stop()
+
+
+def test_attach_says_when_a_data_dir_cannot_be_honoured(monkeypatch, capsys):
+    """With a Backlot already on the default port, `attach` bridges it and never reaches the data
+    dir. A `--data-dir` names a corpus the way `--url` names a server, so dropping it silently
+    would hand the caller another corpus's answers as their own; the note on stderr says so."""
+    monkeypatch.setattr(
+        backlot_mcp, "is_backlot", lambda url, timeout=2: url == backlot_mcp.DEFAULT_URL
+    )
+    monkeypatch.setenv("BACKLOT_DATA_DIR", "/corpora/mine")
+    with backlot_mcp.attach() as base:
+        assert base == backlot_mcp.DEFAULT_URL
+    err = capsys.readouterr().err
+    assert "--data-dir is not used" in err and "/corpora/mine" in err, err
+    monkeypatch.delenv("BACKLOT_DATA_DIR")
+    with backlot_mcp.attach():
+        pass
+    assert "--data-dir" not in capsys.readouterr().err
+
+
+def test_graphql_outcome_flags_a_refusal_but_not_a_field_error_beside_data():
+    """Only an envelope with no `data` at all is a tool error. A field error beside partial data —
+    a nullable field the ACL hid inside an otherwise-fine result — is an answer, and flagging it
+    would have an agent discard a mostly-complete one."""
+    refused = {"data": None, "errors": [{"message": "not found"}]}
+    partial = {"data": {"issue": {"id": "1", "assignee": None}}, "errors": [{"message": "hidden"}]}
+    clean = {"data": {"issue": {"id": "1"}}}
+    assert backlot_mcp.graphql_outcome(refused) == (json.dumps(refused), True)
+    assert backlot_mcp.graphql_outcome(partial) == (json.dumps(partial), False)
+    assert backlot_mcp.graphql_outcome(clean) == (json.dumps(clean), False)
+
+
+def test_openapi_bridge_passes_a_response_through_even_when_it_breaks_its_own_schema(monkeypatch):
+    """`validate_output=False` is the fidelity rule: Backlot's answer is the truth, and the bridge
+    never rejects it for disagreeing with a schema. Pinned with a spec that promises an integer and
+    a server that answers a string — with validation on, the tool call fails instead."""
+    pytest.importorskip("fastmcp")
+    import httpx2
+    from fastmcp import Client
+
+    spec = {
+        "openapi": "3.1.0",
+        "info": {"title": "t", "version": "0"},
+        "paths": {
+            "/thing": {
+                "get": {
+                    "operationId": "thing",
+                    "responses": {
+                        "200": {
+                            "description": "one thing",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {"n": {"type": "integer"}},
+                                        "required": ["n"],
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    }
+    real_client = httpx2.AsyncClient
+
+    def handler(request):
+        return httpx2.Response(200, json={"n": "not-an-integer"})
+
+    monkeypatch.setattr(
+        httpx2,
+        "AsyncClient",
+        lambda **kw: real_client(transport=httpx2.MockTransport(handler), **kw),
+    )
+    creds = backlot_mcp.Credentials(
+        token="t", email=None, s3_access_key_id="a", s3_secret_access_key="s"
+    )
+    server = backlot_mcp.openapi_server("http://backlot.invalid", creds, "slack", spec=spec)
+
+    async def _go():
+        async with Client(server) as c:
+            res = await c.call_tool("thing", {}, raise_on_error=False)
+            return res.is_error, "".join(getattr(b, "text", "") for b in res.content)
+
+    is_error, text = asyncio.run(_go())
+    assert not is_error and "not-an-integer" in text, (is_error, text)
+
+
+def test_build_server_fetches_every_source_concurrently(monkeypatch):
+    """Ten sources are ten round trips before the handshake; against a hosted server answering in
+    ~1s that is ~10s serially, which some MCP clients do not wait for. Each fetch here takes 0.5s,
+    so eight sources built one after another would take 4s; concurrently they take about one."""
+    pytest.importorskip("fastmcp")
+    spec = {"openapi": "3.1.0", "info": {"title": "t", "version": "0"}, "paths": {}}
+
+    def slow_spec(base_url, source):
+        time.sleep(0.5)
+        return spec
+
+    monkeypatch.setattr(backlot_mcp, "openapi_spec", slow_spec)
+    creds = backlot_mcp.Credentials(
+        token="t", email=None, s3_access_key_id="a", s3_secret_access_key="s"
+    )
+    started = time.monotonic()
+    backlot_mcp.build_server("http://backlot.invalid", creds, backlot_mcp.OPENAPI_SOURCES)
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.0, f"{elapsed:.2f}s for {len(backlot_mcp.OPENAPI_SOURCES)} sources"
+
+
+def _initialised_mcp(*args, env=None):
+    """`backlot mcp` as a subprocess with stdin held OPEN, past its MCP handshake. Returns the
+    process; the caller signals it. A supervisor that signals and waits holds stdin exactly so."""
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "backlot", "mcp", *args],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    init = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0"},
+        },
+    }
+    proc.stdin.write((json.dumps(init) + "\n").encode())
+    proc.stdin.flush()
+    ready, _, _ = select.select([proc.stdout], [], [], 120)
+    assert ready, "no initialize response within 120s"
+    line = proc.stdout.readline()
+    assert b'"result"' in line, line
+    return proc
+
+
+@pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT", "SIGHUP"])
+def test_backlot_mcp_exits_on_a_signal_with_stdin_still_open(live_server, signame):
+    """A supervisor that signals its child and waits must not hang. With stdin held open, each
+    terminating signal ends the process with the conventional 128+N — SIGTERM alone used to leave
+    it alive until stdin closed, because the stdio reader thread is non-daemon; SIGINT never ended
+    it; SIGHUP ended it by default disposition without unwinding."""
+    base, _ = live_server
+    sig = getattr(signal, signame)
+    proc = _initialised_mcp("--source", "slack", "--url", base)
+    try:
+        proc.send_signal(sig)
+        code = proc.wait(timeout=20)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert code == 128 + sig, (code, proc.stderr.read()[-500:])
+
+
+def test_backlot_mcp_takes_its_server_down_on_sighup(tmp_path):
+    """The server `attach` starts goes with the process on a signal too, not only when stdin
+    closes — SIGHUP is the one whose default disposition would have ended this process instantly
+    with the server left listening."""
+    if backlot_mcp.is_backlot(backlot_mcp.DEFAULT_URL):
+        pytest.skip(
+            f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"
+        )
+    env = {**os.environ, "BACKLOT_DATA_DIR": str(tmp_path / "data")}
+    proc = _initialised_mcp("--source", "slack", env=env)
+    try:
+        proc.send_signal(signal.SIGHUP)
+        code = proc.wait(timeout=30)
+        err = proc.stderr.read().decode()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert code == 128 + signal.SIGHUP, (code, err[-500:])
+    up = re.search(r"Backlot is up at http://127\.0\.0\.1:(\d+)", err)
+    assert up, err
+    port = int(up.group(1))
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+        except OSError:
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail(f"the server backlot mcp started on port {port} is still listening")
 
 
 def test_backlot_mcp_advertises_only_the_sources_it_mounted(live_server):

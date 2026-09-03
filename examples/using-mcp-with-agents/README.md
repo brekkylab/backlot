@@ -124,9 +124,9 @@ API shape Backlot speaks) when the hostname ends in `.atlassian.net`. So the exa
   (`host-gateway`) for a local server, or to a **remote** deployment's resolved IP;
 - sets `MCP_ALLOWED_URL_DOMAINS=atlassian.net` to pass the server's SSRF guard;
 - authenticates with HTTP Basic where the **api-token is a Backlot token** — Backlot resolves it to a
-  user and enforces that user's ACL. The Basic-auth **username** is required by mcp-atlassian but
-  ignored by Backlot once the token resolves, so a placeholder (`svc@example.com`) works for a
-  local server. For a **remote** target it must be explicit (`--username`), and because the
+  user and enforces that user's ACL. The Basic-auth **username** must be that token's own address,
+  as the real service requires; the placeholder (`svc@example.com`) stands in only for the admin
+  token, which has no address. For a **remote** target it must be explicit (`--username`), and because the
   deployment's TLS cert is for its own name (not `backlot.atlassian.net`), cert verification is
   disabled for that hop (`*_SSL_VERIFY=false`) — fine for a throwaway server.
 

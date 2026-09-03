@@ -45,7 +45,8 @@ take that command's only credential input with it. The same values are in `data/
 | `ava.chen@acme.com` | `usr-29b84da5703116c2a832` | `handbook`, `design`, `product`, `engineering` |
 | `dana.whitfield@acme.com` | `usr-94ef7da374a581b973c0` | `sales` |
 
-The token is what authenticates — never the username, even where a scheme carries one. Send a
+The token is what authenticates. Atlassian's Basic is the one scheme that also checks the
+username, because the real service does: it has to be the token's own address (below). Send a
 user's token and every API filters to that user, which is what makes per-user access a test rather
 than an audit. Send the same request three times, changing only the token, and count what comes
 back:
@@ -147,16 +148,23 @@ the quickest check that an identity resolves.
 
 ### Jira and Confluence — Basic, or `Bearer`
 
-Atlassian clients send HTTP Basic with an API token as the password, so that is what Backlot takes.
-The **username is ignored** once the token resolves — any placeholder works:
+Atlassian clients send HTTP Basic with an API token as the password, so that is what Backlot takes
+— and the **username has to be that token's own address**, which is what the real service matches
+on. Measured against a real Atlassian Cloud site (`GET /rest/api/3/myself`) with a user API token:
+`email:token` answers 200, while an empty password, a wrong password, and a valid token under
+someone else's address all answer 401.
 
 ```bash
-curl -s -u "svc@example.com:usr-29b84da5703116c2a832" \
+curl -s -u "ava.chen@acme.com:usr-29b84da5703116c2a832" \
   localhost:8000/atlassian/rest/api/3/project/search
 
-curl -s -u "svc@example.com:usr-29b84da5703116c2a832" \
+curl -s -u "ava.chen@acme.com:usr-29b84da5703116c2a832" \
   localhost:8000/atlassian/wiki/rest/api/space
 ```
+
+The admin/service token is the exception, and the only one: it resolves to no address, so there is
+nothing to match and any username goes through. That is what lets an Atlassian client send the
+placeholder its config demands — `svc@example.com:admin-service-token` works.
 
 A plain `Authorization: Bearer <token>` is accepted too, which is easier when you are driving the
 API by hand rather than through an Atlassian SDK. Sending neither is a `401` — with one exception,

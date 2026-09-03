@@ -11,7 +11,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, unquote, urlencode
 
 import pytest
 import yaml
@@ -100,6 +100,21 @@ def test_s3_missing_key_is_nosuchkey(live_server):
 
     base_url, settings = live_server
     url, headers = _sign_get(base_url, "/s3/eng-artifacts/does/not/exist.md", settings.admin_token)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(urllib.request.Request(url, headers=headers))
+    assert e.value.code == 404 and b"NoSuchKey" in e.value.read()
+
+
+def test_s3_key_containing_a_question_mark_verifies(live_server):
+    """`?` is a legal character in a key, and a client sends it as `%3F`. Starlette rebuilds
+    `request.url` from the DECODED path, so for `/q%3Fx.txt` its `.query` is `x.txt` — a query the
+    client never sent or signed. The verifier canonicalises the wire query string instead, and an
+    absent key with a `?` in it answers NoSuchKey like every other absent key, not
+    SignatureDoesNotMatch. Signed by botocore, the way boto3 sends it."""
+    import urllib.request
+
+    base_url, settings = live_server
+    url, headers = _sign_get(base_url, "/s3/eng-artifacts/q%3Fx.txt", settings.admin_token)
     with pytest.raises(urllib.error.HTTPError) as e:
         urllib.request.urlopen(urllib.request.Request(url, headers=headers))
     assert e.value.code == 404 and b"NoSuchKey" in e.value.read()
@@ -527,12 +542,13 @@ def _acl():
 
 def _request(method, path, query, headers) -> Request:
     """A minimal Starlette Request mirroring what `resolve_sigv4` reads: headers,
-    query_params, method, url.query, and scope['raw_path'] — plus a fake app.state.acl
-    so `auth.acl(request)` resolves without a real ASGI app."""
+    query_params, method, scope['query_string'] and scope['raw_path'] — plus a fake app.state.acl
+    so `auth.acl(request)` resolves without a real ASGI app. `path` is the wire path; uvicorn
+    hands it over verbatim as `raw_path` and percent-decoded as `path`, and so does this."""
     scope = {
         "type": "http",
         "method": method,
-        "path": path,
+        "path": unquote(path),
         "raw_path": path.encode("ascii"),
         "query_string": query.encode("ascii"),
         "headers": [(k.lower().encode("ascii"), v.encode("ascii")) for k, v in headers.items()],
@@ -641,9 +657,15 @@ def test_header_auth_skew_check_precedes_signature_check():
     assert err == "RequestTimeTooSkewed"
 
 
-def test_header_auth_accepts_current_date():
+# A `%3F` in the key decodes to a `?` that splits Starlette's rebuilt `request.url`, so the
+# canonical request has to come off the wire — see the comment in `resolve_sigv4`.
+SIGNED_PATHS = ["/s3/eng-artifacts", "/s3/eng-artifacts/q%3Fx.txt"]
+
+
+@pytest.mark.parametrize("path", SIGNED_PATHS)
+def test_header_auth_accepts_current_date(path):
     current = datetime.now(timezone.utc).strftime(AMZ_DATE_FORMAT)
-    req = _header_auth_request(current)
+    req = _header_auth_request(current, path=path)
     caller, err = auth.resolve_sigv4(req)
     assert err is None
     assert caller == Caller(email="ava@acme.com", is_admin=False)
@@ -657,9 +679,10 @@ def test_presigned_expired_is_access_denied():
     assert err == "AccessDenied"
 
 
-def test_presigned_unexpired_ok():
+@pytest.mark.parametrize("path", SIGNED_PATHS)
+def test_presigned_unexpired_ok(path):
     current = datetime.now(timezone.utc).strftime(AMZ_DATE_FORMAT)
-    req = _presigned_request(current, expires=3600)
+    req = _presigned_request(current, expires=3600, path=path)
     caller, err = auth.resolve_sigv4(req)
     assert err is None
     assert caller == Caller(email="ava@acme.com", is_admin=False)

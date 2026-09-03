@@ -53,9 +53,6 @@ class Settings(BaseSettings):
     # --- auth ---
     # A caller presenting this token bypasses ACL filtering (full crawl / service account).
     admin_token: str = "admin-service-token"
-    # Expose the /_meta/users directory (per-user tokens) so callers can test per-user ACL.
-    # It hands out tokens in the clear — fine locally; set false to disable.
-    expose_tokens: bool = True
 
     # --- pagination defaults ---
     default_page_size: int = 100

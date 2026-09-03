@@ -16,7 +16,6 @@ import sqlite3
 
 import pytest
 
-from backlot.config import Settings
 from tests._helpers import build_corpus, client_for, crawl_confluence, db_count
 
 
@@ -91,13 +90,6 @@ def test_meta_users_directory(client, tokens_yaml, org):
     assert 0 < len(user_repos) <= len(admin_repos)
 
 
-def test_meta_users_can_be_disabled(client, monkeypatch):
-    from backlot import main
-
-    monkeypatch.setattr(main, "get_settings", lambda: Settings(expose_tokens=False))
-    assert client.get("/_meta/users").status_code == 404
-
-
 def test_unauthenticated_is_rejected(client):
     # Drive accepts API keys, so an anonymous request is an "unregistered caller" -> 403, not 401.
     # A present-but-invalid bearer IS 401. Both measured; see the Google-envelope tests below.
@@ -150,7 +142,8 @@ def test_meta_openapi_spec_endpoint(client):
     assert ids and len(ids) == len(set(ids)), (
         "served spec must have unique operationIds (bridge-ready)"
     )
-    assert client.get("/_meta/openapi/s3").status_code == 404  # SigV4 — intentionally no bridge
+    # s3 is bridged too — the bridge signs each request rather than holding a fixed header
+    assert client.get("/_meta/openapi/s3").status_code == 200
     assert client.get("/_meta/openapi/nope").status_code == 404
 
 

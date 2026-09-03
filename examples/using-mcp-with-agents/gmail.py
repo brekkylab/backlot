@@ -2,21 +2,20 @@
 """Drive Backlot's Gmail API as MCP tools via the generic OpenAPI→MCP bridge. Self-contained.
 
 Official and community Gmail MCP servers hard-wire `googleapis.com` and require real Google OAuth,
-so none can be pointed at a self-hosted server. Instead `_openapi_bridge.py` turns Backlot's typed
-`/openapi.json` into MCP tools: it slices to `/gmail`, dedupes operation aliases, and serves them
-over stdio with a `Bearer <token>` header — retrieval is ACL-scoped by the token (default admin;
-per-user from GET /_meta/users).
+so none can be pointed at a self-hosted server. Instead `backlot mcp --source gmail` turns Backlot's
+typed `/openapi.json` into MCP tools: it slices to `/gmail`, dedupes operation aliases, and serves
+them over stdio with a `Bearer <token>` header — retrieval is ACL-scoped by `--user` (default:
+the admin; any email from GET /_meta/users).
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
-    ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/gmail.py [--url … --token … --agent openai]
+    ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/gmail.py [--url … --user … --agent openai]
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from mcp import StdioServerParameters
 
@@ -46,15 +45,17 @@ QUESTION = (
     "runbook email. Cite the subjects."
 )
 
-_BRIDGE = str(Path(__file__).with_name("_openapi_bridge.py"))
 
+def build_params(base_url: str, user: str | None = None) -> StdioServerParameters:
+    """Run `backlot mcp --source gmail` as a stdio MCP server pointed at Backlot.
 
-def build_params(base_url: str, token: str) -> StdioServerParameters:
-    """Run `_openapi_bridge.py --source gmail` as a stdio MCP server pointed at Backlot."""
-    return StdioServerParameters(
-        command=sys.executable,
-        args=[_BRIDGE, "--source", "gmail", "--base-url", base_url.rstrip("/"), "--token", token],
-    )
+    `-m backlot` through this interpreter rather than the `backlot` script, so it works in an
+    environment whose bin/ is not on PATH. Without `--user` the command answers as the admin, so
+    there is nothing to pass for the default."""
+    args = ["-m", "backlot", "mcp", "--source", "gmail", "--url", base_url]
+    if user:
+        args += ["--user", user]
+    return StdioServerParameters(command=sys.executable, args=args)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -65,9 +66,10 @@ def _parse_args() -> argparse.Namespace:
         "--url", help="Backlot base URL to drive (default: spin up a local throwaway server)"
     )
     p.add_argument(
-        "--token",
-        help="Backlot bearer token from GET /_meta/users "
-        "(default: the admin token, which sees everything)",
+        "--user",
+        metavar="EMAIL",
+        help="answer as this person, from GET /_meta/users "
+        "(default: the admin, who sees everything)",
     )
     p.add_argument(
         "--agent",
@@ -81,7 +83,7 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     with serve_or_connect(CORPUS, url=args.url) as s:
-        if args.token:
-            print("authenticating with --token → retrieval is ACL-filtered to that user")
-        params = build_params(s.base_url, args.token or s.token)
+        if args.user:
+            print(f"answering as {args.user} → retrieval is ACL-filtered to that person")
+        params = build_params(s.base_url, args.user)
         run_agent(args.agent, params, QUESTION)

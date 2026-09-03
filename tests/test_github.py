@@ -480,8 +480,106 @@ _GH_DIFF_DOCS = (
             "author_groups": ["people"],
             "changed_paths": ["app.py", "secret/keys.txt"],
         },
+        # people-only and OPEN, so the branch listing a caller is served depends on which pulls
+        # they can see: its head ref is a branch for hana and not one for bob.
+        {
+            "source_type": "github",
+            "doc_id": "gh-diff-pr-people-only",
+            "repo": "diffable",
+            "subtype": "pull_request",
+            "title": "Move the signing keys behind a rotation job",
+            "content": "body",
+            "group": "people",
+            "visibility": "group",
+            "author_email": "hana@acme.com",
+            "author_groups": ["people"],
+            "state": "open",
+            "head": "hana/key-rotation",
+            "base": "main",
+        },
     ]
 )
+
+
+# A repo that STATES its own refs, and a pull whose head lives in a fork. Both are facts about a
+# repository rather than about a document in it, which is what `subtype: "repo"` exists to carry.
+_GH_REPO_DOCS = [
+    {
+        "source_type": "github",
+        "subtype": "repo",
+        "repo": "stated-repo",
+        "default_branch": "trunk",
+        # One protected and one not, so `?protected=` has all three of real's answers to give.
+        "branches": [{"name": "trunk", "protected": True}, {"name": "release/2026-03"}],
+        "tags": ["v1.0", "v1.1"],
+    },
+    {
+        "source_type": "github",
+        "doc_id": "gh-stated-file",
+        "repo": "stated-repo",
+        "subtype": "file",
+        "path": "main.py",
+        "title": "main.py",
+        "content": "print('hi')\n",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+    },
+    {
+        # OPEN, and its head is a name the repo record does not list: a stated listing is the
+        # repo's own answer, so this head does not add itself to it.
+        "source_type": "github",
+        "doc_id": "gh-stated-pr",
+        "repo": "stated-repo",
+        "subtype": "pull_request",
+        "title": "Work on a branch the repo record does not list",
+        "content": "body",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+        "state": "open",
+        "head": "never-listed",
+        "base": "trunk",
+    },
+    {
+        # `head_repo` naming THIS repo, which is what a corpus writing its own org as the owner
+        # produces. It is not a fork, so its head is a branch here like any other.
+        "source_type": "github",
+        "doc_id": "gh-diff-pr-own-head-repo",
+        "repo": "diffable",
+        "subtype": "pull_request",
+        "title": "Spell out the head repo",
+        "content": "body",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+        "state": "open",
+        "head": "chore/own-head-repo",
+        "head_repo": "acme/diffable",
+        "base": "main",
+    },
+    {
+        # A pull from a FORK of `diffable`: its head is a branch of someone else's repo, so it is
+        # not a branch of this one however open the pull is.
+        "source_type": "github",
+        "doc_id": "gh-diff-pr-forked",
+        "repo": "diffable",
+        "subtype": "pull_request",
+        "title": "Fix the argv handling, from a fork",
+        "content": "body",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+        "state": "open",
+        "head": "fix/from-a-fork",
+        "head_repo": "outsider/diffable",
+        "base": "main",
+    },
+]
 
 
 @pytest.fixture(scope="module")
@@ -489,7 +587,8 @@ def gh_client(tmp_path_factory):
     from tests.conftest import SAMPLE
 
     settings = build_corpus(
-        tmp_path_factory.mktemp("gh_sample"), SAMPLE + _GH_FILE_DOCS + _GH_DIFF_DOCS
+        tmp_path_factory.mktemp("gh_sample"),
+        SAMPLE + _GH_FILE_DOCS + _GH_DIFF_DOCS + _GH_REPO_DOCS,
     )
     with client_for(settings) as c:
         yield c, settings
@@ -663,11 +762,315 @@ def test_github_lists_the_refs_a_client_enumerates_before_it_reads(gh_client, gh
     assert tags.status_code == 200 and tags.json() == []
 
 
+def test_github_branch_listing_holds_the_refs_its_pulls_advertise(gh_client, gh_admin_h, gh_org):
+    """Every ref the repo's own pulls name is a branch of it.
+
+    Measured on api.github.com (2026-09-03): across pydantic/pydantic, fastapi/fastapi,
+    psf/requests, pallets/flask, sqlalchemy/alembic, encode/httpx and jupyter/notebook, all 27 open
+    pulls whose head is a branch of the same repo have that head in `/branches`, and every
+    `base.ref` any pull names is listed too — including a base that is not the default branch
+    (pydantic's `pure-annotation-schema-cache`). A client that resolves a pull's head against the
+    listing — to build a ref picker, or to check the ref still exists before reading files at it —
+    reads an absent head as a deleted or forked branch, while `head.repo.full_name` in the same
+    response says the branch is right here.
+
+    Ordering is real's, ascending by name: `3.0`, `bug/5671`, `init_level_types`, `main`, … on
+    psf/requests.
+    """
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/diffable"
+    pulls = c.get(f"{base}/pulls", headers=gh_admin_h, params={"state": "all"}).json()
+    assert pulls, "the listing is built from this repo's pulls; without one this asserts nothing"
+    listing = c.get(f"{base}/branches", headers=gh_admin_h)
+    assert listing.status_code == 200
+    body = listing.json()
+    names = [b["name"] for b in body]
+    # A fork's head is a branch of the fork, not of this repo, so only a same-repo head counts.
+    same_repo = [p for p in pulls if p["head"]["repo"]["full_name"] == f"{gh_org}/diffable"]
+    advertised = (
+        {"main"} | {p["head"]["ref"] for p in same_repo} | {p["base"]["ref"] for p in pulls}
+    )
+    assert names == sorted(advertised)
+    # an entry stays real's SHORT branch, whatever the listing now holds
+    assert all(set(b["commit"]) == {"sha", "url"} and b["protected"] is False for b in body)
+
+    # a name with a slash is a branch like any other, and every route that takes a ref has to
+    # carry it: measured on psf/requests, `/branches/bug/5671`, `git/trees/bug/5671`,
+    # `/commits/bug/5671` and `?ref=bug/5671` all answer 200. None of those names fit in one path
+    # segment, so a route that takes one 404s a branch it holds.
+    single = c.get(f"{base}/branches/chore/rename", headers=gh_admin_h)
+    assert single.status_code == 200 and single.json()["name"] == "chore/rename"
+    for path, params in (
+        ("/git/ref/heads/chore/rename", None),
+        ("/git/trees/chore/rename", None),
+        ("/commits/chore/rename", None),
+        ("/statuses/chore/rename", None),
+        ("/contents/app.py", {"ref": "chore/rename"}),
+    ):
+        r = c.get(base + path, headers=gh_admin_h, params=params)
+        assert r.status_code == 200, path
+
+    # `?protected=` splits real's three answers, now that there is more than one entry to split:
+    # every branch here is unprotected, so a true value selects none and `false` selects all.
+    for value, kept in (("true", 0), ("1", 0), ("false", len(names)), ("", len(names))):
+        r = c.get(f"{base}/branches", headers=gh_admin_h, params={"protected": value})
+        assert r.status_code == 200 and len(r.json()) == kept, f"?protected={value!r}"
+
+
+def test_github_a_stated_branch_listing_replaces_the_inferred_one(gh_client, gh_admin_h, gh_org):
+    """A `subtype: "repo"` record answers for the repo's refs, and the pulls stop being consulted.
+
+    Which branches a repo has is a fact about the repository, and inferring it from pulls is only
+    the best available answer when nothing states it — it is right for an open pull's head and
+    wrong about 1 time in 5 for a closed one (6 of 28 closed-unmerged heads still exist, measured
+    on api.github.com 2026-09-03). A corpus that states the set is not overruled by that guess:
+    the open pull below heads a branch the record omits, and the listing omits it too, exactly as
+    real does for a pull whose branch was deleted under it.
+    """
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/stated-repo"
+    listing = c.get(f"{base}/branches", headers=gh_admin_h).json()
+    assert [b["name"] for b in listing] == ["release/2026-03", "trunk"]
+
+    pull = c.get(f"{base}/pulls", headers=gh_admin_h, params={"state": "all"}).json()[0]
+    assert pull["head"]["ref"] == "never-listed"
+    assert c.get(f"{base}/branches/never-listed", headers=gh_admin_h).status_code == 404
+
+    # the repo object reports the stated default branch, not the hardcoded `main`
+    assert c.get(base, headers=gh_admin_h).json()["default_branch"] == "trunk"
+    assert c.get(f"{base}/branches/trunk", headers=gh_admin_h).status_code == 200
+
+
+def test_github_stated_protection_gives_protected_all_three_answers(gh_client, gh_admin_h, gh_org):
+    """`?protected=` selects for real once a corpus states which branches are protected.
+
+    Real is three-valued — a truthy value selects the protected branches, `false`/`0` the
+    unprotected ones, an absent or empty parameter all of them (measured on fastapi/fastapi: 22
+    branches, one protected, answering 1 / 21 / 22). Until a corpus could say so, every branch was
+    unprotected and the last two answers coincided; they no longer have to.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/stated-repo/branches"
+
+    def names(params):
+        return [b["name"] for b in c.get(url, headers=gh_admin_h, params=params).json()]
+
+    assert names({"protected": "true"}) == ["trunk"]
+    assert names({"protected": "1"}) == ["trunk"]
+    assert names({"protected": "false"}) == ["release/2026-03"]
+    assert names({"protected": "0"}) == ["release/2026-03"]
+    assert names({"protected": ""}) == ["release/2026-03", "trunk"]
+    assert names(None) == ["release/2026-03", "trunk"]
+    # and the flag rides on the entry itself, in both listings
+    assert [b["protected"] for b in c.get(url, headers=gh_admin_h).json()] == [False, True]
+    single = c.get(f"{url}/trunk", headers=gh_admin_h).json()
+    assert single["protected"] is True
+
+
+def test_github_a_stated_repo_serves_its_tags(gh_client, gh_admin_h, gh_org):
+    """`/tags` answers what the corpus states rather than `[]`.
+
+    Real's item carries `name`, `commit: {sha, url}`, `zipball_url`, `tarball_url` and `node_id`,
+    with the archive urls spelling the ref out as `refs/tags/{name}` (measured on psf/requests).
+    A tag also becomes a ref: `git/ref/tags/{name}` resolves one that exists.
+    """
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/stated-repo"
+    tags = c.get(f"{base}/tags", headers=gh_admin_h).json()
+    assert [t["name"] for t in tags] == ["v1.0", "v1.1"]
+    assert set(tags[0]) == {"name", "commit", "zipball_url", "tarball_url", "node_id"}
+    assert set(tags[0]["commit"]) == {"sha", "url"}
+    assert tags[0]["zipball_url"].endswith("/zipball/refs/tags/v1.0")
+    assert c.get(f"{base}/git/ref/tags/v1.0", headers=gh_admin_h).status_code == 200
+    assert c.get(f"{base}/git/ref/tags/v9.9", headers=gh_admin_h).status_code == 404
+
+    # Real takes a tag wherever it takes a branch, measured on psf/requests with `v2.34.2`:
+    # `/commits/{tag}`, `git/trees/{tag}`, `/statuses/{tag}` and `/contents/{path}?ref={tag}` all
+    # answer 200. A tag that resolved on `/tags` and nowhere else is a ref a client is offered and
+    # cannot read at — `GithubFileSystem.refs` offers it and `fs.ls("", sha=<tag>)` then raises.
+    for path, params in (
+        ("/commits/v1.0", None),
+        ("/git/trees/v1.0", None),
+        ("/statuses/v1.0", None),
+        ("/contents/main.py", {"ref": "v1.0"}),
+    ):
+        assert c.get(base + path, headers=gh_admin_h, params=params).status_code == 200, path
+    # and it resolves to the same commit every other ref of this repo does
+    head = c.get(f"{base}/branches/trunk", headers=gh_admin_h).json()["commit"]["sha"]
+    assert c.get(f"{base}/commits/v1.0", headers=gh_admin_h).json()["sha"] == head
+    # a repo that states none still answers [], which is what real gives a repo with no tags
+    assert c.get(f"/github/repos/{gh_org}/diffable/tags", headers=gh_admin_h).json() == []
+
+
+def test_github_a_forked_pulls_head_is_not_a_branch_of_the_base_repo(gh_client, gh_admin_h, gh_org):
+    """A pull from a fork names a branch of the FORK, so the base repo does not list it.
+
+    Real spells the difference in the pull itself: `head.repo.full_name` is the fork and
+    `head.label` carries the fork's owner, not the base repo's — measured on pydantic/pydantic,
+    where an outside pull reports `chenlichao:fix/…` against `head.repo.full_name`
+    `chenlichao/pydantic`. Without a way to state that, every pull looked same-repo and its head
+    became a branch here.
+    """
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/diffable"
+    pulls = c.get(f"{base}/pulls", headers=gh_admin_h, params={"state": "all"}).json()
+    forked = next(p for p in pulls if p["head"]["ref"] == "fix/from-a-fork")
+    assert forked["head"]["repo"]["full_name"] == "outsider/diffable"
+    assert forked["head"]["label"] == "outsider:fix/from-a-fork"
+    assert forked["base"]["label"] == f"{gh_org}:main"  # the base is still this repo's
+
+    names = [b["name"] for b in c.get(f"{base}/branches", headers=gh_admin_h).json()]
+    assert "fix/from-a-fork" not in names
+    assert c.get(f"{base}/branches/fix/from-a-fork", headers=gh_admin_h).status_code == 404
+
+    # `head_repo` naming THIS repo is not a fork — a corpus reaches it by writing its own org as
+    # the owner, and reading any stated `head_repo` as a fork made that pull advertise a head the
+    # listing then 404d: the contradiction this whole change set removes, from a record the schema
+    # accepts.
+    own = next(p for p in pulls if p["head"]["ref"] == "chore/own-head-repo")
+    assert own["head"]["repo"]["full_name"] == f"{gh_org}/diffable"
+    assert own["head"]["label"] == f"{gh_org}:chore/own-head-repo"
+    assert "chore/own-head-repo" in names
+    assert c.get(f"{base}/branches/chore/own-head-repo", headers=gh_admin_h).status_code == 200
+
+
+def test_github_branch_listing_omits_a_merged_pulls_head_ref(client, admin_h, org):
+    """A merged pull's head branch is gone; its base branch is not.
+
+    The one place a listing built from pulls must NOT hold what a pull advertises. Measured on
+    api.github.com (2026-09-03): 0 of 54 merged same-repo head refs across ten repos appear in
+    `/branches`, while every base ref does. Listing them would trade the divergence this listing
+    closes for a rarer one.
+    """
+    pulls = client.get(
+        f"/github/repos/{org}/gateway/pulls", headers=admin_h, params={"state": "all"}
+    ).json()
+    merged = [p for p in pulls if p["merged"]]
+    assert merged, "gateway's pull is merged; without one this asserts nothing"
+    listing = client.get(f"/github/repos/{org}/gateway/branches", headers=admin_h).json()
+    names = [b["name"] for b in listing]
+    for pull in merged:
+        assert pull["head"]["ref"] not in names
+        assert pull["base"]["ref"] in names
+
+
+def test_github_branch_listing_is_scoped_to_the_caller(gh_client, gh_user_tokens, gh_org):
+    """Built from the pulls the caller can see, so a branch only a restricted pull names is not one
+    they are told about — the rule `/user/repos` already answers repo existence by."""
+    c, _ = gh_client
+    bob = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}  # not in 'people'
+    hana = {"Authorization": f"Bearer {gh_user_tokens['hana@acme.com']}"}
+    url = f"/github/repos/{gh_org}/diffable/branches"
+    assert "hana/key-rotation" in [b["name"] for b in c.get(url, headers=hana).json()]
+    assert "hana/key-rotation" not in [b["name"] for b in c.get(url, headers=bob).json()]
+    assert c.get(f"{url}/hana/key-rotation", headers=hana).status_code == 200
+    assert c.get(f"{url}/hana/key-rotation", headers=bob).status_code == 404
+
+
+def test_github_a_name_the_branch_listing_omits_is_not_a_ref(gh_client, gh_admin_h, gh_org):
+    """ "Does this name exist" is one answer across every route that takes a ref.
+
+    Measured on psf/requests (2026-09-03) for a name no branch listing holds: `/branches/{name}`
+    404, `git/ref/heads/{name}` 404, `git/trees/{name}` 404, `/statuses/{name}` 404,
+    `/contents/{path}?ref=` 404, and `/commits/{name}` **422** carrying
+    `No commit found for SHA: {name}` — not the 404 the other five give. A 40-hex sha naming
+    nothing gets those same answers, so a well-formed sha is not a way in.
+
+    `/statuses/{ref}` still answers `[]` for a ref that DOES exist (measured: `/statuses/main` on
+    psf/requests) — a corpus records no CI, and that empty list is a shape a client meets in
+    production. What changes is only whether the ref was ever named.
+
+    Answering 200 for a name nobody stated made "which branches does this repo have" resolve three
+    different ways depending on which route was asked.
+    """
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/diffable"
+    for ghost in ("totally-made-up", "0" * 40):
+        assert c.get(f"{base}/branches/{ghost}", headers=gh_admin_h).status_code == 404, ghost
+        assert c.get(f"{base}/git/ref/heads/{ghost}", headers=gh_admin_h).status_code == 404, ghost
+        assert c.get(f"{base}/git/trees/{ghost}", headers=gh_admin_h).status_code == 404, ghost
+        assert c.get(f"{base}/statuses/{ghost}", headers=gh_admin_h).status_code == 404, ghost
+        r = c.get(f"{base}/contents/app.py", headers=gh_admin_h, params={"ref": ghost})
+        assert r.status_code == 404, ghost
+        # real's own body for a ref it has no object for, which is NOT the generic "Not Found"
+        # every other 404 here carries (measured on psf/requests)
+        assert r.json()["message"] == f"No commit found for the ref {ghost}"
+        assert r.json()["documentation_url"] == "https://docs.github.com/v3/repos/contents/"
+        commit = c.get(f"{base}/commits/{ghost}", headers=gh_admin_h)
+        assert commit.status_code == 422, ghost
+        assert commit.json()["message"] == f"No commit found for SHA: {ghost}"
+
+
+def test_github_git_ref_resolves_a_pulls_own_ref(gh_client, gh_admin_h, gh_org):
+    """`refs/pull/{n}/head` and `…/merge` are refs real GitHub serves for a pull that exists, and
+    404s for a number that does not — measured on pydantic/pydantic, where #13686 answers both and
+    #999999 answers neither. Holding this route to branches alone would 404 a ref real resolves."""
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/diffable"
+    num = c.get(f"{base}/pulls", headers=gh_admin_h, params={"state": "all"}).json()[0]["number"]
+    for suffix in ("head", "merge"):
+        r = c.get(f"{base}/git/ref/pull/{num}/{suffix}", headers=gh_admin_h)
+        assert r.status_code == 200, suffix
+        assert r.json()["ref"] == f"refs/pull/{num}/{suffix}"
+    assert c.get(f"{base}/git/ref/pull/999999/head", headers=gh_admin_h).status_code == 404
+    # this repo states no tags and `/tags` says so, so a tag ref cannot resolve either
+    assert c.get(f"{base}/git/ref/tags/v1", headers=gh_admin_h).status_code == 404
+
+    # `…/merge` exists only while the pull is OPEN — real drops the merge ref once the pull is
+    # closed: on psf/requests #7616 (merged) and #7589 (closed, unmerged) answer 404 there and 200
+    # on `…/head`, where open #7586 answers 200 on both. The pull above is open, which is why the
+    # merged one below has to be asked separately.
+    merged = f"/github/repos/{gh_org}/gateway"
+    n = c.get(merged + "/pulls", headers=gh_admin_h, params={"state": "all"}).json()[0]
+    assert n["merged"], "gateway's pull is merged; without one this asserts nothing"
+    assert c.get(f"{merged}/git/ref/pull/{n['number']}/head", headers=gh_admin_h).status_code == 200
+    assert (
+        c.get(f"{merged}/git/ref/pull/{n['number']}/merge", headers=gh_admin_h).status_code == 404
+    )
+
+
+def test_github_a_ref_check_reads_the_repos_pulls_once(gh_client, gh_admin_h, gh_org):
+    """The routes that ask whether a ref exists read the pulls behind that answer once.
+
+    `_commit_ish` is the branch names and the commit shas together, and both are derived from the
+    same rows — so fetching them separately ran the ACL-joined pull scan twice for every
+    `/commits`, `git/trees`, `/statuses` and `?ref=` request. Counted rather than described,
+    because nothing else in the suite fails when it doubles.
+
+    The pull scan only; the repo's own row is a primary-key lookup and is not what this counts.
+    """
+    c, _ = gh_client
+    conn = c.app.state.conn
+    base = f"/github/repos/{gh_org}/diffable"
+
+    def pull_scans(path, **kw) -> int:
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        try:
+            assert c.get(base + path, headers=gh_admin_h, **kw).status_code == 200
+        finally:
+            conn.set_trace_callback(None)
+        return sum("kind = 'pull_request'" in q for q in statements)
+
+    assert pull_scans("/branches") == 1
+    assert pull_scans("/commits/main") == 1
+    assert pull_scans("/git/trees/main") == 1
+    assert pull_scans("/statuses/main") == 1
+    assert pull_scans("/contents/app.py", params={"ref": "main"}) == 1
+
+
 def test_github_branch_and_commit_resolve_tree(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
     branch = c.get(f"/github/repos/{gh_org}/codebase/branches/main", headers=gh_admin_h).json()
     tree_sha = branch["commit"]["commit"]["tree"]["sha"]
     commit_sha = branch["commit"]["sha"]
+    # A ref standing for a commit RESOLVES to it. Real answers `/commits/main` with the branch's
+    # own commit sha — the value `/branches/main` reports under `commit.sha` (psf/requests:
+    # `dae7ef63…` from both) — and carries that sha in `url` and `node_id`. Echoing the name back
+    # as the sha handed a client pinning to `/commits/main` a sha no other route would accept.
+    by_name = c.get(f"/github/repos/{gh_org}/codebase/commits/main", headers=gh_admin_h).json()
+    assert by_name["sha"] == commit_sha
+    assert by_name["url"].endswith(f"/commits/{commit_sha}")
     commit = c.get(
         f"/github/repos/{gh_org}/codebase/commits/{commit_sha}", headers=gh_admin_h
     ).json()
@@ -796,6 +1199,7 @@ def test_github_code_search_returns_only_a_paths_head_snapshot(gh_client, gh_adm
                 ("diffable", "README.md"),
                 ("diffable", "app.py"),
                 ("history-repo", "README.md"),
+                ("stated-repo", "main.py"),
             ],
         ),
         (
@@ -1222,16 +1626,26 @@ def test_github_contents_serves_a_snapshot_by_its_stated_ref(gh_client, gh_admin
     """`?ref=` reaches a snapshot the corpus named, which is the only way an older one is
     addressable by path.
 
-    A ref the corpus does not name keeps the documented no-history tolerance and answers HEAD,
-    rather than becoming a new 404 surface: real clients pass a branch name, and a corpus that
-    dates its snapshots without naming them still has to answer `?ref=main`.
+    Two kinds of ref answer here, and they are not the same set the branch listing holds. A
+    snapshot ref (`pr-1`) is a name the corpus gave one revision of a file — a ref without being a
+    branch — and selects it. A branch selects HEAD, since Backlot keeps no per-ref tree (see
+    `get_tree`), so `?ref=main` is the file as it stands.
+
+    A ref that is neither is a 404, as on real (`?ref=totally-made-up` on psf/requests). Answering
+    HEAD for it meant a client that misspelled a branch read the current file and could not tell.
     """
     c, _ = gh_client
     url = f"/github/repos/{gh_org}/history-repo/contents/svc/rate.py"
     raw = {**gh_admin_h, "Accept": "application/vnd.github.raw"}
     assert c.get(url, headers=raw, params={"ref": "pr-1"}).text == "LIMIT = 1\n"
     assert c.get(url, headers=raw, params={"ref": "pr-3"}).text == "LIMIT = 3\n"
-    assert c.get(url, headers=raw, params={"ref": "main"}).text == "LIMIT = 3\n"  # unknown -> HEAD
+    assert c.get(url, headers=raw, params={"ref": "main"}).text == "LIMIT = 3\n"  # a branch -> HEAD
+    # an EMPTY value is an absent one, as it is for `?protected=`: real answers
+    # `contents/README.md?ref=` with the file (measured on psf/requests)
+    assert c.get(url, headers=raw, params={"ref": ""}).text == "LIMIT = 3\n"
+    assert (
+        c.get(url, headers=gh_admin_h, params={"ref": "pr-2"}).status_code == 404
+    )  # named by no one
 
     body = c.get(url, headers=gh_admin_h, params={"ref": "pr-1"}).json()
     assert body["path"] == "svc/rate.py"  # the file's address, not the snapshot's
@@ -1480,7 +1894,7 @@ def test_github_user_repos(gh_client, gh_admin_h, gh_user_tokens, gh_org):
         "/branches",
         "/branches/main",
         "/tags",
-        "/commits/deadbeef",
+        "/commits/main",
         "/contents",
         "/collaborators",
         "/teams",
@@ -1592,24 +2006,33 @@ def test_github_pull_sub_resources_the_new_links_point_at(gh_client, gh_admin_h,
 
 def test_github_git_ref_resolves_a_ref_to_a_commit(gh_client, gh_admin_h, gh_org):
     """Resolving a branch to a commit sha, including one whose name contains a slash — the whole
-    point of this route over `/branches/{branch}`, which cannot carry that in one path segment."""
+    point of this route over `/branches/{branch}`, which cannot carry that in one path segment.
+
+    `diffable`, because the slashed branch has to be a branch the repo HAS: a pull of this repo
+    heads `chore/rename`, which is why the listing holds it.
+    """
     c, _ = gh_client
-    r = c.get(f"/github/repos/{gh_org}/codebase/git/ref/heads/main", headers=gh_admin_h)
+    base = f"/github/repos/{gh_org}/diffable"
+    r = c.get(f"{base}/git/ref/heads/main", headers=gh_admin_h)
     assert r.status_code == 200
     body = r.json()
     assert body["ref"] == "refs/heads/main" and body["object"]["type"] == "commit"
-    branch = c.get(f"/github/repos/{gh_org}/codebase/branches/main", headers=gh_admin_h).json()
+    branch = c.get(f"{base}/branches/main", headers=gh_admin_h).json()
     assert body["object"]["sha"] == branch["commit"]["sha"]  # the two must agree
 
-    slashed = c.get(
-        f"/github/repos/{gh_org}/codebase/git/ref/heads/release/2026-03", headers=gh_admin_h
-    ).json()
-    assert slashed["ref"] == "refs/heads/release/2026-03"
+    slashed = c.get(f"{base}/git/ref/heads/chore/rename", headers=gh_admin_h).json()
+    assert slashed["ref"] == "refs/heads/chore/rename"
     # the sha it hands back is usable as a git/trees ref, which is what a pinning client does next
-    tree = c.get(
-        f"/github/repos/{gh_org}/codebase/git/trees/{slashed['object']['sha']}", headers=gh_admin_h
-    )
+    tree = c.get(f"{base}/git/trees/{slashed['object']['sha']}", headers=gh_admin_h)
     assert tree.status_code == 200
+
+    # `refs/heads/main` is the FULLY-QUALIFIED spelling, and this route does not take it: real
+    # answers 404 with the get-a-reference endpoint's own body (measured on psf/requests —
+    # `{"message": "Not Found", "documentation_url": ".../git/refs#get-a-reference"}`, a missing
+    # ref rather than a missing route). Accepting it let a client that sends the git spelling pass
+    # here and 404 in production. The ref this route ANSWERS with is still fully qualified, which
+    # is what the assertions above pin.
+    assert c.get(f"{base}/git/ref/refs/heads/main", headers=gh_admin_h).status_code == 404
 
     unknown = c.get(f"/github/repos/{gh_org}/no-such-repo/git/ref/heads/main", headers=gh_admin_h)
     assert unknown.status_code == 404

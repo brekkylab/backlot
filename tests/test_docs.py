@@ -85,8 +85,9 @@ def test_readme_states_no_source_count():
     )
 
 
-# A count OF THE BUNDLED CORPUS, in prose: "136 records", "138 source documents". Two nouns
-# either side, because the offending sentences were written both ways round.
+# A count OF THE BUNDLED CORPUS, in prose: a number against `records` or `documents`, and against
+# `rows` or `lines` too, because the offending sentences were written every one of those ways. No
+# example of one here: this file is scanned like any other, and an example would be a count.
 _CORPUS_COUNT_RE = re.compile(
     r"\b(\d[\d,]*)\s+(?:source\s+)?(?:records?|documents?|rows?|lines?)\b", re.I
 )
@@ -96,9 +97,10 @@ _CORPUS_COUNT_RE = re.compile(
 _BUNDLED_RE = re.compile(r"--bundled|hello\.jsonl|hello-world|bundled corpus|demo corpus", re.I)
 
 
-def test_no_markdown_states_the_bundled_corpus_size():
+def test_no_prose_states_the_bundled_corpus_size():
     """`hello.jsonl` grows whenever a source or a behaviour needs a record, and every number
-    written about it goes stale on that commit — both of the two that existed already had.
+    written about it goes stale on that commit — as the three that existed did on the commit that
+    added a repo record to it.
 
     Two ways a line is caught, because a count goes stale in two directions. A line that NAMES the
     corpus may not put a number next to `records`/`documents` at all, whatever the number. And any
@@ -113,7 +115,10 @@ def test_no_markdown_states_the_bundled_corpus_size():
     corpus = REPO / "backlot" / "data" / "hello.jsonl"
     records = str(sum(1 for line in corpus.read_text().splitlines() if line.strip()))
     offenders = []
-    for path in sorted(REPO.rglob("*.md")):
+    # `.py` as well as `.md`: the count this test was written for lived in three places, and the
+    # third was `backlot/server.py`'s module docstring, which a markdown-only sweep walked past.
+    # A docstring describing the corpus is documentation wherever it is stored.
+    for path in sorted([*REPO.rglob("*.md"), *REPO.rglob("*.py")]):
         # Filtered on the path RELATIVE to the repo, never the absolute one: a checkout can itself
         # live under a directory this list names — a git worktree under `.claude/worktrees/` does —
         # and matching against the absolute parts then skips every file in the repo, passing this

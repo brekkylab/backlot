@@ -73,7 +73,7 @@
         "file",
         "repo"
       ],
-      "description": "Issue vs PR vs file vs the repo itself (default: issue). A `repo` record states facts about the REPOSITORY rather than about a document in it — its refs and its default branch — so it carries no author, body or ACL of its own; the repo stays visible exactly when one of its documents is."
+      "description": "Issue vs PR vs file vs the repo itself (default: issue). A `repo` record states facts about the REPOSITORY rather than about a document in it — its refs and its default branch — so it carries no author, body or ACL of its own; the repo stays visible to a scoped caller exactly when one of its documents is, and to the admin as soon as the record itself exists."
     },
     "path": {
       "type": "string",

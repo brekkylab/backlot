@@ -2536,8 +2536,10 @@ def github_repo_meta(conn, repo) -> sqlite3.Row | None:
 
     Not ACL-scoped, and it does not need to be: a `subtype: "repo"` record carries no document and
     no grant, so this row reveals nothing a caller could not already see. Whether the repo exists
-    FOR a caller is decided by its documents, which is `routers.github._require_repo` and is
-    unchanged by a repo record being present.
+    FOR a caller is `routers.github._repo_visible`, which this does not change — but note what that
+    predicate already says: a SCOPED caller needs a visible document, and the admin needs only the
+    container row. A repo record creates that row without a document, which no record could do
+    before, so a repo stated with nothing in it is served to the admin and 404s for everyone else.
     """
     return conn.execute("SELECT * FROM github_repos WHERE repo = ?", [repo]).fetchone()
 

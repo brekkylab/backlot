@@ -9,16 +9,20 @@ Pass ``records`` (BYO-JSONL dicts) to serve your own corpus instead. ``serve_or_
 an already-running server when one is reachable, which is what lets an example run against the
 hosted deployment or a local one without changing code.
 
-The bundled hello-world corpus (``HELLO_CORPUS``) is 136 records covering EVERY served source, with
-several containers each (4 Slack channels, 3 Gmail mailboxes, 3 Drive folders, 2 repos, 2 Jira
-projects, 2 Confluence spaces, 2 Notion teamspaces, 2 buckets, 2 Linear teams, 2 Fireflies
-channels, 4 HubSpot object types) so a listing has more than one of anything to page through.
+The bundled hello-world corpus (``HELLO_CORPUS``) covers EVERY served source, with several
+containers each — channels, mailboxes, folders, repos, projects, spaces, teamspaces, buckets, teams
+and object types — so a listing always has more than one of anything to page through. ``backlot
+import`` prints the per-source breakdown as it loads; no count is written down here, because the
+corpus grows whenever a source or a behaviour needs a record and a written one goes stale on that
+commit.
 
-Two counts, and they differ on purpose. ``source_documents`` is 136 — what the corpus offered.
-``/health``'s ``documents`` is 167, because parsing promotes structure into rows of the same table:
-Slack ``replies`` and Gmail ``messages`` are messages in their own right. Child rows in the
-per-vendor comment tables (Jira/Confluence/GitHub/Notion/Linear comments, and Fireflies sentences)
-are in neither number — ``documents`` sums root documents only.
+Two counts, and they differ on purpose. ``source_documents`` is what the corpus OFFERED;
+``/health``'s ``documents`` is what is SERVED, and it is larger for two reasons. Parsing promotes
+structure into rows of the same table: Slack ``replies`` and Gmail ``messages`` are messages in
+their own right. And a record is not always a document — a ``subtype: "repo"`` record states a
+repository's refs and becomes no row in the document table at all, so it is counted as offered and
+never as served. Child rows in the per-vendor comment tables (Jira/Confluence/GitHub/Notion/Linear
+comments, and Fireflies sentences) are in neither number — ``documents`` sums root documents only.
 
 It is a demo corpus, not a fixture: assert on shapes and relationships, not on these totals. It also
 leaves optional fields out on purpose — to see what a record MAY carry, read

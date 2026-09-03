@@ -790,6 +790,13 @@ def load_roster(path) -> dict:
 # loaded anyway (see `_unresolved_changed_paths`).
 
 
+# Everything a `subtype: "repo"` record may carry. `group` is the container's owning ACL group,
+# which every record names the same way and which this one is the natural place to name.
+_REPO_RECORD_KEYS = frozenset(
+    {"source_type", "subtype", "repo", "group", "default_branch", "branches", "tags"}
+)
+
+
 def _github_pairing_errors(rec: dict) -> list[str]:
     """Pull-only fields on a record that is not a pull, and a review comment with no anchor.
 
@@ -803,6 +810,17 @@ def _github_pairing_errors(rec: dict) -> list[str]:
     for field in ("default_branch", "branches", "tags"):
         if rec.get(field) is not None and subtype != "repo":
             msgs.append(f"{field} is for subtype='repo' only (this is {subtype or 'issue'!r})")
+    if subtype == "repo":
+        # A repo record states the repo and stops: it registers its container and returns, so a
+        # document field on one is not even stored, let alone served. Refused rather than dropped
+        # for the reason `ref` on a non-file is (a few lines down) — an author who wrote a title or
+        # an ACL here was describing a document they never got. `group` stays: the container's
+        # owning group is a fact about the repo, and every record states it the same way.
+        extra = sorted(set(rec) - _REPO_RECORD_KEYS)
+        if extra:
+            msgs.append(
+                f"a subtype='repo' record states the repo and nothing else; drop {', '.join(extra)}"
+            )
     if rec.get("ref") is not None and subtype != "file":
         # `ref` says WHICH SNAPSHOT of a path this row is, so it means nothing off a file. Every
         # reader of the column is scoped to kind='file', so an unchecked one would be stored and
@@ -836,6 +854,59 @@ def _github_pairing_errors(rec: dict) -> list[str]:
                 f"{subtype or 'issue'!r})"
             )
     return msgs
+
+
+def _open_pull_base(rec: dict) -> str | None:
+    """The base branch an OPEN pull needs to exist, or None for anything that is not one.
+
+    An unstated `base` is the repo's default branch, which a stated listing always holds (see
+    `routers.github._branch_rows`), so there is nothing to check for it.
+    """
+    if rec.get("subtype") != "pull_request" or rec.get("merged_at"):
+        return None
+    if (rec.get("state") or "open") != "open":
+        return None
+    return rec.get("base") or None
+
+
+def _unlisted_open_bases(declared, listed) -> list[tuple[str, str, str]]:
+    """``(where, repo, base)`` for every open pull whose base a STATED branch listing omits.
+
+    ``declared`` is one ``(where, repo, base)`` per open pull; ``listed(repo)`` answers the branch
+    names that repo's record stated, or None where it stated none. One rule for both callers, so a
+    load and a ``--dry-run`` cannot disagree — they differ only in where the listing comes from (a
+    load can also see one an earlier ``--append`` stored; a dry run has the corpus and nothing
+    else).
+
+    A repo that states no listing has no rule to break: its branches are inferred from its pulls,
+    and every pull's base is in them by construction.
+    """
+    out = []
+    for where, repo, base in declared:
+        names = listed(repo)
+        if names is not None and base not in names:
+            out.append((where, repo, base))
+    return out
+
+
+def _unlisted_base_message(repo: str, base: str) -> str:
+    """The refusal for one offending pull, without the `where` its caller prefixes.
+
+    Real cannot be in this state: deleting a branch with an open pull on it closes that pull ("If
+    the branch is associated with at least one open pull request, deleting the branch closes the
+    pull requests." — docs.github.com, *Creating and deleting branches within your repository*), so
+    a stated listing that omits an open pull's base describes a repo that cannot exist. Served, it
+    is exactly the contradiction the branch listing was rebuilt to remove: the pull advertises a
+    base that `/branches/{base}` 404s.
+
+    Refused rather than reported, unlike an unresolved `changed_paths`: a corpus is often a SLICE
+    of a repo and may legitimately stop short of a file, but a repo record is the whole statement
+    of that repo's branches — there is no slice of it.
+    """
+    return (
+        f'base {base!r} is not a branch the `subtype: "repo"` record for {repo!r} lists, '
+        f"and an open pull's base must exist"
+    )
 
 
 def _unresolved_changed_paths(declared, resolves) -> list[tuple[str, str]]:
@@ -1290,6 +1361,7 @@ class _Loader:
         # Skipped only for records this repo generated itself — see load_records.
         self.containers = {}  # (source_type, name) -> group_id
         self.repo_meta = {}  # repo -> the refs a `subtype: "repo"` record stated
+        self.gh_open_bases = []  # (where, repo, base) per open pull, for the check below
         self.users = {}  # email -> display name
         self.groups = set()
         self.memberships = set()  # (group_id, email)
@@ -2234,6 +2306,8 @@ class _Loader:
         # _github_pairing_errors).
         if src == "github":
             self.gh_changesets.extend(_github_path_refs(where, container, rec))
+            if (base := _open_pull_base(rec)) is not None:
+                self.gh_open_bases.append((where, container, base))
 
         # comments on the document — only jira/confluence/github expose them (slack uses replies)
         rec_comments = rec.get("comments") or []
@@ -2639,6 +2713,31 @@ class _Loader:
                     created_ts,
                 ),
             )
+
+        # An open pull's base, against the branch listing its repo states. Read from this run's
+        # records first and the stored row second, so an `--append` whose shard carries the pull
+        # is checked against the listing an earlier shard stated. Runs before `write_containers`,
+        # which is what makes the stored row the EARLIER statement rather than this one.
+        if self.gh_open_bases:
+
+            def _listed(repo: str) -> set[str] | None:
+                stated = self.repo_meta.get(repo, {}).get("branches")
+                if stated is None:
+                    row = store.github_repo_meta(conn, repo)
+                    if row is None or row["branches"] is None:
+                        return None
+                    stated = json.loads(row["branches"])
+                default = self.repo_meta.get(repo, {}).get("default_branch") or "main"
+                return {b["name"] for b in stated} | {default}
+
+            unlisted = _unlisted_open_bases(self.gh_open_bases, _listed)
+            if unlisted:
+                raise SystemExit(
+                    "; ".join(
+                        f"{where}: {_unlisted_base_message(repo, base)}"
+                        for where, repo, base in unlisted
+                    )
+                )
 
         # A pull's declared changeset, against the `file` documents that now exist. Asked of the DB
         # rather than of this run's records, so a path whose file arrived in an earlier `--append`
@@ -3315,6 +3414,8 @@ def run(
         # pass whose whole point is to stream a corpus too large to load.
         gh_files: dict[str, set[str]] = {}
         gh_changesets: list[tuple[str, str, list[str]]] = []
+        gh_listed: dict[str, set[str]] = {}
+        gh_open_bases: list[tuple[str, str, str]] = []
         for lineno, line in corpus_records(corpus):
             line = line.strip()
             if not line:
@@ -3335,9 +3436,22 @@ def run(
                     repo = str(rec.get("repo") or "github")  # as _Loader.add derives it
                     if rec.get("subtype") == "file" and rec.get("path"):
                         gh_files.setdefault(repo, set()).add(rec["path"])
+                    elif rec.get("subtype") == "repo":
+                        if rec.get("branches") is not None:
+                            gh_listed[repo] = {b["name"] for b in rec["branches"]} | {
+                                rec.get("default_branch") or "main"
+                            }
                     else:
                         gh_changesets.extend(_github_path_refs(f"line {lineno}", repo, rec))
+                        if (base := _open_pull_base(rec)) is not None:
+                            gh_open_bases.append((lineno, repo, base))
             problems.extend((lineno, m) for m in errs)
+        # Cross-record, so it can only be decided once the whole corpus has been read — which is
+        # why it lands in `problems` here rather than beside the per-record errors above.
+        problems.extend(
+            (lineno, _unlisted_base_message(repo, base))
+            for lineno, repo, base in _unlisted_open_bases(gh_open_bases, gh_listed.get)
+        )
         unresolved = _unresolved_changed_paths(
             gh_changesets, lambda repo, path: path in gh_files.get(repo, ())
         )

@@ -1014,7 +1014,7 @@ async def commit_statuses(owner: str, repo: str, sha: str, request: Request):
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)  # a repo this caller cannot see must not answer for its shas
-    if sha.strip("/") not in _commit_ish(conn, repo, ids):
+    if sha.strip("/") not in _commit_ish(conn, owner, repo, ids):
         raise HTTPException(status_code=404, detail="Not Found")
     return []
 
@@ -1058,9 +1058,11 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     - ``heads/{name}`` for a name :func:`_branch_names` holds. `heads/totally-made-up` is a 404 on
       psf/requests, and answering it here made "which branches does this repo have" resolve one
       way through ``/branches`` and another through this route.
-    - ``pull/{n}/head`` and ``pull/{n}/merge`` for a pull that exists — real serves both
-      (pydantic/pydantic #13686) and 404s a number that does not (#999999). Restricting this route
-      to branches would 404 a ref real resolves.
+    - ``pull/{n}/head`` for a pull that exists, and ``pull/{n}/merge`` only while it is still
+      OPEN. Real drops the merge ref when the pull closes: on psf/requests, #7616 (merged) and
+      #7589 (closed, unmerged) answer 404 on ``…/merge`` and 200 on ``…/head``, where open #7586
+      answers 200 on both. A number that names no pull is a 404 either way (#999999 on
+      pydantic/pydantic). Restricting this route to branches would 404 a ref real resolves.
     - ``tags/{name}`` for a tag the repo states. One it does not state has nothing to resolve to,
       which is the same answer ``/tags`` gives for it.
     - Nothing else — ``refs/heads/main``, the fully-qualified git spelling, included. Real takes
@@ -1074,7 +1076,7 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
     ref = ref.strip("/")
-    if not _ref_exists(conn, repo, ref, ids):
+    if not _ref_exists(conn, owner, repo, ref, ids):
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
     sha = _repo_commit_sha(repo)
@@ -1090,13 +1092,13 @@ async def get_git_ref(owner: str, repo: str, ref: str, request: Request):
     }
 
 
-def _ref_exists(conn, repo: str, ref: str, ids) -> bool:
+def _ref_exists(conn, owner: str, repo: str, ref: str, ids) -> bool:
     """Whether `ref` — already stripped of any `refs/` prefix — names something in this repo. The
     namespaces are :func:`get_git_ref`'s; a pull's number is checked against the pulls the CALLER
     can see, so a ref is not a way to learn a restricted pull exists."""
     head, _, name = ref.partition("/")
     if head == "heads":
-        return bool(name) and name in _branch_names(conn, repo, ids)
+        return bool(name) and name in _branch_names(conn, owner, repo, ids)
     if head == "tags":
         return bool(name) and name in _repo_tags(conn, repo)
     if head == "pull":
@@ -1104,7 +1106,13 @@ def _ref_exists(conn, repo: str, ref: str, ids) -> bool:
         if kind not in ("head", "merge") or not number.isdigit():
             return False
         row = store.github_by_number(conn, repo, int(number), ids)
-        return row is not None and row["kind"] == "pull_request"
+        if row is None or row["kind"] != "pull_request":
+            return False
+        # A merge ref is git's preview of the pull applied to its base, and it stops existing when
+        # there is nothing left to merge — so it is the pull's state, not its existence, that
+        # decides. `state` is COALESCEd because a corpus that states none means open.
+        open_pull = (row["state"] or "open") == "open" and not row["merged_at"]
+        return kind == "head" or open_pull
     return False
 
 
@@ -1160,7 +1168,11 @@ async def get_tree(
     rows = store.list_repo_files(conn, repo, ids)
     entries = _tree_from_paths(owner, repo, rows, ab)
     subtree = _subtree_path(repo, ref, entries)
-    if subtree is None and ref != _repo_tree_sha(repo) and ref not in _commit_ish(conn, repo, ids):
+    if (
+        subtree is None
+        and ref != _repo_tree_sha(repo)
+        and ref not in _commit_ish(conn, owner, repo, ids)
+    ):
         raise HTTPException(status_code=404, detail="Not Found")
     if subtree is not None:
         prefix = subtree + "/"
@@ -1220,7 +1232,7 @@ async def _contents_response(
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    _require_ref(conn, repo, ref, ids)
+    _require_ref(conn, owner, repo, ref, ids)
     ab = _api_base(request)
     path = path.strip("/")
     if path:
@@ -1240,18 +1252,32 @@ async def _contents_response(
     return [_contents_child(owner, repo, e, ab) for e in children]
 
 
-def _require_ref(conn, repo: str, ref: str | None, ids) -> None:
+def _require_ref(conn, owner: str, repo: str, ref: str | None, ids) -> None:
     """404 unless `ref` names something on this repo, which real does for a ref it has no object
     for (`?ref=totally-made-up` on psf/requests).
 
     Wider than the branch listing by one set: a corpus NAMES the snapshots of a file it states
     (`store.github_file_refs`), and those refs are how an older revision is addressable at all.
     They are refs without being branches, so they resolve here and are absent from `/branches`.
+
+    An EMPTY value is an absent one — real answers `contents/README.md?ref=` with the file — the
+    same reading `list_branches` gives an empty `?protected=`.
+
+    The 404 carries real's own body, which is not the generic one every other ref route sends:
+    `No commit found for the ref {ref}`, against the contents documentation (measured). A client
+    matching on the message needs the real text, the reason :func:`_no_commit_for_sha` exists for
+    `/commits`.
     """
-    if ref is None or ref in _commit_ish(conn, repo, ids):
+    if not ref or ref in _commit_ish(conn, owner, repo, ids):
         return
     if ref not in store.github_file_refs(conn, repo, ids):
-        raise HTTPException(status_code=404, detail="Not Found")
+        exc = HTTPException(status_code=404, detail="Not Found")
+        exc.github_body = {
+            "message": f"No commit found for the ref {ref}",
+            "documentation_url": "https://docs.github.com/v3/repos/contents/",
+            "status": "404",
+        }
+        raise exc
 
 
 @router.get("/repos/{owner}/{repo}/contents")
@@ -1333,7 +1359,7 @@ async def list_branches(
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    rows = _branch_rows(conn, repo, ids)
+    rows = _branch_rows(conn, owner, repo, ids)
     if protected:  # an EMPTY value selects nothing, as an absent one does: real answers all 22
         rows = [b for b in rows if b["protected"] is _truthy(protected)]
     sha = _repo_commit_sha(repo)
@@ -1389,7 +1415,7 @@ async def get_branch(owner: str, repo: str, branch: str, request: Request):
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
     branch = branch.strip("/")
-    found = next((b for b in _branch_rows(conn, repo, ids) if b["name"] == branch), None)
+    found = next((b for b in _branch_rows(conn, owner, repo, ids) if b["name"] == branch), None)
     if found is None:
         raise HTTPException(status_code=404, detail="Branch not found")
     ab = _api_base(request)
@@ -1420,7 +1446,7 @@ async def get_commit(owner: str, repo: str, sha: str, request: Request):
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
     sha = sha.strip("/")
-    if sha not in _commit_ish(conn, repo, ids):
+    if sha not in _commit_ish(conn, owner, repo, ids):
         raise _no_commit_for_sha(sha)
     # A NAME resolves to the commit it stands for rather than being echoed back as one: real
     # answers `/commits/main` with the branch's own sha, the value `/branches/main` reports under
@@ -1454,7 +1480,7 @@ async def get_readme(owner: str, repo: str, request: Request, ref: str | None = 
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
-    _require_ref(conn, repo, ref, ids)
+    _require_ref(conn, owner, repo, ref, ids)
     ab = _api_base(request)
     row = store.get_repo_file(conn, repo, "README.md", ids, ref=ref) or store.get_repo_file(
         conn, repo, "readme.md", ids, ref=ref
@@ -1601,7 +1627,7 @@ def _repo_tags(conn, repo: str) -> list[str]:
     return json.loads(meta["tags"]) if meta and meta["tags"] else []
 
 
-def _branch_rows(conn, repo: str, ids, pulls=None) -> list[dict]:
+def _branch_rows(conn, owner: str, repo: str, ids, pulls=None) -> list[dict]:
     """The repo's branches, each with its `protected` flag, ascending by name.
 
     **Stated wins.** A `subtype: "repo"` record naming `branches` is the repo answering for itself,
@@ -1617,7 +1643,8 @@ def _branch_rows(conn, repo: str, ids, pulls=None) -> list[dict]:
     - A MERGED pull's head ref is not — 0 of 54 across ten repos, GitHub's "automatically delete
       head branches" at work. This is the one place the listing must not hold what a pull says.
     - A FORK's head ref is not either: it is a branch of the fork. `head_repo` is how a corpus says
-      so, and without it every pull looked same-repo.
+      so — a `head_repo` naming THIS repo is not a fork — and without it every pull looked
+      same-repo.
     - A `base.ref` is a branch, always, whether or not it is the default branch (pydantic/pydantic
       lists its non-default base `pure-annotation-schema-cache`). A base outlives the pull on it.
 
@@ -1640,15 +1667,19 @@ def _branch_rows(conn, repo: str, ids, pulls=None) -> list[dict]:
         protection.setdefault(default, False)
         return [{"name": n, "protected": protection[n]} for n in sorted(protection)]
     names = {default}
+    here = f"{owner}/{repo}"
     for row in store.github_pull_refs(conn, repo, ids) if pulls is None else pulls:
         names.add(row["base_ref"] or default)
-        if row["state"] == "open" and not row["merged_at"] and not row["head_repo"]:
+        # `head_repo` is compared, not merely tested for presence: a corpus may write this repo's
+        # own `owner/name` there, and reading that as a fork dropped a head the pull advertises —
+        # `_pr_obj` resolves the same field the same way, so the two cannot disagree.
+        if row["state"] == "open" and not row["merged_at"] and (row["head_repo"] or here) == here:
             names.add(row["head_ref"] or _UNSTATED_HEAD_REF)
     return [{"name": n, "protected": False} for n in sorted(names)]
 
 
-def _branch_names(conn, repo: str, ids) -> list[str]:
-    return [b["name"] for b in _branch_rows(conn, repo, ids)]
+def _branch_names(conn, owner: str, repo: str, ids) -> list[str]:
+    return [b["name"] for b in _branch_rows(conn, owner, repo, ids)]
 
 
 def _commit_shas(repo: str, pulls) -> set[str]:
@@ -1668,7 +1699,7 @@ def _commit_shas(repo: str, pulls) -> set[str]:
     return shas
 
 
-def _commit_ish(conn, repo: str, ids) -> set[str]:
+def _commit_ish(conn, owner: str, repo: str, ids) -> set[str]:
     """What may stand in for a commit: a branch name, a TAG, or a commit sha — real GitHub's own
     rule for the `{ref}` of `/commits`, `git/trees`, `/statuses` and `?ref=`.
 
@@ -1683,7 +1714,7 @@ def _commit_ish(conn, repo: str, ids) -> set[str]:
     that scan.
     """
     pulls = store.github_pull_refs(conn, repo, ids)
-    branches = _branch_rows(conn, repo, ids, pulls=pulls)
+    branches = _branch_rows(conn, owner, repo, ids, pulls=pulls)
     names = {b["name"] for b in branches} | set(_repo_tags(conn, repo))
     return names | _commit_shas(repo, pulls)
 

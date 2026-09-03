@@ -544,6 +544,24 @@ _GH_REPO_DOCS = [
         "base": "trunk",
     },
     {
+        # `head_repo` naming THIS repo, which is what a corpus writing its own org as the owner
+        # produces. It is not a fork, so its head is a branch here like any other.
+        "source_type": "github",
+        "doc_id": "gh-diff-pr-own-head-repo",
+        "repo": "diffable",
+        "subtype": "pull_request",
+        "title": "Spell out the head repo",
+        "content": "body",
+        "group": "engineering",
+        "visibility": "public",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+        "state": "open",
+        "head": "chore/own-head-repo",
+        "head_repo": "acme/diffable",
+        "base": "main",
+    },
+    {
         # A pull from a FORK of `diffable`: its head is a branch of someone else's repo, so it is
         # not a branch of this one however open the pull is.
         "source_type": "github",
@@ -905,6 +923,16 @@ def test_github_a_forked_pulls_head_is_not_a_branch_of_the_base_repo(gh_client, 
     assert "fix/from-a-fork" not in names
     assert c.get(f"{base}/branches/fix/from-a-fork", headers=gh_admin_h).status_code == 404
 
+    # `head_repo` naming THIS repo is not a fork — a corpus reaches it by writing its own org as
+    # the owner, and reading any stated `head_repo` as a fork made that pull advertise a head the
+    # listing then 404d: the contradiction this whole change set removes, from a record the schema
+    # accepts.
+    own = next(p for p in pulls if p["head"]["ref"] == "chore/own-head-repo")
+    assert own["head"]["repo"]["full_name"] == f"{gh_org}/diffable"
+    assert own["head"]["label"] == f"{gh_org}:chore/own-head-repo"
+    assert "chore/own-head-repo" in names
+    assert c.get(f"{base}/branches/chore/own-head-repo", headers=gh_admin_h).status_code == 200
+
 
 def test_github_branch_listing_omits_a_merged_pulls_head_ref(client, admin_h, org):
     """A merged pull's head branch is gone; its base branch is not.
@@ -964,6 +992,10 @@ def test_github_a_name_the_branch_listing_omits_is_not_a_ref(gh_client, gh_admin
         assert c.get(f"{base}/statuses/{ghost}", headers=gh_admin_h).status_code == 404, ghost
         r = c.get(f"{base}/contents/app.py", headers=gh_admin_h, params={"ref": ghost})
         assert r.status_code == 404, ghost
+        # real's own body for a ref it has no object for, which is NOT the generic "Not Found"
+        # every other 404 here carries (measured on psf/requests)
+        assert r.json()["message"] == f"No commit found for the ref {ghost}"
+        assert r.json()["documentation_url"] == "https://docs.github.com/v3/repos/contents/"
         commit = c.get(f"{base}/commits/{ghost}", headers=gh_admin_h)
         assert commit.status_code == 422, ghost
         assert commit.json()["message"] == f"No commit found for SHA: {ghost}"
@@ -981,8 +1013,20 @@ def test_github_git_ref_resolves_a_pulls_own_ref(gh_client, gh_admin_h, gh_org):
         assert r.status_code == 200, suffix
         assert r.json()["ref"] == f"refs/pull/{num}/{suffix}"
     assert c.get(f"{base}/git/ref/pull/999999/head", headers=gh_admin_h).status_code == 404
-    # a corpus states no tags and `/tags` says so, so a tag ref cannot resolve either
+    # this repo states no tags and `/tags` says so, so a tag ref cannot resolve either
     assert c.get(f"{base}/git/ref/tags/v1", headers=gh_admin_h).status_code == 404
+
+    # `…/merge` exists only while the pull is OPEN — real drops the merge ref once the pull is
+    # closed: on psf/requests #7616 (merged) and #7589 (closed, unmerged) answer 404 there and 200
+    # on `…/head`, where open #7586 answers 200 on both. The pull above is open, which is why the
+    # merged one below has to be asked separately.
+    merged = f"/github/repos/{gh_org}/gateway"
+    n = c.get(merged + "/pulls", headers=gh_admin_h, params={"state": "all"}).json()[0]
+    assert n["merged"], "gateway's pull is merged; without one this asserts nothing"
+    assert c.get(f"{merged}/git/ref/pull/{n['number']}/head", headers=gh_admin_h).status_code == 200
+    assert (
+        c.get(f"{merged}/git/ref/pull/{n['number']}/merge", headers=gh_admin_h).status_code == 404
+    )
 
 
 def test_github_a_ref_check_reads_the_repos_pulls_once(gh_client, gh_admin_h, gh_org):
@@ -1596,6 +1640,9 @@ def test_github_contents_serves_a_snapshot_by_its_stated_ref(gh_client, gh_admin
     assert c.get(url, headers=raw, params={"ref": "pr-1"}).text == "LIMIT = 1\n"
     assert c.get(url, headers=raw, params={"ref": "pr-3"}).text == "LIMIT = 3\n"
     assert c.get(url, headers=raw, params={"ref": "main"}).text == "LIMIT = 3\n"  # a branch -> HEAD
+    # an EMPTY value is an absent one, as it is for `?protected=`: real answers
+    # `contents/README.md?ref=` with the file (measured on psf/requests)
+    assert c.get(url, headers=raw, params={"ref": ""}).text == "LIMIT = 3\n"
     assert (
         c.get(url, headers=gh_admin_h, params={"ref": "pr-2"}).status_code == 404
     )  # named by no one

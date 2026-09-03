@@ -1446,6 +1446,34 @@ def test_issue_id_and_project_id_comparators_keep_their_operators(fclient):
     # A project value of any shape that matches nothing is an empty page, as measured.
     assert ids(fclient, '{project: {id: {eq: "PROJ-1"}}}') == []
     assert ids(fclient, '{project: {id: {eq: "not-a-uuid"}}}') == []
+    assert ids(fclient, '{project: {id: {eq: "11111111-1111-1111-8111-111111111111"}}}') == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "00000000-0000-0000-0000-000000000000",
+        "11111111-1111-1111-1111-111111111111",
+        "ffffffff-ffff-ffff-ffff-ffffffffffff",
+    ],
+    ids=["nil", "variant-1", "variant-f"],
+)
+@pytest.mark.parametrize(
+    "field", ["id", "project: {id"], ids=["IssueIDComparator", "EntityIdentifierIDComparator"]
+)
+def test_a_uuid_without_an_rfc4122_variant_is_an_argument_validation_error(fclient, field, value):
+    """Measured 2026-09-03 on both comparators: these three answer `Argument Validation Error`
+    (code INVALID_INPUT) while v1, v4 and v5 UUIDs with a variant of 8-b are looked up -- the variant
+    nibble is what Linear's validator checks, not the version."""
+    close = "}" if field == "id" else "}}"
+    r = post(
+        fclient,
+        '{ issues(filter: {%s: {eq: "%s"}%s) { nodes { identifier } } }' % (field, value, close),
+    )
+    assert r.status_code == 200
+    err = r.json()["errors"][0]
+    assert err["message"] == "Argument Validation Error"
+    assert err["extensions"]["code"] == "INVALID_INPUT"
 
 
 def test_an_issue_id_of_neither_shape_is_an_argument_validation_error(fclient):

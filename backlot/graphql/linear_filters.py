@@ -211,6 +211,34 @@ def _to_timeless(value) -> str | None:
         raise GraphQLError(str(e)) from None
 
 
+# A UUID as Linear's id comparators validate it: 8-4-4-4-12 hex with an RFC 4122 variant nibble
+# (8, 9, a or b). Measured 2026-09-03 on both `IssueFilter.id` and `NullableProjectFilter.id`: the nil
+# UUID, `1111…1111` (variant 1) and `ffff…ffff` (variant f) answer `Argument Validation Error`
+# (code INVALID_INPUT), while `…-4111-8111-…` (v4), `…-1111-8111-…` (v1) and `…-5111-9111-…` (v5)
+# are looked up -- so the version nibble is not checked, the variant is. Every id Backlot serves is
+# a v4 with variant 8-b (`synth._uuid_from`), so nothing of its own is refused.
+UUID_SHAPE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+)
+_UUID_LIKE = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
+
+
+def argument_validation_error() -> GraphQLError:
+    """The error Linear's id comparators answer for a value they refuse: a 200 whose `errors` carry
+    `Argument Validation Error` with code INVALID_INPUT (measured 2026-09-03)."""
+    return GraphQLError("Argument Validation Error", extensions={"code": "INVALID_INPUT"})
+
+
+def _refuse_malformed_uuids(spec: dict | None) -> None:
+    """`EntityIdentifierIDComparator` (``project.id``): any string is looked up -- `"PROJ-1"`,
+    `"not-a-uuid"` and an unknown UUID each answered an empty page -- EXCEPT something shaped like a
+    UUID with a variant Linear's validator rejects, which is refused before the lookup."""
+    for op, raw in (spec or {}).items():
+        for value in raw if isinstance(raw, list) else [raw]:
+            if isinstance(value, str) and _UUID_LIKE.match(value) and not UUID_SHAPE.match(value):
+                raise argument_validation_error()
+
+
 # A comparator key -> how it becomes SQL, given a column expression and the value.
 # `%` / `_` in a LIKE needle are escaped so a user-supplied value stays literal.
 _LIKE_ESCAPE = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
@@ -570,6 +598,7 @@ def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, 
                 )
             )
         elif key == "project":
+            _refuse_malformed_uuids(spec.get("id"))
             add(
                 *_sub_filter(
                     conn,

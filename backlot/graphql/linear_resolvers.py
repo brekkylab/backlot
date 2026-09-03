@@ -20,7 +20,13 @@ import unicodedata
 from graphql import GraphQLError
 
 from backlot import pagination, store, synth
-from backlot.graphql.linear_filters import SCALARS, compile_comment_filter, compile_issue_filter
+from backlot.graphql.linear_filters import (
+    SCALARS,
+    UUID_SHAPE,
+    argument_validation_error,
+    compile_comment_filter,
+    compile_issue_filter,
+)
 
 # Linear's own page defaults: 50 per page, hard-capped at 250.
 PAGE_DEFAULT = 50
@@ -811,7 +817,6 @@ def _comment(row, info) -> dict:
 # --- Query roots ---------------------------------------------------------------------
 
 
-_UUID_SHAPE = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 # Linear's own identifier shape: a key in either case and a numeric suffix. Measured 2026-09-03:
 # `BRE-1`, `bre-1` and `B2E-1` are looked up, `BRE-x`, `BRE-`, `BRE1` and `not-a-uuid` are refused.
 _LINEAR_IDENTIFIER_SHAPE = re.compile(r"^[A-Za-z0-9]+-\d+$")
@@ -830,8 +835,9 @@ def _resolve_one_issue_id(conn, value: str) -> str:
     differently from every other predicate instead of consistently answering empty.
 
     A MISS of neither shape is Linear's `Argument Validation Error` (code `INVALID_INPUT`, a 200
-    with `errors`) rather than the sentinel: that is what `{eq: "not-a-uuid"}` answers there, where
-    a well-shaped unknown (`ZZZ-404`) is an empty page. The lookup comes first because the corpus
+    with `errors`) rather than the sentinel: that is what `{eq: "not-a-uuid"}` and the nil UUID
+    answer there (a UUID counts only with an RFC 4122 variant, see ``linear_filters.UUID_SHAPE``),
+    where a well-shaped unknown (`ZZZ-404`, a variant-8 UUID) is an empty page. The lookup comes first because the corpus
     schema lets an identifier's suffix be any text, so an identifier Backlot actually serves
     (`ENG-abc`) is found before the shape is judged, and only a value that names nothing is held to
     Linear's rule."""
@@ -840,8 +846,8 @@ def _resolve_one_issue_id(conn, value: str) -> str:
         row = store.linear_issue_by_identifier(conn, value)
     if row is not None:
         return row["id"]
-    if not (_UUID_SHAPE.match(value) or _LINEAR_IDENTIFIER_SHAPE.match(value)):
-        raise GraphQLError("Argument Validation Error", extensions={"code": "INVALID_INPUT"})
+    if not (UUID_SHAPE.match(value) or _LINEAR_IDENTIFIER_SHAPE.match(value)):
+        raise argument_validation_error()
     return "\x00none"
 
 

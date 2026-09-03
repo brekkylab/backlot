@@ -543,7 +543,12 @@ def _issue_filter(conn, flt: dict, team_keys: dict | None = None) -> tuple[str, 
         elif key in ("createdAt", "updatedAt", "completedAt", "canceledAt"):
             col = {
                 "createdAt": "created_ts",
-                "updatedAt": "updated_ts",
+                # Against the COALESCE the field is served with, as `priority` above: Linear's
+                # `updatedAt` is non-null, so an issue with no recorded edit has to be found at
+                # the creation time it reports, and `neq` must not drop it (see
+                # store.LINEAR_UPDATED_EXPR). `completedAt` / `canceledAt` are nullable in Linear
+                # too (`NullableDateComparator`), so the raw column is right for them.
+                "updatedAt": store.LINEAR_UPDATED_EXPR,
                 "completedAt": "completed_ts",
                 "canceledAt": "canceled_ts",
             }[key]

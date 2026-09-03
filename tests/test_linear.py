@@ -1588,6 +1588,57 @@ def _linear_identifiers(client, authorization):
     return r.status_code, r.json()
 
 
+def test_an_issue_with_no_recorded_edit_is_filtered_on_the_updatedAt_it_serves(tmp_path):
+    """`Issue.updatedAt` is non-null in Linear; Backlot serves an issue with no recorded edit at its
+    creation time (`COALESCE(updated_ts, created_ts)`), and the sorts already read that expression.
+    The filter has to read it too: against the raw column, `eq` missed the value a client had just
+    read, `gte` / `lt` left the issue out of every window, and `neq` -- which compares the field
+    directly since Linear's non-null `updatedAt` can never drop a row -- dropped it outright."""
+    records = [
+        complete(
+            "linear",
+            doc_id="e1",
+            identifier="ENG-1",
+            title="edited",
+            created="2026-01-01T00:00:00Z",
+            updated="2026-01-05T00:00:00Z",
+        ),
+        complete(
+            "linear",
+            doc_id="e2",
+            identifier="ENG-2",
+            title="never edited",
+            created="2026-02-01T00:00:00Z",
+        ),
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+
+        def ids_for(filter_literal):
+            body = gql(
+                client, "{ issues(filter: %s) { nodes { identifier } } }" % filter_literal, h
+            )
+            return sorted(n["identifier"] for n in body.json()["data"]["issues"]["nodes"])
+
+        served = gql(client, "{ issues { nodes { identifier updatedAt } } }", h).json()["data"]
+        assert {n["identifier"]: n["updatedAt"] for n in served["issues"]["nodes"]} == {
+            "ENG-1": "2026-01-05T00:00:00Z",
+            "ENG-2": "2026-02-01T00:00:00Z",
+        }
+        assert ids_for('{updatedAt: {eq: "2026-02-01T00:00:00Z"}}') == ["ENG-2"]
+        assert ids_for('{updatedAt: {neq: "2020-01-01T00:00:00Z"}}') == ["ENG-1", "ENG-2"]
+        assert ids_for('{updatedAt: {gte: "2026-01-01T00:00:00Z"}}') == ["ENG-1", "ENG-2"]
+        assert ids_for('{updatedAt: {lt: "2030-01-01T00:00:00Z"}}') == ["ENG-1", "ENG-2"]
+        assert ids_for('{updatedAt: {gt: "2026-01-05T00:00:00Z"}}') == ["ENG-2"]
+        # and the sort agrees with the filter, both reading the served value
+        desc = gql(
+            client,
+            "{ issues(sort: [{updatedAt: {order: Descending}}]) { nodes { identifier } } }",
+            h,
+        ).json()["data"]["issues"]["nodes"]
+        assert [n["identifier"] for n in desc] == ["ENG-2", "ENG-1"]
+
+
 def test_an_unset_priority_filters_and_sorts_as_the_zero_it_is_served_as(tmp_path):
     """`Issue.priority` is non-null in Linear and reads 0 for "no priority"; Backlot serves 0 for a
     NULL column. The filter and the sort have to see that same 0, or `priority: {eq: 0}` misses the

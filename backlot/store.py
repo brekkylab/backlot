@@ -1195,13 +1195,19 @@ def list_hubspot_objects(
 # offset by one and a mid-crawl cursor silently re-reads a row. `id` breaks ties into a
 # total order either way, which offset paging requires.
 LINEAR_DEFAULT_ORDER_BY = "createdAt"
-LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": "COALESCE(updated_ts, created_ts)"}
+
+# `Issue.updatedAt` is non-null in Linear; an issue with no recorded edit reports its creation
+# time, and this is the expression the field is served with. Every comparison and sort over the
+# field reads the SAME expression, so a client crawling "newest first until older than X" sees a
+# monotonic sequence, and `updatedAt: {eq: <the value it just read>}` finds the issue. A raw
+# `updated_ts` in the filter left an issue with a NULL column out of `eq`/`gte`/`lt` and -- once
+# `neq` compared the field directly -- out of `neq` too, where Linear's non-null field can never
+# drop a row. The index in the DDL is on this expression.
+LINEAR_UPDATED_EXPR = "COALESCE(updated_ts, created_ts)"
+LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": LINEAR_UPDATED_EXPR}
 
 
-# `IssueSortInput` key -> the column it sorts on. `updatedAt` uses the same COALESCE the field
-# itself is served with (an issue with no recorded edit reports its creation time), so a client
-# crawling "newest first until older than X" sees a monotonic sequence rather than one that
-# disagrees with the `updatedAt` it is reading.
+# `IssueSortInput` key -> the column it sorts on.
 # `Issue.priority` is served as 0 when the column is NULL (Linear's own "no priority", and the
 # field is non-null there), so every comparison and sort over it has to see the same 0 -- a raw
 # `priority` put an unset issue outside `priority: {eq: 0}` and after every other row in a sort.
@@ -1212,7 +1218,7 @@ LINEAR_SORT_COLUMNS = {
     "priority": LINEAR_PRIORITY_EXPR,
     "estimate": "estimate",
     "createdAt": "created_ts",
-    "updatedAt": "COALESCE(updated_ts, created_ts)",
+    "updatedAt": LINEAR_UPDATED_EXPR,
 }
 
 

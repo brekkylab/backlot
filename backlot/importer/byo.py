@@ -2721,14 +2721,20 @@ class _Loader:
         if self.gh_open_bases:
 
             def _listed(repo: str) -> set[str] | None:
-                stated = self.repo_meta.get(repo, {}).get("branches")
+                # The default branch is listed even when `branches` omits it (see
+                # `routers.github._branch_rows`), so it belongs to the listing — and it has to be
+                # read from WHEREVER that listing came from. Read from this run's records while
+                # the listing came from the stored row, it fell back to the default's own default
+                # and refused a base that the same corpus loaded whole accepts.
+                meta = self.repo_meta.get(repo, {})
+                stated, row = meta.get("branches"), None
                 if stated is None:
                     row = store.github_repo_meta(conn, repo)
                     if row is None or row["branches"] is None:
                         return None
                     stated = json.loads(row["branches"])
-                default = self.repo_meta.get(repo, {}).get("default_branch") or "main"
-                return {b["name"] for b in stated} | {default}
+                default = meta.get("default_branch") or (row and row["default_branch"])
+                return {b["name"] for b in stated} | {default or store.GITHUB_DEFAULT_BRANCH}
 
             unlisted = _unlisted_open_bases(self.gh_open_bases, _listed)
             if unlisted:
@@ -3439,7 +3445,7 @@ def run(
                     elif rec.get("subtype") == "repo":
                         if rec.get("branches") is not None:
                             gh_listed[repo] = {b["name"] for b in rec["branches"]} | {
-                                rec.get("default_branch") or "main"
+                                rec.get("default_branch") or store.GITHUB_DEFAULT_BRANCH
                             }
                     else:
                         gh_changesets.extend(_github_path_refs(f"line {lineno}", repo, rec))

@@ -1591,7 +1591,9 @@ async def list_repo_teams(owner: str, repo: str, request: Request):
 
 # The refs a pull advertises when the corpus states neither. `_pr_obj` serves these and
 # `_branch_names` lists them: a corpus that names no branches must still not contradict itself.
-_DEFAULT_BRANCH = "main"
+# The branch is `store`'s, because the importer checks an open pull's base against the same
+# fallback and a second copy of it here is a second answer.
+_DEFAULT_BRANCH = store.GITHUB_DEFAULT_BRANCH
 _UNSTATED_HEAD_REF = "feature"
 
 

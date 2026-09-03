@@ -2770,6 +2770,59 @@ def test_a_stated_listing_must_hold_the_base_of_every_open_pull(tmp_path):
     load(shut, Settings(data_dir=tmp_path / "closed-dir"))
 
 
+def test_the_base_check_reads_the_default_branch_of_the_listing_it_checks(tmp_path):
+    """The default branch a stated listing implies travels with it, from the row as from the record.
+
+    `_branch_rows` lists the stated `default_branch` even when `branches` omits it, so a pull based
+    on it is valid. Under `--append` the listing comes from the STORED row while `repo_meta` is
+    empty for a shard carrying no repo record — reading the default from `repo_meta` there fell
+    back to `main` and refused a base the same corpus accepts as one load.
+    """
+    import json
+
+    from backlot import store
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    repo_record = {
+        "source_type": "github",
+        "subtype": "repo",
+        "repo": "svc",
+        "default_branch": "trunk",  # and `branches` does NOT repeat it
+        "branches": [{"name": "feat/x"}],
+    }
+    pull = complete(
+        source_type="github",
+        repo="svc",
+        subtype="pull_request",
+        doc_id="gh-open",
+        number=4242,
+        title="Open",
+        content="o",
+        author_email="ava@acme.com",
+        state="open",
+        head="feat/x",
+        base="trunk",
+    )
+
+    # as one corpus
+    whole = tmp_path / "whole.jsonl"
+    whole.write_text("\n".join(json.dumps(r) for r in (repo_record, pull)))
+    load(whole, Settings(data_dir=tmp_path / "whole-dir"))
+
+    # and split across an append, which must reach the same verdict
+    settings = Settings(data_dir=tmp_path / "split-dir")
+    first = tmp_path / "a.jsonl"
+    first.write_text(json.dumps(repo_record))
+    second = tmp_path / "b.jsonl"
+    second.write_text(json.dumps(pull))
+    load(first, settings)
+    load(second, settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    assert store.github_repo_meta(conn, "svc")["default_branch"] == "trunk"
+    conn.close()
+
+
 def test_a_dry_run_reports_the_base_a_stated_listing_omits(tmp_path, capsys):
     """`--dry-run` refuses what the load refuses. A corpus must never pass the check that exists to
     spare the author a failed import and then fail the import — the rule `_github_pairing_errors`

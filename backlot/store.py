@@ -2530,6 +2530,12 @@ def github_pull_refs(conn, repo, visible_ids=None) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+# The branch a repo has when its record states no `default_branch` — a fact about the column
+# below, and read by both the router that serves it and the importer that checks against it, so
+# the two cannot drift into disagreeing about what an unstated default means.
+GITHUB_DEFAULT_BRANCH = "main"
+
+
 def github_repo_meta(conn, repo) -> sqlite3.Row | None:
     """The repo's own row — its stated `default_branch`, `branches` and `tags`, any of which may
     be NULL for a corpus that stated none.

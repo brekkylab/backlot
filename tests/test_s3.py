@@ -686,4 +686,3 @@ def test_presigned_unexpired_ok(path):
     caller, err = auth.resolve_sigv4(req)
     assert err is None
     assert caller == Caller(email="ava@acme.com", is_admin=False)
-

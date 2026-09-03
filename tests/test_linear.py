@@ -902,9 +902,8 @@ def test_comment_filter_by_the_served_id_round_trips(fclient):
 
 def test_an_empty_labels_predicate_constrains_nothing_as_it_does_on_linear(fclient):
     """`labels: {}`, `labels: {some: {}}`, `labels: {every: {}}` and `labels: {some: {name: {}}}` each
-    answered every issue on api.linear.app (measured 2026-09-03), the label-less ones included. They
-    used to be refused here as "constrains nothing"; the vendor's answer is that an empty predicate
-    is no predicate, so they compile to nothing now."""
+    answered every issue on api.linear.app (measured 2026-09-03), the label-less ones included: an
+    empty predicate is no predicate there, so it compiles to nothing here."""
     everything = ids(fclient, "{}")
     for literal in (
         "{labels: {}}",
@@ -1013,9 +1012,10 @@ _LABEL_CELLS = [
 def test_labels_quantifiers_answer_as_linear(fclient, literal, expected):
     """Linear pushes a negation outside the quantifier: `some` over a negative predicate is the
     complement of `every` over its positive form, so it answers an issue with no labels; and `every`
-    over a positive predicate needs at least one label, so it does not. Backlot compiled the textbook
-    EXISTS / NOT EXISTS, which answered the opposite on both counts (#112). Each cell here is one
-    measured answer; the mapping to the fixture is above `_LABEL_CELLS`."""
+    over a positive predicate needs at least one label, so it does not. The textbook EXISTS and
+    NOT EXISTS answer the opposite on both counts, which is what #112 measured over label-less
+    issues. Each cell here is one measured answer; the mapping to the fixture is above
+    `_LABEL_CELLS`."""
     assert ids(fclient, "{labels: %s}" % literal) == sorted(expected)
 
 

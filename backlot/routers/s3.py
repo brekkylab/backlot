@@ -181,6 +181,18 @@ def _conflict(selected: list[str], resource: str) -> Response:
     )
 
 
+def _head_refusal(selected: list[str]) -> Response:
+    """HEAD with a sub-resource selector, refused before the bucket or the key is looked up.
+
+    No sub-resource has a HEAD form: real S3 answers ``HEAD /{bucket}?versioning`` and
+    ``HEAD /{key}?acl`` 405 with an empty ``application/xml`` body, whether or not the bucket or the
+    key exists, and two selectors at once with the conflict's 400 and the same empty body
+    (measured). Real S3 also sends an ``Allow`` naming the methods that sub-resource takes; Backlot
+    takes none of them, so it sends none.
+    """
+    return Response(status_code=400 if len(selected) > 1 else 405, media_type="application/xml")
+
+
 def _not_implemented(selector: str, resource: str) -> Response:
     """Refuse an operation Backlot does not implement, instead of answering it with another's body.
 
@@ -302,12 +314,11 @@ async def head_bucket(request: Request, bucket: str):
     if err:
         return Response(status_code=err.status_code)
     conn = auth.conn(request)
+    selected = _selected(request.query_params, _BUCKET_SELECTORS)
+    if selected:
+        return _head_refusal(selected)
     if not _bucket_visible(conn, bucket, visible):
         return Response(status_code=404)
-    if _selected(request.query_params, _BUCKET_SELECTORS):
-        # No sub-resource has a HEAD form: real S3 answers `HEAD /{bucket}?versioning` 405 with an
-        # empty application/xml body (measured).
-        return Response(status_code=405, media_type="application/xml")
     return Response(status_code=200, headers={"x-amz-bucket-region": "us-east-1"})
 
 
@@ -472,9 +483,7 @@ async def object_get(request: Request, bucket: str, key: str):
     conn = auth.conn(request)
     selected = _selected(request.query_params, _OBJECT_SELECTORS)
     if selected and request.method == "HEAD":
-        # No sub-resource has a HEAD form: real S3 answers `HEAD /{key}?acl` 405 with an empty
-        # application/xml body, whether or not the key exists (measured).
-        return Response(status_code=405, media_type="application/xml")
+        return _head_refusal(selected)
     if len(selected) > 1:
         return _conflict(selected, f"/{bucket}/{key}")
     if selected == ["uploadId"]:

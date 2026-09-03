@@ -560,6 +560,21 @@ def test_two_subresources_at_once_conflict_the_way_real_s3_conflicts_them(live_s
     assert err.code == 400 and b"InvalidArgument" in err.read()
 
 
+def test_head_with_two_subresources_is_the_conflicts_400_with_an_empty_body(live_server):
+    base_url, settings = live_server
+    # Real S3 keeps the conflict's status for a HEAD and, as for any HEAD, sends no body; the
+    # bucket and the key are not looked up first.
+    for path in (
+        "/s3/eng-artifacts?versioning&acl",
+        f"{OBJECT_PATH}?acl&tagging",
+        "/s3/no-such-bucket?acl&versioning",
+        "/s3/eng-artifacts/no/such.md?acl&tagging",
+    ):
+        err = _refused(base_url, path, settings.admin_token, method="HEAD")
+        assert err.code == 400 and err.read() == b"", path
+        assert err.headers.get("Content-Type") == "application/xml"
+
+
 def test_what_does_not_exist_is_reported_before_the_subresource_except_for_list_parts(live_server):
     base_url, settings = live_server
     token = settings.admin_token
@@ -580,7 +595,9 @@ def test_head_with_a_subresource_is_405_and_a_bare_head_still_answers(live_serve
         "/s3/eng-artifacts?versioning",
         f"{OBJECT_PATH}?acl",
         f"{OBJECT_PATH}?uploadId=x",
-        "/s3/eng-artifacts/no/such.md?acl",  # before the key is looked up, as on real S3
+        # Before the bucket or the key is looked up, as on real S3.
+        "/s3/no-such-bucket?versioning",
+        "/s3/eng-artifacts/no/such.md?acl",
     ):
         err = _refused(base_url, path, token, method="HEAD")
         assert err.code == 405 and err.read() == b"", path

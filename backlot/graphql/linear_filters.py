@@ -315,6 +315,14 @@ class _Comparator:
         for op, raw in spec.items():
             if raw is None and op in ("and", "or"):
                 continue
+            if raw is None and op == "null":
+                # Measured 2026-09-03: an explicit null operand on `null` itself reads as
+                # `null: true`, not as `false` and not as the condition-nothing-passes below.
+                # `dueDate: {null: null}` answered every issue over four with no due date (so not
+                # "nothing passes"), `priority: {null: null}` none over four that all carry a
+                # priority, and `{or: [{priority: {null: null}}, {title: {eq: T}}]}` the title
+                # match alone (so not a vacuous key either).
+                raw = True
             if raw is None and op != "null":
                 # A null operand is a condition, not an absent one. Measured against
                 # api.linear.app: a comparison with null (`eq`, `neq`, `lt`, `lte`, `gt`, `gte`)

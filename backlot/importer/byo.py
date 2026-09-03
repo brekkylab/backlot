@@ -2483,12 +2483,22 @@ class _Loader:
                 # The repo's own refs, from the `subtype: "repo"` record if the corpus wrote one.
                 # `_j(None)` stays NULL, which is what tells "the corpus did not say" (infer the
                 # branches from the pulls) apart from a stated empty list (a repo with none).
+                #
+                # COALESCE on each, so an `--append` whose shard says nothing about the refs keeps
+                # what an earlier one stated. Every container the shard TOUCHED is upserted here,
+                # and a shard carrying one issue for a repo touches it while saying nothing about
+                # its refs — writing this load's NULL would turn a stated listing back into an
+                # inferred one, silently. A record that wants the stated set gone says so with
+                # `"branches": []`, which stores `"[]"` rather than NULL. `group_id` keeps its
+                # last-write rule: an appended record always states a group, or its slug.
                 meta = self.repo_meta.get(name, {})
                 self.conn.execute(
                     f"INSERT INTO {gtable}({gcol}, group_id, default_branch, branches, tags) "
                     f"VALUES (?,?,?,?,?) ON CONFLICT({gcol}) DO UPDATE SET "
-                    "group_id=excluded.group_id, default_branch=excluded.default_branch, "
-                    "branches=excluded.branches, tags=excluded.tags",
+                    "group_id=excluded.group_id, "
+                    "default_branch=COALESCE(excluded.default_branch, default_branch), "
+                    "branches=COALESCE(excluded.branches, branches), "
+                    "tags=COALESCE(excluded.tags, tags)",
                     (
                         name,
                         group_id,

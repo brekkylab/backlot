@@ -865,6 +865,21 @@ def test_github_a_stated_repo_serves_its_tags(gh_client, gh_admin_h, gh_org):
     assert tags[0]["zipball_url"].endswith("/zipball/refs/tags/v1.0")
     assert c.get(f"{base}/git/ref/tags/v1.0", headers=gh_admin_h).status_code == 200
     assert c.get(f"{base}/git/ref/tags/v9.9", headers=gh_admin_h).status_code == 404
+
+    # Real takes a tag wherever it takes a branch, measured on psf/requests with `v2.34.2`:
+    # `/commits/{tag}`, `git/trees/{tag}`, `/statuses/{tag}` and `/contents/{path}?ref={tag}` all
+    # answer 200. A tag that resolved on `/tags` and nowhere else is a ref a client is offered and
+    # cannot read at — `GithubFileSystem.refs` offers it and `fs.ls("", sha=<tag>)` then raises.
+    for path, params in (
+        ("/commits/v1.0", None),
+        ("/git/trees/v1.0", None),
+        ("/statuses/v1.0", None),
+        ("/contents/main.py", {"ref": "v1.0"}),
+    ):
+        assert c.get(base + path, headers=gh_admin_h, params=params).status_code == 200, path
+    # and it resolves to the same commit every other ref of this repo does
+    head = c.get(f"{base}/branches/trunk", headers=gh_admin_h).json()["commit"]["sha"]
+    assert c.get(f"{base}/commits/v1.0", headers=gh_admin_h).json()["sha"] == head
     # a repo that states none still answers [], which is what real gives a repo with no tags
     assert c.get(f"/github/repos/{gh_org}/diffable/tags", headers=gh_admin_h).json() == []
 
@@ -1005,6 +1020,13 @@ def test_github_branch_and_commit_resolve_tree(gh_client, gh_admin_h, gh_org):
     branch = c.get(f"/github/repos/{gh_org}/codebase/branches/main", headers=gh_admin_h).json()
     tree_sha = branch["commit"]["commit"]["tree"]["sha"]
     commit_sha = branch["commit"]["sha"]
+    # A ref standing for a commit RESOLVES to it. Real answers `/commits/main` with the branch's
+    # own commit sha — the value `/branches/main` reports under `commit.sha` (psf/requests:
+    # `dae7ef63…` from both) — and carries that sha in `url` and `node_id`. Echoing the name back
+    # as the sha handed a client pinning to `/commits/main` a sha no other route would accept.
+    by_name = c.get(f"/github/repos/{gh_org}/codebase/commits/main", headers=gh_admin_h).json()
+    assert by_name["sha"] == commit_sha
+    assert by_name["url"].endswith(f"/commits/{commit_sha}")
     commit = c.get(
         f"/github/repos/{gh_org}/codebase/commits/{commit_sha}", headers=gh_admin_h
     ).json()

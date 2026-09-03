@@ -1422,6 +1422,14 @@ async def get_commit(owner: str, repo: str, sha: str, request: Request):
     sha = sha.strip("/")
     if sha not in _commit_ish(conn, repo, ids):
         raise _no_commit_for_sha(sha)
+    # A NAME resolves to the commit it stands for rather than being echoed back as one: real
+    # answers `/commits/main` with the branch's own sha, the value `/branches/main` reports under
+    # `commit.sha` (both `dae7ef63…` on psf/requests), and carries it in `url` and `node_id` too.
+    # Every ref of this repo stands for the one snapshot commit (see :func:`get_tree`), so a
+    # branch and a tag resolve alike; a pull's head or base sha arrives already 40-hex and is its
+    # own answer.
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        sha = _repo_commit_sha(repo)
     ab = _api_base(request)
     tree_sha = _repo_tree_sha(repo)
     return {
@@ -1661,16 +1669,23 @@ def _commit_shas(repo: str, pulls) -> set[str]:
 
 
 def _commit_ish(conn, repo: str, ids) -> set[str]:
-    """What may stand in for a commit: a branch name or a commit sha, real GitHub's own rule for
-    the `{ref}` of `/commits` and `git/trees`.
+    """What may stand in for a commit: a branch name, a TAG, or a commit sha — real GitHub's own
+    rule for the `{ref}` of `/commits`, `git/trees`, `/statuses` and `?ref=`.
 
-    One read of the repo's pulls, shared by both halves: the branch names and the commit shas come
+    A tag counts wherever a branch does, measured on psf/requests with `v2.34.2`: all four answer
+    200 for it. A tag that resolved on `/tags` and `git/ref/tags/{name}` alone was a ref a client
+    is offered and cannot then read at — `GithubFileSystem.refs` lists it and `fs.ls("", sha=…)`
+    raises on it.
+
+    One read of the repo's pulls, shared by every half: the branch names and the commit shas come
     from the same rows, and fetching them separately ran that ACL-joined scan twice on every route
-    that asks whether a ref exists.
+    that asks whether a ref exists. The tags are a primary-key lookup on the repo's own row, not
+    that scan.
     """
     pulls = store.github_pull_refs(conn, repo, ids)
     branches = _branch_rows(conn, repo, ids, pulls=pulls)
-    return {b["name"] for b in branches} | _commit_shas(repo, pulls)
+    names = {b["name"] for b in branches} | set(_repo_tags(conn, repo))
+    return names | _commit_shas(repo, pulls)
 
 
 def _no_commit_for_sha(sha: str) -> HTTPException:

@@ -2708,6 +2708,70 @@ def test_append_accumulates_source_documents(tmp_path):
     conn.close()
 
 
+def test_append_keeps_the_refs_an_earlier_shard_stated(tmp_path):
+    """A shard that says nothing about a repo's refs leaves the stated ones alone.
+
+    `write_containers` upserts every container the shard touched, and a shard carrying one issue
+    for a repo touches that repo while saying nothing about its refs — so writing what this load
+    knows would put NULL over the earlier statement. NULL is the column's way of saying "the corpus
+    did not say", and "a later shard did not repeat it" is not that. A record that wants the stated
+    set gone still says so with `"branches": []`.
+    """
+    import json
+
+    from backlot import store
+    from backlot.config import Settings
+    from backlot.importer.byo import load
+
+    settings = Settings(data_dir=tmp_path)
+    first = tmp_path / "a.jsonl"
+    first.write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in (
+                {
+                    "source_type": "github",
+                    "subtype": "repo",
+                    "repo": "svc",
+                    "default_branch": "main",
+                    "branches": [{"name": "main", "protected": True}, {"name": "feat/x"}],
+                    "tags": ["v1.0"],
+                },
+                complete(
+                    source_type="github",
+                    repo="svc",
+                    doc_id="gh-a",
+                    title="A",
+                    content="a",
+                    author_email="ava@acme.com",
+                ),
+            )
+        )
+    )
+    second = tmp_path / "b.jsonl"
+    second.write_text(
+        json.dumps(
+            complete(
+                source_type="github",
+                repo="svc",  # the same repo, and nothing about its refs
+                doc_id="gh-b",
+                number=4242,
+                title="B",
+                content="b",
+                author_email="ava@acme.com",
+            )
+        )
+    )
+    load(first, settings)
+    load(second, settings, reset=False)
+    conn = store.connect_ro(settings.db_path)
+    row = store.github_repo_meta(conn, "svc")
+    assert row["default_branch"] == "main"
+    assert json.loads(row["branches"]) == [{"name": "main", "protected": True}, {"name": "feat/x"}]
+    assert json.loads(row["tags"]) == ["v1.0"]
+    conn.close()
+
+
 def test_hello_corpus_loads_and_covers_every_source(tmp_path):
     """The wheel's built-in corpus must load and exercise EVERY served source.
 

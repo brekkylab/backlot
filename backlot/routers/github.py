@@ -133,18 +133,39 @@ async def _validate_api_version(request: Request) -> None:
 
 
 async def _validate_path_owner(request: Request) -> None:
-    """404 a request whose ``{owner}``/``{org}`` segment is not the org we serve.
+    """404 a request whose ``{owner}``/``{org}`` segment is not the org we serve, and hand the
+    handlers the org's OWN spelling of it rather than the caller's.
 
     Real GitHub 404s a wrong owner; echoing whatever was asked for back into the response lets a
     client's owner-handling bug pass against Backlot and fail in production. A router-wide
     dependency rather than a call in each handler so a route added later cannot forget it — routes
     with neither path param (``/search/issues``, ``/user/repos``) are unaffected. Credentials are
     checked first, so a bad token still reports 401 rather than the owner's 404.
+
+    The match is case-insensitive, as GitHub logins are, and real then answers in the canonical
+    spelling whatever case was asked for: `/repos/PSF/REQUESTS` answers `full_name: psf/requests`
+    with every url and template lowercase, `/orgs/PSF` answers `login: psf`, and an issue item's
+    `url` and `html_url` are lowercase too (measured 2026-09-03, 200 each — no redirect, so the
+    normalization is in the body). Canonicalizing the param here rather than at each url means the
+    ~30 handlers that interpolate it, and everything they derive from it, cannot disagree: this is
+    also what keeps `synth.github_user_id(org)` from minting one id per spelling. FastAPI solves
+    router dependencies before it reads the endpoint's own path params, so the handler signature
+    receives the value set here.
+
+    The pagination `Link` header is the one url this does not reach: :func:`_base_url` builds it
+    from the path the request arrived on, deliberately, and real has no named url to match there —
+    it paginates by numeric repository id instead (`/repositories/1362490/issues`, measured on the
+    same day).
     """
     _require(request)
-    owner = request.path_params.get("owner") or request.path_params.get("org")
-    if owner is not None and owner.lower() != _org(request).lower():
+    key = "owner" if "owner" in request.path_params else "org"
+    owner = request.path_params.get(key)
+    if owner is None:
+        return
+    canonical = _org(request)
+    if owner.lower() != canonical.lower():
         raise HTTPException(status_code=404, detail="Not Found")
+    request.path_params[key] = canonical
 
 
 router = APIRouter(
@@ -618,13 +639,19 @@ async def search_code(
 
 @router.get("/orgs/{org}")
 async def get_org(org: str, request: Request):
+    """The org, in its own spelling — `org` arrives canonical from :func:`_validate_path_owner`.
+
+    The two urls are built from that name rather than from the path the request came in on, which
+    is the only difference a mixed-case `/orgs/{org}` can still see.
+    """
     _require(request)
+    ab = _api_base(request)
     return {
         "login": org,
         "id": synth.github_user_id(org),
         "type": "Organization",
-        "url": f"{_base_url(request)}",
-        "repos_url": f"{_base_url(request)}/repos",
+        "url": f"{ab}/orgs/{org}",
+        "repos_url": f"{ab}/orgs/{org}/repos",
         "html_url": f"https://github.com/{org}",
     }
 

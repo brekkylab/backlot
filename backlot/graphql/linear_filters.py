@@ -209,6 +209,13 @@ def _label_predicate(spec: dict) -> tuple[str, list]:
             frags = [f for f, _ in subs if f]
             for _, sp in subs:
                 params.extend(sp)
+            if key == "or" and sub == []:
+                # Measured 2026-09-03: a literally empty `or` is a predicate every label satisfies,
+                # and the quantifier still applies -- `some: {or: []}` and `every: {or: []}` both
+                # answered exactly the issues with at least one label. An empty `and`, and an `or`
+                # whose branches are themselves empty (`or: [{}]`), are no predicate at all: every
+                # issue answered, label-less ones included, which the empty fragment below gives.
+                frags = ["1"]
             frag, p = (
                 (("(" + (" AND " if key == "and" else " OR ").join(frags) + ")") if frags else ""),
                 [],
@@ -278,8 +285,9 @@ def _labels_predicate(spec: dict, *, every: bool) -> tuple[str, list]:
 
     So each negative form is the negation of the positive form of the other quantifier -- Linear
     pushes the ``not`` outside the quantifier -- and :func:`_reads_as_negation` says which form a
-    compound predicate takes. An empty predicate (``some: {}``) constrains nothing there: every
-    issue answered, label-less ones included, so it compiles to nothing here too."""
+    compound predicate takes. An empty predicate (``some: {}``, ``some: {and: []}``) constrains
+    nothing there: every issue answered, label-less ones included, so it compiles to nothing here
+    too. The one exception is a literally empty ``or`` (see :func:`_label_predicate`)."""
     inner, params = _label_predicate(spec)
     if not inner:
         return "", []

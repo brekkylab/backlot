@@ -981,6 +981,31 @@ _LABEL_CELLS = [
     ('{name: {eq: "bug"}}', {L2, L1}),
     ("{null: true}", set()),
     ("{null: false}", {L2, L1, U}),
+    ('{name: {neq: "bug"}}', {L2, U}),
+    ('{name: {nin: ["bug"]}}', {L2, U}),
+    ('{name: {eq: "bug", neq: "nope"}}', {L2, L1}),
+    ('{and: [{some: {name: {eq: "bug"}}}, {length: {eq: 2}}]}', {L2}),
+    ("{and: []}", {L2, L1, U}),
+    ("{or: []}", {L2, L1, U}),
+    ("{or: [{}]}", {L2, L1, U}),
+    # a predicate that mixes a comparator with a nested and / or is one AND, polarity included
+    ('{some: {name: {neq: "bug"}, and: [{name: {eq: "gateway"}}]}}', {L2}),
+    ('{every: {name: {neq: "nope"}, or: [{name: {eq: "bug"}}]}}', {L1}),
+    # empty lists: an empty `in` matches no label, an empty `nin` every label
+    ("{length: {in: []}}", set()),
+    ("{length: {nin: []}}", {L2, L1, U}),
+    ("{some: {name: {in: []}}}", set()),
+    ("{some: {name: {nin: []}}}", {L2, L1, U}),
+    ("{every: {name: {in: []}}}", set()),
+    ("{every: {name: {nin: []}}}", {L2, L1, U}),
+    # an empty `and` is no predicate; a literally empty `or` is one every label satisfies, so the
+    # quantifier still applies and asks for at least one label
+    ("{some: {and: []}}", {L2, L1, U}),
+    ("{every: {and: []}}", {L2, L1, U}),
+    ("{some: {or: []}}", {L2, L1}),
+    ("{every: {or: []}}", {L2, L1}),
+    ("{some: {or: [{}]}}", {L2, L1, U}),
+    ('{some: {or: [], name: {neq: "bug"}}}', {L2}),
 ]
 
 

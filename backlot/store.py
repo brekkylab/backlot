@@ -1318,14 +1318,18 @@ def linear_issue_by_identifier(conn, identifier, visible_ids=None) -> sqlite3.Ro
     repeat in one real corpus), so this deliberately returns the first by ``id`` rather than pretending
     the lookup is unambiguous — the UUID form of ``issue(id:)`` is the exact one.
 
-    Case-insensitive the way Linear's is: ``bre-1`` resolved to ``BRE-1`` there (measured
-    2026-09-03). Two indexed equality probes, the value as written and then upper-cased, rather than
-    a ``COLLATE NOCASE`` that would put the identifier index aside on every lookup. A corpus may
-    write a mixed-case suffix (the schema leaves everything after the hyphen opaque), which is why
-    the as-written probe comes first."""
+    Case-insensitive on the team KEY, the way Linear's is: ``bre-1`` resolved to ``BRE-1`` there
+    (measured 2026-09-03). The key is the only half of a Linear identifier that carries letters --
+    the suffix is a number -- so it is the half that is folded. The corpus schema leaves the suffix
+    opaque (``ENG-1a`` is a legal identifier here), so the suffix is compared as written and a
+    spelling that differs only there (``ENG-1A``) names a different string. Three indexed equality
+    probes -- as written, key upper-cased, the whole value upper-cased -- rather than a
+    ``COLLATE NOCASE`` that would put the identifier index aside on every lookup."""
     sql = "SELECT * FROM linear_issues WHERE identifier = ?"
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
-    for candidate in dict.fromkeys((identifier, str(identifier).upper())):
+    text = str(identifier)
+    key, sep, suffix = text.partition("-")
+    for candidate in dict.fromkeys((text, f"{key.upper()}{sep}{suffix}", text.upper())):
         row = conn.execute(sql + clause + " ORDER BY id LIMIT 1", [candidate] + cparams).fetchone()
         if row is not None:
             return row

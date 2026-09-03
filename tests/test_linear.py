@@ -124,9 +124,9 @@ def test_linear_issue_by_uuid_and_by_identifier(client, admin_h, ro_conn):
 
 
 def test_linear_issue_by_identifier_is_case_insensitive(client, admin_h):
-    """Linear resolved `bre-1` to `BRE-1` (measured 2026-09-03): the identifier's case is not part
-    of the lookup. The as-written spelling is tried first, so a corpus identifier with a mixed-case
-    suffix is still reachable exactly."""
+    """Linear resolved `bre-1` to `BRE-1` (measured 2026-09-03): the key's case is not part of the
+    lookup. The as-written spelling is tried first, so a corpus identifier with a mixed-case suffix
+    is still reachable exactly (the suffix rule is the test after this one)."""
     r = gql(client, '{ issue(id: "eng-101") { identifier } }', admin_h).json()
     assert r["data"]["issue"]["identifier"] == "ENG-101"
     miss = gql(client, '{ issue(id: "eng-999") { identifier } }', admin_h).json()
@@ -1664,6 +1664,39 @@ def test_an_issue_with_no_recorded_edit_is_filtered_on_the_updatedAt_it_serves(t
             h,
         ).json()["data"]["issues"]["nodes"]
         assert [n["identifier"] for n in desc] == ["ENG-2", "ENG-1"]
+
+
+def test_a_mixed_case_suffix_is_reached_under_a_lower_cased_key(tmp_path):
+    """The schema leaves an identifier's suffix opaque, so a corpus may write `ENG-1a`. Folding the
+    case of the whole value could not reach it from `eng-1a` -- the probes were `eng-1a` and then
+    `ENG-1A`, neither of which is the stored string -- while `issue(id: "ENG-1a")` found it, so one
+    issue answered under one spelling of its key and not the other. Linear's identifier has letters
+    only in the key, so the key is folded and the suffix is compared as written: `eng-1a` and
+    `ENG-1a` are the same issue, `ENG-1A` is a different string and names nothing."""
+    records = [
+        complete(
+            "linear",
+            doc_id="m1",
+            identifier="ENG-1a",
+            title="mixed",
+            created="2026-01-01T00:00:00Z",
+        )
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": settings.admin_token}
+        for spelling in ("ENG-1a", "eng-1a"):
+            one = gql(client, '{ issue(id: "%s") { identifier } }' % spelling, h).json()
+            assert one["data"]["issue"]["identifier"] == "ENG-1a", spelling
+            page = gql(
+                client,
+                '{ issues(filter: {id: {eq: "%s"}}) { nodes { identifier } } }' % spelling,
+                h,
+            ).json()
+            assert [n["identifier"] for n in page["data"]["issues"]["nodes"]] == ["ENG-1a"], (
+                spelling
+            )
+        miss = gql(client, '{ issue(id: "ENG-1A") { identifier } }', h).json()
+        assert "Entity not found" in miss["errors"][0]["message"]
 
 
 def test_an_unset_priority_filters_and_sorts_as_the_zero_it_is_served_as(tmp_path):

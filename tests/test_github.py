@@ -894,10 +894,10 @@ def test_github_ref_listings_page_like_every_other_listing(
 
     Measured on api.github.com: `?per_page=2` answers two items on both routes with `rel="next"`
     and `rel="last"`, and `last` counts the pages of the whole listing — `/tags?per_page=2` on
-    psf/requests reports page 81 for its 161 tags. These were the only two list routes here that
-    reached neither `clamp_page` nor the header, which stayed invisible while the branch listing
-    was a fixed one-element list: a client that pages every other listing by following `next` read
-    the first page and never learned there was no second page to ask for.
+    psf/requests reports page 81 for its 161 tags. Both routes ignored `per_page` outright, which
+    stayed invisible while the branch listing was a fixed one-element list: a client that pages
+    every repo-level listing by following `next` read the first page and never learned there was
+    no second page to ask for.
     """
     c, _ = gh_client
     url = f"/github/repos/{gh_org}/stated-repo/{route}"
@@ -912,6 +912,28 @@ def test_github_ref_listings_page_like_every_other_listing(
 
     # a listing that fits one page carries no Link at all, as real sends none
     assert "Link" not in c.get(url, headers=gh_admin_h).headers
+
+
+def test_github_a_page_url_echoes_only_the_filters_the_caller_sent(gh_client, gh_admin_h, gh_org):
+    """A next-page url spells out a listing's filter only when the request carried it.
+
+    Measured on psf/requests: `?per_page=1` links `per_page` and `page` alone on both `/issues` and
+    `/pulls`, and `?state=open&per_page=1` links `state=open` beside them — the same split
+    `/branches?protected=` makes, where even an empty value is echoed. `state` defaults to `open`,
+    so a handler that echoes its own default hands a paginator a url NARROWER than the one it
+    called: a client that asked for every issue and pages by following `next` would follow a link
+    saying `state=open` and lose the closed ones from page 2 on.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/diffable/pulls"
+
+    def next_url(params):
+        r = c.get(url, headers=gh_admin_h, params={"per_page": 1, **params})
+        return _link_rels(r.headers["Link"])["next"]
+
+    assert "state" not in next_url({})
+    assert "state=open" in next_url({"state": "open"})
+    assert "state=all" in next_url({"state": "all"})
 
 
 def test_github_a_stated_repo_serves_its_tags(gh_client, gh_admin_h, gh_org):

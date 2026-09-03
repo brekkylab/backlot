@@ -254,6 +254,22 @@ def _paged(
     return JSONResponse(body, headers=headers)
 
 
+def _echo(request: Request, **params) -> dict:
+    """The filters a next-page url must spell out: the ones the CALLER sent, in `_paged`'s shape.
+
+    Real GitHub carries a listing's filter into its `Link` only when the request carried it.
+    Measured on psf/requests: `/pulls?per_page=1` links `per_page` and `page` alone where
+    `?state=open&per_page=1` links `state=open` beside them, the same on `/issues`, and
+    `/branches?protected=` on fastapi/fastapi echoes even an empty value. So what decides is
+    whether the parameter arrived, not whether it narrows anything.
+
+    A default the handler applied is not something the caller asked for: `state` defaults to
+    `open`, and echoing that gave a client paging every issue a `next` url saying `state=open`,
+    which drops the closed ones from page 2 on — a listing that changes shape as it is walked.
+    """
+    return {k: v for k, v in params.items() if k in request.query_params}
+
+
 _GH_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
 # The qualifiers each search endpoint honors. They differ because the resources do: an issue has a
 # state and an author, a file has a path and an extension. A key absent from the set stays as free
@@ -740,7 +756,7 @@ async def list_issues(
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
     body = [_issue_obj(conn, owner, repo, r, ab, _version(request)) for r in rows]
-    return _paged(request, len(all_rows), {"state": state}, body, page, per_page)
+    return _paged(request, len(all_rows), _echo(request, state=state), body, page, per_page)
 
 
 # --- a comment by its own id ----------------------------------------------------
@@ -856,7 +872,7 @@ async def list_pulls(
         _pr_obj(conn, owner, repo, r, ab, ids=ids, repo_files=repo_files, version=_version(request))
         for r in prs[start : start + per_page]
     ]
-    return _paged(request, len(prs), {"state": state}, body, page, per_page)
+    return _paged(request, len(prs), _echo(request, state=state), body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}")
@@ -1382,10 +1398,7 @@ async def list_branches(
         {"name": b["name"], "commit": {"sha": sha, "url": url}, "protected": b["protected"]}
         for b in rows[start : start + per_page]
     ]
-    # the selection rides on the page urls, and only when it was sent: real echoes `protected=false`
-    # and an empty `protected=` alike, and spells out neither for a parameter that was omitted
-    extra = {} if protected is None else {"protected": protected}
-    return _paged(request, len(rows), extra, body, page, per_page)
+    return _paged(request, len(rows), _echo(request, protected=protected), body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/tags")

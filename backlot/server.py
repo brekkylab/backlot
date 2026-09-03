@@ -137,12 +137,11 @@ def meta_users(url: str, timeout: float = 10) -> dict:
     """The directory a Backlot server publishes at ``GET /_meta/users``: every user's email and
     token, each one's S3 access-key pair, and the admin's own.
 
-    Raises when it cannot be read or is not a directory at all; a directory missing the
-    individual fields a caller needs is :func:`backlot.mcp.resolve`'s to report. Strict either
-    way, because a caller naming a user
-    (``backlot mcp --user``) cannot be satisfied by a guess — a resolution that silently became the
-    admin would answer with the admin's unfiltered view. :func:`admin_token_for` is the lenient
-    wrapper ``serve_or_connect`` wants instead.
+    Raises when it cannot be read or is not a directory at all; a directory that is one but lacks
+    the individual fields a caller needs is :func:`backlot.mcp.resolve`'s to report. Strict because
+    a caller naming a user (``backlot mcp --user``) cannot be satisfied by a guess — a resolution
+    that silently became the admin would answer with the admin's unfiltered view.
+    :func:`admin_token_for` is the lenient wrapper ``serve_or_connect`` wants instead.
     """
     with urllib.request.urlopen(f"{url.rstrip('/')}/_meta/users", timeout=timeout) as r:
         if r.status != 200:

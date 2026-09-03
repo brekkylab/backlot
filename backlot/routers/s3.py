@@ -188,9 +188,10 @@ async def list_buckets(request: Request):
 
 @router.head("/{bucket}")
 async def head_bucket(request: Request, bucket: str):
-    """HeadBucket — 200 if the caller can see this bucket, 404 otherwise, with no body either way.
+    """HeadBucket — 200 if the caller can see this bucket, 404 if they cannot, and the signature's
+    own status (403, or 400 for a malformed header) when the request does not authenticate at all.
 
-    Headers alone, which is why it carries no MCP tool (see ``backlot.openapi``)."""
+    Headers alone in every case, which is why it carries no MCP tool (see ``backlot.openapi``)."""
     caller, visible, err = _auth(request)
     if err:
         return Response(status_code=err.status_code)

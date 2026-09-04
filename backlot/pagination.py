@@ -118,7 +118,15 @@ def github_link_header(
     """Build a Link header with rel=next/prev/first/last. ``params`` are extra query args.
 
     Returns ``None`` for a single page, which is what real sends there: no header at all, rather
-    than one whose every rel points back at the page the caller is already holding.
+    than one whose every rel points back at the page the caller is already holding. That holds
+    however far past a one-page listing the caller asks.
+
+    A page PAST the last one is the caller's way out of a listing it overshot, so ``prev`` names the
+    last page that HOLDS rows rather than the page before the one asked for, and ``last`` comes back
+    to say where the rows end. Measured on api.github.com on 2026-09-04: pages 7 and 99 of a
+    six-page collaborator listing both answer prev=6, last=6, first=1, and a search whose 30 results
+    end on page 3 answers prev=3, last=3, first=1 for page 9. On the last page that holds rows there
+    is no ``last`` — a client already there needs no pointer to it.
 
     Values are percent-encoded because a param value is arbitrary text — a search `q` carries
     spaces and colons — and a URI cannot hold them raw. A client that follows the link has to
@@ -140,8 +148,10 @@ def github_link_header(
         parts.append(f'{link(page + 1)}; rel="next"')
         parts.append(f'{link(last_page)}; rel="last"')
     if page > 1:
-        parts.append(f'{link(page - 1)}; rel="prev"')
+        parts.append(f'{link(min(page - 1, last_page))}; rel="prev"')
         parts.append(f'{link(1)}; rel="first"')
+    if page > last_page:
+        parts.append(f'{link(last_page)}; rel="last"')
     return ", ".join(parts) if parts else None
 
 

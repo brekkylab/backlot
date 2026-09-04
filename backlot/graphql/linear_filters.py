@@ -923,13 +923,14 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
         null = any(inner)
     else:
         null = None
-    # Which column carries "no such relation" is mapping-specific, so use the first mapped column.
-    col = next(m[1] for m in mapping.values())
-    if null is True:
-        return f"{col} IS NULL", []
     parts: list[str] = []
     params: list = []
-    if null is False:
+    if null is not None:
+        # Which column carries "no such relation" is mapping-specific, so use the first mapped
+        # column. Only a nullable relation reaches here; `state` and `team` carry no `null` key.
+        col = next(m[1] for m in mapping.values())
+        if null is True:
+            return _join([f"{col} IS NULL"], "AND"), []
         parts.append(f"{col} IS NOT NULL")
     for key, sub, _ in items:
         if key == "null":

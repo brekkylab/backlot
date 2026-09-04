@@ -1858,12 +1858,16 @@ def test_a_malformed_project_id_is_refused_however_deep_the_filter_nests_it(fcli
     """`ProjectFilter` takes `and` / `or`, and `_sub_filter` follows them to the same lookup, so a
     UUID refused at `{project: {id: …}}` has to be refused at `{project: {and: [{id: …}]}}` too --
     this branch looked the nested one up and answered an empty page. The issue-id side already
-    recursed (`{and: [{id: {eq: "not-a-uuid"}}]}` is refused), so the two sides now agree."""
+    recursed (`{and: [{id: {eq: "not-a-uuid"}}]}` is refused), so the two sides now agree. The last
+    shape pins that `null: true` does not swallow the refusal: `_sub_filter` returns before reading
+    the `id`, and the refusal has to happen anyway because `_refuse_malformed_project_ids` runs
+    first."""
     nil = "00000000-0000-0000-0000-000000000000"
     for shape in (
         '{project: {and: [{id: {eq: "%s"}}]}}',
         '{project: {or: [{name: {eq: "runtime"}}, {id: {in: ["%s"]}}]}}',
         '{project: {and: [{or: [{id: {neq: "%s"}}]}]}}',
+        '{project: {null: true, id: {eq: "%s"}}}',
     ):
         r = post(fclient, "{ issues(filter: %s) { nodes { identifier } } }" % (shape % nil))
         assert r.status_code == 200, shape

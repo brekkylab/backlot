@@ -905,14 +905,20 @@ def test_github_ref_listings_page_like_every_other_listing(
     assert "Link" not in c.get(url, headers=gh_admin_h).headers
 
 
-def test_github_a_page_url_echoes_only_the_filters_the_caller_sent(gh_client, gh_admin_h, gh_org):
+@pytest.mark.parametrize("route", ["pulls", "issues"])
+def test_github_a_page_url_echoes_only_the_filters_the_caller_sent(
+    gh_client, gh_admin_h, gh_org, route
+):
     """A next-page url spells out a listing's filter only when the request carried it (`_echo`).
 
     `state` defaults to `open`, so a url echoing it is narrower than the one the caller called: a
     client walking `state=all` by following `next` would lose the closed rows from page 2 on.
+
+    Both listings that take a `state`, since each applies the default itself: `/issues` serves the
+    repo's pulls as rows too, the way real does, so `diffable` pages it without a fixture of its own.
     """
     c, _ = gh_client
-    url = f"/github/repos/{gh_org}/diffable/pulls"
+    url = f"/github/repos/{gh_org}/diffable/{route}"
 
     def next_url(params):
         r = c.get(url, headers=gh_admin_h, params={"per_page": 1, **params})

@@ -255,13 +255,16 @@ def _paged(
 
 
 def _echo(request: Request, **params) -> dict:
-    """The filters a next-page url spells out: the ones the CALLER sent, in `_paged`'s shape.
+    """The FILTERS a next-page url spells out: the ones the caller sent, in `_paged`'s shape.
 
     Real echoes a listing's filter only when the request carried it — `/pulls?per_page=1` links
     `per_page` and `page` alone where `?state=open&per_page=1` links `state=open` too, and an empty
     `?protected=` is echoed as well (measured on psf/requests and fastapi/fastapi). A default the
     handler applied is not one the caller asked for: echoing `state`'s `open` narrows the url a
     paginator follows, dropping the rows a `state=all` walk asked for.
+
+    Filters only. `per_page` is `github_link_header`'s to write, and it writes the effective size
+    whether or not the caller named one, where real omits it for a caller who did not (#126).
     """
     return {k: v for k, v in params.items() if k in request.query_params}
 

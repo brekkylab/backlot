@@ -254,6 +254,21 @@ def _paged(
     return JSONResponse(body, headers=headers)
 
 
+def _echo(request: Request, **params) -> dict:
+    """The FILTERS a next-page url spells out: the ones the caller sent, in `_paged`'s shape.
+
+    Real echoes a listing's filter only when the request carried it — `/pulls?per_page=1` links
+    `per_page` and `page` alone where `?state=open&per_page=1` links `state=open` too, and an empty
+    `?protected=` is echoed as well (measured on psf/requests and fastapi/fastapi). A default the
+    handler applied is not one the caller asked for: echoing `state`'s `open` narrows the url a
+    paginator follows, dropping the rows a `state=all` walk asked for.
+
+    Filters only. `per_page` is `github_link_header`'s to write, and it writes the effective size
+    whether or not the caller named one, where real omits it for a caller who did not (#126).
+    """
+    return {k: v for k, v in params.items() if k in request.query_params}
+
+
 _GH_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
 # The qualifiers each search endpoint honors. They differ because the resources do: an issue has a
 # state and an author, a file has a path and an extension. A key absent from the set stays as free
@@ -740,7 +755,7 @@ async def list_issues(
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
     body = [_issue_obj(conn, owner, repo, r, ab, _version(request)) for r in rows]
-    return _paged(request, len(all_rows), {"state": state}, body, page, per_page)
+    return _paged(request, len(all_rows), _echo(request, state=state), body, page, per_page)
 
 
 # --- a comment by its own id ----------------------------------------------------
@@ -856,7 +871,7 @@ async def list_pulls(
         _pr_obj(conn, owner, repo, r, ab, ids=ids, repo_files=repo_files, version=_version(request))
         for r in prs[start : start + per_page]
     ]
-    return _paged(request, len(prs), {"state": state}, body, page, per_page)
+    return _paged(request, len(prs), _echo(request, state=state), body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}")
@@ -1331,7 +1346,12 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
 
 @router.get("/repos/{owner}/{repo}/branches")
 async def list_branches(
-    owner: str, repo: str, request: Request, protected: str | None = Query(None)
+    owner: str,
+    repo: str,
+    request: Request,
+    protected: str | None = Query(None),
+    page: PageParam = None,
+    per_page: PageParam = None,
 ):
     """The repo's branches: the default branch, plus the refs its pulls advertise.
 
@@ -1354,6 +1374,10 @@ async def list_branches(
     All three answers are distinct for a repo whose `subtype: "repo"` record states which branches
     are protected. For one that does not, every branch is unprotected and real's last two coincide
     — a pull cannot imply protection, so an inferred listing has none (see :func:`_branch_rows`).
+
+    `?protected=` selects AHEAD of the page cut, so the `Link` counts the pages of the selection:
+    `?protected=false&per_page=1` on fastapi/fastapi answers one of the 21 unprotected branches and
+    reports `rel="last"` page 21, not the 22 of the whole listing.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -1362,16 +1386,27 @@ async def list_branches(
     rows = _branch_rows(conn, owner, repo, ids)
     if protected:  # an EMPTY value selects nothing, as an absent one does: real answers all 22
         rows = [b for b in rows if b["protected"] is _truthy(protected)]
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     sha = _repo_commit_sha(repo)
     url = f"{_api_base(request)}/repos/{owner}/{repo}/commits/{sha}"
-    return [
+    body = [
         {"name": b["name"], "commit": {"sha": sha, "url": url}, "protected": b["protected"]}
-        for b in rows
+        for b in rows[start : start + per_page]
     ]
+    return _paged(request, len(rows), _echo(request, protected=protected), body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/tags")
-async def list_tags(owner: str, repo: str, request: Request):
+async def list_tags(
+    owner: str,
+    repo: str,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     """The tags a `subtype: "repo"` record stated, or `[]` for a repo that stated none.
 
     Empty rather than absent for a repo with no tags. Real GitHub answers `[]` there —
@@ -1384,12 +1419,20 @@ async def list_tags(owner: str, repo: str, request: Request):
     `refs/tags/{name}`. Every tag resolves to the repo's one snapshot commit, as every branch does
     — Backlot keeps no commit history (see :func:`get_tree`), so a tag cannot point at a different
     one.
+
+    Paged like the rest of the router, and real pages it too: `?per_page=2` there answers two tags
+    with a `rel="last"` counting all 161.
     """
     conn = auth.conn(request)
     caller = _require(request)
     _require_repo(conn, repo, auth.visible_ids(request, caller))
+    names = _repo_tags(conn, repo)
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     ab, sha = _api_base(request), _repo_commit_sha(repo)
-    return [
+    body = [
         {
             "name": name,
             "commit": {"sha": sha, "url": f"{ab}/repos/{owner}/{repo}/commits/{sha}"},
@@ -1397,8 +1440,9 @@ async def list_tags(owner: str, repo: str, request: Request):
             "tarball_url": f"{ab}/repos/{owner}/{repo}/tarball/refs/tags/{name}",
             "node_id": synth.node_id("Ref", synth.github_number(f"{repo}:tags/{name}")),
         }
-        for name in _repo_tags(conn, repo)
+        for name in names[start : start + per_page]
     ]
+    return _paged(request, len(names), {}, body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/branches/{branch:path}")

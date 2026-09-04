@@ -855,6 +855,9 @@ def test_github_stated_protection_gives_protected_all_three_answers(gh_client, g
     def names(params):
         return [b["name"] for b in c.get(url, headers=gh_admin_h, params=params).json()]
 
+    def next_url(params):
+        return _link_rels(c.get(url, headers=gh_admin_h, params=params).headers["Link"])["next"]
+
     assert names({"protected": "true"}) == ["trunk"]
     assert names({"protected": "1"}) == ["trunk"]
     assert names({"protected": "false"}) == ["release/2026-03"]
@@ -865,6 +868,65 @@ def test_github_stated_protection_gives_protected_all_three_answers(gh_client, g
     assert [b["protected"] for b in c.get(url, headers=gh_admin_h).json()] == [False, True]
     single = c.get(f"{url}/trunk", headers=gh_admin_h).json()
     assert single["protected"] is True
+
+    # the selection happens ahead of the page cut, and a page url spells out only a parameter the
+    # caller sent, an empty value included (`list_branches` and `_echo` carry the measurements)
+    paged = c.get(url, headers=gh_admin_h, params={"protected": "false", "per_page": 1})
+    assert [b["name"] for b in paged.json()] == ["release/2026-03"]
+    assert "Link" not in paged.headers, "one unprotected branch here is a single page"
+    assert "protected=&" in next_url({"protected": "", "per_page": 1})
+    assert "protected" not in next_url({"per_page": 1})
+
+
+@pytest.mark.parametrize(
+    "route, names",
+    [("branches", ["release/2026-03", "trunk"]), ("tags", ["v1.0", "v1.1"])],
+)
+def test_github_ref_listings_page_like_every_other_listing(
+    gh_client, gh_admin_h, gh_org, route, names
+):
+    """`/branches` and `/tags` honour `per_page` and send the `Link` the rest of the router sends.
+
+    Neither listing reports a total, so `next` is the only way a client learns there is a second
+    page at all — the reason the header is not optional here.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/stated-repo/{route}"
+    first = c.get(url, headers=gh_admin_h, params={"per_page": 1})
+    assert [x["name"] for x in first.json()] == names[:1]
+    assert set(_link_rels(first.headers["Link"])) == {"next", "last"}
+
+    nxt = _link_rels(first.headers["Link"])["next"]
+    second = c.get(nxt.split("testserver", 1)[1], headers=gh_admin_h)
+    assert [x["name"] for x in second.json()] == names[1:]
+    assert {"prev", "first"} <= set(_link_rels(second.headers["Link"]))
+
+    # one page carries no Link at all, as real sends none
+    assert "Link" not in c.get(url, headers=gh_admin_h).headers
+
+
+@pytest.mark.parametrize("route", ["pulls", "issues"])
+def test_github_a_page_url_echoes_only_the_filters_the_caller_sent(
+    gh_client, gh_admin_h, gh_org, route
+):
+    """A next-page url spells out a listing's filter only when the request carried it (`_echo`).
+
+    `state` defaults to `open`, so a url echoing it is narrower than the one the caller called: a
+    client walking `state=all` by following `next` would lose the closed rows from page 2 on.
+
+    Both listings that take a `state`, since each applies the default itself: `/issues` serves the
+    repo's pulls as rows too, the way real does, so `diffable` pages it without a fixture of its own.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/diffable/{route}"
+
+    def next_url(params):
+        r = c.get(url, headers=gh_admin_h, params={"per_page": 1, **params})
+        return _link_rels(r.headers["Link"])["next"]
+
+    assert "state" not in next_url({})
+    assert "state=open" in next_url({"state": "open"})
+    assert "state=all" in next_url({"state": "all"})
 
 
 def test_github_a_stated_repo_serves_its_tags(gh_client, gh_admin_h, gh_org):

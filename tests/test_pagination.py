@@ -78,9 +78,19 @@ def test_github_link_header():
     h = pg.github_link_header("http://x/repos/o/r/issues", {"state": "all"}, 1, 10, 25)
     assert 'rel="next"' in h and 'rel="last"' in h
     assert "page=2" in h and "page=3" in h
+    # the rels come in one fixed order whichever of them a page has: prev, next, last, first.
+    # Measured on api.github.com on 2026-09-04 across four pages of one collaborator listing —
+    # page 1 answers `next, last`, a middle page all four in that order, the last page `prev,
+    # first`, and a page past the end `prev, last, first`.
+    assert list(_pages(h)) == ["next", "last"]
+    assert list(_pages(pg.github_link_header("http://x", {}, 2, 10, 25))) == [
+        "prev",
+        "next",
+        "last",
+        "first",
+    ]
     # the last page that HOLDS rows: no `next`, and no `last` either — a client already there does
-    # not need to be told where the end is (measured on api.github.com, page 6 of a six-page
-    # collaborator listing, 2026-09-04)
+    # not need to be told where the end is
     assert _pages(pg.github_link_header("http://x", {}, 3, 10, 25)) == {"prev": 2, "first": 1}
     assert pg.github_link_header("http://x", {}, 1, 10, 5) is None  # single page
 
@@ -89,11 +99,11 @@ def test_github_link_header():
     # pages 7 and 99 of that six-page listing both answer prev=6, last=6, first=1, and a search
     # whose 30 results end on page 3 answers prev=3, last=3, first=1 for page 9 — both surfaces
     # page through this helper. A client that overshot has to be able to reach the data again.
-    assert _pages(pg.github_link_header("http://x", {}, 99, 10, 25)) == {
-        "prev": 3,
-        "last": 3,
-        "first": 1,
-    }
+    assert list(_pages(pg.github_link_header("http://x", {}, 99, 10, 25)).items()) == [
+        ("prev", 3),
+        ("last", 3),
+        ("first", 1),
+    ]
     # ...and a listing that never had a second page stays header-less however far past it you ask
     assert pg.github_link_header("http://x", {}, 99, 10, 5) is None
 

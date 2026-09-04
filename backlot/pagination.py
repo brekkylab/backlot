@@ -128,6 +128,9 @@ def github_link_header(
     end on page 3 answers prev=3, last=3, first=1 for page 9. On the last page that holds rows there
     is no ``last`` — a client already there needs no pointer to it.
 
+    The rels come in one fixed order whichever of them a page has — prev, next, last, first — which
+    is the order real emits across all four of those pages.
+
     Values are percent-encoded because a param value is arbitrary text — a search `q` carries
     spaces and colons — and a URI cannot hold them raw. A client that follows the link has to
     arrive at the query it was paging, not at a truncated one.
@@ -144,14 +147,14 @@ def github_link_header(
         return f"<{url_no_query}?{q}>"
 
     parts = []
-    if page < last_page:
-        parts.append(f'{link(page + 1)}; rel="next"')
-        parts.append(f'{link(last_page)}; rel="last"')
     if page > 1:
         parts.append(f'{link(min(page - 1, last_page))}; rel="prev"')
-        parts.append(f'{link(1)}; rel="first"')
-    if page > last_page:
+    if page < last_page:
+        parts.append(f'{link(page + 1)}; rel="next"')
+    if page != last_page:  # short of the end, or past it
         parts.append(f'{link(last_page)}; rel="last"')
+    if page > 1:
+        parts.append(f'{link(1)}; rel="first"')
     return ", ".join(parts) if parts else None
 
 

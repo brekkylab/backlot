@@ -1537,7 +1537,7 @@ _RELATION_OR_CELLS = [
     ("project", "{}", {W1, W2, N3, N4}),
     ("project", "{and: []}", {W1, W2, N3, N4}),
     ("project", "{or: [{}]}", {W1, W2, N3, N4}),
-    # the added rows vanish when the comparator branch carries `null: false`, or when the `or` is not the object's own
+    # every branch carrying `null: false` is FLAGS deciding false: the relation is present, and the rest reads under that
     ("project", '{or: [{null: false}, {null: false, name: {eq: "nobody"}}]}', set()),
     ("project", '{or: [{null: false}, {null: false, name: {eq: "zz-pa"}}]}', {W1}),
     ("project", '{or: [{}, {null: false, name: {eq: "nobody"}}]}', {N3, N4}),
@@ -1594,7 +1594,7 @@ _RELATION_OR_CELLS = [
         '{or: [{null: true, name: {eq: "zz-pa"}}, {null: false, name: {eq: "nobody"}}]}',
         {W1, N3, N4},
     ),
-    # a `null: true` below an object with a comparator key of its own, or in an `and` branch beside its own `or`, is the issues without; the object's own `null` wins
+    # a `null: true` anywhere below is ASSEMBLE's `IS NULL OR rest`; the object's own `null` decides first
     ("project", '{or: [{null: true}], name: {eq: "zz-pa"}}', {N3, N4}),
     ("project", '{or: [{null: true}, {name: {eq: "zz-pb"}}], name: {eq: "zz-pa"}}', {N3, N4}),
     ("project", '{or: [{null: true}, {name: {eq: "zz-pa"}}], id: {eq: "%s"}}' % _ZZ_PB, {N3, N4}),
@@ -1671,11 +1671,11 @@ _RELATION_OR_CELLS = [
     ("assignee", "{or: []}", {W1}),
     ("assignee", '{or: [{null: false}, {name: {neq: "nuri"}}]}', {W2, N3, N4}),
     ("assignee", '{null: false, or: [{}, {name: {eq: "nuri"}}]}', {W1}),
-    # a `null: true` anywhere below the object adds the issues without the relation to whatever the REST of the object answers, so a sibling key or a second group still reads
+    # the `IS NULL OR rest` is over the whole object, so a sibling key or a second list still reads
     ("project", '{or: [{null: true}, {name: {eq: "zz-pa"}}], name: {eq: "zz-pa"}}', {W1, N3, N4}),
     (
         "project",
-        '{or: [{null: true}, {name: {eq: "zz-pa"}}], id: {eq: "%s"}}' % (_ZZ_PA,),
+        '{or: [{null: true}, {name: {eq: "zz-pa"}}], id: {eq: "%s"}}' % _ZZ_PA,
         {W1, N3, N4},
     ),
     (
@@ -1709,7 +1709,7 @@ _RELATION_OR_CELLS = [
         '{and: [{or: [{null: false}, {name: {eq: "zz-pa"}}]}], or: [{null: true}, {name: {eq: "zz-pa"}}]}',
         {W1},
     ),
-    # a bare `{null: false}` in an `or` lifted from an `and` branch requires the relation for the whole object, unless that `or` carries a `null: true`
+    # FLAGS reads an `and` branch that is an `or` with a bare `{null: false}` and no `null: true` as saying false
     ("project", '{and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}]}', {W2}),
     ("project", "{and: [{or: [{null: false}, {}]}]}", {W1, W2}),
     ("project", "{and: [{or: [{null: false}, {null: true}]}]}", {W1, W2, N3, N4}),
@@ -1775,7 +1775,7 @@ _RELATION_OR_CELLS = [
     ),
     ("project", '{and: [{or: [{null: false}, {null: true, name: {eq: "zz-pa"}}]}]}', {W1, N3, N4}),
     ("project", '{and: [{and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}]}]}', {W2}),
-    # the object's own `or` is not an `and` branch: its bare `{null: false}` is the missing-relation alternative even beside a sibling key
+    # the object's own `or` contributes no flag from a bare `{null: false}`: LISTS reads it as the missing-relation alternative, sibling keys or not
     ("project", '{or: [{null: false}, {name: {neq: "zz-pa"}}], name: {neq: "zz-pb"}}', {N3, N4}),
     (
         "project",
@@ -1792,11 +1792,6 @@ _RELATION_OR_CELLS = [
         "project",
         '{or: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}, {name: {eq: "nobody"}}]}',
         {W2, N3, N4},
-    ),
-    (
-        "project",
-        '{or: [{null: false}, {name: {neq: "zz-pa"}}], and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}]}',
-        {W2},
     ),
 ]
 

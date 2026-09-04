@@ -261,9 +261,10 @@ input NullableUserFilter {
   null: Boolean
   and: [NullableUserFilter!]
   """The keys of one branch are alternatives, as on every `or` here. A branch that says nothing about
-  the related row (`{}`, `{null: true}`, a bare `{null: false}`) beside one that does adds the issues
-  without the relation; every branch carrying `null: true` is the issues without it, comparators
-  unread (measured 2026-09-04)."""
+  the related row (`{}`, `{null: true}`) beside one that does adds the issues without the relation,
+  and every branch carrying `null: true` is the issues without it, comparators unread. A bare
+  `{null: false}` branch is that alternative in the object's own `or`, and the object's `null: false`
+  when the `or` sits in an `and` branch (measured 2026-09-04)."""
   or: [NullableUserFilter!]
 }
 
@@ -284,9 +285,10 @@ input NullableProjectFilter {
   null: Boolean
   and: [NullableProjectFilter!]
   """The keys of one branch are alternatives, as on every `or` here. A branch that says nothing about
-  the related row (`{}`, `{null: true}`, a bare `{null: false}`) beside one that does adds the issues
-  without the relation; every branch carrying `null: true` is the issues without it, comparators
-  unread (measured 2026-09-04)."""
+  the related row (`{}`, `{null: true}`) beside one that does adds the issues without the relation,
+  and every branch carrying `null: true` is the issues without it, comparators unread. A bare
+  `{null: false}` branch is that alternative in the object's own `or`, and the object's `null: false`
+  when the `or` sits in an `and` branch (measured 2026-09-04)."""
   or: [NullableProjectFilter!]
 }
 

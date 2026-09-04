@@ -1095,74 +1095,56 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
     An ``or`` is not the union of its branches each read by that rule. Measured 2026-09-04, 458
     filters in eleven rounds over the same four issues (two in two projects, one of them assigned
     to the viewer, two in none); from the third round on each round was predicted from the rule
-    before it was sent, and the misses fixed corners until the procedure below fit every row:
+    before it was sent, and the misses fixed corners until one procedure fit every row. That
+    procedure is what this function is, in this order:
 
-    * A ``null: true`` anywhere below the object -- in an ``or`` branch, an ``and`` branch, or
-      nested deeper -- adds the issues without the relation to whatever the REST of the object
-      answers, ``IS NULL OR (rest)``: ``{or: [{null: true}, {name: {eq: X}}], name: {eq: Y}}`` is
-      the issues without a project plus those in X that are also in Y, and ``{and: [{or: [{null:
-      true}, {name: {eq: X}}]}], or: [{name: {eq: X}}]}`` the issues without plus X's. The
-      object's own ``null: false`` wins over it (``{null: false, or: [{null: true}, {name: {eq:
-      X}}]}`` is X's), and so does a bare ``{null: false}`` branch of an ``or`` lifted out of an
-      ``and`` branch (below).
-    * An ``or`` whose every branch carries a ``null: true`` somewhere is the issues without the
-      relation, comparators unread: ``{or: [{null: true, name: {eq: X}}, {null: true}]}``.
-    * Otherwise the ``or`` is the issues whose relation satisfies its branches read against the
-      related row, where THE KEYS OF ONE BRANCH ARE ALTERNATIVES -- ``{or: [{name: {eq: X}, id:
-      {eq: Y}}]}`` is X's and Y's where ``{name: {eq: X}, id: {eq: Y}}`` is none, as Linear's
-      ``or`` reads a branch on ``IssueFilter`` and ``ProjectFilter`` too -- a branch that says
-      nothing about that row (``{}``, ``{null: true}``, ``{null: false}``) skipped, and nothing
-      left meaning every related row; PLUS the issues without the relation when some branch is
-      ``{}`` (``{and: []}``, or an ``or`` with such a branch), or when the ``or`` is the object's
-      own and some branch is a bare ``{null: false}`` beside one with no ``null: false`` anywhere
-      in it and no ``null: true`` in the ``or``. So ``{or: [{null: false}, {name: {eq:
-      "nobody"}}]}``, ``{or: [{}, {name: {eq: "nobody"}}]}`` and ``{or: [{null: true}, {name: {eq:
-      "nobody"}}]}`` are each the issues without a project, ``{or: [{null: true, name: {eq: X}},
-      {name: {eq: "nobody"}}]}`` those plus X's, and ``{or: [{null: false}, {null: false, name:
-      {eq: "nobody"}}]}`` none. When every branch carries a ``null: false`` the relation must
-      exist, which only a negative comparator can show.
-    * The same bare ``{null: false}`` in an ``or`` lifted out of an ``and`` branch does the
-      opposite: it requires the relation for the whole object, as the object's own ``null:
-      false`` would, so ``{and: [{or: [{null: false}, {name: {neq: X}}]}]}`` is the issues with a
-      project other than X and ``{and: [{or: [{null: false}, {}]}]}`` the issues with one; a
-      ``null: true`` in that ``or`` (``{and: [{or: [{null: false}, {null: true}]}]}``, every issue)
-      turns it off.
-    * A branch that is nothing but comparators with no operator (``{name: {}}``) makes the
-      ``or`` constrain nothing, ``{or: [{name: {}}, {name: {eq: "nobody"}}]}`` being every issue,
-      unless every branch carries ``null: false``, when the relation is still required; beside a
-      real key the same comparator is TRUE inside its branch, so ``{or: [{name: {}, id: {eq:
-      Y}}]}`` is the issues with a project.
-    * An ``or`` inside a branch renders its related-row side only, its ``null`` keys counting
-      toward the rules above for the ``or`` that holds it; a nested ``or: []`` and an ``and: []``
-      render nothing, and the object's own ``or: []`` is the issues with the relation, where
-      ``{}`` and ``{and: []}`` are every issue.
+    FLAGS. What the object says about the relation's existence is its own ``null``. Failing that,
+    it is what its ``and`` branches say, merged with ``true`` winning over ``false`` (the rule
+    above for direct ``null`` keys, applied to every branch): a branch says its own ``null``, and
+    a branch that is an ``or`` says ``true`` when every alternative carries ``null: true`` and
+    ``false`` when it holds a bare ``{null: false}`` and no ``null: true`` anywhere. The object's
+    own ``or`` contributes only a ``null`` common to all of its alternatives.
 
-    Read as one procedure, which is how every row above was reproduced. FLAGS: what the object says
-    about the relation's existence is its own ``null``; failing that, what its ``and`` branches say,
-    merged with ``true`` winning over ``false`` (#124), where a branch says its own ``null``, and a
-    branch that is an ``or`` says ``true`` when every alternative carries ``null: true`` and ``false``
-    when it holds a bare ``{null: false}`` and no ``null: true`` anywhere; the object's own ``or``
-    only contributes a ``null`` common to all of its alternatives. ASSEMBLE: ``true`` is the issues
-    without the relation, nothing else read; ``false`` drops every ``null`` key below the object and
-    is the relation present AND the rest; nothing decided is the rest, ORed with the issues without
-    the relation when a ``null: true`` is anywhere below. LISTS: each ``or`` against the related row,
-    the keys of one alternative being alternatives, ``null`` keys unread, an alternative with no
-    operator-bearing comparator making the list say nothing; a list whose every alternative says
-    nothing about the row says nothing (an empty list is the relation present); otherwise an
-    alternative that says nothing about the row (``{}``, ``{and: []}``, a bare ``{null: *}``, or
-    an ``or`` holding one) is the list's missing-relation alternative. Two readings are the
-    vendor's and not derivable from the rest: that a disjunction with a bare ``{null: false}``
-    counts as asserting ``null: false`` when merged as an ``and`` branch, and that the keys of an
-    alternative are alternatives.
+    ASSEMBLE. ``true`` is the issues without the relation, nothing else read. ``false`` drops every
+    ``null`` key below the object and is the relation present AND the rest. Nothing decided is the
+    rest, ORed with the issues without the relation when a ``null: true`` is anywhere below.
 
-    The one piece of Linear's own filter
-    code that is public, the matcher its web client runs over synced models (the ``or`` and
-    ``and`` operators of the ModelMatcher in ``static.linear.app/client/assets/store.*.js``,
-    read 2026-09-04), does answer a missing relation by scanning: an ``or`` there is "some
-    branch says ``null: true``", an ``and`` "every branch does". It is not the API's compiler,
-    though -- it ANDs the keys of a branch and reads ``{and: [{null: true}, {name: {eq: X}}]}``
-    as none where the API answers the issues without the relation -- so the clauses above stay
-    measured."""
+    LISTS. Each ``or`` is read against the related row: THE KEYS OF ONE ALTERNATIVE ARE
+    ALTERNATIVES (``{or: [{name: {eq: X}, id: {eq: Y}}]}`` is X's and Y's where ``{name: {eq: X},
+    id: {eq: Y}}`` is none, as Linear's ``or`` reads a branch on ``IssueFilter`` and
+    ``ProjectFilter`` too), ``null`` keys are not read, an alternative with no operator-bearing
+    comparator makes the list say nothing, a list whose every alternative says nothing about the
+    row says nothing (an empty list is the relation present), and otherwise an alternative that
+    says nothing about the row (``{}``, ``{and: []}``, a bare ``{null: *}``, or an ``or`` holding
+    one) is the list's missing-relation alternative. A list does not know where it came from.
+
+    The rows that pin each step: ``{or: [{null: true, name: {eq: X}}, {null: true}]}`` is the
+    issues without a project, FLAGS from the object's own ``or``; ``{and: [{or: [{null: false},
+    {name: {eq: "nobody"}}]}, {or: [{null: true}]}]}`` is the issues without, the second branch
+    saying ``true`` and ``true`` winning; ``{and: [{or: [{null: false}, {name: {neq: X}}]}]}`` is
+    the issues with a project other than X, the branch saying ``false``; ``{null: false, or:
+    [{null: true}]}`` is the issues with a project, the own ``null`` dropping the one below;
+    ``{or: [{null: true}, {name: {eq: X}}], name: {eq: Y}}`` is the issues without plus those in
+    X and Y, the ``IS NULL OR rest`` of ASSEMBLE; ``{or: [{null: false}, {name: {eq: "nobody"}}]}``,
+    ``{or: [{}, {name: {eq: "nobody"}}]}`` and ``{or: [{null: true}, {name: {eq: "nobody"}}]}``
+    are each the issues without, the missing-relation alternative of LISTS, where ``{or: [{null:
+    false}, {null: false}]}`` is the issues with and ``{or: [{}, {}]}`` every issue, lists that
+    say nothing; ``{or: [{null: true, name: {eq: X}}, {name: {eq: "nobody"}}]}`` is the issues
+    without plus X's, the ``null`` unread on the row side; ``{or: [{name: {}}, {name: {eq:
+    "nobody"}}]}`` is every issue and ``{or: [{name: {}, id: {eq: Y}}]}`` the issues with a
+    project; ``{or: []}`` is the issues with a project where ``{}`` and ``{and: []}`` are every
+    issue.
+
+    Two readings in the procedure are the vendor's and not derivable from the rest: that a
+    disjunction holding a bare ``{null: false}`` counts as asserting ``null: false`` when merged
+    as an ``and`` branch, and that the keys of an alternative are alternatives. The API's compiler
+    is not public. The one piece of Linear's filter code that is, the matcher its web client runs
+    over synced models (the ``or`` and ``and`` operators of the ModelMatcher in
+    ``static.linear.app/client/assets/store.*.js``, read 2026-09-04), answers a missing relation
+    by the same kind of scan -- an ``or`` there is "some branch says ``null: true``", an ``and``
+    "every branch does" -- but ANDs the keys of a branch and reads ``{and: [{null: true}, {name:
+    {eq: X}}]}`` as none where the API answers the issues without the relation, so it is a second
+    implementation and both readings stay measured."""
     spec = _without_null_values(spec)
     # Which column carries "no such relation" is mapping-specific, so use the first mapped column.
     col = next(m[1] for m in mapping.values())
@@ -1195,6 +1177,7 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
     if null is False:
         spec = _without_nulls(spec)
         items = _relation_items(spec)
+    # LISTS, and the comparators, ANDed
     parts: list[str] = []
     params: list = []
     for key, sub, _ in items:

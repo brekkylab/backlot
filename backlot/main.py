@@ -165,6 +165,28 @@ async def echo_github_api_version(request: Request, call_next):
 
 
 @app.middleware("http")
+async def resolve_github_id_paths(request: Request, call_next):
+    """Serve `/github/repositories/{id}/…` and `/github/organizations/{id}/…` as what the
+    login-keyed paths serve, because that is the form real's page urls take (see
+    ``_page_base_url``) and a page url a client cannot follow is worse than no header at all.
+
+    A rewrite rather than a redirect: real answers 200 on `/repositories/{id}/collaborators`
+    directly, so a 302 would be a shape a client only meets here. An id that names nothing is left
+    alone and 404s on the route it fails to match, the same answer a name that names nothing gets.
+    """
+    path = request.url.path
+    if path.startswith("/github/repositories/") or path.startswith("/github/organizations/"):
+        acl = getattr(request.app.state, "acl", None)
+        canonical = github.canonical_id_path(
+            request.app.state.conn, getattr(acl, "org_name", None) or get_settings().org_name, path
+        )
+        if canonical is not None:
+            request.scope["path"] = canonical
+            request.scope["raw_path"] = canonical.encode()
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def parse_slack_form(request: Request, call_next):
     """Slack SDK POSTs urlencoded params; stash them for the router's param lookup."""
     if request.url.path.startswith("/slack/") and request.method == "POST":

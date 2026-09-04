@@ -297,6 +297,53 @@ def _api_base(request: Request) -> str:
     return f"{request.url.scheme}://{host}/github"
 
 
+#: The id-keyed prefixes real's page urls use, mapped to the login-keyed path each one stands for.
+_ID_PATHS = {"repositories": "repos", "organizations": "orgs"}
+
+
+def _page_base_url(request: Request) -> str:
+    """The url a page LINK is built on, which names a repository and an organization by ID.
+
+    Real's page urls do, where the resource urls in the same response do not: `/collaborators` at
+    `per_page=1` links `/repositories/1287077005/collaborators?…` and an org's `/repos` links
+    `/organizations/130592615/repos?…`, while a comment in that body still carries
+    `url: …/repos/psf/requests/issues/comments/…` (measured on api.github.com on 2026-09-04). So
+    the two forms are not interchangeable and only the page urls carry the id; `/user/repos` and
+    `/search/…` keep their own paths, naming no owner to swap.
+
+    The form has to resolve, which is ``resolve_github_id_paths`` in :mod:`backlot.main`.
+    """
+    parts = request.url.path.strip("/").split("/")
+    path = request.url.path
+    if parts[1:2] == ["repos"] and len(parts) >= 4:
+        path = "/".join(["/github/repositories", str(synth.github_user_id(parts[3])), *parts[4:]])
+    elif parts[1:2] == ["orgs"] and len(parts) >= 3:
+        path = "/".join(["/github/organizations", str(synth.github_user_id(parts[2])), *parts[3:]])
+    host = request.headers.get("host", "localhost")
+    return f"{request.url.scheme}://{host}{path}"
+
+
+def canonical_id_path(conn, org: str, path: str) -> str | None:
+    """The login-keyed path an id-keyed one stands for, or ``None`` when the id names nothing.
+
+    The inverse of :func:`_page_base_url`, so that the page urls Backlot emits can be followed.
+    Resolution is by id alone and says nothing about visibility — the route it lands on applies the
+    caller's ACL, so a repository this caller cannot read 404s exactly as it does by name.
+    """
+    parts = path.strip("/").split("/", 3)
+    if len(parts) < 3 or parts[1] not in _ID_PATHS:
+        return None
+    tail = parts[3:]
+    if parts[1] == "organizations":
+        if str(synth.github_user_id(org)) != parts[2]:
+            return None
+        return "/".join(["/github/orgs", org, *tail])
+    for row in store.list_containers(conn, "github"):
+        if str(synth.github_user_id(row["name"])) == parts[2]:
+            return "/".join(["/github/repos", org, row["name"], *tail])
+    return None
+
+
 def _link_response(link: str | None, body: list) -> Response:
     return JSONResponse(body, headers={"Link": link} if link else {})
 
@@ -304,7 +351,7 @@ def _link_response(link: str | None, body: list) -> Response:
 def _paged(
     request: Request, rows_total: int, extra: dict, body: list, page: int, per_page: int
 ) -> Response:
-    link = github_link_header(_base_url(request), extra, page, per_page, rows_total)
+    link = github_link_header(_page_base_url(request), extra, page, per_page, rows_total)
     return _link_response(link, body)
 
 
@@ -319,7 +366,9 @@ def _paged_by_cursor(
 ) -> Response:
     """:func:`_paged` for the one listing real pages by cursor rather than by offset — see
     :func:`backlot.pagination.github_cursor_link_header`."""
-    link = github_cursor_link_header(_base_url(request), extra, page, per_page, rows_total, offset)
+    link = github_cursor_link_header(
+        _page_base_url(request), extra, page, per_page, rows_total, offset
+    )
     return _link_response(link, body)
 
 
@@ -397,7 +446,7 @@ def _search_paged(
     rather than by returning a ``JSONResponse``, so the handler keeps its ``response_model`` and the
     operation keeps the typed schema the MCP bridge reads.
     """
-    link = github_link_header(_base_url(request), {"q": q}, page, per_page, total)
+    link = github_link_header(_page_base_url(request), {"q": q}, page, per_page, total)
     if link:
         response.headers["Link"] = link
 

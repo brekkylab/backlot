@@ -16,7 +16,7 @@ import yaml
 
 import pytest
 
-from backlot import store
+from backlot import store, synth
 from backlot.pagination import encode_cursor
 from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
 
@@ -1765,6 +1765,48 @@ def test_github_the_issue_listing_pages_by_cursor_not_by_offset(gh_client, gh_ad
     assert set(_link_rels(last.headers["Link"])) == {"prev"}
     beyond = c.get(url, headers=gh_admin_h, params={**args, "page": len(full) + 1})
     assert beyond.json() == [] and "Link" not in beyond.headers
+
+
+def test_github_a_page_url_names_the_repository_and_the_org_by_id(gh_client, gh_admin_h, gh_org):
+    """Real's page urls name a repository and an organization by ID, where the resource urls in the
+    very same response keep the login form.
+
+    Measured on api.github.com on 2026-09-04: `/repos/brekkylab/enterprise-mock/collaborators` at
+    `per_page=1` links `/repositories/1287077005/collaborators?per_page=1&page=2`,
+    `/orgs/brekkylab/repos` links `/organizations/130592615/repos?…`, and a comment fetched in the
+    same breath still carries `url: …/repos/psf/requests/issues/comments/…`. `/user/repos` keeps its
+    own path — it names no owner to swap for an id.
+
+    The id form has to RESOLVE, or the header hands a client a url it cannot follow: real answers
+    200 on `/repositories/{id}/collaborators` directly, and so does Backlot (see
+    ``resolve_github_id_paths`` in ``backlot.main``).
+    """
+    c, _ = gh_client
+    rid, oid = synth.github_user_id("diffable"), synth.github_user_id(gh_org)
+    url = f"/github/repos/{gh_org}/diffable/pulls"
+    args = {"state": "all", "per_page": 1}
+
+    nxt = _link_rels(c.get(url, headers=gh_admin_h, params=args).headers["Link"])["next"]
+    assert f"/github/repositories/{rid}/pulls?" in nxt
+    second = c.get(nxt.split("testserver", 1)[1], headers=gh_admin_h)
+    assert second.json() == c.get(url, headers=gh_admin_h, params={**args, "page": 2}).json()
+    # a resource url in that same body keeps the owner/repo form
+    assert f"/repos/{gh_org}/diffable/" in second.json()[0]["url"]
+
+    org_next = _link_rels(
+        c.get(f"/github/orgs/{gh_org}/repos", headers=gh_admin_h, params={"per_page": 1}).headers[
+            "Link"
+        ]
+    )["next"]
+    assert f"/github/organizations/{oid}/repos?" in org_next
+    assert c.get(org_next.split("testserver", 1)[1], headers=gh_admin_h).status_code == 200
+
+    # the listing with no owner in its path is left alone, and an id that names nothing 404s
+    user_next = _link_rels(
+        c.get("/github/user/repos", headers=gh_admin_h, params={"per_page": 1}).headers["Link"]
+    )["next"]
+    assert "/github/user/repos?" in user_next
+    assert c.get(f"/github/repositories/{rid + 1}/pulls", headers=gh_admin_h).status_code == 404
 
 
 @pytest.mark.parametrize(

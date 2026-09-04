@@ -165,6 +165,31 @@ async def echo_github_api_version(request: Request, call_next):
 
 
 @app.middleware("http")
+async def resolve_github_id_paths(request: Request, call_next):
+    """Serve `/github/repositories/{id}/…` and `/github/organizations/{id}/…` as what the
+    login-keyed paths serve, because that is the form real's page urls take (see
+    ``_page_base_url``) and a page url a client cannot follow is worse than no header at all.
+
+    A rewrite rather than a redirect: real answers 200 on `/repositories/{id}/collaborators`
+    directly, so a 302 would be a shape a client only meets here.
+
+    The rewrite happens on the PREFIX, whatever the id turns out to name, so that these paths
+    answer in the order the named ones do — see ``canonical_id_path`` for why resolving first would
+    tell an unauthenticated caller which ids the corpus holds.
+    """
+    path = request.url.path
+    if path.startswith("/github/repositories/") or path.startswith("/github/organizations/"):
+        acl = getattr(request.app.state, "acl", None)
+        canonical = github.canonical_id_path(
+            request.app.state.conn, getattr(acl, "org_name", None) or get_settings().org_name, path
+        )
+        if canonical is not None:
+            request.scope["path"] = canonical
+            request.scope["raw_path"] = canonical.encode()
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
 

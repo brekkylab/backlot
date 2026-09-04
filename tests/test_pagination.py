@@ -1,6 +1,21 @@
+import re
+from urllib.parse import quote
+
 import pytest
 
 from backlot import pagination as pg
+
+
+def _pages(header: str) -> dict[str, int]:
+    """A GitHub `Link` header's rel -> page number map (RFC5988 `<url>; rel="name"`)."""
+    return {
+        rel: int(page) for page, rel in re.findall(r"[?&]page=(\d+)[^>]*>; rel=\"(\w+)\"", header)
+    }
+
+
+def _link_rel_names(header: str) -> list[str]:
+    """Its rels in the order sent, whether or not their urls carry a page number."""
+    return re.findall(r'rel="(\w+)"', header)
 
 
 def test_cursor_roundtrip():
@@ -71,9 +86,123 @@ def test_github_link_header():
     h = pg.github_link_header("http://x/repos/o/r/issues", {"state": "all"}, 1, 10, 25)
     assert 'rel="next"' in h and 'rel="last"' in h
     assert "page=2" in h and "page=3" in h
-    # last page -> no next
-    assert pg.github_link_header("http://x", {}, 3, 10, 25) is not None  # has prev/first
+    # the rels come in one fixed order whichever of them a page has: prev, next, last, first.
+    # Measured on api.github.com on 2026-09-04 across four pages of one collaborator listing —
+    # page 1 answers `next, last`, a middle page all four in that order, the last page `prev,
+    # first`, and a page past the end `prev, last, first`.
+    assert list(_pages(h)) == ["next", "last"]
+    assert list(_pages(pg.github_link_header("http://x", {}, 2, 10, 25))) == [
+        "prev",
+        "next",
+        "last",
+        "first",
+    ]
+    # the last page that HOLDS rows: no `next`, and no `last` either — a client already there does
+    # not need to be told where the end is
+    assert _pages(pg.github_link_header("http://x", {}, 3, 10, 25)) == {"prev": 2, "first": 1}
     assert pg.github_link_header("http://x", {}, 1, 10, 5) is None  # single page
+
+    # PAST the end, `prev` backs up to the last page that holds rows rather than to the page before
+    # the one asked for, and `last` comes back to say where the rows end. Measured the same day:
+    # pages 7 and 99 of that six-page listing both answer prev=6, last=6, first=1, and a search
+    # whose 30 results end on page 3 answers prev=3, last=3, first=1 for page 9 — both surfaces
+    # page through this helper. A client that overshot has to be able to reach the data again.
+    assert list(_pages(pg.github_link_header("http://x", {}, 99, 10, 25)).items()) == [
+        ("prev", 3),
+        ("last", 3),
+        ("first", 1),
+    ]
+    # ...and a listing that never had a second page stays header-less however far past it you ask
+    assert pg.github_link_header("http://x", {}, 99, 10, 5) is None
+
+    # A page size the CALLER did not send is not written into the urls, the rule that already
+    # governs a listing's filters. Real: `psf/requests/tags` with no query links `?page=2` and
+    # `?page=6` — six pages of 161 tags at real's own default of 30, no `per_page` anywhere — where
+    # `?per_page=1` links `per_page=1&page=2` (measured 2026-09-04).
+    unsent = pg.github_link_header("http://x", {}, 1, 10, 25)
+    assert _pages(unsent) == {"next": 2, "last": 3}
+    assert "per_page" not in unsent
+
+    # ...and one the caller DID send goes back in the caller's own spelling rather than as the size
+    # the handler applied, which is why an unparseable one survives the round trip
+    spelled = pg.github_link_header("http://x", {}, 1, 10, 25, per_page_param="abc")
+    assert "per_page=abc" in spelled and _pages(spelled) == {"next": 2, "last": 3}
+
+
+def test_github_cursor_link_header_pages_a_listing_real_pages_by_cursor():
+    """Real cursor-pages `/repos/{o}/{r}/issues` where it offset-pages every other listing: the
+    header carries `next`/`prev` alone — never `last` or `first` — each url pairing the caller's
+    page ± 1 with an opaque cursor, and a window past the rows carries no header at all.
+
+    Measured on api.github.com on 2026-09-04 against a repository with 12 open issues, `per_page=5`:
+    page 1 answers `next` with an `after` cursor, page 2 `next, prev` in that order, page 3 — the
+    last that holds rows — `prev` alone with a `before` cursor, and pages 4 and 99 nothing at all.
+    The same 12 rows at `per_page=100` also answer nothing. Following page 1's `after` lands on
+    exactly the rows `page=2` answers and page 3's `before` on the same window, so a cursor names
+    where a window STARTS and `before` names the window ending where this one begins.
+    """
+
+    def h(page, offset, total=12, per_page=5):
+        return pg.github_cursor_link_header(
+            "http://x", {"state": "open"}, page, per_page, total, offset
+        )
+
+    assert list(_pages(h(1, 0))) == ["next"]
+    assert list(_pages(h(2, 5)).items()) == [("next", 3), ("prev", 1)]
+    assert _pages(h(3, 10)) == {"prev": 2}
+    assert h(4, 15) is None and h(99, 490) is None  # past the rows
+    assert h(1, 0, per_page=100) is None  # one page holds every row
+    assert h(1, 0, total=0) is None  # ...as does none at all
+
+    # the cursor names the window the url lands on; the page number beside it is only the caller's
+    # own ± 1, which real echoes even when the cursor contradicts it (`?page=50&after=<page 1's>`
+    # answers page 2's rows and links page 51)
+    assert f"after={quote(pg.encode_cursor(5), safe='')}" in h(1, 0)
+    assert f"before={quote(pg.encode_cursor(10), safe='')}" in h(3, 10)
+    assert _pages(h(50, 5)) == {"next": 51, "prev": 49}
+
+    # `page=None` writes no page at all: the alternative to a number is the absence of one, never
+    # the `page=0` a caller at page 1 with a cursor would otherwise be handed
+    cursored = h(None, 3)
+    assert set(_link_rel_names(cursored)) == {"next", "prev"}
+    assert "page=" not in cursored.replace("per_page=", "")
+
+    # this one WRITES the page size whether or not the caller sent it, where an offset listing
+    # omits an unsent one: `/repos/psf/requests/issues?page=2` links `…&per_page=30` while
+    # `/tags` with no query links no size at all (both measured the same day)
+    assert "per_page=5" in h(1, 0)
+
+
+def test_github_code_search_link_header_keeps_first_and_last_on_every_page():
+    """The five positions :func:`pagination.github_code_search_link_header` was measured at, which
+    are the four rules it does not share with a listing plus the one it does."""
+
+    def h(page, total=45, per_page=5):
+        return pg.github_code_search_link_header("http://x", {"q": "def"}, page, per_page, total)
+
+    assert list(_pages(h(1)).items()) == [("next", 2), ("first", 1), ("last", 9)]
+    assert list(_pages(h(5)).items()) == [("next", 6), ("prev", 4), ("first", 1), ("last", 9)]
+    assert list(_pages(h(9)).items()) == [("prev", 8), ("first", 1), ("last", 9)]
+    assert list(_pages(h(99)).items()) == [("prev", 98), ("first", 1), ("last", 9)]
+    assert h(1, per_page=100) is None
+
+    # the size written is the one applied — this builder takes no spelling from the caller, which
+    # is the cell `/search/issues` differs on
+    assert "per_page=30" in h(1, per_page=30)
+
+
+def test_github_cursor_offset_prefers_the_cursor_over_the_page():
+    """A cursor OVERRIDES `page` rather than adding to it. Measured the same day: `?per_page=2` at
+    `page=50` with page 1's `after` cursor answers the two rows `page=2` answers, where `page=50`
+    alone answers a different window — so the cursor decides and `page` is carried along.
+    """
+    assert pg.github_cursor_offset(50, 2, pg.encode_cursor(2), None) == 2
+    assert pg.github_cursor_offset(3, 5, None, None) == 10  # neither cursor: the page's own offset
+    # `before` names the window that ENDS at the offset it carries, and clamps at the start
+    assert pg.github_cursor_offset(9, 5, None, pg.encode_cursor(10)) == 5
+    assert pg.github_cursor_offset(9, 5, None, pg.encode_cursor(2)) == 0
+    # a cursor that does not decode restarts at the first window, `decode_cursor`'s own tolerance
+    assert pg.github_cursor_offset(4, 5, "garbage", None) == 0
 
 
 def test_github_link_header_percent_encodes_its_param_values():

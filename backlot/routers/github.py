@@ -21,7 +21,14 @@ from pydantic import BaseModel, ConfigDict
 from backlot import auth, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
-from backlot.pagination import PageParam, clamp_page, github_link_header
+from backlot.pagination import (
+    PageParam,
+    clamp_page,
+    github_code_search_link_header,
+    github_cursor_link_header,
+    github_cursor_offset,
+    github_link_header,
+)
 
 # Real GitHub caps a recursive tree at 100k entries / 7 MB and reports `truncated: true`. Module
 # level rather than settings, so a test can lower them: a corpus big enough to hit the real cap is
@@ -152,10 +159,10 @@ async def _validate_path_owner(request: Request) -> None:
     router dependencies before it reads the endpoint's own path params, so the handler signature
     receives the value set here.
 
-    The pagination `Link` header is the one url this does not reach: :func:`_base_url` builds it
-    from the path the request arrived on, deliberately, and real has no named url to match there —
-    it paginates by numeric repository id instead (`/repositories/1362490/issues`, measured on the
-    same day).
+    The canonical spelling reaches the pagination `Link` header too, by way of the id it hashes to:
+    real paginates by numeric repository id (`/repositories/1362490/issues`, measured on the same
+    day), and :func:`_page_base_url` hashes the settled spelling rather than the one the request
+    arrived with — this dependency's for the org, :func:`_canonical_path_repo`'s for the repo.
     """
     _require(request)
     key = "owner" if "owner" in request.path_params else "org"
@@ -279,11 +286,6 @@ class GitHubCodeSearch(_Loose):
     items: list[GitHubCodeHit]
 
 
-def _base_url(request: Request) -> str:
-    host = request.headers.get("host", "localhost")
-    return f"{request.url.scheme}://{host}{request.url.path}"
-
-
 def _api_base(request: Request) -> str:
     """Backlot's GitHub API root (…/github), used for resource `url` fields so SDK
     clients (e.g. PyGithub) that lazily complete objects fetch back from Backlot."""
@@ -291,12 +293,108 @@ def _api_base(request: Request) -> str:
     return f"{request.url.scheme}://{host}/github"
 
 
+#: The id-keyed prefixes real's page urls use.
+_ID_PATHS = {"repositories", "organizations"}
+
+
+def _page_base_url(request: Request) -> str:
+    """The url a page LINK is built on, which names a repository and an organization by ID.
+
+    Real's page urls do, where the resource urls in the same response do not: `/collaborators` at
+    `per_page=1` links `/repositories/1287077005/collaborators?…` and an org's `/repos` links
+    `/organizations/130592615/repos?…`, while a comment in that body still carries
+    `url: …/repos/psf/requests/issues/comments/…` (measured on api.github.com on 2026-09-04). So
+    the two forms are not interchangeable and only the page urls carry the id; `/user/repos` and
+    `/search/…` keep their own paths, naming no owner to swap.
+
+    The form has to resolve, which is ``resolve_github_id_paths`` in :mod:`backlot.main`.
+
+    The id is the CORPUS's, not one minted from the spelling the request used: both segments
+    resolve in any case, so hashing the caller's spelling would name an id nothing holds and 404
+    the client that followed the url. Both spellings are already to hand — `_canonical_path_repo`
+    has put the corpus's in ``path_params`` and the org route only answers for the one org.
+    """
+    parts = request.url.path.strip("/").split("/")
+    path = request.url.path
+    if parts[1:2] == ["repos"] and len(parts) >= 4:
+        repo = request.path_params.get("repo") or parts[3]
+        path = "/".join(["/github/repositories", str(synth.github_user_id(repo)), *parts[4:]])
+    elif parts[1:2] == ["orgs"] and len(parts) >= 3:
+        # the one org served, which is the spelling `_validate_path_owner` accepted this path for
+        path = "/".join(
+            ["/github/organizations", str(synth.github_user_id(_org(request))), *parts[3:]]
+        )
+    host = request.headers.get("host", "localhost")
+    return f"{request.url.scheme}://{host}{path}"
+
+
+def canonical_id_path(conn, org: str, path: str) -> str | None:
+    """The login-keyed path an id-keyed one stands for, or ``None`` when the path is not one.
+
+    The inverse of :func:`_page_base_url`, so that the page urls Backlot emits can be followed.
+    Resolution is by id alone and says nothing about visibility — the route it lands on applies the
+    caller's ACL, so a repository this caller cannot read 404s exactly as it does by name.
+
+    An id that names NOTHING is still rewritten, with the id left where the name goes, so that this
+    path answers in the order the named one does: :func:`_validate_path_owner` puts credentials
+    ahead of existence, and resolving here first would let a caller with none tell an id the corpus
+    holds (401) from one it does not (404) — and since the id is ``github_user_id(name)``, confirm
+    a guessed name that way.
+
+    An id TWO repositories share names neither. `github_user_id` is `1000 + digest % 9_000_000` and
+    so not injective — `repo485` and `repo4107` both hash to 7755679 — and answering with whichever
+    name sorts first would walk a client onto another repository's page with nothing in the response
+    to say so. :func:`store.container_spelling` settles the ambiguous spelling the same way.
+    """
+    parts = path.strip("/").split("/", 3)
+    if len(parts) < 3 or parts[1] not in _ID_PATHS:
+        return None
+    tail = parts[3:]
+    if parts[1] == "organizations":
+        named = org if str(synth.github_user_id(org)) == parts[2] else parts[2]
+        return "/".join(["/github/orgs", named, *tail])
+    hits = [
+        r["name"]
+        for r in store.list_containers(conn, "github")
+        if str(synth.github_user_id(r["name"])) == parts[2]
+    ]
+    named = hits[0] if len(hits) == 1 else parts[2]
+    return "/".join(["/github/repos", org, named, *tail])
+
+
+def _link_response(link: str | None, body: list) -> Response:
+    return JSONResponse(body, headers={"Link": link} if link else {})
+
+
 def _paged(
     request: Request, rows_total: int, extra: dict, body: list, page: int, per_page: int
 ) -> Response:
-    link = github_link_header(_base_url(request), extra, page, per_page, rows_total)
-    headers = {"Link": link} if link else {}
-    return JSONResponse(body, headers=headers)
+    link = github_link_header(
+        _page_base_url(request),
+        extra,
+        page,
+        per_page,
+        rows_total,
+        per_page_param=request.query_params.get("per_page"),
+    )
+    return _link_response(link, body)
+
+
+def _paged_by_cursor(
+    request: Request,
+    rows_total: int,
+    extra: dict,
+    body: list,
+    page: int | None,
+    per_page: int,
+    offset: int,
+) -> Response:
+    """:func:`_paged` for the one listing real pages by cursor rather than by offset — see
+    :func:`backlot.pagination.github_cursor_link_header`."""
+    link = github_cursor_link_header(
+        _page_base_url(request), extra, page, per_page, rows_total, offset
+    )
+    return _link_response(link, body)
 
 
 def _echo(request: Request, **params) -> dict:
@@ -308,8 +406,8 @@ def _echo(request: Request, **params) -> dict:
     handler applied is not one the caller asked for: echoing `state`'s `open` narrows the url a
     paginator follows, dropping the rows a `state=all` walk asked for.
 
-    Filters only. `per_page` is `github_link_header`'s to write, and it writes the effective size
-    whether or not the caller named one, where real omits it for a caller who did not (#126).
+    Filters only. `per_page` is `github_link_header`'s to write, and it applies the same rule to it:
+    the caller's own spelling of the size when they named one, and nothing at all when they did not.
     """
     return {k: v for k, v in params.items() if k in request.query_params}
 
@@ -363,7 +461,14 @@ def _issue_qual_match(row, quals: dict) -> bool:
 
 
 def _search_paged(
-    request: Request, response: Response, q: str, page: int, per_page: int, total: int
+    request: Request,
+    response: Response,
+    q: str,
+    page: int,
+    per_page: int,
+    total: int,
+    *,
+    code: bool = False,
 ) -> None:
     """Carry the RFC5988 `Link` real sends on a search onto ``response``.
 
@@ -372,8 +477,25 @@ def _search_paged(
     what :func:`_paged` already gives every listing on this router. Set on the injected response
     rather than by returning a ``JSONResponse``, so the handler keeps its ``response_model`` and the
     operation keeps the typed schema the MCP bridge reads.
+
+    ``code`` picks the builder, because the two search routes do not share one: `/search/issues`
+    pages by the listings' rules, down to carrying the caller's own spelling of the size, and
+    `/search/code` by its own, which carries the size applied (see
+    :func:`backlot.pagination.github_code_search_link_header`).
     """
-    link = github_link_header(_base_url(request), {"q": q}, page, per_page, total)
+    if code:
+        link = github_code_search_link_header(
+            _page_base_url(request), {"q": q}, page, per_page, total
+        )
+    else:
+        link = github_link_header(
+            _page_base_url(request),
+            {"q": q},
+            page,
+            per_page,
+            total,
+            per_page_param=request.query_params.get("per_page"),
+        )
     if link:
         response.headers["Link"] = link
 
@@ -400,15 +522,18 @@ async def search_issues(
     conn = auth.conn(request)
     ids = auth.visible_ids(request, caller)
     free, quals = _parse_q(q, _GH_ISSUE_QUALS)
-    container = None  # a repo: qualifier narrows to one repo
-    for v in quals.get("repo", []):
-        # Any case, as real takes it: `repo:PSF/Requests is:issue` answers the same 4,173 as the
-        # lowercase spelling (measured 2026-09-04). A name that resolves in NO case still leaves
-        # `container` None, which WIDENS this search to the whole corpus, where `_code_repos`
-        # beside it narrows to nothing and real refuses the query with a 422.
-        spelled = store.container_spelling(conn, "github", v.split("/")[-1])
-        if spelled is not None:
-            container = spelled
+    # _org, not the setting directly: the owner a `repo:` is compared against, and the one in the
+    # URLs these items carry, has to be the one the repo routes accept, or every link a client
+    # follows out of a search hit 404s
+    owner = _org(request)
+    # Any case, as real takes it: `repo:PSF/Requests is:issue` answers the same 4,173 as the
+    # lowercase spelling (measured 2026-09-04). A qualifier that resolves to NOTHING is refused
+    # rather than dropped — dropping it left `container` None, which widened this search to the
+    # whole corpus and answered a client that scoped its search with other repositories' issues.
+    named = _qual_repos(conn, quals, owner, ids)
+    if named is not None and not named:
+        raise _search_unsearchable_repo()
+    container = named[-1] if named else None
     if free:
         cand = store.search_documents(conn, free, "github", ids, limit=10_000, container=container)
     else:
@@ -419,9 +544,6 @@ async def search_issues(
     )
     start = (page - 1) * per_page
     ab = _api_base(request)
-    # _org, not the setting directly: the owner in the URLs these items carry has to be the one the
-    # repo routes accept, or every link a client follows out of a search hit 404s
-    owner = _org(request)
     items = [
         _issue_obj(conn, owner, r["repo"], r, ab, _version(request))
         for r in matched[start : start + per_page]
@@ -496,18 +618,23 @@ def _code_in_targets(quals: dict) -> set[str]:
     return (named & {"file", "path"}) or {"file", "path"}
 
 
-def _code_repos(conn, quals: dict, org: str) -> set[str] | None:
-    """The repos a `repo:` qualifier names, or ``None`` when it names none. Several of them OR, as
-    on real.
+def _qual_repos(conn, quals: dict, org: str, ids) -> list[str] | None:
+    """The corpus spellings a `repo:` qualifier names, in the order named, or ``None`` when the
+    query carries no `repo:` at all. EMPTY when every name it carried resolves to nothing.
 
-    An EMPTY set is a restriction nothing satisfies, and that is the point: a `repo:` naming a repo
-    Backlot does not serve — or one under another owner, which `_validate_path_owner` 404s
-    everywhere else — has to match nothing rather than quietly widening back to the whole corpus and
-    answering with files from a repo the caller did not ask about.
+    Both search routes read the qualifier through here, because a name that resolves for one and
+    not the other is two answers to one question. Resolution is by spelling AND by visibility: a
+    repo the caller cannot see counts as unresolved, which is real's own answer — its 422 for an
+    unsearchable repository covers "does not exist" and "you cannot view it" in one message, so
+    neither answer confirms which.
+
+    An empty list is a restriction nothing satisfies, and that is the point: a `repo:` naming a
+    repo Backlot does not serve — or one under another owner, which `_validate_path_owner` 404s
+    everywhere else — has to be refused rather than quietly widening back to the whole corpus.
     """
     if "repo" not in quals:
         return None
-    names = set()
+    names = []
     for v in quals["repo"]:
         owner, _, name = v.rpartition("/")
         if owner and owner.lower() != org.lower():
@@ -515,9 +642,20 @@ def _code_repos(conn, quals: dict, org: str) -> set[str] | None:
         # The corpus's spelling, from a qualifier in any case — as the owner half is already
         # compared (see :func:`store.container_spelling` for what real answers).
         spelled = store.container_spelling(conn, "github", name)
-        if spelled is not None:
-            names.add(spelled)
+        if spelled is None:
+            continue
+        # `_visible_repos`'s rule for the one name asked about rather than for every repo in the
+        # corpus: a repo with no document this caller can read is not visible to them.
+        if ids is not None and store.count_documents(conn, "github", spelled, ids) == 0:
+            continue
+        names.append(spelled)
     return names
+
+
+def _code_repos(conn, quals: dict, org: str, ids) -> set[str] | None:
+    """:func:`_qual_repos` as the set `search_code` filters on. Several repos OR, as on real."""
+    named = _qual_repos(conn, quals, org, ids)
+    return None if named is None else set(named)
 
 
 # Real's fragment is a couple of hundred characters of the file around the match.
@@ -599,6 +737,36 @@ def _search_validation_failed(field: str) -> HTTPException:
     return exc
 
 
+def _search_unsearchable_repo() -> HTTPException:
+    """Real's 422 for a `repo:` qualifier that names no repository it can search.
+
+    Measured on api.github.com on 2026-09-04: `search/issues?q=repo:psf/ghost-zz-9876` and
+    `repo:someone-else-zz/requests` both answer this body, and so does a repository the token
+    cannot view — one message for all three, which is why :func:`_qual_repos` treats an invisible
+    repo as unresolved. `code` is `invalid` where the missing-parameter 422 says `missing`, the
+    error carries a `message` that one has none, and the `documentation_url` differs from it by a
+    trailing slash — real's, not a typo.
+    """
+    exc = HTTPException(status_code=422, detail="Validation Failed")
+    exc.github_body = {
+        "message": "Validation Failed",
+        "errors": [
+            {
+                "message": (
+                    "The listed users and repositories cannot be searched either because the "
+                    "resources do not exist or you do not have permission to view them."
+                ),
+                "resource": "Search",
+                "field": "q",
+                "code": "invalid",
+            }
+        ],
+        "documentation_url": "https://docs.github.com/v3/search/",
+        "status": "422",
+    }
+    return exc
+
+
 @router.get("/search/code", response_model=GitHubCodeSearch)
 async def search_code(
     request: Request,
@@ -637,10 +805,13 @@ async def search_code(
     ids = auth.visible_ids(request, caller)
     free, quals = _parse_q(q, _GH_CODE_QUALS)
     org = _org(request)
-    repos = _code_repos(conn, quals, org)
-    # A `repo:` that resolved to nothing: no row can satisfy it, so there is nothing to read.
+    repos = _code_repos(conn, quals, org, ids)
+    # A `repo:` that resolved to nothing: no row can satisfy it, so there is nothing to read. Real
+    # answers this route 200 rather than `/search/issues`'s 422, and says so in `incomplete_results`
+    # — `search/code?q=repo:psf/ghost-zz-9876+def` is `total_count: 0` with the flag TRUE, where a
+    # name that resolves beside it makes it false again (measured 2026-09-04).
     if repos is not None and not repos:
-        return {"total_count": 0, "incomplete_results": False, "items": []}
+        return {"total_count": 0, "incomplete_results": True, "items": []}
     one = next(iter(repos)) if repos and len(repos) == 1 else None
     targets = _code_in_targets(quals)
     terms = _code_terms(free)
@@ -679,7 +850,7 @@ async def search_code(
         if want_matches:
             hit["text_matches"] = _text_matches(row["content"], hit["url"], terms)
         items.append(hit)
-    _search_paged(request, response, q, page, per_page, len(matched))
+    _search_paged(request, response, q, page, per_page, len(matched), code=True)
     return {"total_count": len(matched), "incomplete_results": False, "items": items}
 
 
@@ -793,6 +964,13 @@ async def list_issues(
     page: PageParam = None,
     per_page: PageParam = None,
 ):
+    """The repo's issues AND pulls, cursor-paged the way real pages this one listing.
+
+    `after`/`before` are read off the query rather than declared: GitHub's published OpenAPI
+    declares neither for this operation, so a declared parameter would put in Backlot's contract —
+    and in the tool `backlot mcp` builds from it — an argument the vendor's spec does not have. The
+    live API both emits and honours them (see :func:`backlot.pagination.github_cursor_offset`).
+    """
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -805,15 +983,27 @@ async def list_issues(
         for r in store.list_documents(conn, "github", repo, ids, limit=10_000, state=state_filter)
         if r["kind"] != "file"
     ]
+    asserted = page  # kept: the page urls carry the number the caller claimed, or none at all
     page, per_page = clamp_page(
         page, per_page, get_settings().default_page_size, get_settings().max_page_size
     )
-    start = (page - 1) * per_page
+    q = request.query_params
+    start = github_cursor_offset(page, per_page, q.get("after"), q.get("before"))
     rows = all_rows[start : start + per_page]
+    # A cursor and no page of 2 or more asserted beside it is the one case real writes no page
+    # number, so `None` says exactly that (see `github_cursor_link_header`). Without a cursor the
+    # page is the caller's own position and real writes it.
+    cursored = "after" in q or "before" in q
+    if not cursored:
+        link_page = page
+    else:
+        link_page = asserted if asserted and asserted >= 2 else None
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
     body = [_issue_obj(conn, owner, repo, r, ab, _version(request)) for r in rows]
-    return _paged(request, len(all_rows), _echo(request, state=state), body, page, per_page)
+    return _paged_by_cursor(
+        request, len(all_rows), _echo(request, state=state), body, link_page, per_page, start
+    )
 
 
 # --- a comment by its own id ----------------------------------------------------
@@ -883,20 +1073,30 @@ async def get_issue(owner: str, repo: str, number: int, request: Request):
 
 
 @router.get("/repos/{owner}/{repo}/issues/{number}/comments")
-async def issue_comments(owner: str, repo: str, number: int, request: Request):
+async def issue_comments(
+    owner: str,
+    repo: str,
+    number: int,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     row = _resolve(conn, repo, number, ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
+    # anchored=False: a line-anchored review comment belongs to /pulls/{n}/comments, and serving it
+    # here too would duplicate it under a resource that means something else
+    rows = store.github_comments(conn, row["repo"], row["number"], anchored=False)
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     ab = _api_base(request)
-    return [
-        _gh_comment(owner, repo, number, c, ab)
-        # anchored=False: a line-anchored review comment belongs to /pulls/{n}/comments, and
-        # serving it here too would duplicate it under a resource that means something else
-        for c in store.github_comments(conn, row["repo"], row["number"], anchored=False)
-    ]
+    body = [_gh_comment(owner, repo, number, c, ab) for c in rows[start : start + per_page]]
+    return _paged(request, len(rows), {}, body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/pulls")
@@ -961,7 +1161,14 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/reviews")
-async def pull_reviews(owner: str, repo: str, number: int, request: Request):
+async def pull_reviews(
+    owner: str,
+    repo: str,
+    number: int,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -971,8 +1178,15 @@ async def pull_reviews(owner: str, repo: str, number: int, request: Request):
     ab = _api_base(request)
     number = _issue_number(row)
     sha = hashlib.sha1(_seed(row).encode()).hexdigest()[:40]
+    reviews = store.jcol(row, "reviews")
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     out = []
-    for i, rv in enumerate(store.jcol(row, "reviews"), start=1):
+    # the enumeration counts from the review's place in the WHOLE listing, not in the page: `i`
+    # seeds the id and the timestamp, so a review's identity has to stay put whatever page it is on
+    for i, rv in enumerate(reviews[start : start + per_page], start=start + 1):
         rid = synth.github_number(_seed(row) + str(i))
         pr_url = f"{ab}/repos/{owner}/{repo}/pulls/{number}"
         out.append(
@@ -995,11 +1209,18 @@ async def pull_reviews(owner: str, repo: str, number: int, request: Request):
                 },
             }
         )
-    return out
+    return _paged(request, len(reviews), {}, out, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/comments")
-async def pull_review_comments(owner: str, repo: str, number: int, request: Request):
+async def pull_review_comments(
+    owner: str,
+    repo: str,
+    number: int,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     """A pull's REVIEW comments — the line-anchored ones. A different resource from both
     ``/issues/{n}/comments`` (the conversation) and ``/pulls/{n}/reviews`` (approve/request-changes
     events): a corpus marks a comment as this one by giving it a ``path``.
@@ -1016,18 +1237,31 @@ async def pull_review_comments(owner: str, repo: str, number: int, request: Requ
         raise HTTPException(status_code=404, detail="Not Found")
     src = _RepoFiles(conn, repo, ids)
     resolved = _resolved_review_comments(conn, row, src)
-    if not resolved:
-        return []
-    ab = _api_base(request)
-    # The same changeset this pull's diff serves, so a comment's `diff_hunk` and the diff agree.
-    patches = {
-        f["filename"]: f.get("patch") for f in _pr_files(conn, owner, repo, row, ab, ids, src)
-    }
-    return [_gh_review_comment(owner, repo, number, row, c, f, patches, ab) for c, f in resolved]
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
+    window = resolved[start : start + per_page]
+    body = []
+    if window:  # the pull may have no review comments, or the page be past the ones it has
+        ab = _api_base(request)
+        # The same changeset this pull's diff serves, so a comment's `diff_hunk` and the diff agree.
+        patches = {
+            f["filename"]: f.get("patch") for f in _pr_files(conn, owner, repo, row, ab, ids, src)
+        }
+        body = [_gh_review_comment(owner, repo, number, row, c, f, patches, ab) for c, f in window]
+    return _paged(request, len(resolved), {}, body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/commits")
-async def pull_commits(owner: str, repo: str, number: int, request: Request):
+async def pull_commits(
+    owner: str,
+    repo: str,
+    number: int,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     """The pull's commits — one, the head, which is what the pull object already claims.
 
     Here because ``_links.commits``/``commits_url`` name it: a field whose whole purpose is to be
@@ -1049,7 +1283,7 @@ async def pull_commits(owner: str, repo: str, number: int, request: Request):
     # serves both because they are different things: one signed the commit, one has an account.
     git_author = {"name": author["login"], "email": row["author_email"], "date": created}
     tree_sha = _repo_tree_sha(repo)
-    return [
+    commits = [
         {
             "sha": sha,
             "node_id": synth.node_id("Commit", sha[:12]),
@@ -1068,10 +1302,22 @@ async def pull_commits(owner: str, repo: str, number: int, request: Request):
             "parents": [],  # no history is kept, so the head has no parent to name
         }
     ]
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
+    return _paged(request, len(commits), {}, commits[start : start + per_page], page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/statuses/{sha:path}")
-async def commit_statuses(owner: str, repo: str, sha: str, request: Request):
+async def commit_statuses(
+    owner: str,
+    repo: str,
+    sha: str,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     """Statuses for a commit: always empty, and empty is the honest answer rather than a stub.
 
     A corpus records no CI, and real GitHub answers `[]` for a sha nobody reported a status on — so
@@ -1082,6 +1328,10 @@ async def commit_statuses(owner: str, repo: str, sha: str, request: Request):
     `/statuses/main` answers `[]` and `/statuses/totally-made-up` 404s (measured on psf/requests) —
     the same question :func:`_commit_ish` answers for `/commits` and `git/trees`. The ref is the
     trailing path for the same reason it is there: `/statuses/bug/5671` resolves on real.
+
+    The page parameters change no body while the listing is empty; they are here because real accepts
+    them — `kubernetes/kubernetes` at `?per_page=1` answers one status with a `Link` (measured
+    2026-09-04) — and the contract is what `backlot mcp` hands an agent as a tool.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -1089,7 +1339,10 @@ async def commit_statuses(owner: str, repo: str, sha: str, request: Request):
     _require_repo(conn, repo, ids)  # a repo this caller cannot see must not answer for its shas
     if sha.strip("/") not in _commit_ish(conn, owner, repo, ids):
         raise HTTPException(status_code=404, detail="Not Found")
-    return []
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    return _paged(request, 0, {}, [], page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/files")
@@ -1667,7 +1920,13 @@ async def get_readme(owner: str, repo: str, request: Request, ref: str | None = 
 
 
 @router.get("/repos/{owner}/{repo}/collaborators")
-async def list_collaborators(owner: str, repo: str, request: Request):
+async def list_collaborators(
+    owner: str,
+    repo: str,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -1675,8 +1934,13 @@ async def list_collaborators(owner: str, repo: str, request: Request):
     emails = store.container_member_emails(conn, "github", repo)
     if emails is None:
         emails = store.all_user_emails(conn)
+    emails = sorted(emails)
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     ab = _api_base(request)
-    return [
+    body = [
         {
             **_gh_user(e, ab),
             "role_name": "read",
@@ -1688,19 +1952,26 @@ async def list_collaborators(owner: str, repo: str, request: Request):
                 "pull": True,
             },
         }
-        for e in sorted(emails)
+        for e in emails[start : start + per_page]
     ]
+    return _paged(request, len(emails), {}, body, page, per_page)
 
 
 @router.get("/orgs/{org}/teams")
-async def list_teams(org: str, request: Request):
+async def list_teams(
+    org: str, request: Request, page: PageParam = None, per_page: PageParam = None
+):
     conn = auth.conn(request)
     _require(request)
     rows = conn.execute(
         "SELECT id, display_name FROM principals WHERE type = 'group' ORDER BY id"
     ).fetchall()
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     ab = _api_base(request)
-    return [
+    body = [
         {
             "id": synth.github_user_id(r["id"]),
             "node_id": synth.node_id("Team", synth.github_user_id(r["id"])),
@@ -1713,27 +1984,39 @@ async def list_teams(org: str, request: Request):
             "url": f"{ab}/orgs/{org}/teams/{r['id']}",
             "html_url": f"https://github.com/orgs/{org}/teams/{r['id']}",
         }
-        for r in rows
+        for r in rows[start : start + per_page]
     ]
+    return _paged(request, len(rows), {}, body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/teams")
-async def list_repo_teams(owner: str, repo: str, request: Request):
+async def list_repo_teams(
+    owner: str,
+    repo: str,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
     c = store.get_container(conn, "github", repo)
-    if not c["group_id"]:
-        return []
-    return [
-        {
-            "id": synth.github_user_id(c["group_id"]),
-            "name": c["group_id"],
-            "slug": c["group_id"],
-            "permission": "pull",
-        }
-    ]
+    teams = []
+    if c["group_id"]:
+        teams.append(
+            {
+                "id": synth.github_user_id(c["group_id"]),
+                "name": c["group_id"],
+                "slug": c["group_id"],
+                "permission": "pull",
+            }
+        )
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
+    return _paged(request, len(teams), {}, teams[start : start + per_page], page, per_page)
 
 
 # --- repo file tree / contents / blobs ------------------------------------------

@@ -10,12 +10,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
+from urllib.parse import quote
 
 import yaml
 
 import pytest
 
-from backlot import store
+from backlot import store, synth
+from backlot.config import get_settings
+from backlot.pagination import encode_cursor
 from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
 
 
@@ -962,6 +966,66 @@ def test_github_ref_listings_page_like_every_other_listing(
     assert "Link" not in c.get(url, headers=gh_admin_h).headers
 
 
+@pytest.mark.parametrize(
+    "route, total",
+    [
+        ("repos/{org}/gateway/issues/{gw}/comments", 1),
+        ("repos/{org}/diffable/pulls/{declared}/comments", 2),
+        ("repos/{org}/gateway/pulls/{gw}/reviews", 1),
+        ("repos/{org}/gateway/pulls/{gw}/commits", 1),
+        ("repos/{org}/codebase/collaborators", 8),
+        ("orgs/{org}/teams", 12),
+        ("repos/{org}/codebase/teams", 1),
+        ("repos/{org}/gateway/statuses/{sha}", 0),
+    ],
+)
+def test_github_sub_resource_listings_page_and_answer_an_empty_page(
+    gh_client, gh_admin_h, gh_org, route, total
+):
+    """Every list route here honours `page`/`per_page` and stops at the end of the listing.
+
+    A listing does not have to span a page for a client to see the difference: real answers `[]`
+    past the last page where a route that ignores `page` serves its first page forever. Measured on
+    api.github.com on 2026-09-04 — `psf/requests/pulls/7616/commits` holds one commit, and
+    `?per_page=1&page=1` answers it where `page=99` answers nothing; the six collaborators of a
+    repository the author administers answer the same way, and `kubernetes/kubernetes`'s legacy
+    `/statuses/{sha}` pages at `per_page=1` with a `Link`. So a walk that increments `page` until
+    the answer is empty — the way a listing that reports no total is paged — terminates on real. It
+    did not here, and `/pulls/{n}/commits` and `/repos/{o}/{r}/teams` were the worst of it: their
+    single item repeated without end.
+    """
+    c, _ = gh_client
+    gw = synth.github_number("gh-pr-1")
+    sha = c.get(f"/github/repos/{gh_org}/gateway/pulls/{gw}", headers=gh_admin_h).json()["head"][
+        "sha"
+    ]
+    url = "/github/" + route.format(
+        org=gh_org, gw=gw, declared=synth.github_number("gh-diff-pr-declared"), sha=sha
+    )
+    full = c.get(url, headers=gh_admin_h).json()
+    assert len(full) == total, "the listing this walk is measured against"
+
+    walked, page = [], 1
+    while page <= total + 2:
+        body = c.get(url, headers=gh_admin_h, params={"per_page": 1, "page": page}).json()
+        if not body:
+            break
+        assert len(body) == 1, f"page {page} served more than the per_page asked for"
+        walked += body
+        page += 1
+    else:
+        pytest.fail("no page of this listing is empty, so a walk of it never terminates")
+    assert walked == full  # every item once, in the order the unpaged listing has them
+
+    first = c.get(url, headers=gh_admin_h, params={"per_page": 1})
+    if total > 1:
+        rels = _link_rels(first.headers["Link"])
+        assert set(rels) == {"next", "last"}
+        assert rels["last"].endswith(f"page={total}")
+    else:
+        assert "Link" not in first.headers  # a single page carries none, as real sends none
+
+
 @pytest.mark.parametrize("route", ["pulls", "issues"])
 def test_github_a_page_url_echoes_only_the_filters_the_caller_sent(
     gh_client, gh_admin_h, gh_org, route
@@ -1664,13 +1728,253 @@ def _link_rels(header: str) -> dict:
     return rels
 
 
+def test_github_the_issue_listing_pages_by_cursor_not_by_offset(gh_client, gh_admin_h, gh_org):
+    """`/repos/{o}/{r}/issues` is the one listing real pages by CURSOR, and its header says so: only
+    `next` and `prev`, each url carrying an opaque `after`/`before` beside the page number, and no
+    header at all past the rows.
+
+    Measured on api.github.com on 2026-09-04 against a repository with 12 open issues at
+    `per_page=5` — page 1 answers `next` alone, page 2 `next, prev`, page 3 `prev` alone, pages 4
+    and 99 nothing — where `/pulls` on the same server answers all four rels from `page=2`. The
+    cursor is what selects the window: `?page=50` carrying page 1's `after` answers page 2's rows.
+    So `rel="last"`, which every other listing here sends, would tell a client the size of a
+    listing real never sizes for it.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/diffable/issues"
+    args = {"state": "all", "per_page": 1}
+    full = c.get(url, headers=gh_admin_h, params={"state": "all"}).json()
+    assert len(full) > 2, "the walk this test measures needs more rows than a page holds"
+
+    first = c.get(url, headers=gh_admin_h, params=args)
+    assert set(_link_rels(first.headers["Link"])) == {"next"}
+    assert f"after={quote(encode_cursor(1), safe='')}" in first.headers["Link"]
+
+    second = c.get(
+        _link_rels(first.headers["Link"])["next"].split("testserver", 1)[1], headers=gh_admin_h
+    )
+    assert second.json() == full[1:2]
+    assert set(_link_rels(second.headers["Link"])) == {"next", "prev"}
+
+    # the cursor decides the window, not the page carried beside it
+    ahead = c.get(url, headers=gh_admin_h, params={**args, "page": 50, "after": encode_cursor(1)})
+    assert ahead.json() == full[1:2]
+
+    # the last row's page keeps `prev` alone, and the page after it carries no header
+    last = c.get(url, headers=gh_admin_h, params={**args, "page": len(full)})
+    assert set(_link_rels(last.headers["Link"])) == {"prev"}
+    beyond = c.get(url, headers=gh_admin_h, params={**args, "page": len(full) + 1})
+    assert beyond.json() == [] and "Link" not in beyond.headers
+
+
+def test_github_a_page_url_names_the_repository_and_the_org_by_id(gh_client, gh_admin_h, gh_org):
+    """Real's page urls name a repository and an organization by ID, where the resource urls in the
+    very same response keep the login form.
+
+    Measured on api.github.com on 2026-09-04: `/repos/brekkylab/enterprise-mock/collaborators` at
+    `per_page=1` links `/repositories/1287077005/collaborators?per_page=1&page=2`,
+    `/orgs/brekkylab/repos` links `/organizations/130592615/repos?…`, and a comment fetched in the
+    same breath still carries `url: …/repos/psf/requests/issues/comments/…`. `/user/repos` keeps its
+    own path — it names no owner to swap for an id.
+
+    The id form has to RESOLVE, or the header hands a client a url it cannot follow: real answers
+    200 on `/repositories/{id}/collaborators` directly, and so does Backlot (see
+    ``resolve_github_id_paths`` in ``backlot.main``).
+    """
+    c, _ = gh_client
+    rid, oid = synth.github_user_id("diffable"), synth.github_user_id(gh_org)
+    url = f"/github/repos/{gh_org}/diffable/pulls"
+    args = {"state": "all", "per_page": 1}
+
+    nxt = _link_rels(c.get(url, headers=gh_admin_h, params=args).headers["Link"])["next"]
+    assert f"/github/repositories/{rid}/pulls?" in nxt
+    second = c.get(nxt.split("testserver", 1)[1], headers=gh_admin_h)
+    assert second.json() == c.get(url, headers=gh_admin_h, params={**args, "page": 2}).json()
+    # a resource url in that same body keeps the owner/repo form
+    assert f"/repos/{gh_org}/diffable/" in second.json()[0]["url"]
+
+    org_next = _link_rels(
+        c.get(f"/github/orgs/{gh_org}/repos", headers=gh_admin_h, params={"per_page": 1}).headers[
+            "Link"
+        ]
+    )["next"]
+    assert f"/github/organizations/{oid}/repos?" in org_next
+    assert c.get(org_next.split("testserver", 1)[1], headers=gh_admin_h).status_code == 200
+
+    # the listing with no owner in its path is left alone, and an id that names nothing 404s
+    user_next = _link_rels(
+        c.get("/github/user/repos", headers=gh_admin_h, params={"per_page": 1}).headers["Link"]
+    )["next"]
+    assert "/github/user/repos?" in user_next
+    assert c.get(f"/github/repositories/{rid + 1}/pulls", headers=gh_admin_h).status_code == 404
+
+    # The id is the CORPUS's, not one minted from the spelling the caller used. Both segments
+    # resolve in any case, so a page url built from the request path would name an id nothing
+    # holds — and 404 the client that followed it.
+    for path in (
+        f"/github/repos/{gh_org}/DIFFABLE/pulls",
+        f"/github/repos/{gh_org.upper()}/diffable/pulls",
+    ):
+        loud = _link_rels(c.get(path, headers=gh_admin_h, params=args).headers["Link"])["next"]
+        assert f"/github/repositories/{rid}/pulls?" in loud, path
+        assert c.get(loud.split("testserver", 1)[1], headers=gh_admin_h).status_code == 200, path
+    loud_org = _link_rels(
+        c.get(
+            f"/github/orgs/{gh_org.upper()}/repos", headers=gh_admin_h, params={"per_page": 1}
+        ).headers["Link"]
+    )["next"]
+    assert f"/github/organizations/{oid}/repos?" in loud_org
+    assert c.get(loud_org.split("testserver", 1)[1], headers=gh_admin_h).status_code == 200
+
+
+def test_github_an_id_path_answers_in_the_order_the_named_path_does(gh_client, gh_admin_h, gh_org):
+    """An id that names nothing is refused the way a name that names nothing is, and in the same
+    order: credentials first, existence second, so that no answer here tells an unauthenticated
+    caller which ids the corpus holds (`canonical_id_path` says why that matters)."""
+    c, _ = gh_client
+    held, absent = synth.github_user_id("diffable"), synth.github_user_id("diffable") + 1
+    for path in (
+        f"/github/repositories/{held}/pulls",
+        f"/github/repositories/{absent}/pulls",
+        f"/github/repos/{gh_org}/diffable/pulls",
+        f"/github/repos/{gh_org}/nosuchrepo/pulls",
+    ):
+        assert c.get(path).status_code == 401, path
+    assert c.get(f"/github/repositories/{held}/pulls", headers=gh_admin_h).status_code == 200
+    assert c.get(f"/github/repositories/{absent}/pulls", headers=gh_admin_h).status_code == 404
+
+
+def test_github_an_id_two_repos_share_names_neither(tmp_path):
+    """A corpus that holds both halves of a `github_user_id` collision — the ids are not unique,
+    see `canonical_id_path` — answers for each name and 404s the id they share, rather
+    than walking a client onto whichever of the two sorts first."""
+    assert synth.github_user_id("repo485") == synth.github_user_id("repo4107")
+    shared = synth.github_user_id("repo485")
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": f"gh-{name}",
+                "repo": name,
+                "subtype": "issue",
+                "title": "hi",
+                "content": "body",
+                "visibility": "public",
+                "author_email": "ava@acme.com",
+            }
+            for name in ("repo485", "repo4107")
+        ],
+        name="collide.jsonl",
+    )
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        org = c.get("/_meta/users").json()["org"]
+        for name in ("repo485", "repo4107"):
+            assert c.get(f"/github/repos/{org}/{name}/issues", headers=h).status_code == 200, name
+        assert c.get(f"/github/repositories/{shared}/issues", headers=h).status_code == 404
+
+
+def test_github_only_the_offset_surfaces_write_the_size_the_caller_spelt(
+    gh_client, gh_admin_h, monkeypatch
+):
+    """Which surfaces carry the caller's own spelling of `per_page` and which carry the size they
+    applied. `/search/issues` and the listings carry the caller's; `/search/code` carries the size
+    it applied, as the cursor listing does.
+
+    Measured on api.github.com on 2026-09-04: `/search/code?q=…&per_page=500` on 1,808 hits links
+    `per_page=100`, its own cap, and `?per_page=0` links `per_page=30`, where
+    `/search/issues?…&per_page=500` links `per_page=500` and `/tags?per_page=abc` links
+    `per_page=abc`. The cap is overridden here so Backlot's own applied size differs from the value
+    sent, which is what tells the two rules apart at all.
+    """
+    c, _ = gh_client
+    monkeypatch.setenv("BACKLOT_MAX_PAGE_SIZE", "2")
+    get_settings.cache_clear()
+    try:
+        code = c.get(
+            "/github/search/code", headers=gh_admin_h, params={"q": "extension:md", "per_page": 500}
+        )
+        issues = c.get(
+            "/github/search/issues",
+            headers=gh_admin_h,
+            params={"q": "repo:diffable is:pr", "per_page": 500},
+        )
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+    assert "per_page=2" in _link_rels(code.headers["Link"])["next"]
+    assert "per_page=500" in _link_rels(issues.headers["Link"])["next"]
+
+
+def test_github_the_issue_listing_writes_a_page_number_only_where_one_was_claimed(
+    gh_client, gh_admin_h, gh_org
+):
+    """Which requests get a page number in their cursor urls, which is the branch the route decides
+    and the helper only carries out.
+
+    Measured on api.github.com on 2026-09-04 at `per_page=2`: `?after=C` and `?page=1&after=C` both
+    answer `next` and `prev` with no `page` in either url, where `?page=3&after=C` answers next=4
+    and prev=2 and a request with no cursor at all answers next=2.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/diffable/issues"
+    args = {"state": "all", "per_page": 1, "after": encode_cursor(1)}
+
+    def pages(params):
+        rels = _link_rels(c.get(url, headers=gh_admin_h, params=params).headers["Link"])
+        return {
+            rel: re.search(r"[?&]page=(\d+)", link).group(1) if "&page=" in link else None
+            for rel, link in rels.items()
+        }
+
+    assert pages(args) == {"next": None, "prev": None}
+    assert pages({**args, "page": 1}) == {"next": None, "prev": None}
+    assert pages({**args, "page": 3}) == {"next": "4", "prev": "2"}
+    assert pages({"state": "all", "per_page": 1}) == {"next": "2"}
+
+
+def test_github_a_page_url_omits_a_page_size_the_caller_did_not_send(
+    gh_client, gh_admin_h, gh_org, monkeypatch
+):
+    """A `per_page` the handler defaulted is not one the caller sent, so the page urls leave it out
+    — the rule `_paged` already applies to a listing's filters, reaching the one parameter it
+    builds itself.
+
+    Real omits it: `psf/requests/tags` with no query links `?page=2` and `?page=6`, six pages of
+    161 tags at its own default of 30, with no `per_page` anywhere, where `?per_page=1` links
+    `per_page=1&page=2`. Search omits it the same way (measured on api.github.com on 2026-09-04).
+
+    The default page size is overridden here because no listing in the corpus is longer than the
+    100 rows Backlot defaults to, so nothing in it spans a page without a `per_page` to make it.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/diffable/pulls"
+    monkeypatch.setenv("BACKLOT_DEFAULT_PAGE_SIZE", "1")
+    get_settings.cache_clear()
+    try:
+        unsent = c.get(url, headers=gh_admin_h, params={"state": "all"})
+        nxt = _link_rels(unsent.headers["Link"])["next"]
+        assert nxt.endswith("?state=all&page=2") and "per_page" not in nxt
+        sent = c.get(url, headers=gh_admin_h, params={"state": "all", "per_page": 1})
+        assert "per_page=1&page=2" in _link_rels(sent.headers["Link"])["next"]
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+
 @pytest.mark.parametrize(
-    "path, q",
-    [("/github/search/code", "extension:md"), ("/github/search/issues", "repo:diffable is:pr")],
+    "path, q, page_one",
+    [
+        ("/github/search/code", "extension:md", {"next", "first", "last"}),
+        ("/github/search/issues", "repo:diffable is:pr", {"next", "last"}),
+    ],
 )
-def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q):
-    """Real pages a search response with an RFC5988 `Link`, exactly as it pages a listing, and
-    sends none at all when the results fit on one page.
+def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q, page_one):
+    """Real pages a search response with an RFC5988 `Link` and sends none at all when the results
+    fit on one page — but the two search routes do not page alike, and page 1 is where it shows:
+    `/search/issues` answers `next, last` as every listing here does, `/search/code` `next, first,
+    last` (:func:`backlot.pagination.github_code_search_link_header` for the rest of its rules).
 
     A search envelope reports `total_count`, so the header is not the only way to learn there is
     more — it is how a client that FOLLOWS links pages without composing a URL of its own, which is
@@ -1680,7 +1984,7 @@ def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q):
     first = c.get(path, headers=gh_admin_h, params={"q": q, "per_page": 2, "page": 1})
     total = first.json()["total_count"]
     assert total > 2, "the fixture has to span more than one page for this to mean anything"
-    assert set(_link_rels(first.headers["Link"])) == {"next", "last"}
+    assert set(_link_rels(first.headers["Link"])) == page_one
 
     # following `next` lands on the same query's second page -- the round-trip the encoding is for
     nxt = _link_rels(first.headers["Link"])["next"]
@@ -2261,6 +2565,52 @@ def test_github_answers_the_corpus_spelling_whatever_case_was_asked_for(
     bob = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}
     assert c.get(f"/github/repos/{gh_org}/VAULT", headers=bob).status_code == 404
     assert c.get(f"/github/repos/{gh_org}/VAULT", headers=gh_admin_h).status_code == 200
+
+
+def test_github_a_repo_qualifier_naming_nothing_is_refused_rather_than_widened(
+    gh_client, gh_admin_h, gh_org, gh_user_tokens
+):
+    """A `repo:` that resolves to no repository is real's 422 on `/search/issues`, not the whole
+    corpus's issues — and `incomplete_results` on `/search/code`, not a silent zero.
+
+    Measured on api.github.com on 2026-09-04. `search/issues?q=repo:psf/ghost-zz-9876` and
+    `repo:someone-else-zz/requests` both answer 422 with `code: "invalid"` and "The listed users and
+    repositories cannot be searched…", which is also the answer for a repository the token cannot
+    see — so the body never says which of the two it was, and neither does this. The refusal is for
+    a qualifier that resolves to NOTHING: `repo:psf/requests repo:psf/ghost-zz-9876 timeout` is a
+    200 answering psf/requests' 846 items.
+
+    `search/code` answers those same queries 200 with `total_count: 0` and
+    `incomplete_results: true`, and `false` for the mix — the one field its answer differs in.
+    """
+    c, _ = gh_client
+    issues, code = "/github/search/issues", "/github/search/code"
+
+    def ask(path, q, headers=gh_admin_h):
+        r = c.get(path, headers=headers, params={"q": q})
+        return r.status_code, r.json()
+
+    assert ask(issues, "repo:gateway")[1]["total_count"] > 0  # a name that resolves still narrows
+
+    for q in ("repo:ghost", f"repo:{gh_org}/ghost", "repo:someone-else/gateway"):
+        status, body = ask(issues, q)
+        assert status == 422, q
+        assert body["errors"][0]["code"] == "invalid" and body["errors"][0]["field"] == "q"
+        assert body["errors"][0]["message"].startswith("The listed users and repositories")
+        assert body["documentation_url"] == "https://docs.github.com/v3/search/"
+    # one that resolves beside one that does not is not refused
+    assert ask(issues, "repo:gateway repo:ghost")[1]["total_count"] > 0
+
+    # a repository the caller cannot see answers the refusal too, so the 422 does not confirm it
+    bob = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}
+    assert ask(issues, "repo:vault", bob)[0] == 422
+    assert ask(issues, "repo:vault")[0] == 200
+
+    for q in ("repo:ghost line", "repo:someone-else/codebase line"):
+        status, body = ask(code, q)
+        assert (status, body["total_count"], body["incomplete_results"]) == (200, 0, True), q
+    assert ask(code, "repo:codebase repo:ghost line")[1]["incomplete_results"] is False
+    assert ask(code, "repo:vault line", bob)[1]["incomplete_results"] is True
 
 
 # --- X-GitHub-Api-Version negotiation -----------------------------------------
@@ -3033,6 +3383,19 @@ def test_github_list_issues_documents_state_param(client):
     params = {p["name"]: p for p in op.get("parameters", [])}
     assert "state" in params and {"page", "per_page"} <= set(params)
     assert params["state"]["schema"].get("default") == "open"
+
+
+def test_github_the_statuses_listing_declares_the_page_parameters_real_accepts(client):
+    """`/statuses/{sha}` answers `[]` on every page on both sides, so its page parameters change no
+    body a client can read — they change the contract, which is what `backlot mcp` hands an agent as
+    a tool. Real accepts them: measured on api.github.com on 2026-09-04, a `kubernetes/kubernetes`
+    pull head at `?per_page=1` answers one status with a `Link` carrying `rel="next"`. GitHub's
+    published OpenAPI declares this legacy route not at all, so no baseline entry covers it and the
+    contract is the only place the divergence shows.
+    """
+    path = "/github/repos/{owner}/{repo}/statuses/{sha}"
+    op = client.get("/openapi.json").json()["paths"][path]["get"]
+    assert {"page", "per_page"} <= {p["name"] for p in op.get("parameters", [])}
 
 
 def test_github_search_still_filters_by_q(client, admin_h):

@@ -282,9 +282,22 @@ input IssueLabelFilter {
   or: [IssueLabelFilter!]
 }
 
+# The rules below are measured, not read off the docs: `linear_filters._labels_filter` carries the
+# key precedence with its cells, `linear_filters._labels_predicate` the two quantifiers.
+"""
+Linear's quantifiers over a collection are not the textbook ones: `every` with a positive predicate
+needs at least one label, and `some` with a negative one (`neq`, `nin`, …) also answers an issue with
+no labels. The keys do not AND together: `and` answers if present, else `or`, else the first present
+of `length`, `every`, `some`, `name`; only `null` ANDs, and only beside those four. `length` counts
+the labels; `null: true` matches nothing, since an issue's label collection is never null; a bare
+`name` reads as `some`.
+"""
 input IssueLabelCollectionFilter {
   some: IssueLabelFilter
   every: IssueLabelFilter
+  name: StringComparator
+  length: NumberComparator
+  null: Boolean
   and: [IssueLabelCollectionFilter!]
   or: [IssueLabelCollectionFilter!]
 }

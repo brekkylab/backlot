@@ -962,6 +962,68 @@ def test_github_ref_listings_page_like_every_other_listing(
     assert "Link" not in c.get(url, headers=gh_admin_h).headers
 
 
+@pytest.mark.parametrize(
+    "route, total",
+    [
+        ("repos/{org}/gateway/issues/{gw}/comments", 1),
+        ("repos/{org}/diffable/pulls/{declared}/comments", 2),
+        ("repos/{org}/gateway/pulls/{gw}/reviews", 1),
+        ("repos/{org}/gateway/pulls/{gw}/commits", 1),
+        ("repos/{org}/codebase/collaborators", 8),
+        ("orgs/{org}/teams", 12),
+        ("repos/{org}/codebase/teams", 1),
+        ("repos/{org}/gateway/statuses/{sha}", 0),
+    ],
+)
+def test_github_sub_resource_listings_page_and_answer_an_empty_page(
+    gh_client, gh_admin_h, gh_org, route, total
+):
+    """Every list route here honours `page`/`per_page` and stops at the end of the listing.
+
+    A listing does not have to span a page for a client to see the difference: real answers `[]`
+    past the last page where a route that ignores `page` serves its first page forever. Measured on
+    api.github.com on 2026-09-04 — `psf/requests/pulls/7616/commits` holds one commit, and
+    `?per_page=1&page=1` answers it where `page=99` answers nothing; the six collaborators of a
+    repository the author administers answer the same way, and `kubernetes/kubernetes`'s legacy
+    `/statuses/{sha}` pages at `per_page=1` with a `Link`. So a walk that increments `page` until
+    the answer is empty — the way a listing that reports no total is paged — terminates on real. It
+    did not here, and `/pulls/{n}/commits` and `/repos/{o}/{r}/teams` were the worst of it: their
+    single item repeated without end.
+    """
+    c, _ = gh_client
+    from backlot import synth
+
+    gw = synth.github_number("gh-pr-1")
+    sha = c.get(f"/github/repos/{gh_org}/gateway/pulls/{gw}", headers=gh_admin_h).json()["head"][
+        "sha"
+    ]
+    url = "/github/" + route.format(
+        org=gh_org, gw=gw, declared=synth.github_number("gh-diff-pr-declared"), sha=sha
+    )
+    full = c.get(url, headers=gh_admin_h).json()
+    assert len(full) == total, "the listing this walk is measured against"
+
+    walked, page = [], 1
+    while page <= total + 2:
+        body = c.get(url, headers=gh_admin_h, params={"per_page": 1, "page": page}).json()
+        if not body:
+            break
+        assert len(body) == 1, f"page {page} served more than the per_page asked for"
+        walked += body
+        page += 1
+    else:
+        pytest.fail("no page of this listing is empty, so a walk of it never terminates")
+    assert walked == full  # every item once, in the order the unpaged listing has them
+
+    first = c.get(url, headers=gh_admin_h, params={"per_page": 1})
+    if total > 1:
+        rels = _link_rels(first.headers["Link"])
+        assert set(rels) == {"next", "last"}
+        assert rels["last"].endswith(f"page={total}")
+    else:
+        assert "Link" not in first.headers  # a single page carries none, as real sends none
+
+
 @pytest.mark.parametrize("route", ["pulls", "issues"])
 def test_github_a_page_url_echoes_only_the_filters_the_caller_sent(
     gh_client, gh_admin_h, gh_org, route
@@ -3033,6 +3095,19 @@ def test_github_list_issues_documents_state_param(client):
     params = {p["name"]: p for p in op.get("parameters", [])}
     assert "state" in params and {"page", "per_page"} <= set(params)
     assert params["state"]["schema"].get("default") == "open"
+
+
+def test_github_the_statuses_listing_declares_the_page_parameters_real_accepts(client):
+    """`/statuses/{sha}` answers `[]` on every page on both sides, so its page parameters change no
+    body a client can read — they change the contract, which is what `backlot mcp` hands an agent as
+    a tool. Real accepts them: measured on api.github.com on 2026-09-04, a `kubernetes/kubernetes`
+    pull head at `?per_page=1` answers one status with a `Link` carrying `rel="next"`. GitHub's
+    published OpenAPI declares this legacy route not at all, so no baseline entry covers it and the
+    contract is the only place the divergence shows.
+    """
+    path = "/github/repos/{owner}/{repo}/statuses/{sha}"
+    op = client.get("/openapi.json").json()["paths"][path]["get"]
+    assert {"page", "per_page"} <= {p["name"] for p in op.get("parameters", [])}
 
 
 def test_github_search_still_filters_by_q(client, admin_h):

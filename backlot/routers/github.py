@@ -883,20 +883,30 @@ async def get_issue(owner: str, repo: str, number: int, request: Request):
 
 
 @router.get("/repos/{owner}/{repo}/issues/{number}/comments")
-async def issue_comments(owner: str, repo: str, number: int, request: Request):
+async def issue_comments(
+    owner: str,
+    repo: str,
+    number: int,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     row = _resolve(conn, repo, number, ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
+    # anchored=False: a line-anchored review comment belongs to /pulls/{n}/comments, and serving it
+    # here too would duplicate it under a resource that means something else
+    rows = store.github_comments(conn, row["repo"], row["number"], anchored=False)
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     ab = _api_base(request)
-    return [
-        _gh_comment(owner, repo, number, c, ab)
-        # anchored=False: a line-anchored review comment belongs to /pulls/{n}/comments, and
-        # serving it here too would duplicate it under a resource that means something else
-        for c in store.github_comments(conn, row["repo"], row["number"], anchored=False)
-    ]
+    body = [_gh_comment(owner, repo, number, c, ab) for c in rows[start : start + per_page]]
+    return _paged(request, len(rows), {}, body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/pulls")
@@ -961,7 +971,14 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/reviews")
-async def pull_reviews(owner: str, repo: str, number: int, request: Request):
+async def pull_reviews(
+    owner: str,
+    repo: str,
+    number: int,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -971,8 +988,15 @@ async def pull_reviews(owner: str, repo: str, number: int, request: Request):
     ab = _api_base(request)
     number = _issue_number(row)
     sha = hashlib.sha1(_seed(row).encode()).hexdigest()[:40]
+    reviews = store.jcol(row, "reviews")
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     out = []
-    for i, rv in enumerate(store.jcol(row, "reviews"), start=1):
+    # the enumeration counts from the review's place in the WHOLE listing, not in the page: `i`
+    # seeds the id and the timestamp, so a review's identity has to stay put whatever page it is on
+    for i, rv in enumerate(reviews[start : start + per_page], start=start + 1):
         rid = synth.github_number(_seed(row) + str(i))
         pr_url = f"{ab}/repos/{owner}/{repo}/pulls/{number}"
         out.append(
@@ -995,11 +1019,18 @@ async def pull_reviews(owner: str, repo: str, number: int, request: Request):
                 },
             }
         )
-    return out
+    return _paged(request, len(reviews), {}, out, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/comments")
-async def pull_review_comments(owner: str, repo: str, number: int, request: Request):
+async def pull_review_comments(
+    owner: str,
+    repo: str,
+    number: int,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     """A pull's REVIEW comments — the line-anchored ones. A different resource from both
     ``/issues/{n}/comments`` (the conversation) and ``/pulls/{n}/reviews`` (approve/request-changes
     events): a corpus marks a comment as this one by giving it a ``path``.
@@ -1016,18 +1047,31 @@ async def pull_review_comments(owner: str, repo: str, number: int, request: Requ
         raise HTTPException(status_code=404, detail="Not Found")
     src = _RepoFiles(conn, repo, ids)
     resolved = _resolved_review_comments(conn, row, src)
-    if not resolved:
-        return []
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
+    window = resolved[start : start + per_page]
+    if not window:  # the pull has no review comments, or the page is past the ones it has
+        return _paged(request, len(resolved), {}, [], page, per_page)
     ab = _api_base(request)
     # The same changeset this pull's diff serves, so a comment's `diff_hunk` and the diff agree.
     patches = {
         f["filename"]: f.get("patch") for f in _pr_files(conn, owner, repo, row, ab, ids, src)
     }
-    return [_gh_review_comment(owner, repo, number, row, c, f, patches, ab) for c, f in resolved]
+    body = [_gh_review_comment(owner, repo, number, row, c, f, patches, ab) for c, f in window]
+    return _paged(request, len(resolved), {}, body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/commits")
-async def pull_commits(owner: str, repo: str, number: int, request: Request):
+async def pull_commits(
+    owner: str,
+    repo: str,
+    number: int,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     """The pull's commits — one, the head, which is what the pull object already claims.
 
     Here because ``_links.commits``/``commits_url`` name it: a field whose whole purpose is to be
@@ -1049,7 +1093,7 @@ async def pull_commits(owner: str, repo: str, number: int, request: Request):
     # serves both because they are different things: one signed the commit, one has an account.
     git_author = {"name": author["login"], "email": row["author_email"], "date": created}
     tree_sha = _repo_tree_sha(repo)
-    return [
+    commits = [
         {
             "sha": sha,
             "node_id": synth.node_id("Commit", sha[:12]),
@@ -1068,10 +1112,22 @@ async def pull_commits(owner: str, repo: str, number: int, request: Request):
             "parents": [],  # no history is kept, so the head has no parent to name
         }
     ]
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
+    return _paged(request, len(commits), {}, commits[start : start + per_page], page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/statuses/{sha:path}")
-async def commit_statuses(owner: str, repo: str, sha: str, request: Request):
+async def commit_statuses(
+    owner: str,
+    repo: str,
+    sha: str,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     """Statuses for a commit: always empty, and empty is the honest answer rather than a stub.
 
     A corpus records no CI, and real GitHub answers `[]` for a sha nobody reported a status on — so
@@ -1082,6 +1138,10 @@ async def commit_statuses(owner: str, repo: str, sha: str, request: Request):
     `/statuses/main` answers `[]` and `/statuses/totally-made-up` 404s (measured on psf/requests) —
     the same question :func:`_commit_ish` answers for `/commits` and `git/trees`. The ref is the
     trailing path for the same reason it is there: `/statuses/bug/5671` resolves on real.
+
+    The page parameters change no body while the listing is empty; they are here because real accepts
+    them — `kubernetes/kubernetes` at `?per_page=1` answers one status with a `Link` (measured
+    2026-09-04) — and the contract is what `backlot mcp` hands an agent as a tool.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -1089,7 +1149,10 @@ async def commit_statuses(owner: str, repo: str, sha: str, request: Request):
     _require_repo(conn, repo, ids)  # a repo this caller cannot see must not answer for its shas
     if sha.strip("/") not in _commit_ish(conn, owner, repo, ids):
         raise HTTPException(status_code=404, detail="Not Found")
-    return []
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    return _paged(request, 0, {}, [], page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/files")
@@ -1667,7 +1730,13 @@ async def get_readme(owner: str, repo: str, request: Request, ref: str | None = 
 
 
 @router.get("/repos/{owner}/{repo}/collaborators")
-async def list_collaborators(owner: str, repo: str, request: Request):
+async def list_collaborators(
+    owner: str,
+    repo: str,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -1675,8 +1744,13 @@ async def list_collaborators(owner: str, repo: str, request: Request):
     emails = store.container_member_emails(conn, "github", repo)
     if emails is None:
         emails = store.all_user_emails(conn)
+    emails = sorted(emails)
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     ab = _api_base(request)
-    return [
+    body = [
         {
             **_gh_user(e, ab),
             "role_name": "read",
@@ -1688,19 +1762,26 @@ async def list_collaborators(owner: str, repo: str, request: Request):
                 "pull": True,
             },
         }
-        for e in sorted(emails)
+        for e in emails[start : start + per_page]
     ]
+    return _paged(request, len(emails), {}, body, page, per_page)
 
 
 @router.get("/orgs/{org}/teams")
-async def list_teams(org: str, request: Request):
+async def list_teams(
+    org: str, request: Request, page: PageParam = None, per_page: PageParam = None
+):
     conn = auth.conn(request)
     _require(request)
     rows = conn.execute(
         "SELECT id, display_name FROM principals WHERE type = 'group' ORDER BY id"
     ).fetchall()
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
     ab = _api_base(request)
-    return [
+    body = [
         {
             "id": synth.github_user_id(r["id"]),
             "node_id": synth.node_id("Team", synth.github_user_id(r["id"])),
@@ -1713,27 +1794,39 @@ async def list_teams(org: str, request: Request):
             "url": f"{ab}/orgs/{org}/teams/{r['id']}",
             "html_url": f"https://github.com/orgs/{org}/teams/{r['id']}",
         }
-        for r in rows
+        for r in rows[start : start + per_page]
     ]
+    return _paged(request, len(rows), {}, body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/teams")
-async def list_repo_teams(owner: str, repo: str, request: Request):
+async def list_repo_teams(
+    owner: str,
+    repo: str,
+    request: Request,
+    page: PageParam = None,
+    per_page: PageParam = None,
+):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     _require_repo(conn, repo, ids)
     c = store.get_container(conn, "github", repo)
-    if not c["group_id"]:
-        return []
-    return [
-        {
-            "id": synth.github_user_id(c["group_id"]),
-            "name": c["group_id"],
-            "slug": c["group_id"],
-            "permission": "pull",
-        }
-    ]
+    teams = []
+    if c["group_id"]:
+        teams.append(
+            {
+                "id": synth.github_user_id(c["group_id"]),
+                "name": c["group_id"],
+                "slug": c["group_id"],
+                "permission": "pull",
+            }
+        )
+    page, per_page = clamp_page(
+        page, per_page, get_settings().default_page_size, get_settings().max_page_size
+    )
+    start = (page - 1) * per_page
+    return _paged(request, len(teams), {}, teams[start : start + per_page], page, per_page)
 
 
 # --- repo file tree / contents / blobs ------------------------------------------

@@ -2720,18 +2720,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /orgs/{}/teams?page",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /orgs/{}/teams?per_page",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /orgs/{}/teams?team_type",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -3356,18 +3344,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /repos/{}/{}/collaborators?page",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/collaborators?per_page",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /repos/{}/{}/collaborators?permission",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -3782,18 +3758,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /repos/{}/{}/issues/{}/comments?page",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/issues/{}/comments?per_page",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /repos/{}/{}/issues/{}/comments?since",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -4046,18 +4010,6 @@
     {
       "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /repos/{}/{}/pulls/{}/comments?page",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/pulls/{}/comments?per_page",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
       "path": "GET /repos/{}/{}/pulls/{}/comments?since",
       "detail": "the vendor accepts it; Backlot does not"
     },
@@ -4065,18 +4017,6 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /repos/{}/{}/pulls/{}/comments?sort",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/pulls/{}/commits?page",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/pulls/{}/commits?per_page",
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
@@ -4108,18 +4048,6 @@
       "severity": "gap",
       "path": "GET /repos/{}/{}/pulls/{}/reviews/{}/comments",
       "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/pulls/{}/reviews?page",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/pulls/{}/reviews?per_page",
-      "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_param",
@@ -4348,18 +4276,6 @@
       "severity": "gap",
       "path": "GET /repos/{}/{}/tarball/{}",
       "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/teams?page",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/teams?per_page",
-      "detail": "the vendor accepts it; Backlot does not"
     },
     {
       "kind": "missing_operation",

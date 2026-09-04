@@ -388,8 +388,8 @@ def _echo(request: Request, **params) -> dict:
     handler applied is not one the caller asked for: echoing `state`'s `open` narrows the url a
     paginator follows, dropping the rows a `state=all` walk asked for.
 
-    Filters only. `per_page` is `github_link_header`'s to write, and it writes the effective size
-    whether or not the caller named one, where real omits it for a caller who did not (#126).
+    Filters only. `per_page` is `github_link_header`'s to write, and it applies the same rule to it:
+    the effective size for a caller who named one, and nothing at all for a caller who did not.
     """
     return {k: v for k, v in params.items() if k in request.query_params}
 

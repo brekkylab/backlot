@@ -110,6 +110,14 @@ def test_github_link_header():
     # ...and a listing that never had a second page stays header-less however far past it you ask
     assert pg.github_link_header("http://x", {}, 99, 10, 5) is None
 
+    # A page size the CALLER did not send is not written into the urls, the rule that already
+    # governs a listing's filters. Real: `psf/requests/tags` with no query links `?page=2` and
+    # `?page=6` — six pages of 161 tags at real's own default of 30, no `per_page` anywhere — where
+    # `?per_page=1` links `per_page=1&page=2` (measured 2026-09-04).
+    unsent = pg.github_link_header("http://x", {}, 1, 10, 25, per_page_sent=False)
+    assert _pages(unsent) == {"next": 2, "last": 3}
+    assert "per_page" not in unsent
+
 
 def test_github_cursor_link_header_pages_a_listing_real_pages_by_cursor():
     """Real cursor-pages `/repos/{o}/{r}/issues` where it offset-pages every other listing: the
@@ -142,6 +150,11 @@ def test_github_cursor_link_header_pages_a_listing_real_pages_by_cursor():
     assert f"after={quote(pg.encode_cursor(5), safe='')}" in h(1, 0)
     assert f"before={quote(pg.encode_cursor(10), safe='')}" in h(3, 10)
     assert _pages(h(50, 5)) == {"next": 51, "prev": 49}
+
+    # this one WRITES the page size whether or not the caller sent it, where an offset listing
+    # omits an unsent one: `/repos/psf/requests/issues?page=2` links `…&per_page=30` while
+    # `/tags` with no query links no size at all (both measured the same day)
+    assert "per_page=5" in h(1, 0)
 
 
 def test_github_cursor_offset_prefers_the_cursor_over_the_page():

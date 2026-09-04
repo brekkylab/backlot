@@ -17,6 +17,7 @@ import yaml
 import pytest
 
 from backlot import store, synth
+from backlot.config import get_settings
 from backlot.pagination import encode_cursor
 from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
 
@@ -1807,6 +1808,35 @@ def test_github_a_page_url_names_the_repository_and_the_org_by_id(gh_client, gh_
     )["next"]
     assert "/github/user/repos?" in user_next
     assert c.get(f"/github/repositories/{rid + 1}/pulls", headers=gh_admin_h).status_code == 404
+
+
+def test_github_a_page_url_omits_a_page_size_the_caller_did_not_send(
+    gh_client, gh_admin_h, gh_org, monkeypatch
+):
+    """A `per_page` the handler defaulted is not one the caller sent, so the page urls leave it out
+    — the rule `_paged` already applies to a listing's filters, reaching the one parameter it
+    builds itself.
+
+    Real omits it: `psf/requests/tags` with no query links `?page=2` and `?page=6`, six pages of
+    161 tags at its own default of 30, with no `per_page` anywhere, where `?per_page=1` links
+    `per_page=1&page=2`. Search omits it the same way (measured on api.github.com on 2026-09-04).
+
+    The default page size is overridden here because no listing in the corpus is longer than the
+    100 rows Backlot defaults to, so nothing in it spans a page without a `per_page` to make it.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/diffable/pulls"
+    monkeypatch.setenv("BACKLOT_DEFAULT_PAGE_SIZE", "1")
+    get_settings.cache_clear()
+    try:
+        unsent = c.get(url, headers=gh_admin_h, params={"state": "all"})
+        nxt = _link_rels(unsent.headers["Link"])["next"]
+        assert nxt.endswith("?state=all&page=2") and "per_page" not in nxt
+        sent = c.get(url, headers=gh_admin_h, params={"state": "all", "per_page": 1})
+        assert "per_page=1&page=2" in _link_rels(sent.headers["Link"])["next"]
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
 
 
 @pytest.mark.parametrize(

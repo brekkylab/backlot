@@ -119,9 +119,22 @@ def _page_url(url_no_query: str, params: dict) -> str:
 
 
 def github_link_header(
-    url_no_query: str, params: dict, page: int, per_page: int, total: int
+    url_no_query: str,
+    params: dict,
+    page: int,
+    per_page: int,
+    total: int,
+    *,
+    per_page_sent: bool = True,
 ) -> str | None:
     """Build a Link header with rel=next/prev/first/last. ``params`` are extra query args.
+
+    ``per_page_sent`` says whether the CALLER named the page size; a size the handler defaulted is
+    left out of the urls, the rule a listing's filters already follow. Real omits it: `/tags` with
+    no query links `?page=2` and `?page=6` — six pages of 161 tags at its own default of 30 — where
+    `?per_page=1` links `per_page=1&page=2`, and search behaves the same (measured on
+    api.github.com on 2026-09-04). :func:`github_cursor_link_header` is the exception, and writes
+    the size either way.
 
     Returns ``None`` for a single page, which is what real sends there: no header at all, rather
     than one whose every rel points back at the page the caller is already holding. That holds
@@ -145,8 +158,10 @@ def github_link_header(
     if last_page <= 1:
         return None
 
+    size = {"per_page": per_page} if per_page_sent else {}
+
     def link(p: int) -> str:
-        return _page_url(url_no_query, {**params, "per_page": per_page, "page": p})
+        return _page_url(url_no_query, {**params, **size, "page": p})
 
     parts = []
     if page > 1:

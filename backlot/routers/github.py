@@ -351,7 +351,14 @@ def _link_response(link: str | None, body: list) -> Response:
 def _paged(
     request: Request, rows_total: int, extra: dict, body: list, page: int, per_page: int
 ) -> Response:
-    link = github_link_header(_page_base_url(request), extra, page, per_page, rows_total)
+    link = github_link_header(
+        _page_base_url(request),
+        extra,
+        page,
+        per_page,
+        rows_total,
+        per_page_sent="per_page" in request.query_params,
+    )
     return _link_response(link, body)
 
 
@@ -446,7 +453,14 @@ def _search_paged(
     rather than by returning a ``JSONResponse``, so the handler keeps its ``response_model`` and the
     operation keeps the typed schema the MCP bridge reads.
     """
-    link = github_link_header(_page_base_url(request), {"q": q}, page, per_page, total)
+    link = github_link_header(
+        _page_base_url(request),
+        {"q": q},
+        page,
+        per_page,
+        total,
+        per_page_sent="per_page" in request.query_params,
+    )
     if link:
         response.headers["Link"] = link
 

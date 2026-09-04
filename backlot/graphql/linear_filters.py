@@ -905,11 +905,15 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
     {eq: X}}`` and ``{and: [{null: true}, {name: {eq: X}}]}`` are ``null: true`` too. A ``null``
     written at the object's own level wins over one inside its ``and`` branches (``{null: false,
     and: [{null: true}]}`` is the issues with the relation); between branches ``true`` wins
-    (``{and: [{null: false}, {null: true}]}`` is the issues without it). An ``or`` is the union
-    of its branches, each read by this rule, so ``{or: [{null: true}, {name: {eq: X}}]}`` is the
-    unassigned issues plus X's. An ``and`` at the level of ``IssueFilter`` is not this object:
-    ``{and: [{assignee: {null: true}}, {assignee: {name: {eq: X}}}]}`` is two relation filters
-    ANDed and answers none, as measured."""
+    (``{and: [{null: false}, {null: true}]}`` is the issues without it). An ``and`` at the level
+    of ``IssueFilter`` is not this object: ``{and: [{assignee: {null: true}}, {assignee: {name:
+    {eq: X}}}]}`` is two relation filters ANDed and answers none, as measured.
+
+    An ``or`` here is compiled as the union of its branches, each read by the rule above, so
+    ``{or: [{null: true}, {name: {eq: X}}]}`` is the unassigned issues plus X's. That union is
+    Backlot's, not the vendor's: #128 measured rows it loses -- ``{or: [{null: true}, {name: {eq:
+    X}}], name: {eq: Y}}`` is the issues without the relation where the union answers none, and
+    ``{or: []}`` is the issues with it where the union constrains nothing."""
     items = _relation_items(spec)
     own = [sub for key, sub, nested in items if key == "null" and not nested]
     inner = [sub for key, sub, nested in items if key == "null" and nested]

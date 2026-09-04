@@ -133,26 +133,71 @@ async def _validate_api_version(request: Request) -> None:
 
 
 async def _validate_path_owner(request: Request) -> None:
-    """404 a request whose ``{owner}``/``{org}`` segment is not the org we serve.
+    """404 a request whose ``{owner}``/``{org}`` segment is not the org we serve, and hand the
+    handlers the org's OWN spelling of it rather than the caller's.
 
     Real GitHub 404s a wrong owner; echoing whatever was asked for back into the response lets a
     client's owner-handling bug pass against Backlot and fail in production. A router-wide
     dependency rather than a call in each handler so a route added later cannot forget it — routes
     with neither path param (``/search/issues``, ``/user/repos``) are unaffected. Credentials are
     checked first, so a bad token still reports 401 rather than the owner's 404.
+
+    The match is case-insensitive, as GitHub logins are, and real then answers in the canonical
+    spelling whatever case was asked for: `/repos/PSF/REQUESTS` answers `full_name: psf/requests`
+    with every url and template lowercase, `/orgs/PSF` answers `login: psf`, and an issue item's
+    `url` and `html_url` are lowercase too (measured 2026-09-03, 200 each — no redirect, so the
+    normalization is in the body). Canonicalizing the param here rather than at each url means the
+    ~30 handlers that interpolate it, and everything they derive from it, cannot disagree: this is
+    also what keeps `synth.github_user_id(org)` from minting one id per spelling. FastAPI solves
+    router dependencies before it reads the endpoint's own path params, so the handler signature
+    receives the value set here.
+
+    The pagination `Link` header is the one url this does not reach: :func:`_base_url` builds it
+    from the path the request arrived on, deliberately, and real has no named url to match there —
+    it paginates by numeric repository id instead (`/repositories/1362490/issues`, measured on the
+    same day).
     """
     _require(request)
-    owner = request.path_params.get("owner") or request.path_params.get("org")
-    if owner is not None and owner.lower() != _org(request).lower():
+    key = "owner" if "owner" in request.path_params else "org"
+    owner = request.path_params.get(key)
+    if owner is None:
+        return
+    canonical = _org(request)
+    if owner.lower() != canonical.lower():
         raise HTTPException(status_code=404, detail="Not Found")
+    request.path_params[key] = canonical
+
+
+async def _canonical_path_repo(request: Request) -> None:
+    """Hand the handlers the corpus's spelling of ``{repo}``, whatever case it was asked for.
+
+    Real resolves the name case-insensitively and answers in its own spelling — `/repos/PSF/Requests`
+    is 200 with `name: requests` (measured 2026-09-03) — where a case-sensitive container lookup
+    404'd it. Canonicalized, not merely matched, for the reason :func:`_validate_path_owner` gives.
+
+    A NAME and nothing else: whether the caller may SEE the repo stays :func:`_require_repo`'s
+    answer, taken afterwards on this name, so a repo hidden from a scoped token is a 404 in every
+    spelling.
+    """
+    repo = request.path_params.get("repo")
+    if repo is None:
+        return
+    spelled = store.container_spelling(auth.conn(request), "github", repo)
+    if spelled is not None:
+        request.path_params["repo"] = spelled
 
 
 router = APIRouter(
     prefix="/github",
     tags=["github"],
     # Order is the answering order: an unsupported API version is a malformed request and real
-    # refuses it before authenticating or routing, so it is declared first.
-    dependencies=[Depends(_validate_api_version), Depends(_validate_path_owner)],
+    # refuses it before authenticating or routing, so it is declared first. The repo's spelling is
+    # resolved last, and so never for a request that fails the version or the credential.
+    dependencies=[
+        Depends(_validate_api_version),
+        Depends(_validate_path_owner),
+        Depends(_canonical_path_repo),
+    ],
 )
 
 
@@ -357,9 +402,13 @@ async def search_issues(
     free, quals = _parse_q(q, _GH_ISSUE_QUALS)
     container = None  # a repo: qualifier narrows to one repo
     for v in quals.get("repo", []):
-        name = v.split("/")[-1]
-        if store.get_container(conn, "github", name) is not None:
-            container = name
+        # Any case, as real takes it: `repo:PSF/Requests is:issue` answers the same 4,173 as the
+        # lowercase spelling (measured 2026-09-04). A name that resolves in NO case still leaves
+        # `container` None, which WIDENS this search to the whole corpus, where `_code_repos`
+        # beside it narrows to nothing and real refuses the query with a 422.
+        spelled = store.container_spelling(conn, "github", v.split("/")[-1])
+        if spelled is not None:
+            container = spelled
     if free:
         cand = store.search_documents(conn, free, "github", ids, limit=10_000, container=container)
     else:
@@ -463,8 +512,11 @@ def _code_repos(conn, quals: dict, org: str) -> set[str] | None:
         owner, _, name = v.rpartition("/")
         if owner and owner.lower() != org.lower():
             continue
-        if store.get_container(conn, "github", name) is not None:
-            names.add(name)
+        # The corpus's spelling, from a qualifier in any case — as the owner half is already
+        # compared (see :func:`store.container_spelling` for what real answers).
+        spelled = store.container_spelling(conn, "github", name)
+        if spelled is not None:
+            names.add(spelled)
     return names
 
 
@@ -633,13 +685,19 @@ async def search_code(
 
 @router.get("/orgs/{org}")
 async def get_org(org: str, request: Request):
+    """The org, in its own spelling — `org` arrives canonical from :func:`_validate_path_owner`.
+
+    The two urls are built from that name rather than from the path the request came in on, which
+    is the only difference a mixed-case `/orgs/{org}` can still see.
+    """
     _require(request)
+    ab = _api_base(request)
     return {
         "login": org,
         "id": synth.github_user_id(org),
         "type": "Organization",
-        "url": f"{_base_url(request)}",
-        "repos_url": f"{_base_url(request)}/repos",
+        "url": f"{ab}/orgs/{org}",
+        "repos_url": f"{ab}/orgs/{org}/repos",
         "html_url": f"https://github.com/{org}",
     }
 
@@ -1445,6 +1503,23 @@ async def list_tags(
     return _paged(request, len(names), {}, body, page, per_page)
 
 
+@router.get("/repos/{owner}/{repo}/branches/{branch:path}/protection")
+async def get_branch_protection(owner: str, repo: str, branch: str, request: Request):
+    """Where `protection_url` points: real's 404 for a caller without repo-admin rights.
+
+    Real gates this on those rights and answers everyone else `Not Found`, protected branch or not
+    (psf/requests `main` and `3.0`, 2026-09-03). The admin answers need what a corpus does not
+    state — `Branch not protected`, or a 200 carrying the classic configuration — so nothing here
+    resolves; the credential and the owner are still the router-wide dependencies'.
+
+    Declared above :func:`get_branch` so the trailing `/protection` beats a name that could
+    swallow it, which is real's precedence: `/branches/bug/5671/protection` on psf/requests, where
+    `bug/5671` IS a branch, answers this anchor and not get-a-branch's. A branch actually named
+    `…/protection` is therefore unreachable on both.
+    """
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
 @router.get("/repos/{owner}/{repo}/branches/{branch:path}")
 async def get_branch(owner: str, repo: str, branch: str, request: Request):
     """One branch, if the listing holds it — 404 otherwise, as real answers for a name no branch
@@ -1452,7 +1527,24 @@ async def get_branch(owner: str, repo: str, branch: str, request: Request):
 
     The name is the trailing PATH because a branch name may contain a slash and real serves it
     whole: `/branches/bug/5671` on psf/requests answers that branch, where a single path segment
-    could only 404 it.
+    could only 404 it. A slash stays a slash in the urls below, unescaped, as real spells them.
+
+    Six members on every branch, protected or not — measured 2026-09-03 across 30 branches of 28
+    repos, none omitting one or carrying a seventh. `_links.html` is github.com, the host every
+    `html_url` here is already spelt against; `self` and `protection_url` are Backlot's own, built
+    from the branch this route resolved, like the `commit.url` beside them.
+
+    **`protection.enabled` is not `protected`.** It reports CLASSIC protection where `protected`
+    covers any mechanism, so real answers `protected: true` with `enabled: false` for a
+    ruleset-protected branch (fastapi/fastapi `master`, brekkylab/backlot `main`) and
+    `enabled: true` for a classic one (psf/requests `main`, 15 of the 22 protected branches
+    measured). A corpus states the one bit and no mechanism, and Backlot serves no rulesets route,
+    so it reads as classic — the other reading calls a branch protected with nothing served to say
+    why.
+
+    `required_status_checks` is real's empty block either way, measured on an unprotected branch
+    (psf/requests `3.0`) and a classic-protected one requiring no check (django/django `main`): a
+    corpus records no CI, which is also why `/statuses/{sha}` answers `[]`.
     """
     conn = auth.conn(request)
     caller = _require(request)
@@ -1464,14 +1556,28 @@ async def get_branch(owner: str, repo: str, branch: str, request: Request):
         raise HTTPException(status_code=404, detail="Branch not found")
     ab = _api_base(request)
     commit_sha, tree_sha = _repo_commit_sha(repo), _repo_tree_sha(repo)
+    self_url = f"{ab}/repos/{owner}/{repo}/branches/{branch}"
     return {
         "name": branch,
-        "protected": found["protected"],
         "commit": {
             "sha": commit_sha,
             "commit": {"tree": {"sha": tree_sha}},
             "url": f"{ab}/repos/{owner}/{repo}/commits/{commit_sha}",
         },
+        "_links": {
+            "self": self_url,
+            "html": f"https://github.com/{owner}/{repo}/tree/{branch}",
+        },
+        "protected": found["protected"],
+        "protection": {
+            "enabled": found["protected"],
+            "required_status_checks": {
+                "enforcement_level": "off",
+                "contexts": [],
+                "checks": [],
+            },
+        },
+        "protection_url": f"{self_url}/protection",
     }
 
 

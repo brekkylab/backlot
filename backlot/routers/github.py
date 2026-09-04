@@ -487,15 +487,18 @@ async def search_issues(
     conn = auth.conn(request)
     ids = auth.visible_ids(request, caller)
     free, quals = _parse_q(q, _GH_ISSUE_QUALS)
-    container = None  # a repo: qualifier narrows to one repo
-    for v in quals.get("repo", []):
-        # Any case, as real takes it: `repo:PSF/Requests is:issue` answers the same 4,173 as the
-        # lowercase spelling (measured 2026-09-04). A name that resolves in NO case still leaves
-        # `container` None, which WIDENS this search to the whole corpus, where `_code_repos`
-        # beside it narrows to nothing and real refuses the query with a 422.
-        spelled = store.container_spelling(conn, "github", v.split("/")[-1])
-        if spelled is not None:
-            container = spelled
+    # _org, not the setting directly: the owner a `repo:` is compared against, and the one in the
+    # URLs these items carry, has to be the one the repo routes accept, or every link a client
+    # follows out of a search hit 404s
+    owner = _org(request)
+    # Any case, as real takes it: `repo:PSF/Requests is:issue` answers the same 4,173 as the
+    # lowercase spelling (measured 2026-09-04). A qualifier that resolves to NOTHING is refused
+    # rather than dropped — dropping it left `container` None, which widened this search to the
+    # whole corpus and answered a client that scoped its search with other repositories' issues.
+    named = _qual_repos(conn, quals, owner, ids)
+    if named is not None and not named:
+        raise _search_unsearchable_repo()
+    container = named[-1] if named else None
     if free:
         cand = store.search_documents(conn, free, "github", ids, limit=10_000, container=container)
     else:
@@ -506,9 +509,6 @@ async def search_issues(
     )
     start = (page - 1) * per_page
     ab = _api_base(request)
-    # _org, not the setting directly: the owner in the URLs these items carry has to be the one the
-    # repo routes accept, or every link a client follows out of a search hit 404s
-    owner = _org(request)
     items = [
         _issue_obj(conn, owner, r["repo"], r, ab, _version(request))
         for r in matched[start : start + per_page]
@@ -583,18 +583,24 @@ def _code_in_targets(quals: dict) -> set[str]:
     return (named & {"file", "path"}) or {"file", "path"}
 
 
-def _code_repos(conn, quals: dict, org: str) -> set[str] | None:
-    """The repos a `repo:` qualifier names, or ``None`` when it names none. Several of them OR, as
-    on real.
+def _qual_repos(conn, quals: dict, org: str, ids) -> list[str] | None:
+    """The corpus spellings a `repo:` qualifier names, in the order named, or ``None`` when the
+    query carries no `repo:` at all. EMPTY when every name it carried resolves to nothing.
 
-    An EMPTY set is a restriction nothing satisfies, and that is the point: a `repo:` naming a repo
-    Backlot does not serve — or one under another owner, which `_validate_path_owner` 404s
-    everywhere else — has to match nothing rather than quietly widening back to the whole corpus and
-    answering with files from a repo the caller did not ask about.
+    Both search routes read the qualifier through here, because a name that resolves for one and
+    not the other is two answers to one question. Resolution is by spelling AND by visibility: a
+    repo the caller cannot see counts as unresolved, which is real's own answer — its 422 for an
+    unsearchable repository covers "does not exist" and "you cannot view it" in one message, so
+    neither answer confirms which.
+
+    An empty list is a restriction nothing satisfies, and that is the point: a `repo:` naming a
+    repo Backlot does not serve — or one under another owner, which `_validate_path_owner` 404s
+    everywhere else — has to be refused rather than quietly widening back to the whole corpus.
     """
     if "repo" not in quals:
         return None
-    names = set()
+    visible = set(_visible_repos(conn, ids))
+    names = []
     for v in quals["repo"]:
         owner, _, name = v.rpartition("/")
         if owner and owner.lower() != org.lower():
@@ -602,9 +608,15 @@ def _code_repos(conn, quals: dict, org: str) -> set[str] | None:
         # The corpus's spelling, from a qualifier in any case — as the owner half is already
         # compared (see :func:`store.container_spelling` for what real answers).
         spelled = store.container_spelling(conn, "github", name)
-        if spelled is not None:
-            names.add(spelled)
+        if spelled is not None and spelled in visible:
+            names.append(spelled)
     return names
+
+
+def _code_repos(conn, quals: dict, org: str, ids) -> set[str] | None:
+    """:func:`_qual_repos` as the set `search_code` filters on. Several repos OR, as on real."""
+    named = _qual_repos(conn, quals, org, ids)
+    return None if named is None else set(named)
 
 
 # Real's fragment is a couple of hundred characters of the file around the match.
@@ -686,6 +698,36 @@ def _search_validation_failed(field: str) -> HTTPException:
     return exc
 
 
+def _search_unsearchable_repo() -> HTTPException:
+    """Real's 422 for a `repo:` qualifier that names no repository it can search.
+
+    Measured on api.github.com on 2026-09-04: `search/issues?q=repo:psf/ghost-zz-9876` and
+    `repo:someone-else-zz/requests` both answer this body, and so does a repository the token
+    cannot view — one message for all three, which is why :func:`_qual_repos` treats an invisible
+    repo as unresolved. `code` is `invalid` where the missing-parameter 422 says `missing`, the
+    error carries a `message` that one has none, and the `documentation_url` differs from it by a
+    trailing slash — real's, not a typo.
+    """
+    exc = HTTPException(status_code=422, detail="Validation Failed")
+    exc.github_body = {
+        "message": "Validation Failed",
+        "errors": [
+            {
+                "message": (
+                    "The listed users and repositories cannot be searched either because the "
+                    "resources do not exist or you do not have permission to view them."
+                ),
+                "resource": "Search",
+                "field": "q",
+                "code": "invalid",
+            }
+        ],
+        "documentation_url": "https://docs.github.com/v3/search/",
+        "status": "422",
+    }
+    return exc
+
+
 @router.get("/search/code", response_model=GitHubCodeSearch)
 async def search_code(
     request: Request,
@@ -724,10 +766,13 @@ async def search_code(
     ids = auth.visible_ids(request, caller)
     free, quals = _parse_q(q, _GH_CODE_QUALS)
     org = _org(request)
-    repos = _code_repos(conn, quals, org)
-    # A `repo:` that resolved to nothing: no row can satisfy it, so there is nothing to read.
+    repos = _code_repos(conn, quals, org, ids)
+    # A `repo:` that resolved to nothing: no row can satisfy it, so there is nothing to read. Real
+    # answers this route 200 rather than `/search/issues`'s 422, and says so in `incomplete_results`
+    # — `search/code?q=repo:psf/ghost-zz-9876+def` is `total_count: 0` with the flag TRUE, where a
+    # name that resolves beside it makes it false again (measured 2026-09-04).
     if repos is not None and not repos:
-        return {"total_count": 0, "incomplete_results": False, "items": []}
+        return {"total_count": 0, "incomplete_results": True, "items": []}
     one = next(iter(repos)) if repos and len(repos) == 1 else None
     targets = _code_in_targets(quals)
     terms = _code_terms(free)

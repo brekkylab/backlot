@@ -2438,6 +2438,52 @@ def test_github_answers_the_corpus_spelling_whatever_case_was_asked_for(
     assert c.get(f"/github/repos/{gh_org}/VAULT", headers=gh_admin_h).status_code == 200
 
 
+def test_github_a_repo_qualifier_naming_nothing_is_refused_rather_than_widened(
+    gh_client, gh_admin_h, gh_org, gh_user_tokens
+):
+    """A `repo:` that resolves to no repository is real's 422 on `/search/issues`, not the whole
+    corpus's issues — and `incomplete_results` on `/search/code`, not a silent zero.
+
+    Measured on api.github.com on 2026-09-04. `search/issues?q=repo:psf/ghost-zz-9876` and
+    `repo:someone-else-zz/requests` both answer 422 with `code: "invalid"` and "The listed users and
+    repositories cannot be searched…", which is also the answer for a repository the token cannot
+    see — so the body never says which of the two it was, and neither does this. The refusal is for
+    a qualifier that resolves to NOTHING: `repo:psf/requests repo:psf/ghost-zz-9876 timeout` is a
+    200 answering psf/requests' 846 items.
+
+    `search/code` answers those same queries 200 with `total_count: 0` and
+    `incomplete_results: true`, and `false` for the mix — the one field its answer differs in.
+    """
+    c, _ = gh_client
+    issues, code = "/github/search/issues", "/github/search/code"
+
+    def ask(path, q, headers=gh_admin_h):
+        r = c.get(path, headers=headers, params={"q": q})
+        return r.status_code, r.json()
+
+    assert ask(issues, "repo:gateway")[1]["total_count"] > 0  # a name that resolves still narrows
+
+    for q in ("repo:ghost", f"repo:{gh_org}/ghost", "repo:someone-else/gateway"):
+        status, body = ask(issues, q)
+        assert status == 422, q
+        assert body["errors"][0]["code"] == "invalid" and body["errors"][0]["field"] == "q"
+        assert body["errors"][0]["message"].startswith("The listed users and repositories")
+        assert body["documentation_url"] == "https://docs.github.com/v3/search/"
+    # one that resolves beside one that does not is not refused
+    assert ask(issues, "repo:gateway repo:ghost")[1]["total_count"] > 0
+
+    # a repository the caller cannot see answers the refusal too, so the 422 does not confirm it
+    bob = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}
+    assert ask(issues, "repo:vault", bob)[0] == 422
+    assert ask(issues, "repo:vault")[0] == 200
+
+    for q in ("repo:ghost line", "repo:someone-else/codebase line"):
+        status, body = ask(code, q)
+        assert (status, body["total_count"], body["incomplete_results"]) == (200, 0, True), q
+    assert ask(code, "repo:codebase repo:ghost line")[1]["incomplete_results"] is False
+    assert ask(code, "repo:vault line", bob)[1]["incomplete_results"] is True
+
+
 # --- X-GitHub-Api-Version negotiation -----------------------------------------
 #
 # The two versions real GitHub currently supports, and the only field-level difference between them

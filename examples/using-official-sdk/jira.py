@@ -8,6 +8,7 @@
 """
 
 import argparse
+import sys
 
 from atlassian import Jira
 
@@ -46,7 +47,7 @@ _p.add_argument(
 _p.add_argument(
     "--username",
     default="svc@example.com",
-    help="Atlassian Basic-auth username (email); Backlot resolves the caller by the token/password",
+    help="Atlassian Basic-auth username: the address the token belongs to, which the real service requires to match (the placeholder works only for the admin token, which has none)",
 )
 _p.add_argument(
     "--password",
@@ -60,7 +61,24 @@ args = _p.parse_args()
 with serve_or_connect(CORPUS, url=args.url) as s:
     username = args.username
     password = args.password or args.token or s.token
-    if args.username != "svc@example.com" or args.password or args.token:
+    # Atlassian authenticates the PAIR: a user's api_token under someone else's address is a 401
+    # on the real service, and Backlot answers the same. Both halves have to name one identity, so
+    # either alone is refused rather than sent. The admin/service token is the exception both ways
+    # — it has no address, so any username carries it, which is what `docs/auth.md` documents.
+    named_token = (args.password or args.token) not in (None, s.token)
+    named_user = args.username != "svc@example.com"
+    if named_token and not named_user:
+        sys.exit(
+            "a --token/--password names one user, so pass --username with that user's own email "
+            f"too (GET {s.base_url}/_meta/users lists both)"
+        )
+    if named_user and not named_token:
+        sys.exit(
+            f"--username alone would send the admin token under {args.username}, which Backlot "
+            "takes as the admin: pass --token with that user's own token too "
+            f"(GET {s.base_url}/_meta/users lists both)"
+        )
+    if named_user or named_token:
         print(f"authenticating as {username} → responses are ACL-filtered to that user")
     jira = Jira(url=f"{s.base_url}/atlassian", username=username, password=password)
 

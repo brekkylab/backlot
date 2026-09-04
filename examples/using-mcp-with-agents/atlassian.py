@@ -9,7 +9,7 @@ when the hostname ends in `.atlassian.net`, so we always use a fake `backlot.atl
 with Docker's `--add-host` — to the host machine (`host-gateway`) for a local server, or to a remote
 deployment's resolved IP. Auth is HTTP Basic where the **api_token is a Backlot token** (`--token`,
 default admin; per-user from GET /_meta/users); the **username** is required by mcp-atlassian but
-ignored by Backlot once the token resolves.
+matched by Backlot against the token's own account, as the real service does.
 
 Prereqs: Docker; `pip install -e ".[mcp]"`; an LLM key for `--agent` (`ANTHROPIC_API_KEY`, or
 `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
@@ -65,7 +65,9 @@ def build_params(base_url: str, token: str, username: str | None) -> StdioServer
     host = "backlot.atlassian.net"  # must end in .atlassian.net for Cloud detection
     if (u.hostname or "127.0.0.1") in _LOCAL_HOSTS:
         scheme, port, addhost, ssl_verify = "http", (u.port or 80), "host-gateway", True
-        user = username or "svc@example.com"  # placeholder; Backlot ignores it once token resolves
+        # The placeholder stands in only for the admin token, which has no address of its own; a
+        # user's token needs that user's email, which is what the real service matches on.
+        user = username or "svc@example.com"
     else:
         # remote deployment: alias the fake host to its IP, and require an explicit identity
         if not username:
@@ -119,7 +121,11 @@ def _parse_args() -> argparse.Namespace:
         help="Backlot bearer token from GET /_meta/users "
         "(default: the admin token, which sees everything)",
     )
-    p.add_argument("--username", help="Atlassian Basic-auth username (required for a remote --url)")
+    p.add_argument(
+        "--username",
+        help="Atlassian Basic-auth username: the address --token belongs to (required with "
+        "--token, and for a remote --url)",
+    )
     p.add_argument(
         "--agent",
         choices=("anthropic", "openai"),
@@ -137,7 +143,21 @@ if __name__ == "__main__":
     # bind and the firewall prompt that opening a port to the network raises.
     host = "0.0.0.0" if sys.platform == "linux" else "127.0.0.1"
     with serve_or_connect(CORPUS, url=args.url, host=host) as s:
+        # Atlassian matches the pair, so either half alone is refused rather than sent: a token
+        # under someone else's address is a 401, and an address with no token would carry the
+        # admin's, which Backlot takes as the admin under any name.
+        if args.token and not args.username:
+            sys.exit(
+                "--token names one user, so pass --username with that user's own email too: "
+                f"Atlassian matches the pair, and {s.base_url}/_meta/users lists both"
+            )
+        if args.username and not args.token:
+            sys.exit(
+                f"--username alone would send the admin token under {args.username}, which "
+                "Backlot takes as the admin: pass --token with that user's own token too "
+                f"({s.base_url}/_meta/users lists both)"
+            )
         if args.token:
-            print("authenticating with --token → retrieval is ACL-filtered to that user")
+            print(f"authenticating as {args.username} → retrieval is ACL-filtered to that user")
         params = build_params(s.base_url, args.token or s.token, args.username)
         run_agent(args.agent, params, QUESTION)

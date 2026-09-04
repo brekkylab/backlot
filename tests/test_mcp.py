@@ -61,12 +61,15 @@ def _docker_available() -> bool:
         return False
 
 
-def _atlassian_params(base: str, token: str):
+def _atlassian_params(base: str, token: str, username: str = "svc@example.com"):
     """`docker run` args pointing mcp-atlassian at a local server (see examples/.../atlassian.py).
 
     mcp-atlassian only classifies a host as Atlassian *Cloud* when it ends in `.atlassian.net`, so
     use a fake `backlot.atlassian.net` mapped to the host via `--add-host`, and Basic auth where the
-    api_token is a Backlot token (Backlot resolves it to a user and enforces that user's ACL)."""
+    api_token is a Backlot token (Backlot resolves it to a user and enforces that user's ACL).
+
+    ``username`` has to be that token's own address, as the real service requires — the default
+    placeholder works only for the admin token, which has no address to match."""
     from mcp import StdioServerParameters
 
     port = base.rsplit(":", 1)[1]  # Docker reaches Backlot on the host via host-gateway
@@ -81,13 +84,13 @@ def _atlassian_params(base: str, token: str):
             "-e",
             f"JIRA_URL={url}/atlassian",
             "-e",
-            "JIRA_USERNAME=svc@example.com",
+            f"JIRA_USERNAME={username}",
             "-e",
             f"JIRA_API_TOKEN={token}",
             "-e",
             f"CONFLUENCE_URL={url}/atlassian/wiki",
             "-e",
-            "CONFLUENCE_USERNAME=svc@example.com",
+            f"CONFLUENCE_USERNAME={username}",
             "-e",
             f"CONFLUENCE_API_TOKEN={token}",
             "-e",
@@ -150,24 +153,41 @@ async def _call(params, tool_pred, args, ok_pred) -> bool:
 
 @pytest.mark.skipif(not _docker_available(), reason="Docker not available")
 def test_mcp_atlassian_acl_enforced(live_server):
+    """A Jira issue the admin reads through mcp-atlassian is not-found for a scoped user.
+
+    Both calls carry a credential the real service would accept — the placeholder username for the
+    admin, who has no address, and the user's own address for the user — so the scoped miss is the
+    ACL's. Without the matching username the read would fail on auth instead, which reaches this
+    test the same way and would leave it green with the ACL doing nothing; the third read is the
+    control that rules that out."""
     base, settings = live_server
     user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
     row, email = _restricted_doc(settings, user["token"], "jira")
     assert row is not None, f"no Jira issue is ACL-restricted from {email} in the sample corpus"
     key = row["key"]  # the stored column: jira is probed, so a re-derived hash can disagree
+    seen, _ = _visible_doc(settings, user["token"], "jira")
+    assert seen is not None, f"no Jira issue is readable by {email} in the sample corpus"
+    visible = seen["key"]
 
-    def reads(token):
+    def reads(token, username, issue_key):
         return asyncio.run(
             _call(
-                _atlassian_params(base, token),
+                _atlassian_params(base, token, username),
                 tool_pred=lambda n: n == "jira_get_issue",
-                args={"issue_key": key},
+                args={"issue_key": issue_key},
                 ok_pred=lambda t: t.strip().startswith("{") and '"key"' in t,
             )
         )
 
-    assert reads(settings.admin_token), "admin should read the issue through mcp-atlassian"
-    assert not reads(user["token"]), f"{email} should be blocked from the issue via mcp-atlassian"
+    assert reads(settings.admin_token, "svc@example.com", key), (
+        "admin should read the issue through mcp-atlassian"
+    )
+    assert reads(user["token"], email, visible), (
+        f"{email} should read an issue they can see, or the miss below is an auth failure"
+    )
+    assert not reads(user["token"], email, key), (
+        f"{email} should be blocked from the restricted issue via mcp-atlassian"
+    )
 
 
 # --------------------------------------------------------------------------- Notion
@@ -257,6 +277,22 @@ def test_mcp_s3_lists_objects(live_server):
 
 
 # ------------------------------------------------------ the OpenAPI→MCP bridge (backlot.mcp)
+
+
+def _visible_doc(settings, user_token: str, source: str):
+    """A doc of ``source`` this user CAN read — the mirror of :func:`_restricted_doc`.
+
+    Returns ``(row, email)`` with ``row`` None when the corpus has none, so a caller says what is
+    missing the way the restricted-doc callers do rather than raising ``StopIteration`` bare."""
+    conn = store.connect_ro(settings.db_path)
+    acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
+    caller = acl.resolve(user_token)
+    vids = acl.visible_ids(conn, caller)
+    for row in conn.execute(f"SELECT * FROM {store.table(source)}"):
+        key = tuple(row[c] for c in store.id_columns(source))
+        if store.get_document(conn, source, *key, visible_ids=vids) is not None:
+            return row, caller.email
+    return None, caller.email
 
 
 def _bridge_call(base, source, creds, *, tool_pred, args, ok_pred) -> bool:
@@ -417,25 +453,20 @@ def test_auth_header_spells_each_source_the_way_its_client_speaks():
 def test_mcp_atlassian_bridge_authenticates_basic_for_the_resolved_user(live_server):
     """The Atlassian case above only asserts a scoped user is BLOCKED from a restricted issue, and
     `_bridge_call` reports a rejected credential the same way it reports a hidden document, so on
-    its own it stays green with the Basic header corrupted. This is the positive half.
+    its own it stays green with the Basic header corrupted. This is the positive half, and now that
+    ``auth.resolve_basic`` requires the pair it shows both halves authenticated: neither the
+    address nor the token reads anything alone.
 
-    What it cannot show is WHICH half of `email:token` authenticated, because on this surface
-    ``auth.resolve_basic`` accepts the username alone when the password does not resolve — measured,
-    an empty password answers 200, which real Atlassian refuses. The header itself is asserted in
-    ``test_auth_header_spells_each_source_the_way_its_client_speaks`` instead, which is where a
-    mangled or swapped credential is caught without depending on that behaviour."""
+    Which half sits where is asserted on the header in
+    ``test_auth_header_spells_each_source_the_way_its_client_speaks``, which catches a swap without
+    a round trip — Backlot's Atlassian surface takes Bearer too, so no answer can tell the schemes
+    apart."""
     pytest.importorskip("fastmcp")
     base, settings = live_server
     email = yaml.safe_load(settings.tokens_path.read_text())["users"][0]["email"]
     creds = backlot_mcp.resolve(base, email)
-    conn = store.connect_ro(settings.db_path)
-    acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
-    vids = acl.visible_ids(conn, acl.resolve(creds.token))
-    row = next(
-        r
-        for r in conn.execute("SELECT * FROM jira_issues")
-        if store.get_document(conn, "jira", r["key"], visible_ids=vids) is not None
-    )
+    row, _ = _visible_doc(settings, creds.token, "jira")
+    assert row is not None, f"no Jira issue is readable by {email} in the sample corpus"
     assert _bridge_call(
         base,
         "atlassian",

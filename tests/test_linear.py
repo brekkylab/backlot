@@ -1434,9 +1434,9 @@ def test_relation_null_true_reads_nothing_else_in_the_object_as_linear(fclient, 
 # workspace had four issues: BRE-1 in project `zz-pa` and assigned to the viewer (`nuri`), BRE-2 in
 # `zz-pb`, BRE-3 and BRE-4 in no project and unassigned; the projects were created for the
 # measurement and deleted after. The fixture below has the same shape, names included, and `nobody`
-# is a name no project or user has. 350 filters were measured in four rounds, the last 69 predicted
-# from the rule on `_sub_filter` before they were sent; these cells are the ones that tell its
-# clauses apart, each one a measured answer.
+# is a name no project or user has. 429 filters were measured in eight rounds, every round from
+# the third predicted from the rule on `_sub_filter` before it was sent; these cells are the ones
+# that tell its clauses apart, each one a measured answer.
 _RELATION_OR_CORPUS = [
     {
         "source_type": "linear",
@@ -1496,7 +1496,7 @@ _RELATION_OR_CORPUS = [
     },
 ]
 W1, W2, N3, N4 = "BRE-1", "BRE-2", "BRE-3", "BRE-4"
-_ZZ_PB = synth.linear_project_id("zz-pb")
+_ZZ_PA, _ZZ_PB = synth.linear_project_id("zz-pa"), synth.linear_project_id("zz-pb")
 _RELATION_OR_CELLS = [
     # the keys of one branch are alternatives; outside an `or` the same keys AND
     ("project", '{or: [{name: {eq: "zz-pa"}, id: {eq: "%s"}}]}' % _ZZ_PB, {W1, W2}),
@@ -1671,6 +1671,80 @@ _RELATION_OR_CELLS = [
     ("assignee", "{or: []}", {W1}),
     ("assignee", '{or: [{null: false}, {name: {neq: "nuri"}}]}', {W2, N3, N4}),
     ("assignee", '{null: false, or: [{}, {name: {eq: "nuri"}}]}', {W1}),
+    # a `null: true` anywhere below the object adds the issues without the relation to whatever the REST of the object answers, so a sibling key or a second group still reads
+    ("project", '{or: [{null: true}, {name: {eq: "zz-pa"}}], name: {eq: "zz-pa"}}', {W1, N3, N4}),
+    (
+        "project",
+        '{or: [{null: true}, {name: {eq: "zz-pa"}}], id: {eq: "%s"}}' % (_ZZ_PA,),
+        {W1, N3, N4},
+    ),
+    (
+        "project",
+        '{and: [{or: [{null: true}, {name: {eq: "zz-pa"}}]}], or: [{name: {eq: "zz-pa"}}]}',
+        {W1, N3, N4},
+    ),
+    (
+        "project",
+        '{and: [{or: [{null: true}, {name: {eq: "zz-pa"}}]}], or: [{name: {eq: "nobody"}}]}',
+        {N3, N4},
+    ),
+    (
+        "project",
+        '{and: [{or: [{null: true}, {name: {eq: "zz-pa"}}]}], name: {eq: "zz-pa"}}',
+        {W1, N3, N4},
+    ),
+    (
+        "project",
+        '{and: [{or: [{null: true}, {name: {eq: "zz-pa"}}]}, {or: [{name: {eq: "zz-pa"}}, {id: {eq: "%s"}}]}]}'
+        % (_ZZ_PB,),
+        {W1, N3, N4},
+    ),
+    (
+        "project",
+        '{and: [{or: [{null: true}, {name: {eq: "zz-pa"}}]}, {or: [{name: {eq: "nobody"}}]}]}',
+        {N3, N4},
+    ),
+    (
+        "project",
+        '{and: [{or: [{null: false}, {name: {eq: "zz-pa"}}]}], or: [{null: true}, {name: {eq: "zz-pa"}}]}',
+        {W1},
+    ),
+    # a bare `{null: false}` in an `or` lifted from an `and` branch requires the relation for the whole object, unless that `or` carries a `null: true`
+    ("project", '{and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}]}', {W2}),
+    ("project", "{and: [{or: [{null: false}, {}]}]}", {W1, W2}),
+    ("project", "{and: [{or: [{null: false}, {null: true}]}]}", {W1, W2, N3, N4}),
+    (
+        "project",
+        '{and: [{or: [{null: false}, {null: true}, {name: {eq: "zz-pa"}}]}]}',
+        {W1, N3, N4},
+    ),
+    ("project", '{and: [{or: [{null: false}, {}, {name: {neq: "zz-pa"}}]}]}', {W2}),
+    ("project", '{and: [{or: [{null: false}, {or: [{name: {neq: "zz-pa"}}]}]}]}', {W2}),
+    (
+        "project",
+        '{or: [{null: false}, {name: {neq: "zz-pa"}}], and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}]}',
+        {W2},
+    ),
+    ("project", '{and: [{or: [{}, {name: {neq: "zz-pa"}}]}]}', {W2, N3, N4}),
+    ("project", '{and: [{or: [{null: false}, {name: {eq: "zz-pa"}}]}], or: [{}]}', {W1}),
+    # a branch that is nothing but comparators with no operator makes the `or` constrain nothing; beside a real key it is TRUE inside its branch
+    ("project", "{name: {}}", {W1, W2, N3, N4}),
+    ("project", '{or: [{name: {}}, {name: {eq: "nobody"}}]}', {W1, W2, N3, N4}),
+    ("project", '{or: [{null: false, name: {}}, {name: {eq: "nobody"}}]}', {W1, W2, N3, N4}),
+    ("project", "{or: [{null: false, name: {}}]}", {W1, W2}),
+    ("project", '{or: [{name: {}, id: {eq: "%s"}}]}' % (_ZZ_PB,), {W1, W2}),
+    ("project", '{or: [{name: {}, id: {eq: "%s"}}, {name: {eq: "nobody"}}]}' % (_ZZ_PB,), {W1, W2}),
+    ("project", "{null: false, name: {}}", {W1, W2}),
+    ("project", "{or: [{null: true, name: {}}]}", {N3, N4}),
+    ("project", '{and: [{or: [{name: {}}, {name: {eq: "nobody"}}]}], name: {eq: "zz-pa"}}', {W1}),
+    # `assignee`, the same three
+    ("assignee", '{and: [{or: [{null: false}, {email: {neq: "nobody"}}]}]}', {W1}),
+    (
+        "assignee",
+        '{and: [{or: [{null: true}, {name: {eq: "nuri"}}]}], or: [{name: {eq: "nuri"}}]}',
+        {W1, W2, N3, N4},
+    ),
+    ("assignee", '{or: [{null: true}, {name: {eq: "nuri"}}], email: {eq: "nobody"}}', {W2, N3, N4}),
 ]
 
 

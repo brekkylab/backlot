@@ -161,8 +161,8 @@ async def _validate_path_owner(request: Request) -> None:
 
     The canonical spelling reaches the pagination `Link` header too, by way of the id it hashes to:
     real paginates by numeric repository id (`/repositories/1362490/issues`, measured on the same
-    day), and :func:`_page_base_url` reads the spelling this dependency settled rather than the one
-    the request arrived with.
+    day), and :func:`_page_base_url` hashes the settled spelling rather than the one the request
+    arrived with — this dependency's for the org, :func:`_canonical_path_repo`'s for the repo.
     """
     _require(request)
     key = "owner" if "owner" in request.path_params else "org"
@@ -479,18 +479,23 @@ def _search_paged(
     operation keeps the typed schema the MCP bridge reads.
 
     ``code`` picks the builder, because the two search routes do not share one: `/search/issues`
-    pages by the listings' rules and `/search/code` by its own (see
-    :func:`backlot.pagination.github_code_search_link_header` for the five positions that says).
+    pages by the listings' rules, down to carrying the caller's own spelling of the size, and
+    `/search/code` by its own, which carries the size applied (see
+    :func:`backlot.pagination.github_code_search_link_header`).
     """
-    build = github_code_search_link_header if code else github_link_header
-    link = build(
-        _page_base_url(request),
-        {"q": q},
-        page,
-        per_page,
-        total,
-        per_page_param=request.query_params.get("per_page"),
-    )
+    if code:
+        link = github_code_search_link_header(
+            _page_base_url(request), {"q": q}, page, per_page, total
+        )
+    else:
+        link = github_link_header(
+            _page_base_url(request),
+            {"q": q},
+            page,
+            per_page,
+            total,
+            per_page_param=request.query_params.get("per_page"),
+        )
     if link:
         response.headers["Link"] = link
 

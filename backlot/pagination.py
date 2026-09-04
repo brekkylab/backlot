@@ -197,13 +197,7 @@ def github_cursor_offset(page: int, per_page: int, after: str | None, before: st
 
 
 def github_code_search_link_header(
-    url_no_query: str,
-    params: dict,
-    page: int,
-    per_page: int,
-    total: int,
-    *,
-    per_page_param: str | None = None,
+    url_no_query: str, params: dict, page: int, per_page: int, total: int
 ) -> str | None:
     """Build a Link header for `/search/code`, which pages by none of the listings' rules.
 
@@ -216,8 +210,10 @@ def github_code_search_link_header(
     * `prev` is the page before the one ASKED for even past the end: page 99 answers prev=98, where
       a listing clamps it to the last page that holds rows.
     * the rels come in the order next, prev, first, last.
-    * the size is written whether or not the caller named one — no `per_page` in the query still
-      links `per_page=30` — where a listing omits one the caller did not send.
+    * the size written is the one APPLIED, whether or not the caller named one and whatever they
+      spelt: no `per_page` in the query links `per_page=30`, `?per_page=500` on 1,808 hits links
+      `per_page=100` (its cap) and `?per_page=0` links `per_page=30`, where a listing omits an
+      unsent size and echoes a sent one verbatim. This cell it shares with the cursor listing.
 
     `/search/issues` shares none of that and pages by :func:`github_link_header`. A result set that
     fits one page carries no header, which is the one rule all three surfaces share.
@@ -225,10 +221,9 @@ def github_code_search_link_header(
     last_page = max(1, (total + per_page - 1) // per_page)
     if last_page <= 1:
         return None
-    size = per_page if per_page_param is None else per_page_param
 
     def link(p: int) -> str:
-        return _page_url(url_no_query, {**params, "per_page": size, "page": p})
+        return _page_url(url_no_query, {**params, "per_page": per_page, "page": p})
 
     parts = []
     if page < last_page:

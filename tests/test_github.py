@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from urllib.parse import quote
 
 import yaml
@@ -1872,6 +1873,65 @@ def test_github_an_id_two_repos_share_names_neither(tmp_path):
         for name in ("repo485", "repo4107"):
             assert c.get(f"/github/repos/{org}/{name}/issues", headers=h).status_code == 200, name
         assert c.get(f"/github/repositories/{shared}/issues", headers=h).status_code == 404
+
+
+def test_github_only_the_offset_surfaces_write_the_size_the_caller_spelt(
+    gh_client, gh_admin_h, monkeypatch
+):
+    """Which surfaces carry the caller's own spelling of `per_page` and which carry the size they
+    applied. `/search/issues` and the listings carry the caller's; `/search/code` carries the size
+    it applied, as the cursor listing does.
+
+    Measured on api.github.com on 2026-09-04: `/search/code?q=…&per_page=500` on 1,808 hits links
+    `per_page=100`, its own cap, and `?per_page=0` links `per_page=30`, where
+    `/search/issues?…&per_page=500` links `per_page=500` and `/tags?per_page=abc` links
+    `per_page=abc`. The cap is overridden here so Backlot's own applied size differs from the value
+    sent, which is what tells the two rules apart at all.
+    """
+    c, _ = gh_client
+    monkeypatch.setenv("BACKLOT_MAX_PAGE_SIZE", "2")
+    get_settings.cache_clear()
+    try:
+        code = c.get(
+            "/github/search/code", headers=gh_admin_h, params={"q": "extension:md", "per_page": 500}
+        )
+        issues = c.get(
+            "/github/search/issues",
+            headers=gh_admin_h,
+            params={"q": "repo:diffable is:pr", "per_page": 500},
+        )
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+    assert "per_page=2" in _link_rels(code.headers["Link"])["next"]
+    assert "per_page=500" in _link_rels(issues.headers["Link"])["next"]
+
+
+def test_github_the_issue_listing_writes_a_page_number_only_where_one_was_claimed(
+    gh_client, gh_admin_h, gh_org
+):
+    """Which requests get a page number in their cursor urls, which is the branch the route decides
+    and the helper only carries out.
+
+    Measured on api.github.com on 2026-09-04 at `per_page=2`: `?after=C` and `?page=1&after=C` both
+    answer `next` and `prev` with no `page` in either url, where `?page=3&after=C` answers next=4
+    and prev=2 and a request with no cursor at all answers next=2.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/diffable/issues"
+    args = {"state": "all", "per_page": 1, "after": encode_cursor(1)}
+
+    def pages(params):
+        rels = _link_rels(c.get(url, headers=gh_admin_h, params=params).headers["Link"])
+        return {
+            rel: re.search(r"[?&]page=(\d+)", link).group(1) if "&page=" in link else None
+            for rel, link in rels.items()
+        }
+
+    assert pages(args) == {"next": None, "prev": None}
+    assert pages({**args, "page": 1}) == {"next": None, "prev": None}
+    assert pages({**args, "page": 3}) == {"next": "4", "prev": "2"}
+    assert pages({"state": "all", "per_page": 1}) == {"next": "2"}
 
 
 def test_github_a_page_url_omits_a_page_size_the_caller_did_not_send(

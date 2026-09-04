@@ -177,10 +177,8 @@ def test_github_code_search_link_header_keeps_first_and_last_on_every_page():
     """The five positions :func:`pagination.github_code_search_link_header` was measured at, which
     are the four rules it does not share with a listing plus the one it does."""
 
-    def h(page, total=45, per_page=5, **kw):
-        return pg.github_code_search_link_header(
-            "http://x", {"q": "def"}, page, per_page, total, **kw
-        )
+    def h(page, total=45, per_page=5):
+        return pg.github_code_search_link_header("http://x", {"q": "def"}, page, per_page, total)
 
     assert list(_pages(h(1)).items()) == [("next", 2), ("first", 1), ("last", 9)]
     assert list(_pages(h(5)).items()) == [("next", 6), ("prev", 4), ("first", 1), ("last", 9)]
@@ -188,9 +186,9 @@ def test_github_code_search_link_header_keeps_first_and_last_on_every_page():
     assert list(_pages(h(99)).items()) == [("prev", 98), ("first", 1), ("last", 9)]
     assert h(1, per_page=100) is None
 
-    # the size is written whether or not the caller named one
+    # the size written is the one applied — this builder takes no spelling from the caller, which
+    # is the cell `/search/issues` differs on
     assert "per_page=30" in h(1, per_page=30)
-    assert "per_page=5" in h(1, per_page_param="5")
 
 
 def test_github_cursor_offset_prefers_the_cursor_over_the_page():

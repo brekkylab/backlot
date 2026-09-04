@@ -103,6 +103,44 @@ def test_basic_credential_kind_reports_no_basic_pair_as_absent_or_unparseable(he
     assert auth.basic_credential_kind(_request(header)) == expected
 
 
+# --- atlassian_bearer_token: the one spelling the real site recognises ----------
+
+
+@pytest.mark.parametrize(
+    "header, token",
+    [
+        ("Bearer usr-abc123", "usr-abc123"),
+        (" Bearer usr-abc123", "usr-abc123"),  # leading space is stripped
+        ("Bearer usr-abc123 ", "usr-abc123"),  # so is trailing
+        ("bearer usr-abc123", None),  # the scheme is case-SENSITIVE here
+        ("BEARER usr-abc123", None),
+        ("token usr-abc123", None),  # GitHub's spelling, which Atlassian does not take
+        ("OAuth usr-abc123", None),
+        ("Bearer  usr-abc123", None),  # exactly one space
+        ("Bearer\tusr-abc123", None),  # a tab is not a space
+        ("Bearerusr-abc123", None),
+        ("Bearer", None),
+        ("Bearer ", None),
+        (None, None),
+    ],
+)
+def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(header, token):
+    """Which spellings count as a bearer credential, measured against ecosystem.atlassian.net and
+    brekkylab.atlassian.net on 2026-09-04 on a Jira route: a recognised one is refused (403), and
+    an unrecognised one is processed anonymously (200), so the answer says which the site read.
+    Both sites agreed on every row.
+
+    Not :func:`auth.bearer_token`, which is deliberately permissive because GitHub really does
+    accept ``token <t>`` and RFC 7235 really does make the scheme case-insensitive. Atlassian
+    implements neither, and sharing the permissive parser would authenticate five spellings the
+    real site serves anonymously — so a client sending ``Authorization: bearer <t>`` would pass
+    every test here and read nothing in production. Slack is strict in its own way (see
+    :func:`auth.slack_bearer_token`); it accepts the double space Atlassian refuses, which is why
+    that parser is not shared either.
+    """
+    assert auth.atlassian_bearer_token(_request(header)) == token
+
+
 # --- api_key_token --------------------------------------------------------------
 
 

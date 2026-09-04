@@ -194,6 +194,50 @@ def require_bearer(request: Request, detail: str) -> Caller:
     return caller
 
 
+def atlassian_bearer_token(request: Request) -> str | None:
+    """Parse the ``Authorization`` header the way a ``<site>.atlassian.net`` gateway does, which
+    is stricter than :func:`bearer_token` and strict differently from :func:`slack_bearer_token`.
+
+    Measured against ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04 (a bogus
+    token is enough — a recognised credential is refused with a 403 and an unrecognised one is
+    served anonymously, so the answer says which the site read)::
+
+        Bearer <t>      read            bearer <t>      not read
+        ' Bearer <t>'   read            BEARER <t>      not read
+        Bearer <t>' '   read            token <t>       not read
+                                        OAuth <t>       not read
+                                        Bearer  <t>     not read
+                                        Bearer<TAB><t>  not read
+                                        Bearer<t>       not read
+                                        Bearer          not read
+
+    The scheme is case-sensitive and separated from the token by exactly one space. Sharing
+    :func:`bearer_token` would authenticate four spellings the real site serves anonymously — a
+    client sending ``Authorization: token <t>`` would pass every test here and read nothing in
+    production. Slack refuses a different set: it takes the double space this refuses.
+    """
+    hdr = (_authorization(request) or "").strip()
+    if not hdr.startswith("Bearer "):
+        return None
+    rest = hdr[len("Bearer ") :]
+    if not rest or rest[0].isspace():
+        return None
+    return rest.rstrip()
+
+
+def atlassian_bearer_unreadable(request: Request) -> bool:
+    """Whether the request carries a bearer the site would read and Backlot cannot resolve.
+
+    A Backlot token is an opaque string with no dots, and that is the shape the gateway reports as
+    unreadable — measured with ``usr-<hex>`` itself. A token shaped like a complete signed JWS is
+    read and then rejected with a 401 instead; Backlot issues none, and reproducing Atlassian
+    Connect's accept boundary would mean inventing the space between the shapes measured, so a
+    JWT-shaped bearer takes the 403 here too.
+    """
+    token = atlassian_bearer_token(request)
+    return bool(token) and acl(request).resolve(token) is None
+
+
 def atlassian_caller(request: Request) -> Caller:
     """The caller for an Atlassian read: Basic ``email:api_token`` or a bearer OAuth token, and
     :data:`backlot.acl.ANONYMOUS` when neither resolves.
@@ -203,7 +247,8 @@ def atlassian_caller(request: Request) -> Caller:
     Confluence refuses. Each router decides for itself, so this reports the identity and nothing
     else.
     """
-    return resolve_basic(request) or resolve_bearer(request) or ANONYMOUS
+    bearer = atlassian_bearer_token(request)
+    return resolve_basic(request) or acl(request).resolve(bearer) or ANONYMOUS
 
 
 def resolve_api_key(request: Request) -> Caller | None:

@@ -167,7 +167,15 @@ nothing to match and any username goes through. That is what lets an Atlassian c
 placeholder its config demands — `svc@example.com:admin-service-token` works.
 
 A plain `Authorization: Bearer <token>` is accepted too, which is easier when you are driving the
-API by hand rather than through an Atlassian SDK.
+API by hand rather than through an Atlassian SDK — spelt exactly that way. The real site reads the
+scheme case-sensitively and wants exactly one space after it, so `bearer <token>`, `BEARER
+<token>`, `token <token>` and `Bearer  <token>` are not credentials to it and Backlot does not take
+them either.
+
+A `Bearer` it does read and cannot resolve is the one refusal Jira gives here, and it comes before
+the route: `403 {"error": "Failed to parse Connect Session Auth Token"}`, on every Jira path
+including `serverInfo`. A `<site>.atlassian.net` reads a bearer as a Connect session JWT, and a
+Backlot token is an opaque string, so that is the answer the real site gives one.
 
 The two APIs disagree about a credential that resolves to nobody, and Backlot follows each.
 **Jira does not refuse it**: the read is served to an anonymous caller, and since a corpus grants

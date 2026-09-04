@@ -139,6 +139,68 @@ def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers
         assert r.json()["errorMessages"] == [f"No project could be found with key '{key}'."]
 
 
+def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
+    """A bearer is not the Basic pair: Jira does not go anonymous for one it cannot resolve, it
+    refuses with 403 and a body that is neither API's envelope. A Backlot token is an opaque
+    string with no dots, which is the shape that draws this — measured with `usr-…` itself, and
+    with `bogustoken123` and `a.b.c`, on both sites on 2026-09-04."""
+    r = client.get(
+        "/atlassian/rest/api/3/project/search", headers={"Authorization": "Bearer usr-nope"}
+    )
+    assert r.status_code == 403
+    # The whole body, not a subset: this one route answers with a single `error` key, where every
+    # other Atlassian error here carries message/statusCode/errorMessages.
+    assert r.json() == {"error": "Failed to parse Connect Session Auth Token"}
+    # No Seraph header either — that one reports a failed Basic username, and this is not one.
+    assert "x-seraph-loginreason" not in r.headers
+    # And it is refused ahead of the route: serverInfo needs no credential and still answers 403,
+    # which is why the check is not in the caller helper.
+    info = client.get(
+        "/atlassian/rest/api/3/serverInfo", headers={"Authorization": "Bearer usr-nope"}
+    )
+    assert info.status_code == 403 and info.json() == {
+        "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
+    }
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "bearer usr-nope",
+        "BEARER usr-nope",
+        "token usr-nope",
+        "OAuth usr-nope",
+        "Bearer  usr-nope",
+        "Bearer\tusr-nope",
+        "Bearer",
+    ],
+)
+def test_jira_reads_an_unrecognised_scheme_as_no_credential(client, header):
+    """The 403 above is for a credential the site READ. A spelling it does not read is not a
+    credential at all, and the request is the anonymous one — which is how each spelling was told
+    apart on the real sites in the first place (403 = read, 200 = not read)."""
+    r = client.get("/atlassian/rest/api/3/project/search", headers={"Authorization": header})
+    assert r.status_code == 200 and r.json()["values"] == []
+
+
+def test_atlassian_still_authenticates_the_bearer_spelling_it_does_read(client, tokens_yaml):
+    """The strict parser must not cost the working credential: `Bearer <token>` is what
+    mcp-atlassian sends for an admin, and both APIs answer it."""
+    h = {"Authorization": f"Bearer {tokens_yaml['admin_token']}"}
+    assert client.get("/atlassian/rest/api/3/project/search", headers=h).json()["values"]
+    assert client.get("/atlassian/wiki/rest/api/space", headers=h).status_code == 200
+
+
+def test_confluence_refuses_an_unreadable_bearer_with_its_own_403_not_jiras(client):
+    """Confluence answers a bearer it cannot resolve with the same 403 envelope it gives a failed
+    pair — the refusal is keyed on the credential failing, not on which scheme carried it. Jira's
+    single-key Connect body does not appear on this side. Measured on both sites, for an opaque
+    token and for a JWT-shaped one."""
+    r = client.get("/atlassian/wiki/rest/api/space", headers={"Authorization": "Bearer usr-nope"})
+    assert r.status_code == 403
+    assert r.json()["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
+
+
 @pytest.mark.parametrize("headers", UNRESOLVABLE)
 def test_confluence_refuses_an_unresolvable_credential_with_its_own_403(client, headers):
     """Confluence does not process an anonymous caller the way Jira does: it rejects the request

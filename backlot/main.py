@@ -165,6 +165,24 @@ async def echo_github_api_version(request: Request, call_next):
 
 
 @app.middleware("http")
+async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
+    """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
+
+    Unlike the Basic pair, which Jira serves anonymously, an unreadable bearer is refused — and
+    refused ahead of everything, so `serverInfo` and `field` answer it too even though neither
+    needs a credential. That is why this short-circuits rather than living in
+    ``atlassian._jira_caller``. Confluence is not here: it answers its own 403 for any credential
+    that fails, which ``atlassian._confluence_caller`` already gives. Measured against
+    ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04.
+    """
+    if request.url.path.startswith("/atlassian/rest/") and auth.atlassian_bearer_unreadable(
+        request
+    ):
+        return JSONResponse(status_code=403, content=errors.atlassian.connect_token_body())
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def report_failed_jira_login(request: Request, call_next):
     """Say that a Jira read presented a credential Backlot could not resolve, as real Jira does.
 

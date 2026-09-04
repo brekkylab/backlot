@@ -26,6 +26,17 @@ CONFLUENCE_FORBIDDEN = (
 )
 CONFLUENCE_UNAUTHORIZED = "Unauthorized"
 
+# What a `<site>.atlassian.net` gateway answers a `Bearer` it cannot read as a Connect session
+# JWT, on every Jira route — `serverInfo` and `field`, which need no credential, included. One
+# `error` key and nothing else: not this module's envelope, and not Confluence's either, so it is
+# returned as its own body rather than shaped. Measured on ecosystem.atlassian.net and
+# brekkylab.atlassian.net on 2026-09-04.
+CONNECT_TOKEN_UNREADABLE = "Failed to parse Connect Session Auth Token"
+
+
+def connect_token_body() -> dict:
+    return {"error": CONNECT_TOKEN_UNREADABLE}
+
 
 def owns(path: str) -> bool:
     return path.startswith(PREFIX)

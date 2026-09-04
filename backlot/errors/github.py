@@ -79,6 +79,9 @@ ROUTE_DOCS: dict[str, str] = {
     "/github/repos/{owner}/{repo}/git/blobs/{sha}": _DOCS + "git/blobs#get-a-blob",
     "/github/repos/{owner}/{repo}/branches": _DOCS + "branches/branches#list-branches",
     "/github/repos/{owner}/{repo}/tags": _DOCS + "repos/repos#list-repository-tags",
+    "/github/repos/{owner}/{repo}/branches/{branch}/protection": (
+        _DOCS + "branches/branch-protection#get-branch-protection"
+    ),
     "/github/repos/{owner}/{repo}/branches/{branch}": _DOCS + "branches/branches#get-a-branch",
     "/github/repos/{owner}/{repo}/commits/{sha}": _DOCS + "commits/commits#get-a-commit",
     "/github/repos/{owner}/{repo}/readme": _DOCS + "repos/contents#get-a-repository-readme",

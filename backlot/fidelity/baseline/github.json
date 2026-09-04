@@ -3110,12 +3110,6 @@
     {
       "kind": "missing_operation",
       "severity": "gap",
-      "path": "GET /repos/{}/{}/branches/{}/protection",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
       "path": "GET /repos/{}/{}/branches/{}/protection/enforce_admins",
       "detail": "the vendor serves it; Backlot does not"
     },
@@ -3166,20 +3160,6 @@
       "severity": "gap",
       "path": "GET /repos/{}/{}/branches/{}/protection/restrictions/users",
       "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/branches?page",
-      "detail": "the vendor accepts it; Backlot does not",
-      "note": "Real GitHub paginates the branch and tag listings with `page`/`per_page`; the listings Backlot added in #95 accept neither. Read off GitHub's published OpenAPI on 2026-09-01."
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/branches?per_page",
-      "detail": "the vendor accepts it; Backlot does not",
-      "note": "Real GitHub paginates the branch and tag listings with `page`/`per_page`; the listings Backlot added in #95 accept neither. Read off GitHub's published OpenAPI on 2026-09-01."
     },
     {
       "kind": "missing_operation",
@@ -4362,20 +4342,6 @@
       "severity": "gap",
       "path": "GET /repos/{}/{}/subscription",
       "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/tags?page",
-      "detail": "the vendor accepts it; Backlot does not",
-      "note": "Real GitHub paginates the branch and tag listings with `page`/`per_page`; the listings Backlot added in #95 accept neither. Read off GitHub's published OpenAPI on 2026-09-01."
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /repos/{}/{}/tags?per_page",
-      "detail": "the vendor accepts it; Backlot does not",
-      "note": "Real GitHub paginates the branch and tag listings with `page`/`per_page`; the listings Backlot added in #95 accept neither. Read off GitHub's published OpenAPI on 2026-09-01."
     },
     {
       "kind": "missing_operation",

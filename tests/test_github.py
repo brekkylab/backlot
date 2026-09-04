@@ -740,6 +740,9 @@ def test_github_lists_the_refs_a_client_enumerates_before_it_reads(gh_client, gh
     assert [b["name"] for b in body] == [repo["default_branch"]]
     assert body[0]["protected"] is False
     assert set(body[0]["commit"]) == {"sha", "url"}
+    # those three and nothing else: real's item carries none of the `_links`, `protection` and
+    # `protection_url` the single-branch route does (psf/requests, `?per_page=1` against `/3.0`)
+    assert set(body[0]) == {"name", "commit", "protected"}
     # the one branch is the one `/branches/{branch}` already serves, down to the commit
     single = c.get(f"/github/repos/{gh_org}/codebase/branches/main", headers=gh_admin_h).json()
     assert body[0]["commit"]["sha"] == single["commit"]["sha"]
@@ -841,19 +844,29 @@ def test_github_a_stated_branch_listing_replaces_the_inferred_one(gh_client, gh_
     assert c.get(f"{base}/branches/trunk", headers=gh_admin_h).status_code == 200
 
 
-def test_github_stated_protection_gives_protected_all_three_answers(gh_client, gh_admin_h, gh_org):
-    """`?protected=` selects for real once a corpus states which branches are protected.
+def test_github_stated_protection_decides_the_filter_and_the_protection_object(
+    gh_client, gh_admin_h, gh_org
+):
+    """`?protected=` selects for real once a corpus states which branches are protected, and the
+    same stated bit decides `protection.enabled` on the branch object.
 
     Real is three-valued — a truthy value selects the protected branches, `false`/`0` the
     unprotected ones, an absent or empty parameter all of them (measured on fastapi/fastapi: 22
     branches, one protected, answering 1 / 21 / 22). Until a corpus could say so, every branch was
     unprotected and the last two answers coincided; they no longer have to.
+
+    `protection.enabled` reports CLASSIC protection where `protected` covers any mechanism, and a
+    stated bit is read as the classic one — measured 2026-09-03, see
+    :func:`backlot.routers.github.get_branch`.
     """
     c, _ = gh_client
     url = f"/github/repos/{gh_org}/stated-repo/branches"
 
     def names(params):
         return [b["name"] for b in c.get(url, headers=gh_admin_h, params=params).json()]
+
+    def next_url(params):
+        return _link_rels(c.get(url, headers=gh_admin_h, params=params).headers["Link"])["next"]
 
     assert names({"protected": "true"}) == ["trunk"]
     assert names({"protected": "1"}) == ["trunk"]
@@ -863,8 +876,114 @@ def test_github_stated_protection_gives_protected_all_three_answers(gh_client, g
     assert names(None) == ["release/2026-03", "trunk"]
     # and the flag rides on the entry itself, in both listings
     assert [b["protected"] for b in c.get(url, headers=gh_admin_h).json()] == [False, True]
+
+    # real's six members on EVERY branch, protected or not, and PyGithub's `Branch` declares the
+    # three this used to omit
     single = c.get(f"{url}/trunk", headers=gh_admin_h).json()
-    assert single["protected"] is True
+    slashed = c.get(f"{url}/release/2026-03", headers=gh_admin_h).json()
+    keys = {"name", "commit", "_links", "protected", "protection", "protection_url"}
+    assert set(single) == keys and set(slashed) == keys
+    assert single["protected"] is True and single["protection"]["enabled"] is True
+    assert slashed["protected"] is False and slashed["protection"]["enabled"] is False
+    # real's empty block either way: a corpus records no CI
+    empty = {"enforcement_level": "off", "contexts": [], "checks": []}
+    assert single["protection"] == {"enabled": True, "required_status_checks": empty}
+    assert slashed["protection"] == {"enabled": False, "required_status_checks": empty}
+
+    # a slash stays a slash in all three urls, unescaped, as real spells them
+    self_url = slashed["_links"]["self"]
+    assert self_url.split("testserver", 1)[1] == f"{url}/release/2026-03"
+    assert slashed["protection_url"] == f"{self_url}/protection"
+    assert slashed["_links"]["html"] == (
+        f"https://github.com/{gh_org}/stated-repo/tree/release/2026-03"
+    )
+    # `self` resolves to this same object, which is the point of serving it
+    assert c.get(self_url.split("testserver", 1)[1], headers=gh_admin_h).json() == slashed
+
+    # `protection_url` reaches a route, and that route answers real's 404 for a caller without
+    # repo-admin rights (psf/requests `main` and `3.0`). The slashed name pins the route ORDER:
+    # real reads the trailing `/protection` as the route even after a slashed name
+    # (`/branches/bug/5671/protection` answers this anchor, and `bug/5671` is a branch).
+    for name in ("trunk", "release/2026-03"):
+        r = c.get(f"{url}/{name}/protection", headers=gh_admin_h)
+        assert r.status_code == 404, name
+        assert r.json() == {
+            "message": "Not Found",
+            "documentation_url": (
+                "https://docs.github.com/rest/branches/branch-protection#get-branch-protection"
+            ),
+            "status": "404",
+        }, name
+
+    # that handler resolves nothing, so the router-wide dependencies are what answer for the
+    # credential, the owner and the version — an unauthenticated 404 would confirm the route
+    prot = f"{url}/trunk/protection"
+    bad_token = {"Authorization": "Bearer usr-not-a-real-token"}
+    old_version = {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}
+    wrong_owner = "/github/repos/not-the-owner/stated-repo/branches/trunk/protection"
+    assert c.get(prot).status_code == 401
+    assert c.get(prot, headers=bad_token).status_code == 401
+    assert c.get(prot, headers=old_version).status_code == 400
+    assert c.get(wrong_owner, headers=gh_admin_h).status_code == 404
+
+    # the selection happens ahead of the page cut, and a page url spells out only a parameter the
+    # caller sent, an empty value included (`list_branches` and `_echo` carry the measurements)
+    paged = c.get(url, headers=gh_admin_h, params={"protected": "false", "per_page": 1})
+    assert [b["name"] for b in paged.json()] == ["release/2026-03"]
+    assert "Link" not in paged.headers, "one unprotected branch here is a single page"
+    assert "protected=&" in next_url({"protected": "", "per_page": 1})
+    assert "protected" not in next_url({"per_page": 1})
+
+
+@pytest.mark.parametrize(
+    "route, names",
+    [("branches", ["release/2026-03", "trunk"]), ("tags", ["v1.0", "v1.1"])],
+)
+def test_github_ref_listings_page_like_every_other_listing(
+    gh_client, gh_admin_h, gh_org, route, names
+):
+    """`/branches` and `/tags` honour `per_page` and send the `Link` the rest of the router sends.
+
+    Neither listing reports a total, so `next` is the only way a client learns there is a second
+    page at all — the reason the header is not optional here.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/stated-repo/{route}"
+    first = c.get(url, headers=gh_admin_h, params={"per_page": 1})
+    assert [x["name"] for x in first.json()] == names[:1]
+    assert set(_link_rels(first.headers["Link"])) == {"next", "last"}
+
+    nxt = _link_rels(first.headers["Link"])["next"]
+    second = c.get(nxt.split("testserver", 1)[1], headers=gh_admin_h)
+    assert [x["name"] for x in second.json()] == names[1:]
+    assert {"prev", "first"} <= set(_link_rels(second.headers["Link"]))
+
+    # one page carries no Link at all, as real sends none
+    assert "Link" not in c.get(url, headers=gh_admin_h).headers
+
+
+@pytest.mark.parametrize("route", ["pulls", "issues"])
+def test_github_a_page_url_echoes_only_the_filters_the_caller_sent(
+    gh_client, gh_admin_h, gh_org, route
+):
+    """A next-page url spells out a listing's filter only when the request carried it (`_echo`).
+
+    `state` defaults to `open`, so a url echoing it is narrower than the one the caller called: a
+    client walking `state=all` by following `next` would lose the closed rows from page 2 on.
+
+    Both listings that take a `state`, since each applies the default itself: `/issues` serves the
+    repo's pulls as rows too, the way real does, so `diffable` pages it without a fixture of its own.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/diffable/{route}"
+
+    def next_url(params):
+        r = c.get(url, headers=gh_admin_h, params={"per_page": 1, **params})
+        return _link_rels(r.headers["Link"])["next"]
+
+    assert "state" not in next_url({})
+    assert "state=open" in next_url({"state": "open"})
+    assert "state=all" in next_url({"state": "all"})
 
 
 def test_github_a_stated_repo_serves_its_tags(gh_client, gh_admin_h, gh_org):
@@ -2066,6 +2185,82 @@ def test_github_validates_the_owner_segment(gh_client, gh_admin_h, gh_org):
     assert c.get(f"/github/repos/{gh_org.upper()}/codebase", headers=gh_admin_h).status_code == 200
     assert c.get("/github/orgs/not-the-org", headers=gh_admin_h).status_code == 404
     assert c.get("/github/orgs/not-the-org/repos", headers=gh_admin_h).status_code == 404
+
+
+def test_github_answers_the_corpus_spelling_whatever_case_was_asked_for(
+    gh_client, gh_admin_h, gh_org, gh_user_tokens
+):
+    """A url Backlot answers names the org and the repo as the corpus spells them, not as the
+    caller typed them — and a repo asked for in another case resolves rather than 404ing.
+
+    Real normalizes both segments and 404s neither: `GET /repos/PSF/REQUESTS` answers
+    `name: requests`, `full_name: psf/requests` and every url, template and git url lowercase,
+    `/orgs/PSF` answers `login: psf` and `url: .../orgs/psf`, and an issue item's `url`,
+    `repository_url` and `html_url` are lowercase too — measured on api.github.com 2026-09-03,
+    200 each with no redirect, so the normalization is in the body rather than in a `Location`.
+    Echoing the caller's spelling gives one resource two identities: a client keying a cache on the
+    url it got back stores both, and `/orgs/ACME` and `/orgs/acme` reported different `id`s, since
+    the id is synthesized from the name it was asked with.
+
+    Resolving the repo case-insensitively must not widen what a scoped token sees, which is the
+    last two assertions: the name is canonicalized before the visibility check, never instead of
+    it.
+    """
+    c, _ = gh_client
+    shout, shout_repo = gh_org.upper(), "CODEBASE"
+    assert shout != gh_org, "this asserts nothing unless the org has a case to get wrong"
+
+    def shouted(body):
+        """Every string in the response carrying a spelling the corpus does not use."""
+        if isinstance(body, dict):
+            return [u for v in body.values() for u in shouted(v)]
+        if isinstance(body, list):
+            return [u for v in body for u in shouted(v)]
+        if not isinstance(body, str):
+            return []
+        return [body] if shout in body or shout_repo in body else []
+
+    for path in ("", "/branches/main", "/issues", "/pulls", "/readme", "/tags", "/collaborators"):
+        r = c.get(f"/github/repos/{shout}/{shout_repo}{path}", headers=gh_admin_h)
+        assert r.status_code == 200, path
+        assert shouted(r.json()) == [], f"{path} echoed the caller's: {shouted(r.json())}"
+
+    base = f"/github/repos/{shout}/{shout_repo}"
+    branch = c.get(f"{base}/branches/main", headers=gh_admin_h).json()
+    assert branch["_links"]["self"].endswith(f"/repos/{gh_org}/codebase/branches/main")
+    assert branch["_links"]["html"] == f"https://github.com/{gh_org}/codebase/tree/main"
+    assert branch["protection_url"] == f"{branch['_links']['self']}/protection"
+    assert f"/repos/{gh_org}/codebase/" in branch["commit"]["url"]
+
+    repo = c.get(base, headers=gh_admin_h).json()
+    assert repo["name"] == "codebase" and repo["full_name"] == f"{gh_org}/codebase"
+    assert repo["html_url"] == f"https://github.com/{gh_org}/codebase"
+    assert repo["owner"]["login"] == gh_org
+    # the same object either spelling reaches it by, ids and templates included
+    assert repo == c.get(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h).json()
+
+    # `/orgs/{org}` is held to the same rule, and the synthesized `id` is the sharp end of it:
+    # derived from the name, it forked into two values for one org.
+    org = c.get(f"/github/orgs/{shout}", headers=gh_admin_h).json()
+    assert org == c.get(f"/github/orgs/{gh_org}", headers=gh_admin_h).json()
+    assert org["login"] == gh_org and org["html_url"] == f"https://github.com/{gh_org}"
+    assert org["url"].endswith(f"/orgs/{gh_org}") and org["repos_url"].endswith("/repos")
+
+    # A `repo:` qualifier resolves the same way, on both search routes: real answers the same
+    # 4,173 for `repo:PSF/Requests is:issue` as for the lowercase spelling, with `repository_url`
+    # canonical (measured 2026-09-04). A qualifier that resolved in only one case would read as
+    # "that repo has no matches" rather than as a spelling this server would not take.
+    for route, named in (("issues", "gateway"), ("code", "codebase")):
+        url = f"/github/search/{route}"
+        loud = c.get(url, headers=gh_admin_h, params={"q": f"repo:{named.upper()}"})
+        quiet = c.get(url, headers=gh_admin_h, params={"q": f"repo:{named}"})
+        assert loud.status_code == 200 and quiet.json()["total_count"] > 0, route
+        assert loud.json() == quiet.json(), route
+
+    # 'vault' is invisible to bob, in whatever case he asks for it
+    bob = {"Authorization": f"Bearer {gh_user_tokens['bob@acme.com']}"}
+    assert c.get(f"/github/repos/{gh_org}/VAULT", headers=bob).status_code == 404
+    assert c.get(f"/github/repos/{gh_org}/VAULT", headers=gh_admin_h).status_code == 200
 
 
 # --- X-GitHub-Api-Version negotiation -----------------------------------------

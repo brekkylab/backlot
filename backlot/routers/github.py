@@ -646,7 +646,7 @@ def _qual_repos(conn, quals: dict, org: str, ids) -> list[str] | None:
             continue
         # `_visible_repos`'s rule for the one name asked about rather than for every repo in the
         # corpus: a repo with no document this caller can read is not visible to them.
-        if ids is not None and store.count_documents(conn, "github", spelled, ids) == 0:
+        if ids is not None and not store.has_visible_document(conn, "github", spelled, ids):
             continue
         names.append(spelled)
     return names
@@ -883,7 +883,7 @@ def _repo_visible(conn, repo: str, ids) -> bool:
     """
     if store.get_container(conn, "github", repo) is None:
         return False
-    return ids is None or store.count_documents(conn, "github", repo, ids) > 0
+    return ids is None or store.has_visible_document(conn, "github", repo, ids)
 
 
 def _require_repo(conn, repo: str, ids) -> None:
@@ -896,7 +896,7 @@ def _visible_repos(conn, ids) -> list[str]:
     """Repo names the caller can see at all — one with no visible document is not visible."""
     repos = [r["name"] for r in store.list_containers(conn, "github")]
     if ids is not None:
-        repos = [n for n in repos if store.count_documents(conn, "github", n, ids) > 0]
+        repos = [n for n in repos if store.has_visible_document(conn, "github", n, ids)]
     return repos
 
 

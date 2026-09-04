@@ -837,12 +837,58 @@ def _space_container_for_key(conn, space_key: str) -> str | None:
     return None
 
 
+def _reachable_spaces(conn, ids) -> list:
+    """The spaces the caller can reach, as container rows — `_reachable_projects` for Confluence.
+
+    A space is listed when the caller can read a page in it. Backlot's ACL grants per document, so
+    there is nothing else to read "can view this space" off, and the same reasoning applies as on
+    the Jira side: real Confluence lists a space by its space permissions, and a space can grant
+    `read` while showing the caller no page, so a real listing can hold a space this one drops.
+    That scoped rule is NOT measured — an anonymous caller cannot be used to measure it, because
+    Confluence answers 403 before a space is resolved (see :func:`_confluence_caller`), and a
+    scoped measurement needs two accounts plus a space permission scheme on a live site. What it
+    does settle is the other direction: a caller who can open nothing in a space is not shown it.
+    """
+    rows = store.list_containers(conn, "confluence")
+    if ids is None:
+        return rows
+    return [r for r in rows if store.has_visible_document(conn, "confluence", r["name"], ids)]
+
+
+def _require_space(request: Request, conn, key: str) -> str:
+    """The container behind a space key the caller can reach, or Confluence's own 404 for it.
+
+    `_require_project` for Confluence, and the reason to refuse rather than serve is sharpest on
+    ``space/{key}/permission``: its roster names the people who hold `read` on the space, so a
+    caller who reaches no page in it would learn which colleagues read a space they cannot see
+    into. The addresses themselves are not the disclosure — `slack/api/users.list` already answers
+    any scoped caller with every address in the corpus — the association is.
+
+    Confluence's not-found for a space is ``404 {"message": "No space with the given key
+    exists"}``, so an unreachable space reports as an absent one, the way `issue/{key}` and
+    `content/{id}` already answer here. Both space reads have to give that ONE answer for the
+    refusal to hold: a route that reported a key naming nothing any other way — 200 with an empty
+    roster, say — would let a caller read the space's existence off the difference, which is the
+    fact the refusal exists to withhold. Which refusal real Confluence would give a scoped caller
+    is unmeasured, for the reason :func:`_reachable_spaces` gives.
+    """
+    ids = auth.visible_ids(request, _confluence_caller(request))
+    container = _space_container_for_key(conn, key)
+    # No `ids is None` short-circuit, unlike `github._repo_visible`: there a `subtype: repo`
+    # record creates a container holding no document, so the admin needs the record alone to be
+    # enough. `confluence.schema.json` requires `space` on every record and has no container-only
+    # subtype, so an unscoped caller reaching a space with no page cannot arise.
+    if container is not None and store.has_visible_document(conn, "confluence", container, ids):
+        return container
+    raise HTTPException(status_code=404, detail="No space with the given key exists")
+
+
 @router.get("/wiki/rest/api/space", response_model=ConfluenceResults)
 async def confluence_spaces(request: Request):
     conn = auth.conn(request)
-    _confluence_caller(request)
+    ids = auth.visible_ids(request, _confluence_caller(request))
     results = []
-    for r in store.list_containers(conn, "confluence"):
+    for r in _reachable_spaces(conn, ids):
         key = synth.confluence_space_key(r["name"])
         results.append(
             {
@@ -859,45 +905,36 @@ async def confluence_spaces(request: Request):
 @router.get("/wiki/rest/api/space/{key}/permission")
 async def confluence_space_permission(key: str, request: Request):
     conn = auth.conn(request)
-    _confluence_caller(request)
-    container = _space_container_for_key(conn, key)
-    perms = []
-    if container:
-        emails = store.container_member_emails(conn, "confluence", container)
-        if emails is None:
-            perms.append(
-                {
-                    "operation": {"operation": "read", "targetType": "space"},
-                    "subjects": {"user": {"results": []}},
-                    "anonymousAccess": True,
+    container = _require_space(request, conn, key)
+    emails = store.container_member_emails(conn, "confluence", container)
+    if emails is None:
+        perm = {
+            "operation": {"operation": "read", "targetType": "space"},
+            "subjects": {"user": {"results": []}},
+            "anonymousAccess": True,
+        }
+    else:
+        perm = {
+            "operation": {"operation": "read", "targetType": "space"},
+            "subjects": {
+                "user": {
+                    "results": [
+                        {"accountId": synth.atlassian_account_id(e), "email": e}
+                        for e in sorted(emails)
+                    ]
                 }
-            )
-        else:
-            perms.append(
-                {
-                    "operation": {"operation": "read", "targetType": "space"},
-                    "subjects": {
-                        "user": {
-                            "results": [
-                                {"accountId": synth.atlassian_account_id(e), "email": e}
-                                for e in sorted(emails)
-                            ]
-                        }
-                    },
-                }
-            )
-    return {"results": perms}
+            },
+        }
+    return {"results": [perm]}
 
 
 @router.get("/wiki/rest/api/space/{key}", response_model=ConfluencePage, openapi_extra=_P_EXPAND)
 async def confluence_space_get(key: str, request: Request):
     """Single-space fetch (atlassian-python-api's ``get_space`` / mcp-atlassian result enrichment).
-    404s (Atlassian-shaped) for an unknown key."""
+    404s (Atlassian-shaped) for a key that names nothing the caller can reach — see
+    :func:`_require_space`."""
     conn = auth.conn(request)
-    _confluence_caller(request)
-    container = _space_container_for_key(conn, key)
-    if container is None:
-        raise HTTPException(status_code=404, detail="No space with the given key exists")
+    container = _require_space(request, conn, key)
     space = {
         "id": synth.github_user_id(container),
         "key": key,

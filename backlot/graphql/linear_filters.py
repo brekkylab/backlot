@@ -1132,7 +1132,14 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
     This is the vendor's arithmetic as measured, not its code: the first two clauses read like a
     scan for ``null: true`` that decides whether rows without the relation are admitted, the
     rest like flags hoisted out of the branches before the related-row side compiles, but no
-    single query shape was found that yields all of it."""
+    single query shape was found that yields all of it. The one piece of Linear's own filter
+    code that is public, the matcher its web client runs over synced models (the ``or`` and
+    ``and`` operators of the ModelMatcher in ``static.linear.app/client/assets/store.*.js``,
+    read 2026-09-04), does answer a missing relation by scanning: an ``or`` there is "some
+    branch says ``null: true``", an ``and`` "every branch does". It is not the API's compiler,
+    though -- it ANDs the keys of a branch and reads ``{and: [{null: true}, {name: {eq: X}}]}``
+    as none where the API answers the issues without the relation -- so the clauses above stay
+    measured."""
     spec = _without_null_values(spec)
     items = _relation_items(spec)
     own = [sub for key, sub, nested in items if key == "null" and not nested]

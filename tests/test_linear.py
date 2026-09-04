@@ -1374,6 +1374,62 @@ def test_issue_filter_or_answers_a_vacuous_branch_as_linear(fclient, literal, ex
     assert ids(fclient, literal) == sorted(expected)
 
 
+# A nullable relation's `null: true` beside other keys. api.linear.app reads nothing else in the
+# object: `{null: true, name: {eq: X}}` is the issues without the relation, not none (measured
+# 2026-09-04 on `project` with two issues in two throwaway projects beside two in none, and on
+# `assignee` with one issue assigned to the viewer beside three unassigned). `and` branches are keys
+# of the same object, the object's own `null` wins over its branches', `null: false` does AND, and
+# an `or` is the union of its branches. Same fixture: ENG-1 is Bob Stone's and in `runtime`, ENG-2 is
+# in `runtime` and unassigned, DES-1 has neither; every issue has a creator.
+_RUNTIME = synth.linear_project_id("runtime")
+_RELATION_NULL_CELLS = [
+    # `null: true` reads nothing else in the object
+    ('{assignee: {null: true, name: {eq: "Bob Stone"}}}', {L1, U}),
+    ('{assignee: {null: true, name: {eq: "nobody"}}}', {L1, U}),
+    ('{assignee: {null: true, name: {neq: "Bob Stone"}}}', {L1, U}),
+    ('{assignee: {null: true, email: {eq: "bob@acme.com"}, name: {eq: "Bob Stone"}}}', {L1, U}),
+    ('{assignee: {null: true, and: [{name: {eq: "Bob Stone"}}]}}', {L1, U}),
+    ('{assignee: {null: true, or: [{name: {eq: "Bob Stone"}}]}}', {L1, U}),
+    ('{project: {null: true, name: {eq: "runtime"}}}', {U}),
+    ('{project: {null: true, id: {eq: "%s"}}}' % _RUNTIME, {U}),
+    # `and` branches are keys of the same object
+    ('{assignee: {and: [{null: true}], name: {eq: "Bob Stone"}}}', {L1, U}),
+    ('{assignee: {and: [{null: true}, {name: {eq: "Bob Stone"}}]}}', {L1, U}),
+    ('{assignee: {and: [{and: [{null: true}]}, {name: {eq: "Bob Stone"}}]}}', {L1, U}),
+    ("{assignee: {and: [{null: true}, {null: false}]}}", {L1, U}),
+    ("{assignee: {and: [{null: false}, {null: true}]}}", {L1, U}),
+    # the object's own `null` wins over its branches'
+    ("{assignee: {null: false, and: [{null: true}]}}", {L2}),
+    ("{assignee: {null: true, and: [{null: false}]}}", {L1, U}),
+    ("{creator: {null: false, and: [{null: true}]}}", EVERY),
+    # `null: false` does AND
+    ('{assignee: {null: false, name: {eq: "Bob Stone"}}}', {L2}),
+    ('{assignee: {null: false, name: {neq: "Bob Stone"}}}', set()),
+    ('{assignee: {null: false, name: {eq: "nobody"}}}', set()),
+    ('{project: {null: false, name: {eq: "runtime"}}}', {L1, L2}),
+    ('{assignee: {null: false, or: [{null: true}, {name: {eq: "Bob Stone"}}]}}', {L2}),
+    # an `or` is the union of its branches, each read by this rule
+    ('{assignee: {or: [{null: true}, {name: {eq: "Bob Stone"}}]}}', EVERY),
+    ('{assignee: {or: [{null: true, name: {eq: "Bob Stone"}}]}}', {L1, U}),
+    # two relation filters on the same relation are two filters, ANDed as `IssueFilter` ANDs
+    ('{and: [{assignee: {null: true}}, {assignee: {name: {eq: "Bob Stone"}}}]}', set()),
+    ('{or: [{assignee: {null: true, name: {eq: "Bob Stone"}}}, %s]}' % NONE, {L1, U}),
+    ('{project: {null: true, name: {eq: "runtime"}}, assignee: {null: true}}', {U}),
+    ('{project: {null: true, name: {eq: "runtime"}}, assignee: {name: {eq: "Bob Stone"}}}', set()),
+]
+
+
+@pytest.mark.parametrize(
+    "literal,expected", _RELATION_NULL_CELLS, ids=[c[0] for c in _RELATION_NULL_CELLS]
+)
+def test_relation_null_true_reads_nothing_else_in_the_object_as_linear(fclient, literal, expected):
+    """`null: true` on a nullable relation is not one condition among the object's keys: Linear
+    answers the issues without the relation whatever else the object says, where ANDing the keys
+    answers none. `null: false` does AND with them. Each cell is one measured answer; the mapping
+    to the fixture is above `_RELATION_NULL_CELLS`."""
+    assert ids(fclient, literal) == sorted(expected)
+
+
 # --- response-shape assertions (were tests/test_fidelity.py) --------------------------------
 
 
@@ -1460,6 +1516,7 @@ LINEAR_ENUMS = {
         "githubPersonal",
         "githubCodeAccessPersonal",
         "gitlab",
+        "origin",
         "googleCalendarPersonal",
         "googleSheets",
         "intercom",
@@ -1801,12 +1858,16 @@ def test_a_malformed_project_id_is_refused_however_deep_the_filter_nests_it(fcli
     """`ProjectFilter` takes `and` / `or`, and `_sub_filter` follows them to the same lookup, so a
     UUID refused at `{project: {id: …}}` has to be refused at `{project: {and: [{id: …}]}}` too --
     this branch looked the nested one up and answered an empty page. The issue-id side already
-    recursed (`{and: [{id: {eq: "not-a-uuid"}}]}` is refused), so the two sides now agree."""
+    recursed (`{and: [{id: {eq: "not-a-uuid"}}]}` is refused), so the two sides now agree. The last
+    shape pins that `null: true` does not swallow the refusal: `_sub_filter` returns before reading
+    the `id`, and the refusal has to happen anyway because `_refuse_malformed_project_ids` runs
+    first."""
     nil = "00000000-0000-0000-0000-000000000000"
     for shape in (
         '{project: {and: [{id: {eq: "%s"}}]}}',
         '{project: {or: [{name: {eq: "runtime"}}, {id: {in: ["%s"]}}]}}',
         '{project: {and: [{or: [{id: {neq: "%s"}}]}]}}',
+        '{project: {null: true, id: {eq: "%s"}}}',
     ):
         r = post(fclient, "{ issues(filter: %s) { nodes { identifier } } }" % (shape % nil))
         assert r.status_code == 200, shape

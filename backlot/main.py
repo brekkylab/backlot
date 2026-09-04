@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backlot import errors, openapi, store, synth
+from backlot import auth, errors, openapi, store, synth
 from backlot.acl import Acl
 from backlot.config import get_settings
 from backlot.oauth import Oauth
@@ -187,6 +187,42 @@ async def resolve_github_id_paths(request: Request, call_next):
             request.scope["path"] = canonical
             request.scope["raw_path"] = canonical.encode()
     return await call_next(request)
+
+
+@app.middleware("http")
+async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
+    """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
+
+    Unlike the Basic pair, which Jira serves anonymously, an unreadable bearer is refused — and
+    refused ahead of everything, so `serverInfo` and `field` answer it too even though neither
+    needs a credential. That is why this short-circuits rather than living in
+    ``atlassian._jira_caller``. Confluence is not here: it answers its own 403 for any credential
+    that fails, which ``atlassian._confluence_caller`` already gives. Measured against
+    ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04.
+    """
+    if request.url.path.startswith("/atlassian/rest/") and auth.atlassian_bearer_unreadable(
+        request
+    ):
+        return JSONResponse(status_code=403, content=errors.atlassian.connect_token_body())
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def report_failed_jira_login(request: Request, call_next):
+    """Say that a Jira read presented a credential Backlot could not resolve, as real Jira does.
+
+    Jira serves those reads anonymously rather than refusing them (see
+    ``backlot.routers.atlassian._jira_caller``) and reports the failure only in this header, on
+    every answer it gives — the 200s included, which is why this is middleware rather than
+    something a refusal path could carry. The header is keyed on the username alone, and
+    Confluence sends it on nothing. Measured against ecosystem.atlassian.net and
+    brekkylab.atlassian.net on 2026-09-04.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/atlassian/rest/") and auth.basic_names_a_user(request):
+        if auth.atlassian_caller(request).is_anonymous:
+            response.headers["X-Seraph-LoginReason"] = "AUTHENTICATED_FAILED"
+    return response
 
 
 @app.middleware("http")

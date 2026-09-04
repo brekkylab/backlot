@@ -3,7 +3,9 @@
 Principal ids are globally unique across types (org name, group slugs, user emails),
 so a document is visible to a caller iff any of the doc's ACL ``principal_id`` values
 is in the caller's principal set: ``{org} ∪ {their groups} ∪ {their own email}``.
-An admin/service token bypasses filtering entirely (``visible_ids`` -> ``None``).
+An admin/service token bypasses filtering entirely (``visible_ids`` -> ``None``), and the
+anonymous caller sees nothing (``visible_ids`` -> the empty set, which ``store._acl_clause``
+answers with ``AND 0``).
 """
 
 from __future__ import annotations
@@ -19,8 +21,15 @@ from backlot import store, synth
 
 @dataclass(frozen=True)
 class Caller:
-    email: str | None  # None for admin/service account
+    email: str | None  # None for admin/service account, and for the anonymous caller
     is_admin: bool
+    is_anonymous: bool = False  # a caller whose credential resolved to nobody
+
+
+# The caller a vendor drops to when it processes an unauthenticated read instead of refusing it,
+# as Jira does. Its principal set is empty rather than the org's: a corpus grants "public" to the
+# org, and nobody outside the org is in it.
+ANONYMOUS = Caller(email=None, is_admin=False, is_anonymous=True)
 
 
 class Acl:
@@ -84,6 +93,8 @@ class Acl:
     def visible_ids(self, conn: sqlite3.Connection, caller: Caller) -> set[str] | None:
         if caller.is_admin:
             return None
+        if caller.is_anonymous:
+            return set()
         ids = {self.org_name, caller.email}
         ids.update(store.user_group_ids(conn, caller.email))
         return ids

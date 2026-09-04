@@ -97,7 +97,11 @@ def test_unauthenticated_is_rejected(client):
     assert (
         client.get("/drive/v3/files", headers={"Authorization": "Bearer nope"}).status_code == 401
     )
-    assert client.get("/atlassian/rest/api/3/search/jql").status_code == 401
+    # Atlassian splits: Jira serves the read as an anonymous caller (which reaches no document),
+    # Confluence refuses outright with its own 403. Both measured; see tests/test_atlassian.py.
+    jira = client.get("/atlassian/rest/api/3/project/search")
+    assert jira.status_code == 200 and jira.json()["values"] == []
+    assert client.get("/atlassian/wiki/rest/api/space").status_code == 403
     slack = client.post("/slack/api/conversations.list").json()
     assert slack == {"ok": False, "error": "not_authed"}
 

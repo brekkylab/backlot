@@ -167,9 +167,31 @@ nothing to match and any username goes through. That is what lets an Atlassian c
 placeholder its config demands — `svc@example.com:admin-service-token` works.
 
 A plain `Authorization: Bearer <token>` is accepted too, which is easier when you are driving the
-API by hand rather than through an Atlassian SDK. Sending neither is a `401` — with one exception,
-`rest/api/3/serverInfo`, which answers unauthenticated as real Jira's does, so it is the one
-Atlassian endpoint that cannot tell you whether your credential works.
+API by hand rather than through an Atlassian SDK — spelt exactly that way. The real site reads the
+scheme case-sensitively and wants exactly one space after it, so `bearer <token>`, `BEARER
+<token>`, `token <token>` and `Bearer  <token>` are not credentials to it and Backlot does not take
+them either.
+
+A `Bearer` it does read and cannot resolve is the one refusal Jira gives here, and it comes before
+the route: `403 {"error": "Failed to parse Connect Session Auth Token"}`, on every Jira path
+including `serverInfo`. A `<site>.atlassian.net` reads a bearer as a Connect session JWT, and a
+Backlot token is an opaque string, so that is the answer the real site gives one.
+
+The two APIs disagree about a credential that resolves to nobody, and Backlot follows each.
+**Jira does not refuse it**: the read is served to an anonymous caller, and since a corpus grants
+its documents to the org and to groups and addresses inside it, an anonymous caller reaches none of
+them — `project/search` answers `200` with an empty `values`, a search answers `200` with no
+issues, and an issue answers Jira's `404`. The failure is reported in the
+`X-Seraph-LoginReason: AUTHENTICATED_FAILED` header rather than in the status, so a Basic
+credential is checked on Jira by reading that header — not by the status, and not by whether
+anything came back, since an empty listing is also the honest answer for a working credential over
+a corpus it can read nothing in. A misspelt bearer scheme has neither signal: it is not a
+credential to the site, so the answer is the anonymous one with no header at all. Check a bearer
+against Confluence, or against a Jira read you know the account can see.
+**Confluence does refuse it**, with a `403` in its own envelope, or a `401` when the Basic value is
+not one username and one password (an empty password included). Measured against a public
+Atlassian Cloud site and a private one on 2026-09-04, with a wrong password, an empty one, a value
+that is not base64, an unknown scheme, and no header at all.
 
 ### Notion — `Bearer`
 

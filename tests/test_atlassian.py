@@ -7,11 +7,13 @@ or call the response builder directly.
 from __future__ import annotations
 
 from starlette.requests import Request
+import base64
 import re
 
 import pytest
 
 from backlot import store
+from backlot.errors import atlassian as errors_atlassian
 from tests._helpers import (
     bare_request,
     client_for,
@@ -31,18 +33,254 @@ def test_admin_confluence_crawls_all(client, admin_h, ro_conn):
     assert len(crawl_confluence(client, admin_h)) == db_count(ro_conn, "confluence")
 
 
-def test_atlassian_401_keeps_the_atlassian_error_envelope(client):
-    """Atlassian clients parse the error body as Atlassian Cloud's envelope (Confluence's
-    raise_for_status reads ``response.json()["message"]``), so a 401 there is not FastAPI's
-    ``{"detail": ...}`` — see backlot.main._atlassian_error_body."""
-    # NOT serverInfo: the jira PyPI client probes that on connect, so it answers unauthenticated
-    # on purpose. project/search is the first call that actually needs a credential.
-    r = client.get("/atlassian/rest/api/3/project/search")
+def _basic(raw: str) -> dict[str, str]:
+    return {"Authorization": "Basic " + base64.b64encode(raw.encode()).decode()}
+
+
+FAILED_PAIR = _basic("nobody@example.com:wrongtoken")
+
+# Measured against ecosystem.atlassian.net (a site with public projects) and
+# brekkylab.atlassian.net (one without) on 2026-09-04, with `nobody@example.com:wrongtoken`,
+# with an empty password, with a value that is not base64, with an unknown scheme, and with no
+# Authorization header at all. Every shape below answered the same on both sites.
+UNRESOLVABLE = [
+    pytest.param(FAILED_PAIR, id="failed-pair"),
+    pytest.param({}, id="no-credential"),
+    pytest.param({"Authorization": "Bogus xyz"}, id="unknown-scheme"),
+]
+
+
+@pytest.mark.parametrize("headers", UNRESOLVABLE)
+def test_jira_processes_a_credential_it_cannot_resolve_as_anonymous(client, headers):
+    """Real Jira does not refuse an unresolvable credential on these routes — it drops the caller
+    to anonymous and answers the request. `project/search` is 200 with the projects an anonymous
+    caller may see, a bounded `search/jql` is 200 with that query's anonymous view, and an issue
+    is Jira's own 404. No document in a Backlot corpus is granted to a principal outside the org,
+    so anonymous reaches none of them and each listing comes back empty."""
+    projects = client.get("/atlassian/rest/api/3/project/search", headers=headers)
+    assert projects.status_code == 200 and projects.json()["values"] == []
+    found = client.get(
+        "/atlassian/rest/api/3/search/jql", headers=headers, params={"jql": "project = payments"}
+    )
+    assert found.status_code == 200 and found.json()["issues"] == []
+    issue = client.get("/atlassian/rest/api/3/issue/ABC-1", headers=headers)
+    assert issue.status_code == 404
+    assert issue.json()["errorMessages"] == [
+        "Issue does not exist or you do not have permission to see it."
+    ]
+
+
+@pytest.mark.parametrize("path", ["/rest/api/3/field", "/rest/api/3/issueLinkType"])
+def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client, path):
+    """Both answer 200 to a failed pair on the real sites, so neither is behind the credential."""
+    assert client.get(f"/atlassian{path}", headers=FAILED_PAIR).status_code == 200
+
+
+def test_jira_lists_only_the_projects_the_caller_can_open(tmp_path):
+    """The anonymous listing is empty because a project is listed when the caller can see an issue
+    in it, and that rule is not anonymous-only: a scoped caller who can open nothing in a project
+    does not get it either. Backlot grants per document, so the projects have to be read off the
+    issues — listing every one of them to everybody was how an empty anonymous listing could not
+    be told from a full one."""
+    corpus = [
+        {
+            "source_type": "jira",
+            "doc_id": "j-open",
+            "project": "payments",
+            "title": "Gateway 502s",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+        },
+        {
+            "source_type": "jira",
+            "doc_id": "j-shut",
+            "project": "secrets",
+            "title": "Rotation",
+            "content": "Body.",
+            "author_email": "bob@acme.com",
+            "visibility": "private",
+        },
+    ]
+    settings = tiny_corpus(tmp_path, corpus)
+    with client_for(settings, reload=True) as c:
+        import yaml
+
+        written = yaml.safe_load(settings.tokens_path.read_text())
+        tokens = {u["email"]: u["token"] for u in written["users"]}
+        tokens["admin"] = written["admin_token"]
+
+        def keys(headers):
+            listing = c.get("/atlassian/rest/api/3/project/search", headers=headers).json()
+            return sorted(p["name"] for p in listing["values"])
+
+        assert keys({"Authorization": f"Bearer {tokens['admin']}"}) == ["payments", "secrets"]
+        assert keys({"Authorization": f"Bearer {tokens['bob@acme.com']}"}) == [
+            "payments",
+            "secrets",
+        ]
+        assert keys({"Authorization": f"Bearer {tokens['ava@acme.com']}"}) == ["payments"]
+        assert keys({}) == []
+
+
+@pytest.mark.parametrize("headers", UNRESOLVABLE)
+def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers):
+    """A role read is the one Jira route that keeps refusing an anonymous caller, and which of the
+    two refusals it gives is decided by the project: on the site where the key names a project
+    anonymous can see it is 401 ("You cannot edit the configuration of this project."), and on the
+    site where it names nothing it is 404. Anonymous sees no Backlot project, so it is always the
+    404 here — the corpus's own project key gets the answer a key naming nothing would."""
+    from backlot import synth
+
+    key = synth.jira_project_key("payments")
+    for path in (f"/rest/api/3/project/{key}/role", f"/rest/api/3/project/{key}/role/10002"):
+        r = client.get(f"/atlassian{path}", headers=headers)
+        assert r.status_code == 404, path
+        assert r.json()["errorMessages"] == [f"No project could be found with key '{key}'."]
+
+
+def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
+    """A bearer is not the Basic pair: Jira does not go anonymous for one it cannot resolve, it
+    refuses with 403 and a body that is neither API's envelope. A Backlot token is an opaque
+    string with no dots, which is the shape that draws this — measured with `usr-…` itself, and
+    with `bogustoken123` and `a.b.c`, on both sites on 2026-09-04."""
+    r = client.get(
+        "/atlassian/rest/api/3/project/search", headers={"Authorization": "Bearer usr-nope"}
+    )
+    assert r.status_code == 403
+    # The whole body, not a subset: this one route answers with a single `error` key, where every
+    # other Atlassian error here carries message/statusCode/errorMessages.
+    assert r.json() == {"error": "Failed to parse Connect Session Auth Token"}
+    # No Seraph header either — that one reports a failed Basic username, and this is not one.
+    assert "x-seraph-loginreason" not in r.headers
+    # And it is refused ahead of the route: serverInfo needs no credential and still answers 403,
+    # which is why the check is not in the caller helper.
+    info = client.get(
+        "/atlassian/rest/api/3/serverInfo", headers={"Authorization": "Bearer usr-nope"}
+    )
+    assert info.status_code == 403 and info.json() == {
+        "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
+    }
+
+
+def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
+    """The one disclosed divergence, pinned so it cannot drift into an accident. A bearer shaped
+    like a complete signed JWS is READ by the real gateway and then rejected — `401 text/html`
+    "Client must be authenticated to access this resource." on both sites — where every incomplete
+    shape draws the 403. Backlot issues no JWT-shaped token, and reproducing Atlassian Connect's
+    accept boundary would mean inventing the space between the shapes measured, so this answers the
+    403. If `auth.atlassian_bearer_unreadable` ever grows a shape check, this is what says so."""
+    jws = "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ4In0.c2ln"
+    r = client.get(
+        "/atlassian/rest/api/3/project/search", headers={"Authorization": f"Bearer {jws}"}
+    )
+    assert r.status_code == 403
+    assert r.json() == {"error": errors_atlassian.CONNECT_TOKEN_UNREADABLE}
+    # Confluence answers a JWT-shaped bearer with its own 403, which real does too.
+    conf = client.get("/atlassian/wiki/rest/api/space", headers={"Authorization": f"Bearer {jws}"})
+    assert conf.status_code == 403
+    assert conf.json()["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "bearer usr-nope",
+        "BEARER usr-nope",
+        "token usr-nope",
+        "OAuth usr-nope",
+        "Bearer  usr-nope",
+        "Bearer\tusr-nope",
+        "Bearer",
+    ],
+)
+def test_jira_reads_an_unrecognised_scheme_as_no_credential(client, header):
+    """The 403 above is for a credential the site READ. A spelling it does not read is not a
+    credential at all, and the request is the anonymous one — which is how each spelling was told
+    apart on the real sites in the first place (403 = read, 200 = not read)."""
+    r = client.get("/atlassian/rest/api/3/project/search", headers={"Authorization": header})
+    assert r.status_code == 200 and r.json()["values"] == []
+
+
+def test_atlassian_still_authenticates_the_bearer_spelling_it_does_read(client, tokens_yaml):
+    """The strict parser must not cost the working credential: `Bearer <token>` is what
+    mcp-atlassian sends for an admin, and both APIs answer it."""
+    h = {"Authorization": f"Bearer {tokens_yaml['admin_token']}"}
+    assert client.get("/atlassian/rest/api/3/project/search", headers=h).json()["values"]
+    assert client.get("/atlassian/wiki/rest/api/space", headers=h).status_code == 200
+
+
+def test_confluence_refuses_an_unreadable_bearer_with_its_own_403_not_jiras(client):
+    """Confluence answers a bearer it cannot resolve with the same 403 envelope it gives a failed
+    pair — the refusal is keyed on the credential failing, not on which scheme carried it. Jira's
+    single-key Connect body does not appear on this side. Measured on both sites, for an opaque
+    token and for a JWT-shaped one."""
+    r = client.get("/atlassian/wiki/rest/api/space", headers={"Authorization": "Bearer usr-nope"})
+    assert r.status_code == 403
+    assert r.json()["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
+
+
+@pytest.mark.parametrize("headers", UNRESOLVABLE)
+def test_confluence_refuses_an_unresolvable_credential_with_its_own_403(client, headers):
+    """Confluence does not process an anonymous caller the way Jira does: it rejects the request
+    outright, with a 403 in its own envelope, whether the credential failed or was never sent."""
+    for path in ("/wiki/rest/api/space", "/wiki/rest/api/content/1"):
+        r = client.get(f"/atlassian{path}", headers=headers)
+        assert r.status_code == 403, path
+        assert r.json()["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
+        assert r.json()["statusCode"] == 403
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["nobody@example.com:", ":wrongtoken", ":", "nobody@example.com", "nobody@example.com:a:b"],
+)
+def test_confluence_answers_401_to_a_basic_credential_it_cannot_parse(client, raw):
+    """Confluence's 403 is for a credential it read and rejected. A Basic value that is not one
+    non-empty user and one non-empty password separated by a single colon is not one it can read,
+    and that is a 401 carrying the site's own OAuth realm — measured on both sites for each shape
+    below, and for a value that is not base64 at all. Backlot keeps the Atlassian JSON envelope
+    that every other error here carries, where the real 401 is Tomcat's HTML page."""
+    r = client.get("/atlassian/wiki/rest/api/space", headers=_basic(raw))
     assert r.status_code == 401
+    # The literal, not the constant: comparing the body against the same constant the router
+    # emits passes whatever that constant says, and its value is the measured part — the title of
+    # the Tomcat page real answers with, kept because this envelope is JSON where that page is not.
+    assert r.json()["message"] == "Unauthorized"
+    assert r.headers["www-authenticate"] == 'OAuth realm="http%3A%2F%2Ftestserver%2Fwiki"'
+
+
+def test_jira_reports_a_failed_credential_in_the_seraph_header(client):
+    """Jira answers a failed credential anonymously but still says one was presented, on every
+    response including the 200s. The header is keyed on the username: a value carrying a non-empty
+    user before its first colon gets it, and one without a colon, or with an empty user, does not
+    — neither does a request that sent no credential at all."""
+    carries = client.get("/atlassian/rest/api/3/project/search", headers=FAILED_PAIR)
+    assert carries.headers["x-seraph-loginreason"] == "AUTHENTICATED_FAILED"
+    for headers in ({}, _basic(":wrongtoken"), _basic("nobody@example.com")):
+        answer = client.get("/atlassian/rest/api/3/project/search", headers=headers)
+        assert "x-seraph-loginreason" not in answer.headers
+    # Confluence carries no Seraph header on any of its answers.
+    refused = client.get("/atlassian/wiki/rest/api/space", headers=FAILED_PAIR)
+    assert "x-seraph-loginreason" not in refused.headers
+
+
+def test_atlassian_error_keeps_the_atlassian_error_envelope(client):
+    """Atlassian clients parse the error body as Atlassian Cloud's envelope (Confluence's
+    raise_for_status reads ``response.json()["message"]``), so an error there is not FastAPI's
+    ``{"detail": ...}`` — see backlot.errors.atlassian."""
+    r = client.get("/atlassian/wiki/rest/api/space")
+    assert r.status_code == 403
     body = r.json()
-    assert body["message"] == "Unauthorized"
-    assert body["errorMessages"] == ["Unauthorized"]
-    assert body["statusCode"] == 401
+    # Once against the vendor's own wording rather than against the constant, for the reason given
+    # in test_confluence_answers_401_to_a_basic_credential_it_cannot_parse; the other sites compare
+    # the constant, which pins that the router reaches for the right one.
+    assert body["message"] == (
+        "com.atlassian.confluence.mvc.rest.common.exception.StacklessResponseStatusException: "
+        '403 FORBIDDEN "Request rejected because caller cannot access Confluence"'
+    )
+    assert body["errorMessages"] == [errors_atlassian.CONFLUENCE_FORBIDDEN]
+    assert body["statusCode"] == 403
 
 
 def test_jira_serverinfo_v2_alias_matches_v3(client, admin_h):
@@ -262,9 +500,9 @@ def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
 def test_atlassian_errors_use_atlassian_envelope(client):
     # atlassian-python-api's Confluence client does response.json()["message"] on any error, so
     # Backlot must shape /atlassian errors like Cloud does (message + statusCode), not {"detail"}.
-    r = client.get("/atlassian/wiki/rest/api/content/999999")  # unauthenticated -> 401
-    assert r.status_code == 401
-    assert r.json().get("message") and r.json().get("statusCode") == 401
+    r = client.get("/atlassian/wiki/rest/api/content/999999")  # unauthenticated -> 403
+    assert r.status_code == 403
+    assert r.json().get("message") and r.json().get("statusCode") == 403
     r2 = client.get(
         "/atlassian/wiki/rest/api/content/search"
     )  # 'search' fails int path validation -> 422

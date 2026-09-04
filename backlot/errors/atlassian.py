@@ -13,6 +13,30 @@ import http
 
 PREFIX = "/atlassian"
 
+# The two refusals Confluence gives a caller it will not serve, measured against
+# ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04. A credential it read and
+# rejected, and a request that carried none, both get the 403 below verbatim — the vendor reports
+# its own exception class in the message, and a client that logs the body logs that. A Basic value
+# it could not read gets a 401 instead, whose real body is Tomcat's HTML page titled "HTTP Status
+# 401 - Unauthorized"; that title is the message here, because the envelope this module exists to
+# emit is JSON and a client parsing `message` out of the page would find nothing.
+CONFLUENCE_FORBIDDEN = (
+    "com.atlassian.confluence.mvc.rest.common.exception.StacklessResponseStatusException: "
+    '403 FORBIDDEN "Request rejected because caller cannot access Confluence"'
+)
+CONFLUENCE_UNAUTHORIZED = "Unauthorized"
+
+# What a `<site>.atlassian.net` gateway answers a `Bearer` it cannot read as a Connect session
+# JWT, on every Jira route — `serverInfo` and `field`, which need no credential, included. One
+# `error` key and nothing else: not this module's envelope, and not Confluence's either, so it is
+# returned as its own body rather than shaped. Measured on ecosystem.atlassian.net and
+# brekkylab.atlassian.net on 2026-09-04.
+CONNECT_TOKEN_UNREADABLE = "Failed to parse Connect Session Auth Token"
+
+
+def connect_token_body() -> dict:
+    return {"error": CONNECT_TOKEN_UNREADABLE}
+
 
 def owns(path: str) -> bool:
     return path.startswith(PREFIX)

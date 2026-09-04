@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, Request
 
 from backlot import sigv4
-from backlot.acl import Acl, Caller
+from backlot.acl import ANONYMOUS, Acl, Caller
 
 
 def conn(request: Request) -> sqlite3.Connection:
@@ -62,20 +62,78 @@ def api_key_token(request: Request) -> str | None:
     return hdr
 
 
-def basic_password(request: Request) -> tuple[str | None, str | None]:
-    """Parse ``Authorization: Basic base64(user:pass)`` -> (user, pass)."""
+# How much of a Basic credential a request carries.
+BASIC_ABSENT = "absent"  # no header, another scheme, or `Basic` with nothing to decode
+BASIC_UNPARSEABLE = "unparseable"  # a value that is not one user and one password
+BASIC_PAIR = "pair"  # exactly one non-empty user and one non-empty password
+
+
+def _basic_value(request: Request) -> str | None:
+    """The raw base64 payload of an ``Authorization: Basic`` header, or None for any other."""
     hdr = _authorization(request)
     if not hdr:
-        return None, None
+        return None
     parts = hdr.split(None, 1)
     if len(parts) == 2 and parts[0].lower() == "basic":
-        try:
-            decoded = base64.b64decode(parts[1]).decode("utf-8", "replace")
-            user, _, pw = decoded.partition(":")
-            return user, pw
-        except (ValueError, UnicodeDecodeError):
-            return None, None
-    return None, None
+        return parts[1]
+    return None
+
+
+def _decoded_basic(request: Request) -> str | None:
+    """The decoded ``user:pass`` of a Basic header, ``None`` when there is none to decode and
+    ``""`` for a payload that is not base64 — a value that was there and could not be read."""
+    value = _basic_value(request)
+    if not value:
+        return None
+    try:
+        return base64.b64decode(value).decode("utf-8", "replace")
+    except (ValueError, UnicodeDecodeError):
+        return ""
+
+
+def basic_password(request: Request) -> tuple[str | None, str | None]:
+    """Parse ``Authorization: Basic base64(user:pass)`` -> (user, pass)."""
+    decoded = _decoded_basic(request)
+    if not decoded:
+        return None, None
+    user, _, pw = decoded.partition(":")
+    return user, pw
+
+
+def basic_credential_kind(request: Request) -> str:
+    """Which of :data:`BASIC_ABSENT` / :data:`BASIC_UNPARSEABLE` / :data:`BASIC_PAIR` the request
+    carries.
+
+    Confluence answers the three differently — a pair it read and rejected is its 403, a value it
+    could not read is a 401, and no credential at all is the 403 again — so which one a request
+    holds decides which refusal it draws. Measured against ecosystem.atlassian.net and
+    brekkylab.atlassian.net on 2026-09-04, which is where the split is observable at all: a single
+    colon with both halves non-empty is the pair; an empty user, an empty password, no colon, a
+    second colon, or a payload that is not base64 is unparseable; and a missing header, an unknown
+    scheme and a `Basic` with nothing after it are no credential.
+    """
+    if not _basic_value(request):
+        return BASIC_ABSENT
+    decoded = _decoded_basic(request)
+    if not decoded:  # a payload that is there and does not decode
+        return BASIC_UNPARSEABLE
+    user, _, pw = decoded.partition(":")
+    if user and pw and ":" not in pw:
+        return BASIC_PAIR
+    return BASIC_UNPARSEABLE
+
+
+def basic_names_a_user(request: Request) -> bool:
+    """Whether the request presented a Basic credential naming somebody.
+
+    Jira reports one it could not resolve in ``X-Seraph-LoginReason``, and the header is keyed on
+    the username alone: a value carrying a non-empty user before its first colon draws it whatever
+    follows, and one with an empty user, or with no colon at all, draws nothing. Measured on both
+    sites on 2026-09-04.
+    """
+    decoded = _decoded_basic(request) or ""
+    user, colon, _ = decoded.partition(":")
+    return bool(user and colon)
 
 
 def slack_bearer_token(request: Request) -> str | None:
@@ -96,9 +154,10 @@ def slack_bearer_token(request: Request) -> str | None:
     A tab is not a space to Slack, so the generic whitespace split in :func:`bearer_token` is
     wrong here, and so is its case-insensitive scheme match. That function stays permissive because
     GitHub really does accept ``token <t>`` and RFC 7235 really does make the scheme
-    case-insensitive; Slack implements neither. Sharing it would let Backlot authenticate six
-    spellings live Slack refuses outright, so a client sending ``Authorization: token <xoxb>``
-    would pass every test here and reach nothing in production.
+    case-insensitive; Slack implements neither. Of the five spellings above that Slack refuses,
+    sharing it would authenticate four — every one but ``Bearer<t>``, which it does not take
+    either — so a client sending ``Authorization: token <xoxb>`` would pass every test here and
+    reach nothing in production.
     """
     hdr = (_authorization(request) or "").strip()
     if not hdr.startswith("Bearer "):
@@ -136,13 +195,71 @@ def require_bearer(request: Request, detail: str) -> Caller:
     return caller
 
 
-def require_basic_or_bearer(request: Request, detail: str) -> Caller:
-    """Same, for Atlassian: it carries Basic ``email:api_token`` and also accepts a bearer OAuth
-    token, so both are tried before refusing."""
-    caller = resolve_basic(request) or resolve_bearer(request)
-    if caller is None:
-        raise HTTPException(status_code=401, detail=detail)
-    return caller
+def atlassian_bearer_token(request: Request) -> str | None:
+    """Parse the ``Authorization`` header the way a ``<site>.atlassian.net`` gateway does, which
+    is stricter than :func:`bearer_token` and strict differently from :func:`slack_bearer_token`.
+
+    Measured against ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04 (a bogus
+    token is enough — a recognised credential is refused with a 403 and an unrecognised one is
+    served anonymously, so the answer says which the site read)::
+
+        Bearer <t>      read            bearer <t>      not read
+        ' Bearer <t>'   read            BEARER <t>      not read
+        Bearer <t>' '   read            token <t>       not read
+                                        OAuth <t>       not read
+                                        Bearer  <t>     not read
+                                        Bearer<TAB><t>  not read
+                                        Bearer<t>       not read
+                                        Bearer          not read
+
+    The scheme is case-sensitive and separated from the token by exactly one space. Sharing
+    :func:`bearer_token` would authenticate five of those spellings — every "not read" row above
+    but ``OAuth <t>``, ``Bearer<t>`` and the bare ``Bearer`` — so a client sending
+    ``Authorization: token <t>`` would pass every test here and read nothing in production. Slack
+    refuses a different set: it takes the double space this refuses.
+
+    The leading ``strip`` is what serves the ``Bearer <t>' '`` row, so the token needs no second
+    one: nothing with trailing whitespace survives to reach it.
+    """
+    hdr = (_authorization(request) or "").strip()
+    if not hdr.startswith("Bearer "):
+        return None
+    rest = hdr[len("Bearer ") :]
+    if not rest or rest[0].isspace():
+        return None
+    return rest
+
+
+def atlassian_bearer_unreadable(request: Request) -> bool:
+    """Whether the request carries a bearer the site would read and Backlot cannot resolve.
+
+    A Backlot token is an opaque string with no dots, and that is the shape the gateway reports as
+    unreadable — measured with ``usr-<hex>`` itself. A token shaped like a complete signed JWS is
+    read and then rejected with a 401 instead; Backlot issues none, and reproducing Atlassian
+    Connect's accept boundary would mean inventing the space between the shapes measured, so a
+    JWT-shaped bearer takes the 403 here too.
+    """
+    token = atlassian_bearer_token(request)
+    return bool(token) and acl(request).resolve(token) is None
+
+
+def atlassian_caller(request: Request) -> Caller:
+    """The caller for an Atlassian read: Basic ``email:api_token`` or
+    :func:`atlassian_bearer_token`, and :data:`backlot.acl.ANONYMOUS` when neither resolves.
+
+    The bearer is NOT an OAuth 3LO token standing in for Atlassian's own. A 3LO token goes to
+    ``api.atlassian.com/ex/jira/{cloudid}/…``, which Backlot does not serve; on the
+    ``<site>.atlassian.net`` surface it does serve, a bearer is read as a Connect session JWT, and
+    an opaque Backlot token is one the gateway cannot read at all — which is the ``403``
+    :func:`atlassian_bearer_unreadable` reports.
+
+    No refusal here, unlike :func:`require_bearer`: the two Atlassian APIs disagree about what an
+    unresolved credential means. Jira drops the caller to anonymous and answers the request; only
+    Confluence refuses. Each router decides for itself, so this reports the identity and nothing
+    else.
+    """
+    bearer = atlassian_bearer_token(request)
+    return resolve_basic(request) or acl(request).resolve(bearer) or ANONYMOUS
 
 
 def resolve_api_key(request: Request) -> Caller | None:

@@ -433,9 +433,12 @@ def test_mcp_bridge_enforces_the_acl(live_server, source, where, tool_pred, buil
 
 def test_auth_header_spells_each_source_the_way_its_client_speaks():
     """Which scheme goes on the wire, asserted on the header rather than on an answer: Backlot's
-    Atlassian surface accepts Bearer too (``auth.require_basic_or_bearer``), so no round-trip can
-    tell the two apart. The reason the Basic branch exists is mcp-atlassian, which speaks
-    ``email:api_token`` and nothing else, so that is what has to be pinned."""
+    Atlassian surface takes Bearer too (``auth.atlassian_caller``), so a credential that resolves
+    reads the same either way and no round-trip can tell the two apart. One that does NOT resolve
+    is now separable — a failed pair is served anonymously where a failed bearer is a 403 — but
+    that says which credential failed, not which scheme a working one was sent under. The reason
+    the Basic branch exists is mcp-atlassian, which speaks ``email:api_token`` and nothing else,
+    so that is what has to be pinned."""
     creds = backlot_mcp.Credentials(
         token="usr-abc", email="ava@acme.com", s3_access_key_id="AKIA", s3_secret_access_key="s"
     )

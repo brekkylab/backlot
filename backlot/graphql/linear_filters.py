@@ -867,33 +867,76 @@ def _issue_parts(conn, flt: dict, team_keys: dict | None) -> tuple[str, list, bo
     return _join(parts, "AND"), params, vacuous
 
 
-def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
-    """A nested object filter (``state``, ``assignee``, ``team``, ``project``)."""
-    parts: list[str] = []
-    params: list = []
+def _relation_items(spec: dict, nested: bool = False) -> list[tuple[str, object, bool]]:
+    """The keys of a nested object filter with its ``and`` branches read as more keys of the same
+    object, each tagged with whether it came from a branch. ``null: null`` is no key at all, unlike
+    on a comparator (see `_Comparator.render`): measured 2026-09-03 with one assigned issue beside
+    three unassigned, `assignee: {null: null}` answered all four where `null: true` answered the
+    three and `null: false` the one, `{null: null, name: {eq: ME}}` the assigned one alone,
+    `{null: null, name: {eq: "nobody"}}` none, and `{or: [{assignee: {null: null}}, {title: {eq:
+    "no such title"}}]}` all four -- the branch left as `{}` is a key that constrains nothing, as
+    `{assignee: {}}` is."""
+    out: list[tuple[str, object, bool]] = []
     for key, sub in (spec or {}).items():
         if sub is None:
-            # `null: null` included: on a relation it is no key at all, unlike on a comparator
-            # (see `_Comparator.render`). Measured 2026-09-03 with one assigned issue beside three
-            # unassigned: `assignee: {null: null}` answered all four where `null: true` answered
-            # the three and `null: false` the one, `{null: null, name: {eq: ME}}` the assigned one
-            # alone, `{null: null, name: {eq: "nobody"}}` none, and `{or: [{assignee: {null:
-            # null}}, {title: {eq: "no such title"}}]}` all four -- the branch left as `{}` is a
-            # key that constrains nothing, as `{assignee: {}}` is.
             continue
-        if key in ("and", "or"):
+        if key == "and":
+            for branch in sub:
+                out.extend(_relation_items(branch, nested=True))
+        else:
+            out.append((key, sub, nested))
+    return out
+
+
+def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
+    """A nested object filter (``state``, ``assignee``, ``team``, ``project``).
+
+    On a nullable relation ``null: true`` is not one condition among the keys: api.linear.app
+    answers the issues without the relation and reads nothing else in the object, so
+    ``assignee: {null: true, name: {eq: X}}`` is the unassigned issues, not none. Measured
+    2026-09-04 on ``project`` with two issues in two throwaway projects beside two in none (every
+    sibling tried -- ``name``, ``id``, both, an ``and`` or ``or`` of them -- answered the two
+    without a project) and on ``assignee`` with one issue assigned to the viewer beside three
+    unassigned; ``creator`` takes the same path and answered every issue of a workspace whose
+    issues have no creator, where an AND would have answered none. ``null: false`` does AND with
+    its siblings: ``{null: false, name: {eq: X}}`` is the issues with the relation named X.
+
+    ``and`` branches are read as more keys of the same object, so ``{and: [{null: true}], name:
+    {eq: X}}`` and ``{and: [{null: true}, {name: {eq: X}}]}`` are ``null: true`` too. A ``null``
+    written at the object's own level wins over one inside its ``and`` branches (``{null: false,
+    and: [{null: true}]}`` is the issues with the relation); between branches ``true`` wins
+    (``{and: [{null: false}, {null: true}]}`` is the issues without it). An ``or`` is the union
+    of its branches, each read by this rule, so ``{or: [{null: true}, {name: {eq: X}}]}`` is the
+    unassigned issues plus X's. An ``or`` at the level of ``IssueFilter`` is not this object:
+    ``{and: [{assignee: {null: true}}, {assignee: {name: {eq: X}}}]}`` is two relation filters
+    ANDed and answers none, as measured."""
+    items = _relation_items(spec)
+    own = [sub for key, sub, nested in items if key == "null" and not nested]
+    inner = [sub for key, sub, nested in items if key == "null" and nested]
+    if own:
+        null = own[0]
+    elif inner:
+        null = any(inner)
+    else:
+        null = None
+    # Which column carries "no such relation" is mapping-specific, so use the first mapped column.
+    col = next(m[1] for m in mapping.values())
+    if null is True:
+        return f"{col} IS NULL", []
+    parts: list[str] = []
+    params: list = []
+    if null is False:
+        parts.append(f"{col} IS NOT NULL")
+    for key, sub, _ in items:
+        if key == "null":
+            continue
+        if key == "or":
             subs = [_sub_filter(conn, s, mapping) for s in sub]
             frags = [f for f, _ in subs if f]
             for _, p in subs:
                 params.extend(p)
             if frags:
-                parts.append("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
-            continue
-        if key == "null":
-            # `null: true` on a nullable relation means "no such relation on this issue". Which
-            # column carries that is mapping-specific, so use the first mapped column.
-            col = next(m[1] for m in mapping.values())
-            parts.append(f"{col} IS {'NULL' if sub else 'NOT NULL'}")
+                parts.append("(" + " OR ".join(frags) + ")")
             continue
         target = mapping.get(key)
         if target is None:

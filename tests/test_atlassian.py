@@ -76,12 +76,17 @@ def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client, path):
     assert client.get(f"/atlassian{path}", headers=FAILED_PAIR).status_code == 200
 
 
-def test_jira_lists_only_the_projects_the_caller_can_open(tmp_path):
+def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
     """The anonymous listing is empty because a project is listed when the caller can see an issue
     in it, and that rule is not anonymous-only: a scoped caller who can open nothing in a project
     does not get it either. Backlot grants per document, so the projects have to be read off the
     issues — listing every one of them to everybody was how an empty anonymous listing could not
-    be told from a full one."""
+    be told from a full one.
+
+    A Confluence space is the same container under a different vendor's name, so the same corpus
+    carries the split in both: `space` answers `project/search`'s rule, and the two space-scoped
+    reads answer `project/{key}/role`'s.
+    """
     corpus = [
         {
             "source_type": "jira",
@@ -101,10 +106,30 @@ def test_jira_lists_only_the_projects_the_caller_can_open(tmp_path):
             "author_email": "bob@acme.com",
             "visibility": "private",
         },
+        {
+            "source_type": "confluence",
+            "doc_id": "c-open",
+            "space": "engineering",
+            "title": "Runbook",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+        },
+        {
+            "source_type": "confluence",
+            "doc_id": "c-shut",
+            "space": "secrets",
+            "title": "Key rotation",
+            "content": "Body.",
+            "author_email": "bob@acme.com",
+            "visibility": "private",
+        },
     ]
     settings = tiny_corpus(tmp_path, corpus)
     with client_for(settings, reload=True) as c:
         import yaml
+
+        from backlot import synth
 
         written = yaml.safe_load(settings.tokens_path.read_text())
         tokens = {u["email"]: u["token"] for u in written["users"]}
@@ -114,6 +139,10 @@ def test_jira_lists_only_the_projects_the_caller_can_open(tmp_path):
             listing = c.get("/atlassian/rest/api/3/project/search", headers=headers).json()
             return sorted(p["name"] for p in listing["values"])
 
+        def spaces(headers):
+            listing = c.get("/atlassian/wiki/rest/api/space", headers=headers).json()
+            return sorted(s["name"] for s in listing["results"])
+
         assert keys({"Authorization": f"Bearer {tokens['admin']}"}) == ["payments", "secrets"]
         assert keys({"Authorization": f"Bearer {tokens['bob@acme.com']}"}) == [
             "payments",
@@ -121,6 +150,31 @@ def test_jira_lists_only_the_projects_the_caller_can_open(tmp_path):
         ]
         assert keys({"Authorization": f"Bearer {tokens['ava@acme.com']}"}) == ["payments"]
         assert keys({}) == []
+
+        assert spaces({"Authorization": f"Bearer {tokens['admin']}"}) == ["engineering", "secrets"]
+        assert spaces({"Authorization": f"Bearer {tokens['bob@acme.com']}"}) == [
+            "engineering",
+            "secrets",
+        ]
+        assert spaces({"Authorization": f"Bearer {tokens['ava@acme.com']}"}) == ["engineering"]
+        # No anonymous row for the space listing: `_confluence_caller` refuses before a space is
+        # resolved, which is what Confluence itself answers (see the 403 case below).
+
+        # The space ava reaches no page in is reported absent on both space-scoped reads, the way
+        # a project she can open nothing in is on `project/{key}/role`. Bob, who authored the page
+        # in it, still reads both.
+        shut = synth.confluence_space_key("secrets")
+        ava = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+        bob = {"Authorization": f"Bearer {tokens['bob@acme.com']}"}
+        for path in (f"/wiki/rest/api/space/{shut}", f"/wiki/rest/api/space/{shut}/permission"):
+            refused = c.get(f"/atlassian{path}", headers=ava)
+            assert refused.status_code == 404, path
+            assert refused.json()["message"] == "No space with the given key exists"
+            assert c.get(f"/atlassian{path}", headers=bob).status_code == 200, path
+        # ... and the roster she is refused is the one that named bob against that space.
+        roster = c.get(f"/atlassian/wiki/rest/api/space/{shut}/permission", headers=bob).json()
+        readers = roster["results"][0]["subjects"]["user"]["results"]
+        assert [u["email"] for u in readers] == ["bob@acme.com"]
 
 
 @pytest.mark.parametrize("headers", UNRESOLVABLE)
@@ -518,9 +572,16 @@ def test_confluence_single_space_get(client, admin_h):
     key = spaces[0]["key"]
     r = client.get(f"/atlassian/wiki/rest/api/space/{key}", headers=admin_h)
     assert r.status_code == 200 and r.json()["key"] == key and r.json()["name"] == spaces[0]["name"]
-    # unknown space -> clean atlassian-shaped 404
-    r2 = client.get("/atlassian/wiki/rest/api/space/NOSUCH", headers=admin_h)
-    assert r2.status_code == 404 and "message" in r2.json()
+    # the reader roster is the admin's to read, on a space they reach a page in
+    perm = client.get(f"/atlassian/wiki/rest/api/space/{key}/permission", headers=admin_h)
+    assert perm.status_code == 200
+    assert perm.json()["results"][0]["operation"] == {"operation": "read", "targetType": "space"}
+    # An unknown space is the same clean atlassian-shaped 404 on BOTH space-scoped reads, which is
+    # what keeps a space the caller cannot reach from being told apart from one that is not there.
+    for path in ("/wiki/rest/api/space/NOSUCH", "/wiki/rest/api/space/NOSUCH/permission"):
+        absent = client.get(f"/atlassian{path}", headers=admin_h)
+        assert absent.status_code == 404, path
+        assert absent.json()["message"] == "No space with the given key exists", path
 
 
 # --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------

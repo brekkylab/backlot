@@ -1854,24 +1854,6 @@
     {
       "kind": "missing_field",
       "severity": "gap",
-      "path": "IssueLabelCollectionFilter.length",
-      "detail": "vendor serves length: NumberComparator; Backlot does not"
-    },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "IssueLabelCollectionFilter.name",
-      "detail": "vendor serves name: StringComparator; Backlot does not"
-    },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "IssueLabelCollectionFilter.null",
-      "detail": "vendor serves null: Boolean; Backlot does not"
-    },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
       "path": "IssueLabelCollectionFilter.parent",
       "detail": "vendor serves parent: IssueLabelFilter; Backlot does not"
     },

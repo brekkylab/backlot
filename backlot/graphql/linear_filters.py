@@ -924,11 +924,6 @@ def _carries_null_false(spec: dict) -> bool:
     )
 
 
-def _carries_empty(spec: dict) -> bool:
-    """``{}`` itself, ``{and: []}`` (the same object), or an ``or`` with such a branch."""
-    return spec in ({}, {"and": []}) or any(_carries_empty(b) for b in _under(spec, "or"))
-
-
 def _is_bare_null_false(spec: dict) -> bool:
     """``{null: false}`` and nothing else -- written so, or as ``and`` branches that merge to it, or
     as a branch of an ``or``."""
@@ -1020,6 +1015,21 @@ def _related_row_and(conn, branches: list, mapping: dict) -> tuple[str | None, l
     return (_join(frags, "AND") if frags else "1"), params
 
 
+def _says_nothing(spec: dict) -> bool:
+    """A branch with nothing to say about the related row: ``{}``, ``{and: []}``, a bare ``{null:
+    *}``, or ``and`` / non-empty ``or`` branches that all say nothing."""
+    if any(key not in ("null", "or", "and") for key in spec):
+        return False
+    if "or" in spec and not spec["or"]:
+        return False
+    return all(_says_nothing(b) for b in _under(spec, "and", "or"))
+
+
+def _says_nothing_somewhere(spec: dict) -> bool:
+    """`_says_nothing`, or an ``or`` holding such a branch."""
+    return _says_nothing(spec) or any(_says_nothing_somewhere(b) for b in _under(spec, "or"))
+
+
 def _is_vacuous_branch(spec: dict) -> bool:
     """A branch that is nothing but comparators with no operator (``{name: {}}``), ``null`` aside."""
     comparators = [sub for key, sub in spec.items() if key not in ("null", "or", "and")]
@@ -1030,37 +1040,35 @@ def _is_vacuous_branch(spec: dict) -> bool:
     )
 
 
-def _relation_or(
-    conn, branches: list, mapping: dict, col: str, own: bool
-) -> tuple[str, list, bool]:
-    """An ``or`` on a nullable relation, as api.linear.app reads it (the rule is spelled out on
-    `_sub_filter`), WITHOUT the issues a ``null: true`` below it adds: that is the object's
-    business (see `_sub_filter`). ``own`` is whether the ``or`` is the object's own key rather
-    than one lifted out of an ``and`` branch. The third value says whether a bare ``{null:
-    false}`` branch requires the relation for the whole object."""
+def _without_nulls(spec: dict) -> dict:
+    """``spec`` with every ``null`` key dropped, ``and`` / ``or`` branches included: what the object
+    decided about the relation's existence is not re-read below it."""
+    out: dict = {}
+    for key, sub in spec.items():
+        if key == "null":
+            continue
+        out[key] = [_without_nulls(b) for b in sub] if key in ("and", "or") else sub
+    return out
+
+
+def _relation_or(conn, branches: list, mapping: dict, col: str) -> tuple[str, list]:
+    """An ``or`` on a nullable relation read against the related row, as api.linear.app does (the
+    procedure is on `_sub_filter`): the keys of one branch are alternatives, ``null`` keys are not
+    read here, a branch with no operator-bearing comparator makes the list say nothing, a list
+    whose every branch says nothing about the row says nothing, and otherwise a branch that says
+    nothing about the row is the list's missing-relation alternative."""
     if not branches:
-        return f"{col} IS NOT NULL", [], False
-    if all(_carries_null_true(b) for b in branches):
-        return f"{col} IS NULL", [], False
-    has_null_true = any(_carries_null_true(b) for b in branches)
-    every_null_false = all(_carries_null_false(b) for b in branches)
-    if any(_is_vacuous_branch(b) for b in branches):
-        return (f"{col} IS NOT NULL" if every_null_false else ""), [], False
-    bare = (
-        not has_null_true and not every_null_false and any(_is_bare_null_false(b) for b in branches)
-    )
-    without = any(_carries_empty(b) for b in branches) or (bare and own)
-    requires = bare and not own
+        return f"{col} IS NOT NULL", []
+    if any(_is_vacuous_branch(b) for b in branches) or all(_says_nothing(b) for b in branches):
+        return "", []
     related, params = _related_row_or(conn, branches, mapping, nested=False)
-    if without:
-        return ("" if related == "1" else f"({col} IS NULL OR {related})"), params, requires
-    if requires:
-        return ("" if related == "1" else related), params, True
-    if every_null_false or not any(_carries_negative(b) for b in branches):
-        if related == "1":
-            return f"{col} IS NOT NULL", [], False
-        return f"({col} IS NOT NULL AND {related})", params, False
-    return related, params, False
+    if any(_says_nothing_somewhere(b) for b in branches):
+        return ("" if related == "1" else f"({col} IS NULL OR {related})"), params
+    if any(_carries_negative(b) for b in branches):
+        return related, params
+    if related == "1":
+        return f"{col} IS NOT NULL", []
+    return f"({col} IS NOT NULL AND {related})", params
 
 
 def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
@@ -1084,10 +1092,10 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
     of ``IssueFilter`` is not this object: ``{and: [{assignee: {null: true}}, {assignee: {name:
     {eq: X}}}]}`` is two relation filters ANDed and answers none, as measured.
 
-    An ``or`` is not the union of its branches each read by that rule. Measured 2026-09-04, 429
-    filters in eight rounds over the same four issues (two in two projects, one of them assigned
+    An ``or`` is not the union of its branches each read by that rule. Measured 2026-09-04, 458
+    filters in eleven rounds over the same four issues (two in two projects, one of them assigned
     to the viewer, two in none); from the third round on each round was predicted from the rule
-    before it was sent, 105 of 112 right, and the misses fixed corners until every row fit:
+    before it was sent, and the misses fixed corners until the procedure below fit every row:
 
     * A ``null: true`` anywhere below the object -- in an ``or`` branch, an ``and`` branch, or
       nested deeper -- adds the issues without the relation to whatever the REST of the object
@@ -1129,26 +1137,25 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
       render nothing, and the object's own ``or: []`` is the issues with the relation, where
       ``{}`` and ``{and: []}`` are every issue.
 
-    Read as one procedure, which is how every row above was reproduced: MERGE -- ``and`` branches are
-    keys of the object, their ``or`` lists become the object's, ``null`` is the object's own or else
-    any-true over the branches, and a bare ``{null: false}`` branch of a list that came from an
-    ``and`` branch is that branch's ``null: false`` unless a ``null: true`` is anywhere in the list;
-    HOIST -- a list whose every branch carries ``null: true`` is the object saying ``null: true``, one
-    whose every branch carries ``null: false`` requires the relation; NULL -- own ``null: true`` is
-    the issues without the relation, nothing else read; LISTS -- each list against the related row,
-    the keys of one branch alternatives, ``null`` keys unread, a branch saying nothing skipped,
-    nothing left meaning every related row, a branch of operator-less comparators making the list
-    say nothing, and a branch that says nothing about the related row (``{}``, ``{and: []}``, an
-    ``or`` holding one, or in the object's own list a bare ``{null: false}``) being the list's
-    missing-relation alternative; ASSEMBLE -- relation required means present AND the rest, else a
-    ``null: true`` anywhere below means without OR the rest, else the rest. What the procedure
-    does not give is why the two positions read a bare ``{null: false}`` differently; that, and
-    the branch-keys-as-alternatives reading, is measured, not derived.
+    Read as one procedure, which is how every row above was reproduced. FLAGS: what the object says
+    about the relation's existence is its own ``null``; failing that, what its ``and`` branches say,
+    merged with ``true`` winning over ``false`` (#124), where a branch says its own ``null``, and a
+    branch that is an ``or`` says ``true`` when every alternative carries ``null: true`` and ``false``
+    when it holds a bare ``{null: false}`` and no ``null: true`` anywhere; the object's own ``or``
+    only contributes a ``null`` common to all of its alternatives. ASSEMBLE: ``true`` is the issues
+    without the relation, nothing else read; ``false`` drops every ``null`` key below the object and
+    is the relation present AND the rest; nothing decided is the rest, ORed with the issues without
+    the relation when a ``null: true`` is anywhere below. LISTS: each ``or`` against the related row,
+    the keys of one alternative being alternatives, ``null`` keys unread, an alternative with no
+    operator-bearing comparator making the list say nothing; a list whose every alternative says
+    nothing about the row says nothing (an empty list is the relation present); otherwise an
+    alternative that says nothing about the row (``{}``, ``{and: []}``, a bare ``{null: *}``, or
+    an ``or`` holding one) is the list's missing-relation alternative. Two readings are the
+    vendor's and not derivable from the rest: that a disjunction with a bare ``{null: false}``
+    counts as asserting ``null: false`` when merged as an ``and`` branch, and that the keys of an
+    alternative are alternatives.
 
-    This is the vendor's arithmetic as measured, not its code: the first two clauses read like a
-    scan for ``null: true`` that decides whether rows without the relation are admitted, the
-    rest like flags hoisted out of the branches before the related-row side compiles, but no
-    single query shape was found that yields all of it. The one piece of Linear's own filter
+    The one piece of Linear's own filter
     code that is public, the matcher its web client runs over synced models (the ``or`` and
     ``and`` operators of the ModelMatcher in ``static.linear.app/client/assets/store.*.js``,
     read 2026-09-04), does answer a missing relation by scanning: an ``or`` there is "some
@@ -1157,44 +1164,59 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
     as none where the API answers the issues without the relation -- so the clauses above stay
     measured."""
     spec = _without_null_values(spec)
-    items = _relation_items(spec)
-    own = [sub for key, sub, nested in items if key == "null" and not nested]
-    inner = [sub for key, sub, nested in items if key == "null" and nested]
-    if own:
-        null = own[0]
-    elif inner:
-        null = any(inner)
-    else:
-        null = None
     # Which column carries "no such relation" is mapping-specific, so use the first mapped column.
     col = next(m[1] for m in mapping.values())
+    items = _relation_items(spec)
+    own = [sub for key, sub, nested in items if key == "null" and not nested]
+    if own:
+        null = own[0]
+    else:
+        # FLAGS: what the `and` branches say, `true` winning. A branch says its own `null`; an
+        # `or` branch says `true` when every alternative carries `null: true` and `false` when it
+        # holds a bare `{null: false}` and no `null: true`. The object's own `or` contributes only
+        # a `null` its alternatives all carry.
+        flags = [sub for key, sub, nested in items if key == "null" and nested]
+        for key, sub, nested in items:
+            if key != "or" or not sub:
+                continue
+            if all(_carries_null_true(b) for b in sub):
+                flags.append(True)
+            elif not nested:
+                if all(_carries_null_false(b) for b in sub):
+                    flags.append(False)
+            elif not any(_carries_null_true(b) for b in sub) and any(
+                _is_bare_null_false(b) for b in sub
+            ):
+                flags.append(False)
+        null = True if any(flags) else (False if flags else None)
+    # ASSEMBLE
     if null is True:
         return f"{col} IS NULL", []
+    if null is False:
+        spec = _without_nulls(spec)
+        items = _relation_items(spec)
     parts: list[str] = []
     params: list = []
-    requires = null is False
-    for key, sub, nested in items:
-        if key == "or":
-            frag, p, req = _relation_or(conn, sub, mapping, col, own=not nested)
-            requires = requires or req
-            if frag:
-                parts.append(frag)
-                params.extend(p)
     for key, sub, _ in items:
-        if key in ("null", "or") or sub == {}:
+        if key == "null":
             continue
-        target = mapping.get(key)
-        if target is None:
-            raise GraphQLError(f"unsupported nested filter field {key!r}")
-        if target[0] == "col":
-            frag, p = _Comparator(target[1], relation=True).render(sub)
+        if key == "or":
+            frag, p = _relation_or(conn, sub, mapping, col)
+        elif sub == {}:
+            continue
         else:
-            frag, p = _derived_in(conn, target[1], target[2], sub)
+            target = mapping.get(key)
+            if target is None:
+                raise GraphQLError(f"unsupported nested filter field {key!r}")
+            if target[0] == "col":
+                frag, p = _Comparator(target[1], relation=True).render(sub)
+            else:
+                frag, p = _derived_in(conn, target[1], target[2], sub)
         if frag:
             parts.append(frag)
             params.extend(p)
     rest = _join(parts, "AND")
-    if requires:
+    if null is False:
         return _join([f"{col} IS NOT NULL", rest], "AND"), params
     if _carries_null_true(spec):
         return ("" if not rest else f"({col} IS NULL OR {rest})"), params

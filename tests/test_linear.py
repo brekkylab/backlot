@@ -1434,9 +1434,9 @@ def test_relation_null_true_reads_nothing_else_in_the_object_as_linear(fclient, 
 # workspace had four issues: BRE-1 in project `zz-pa` and assigned to the viewer (`nuri`), BRE-2 in
 # `zz-pb`, BRE-3 and BRE-4 in no project and unassigned; the projects were created for the
 # measurement and deleted after. The fixture below has the same shape, names included, and `nobody`
-# is a name no project or user has. 429 filters were measured in eight rounds, every round from
-# the third predicted from the rule on `_sub_filter` before it was sent; these cells are the ones
-# that tell its clauses apart, each one a measured answer.
+# is a name no project or user has. 458 filters were measured in eleven rounds, every round from
+# the third predicted from the procedure on `_sub_filter` before it was sent; these cells are the
+# ones that tell its steps apart, each one a measured answer.
 _RELATION_OR_CORPUS = [
     {
         "source_type": "linear",
@@ -1745,6 +1745,59 @@ _RELATION_OR_CELLS = [
         {W1, W2, N3, N4},
     ),
     ("assignee", '{or: [{null: true}, {name: {eq: "nuri"}}], email: {eq: "nobody"}}', {W2, N3, N4}),
+    # the object's own `null` drops every `null` below it before the rest compiles
+    ("project", "{null: false, or: [{null: true}]}", {W1, W2}),
+    ("project", '{null: false, or: [{null: true, name: {eq: "zz-pa"}}]}', {W1}),
+    ("project", "{null: false, and: [{or: [{null: true}]}]}", {W1, W2}),
+    ("project", '{null: false, and: [{or: [{null: true}]}], name: {eq: "zz-pa"}}', {W1}),
+    # what `and` branches say about `null` merges with true winning: an `or` whose every branch carries `null: true` says true, one with a bare `{null: false}` and no `null: true` says false
+    (
+        "project",
+        '{and: [{or: [{null: false}, {name: {eq: "nobody"}}]}, {or: [{null: true}]}]}',
+        {N3, N4},
+    ),
+    (
+        "project",
+        '{and: [{or: [{null: false}, {name: {eq: "zz-pa"}}]}, {or: [{null: true}]}], name: {eq: "zz-pa"}}',
+        {N3, N4},
+    ),
+    ("project", '{and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}, {null: true}]}', {N3, N4}),
+    ("project", '{and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}, {null: false}]}', {W2}),
+    (
+        "project",
+        '{and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}, {or: [{}, {name: {eq: "zz-pa"}}]}]}',
+        set(),
+    ),
+    (
+        "project",
+        '{and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}], or: [{}, {name: {eq: "zz-pa"}}]}',
+        set(),
+    ),
+    ("project", '{and: [{or: [{null: false}, {null: true, name: {eq: "zz-pa"}}]}]}', {W1, N3, N4}),
+    ("project", '{and: [{and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}]}]}', {W2}),
+    # the object's own `or` is not an `and` branch: its bare `{null: false}` is the missing-relation alternative even beside a sibling key
+    ("project", '{or: [{null: false}, {name: {neq: "zz-pa"}}], name: {neq: "zz-pb"}}', {N3, N4}),
+    (
+        "project",
+        '{and: [{name: {neq: "zz-pb"}}], or: [{null: false}, {name: {neq: "zz-pa"}}]}',
+        {N3, N4},
+    ),
+    (
+        "project",
+        '{and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}], name: {neq: "zz-pb"}}',
+        set(),
+    ),
+    ("project", '{or: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}]}', {W2}),
+    (
+        "project",
+        '{or: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}, {name: {eq: "nobody"}}]}',
+        {W2, N3, N4},
+    ),
+    (
+        "project",
+        '{or: [{null: false}, {name: {neq: "zz-pa"}}], and: [{or: [{null: false}, {name: {neq: "zz-pa"}}]}]}',
+        {W2},
+    ),
 ]
 
 

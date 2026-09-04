@@ -1,7 +1,7 @@
 {
   "source": "github",
   "endpoint": "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
-  "measured": "2026-09-02",
+  "measured": "2026-09-04",
   "acknowledged": [
     {
       "kind": "extra_operation",
@@ -4228,6 +4228,13 @@
       "severity": "gap",
       "path": "GET /repos/{}/{}/stargazers/count",
       "detail": "the vendor serves it; Backlot does not"
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /repos/{}/{}/stargazers/history",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "No corpus states who starred a repository, so `/stargazers`, `/stargazers/count` and `/subscribers` are gaps beside this one and the repo record omits `stargazers_count` rather than inventing it. Answering `[]` would be a shape real never has: measured against api.github.com on 2026-09-04, two repositories with zero stars each answered one row per calendar week from their creation week to now \u2014 2 rows for one created a week earlier, 19 for one created four months earlier \u2014 every row `total: 0` with `days: [0, 0, 0, 0, 0, 0, 0]`. GitHub's published spec says the same: weeks without stars carry zero counts, and pages move backward toward the creation week."
     },
     {
       "kind": "missing_operation",

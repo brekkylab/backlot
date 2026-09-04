@@ -255,8 +255,9 @@ input NullableUserFilter {
   name: StringComparator
   displayName: StringComparator
   email: StringComparator
-  """`true` answers the issues without the relation and reads nothing else in this filter, `and`
-  branches included; `false` does AND with the other keys (measured 2026-09-04)."""
+  """`true` answers the issues without the relation and reads nothing else written beside it in
+  the same filter object, its `and` branches included; `false` does AND with the other keys
+  (measured 2026-09-04)."""
   null: Boolean
   and: [NullableUserFilter!]
   or: [NullableUserFilter!]
@@ -273,8 +274,9 @@ input TeamFilter {
 input NullableProjectFilter {
   id: EntityIdentifierIDComparator
   name: StringComparator
-  """`true` answers the issues without the relation and reads nothing else in this filter, `and`
-  branches included; `false` does AND with the other keys (measured 2026-09-04)."""
+  """`true` answers the issues without the relation and reads nothing else written beside it in
+  the same filter object, its `and` branches included; `false` does AND with the other keys
+  (measured 2026-09-04)."""
   null: Boolean
   and: [NullableProjectFilter!]
   or: [NullableProjectFilter!]

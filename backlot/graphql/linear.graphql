@@ -255,6 +255,9 @@ input NullableUserFilter {
   name: StringComparator
   displayName: StringComparator
   email: StringComparator
+  """`true` answers the issues without the relation and reads nothing else written beside it in
+  the same filter object, its `and` branches included; `false` does AND with the other keys
+  (measured 2026-09-04)."""
   null: Boolean
   and: [NullableUserFilter!]
   or: [NullableUserFilter!]
@@ -271,6 +274,9 @@ input TeamFilter {
 input NullableProjectFilter {
   id: EntityIdentifierIDComparator
   name: StringComparator
+  """`true` answers the issues without the relation and reads nothing else written beside it in
+  the same filter object, its `and` branches included; `false` does AND with the other keys
+  (measured 2026-09-04)."""
   null: Boolean
   and: [NullableProjectFilter!]
   or: [NullableProjectFilter!]
@@ -373,12 +379,14 @@ input IssueFilter {
 enum ExternalSyncService { jira github slack }
 
 """Linear's `IntegrationService`: every integration an issue can carry as its
-`integrationSourceType`. The full list as introspected on 2026-09-03; Backlot serves null for the
-field (a corpus does not say which integration created an issue), the members are here so a client
-switching on the enum sees the same member set."""
+`integrationSourceType`. The full list as introspected on 2026-09-04 (`origin` arrived between the
+2026-09-03 baseline and then); Backlot serves null for the field (a corpus does not say which
+integration created an issue), the members are here so a client switching on the enum sees the same
+member set."""
 enum IntegrationService {
   airbyte discord figma figmaPlugin front github gong githubEnterpriseServer githubCommit
-  githubImport githubPersonal githubCodeAccessPersonal gitlab googleCalendarPersonal googleSheets
+  githubImport githubPersonal githubCodeAccessPersonal gitlab origin googleCalendarPersonal
+  googleSheets
   intercom jira jiraPersonal launchDarkly launchDarklyPersonal loom notion opsgenie pagerDuty
   salesforce slack slackAsks asksWeb slackCustomViewNotifications slackOrgProjectUpdatesPost
   slackOrgInitiativeUpdatesPost slackPersonal slackPost slackProjectPost slackProjectUpdatesPost

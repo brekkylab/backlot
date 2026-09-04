@@ -312,13 +312,21 @@ def _page_base_url(request: Request) -> str:
     `/search/…` keep their own paths, naming no owner to swap.
 
     The form has to resolve, which is ``resolve_github_id_paths`` in :mod:`backlot.main`.
+
+    The id is the CORPUS's, not one minted from the spelling the request used: both segments
+    resolve in any case (see :func:`store.container_spelling`), so hashing the caller's spelling
+    would name an id nothing holds and 404 the client that followed the url.
     """
     parts = request.url.path.strip("/").split("/")
     path = request.url.path
     if parts[1:2] == ["repos"] and len(parts) >= 4:
-        path = "/".join(["/github/repositories", str(synth.github_user_id(parts[3])), *parts[4:]])
+        repo = store.container_spelling(auth.conn(request), "github", parts[3]) or parts[3]
+        path = "/".join(["/github/repositories", str(synth.github_user_id(repo)), *parts[4:]])
     elif parts[1:2] == ["orgs"] and len(parts) >= 3:
-        path = "/".join(["/github/organizations", str(synth.github_user_id(parts[2])), *parts[3:]])
+        # the one org served, which is the spelling `_validate_path_owner` accepted this path for
+        path = "/".join(
+            ["/github/organizations", str(synth.github_user_id(_org(request))), *parts[3:]]
+        )
     host = request.headers.get("host", "localhost")
     return f"{request.url.scheme}://{host}{path}"
 

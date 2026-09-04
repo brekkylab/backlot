@@ -1809,6 +1809,24 @@ def test_github_a_page_url_names_the_repository_and_the_org_by_id(gh_client, gh_
     assert "/github/user/repos?" in user_next
     assert c.get(f"/github/repositories/{rid + 1}/pulls", headers=gh_admin_h).status_code == 404
 
+    # The id is the CORPUS's, not one minted from the spelling the caller used. Both segments
+    # resolve in any case, so a page url built from the request path would name an id nothing
+    # holds — and 404 the client that followed it.
+    for path in (
+        f"/github/repos/{gh_org}/DIFFABLE/pulls",
+        f"/github/repos/{gh_org.upper()}/diffable/pulls",
+    ):
+        loud = _link_rels(c.get(path, headers=gh_admin_h, params=args).headers["Link"])["next"]
+        assert f"/github/repositories/{rid}/pulls?" in loud, path
+        assert c.get(loud.split("testserver", 1)[1], headers=gh_admin_h).status_code == 200, path
+    loud_org = _link_rels(
+        c.get(
+            f"/github/orgs/{gh_org.upper()}/repos", headers=gh_admin_h, params={"per_page": 1}
+        ).headers["Link"]
+    )["next"]
+    assert f"/github/organizations/{oid}/repos?" in loud_org
+    assert c.get(loud_org.split("testserver", 1)[1], headers=gh_admin_h).status_code == 200
+
 
 def test_github_a_page_url_omits_a_page_size_the_caller_did_not_send(
     gh_client, gh_admin_h, gh_org, monkeypatch

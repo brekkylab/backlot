@@ -4221,7 +4221,8 @@
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /repos/{}/{}/stargazers",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "No corpus states who starred a repository, so the whole stargazer family is a gap \u2014 this listing, `/stargazers/count`, `/stargazers/history` and `/subscribers` \u2014 and the repo record omits `stargazers_count` rather than inventing one. Serving any one of them commits Backlot to a star count: the history could be emitted from the record's own `created_at` with no schema change, but then this listing owes `[]`, the count owes `0` and the record owes `stargazers_count: 0`. That is a decision about the family, not about one route."
     },
     {
       "kind": "missing_operation",
@@ -4234,7 +4235,7 @@
       "severity": "gap",
       "path": "GET /repos/{}/{}/stargazers/history",
       "detail": "the vendor serves it; Backlot does not",
-      "note": "No corpus states who starred a repository, so `/stargazers`, `/stargazers/count` and `/subscribers` are gaps beside this one and the repo record omits `stargazers_count` rather than inventing it. Answering `[]` would be a shape real never has: measured against api.github.com on 2026-09-04, two repositories with zero stars each answered one row per calendar week from their creation week to now \u2014 2 rows for one created a week earlier, 19 for one created four months earlier \u2014 every row `total: 0` with `days: [0, 0, 0, 0, 0, 0, 0]`. GitHub's published spec says the same: weeks without stars carry zero counts, and pages move backward toward the creation week."
+      "note": "The family is a gap for the reason on `GET /repos/{}/{}/stargazers`; this is the route where a stand-in would break a client rather than merely be absent. Real never answers an empty FIRST page for a repository that exists, because page 1 always carries at least the creation week, so `history[0][\"week\"]` is safe against real and unsafe against a Backlot that answers `[]`. Measured against api.github.com on 2026-09-04 on repositories with zero stars: one row per calendar week from the creation week to now, every row `total: 0` with `days: [0, 0, 0, 0, 0, 0, 0]` \u2014 one created that same day answered a single row, one created 2026-05-02 answered 19, its oldest row the Sunday of that week. Past the last page real does answer `[]`, and an unknown repository 404s. GitHub's published spec says the same, capping `per_page` at 30 and paging backward toward the creation week."
     },
     {
       "kind": "missing_operation",

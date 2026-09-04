@@ -1129,6 +1129,22 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
       render nothing, and the object's own ``or: []`` is the issues with the relation, where
       ``{}`` and ``{and: []}`` are every issue.
 
+    Read as one procedure, which is how every row above was reproduced: MERGE -- ``and`` branches are
+    keys of the object, their ``or`` lists become the object's, ``null`` is the object's own or else
+    any-true over the branches, and a bare ``{null: false}`` branch of a list that came from an
+    ``and`` branch is that branch's ``null: false`` unless a ``null: true`` is anywhere in the list;
+    HOIST -- a list whose every branch carries ``null: true`` is the object saying ``null: true``, one
+    whose every branch carries ``null: false`` requires the relation; NULL -- own ``null: true`` is
+    the issues without the relation, nothing else read; LISTS -- each list against the related row,
+    the keys of one branch alternatives, ``null`` keys unread, a branch saying nothing skipped,
+    nothing left meaning every related row, a branch of operator-less comparators making the list
+    say nothing, and a branch that says nothing about the related row (``{}``, ``{and: []}``, an
+    ``or`` holding one, or in the object's own list a bare ``{null: false}``) being the list's
+    missing-relation alternative; ASSEMBLE -- relation required means present AND the rest, else a
+    ``null: true`` anywhere below means without OR the rest, else the rest. What the procedure
+    does not give is why the two positions read a bare ``{null: false}`` differently; that, and
+    the branch-keys-as-alternatives reading, is measured, not derived.
+
     This is the vendor's arithmetic as measured, not its code: the first two clauses read like a
     scan for ``null: true`` that decides whether rows without the relation are admitted, the
     rest like flags hoisted out of the branches before the related-row side compiles, but no

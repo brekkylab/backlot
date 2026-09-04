@@ -907,7 +907,7 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
     and: [{null: true}]}`` is the issues with the relation); between branches ``true`` wins
     (``{and: [{null: false}, {null: true}]}`` is the issues without it). An ``or`` is the union
     of its branches, each read by this rule, so ``{or: [{null: true}, {name: {eq: X}}]}`` is the
-    unassigned issues plus X's. An ``or`` at the level of ``IssueFilter`` is not this object:
+    unassigned issues plus X's. An ``and`` at the level of ``IssueFilter`` is not this object:
     ``{and: [{assignee: {null: true}}, {assignee: {name: {eq: X}}}]}`` is two relation filters
     ANDed and answers none, as measured."""
     items = _relation_items(spec)

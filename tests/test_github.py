@@ -2185,9 +2185,9 @@ def test_github_answers_the_corpus_spelling_whatever_case_was_asked_for(
     assert org["url"].endswith(f"/orgs/{gh_org}") and org["repos_url"].endswith("/repos")
 
     # A `repo:` qualifier resolves the same way, on both search routes: real answers the same
-    # 4,173 issues for `repo:PSF/Requests` as for `repo:psf/requests`, with `repository_url`
-    # canonical (measured). A qualifier that resolved only in one case would narrow to nothing and
-    # read as "that repo has no matches" rather than as a spelling this server would not take.
+    # 4,173 for `repo:PSF/Requests is:issue` as for the lowercase spelling, with `repository_url`
+    # canonical (measured 2026-09-04). A qualifier that resolved in only one case would read as
+    # "that repo has no matches" rather than as a spelling this server would not take.
     for route, named in (("issues", "gateway"), ("code", "codebase")):
         url = f"/github/search/{route}"
         loud = c.get(url, headers=gh_admin_h, params={"q": f"repo:{named.upper()}"})

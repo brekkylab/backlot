@@ -387,9 +387,10 @@ async def search_issues(
     free, quals = _parse_q(q, _GH_ISSUE_QUALS)
     container = None  # a repo: qualifier narrows to one repo
     for v in quals.get("repo", []):
-        # Any case, as real takes it: `repo:PSF/Requests` answers the same 4,173 issues as
-        # `repo:psf/requests` (measured 2026-09-03). An unresolved name leaves `container` None,
-        # which widens to the whole corpus — a spelling this refused answered other repos' issues.
+        # Any case, as real takes it: `repo:PSF/Requests is:issue` answers the same 4,173 as the
+        # lowercase spelling (measured 2026-09-04). A name that resolves in NO case still leaves
+        # `container` None, which WIDENS this search to the whole corpus, where `_code_repos`
+        # beside it narrows to nothing and real refuses the query with a 422.
         spelled = store.container_spelling(conn, "github", v.split("/")[-1])
         if spelled is not None:
             container = spelled

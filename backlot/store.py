@@ -2891,8 +2891,11 @@ def container_spelling(conn, source_type, name) -> str | None:
 
     An EXACT match wins, and is tried first so the common request stays on the column's index.
     With no exact match and more than one candidate there is nothing to prefer, so this reports
-    None and the caller 404s — real cannot present that case, a BYO corpus can. ``NOCASE`` folds
-    ASCII, which is the whole of a GitHub repository name.
+    None — real cannot present that case, a BYO corpus can. What None MEANS is each caller's own:
+    the path dependency leaves the name as the request spelt it, so ``_require_repo`` 404s it,
+    while an unresolved `repo:` qualifier is read by each search route for itself.
+
+    ``NOCASE`` folds ASCII, which is the whole of a GitHub repository name.
     """
     if get_container(conn, source_type, name) is not None:
         return name

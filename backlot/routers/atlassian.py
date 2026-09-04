@@ -276,8 +276,10 @@ def _require_project(request: Request, conn, key: str) -> str:
     """
     ids = auth.visible_ids(request, _jira_caller(request))
     container = _jira_container_for_key(conn, key, request)
-    # `ids is None` short-circuits for the same reason _reachable_projects returns every row for
-    # it: an admin sees the project in the listing, so a role read on it must not 404.
+    # The `ids is None` short-circuit mirrors `github._repo_visible`, where it is load-bearing: a
+    # `subtype: repo` record creates a container holding no document, and the admin keeps the repo
+    # as soon as that record exists. No Jira record can do that — `project` is required on every
+    # one of them and none omits the issue — so here it only keeps the two readers alike.
     if container is not None and (
         ids is None or store.has_visible_document(conn, "jira", container, ids)
     ):

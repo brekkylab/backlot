@@ -154,9 +154,10 @@ def slack_bearer_token(request: Request) -> str | None:
     A tab is not a space to Slack, so the generic whitespace split in :func:`bearer_token` is
     wrong here, and so is its case-insensitive scheme match. That function stays permissive because
     GitHub really does accept ``token <t>`` and RFC 7235 really does make the scheme
-    case-insensitive; Slack implements neither. Sharing it would let Backlot authenticate six
-    spellings live Slack refuses outright, so a client sending ``Authorization: token <xoxb>``
-    would pass every test here and reach nothing in production.
+    case-insensitive; Slack implements neither. Of the five spellings above that Slack refuses,
+    sharing it would authenticate four — every one but ``Bearer<t>``, which it does not take
+    either — so a client sending ``Authorization: token <xoxb>`` would pass every test here and
+    reach nothing in production.
     """
     hdr = (_authorization(request) or "").strip()
     if not hdr.startswith("Bearer "):
@@ -212,9 +213,13 @@ def atlassian_bearer_token(request: Request) -> str | None:
                                         Bearer          not read
 
     The scheme is case-sensitive and separated from the token by exactly one space. Sharing
-    :func:`bearer_token` would authenticate four spellings the real site serves anonymously — a
-    client sending ``Authorization: token <t>`` would pass every test here and read nothing in
-    production. Slack refuses a different set: it takes the double space this refuses.
+    :func:`bearer_token` would authenticate five of those spellings — every "not read" row above
+    but ``OAuth <t>``, ``Bearer<t>`` and the bare ``Bearer`` — so a client sending
+    ``Authorization: token <t>`` would pass every test here and read nothing in production. Slack
+    refuses a different set: it takes the double space this refuses.
+
+    The leading ``strip`` is what serves the ``Bearer <t>' '`` row, so the token needs no second
+    one: nothing with trailing whitespace survives to reach it.
     """
     hdr = (_authorization(request) or "").strip()
     if not hdr.startswith("Bearer "):
@@ -222,7 +227,7 @@ def atlassian_bearer_token(request: Request) -> str | None:
     rest = hdr[len("Bearer ") :]
     if not rest or rest[0].isspace():
         return None
-    return rest.rstrip()
+    return rest
 
 
 def atlassian_bearer_unreadable(request: Request) -> bool:
@@ -239,8 +244,14 @@ def atlassian_bearer_unreadable(request: Request) -> bool:
 
 
 def atlassian_caller(request: Request) -> Caller:
-    """The caller for an Atlassian read: Basic ``email:api_token`` or a bearer OAuth token, and
-    :data:`backlot.acl.ANONYMOUS` when neither resolves.
+    """The caller for an Atlassian read: Basic ``email:api_token`` or
+    :func:`atlassian_bearer_token`, and :data:`backlot.acl.ANONYMOUS` when neither resolves.
+
+    The bearer is NOT an OAuth 3LO token standing in for Atlassian's own. A 3LO token goes to
+    ``api.atlassian.com/ex/jira/{cloudid}/…``, which Backlot does not serve; on the
+    ``<site>.atlassian.net`` surface it does serve, a bearer is read as a Connect session JWT, and
+    an opaque Backlot token is one the gateway cannot read at all — which is the ``403``
+    :func:`atlassian_bearer_unreadable` reports.
 
     No refusal here, unlike :func:`require_bearer`: the two Atlassian APIs disagree about what an
     unresolved credential means. Jira drops the caller to anonymous and answers the request; only

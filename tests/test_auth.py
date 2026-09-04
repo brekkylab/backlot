@@ -57,7 +57,9 @@ def test_require_bearer_returns_the_caller_for_a_good_token(acl, tokens):
 
 
 def test_atlassian_caller_accepts_either_scheme(acl, tokens, sample_settings):
-    """Atlassian carries Basic email:api_token and also accepts a bearer OAuth token."""
+    """Atlassian carries Basic email:api_token and also accepts a bearer. Not an OAuth 3LO token
+    standing in for Atlassian's: see :func:`auth.atlassian_caller` for why the surface Backlot
+    serves reads a bearer as something else."""
     token = tokens["ava@acme.com"]
     basic = base64.b64encode(f"ava@acme.com:{token}".encode()).decode()
     assert auth.atlassian_caller(_request(f"Basic {basic}", app=_app(acl))).email == "ava@acme.com"

@@ -163,6 +163,25 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     }
 
 
+def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
+    """The one disclosed divergence, pinned so it cannot drift into an accident. A bearer shaped
+    like a complete signed JWS is READ by the real gateway and then rejected — `401 text/html`
+    "Client must be authenticated to access this resource." on both sites — where every incomplete
+    shape draws the 403. Backlot issues no JWT-shaped token, and reproducing Atlassian Connect's
+    accept boundary would mean inventing the space between the shapes measured, so this answers the
+    403. If `auth.atlassian_bearer_unreadable` ever grows a shape check, this is what says so."""
+    jws = "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ4In0.c2ln"
+    r = client.get(
+        "/atlassian/rest/api/3/project/search", headers={"Authorization": f"Bearer {jws}"}
+    )
+    assert r.status_code == 403
+    assert r.json() == {"error": errors_atlassian.CONNECT_TOKEN_UNREADABLE}
+    # Confluence answers a JWT-shaped bearer with its own 403, which real does too.
+    conf = client.get("/atlassian/wiki/rest/api/space", headers={"Authorization": f"Bearer {jws}"})
+    assert conf.status_code == 403
+    assert conf.json()["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
+
+
 @pytest.mark.parametrize(
     "header",
     [
@@ -224,6 +243,10 @@ def test_confluence_answers_401_to_a_basic_credential_it_cannot_parse(client, ra
     that every other error here carries, where the real 401 is Tomcat's HTML page."""
     r = client.get("/atlassian/wiki/rest/api/space", headers=_basic(raw))
     assert r.status_code == 401
+    # The literal, not the constant: comparing the body against the same constant the router
+    # emits passes whatever that constant says, and its value is the measured part — the title of
+    # the Tomcat page real answers with, kept because this envelope is JSON where that page is not.
+    assert r.json()["message"] == "Unauthorized"
     assert r.headers["www-authenticate"] == 'OAuth realm="http%3A%2F%2Ftestserver%2Fwiki"'
 
 
@@ -249,7 +272,13 @@ def test_atlassian_error_keeps_the_atlassian_error_envelope(client):
     r = client.get("/atlassian/wiki/rest/api/space")
     assert r.status_code == 403
     body = r.json()
-    assert body["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
+    # Once against the vendor's own wording rather than against the constant, for the reason given
+    # in test_confluence_answers_401_to_a_basic_credential_it_cannot_parse; the other sites compare
+    # the constant, which pins that the router reaches for the right one.
+    assert body["message"] == (
+        "com.atlassian.confluence.mvc.rest.common.exception.StacklessResponseStatusException: "
+        '403 FORBIDDEN "Request rejected because caller cannot access Confluence"'
+    )
     assert body["errorMessages"] == [errors_atlassian.CONFLUENCE_FORBIDDEN]
     assert body["statusCode"] == 403
 

@@ -447,7 +447,7 @@ def _derived_in(conn, column: str, derive, spec: dict) -> tuple[str, list]:
     # relation-mode comparator spells it out (`IS NULL OR <> ?`); an IN-list over distinct non-NULL
     # names silently dropped them, so `project:{id:{neq:X}}` and `project:{name:{neq:X}}` disagreed
     # on 24 real rows.
-    negative = any(op in spec for op in ("neq", "nin", "neqIgnoreCase"))
+    negative = any(op in spec for op in _RELATION_NEGATIVE_OPS)
     null_ok = f" OR {column} IS NULL" if negative else ""
     if not matched:
         return (f"{column} IS NULL", []) if negative else ("0", [])
@@ -572,6 +572,10 @@ _NEGATIVE_OPS = frozenset(
         "notEndsWith",
     }
 )
+
+# The operators that keep the issues WITHOUT the relation (see `_Comparator` and `_derived_in`);
+# distinct from `_NEGATIVE_OPS` above, which is the labels polarity rule over every negative operator.
+_RELATION_NEGATIVE_OPS = ("neq", "nin", "neqIgnoreCase")
 _LABEL_COUNT = "json_array_length(COALESCE(labels, '[]'))"
 _LABEL_EACH = "json_each(COALESCE(labels, '[]'))"
 
@@ -938,9 +942,6 @@ def _is_bare_null_false(spec: dict) -> bool:
     return any(_is_bare_null_false(b) for b in _under(spec, "or"))
 
 
-_NEGATIVE_OPS = ("neq", "nin", "neqIgnoreCase")
-
-
 def _carries_negative(spec: dict) -> bool:
     """A comparator that keeps the issues without the relation (see `_Comparator`), anywhere in
     ``spec``."""
@@ -948,7 +949,11 @@ def _carries_negative(spec: dict) -> bool:
         if key in ("or", "and"):
             if any(_carries_negative(b) for b in sub):
                 return True
-        elif key != "null" and isinstance(sub, dict) and any(op in sub for op in _NEGATIVE_OPS):
+        elif (
+            key != "null"
+            and isinstance(sub, dict)
+            and any(op in sub for op in _RELATION_NEGATIVE_OPS)
+        ):
             return True
     return False
 
@@ -1059,6 +1064,10 @@ def _relation_or(conn, branches: list, mapping: dict, col: str) -> tuple[str, li
     nothing about the row is the list's missing-relation alternative."""
     if not branches:
         return f"{col} IS NOT NULL", []
+    for obj in (o for b in branches for o in _through_and_or(b)):
+        for key in obj:
+            if key not in ("null", "or", "and") and mapping.get(key) is None:
+                raise GraphQLError(f"unsupported nested filter field {key!r}")
     if any(_is_vacuous_branch(b) for b in branches) or all(_says_nothing(b) for b in branches):
         return "", []
     related, params = _related_row_or(conn, branches, mapping, nested=False)
@@ -1092,10 +1101,11 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
     of ``IssueFilter`` is not this object: ``{and: [{assignee: {null: true}}, {assignee: {name:
     {eq: X}}}]}`` is two relation filters ANDed and answers none, as measured.
 
-    An ``or`` is not the union of its branches each read by that rule. Measured 2026-09-04, 458
-    filters in eleven rounds over the same four issues (two in two projects, one of them assigned
-    to the viewer, two in none); from the third round on each round was predicted from the rule
-    before it was sent, and the misses fixed corners until one procedure fit every row. That
+    An ``or`` is not the union of its branches each read by that rule. Measured 2026-09-04: 406
+    relation filters in eleven rounds over the same four issues (two in two projects, one of them
+    assigned to the viewer, two in none), which with the 24 rows of #128's first table and the 28 of
+    #124's last round are 458 measured rows; from the third round on each round was predicted from
+    the rule before it was sent, and the misses fixed corners until one procedure fit every row. That
     procedure is what this function is, in this order:
 
     FLAGS. What the object says about the relation's existence is its own ``null``. Failing that,
@@ -1185,12 +1195,12 @@ def _sub_filter(conn, spec: dict, mapping: dict) -> tuple[str, list]:
             continue
         if key == "or":
             frag, p = _relation_or(conn, sub, mapping, col)
-        elif sub == {}:
-            continue
         else:
             target = mapping.get(key)
             if target is None:
                 raise GraphQLError(f"unsupported nested filter field {key!r}")
+            if sub == {}:
+                continue
             if target[0] == "col":
                 frag, p = _Comparator(target[1], relation=True).render(sub)
             else:

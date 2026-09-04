@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import pytest
-from graphql import build_client_schema, is_enum_type, parse, validate
+from graphql import GraphQLError, build_client_schema, is_enum_type, parse, validate
 
 from backlot import synth
 from backlot.fidelity.graphql_diff import backlot_schema
@@ -1819,6 +1819,31 @@ def test_relation_or_reads_a_branch_as_linear(rclient, relation, literal, expect
     `null: true` is those issues alone. The full rule is on `_sub_filter`; each cell is one
     measured answer, the mapping to the fixture above `_RELATION_OR_CORPUS`."""
     assert ids(rclient, "{%s: %s}" % (relation, literal)) == sorted(expected)
+
+
+def test_relation_negative_operators_do_not_shadow_the_labels_polarity_rule():
+    """`_carries_negative` and `_derived_in` share `_RELATION_NEGATIVE_OPS`, the three operators that
+    keep the issues without the relation; the labels polarity rule (`_reads_as_negation`) has its
+    own, wider `_NEGATIVE_OPS`. A rebinding of the latter would silently drop `notContains` and its
+    three siblings from the labels rule #116 measured, so pin both."""
+    assert linear_filters._reads_as_negation({"name": {"notContains": "x"}}) is True
+    assert linear_filters._reads_as_negation({"name": {"neq": "x"}}) is True
+    assert linear_filters._reads_as_negation({"name": {"eq": "x"}}) is False
+    assert set(linear_filters._RELATION_NEGATIVE_OPS) < set(linear_filters._NEGATIVE_OPS)
+
+
+def test_unmapped_nested_field_is_refused_even_with_no_operator():
+    """A nested field this module does not map is refused, not dropped, so the SDL and the compiler
+    cannot drift apart unnoticed; an empty comparator (`{}`) or a place inside an `or` does not
+    get it past the check."""
+    for flt in (
+        {"project": {"bogus": {}}},
+        {"project": {"or": [{"bogus": {}}]}},
+        {"project": {"or": [{"bogus": {}}, {"name": {"eq": "x"}}]}},
+        {"assignee": {"and": [{"bogus": {"eq": "x"}}]}},
+    ):
+        with pytest.raises(GraphQLError, match="unsupported nested filter field 'bogus'"):
+            linear_filters._issue_filter(None, flt)
 
 
 def test_issue_filter_or_reads_the_keys_of_one_branch_as_alternatives(fclient):

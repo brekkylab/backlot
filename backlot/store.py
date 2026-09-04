@@ -1757,6 +1757,26 @@ def gdrive_by_id(conn, file_id, visible_ids=None) -> sqlite3.Row | None:
 _GMAIL_ROOT = " AND (thread_id IS NULL OR thread_id = id)"
 
 
+def has_visible_document(conn, source_type, container=None, visible_ids=None) -> bool:
+    """Whether the caller can read at least one document in ``container``.
+
+    The yes/no form of :func:`count_documents`, for callers that only need existence: no ORDER BY
+    and ``LIMIT 1``, so SQLite stops at the first row the ACL admits instead of walking the whole
+    container to total it. A Jira project listing asks this once per project, where counting each
+    one in full grows with issues-per-project for an answer that never uses the number.
+
+    ``visible_ids`` keeps :func:`_acl_clause`'s three states, the empty set included: an anonymous
+    caller reaches nothing, so every container answers False rather than True.
+    """
+    tbl = table(source_type)
+    sql = f"SELECT 1 FROM {tbl} WHERE 1=1"
+    params: list = []
+    sql = _scope(sql, params, grouping_col(source_type), container, None, None)
+    clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
+    sql += clause + " LIMIT 1"
+    return conn.execute(sql, params + cparams).fetchone() is not None
+
+
 def count_documents(
     conn,
     source_type,

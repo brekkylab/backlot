@@ -221,16 +221,22 @@ async def jira_server_info(request: Request):
 def _reachable_projects(conn, ids) -> list:
     """The projects the caller can reach, as container rows.
 
-    A project is listed when the caller can see an issue in it: Backlot's ACL grants per document
-    rather than per project, so Jira's "can browse this project" has to be read off the issues.
-    Measured anonymously on 2026-09-04 — `project/search` answers 200 with an empty `values` on a
-    site whose projects are all private (brekkylab.atlassian.net) and with the public ones on a
-    site that has them (ecosystem.atlassian.net).
+    A project is listed when the caller can see an issue in it. Backlot's ACL grants per document
+    rather than per project, so there is nothing else to read "can browse this project" off.
+
+    Measured for the ANONYMOUS caller, on 2026-09-04: `project/search` answers 200 with an empty
+    `values` on a site whose projects are all private (brekkylab.atlassian.net) and with the
+    public ones on a site that has them (ecosystem.atlassian.net). The same rule is applied to a
+    scoped caller, which is NOT measured — real Jira lists a project by its browse permission, and
+    a project can carry one while showing the caller no issue, so a listing there can hold a
+    project this one drops. Measuring it needs two accounts and a per-project permission scheme on
+    a live site. What the rule does rule out is the unfiltered listing, which handed every project
+    to a caller who can open nothing in any of them.
     """
     rows = store.list_containers(conn, "jira")
     if ids is None:
         return rows
-    return [r for r in rows if store.count_documents(conn, "jira", r["name"], ids)]
+    return [r for r in rows if store.has_visible_document(conn, "jira", r["name"], ids)]
 
 
 @router.get("/rest/api/3/project/search")
@@ -270,8 +276,10 @@ def _require_project(request: Request, conn, key: str) -> str:
     """
     ids = auth.visible_ids(request, _jira_caller(request))
     container = _jira_container_for_key(conn, key, request)
+    # `ids is None` short-circuits for the same reason _reachable_projects returns every row for
+    # it: an admin sees the project in the listing, so a role read on it must not 404.
     if container is not None and (
-        ids is None or store.count_documents(conn, "jira", container, ids)
+        ids is None or store.has_visible_document(conn, "jira", container, ids)
     ):
         return container
     raise HTTPException(status_code=404, detail=f"No project could be found with key '{key}'.")

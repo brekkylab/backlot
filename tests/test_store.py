@@ -458,6 +458,25 @@ def test_count_documents(db):
     assert store.count_documents(db, "jira", container="no-such-project") == 0
 
 
+def test_has_visible_document_answers_existence_under_the_acl(db, acl):
+    """The yes/no `count_documents` is asked for when a caller only needs to know whether a
+    container holds anything they may read. It has to agree with the count on all three ACL
+    states, including the empty principal set — an anonymous caller reaches nothing, and a helper
+    that read an empty set as "unscoped" would report every container as reachable."""
+    from backlot.acl import Caller
+
+    scoped = acl.visible_ids(db, Caller(email="ava@acme.com", is_admin=False))
+    for container in ("payments", "no-such-project"):
+        for ids in (None, scoped, set()):
+            expected = store.count_documents(db, "jira", container, ids) > 0
+            assert store.has_visible_document(db, "jira", container, ids) is expected, (
+                container,
+                ids,
+            )
+    assert store.has_visible_document(db, "jira", "payments", None) is True
+    assert store.has_visible_document(db, "jira", "payments", set()) is False
+
+
 def test_list_documents_state_filter(db, keys):
     # gateway repo: gh-issue-1 is open (state NULL/"open"), gh-pr-1 is closed
     def listed(**kw):

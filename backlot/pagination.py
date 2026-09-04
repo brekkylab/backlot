@@ -112,6 +112,12 @@ def clamp_page(
     return p, pp
 
 
+def _page_url(url_no_query: str, params: dict) -> str:
+    """One page url in a `Link` header, `<…>`-wrapped with its query percent-encoded."""
+    q = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in params.items())
+    return f"<{url_no_query}?{q}>"
+
+
 def github_link_header(
     url_no_query: str, params: dict, page: int, per_page: int, total: int
 ) -> str | None:
@@ -140,11 +146,7 @@ def github_link_header(
         return None
 
     def link(p: int) -> str:
-        q = "&".join(
-            f"{k}={quote(str(v), safe='')}"
-            for k, v in {**params, "per_page": per_page, "page": p}.items()
-        )
-        return f"<{url_no_query}?{q}>"
+        return _page_url(url_no_query, {**params, "per_page": per_page, "page": p})
 
     parts = []
     if page > 1:
@@ -155,6 +157,50 @@ def github_link_header(
         parts.append(f'{link(last_page)}; rel="last"')
     if page > 1:
         parts.append(f'{link(1)}; rel="first"')
+    return ", ".join(parts) if parts else None
+
+
+def github_cursor_offset(page: int, per_page: int, after: str | None, before: str | None) -> int:
+    """Where a cursor-paged window starts: the cursor's offset, or the page's own when none came.
+
+    A cursor OVERRIDES ``page`` rather than adding to it — measured on api.github.com on 2026-09-04,
+    `/repos/psf/requests/issues?per_page=2&page=50` carrying page 1's `after` answers the rows
+    `page=2` answers, where `page=50` alone answers a different window. ``before`` names the window
+    that ENDS where the cursor points, which is how real's own `prev` walks back a page.
+    """
+    if after is not None:
+        return decode_cursor(after)
+    if before is not None:
+        return max(0, decode_cursor(before) - per_page)
+    return (page - 1) * per_page
+
+
+def github_cursor_link_header(
+    url_no_query: str, params: dict, page: int, per_page: int, total: int, offset: int
+) -> str | None:
+    """Build a Link header for a listing real pages by CURSOR rather than by offset.
+
+    `/repos/{owner}/{repo}/issues` is one; every other GitHub listing takes
+    :func:`github_link_header`. Measured on api.github.com on 2026-09-04 against a repository with
+    12 open issues at `per_page=5`: `next` and `prev` are the only rels — no `last`, no `first`,
+    ever — page 1 answers `next` alone, page 2 `next, prev` in that order, page 3 `prev` alone, and
+    pages 4 and 99 no header at all, as do those 12 rows at `per_page=100`.
+
+    Each url pairs an opaque cursor with the caller's own page ± 1. The page number is carried, not
+    computed: `?page=50` with page 1's cursor answers page 2's rows and links `page=51`. The cursor
+    is what names the window (see :func:`github_cursor_offset`).
+    """
+    if offset >= total:  # a window past the rows carries no header at all, not even `prev`
+        return None
+
+    def link(p: int, **cursor) -> str:
+        return _page_url(url_no_query, {**params, "per_page": per_page, "page": p, **cursor})
+
+    parts = []
+    if offset + per_page < total:
+        parts.append(f'{link(page + 1, after=encode_cursor(offset + per_page))}; rel="next"')
+    if offset > 0:
+        parts.append(f'{link(page - 1, before=encode_cursor(offset))}; rel="prev"')
     return ", ".join(parts) if parts else None
 
 

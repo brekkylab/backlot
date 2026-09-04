@@ -1,4 +1,5 @@
 import re
+from urllib.parse import quote
 
 import pytest
 
@@ -7,7 +8,9 @@ from backlot import pagination as pg
 
 def _pages(header: str) -> dict[str, int]:
     """A GitHub `Link` header's rel -> page number map (RFC5988 `<url>; rel="name"`)."""
-    return {rel: int(page) for page, rel in re.findall(r"page=(\d+)>; rel=\"(\w+)\"", header)}
+    return {
+        rel: int(page) for page, rel in re.findall(r"[?&]page=(\d+)[^>]*>; rel=\"(\w+)\"", header)
+    }
 
 
 def test_cursor_roundtrip():
@@ -106,6 +109,53 @@ def test_github_link_header():
     ]
     # ...and a listing that never had a second page stays header-less however far past it you ask
     assert pg.github_link_header("http://x", {}, 99, 10, 5) is None
+
+
+def test_github_cursor_link_header_pages_a_listing_real_pages_by_cursor():
+    """Real cursor-pages `/repos/{o}/{r}/issues` where it offset-pages every other listing: the
+    header carries `next`/`prev` alone — never `last` or `first` — each url pairing the caller's
+    page ± 1 with an opaque cursor, and a window past the rows carries no header at all.
+
+    Measured on api.github.com on 2026-09-04 against a repository with 12 open issues, `per_page=5`:
+    page 1 answers `next` with an `after` cursor, page 2 `next, prev` in that order, page 3 — the
+    last that holds rows — `prev` alone with a `before` cursor, and pages 4 and 99 nothing at all.
+    The same 12 rows at `per_page=100` also answer nothing. Following page 1's `after` lands on
+    exactly the rows `page=2` answers and page 3's `before` on the same window, so a cursor names
+    where a window STARTS and `before` names the window ending where this one begins.
+    """
+
+    def h(page, offset, total=12, per_page=5):
+        return pg.github_cursor_link_header(
+            "http://x", {"state": "open"}, page, per_page, total, offset
+        )
+
+    assert list(_pages(h(1, 0))) == ["next"]
+    assert list(_pages(h(2, 5)).items()) == [("next", 3), ("prev", 1)]
+    assert _pages(h(3, 10)) == {"prev": 2}
+    assert h(4, 15) is None and h(99, 490) is None  # past the rows
+    assert h(1, 0, per_page=100) is None  # one page holds every row
+    assert h(1, 0, total=0) is None  # ...as does none at all
+
+    # the cursor names the window the url lands on; the page number beside it is only the caller's
+    # own ± 1, which real echoes even when the cursor contradicts it (`?page=50&after=<page 1's>`
+    # answers page 2's rows and links page 51)
+    assert f"after={quote(pg.encode_cursor(5), safe='')}" in h(1, 0)
+    assert f"before={quote(pg.encode_cursor(10), safe='')}" in h(3, 10)
+    assert _pages(h(50, 5)) == {"next": 51, "prev": 49}
+
+
+def test_github_cursor_offset_prefers_the_cursor_over_the_page():
+    """A cursor OVERRIDES `page` rather than adding to it. Measured the same day: `?per_page=2` at
+    `page=50` with page 1's `after` cursor answers the two rows `page=2` answers, where `page=50`
+    alone answers a different window — so the cursor decides and `page` is carried along.
+    """
+    assert pg.github_cursor_offset(50, 2, pg.encode_cursor(2), None) == 2
+    assert pg.github_cursor_offset(3, 5, None, None) == 10  # neither cursor: the page's own offset
+    # `before` names the window that ENDS at the offset it carries, and clamps at the start
+    assert pg.github_cursor_offset(9, 5, None, pg.encode_cursor(10)) == 5
+    assert pg.github_cursor_offset(9, 5, None, pg.encode_cursor(2)) == 0
+    # a cursor that does not decode restarts at the first window, `decode_cursor`'s own tolerance
+    assert pg.github_cursor_offset(4, 5, "garbage", None) == 0
 
 
 def test_github_link_header_percent_encodes_its_param_values():

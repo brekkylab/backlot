@@ -21,7 +21,13 @@ from pydantic import BaseModel, ConfigDict
 from backlot import auth, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
-from backlot.pagination import PageParam, clamp_page, github_link_header
+from backlot.pagination import (
+    PageParam,
+    clamp_page,
+    github_cursor_link_header,
+    github_cursor_offset,
+    github_link_header,
+)
 
 # Real GitHub caps a recursive tree at 100k entries / 7 MB and reports `truncated: true`. Module
 # level rather than settings, so a test can lower them: a corpus big enough to hit the real cap is
@@ -291,12 +297,30 @@ def _api_base(request: Request) -> str:
     return f"{request.url.scheme}://{host}/github"
 
 
+def _link_response(link: str | None, body: list) -> Response:
+    return JSONResponse(body, headers={"Link": link} if link else {})
+
+
 def _paged(
     request: Request, rows_total: int, extra: dict, body: list, page: int, per_page: int
 ) -> Response:
     link = github_link_header(_base_url(request), extra, page, per_page, rows_total)
-    headers = {"Link": link} if link else {}
-    return JSONResponse(body, headers=headers)
+    return _link_response(link, body)
+
+
+def _paged_by_cursor(
+    request: Request,
+    rows_total: int,
+    extra: dict,
+    body: list,
+    page: int,
+    per_page: int,
+    offset: int,
+) -> Response:
+    """:func:`_paged` for the one listing real pages by cursor rather than by offset — see
+    :func:`backlot.pagination.github_cursor_link_header`."""
+    link = github_cursor_link_header(_base_url(request), extra, page, per_page, rows_total, offset)
+    return _link_response(link, body)
 
 
 def _echo(request: Request, **params) -> dict:
@@ -793,6 +817,13 @@ async def list_issues(
     page: PageParam = None,
     per_page: PageParam = None,
 ):
+    """The repo's issues AND pulls, cursor-paged the way real pages this one listing.
+
+    `after`/`before` are read off the query rather than declared: GitHub's published OpenAPI
+    declares neither for this operation, so a declared parameter would put in Backlot's contract —
+    and in the tool `backlot mcp` builds from it — an argument the vendor's spec does not have. The
+    live API both emits and honours them (see :func:`backlot.pagination.github_cursor_offset`).
+    """
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -808,12 +839,15 @@ async def list_issues(
     page, per_page = clamp_page(
         page, per_page, get_settings().default_page_size, get_settings().max_page_size
     )
-    start = (page - 1) * per_page
+    q = request.query_params
+    start = github_cursor_offset(page, per_page, q.get("after"), q.get("before"))
     rows = all_rows[start : start + per_page]
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
     body = [_issue_obj(conn, owner, repo, r, ab, _version(request)) for r in rows]
-    return _paged(request, len(all_rows), _echo(request, state=state), body, page, per_page)
+    return _paged_by_cursor(
+        request, len(all_rows), _echo(request, state=state), body, page, per_page, start
+    )
 
 
 # --- a comment by its own id ----------------------------------------------------

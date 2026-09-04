@@ -10,12 +10,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from urllib.parse import quote
 
 import yaml
 
 import pytest
 
 from backlot import store
+from backlot.pagination import encode_cursor
 from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
 
 
@@ -1724,6 +1726,45 @@ def _link_rels(header: str) -> dict:
         url, _, rel = part.partition("; ")
         rels[rel.removeprefix('rel="').rstrip('"')] = url.strip("<>")
     return rels
+
+
+def test_github_the_issue_listing_pages_by_cursor_not_by_offset(gh_client, gh_admin_h, gh_org):
+    """`/repos/{o}/{r}/issues` is the one listing real pages by CURSOR, and its header says so: only
+    `next` and `prev`, each url carrying an opaque `after`/`before` beside the page number, and no
+    header at all past the rows.
+
+    Measured on api.github.com on 2026-09-04 against a repository with 12 open issues at
+    `per_page=5` — page 1 answers `next` alone, page 2 `next, prev`, page 3 `prev` alone, pages 4
+    and 99 nothing — where `/pulls` on the same server answers all four rels from `page=2`. The
+    cursor is what selects the window: `?page=50` carrying page 1's `after` answers page 2's rows.
+    So `rel="last"`, which every other listing here sends, would tell a client the size of a
+    listing real never sizes for it.
+    """
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/diffable/issues"
+    args = {"state": "all", "per_page": 1}
+    full = c.get(url, headers=gh_admin_h, params={"state": "all"}).json()
+    assert len(full) > 2, "the walk this test measures needs more rows than a page holds"
+
+    first = c.get(url, headers=gh_admin_h, params=args)
+    assert set(_link_rels(first.headers["Link"])) == {"next"}
+    assert f"after={quote(encode_cursor(1), safe='')}" in first.headers["Link"]
+
+    second = c.get(
+        _link_rels(first.headers["Link"])["next"].split("testserver", 1)[1], headers=gh_admin_h
+    )
+    assert second.json() == full[1:2]
+    assert set(_link_rels(second.headers["Link"])) == {"next", "prev"}
+
+    # the cursor decides the window, not the page carried beside it
+    ahead = c.get(url, headers=gh_admin_h, params={**args, "page": 50, "after": encode_cursor(1)})
+    assert ahead.json() == full[1:2]
+
+    # the last row's page keeps `prev` alone, and the page after it carries no header
+    last = c.get(url, headers=gh_admin_h, params={**args, "page": len(full)})
+    assert set(_link_rels(last.headers["Link"])) == {"prev"}
+    beyond = c.get(url, headers=gh_admin_h, params={**args, "page": len(full) + 1})
+    assert beyond.json() == [] and "Link" not in beyond.headers
 
 
 @pytest.mark.parametrize(

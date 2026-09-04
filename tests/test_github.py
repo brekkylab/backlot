@@ -994,8 +994,6 @@ def test_github_sub_resource_listings_page_and_answer_an_empty_page(
     single item repeated without end.
     """
     c, _ = gh_client
-    from backlot import synth
-
     gw = synth.github_number("gh-pr-1")
     sha = c.get(f"/github/repos/{gh_org}/gateway/pulls/{gw}", headers=gh_admin_h).json()["head"][
         "sha"
@@ -1828,6 +1826,54 @@ def test_github_a_page_url_names_the_repository_and_the_org_by_id(gh_client, gh_
     assert c.get(loud_org.split("testserver", 1)[1], headers=gh_admin_h).status_code == 200
 
 
+def test_github_an_id_path_answers_in_the_order_the_named_path_does(gh_client, gh_admin_h, gh_org):
+    """An id that names nothing is refused the way a name that names nothing is, and in the same
+    order: credentials first, existence second, so that no answer here tells an unauthenticated
+    caller which ids the corpus holds (`canonical_id_path` says why that matters)."""
+    c, _ = gh_client
+    held, absent = synth.github_user_id("diffable"), synth.github_user_id("diffable") + 1
+    for path in (
+        f"/github/repositories/{held}/pulls",
+        f"/github/repositories/{absent}/pulls",
+        f"/github/repos/{gh_org}/diffable/pulls",
+        f"/github/repos/{gh_org}/nosuchrepo/pulls",
+    ):
+        assert c.get(path).status_code == 401, path
+    assert c.get(f"/github/repositories/{held}/pulls", headers=gh_admin_h).status_code == 200
+    assert c.get(f"/github/repositories/{absent}/pulls", headers=gh_admin_h).status_code == 404
+
+
+def test_github_an_id_two_repos_share_names_neither(tmp_path):
+    """A corpus that holds both halves of a `github_user_id` collision — the ids are not unique,
+    see `canonical_id_path` — answers for each name and 404s the id they share, rather
+    than walking a client onto whichever of the two sorts first."""
+    assert synth.github_user_id("repo485") == synth.github_user_id("repo4107")
+    shared = synth.github_user_id("repo485")
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": f"gh-{name}",
+                "repo": name,
+                "subtype": "issue",
+                "title": "hi",
+                "content": "body",
+                "visibility": "public",
+                "author_email": "ava@acme.com",
+            }
+            for name in ("repo485", "repo4107")
+        ],
+        name="collide.jsonl",
+    )
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        org = c.get("/_meta/users").json()["org"]
+        for name in ("repo485", "repo4107"):
+            assert c.get(f"/github/repos/{org}/{name}/issues", headers=h).status_code == 200, name
+        assert c.get(f"/github/repositories/{shared}/issues", headers=h).status_code == 404
+
+
 def test_github_a_page_url_omits_a_page_size_the_caller_did_not_send(
     gh_client, gh_admin_h, gh_org, monkeypatch
 ):
@@ -1858,12 +1904,17 @@ def test_github_a_page_url_omits_a_page_size_the_caller_did_not_send(
 
 
 @pytest.mark.parametrize(
-    "path, q",
-    [("/github/search/code", "extension:md"), ("/github/search/issues", "repo:diffable is:pr")],
+    "path, q, page_one",
+    [
+        ("/github/search/code", "extension:md", {"next", "first", "last"}),
+        ("/github/search/issues", "repo:diffable is:pr", {"next", "last"}),
+    ],
 )
-def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q):
-    """Real pages a search response with an RFC5988 `Link`, exactly as it pages a listing, and
-    sends none at all when the results fit on one page.
+def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q, page_one):
+    """Real pages a search response with an RFC5988 `Link` and sends none at all when the results
+    fit on one page — but the two search routes do not page alike, and page 1 is where it shows:
+    `/search/issues` answers `next, last` as every listing here does, `/search/code` `next, first,
+    last` (:func:`backlot.pagination.github_code_search_link_header` for the rest of its rules).
 
     A search envelope reports `total_count`, so the header is not the only way to learn there is
     more — it is how a client that FOLLOWS links pages without composing a URL of its own, which is
@@ -1873,7 +1924,7 @@ def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q):
     first = c.get(path, headers=gh_admin_h, params={"q": q, "per_page": 2, "page": 1})
     total = first.json()["total_count"]
     assert total > 2, "the fixture has to span more than one page for this to mean anything"
-    assert set(_link_rels(first.headers["Link"])) == {"next", "last"}
+    assert set(_link_rels(first.headers["Link"])) == page_one
 
     # following `next` lands on the same query's second page -- the round-trip the encoding is for
     nxt = _link_rels(first.headers["Link"])["next"]

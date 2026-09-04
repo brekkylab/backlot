@@ -24,6 +24,7 @@ from backlot.config import get_settings
 from backlot.pagination import (
     PageParam,
     clamp_page,
+    github_code_search_link_header,
     github_cursor_link_header,
     github_cursor_offset,
     github_link_header,
@@ -158,10 +159,10 @@ async def _validate_path_owner(request: Request) -> None:
     router dependencies before it reads the endpoint's own path params, so the handler signature
     receives the value set here.
 
-    The pagination `Link` header is the one url this does not reach: :func:`_base_url` builds it
-    from the path the request arrived on, deliberately, and real has no named url to match there —
-    it paginates by numeric repository id instead (`/repositories/1362490/issues`, measured on the
-    same day).
+    The canonical spelling reaches the pagination `Link` header too, by way of the id it hashes to:
+    real paginates by numeric repository id (`/repositories/1362490/issues`, measured on the same
+    day), and :func:`_page_base_url` reads the spelling this dependency settled rather than the one
+    the request arrived with.
     """
     _require(request)
     key = "owner" if "owner" in request.path_params else "org"
@@ -285,11 +286,6 @@ class GitHubCodeSearch(_Loose):
     items: list[GitHubCodeHit]
 
 
-def _base_url(request: Request) -> str:
-    host = request.headers.get("host", "localhost")
-    return f"{request.url.scheme}://{host}{request.url.path}"
-
-
 def _api_base(request: Request) -> str:
     """Backlot's GitHub API root (…/github), used for resource `url` fields so SDK
     clients (e.g. PyGithub) that lazily complete objects fetch back from Backlot."""
@@ -297,8 +293,8 @@ def _api_base(request: Request) -> str:
     return f"{request.url.scheme}://{host}/github"
 
 
-#: The id-keyed prefixes real's page urls use, mapped to the login-keyed path each one stands for.
-_ID_PATHS = {"repositories": "repos", "organizations": "orgs"}
+#: The id-keyed prefixes real's page urls use.
+_ID_PATHS = {"repositories", "organizations"}
 
 
 def _page_base_url(request: Request) -> str:
@@ -314,13 +310,14 @@ def _page_base_url(request: Request) -> str:
     The form has to resolve, which is ``resolve_github_id_paths`` in :mod:`backlot.main`.
 
     The id is the CORPUS's, not one minted from the spelling the request used: both segments
-    resolve in any case (see :func:`store.container_spelling`), so hashing the caller's spelling
-    would name an id nothing holds and 404 the client that followed the url.
+    resolve in any case, so hashing the caller's spelling would name an id nothing holds and 404
+    the client that followed the url. Both spellings are already to hand — `_canonical_path_repo`
+    has put the corpus's in ``path_params`` and the org route only answers for the one org.
     """
     parts = request.url.path.strip("/").split("/")
     path = request.url.path
     if parts[1:2] == ["repos"] and len(parts) >= 4:
-        repo = store.container_spelling(auth.conn(request), "github", parts[3]) or parts[3]
+        repo = request.path_params.get("repo") or parts[3]
         path = "/".join(["/github/repositories", str(synth.github_user_id(repo)), *parts[4:]])
     elif parts[1:2] == ["orgs"] and len(parts) >= 3:
         # the one org served, which is the spelling `_validate_path_owner` accepted this path for
@@ -332,24 +329,37 @@ def _page_base_url(request: Request) -> str:
 
 
 def canonical_id_path(conn, org: str, path: str) -> str | None:
-    """The login-keyed path an id-keyed one stands for, or ``None`` when the id names nothing.
+    """The login-keyed path an id-keyed one stands for, or ``None`` when the path is not one.
 
     The inverse of :func:`_page_base_url`, so that the page urls Backlot emits can be followed.
     Resolution is by id alone and says nothing about visibility — the route it lands on applies the
     caller's ACL, so a repository this caller cannot read 404s exactly as it does by name.
+
+    An id that names NOTHING is still rewritten, with the id left where the name goes, so that this
+    path answers in the order the named one does: :func:`_validate_path_owner` puts credentials
+    ahead of existence, and resolving here first would let a caller with none tell an id the corpus
+    holds (401) from one it does not (404) — and since the id is ``github_user_id(name)``, confirm
+    a guessed name that way.
+
+    An id TWO repositories share names neither. `github_user_id` is `1000 + digest % 9_000_000` and
+    so not injective — `repo485` and `repo4107` both hash to 7755679 — and answering with whichever
+    name sorts first would walk a client onto another repository's page with nothing in the response
+    to say so. :func:`store.container_spelling` settles the ambiguous spelling the same way.
     """
     parts = path.strip("/").split("/", 3)
     if len(parts) < 3 or parts[1] not in _ID_PATHS:
         return None
     tail = parts[3:]
     if parts[1] == "organizations":
-        if str(synth.github_user_id(org)) != parts[2]:
-            return None
-        return "/".join(["/github/orgs", org, *tail])
-    for row in store.list_containers(conn, "github"):
-        if str(synth.github_user_id(row["name"])) == parts[2]:
-            return "/".join(["/github/repos", org, row["name"], *tail])
-    return None
+        named = org if str(synth.github_user_id(org)) == parts[2] else parts[2]
+        return "/".join(["/github/orgs", named, *tail])
+    hits = [
+        r["name"]
+        for r in store.list_containers(conn, "github")
+        if str(synth.github_user_id(r["name"])) == parts[2]
+    ]
+    named = hits[0] if len(hits) == 1 else parts[2]
+    return "/".join(["/github/repos", org, named, *tail])
 
 
 def _link_response(link: str | None, body: list) -> Response:
@@ -365,7 +375,7 @@ def _paged(
         page,
         per_page,
         rows_total,
-        per_page_sent="per_page" in request.query_params,
+        per_page_param=request.query_params.get("per_page"),
     )
     return _link_response(link, body)
 
@@ -375,7 +385,7 @@ def _paged_by_cursor(
     rows_total: int,
     extra: dict,
     body: list,
-    page: int,
+    page: int | None,
     per_page: int,
     offset: int,
 ) -> Response:
@@ -397,7 +407,7 @@ def _echo(request: Request, **params) -> dict:
     paginator follows, dropping the rows a `state=all` walk asked for.
 
     Filters only. `per_page` is `github_link_header`'s to write, and it applies the same rule to it:
-    the effective size for a caller who named one, and nothing at all for a caller who did not.
+    the caller's own spelling of the size when they named one, and nothing at all when they did not.
     """
     return {k: v for k, v in params.items() if k in request.query_params}
 
@@ -451,7 +461,14 @@ def _issue_qual_match(row, quals: dict) -> bool:
 
 
 def _search_paged(
-    request: Request, response: Response, q: str, page: int, per_page: int, total: int
+    request: Request,
+    response: Response,
+    q: str,
+    page: int,
+    per_page: int,
+    total: int,
+    *,
+    code: bool = False,
 ) -> None:
     """Carry the RFC5988 `Link` real sends on a search onto ``response``.
 
@@ -460,14 +477,19 @@ def _search_paged(
     what :func:`_paged` already gives every listing on this router. Set on the injected response
     rather than by returning a ``JSONResponse``, so the handler keeps its ``response_model`` and the
     operation keeps the typed schema the MCP bridge reads.
+
+    ``code`` picks the builder, because the two search routes do not share one: `/search/issues`
+    pages by the listings' rules and `/search/code` by its own (see
+    :func:`backlot.pagination.github_code_search_link_header` for the five positions that says).
     """
-    link = github_link_header(
+    build = github_code_search_link_header if code else github_link_header
+    link = build(
         _page_base_url(request),
         {"q": q},
         page,
         per_page,
         total,
-        per_page_sent="per_page" in request.query_params,
+        per_page_param=request.query_params.get("per_page"),
     )
     if link:
         response.headers["Link"] = link
@@ -823,7 +845,7 @@ async def search_code(
         if want_matches:
             hit["text_matches"] = _text_matches(row["content"], hit["url"], terms)
         items.append(hit)
-    _search_paged(request, response, q, page, per_page, len(matched))
+    _search_paged(request, response, q, page, per_page, len(matched), code=True)
     return {"total_count": len(matched), "incomplete_results": False, "items": items}
 
 
@@ -956,17 +978,26 @@ async def list_issues(
         for r in store.list_documents(conn, "github", repo, ids, limit=10_000, state=state_filter)
         if r["kind"] != "file"
     ]
+    asserted = page  # kept: the page urls carry the number the caller claimed, or none at all
     page, per_page = clamp_page(
         page, per_page, get_settings().default_page_size, get_settings().max_page_size
     )
     q = request.query_params
     start = github_cursor_offset(page, per_page, q.get("after"), q.get("before"))
     rows = all_rows[start : start + per_page]
+    # A cursor and no page of 2 or more asserted beside it is the one case real writes no page
+    # number, so `None` says exactly that (see `github_cursor_link_header`). Without a cursor the
+    # page is the caller's own position and real writes it.
+    cursored = "after" in q or "before" in q
+    if not cursored:
+        link_page = page
+    else:
+        link_page = asserted if asserted and asserted >= 2 else None
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
     body = [_issue_obj(conn, owner, repo, r, ab, _version(request)) for r in rows]
     return _paged_by_cursor(
-        request, len(all_rows), _echo(request, state=state), body, page, per_page, start
+        request, len(all_rows), _echo(request, state=state), body, link_page, per_page, start
     )
 
 
@@ -1206,14 +1237,14 @@ async def pull_review_comments(
     )
     start = (page - 1) * per_page
     window = resolved[start : start + per_page]
-    if not window:  # the pull has no review comments, or the page is past the ones it has
-        return _paged(request, len(resolved), {}, [], page, per_page)
-    ab = _api_base(request)
-    # The same changeset this pull's diff serves, so a comment's `diff_hunk` and the diff agree.
-    patches = {
-        f["filename"]: f.get("patch") for f in _pr_files(conn, owner, repo, row, ab, ids, src)
-    }
-    body = [_gh_review_comment(owner, repo, number, row, c, f, patches, ab) for c, f in window]
+    body = []
+    if window:  # the pull may have no review comments, or the page be past the ones it has
+        ab = _api_base(request)
+        # The same changeset this pull's diff serves, so a comment's `diff_hunk` and the diff agree.
+        patches = {
+            f["filename"]: f.get("patch") for f in _pr_files(conn, owner, repo, row, ab, ids, src)
+        }
+        body = [_gh_review_comment(owner, repo, number, row, c, f, patches, ab) for c, f in window]
     return _paged(request, len(resolved), {}, body, page, per_page)
 
 

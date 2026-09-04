@@ -125,16 +125,21 @@ def github_link_header(
     per_page: int,
     total: int,
     *,
-    per_page_sent: bool = True,
+    per_page_param: str | None = None,
 ) -> str | None:
     """Build a Link header with rel=next/prev/first/last. ``params`` are extra query args.
 
-    ``per_page_sent`` says whether the CALLER named the page size; a size the handler defaulted is
-    left out of the urls, the rule a listing's filters already follow. Real omits it: `/tags` with
-    no query links `?page=2` and `?page=6` — six pages of 161 tags at its own default of 30 — where
-    `?per_page=1` links `per_page=1&page=2`, and search behaves the same (measured on
-    api.github.com on 2026-09-04). :func:`github_cursor_link_header` is the exception, and writes
-    the size either way.
+    ``per_page_param`` is the page size the CALLER sent, verbatim, or ``None`` when it sent none.
+    A size the handler defaulted is left out of the urls, the rule a listing's filters already
+    follow, and one the caller sent goes back in the caller's own spelling rather than as the size
+    the handler ended up applying. Both measured on api.github.com on 2026-09-04 against
+    `psf/requests/tags` and its 161 tags: no query links `?page=2` and `?page=6` with no `per_page`
+    anywhere, `?per_page=abc` links `per_page=abc` with `last` page 6 (it applied 30), and
+    `?per_page=500` links `per_page=500` with `last` page 2 (it applied 100). `page` is not like
+    this — every link recomputes it and real recomputes it too, answering `?page=abc` with `page=2`.
+
+    `/search/issues` pages by these rules too. `/search/code` and the cursor-paged issue listing do
+    not: see :func:`github_code_search_link_header` and :func:`github_cursor_link_header`.
 
     Returns ``None`` for a single page, which is what real sends there: no header at all, rather
     than one whose every rel points back at the page the caller is already holding. That holds
@@ -158,11 +163,12 @@ def github_link_header(
     if last_page <= 1:
         return None
 
-    size = {"per_page": per_page} if per_page_sent else {}
+    size = {} if per_page_param is None else {"per_page": per_page_param}
 
     def link(p: int) -> str:
         return _page_url(url_no_query, {**params, **size, "page": p})
 
+    # `last_page >= 2` here, so one of the two page tests always holds and `parts` is never empty
     parts = []
     if page > 1:
         parts.append(f'{link(min(page - 1, last_page))}; rel="prev"')
@@ -172,7 +178,7 @@ def github_link_header(
         parts.append(f'{link(last_page)}; rel="last"')
     if page > 1:
         parts.append(f'{link(1)}; rel="first"')
-    return ", ".join(parts) if parts else None
+    return ", ".join(parts)
 
 
 def github_cursor_offset(page: int, per_page: int, after: str | None, before: str | None) -> int:
@@ -190,8 +196,57 @@ def github_cursor_offset(page: int, per_page: int, after: str | None, before: st
     return (page - 1) * per_page
 
 
+def github_code_search_link_header(
+    url_no_query: str,
+    params: dict,
+    page: int,
+    per_page: int,
+    total: int,
+    *,
+    per_page_param: str | None = None,
+) -> str | None:
+    """Build a Link header for `/search/code`, which pages by none of the listings' rules.
+
+    Measured at five positions on api.github.com on 2026-09-04, `repo:psf/requests def` at
+    `per_page=5` (45 hits, nine pages), and again on `repo:kubernetes/kubernetes extension:md
+    kubelet`:
+
+    * `first` and `last` are on EVERY page — page 1 answers `next, first, last` and page 9, the last
+      that holds rows, answers `prev, first, last`, where a listing sends neither rel there.
+    * `prev` is the page before the one ASKED for even past the end: page 99 answers prev=98, where
+      a listing clamps it to the last page that holds rows.
+    * the rels come in the order next, prev, first, last.
+    * the size is written whether or not the caller named one — no `per_page` in the query still
+      links `per_page=30` — where a listing omits one the caller did not send.
+
+    `/search/issues` shares none of that and pages by :func:`github_link_header`. A result set that
+    fits one page carries no header, which is the one rule all three surfaces share.
+    """
+    last_page = max(1, (total + per_page - 1) // per_page)
+    if last_page <= 1:
+        return None
+    size = per_page if per_page_param is None else per_page_param
+
+    def link(p: int) -> str:
+        return _page_url(url_no_query, {**params, "per_page": size, "page": p})
+
+    parts = []
+    if page < last_page:
+        parts.append(f'{link(page + 1)}; rel="next"')
+    if page > 1:
+        parts.append(f'{link(page - 1)}; rel="prev"')
+    parts.append(f'{link(1)}; rel="first"')
+    parts.append(f'{link(last_page)}; rel="last"')
+    return ", ".join(parts)
+
+
 def github_cursor_link_header(
-    url_no_query: str, params: dict, page: int, per_page: int, total: int, offset: int
+    url_no_query: str,
+    params: dict,
+    page: int | None,
+    per_page: int,
+    total: int,
+    offset: int,
 ) -> str | None:
     """Build a Link header for a listing real pages by CURSOR rather than by offset.
 
@@ -201,21 +256,31 @@ def github_cursor_link_header(
     ever — page 1 answers `next` alone, page 2 `next, prev` in that order, page 3 `prev` alone, and
     pages 4 and 99 no header at all, as do those 12 rows at `per_page=100`.
 
-    Each url pairs an opaque cursor with the caller's own page ± 1. The page number is carried, not
-    computed: `?page=50` with page 1's cursor answers page 2's rows and links `page=51`. The cursor
-    is what names the window (see :func:`github_cursor_offset`).
+    ``page`` is the number the caller ASSERTED, or ``None`` when it asserted none — real writes a
+    page number only where the caller claimed a page of 2 or more, and drops `page` from both urls
+    entirely otherwise. Measured the same day on `?per_page=2`: `?after=C`, `?page=1&after=C` and
+    `?page=0&after=C` all answer `next` and `prev` with no `page` in either url, where
+    `?page=2&after=C` answers next=3/prev=1 and `?page=50&after=C` next=51/prev=49. So the number
+    is carried rather than computed, and the alternative to carrying one is writing none.
+
+    The size is written whether or not the caller sent one, and as the size APPLIED rather than as
+    the caller spelt it: `?per_page=abc` links `per_page=30` here, where `/tags` links `per_page=abc`
+    (both measured). The cursor is what names the window (see :func:`github_cursor_offset`).
     """
     if offset >= total:  # a window past the rows carries no header at all, not even `prev`
         return None
 
-    def link(p: int, **cursor) -> str:
-        return _page_url(url_no_query, {**params, "per_page": per_page, "page": p, **cursor})
+    def link(step: int, **cursor) -> str:
+        q = {**params, "per_page": per_page}
+        if page is not None:
+            q["page"] = page + step
+        return _page_url(url_no_query, {**q, **cursor})
 
     parts = []
     if offset + per_page < total:
-        parts.append(f'{link(page + 1, after=encode_cursor(offset + per_page))}; rel="next"')
+        parts.append(f'{link(1, after=encode_cursor(offset + per_page))}; rel="next"')
     if offset > 0:
-        parts.append(f'{link(page - 1, before=encode_cursor(offset))}; rel="prev"')
+        parts.append(f'{link(-1, before=encode_cursor(offset))}; rel="prev"')
     return ", ".join(parts) if parts else None
 
 

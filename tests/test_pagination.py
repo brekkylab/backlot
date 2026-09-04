@@ -13,6 +13,11 @@ def _pages(header: str) -> dict[str, int]:
     }
 
 
+def _link_rel_names(header: str) -> list[str]:
+    """Its rels in the order sent, whether or not their urls carry a page number."""
+    return re.findall(r'rel="(\w+)"', header)
+
+
 def test_cursor_roundtrip():
     assert pg.decode_cursor(pg.encode_cursor(0)) == 0
     assert pg.decode_cursor(pg.encode_cursor(250)) == 250
@@ -114,9 +119,14 @@ def test_github_link_header():
     # governs a listing's filters. Real: `psf/requests/tags` with no query links `?page=2` and
     # `?page=6` — six pages of 161 tags at real's own default of 30, no `per_page` anywhere — where
     # `?per_page=1` links `per_page=1&page=2` (measured 2026-09-04).
-    unsent = pg.github_link_header("http://x", {}, 1, 10, 25, per_page_sent=False)
+    unsent = pg.github_link_header("http://x", {}, 1, 10, 25)
     assert _pages(unsent) == {"next": 2, "last": 3}
     assert "per_page" not in unsent
+
+    # ...and one the caller DID send goes back in the caller's own spelling rather than as the size
+    # the handler applied, which is why an unparseable one survives the round trip
+    spelled = pg.github_link_header("http://x", {}, 1, 10, 25, per_page_param="abc")
+    assert "per_page=abc" in spelled and _pages(spelled) == {"next": 2, "last": 3}
 
 
 def test_github_cursor_link_header_pages_a_listing_real_pages_by_cursor():
@@ -151,10 +161,36 @@ def test_github_cursor_link_header_pages_a_listing_real_pages_by_cursor():
     assert f"before={quote(pg.encode_cursor(10), safe='')}" in h(3, 10)
     assert _pages(h(50, 5)) == {"next": 51, "prev": 49}
 
+    # `page=None` writes no page at all: the alternative to a number is the absence of one, never
+    # the `page=0` a caller at page 1 with a cursor would otherwise be handed
+    cursored = h(None, 3)
+    assert set(_link_rel_names(cursored)) == {"next", "prev"}
+    assert "page=" not in cursored.replace("per_page=", "")
+
     # this one WRITES the page size whether or not the caller sent it, where an offset listing
     # omits an unsent one: `/repos/psf/requests/issues?page=2` links `…&per_page=30` while
     # `/tags` with no query links no size at all (both measured the same day)
     assert "per_page=5" in h(1, 0)
+
+
+def test_github_code_search_link_header_keeps_first_and_last_on_every_page():
+    """The five positions :func:`pagination.github_code_search_link_header` was measured at, which
+    are the four rules it does not share with a listing plus the one it does."""
+
+    def h(page, total=45, per_page=5, **kw):
+        return pg.github_code_search_link_header(
+            "http://x", {"q": "def"}, page, per_page, total, **kw
+        )
+
+    assert list(_pages(h(1)).items()) == [("next", 2), ("first", 1), ("last", 9)]
+    assert list(_pages(h(5)).items()) == [("next", 6), ("prev", 4), ("first", 1), ("last", 9)]
+    assert list(_pages(h(9)).items()) == [("prev", 8), ("first", 1), ("last", 9)]
+    assert list(_pages(h(99)).items()) == [("prev", 98), ("first", 1), ("last", 9)]
+    assert h(1, per_page=100) is None
+
+    # the size is written whether or not the caller named one
+    assert "per_page=30" in h(1, per_page=30)
+    assert "per_page=5" in h(1, per_page_param="5")
 
 
 def test_github_cursor_offset_prefers_the_cursor_over_the_page():

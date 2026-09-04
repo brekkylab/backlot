@@ -171,8 +171,11 @@ async def resolve_github_id_paths(request: Request, call_next):
     ``_page_base_url``) and a page url a client cannot follow is worse than no header at all.
 
     A rewrite rather than a redirect: real answers 200 on `/repositories/{id}/collaborators`
-    directly, so a 302 would be a shape a client only meets here. An id that names nothing is left
-    alone and 404s on the route it fails to match, the same answer a name that names nothing gets.
+    directly, so a 302 would be a shape a client only meets here.
+
+    The rewrite happens on the PREFIX, whatever the id turns out to name, so that these paths
+    answer in the order the named ones do — see ``canonical_id_path`` for why resolving first would
+    tell an unauthenticated caller which ids the corpus holds.
     """
     path = request.url.path
     if path.startswith("/github/repositories/") or path.startswith("/github/organizations/"):

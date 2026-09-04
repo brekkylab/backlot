@@ -167,9 +167,19 @@ nothing to match and any username goes through. That is what lets an Atlassian c
 placeholder its config demands — `svc@example.com:admin-service-token` works.
 
 A plain `Authorization: Bearer <token>` is accepted too, which is easier when you are driving the
-API by hand rather than through an Atlassian SDK. Sending neither is a `401` — with one exception,
-`rest/api/3/serverInfo`, which answers unauthenticated as real Jira's does, so it is the one
-Atlassian endpoint that cannot tell you whether your credential works.
+API by hand rather than through an Atlassian SDK.
+
+The two APIs disagree about a credential that resolves to nobody, and Backlot follows each.
+**Jira does not refuse it**: the read is served to an anonymous caller, and since a corpus grants
+its documents to the org and to groups and addresses inside it, an anonymous caller reaches none of
+them — `project/search` answers `200` with an empty `values`, a search answers `200` with no
+issues, and an issue answers Jira's `404`. The failure is reported in the
+`X-Seraph-LoginReason: AUTHENTICATED_FAILED` header rather than in the status, so a credential
+check on Jira is a check of that header or of whether anything came back at all.
+**Confluence does refuse it**, with a `403` in its own envelope, or a `401` when the Basic value is
+not one username and one password (an empty password included). Measured against a public
+Atlassian Cloud site and a private one on 2026-09-04, with a wrong password, an empty one, a value
+that is not base64, an unknown scheme, and no header at all.
 
 ### Notion — `Bearer`
 

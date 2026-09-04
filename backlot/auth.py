@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, Request
 
 from backlot import sigv4
-from backlot.acl import Acl, Caller
+from backlot.acl import ANONYMOUS, Acl, Caller
 
 
 def conn(request: Request) -> sqlite3.Connection:
@@ -62,20 +62,78 @@ def api_key_token(request: Request) -> str | None:
     return hdr
 
 
-def basic_password(request: Request) -> tuple[str | None, str | None]:
-    """Parse ``Authorization: Basic base64(user:pass)`` -> (user, pass)."""
+# How much of a Basic credential a request carries.
+BASIC_ABSENT = "absent"  # no header, another scheme, or `Basic` with nothing to decode
+BASIC_UNPARSEABLE = "unparseable"  # a value that is not one user and one password
+BASIC_PAIR = "pair"  # exactly one non-empty user and one non-empty password
+
+
+def _basic_value(request: Request) -> str | None:
+    """The raw base64 payload of an ``Authorization: Basic`` header, or None for any other."""
     hdr = _authorization(request)
     if not hdr:
-        return None, None
+        return None
     parts = hdr.split(None, 1)
     if len(parts) == 2 and parts[0].lower() == "basic":
-        try:
-            decoded = base64.b64decode(parts[1]).decode("utf-8", "replace")
-            user, _, pw = decoded.partition(":")
-            return user, pw
-        except (ValueError, UnicodeDecodeError):
-            return None, None
-    return None, None
+        return parts[1]
+    return None
+
+
+def _decoded_basic(request: Request) -> str | None:
+    """The decoded ``user:pass`` of a Basic header, ``None`` when there is none to decode and
+    ``""`` for a payload that is not base64 — a value that was there and could not be read."""
+    value = _basic_value(request)
+    if not value:
+        return None
+    try:
+        return base64.b64decode(value).decode("utf-8", "replace")
+    except (ValueError, UnicodeDecodeError):
+        return ""
+
+
+def basic_password(request: Request) -> tuple[str | None, str | None]:
+    """Parse ``Authorization: Basic base64(user:pass)`` -> (user, pass)."""
+    decoded = _decoded_basic(request)
+    if not decoded:
+        return None, None
+    user, _, pw = decoded.partition(":")
+    return user, pw
+
+
+def basic_credential_kind(request: Request) -> str:
+    """Which of :data:`BASIC_ABSENT` / :data:`BASIC_UNPARSEABLE` / :data:`BASIC_PAIR` the request
+    carries.
+
+    Confluence answers the three differently — a pair it read and rejected is its 403, a value it
+    could not read is a 401, and no credential at all is the 403 again — so which one a request
+    holds decides which refusal it draws. Measured against ecosystem.atlassian.net and
+    brekkylab.atlassian.net on 2026-09-04, which is where the split is observable at all: a single
+    colon with both halves non-empty is the pair; an empty user, an empty password, no colon, a
+    second colon, or a payload that is not base64 is unparseable; and a missing header, an unknown
+    scheme and a `Basic` with nothing after it are no credential.
+    """
+    if not _basic_value(request):
+        return BASIC_ABSENT
+    decoded = _decoded_basic(request)
+    if not decoded:  # a payload that is there and does not decode
+        return BASIC_UNPARSEABLE
+    user, _, pw = decoded.partition(":")
+    if user and pw and ":" not in pw:
+        return BASIC_PAIR
+    return BASIC_UNPARSEABLE
+
+
+def basic_names_a_user(request: Request) -> bool:
+    """Whether the request presented a Basic credential naming somebody.
+
+    Jira reports one it could not resolve in ``X-Seraph-LoginReason``, and the header is keyed on
+    the username alone: a value carrying a non-empty user before its first colon draws it whatever
+    follows, and one with an empty user, or with no colon at all, draws nothing. Measured on both
+    sites on 2026-09-04.
+    """
+    decoded = _decoded_basic(request) or ""
+    user, colon, _ = decoded.partition(":")
+    return bool(user and colon)
 
 
 def slack_bearer_token(request: Request) -> str | None:
@@ -136,13 +194,16 @@ def require_bearer(request: Request, detail: str) -> Caller:
     return caller
 
 
-def require_basic_or_bearer(request: Request, detail: str) -> Caller:
-    """Same, for Atlassian: it carries Basic ``email:api_token`` and also accepts a bearer OAuth
-    token, so both are tried before refusing."""
-    caller = resolve_basic(request) or resolve_bearer(request)
-    if caller is None:
-        raise HTTPException(status_code=401, detail=detail)
-    return caller
+def atlassian_caller(request: Request) -> Caller:
+    """The caller for an Atlassian read: Basic ``email:api_token`` or a bearer OAuth token, and
+    :data:`backlot.acl.ANONYMOUS` when neither resolves.
+
+    No refusal here, unlike :func:`require_bearer`: the two Atlassian APIs disagree about what an
+    unresolved credential means. Jira drops the caller to anonymous and answers the request; only
+    Confluence refuses. Each router decides for itself, so this reports the identity and nothing
+    else.
+    """
+    return resolve_basic(request) or resolve_bearer(request) or ANONYMOUS
 
 
 def resolve_api_key(request: Request) -> Caller | None:

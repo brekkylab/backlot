@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from html import escape
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
@@ -17,6 +18,7 @@ from backlot import auth, store, synth
 from backlot.openapi import qp
 from backlot.acl import Caller
 from backlot.config import get_settings
+from backlot.errors import atlassian as errors_atlassian
 from backlot.pagination import confluence_next_link, decode_cursor, next_page_token
 
 router = APIRouter(prefix="/atlassian", tags=["atlassian"])
@@ -92,8 +94,39 @@ _P_CONTENT = {
 }
 
 
-def _require(request: Request) -> Caller:
-    return auth.require_basic_or_bearer(request, "Unauthorized")
+def _jira_caller(request: Request) -> Caller:
+    """The caller for a Jira read, anonymous when no credential resolved.
+
+    Jira does not refuse an unresolvable credential on the routes served here: it processes the
+    request as an anonymous caller, and says so in ``X-Seraph-LoginReason`` (added for every
+    ``/atlassian/rest`` answer in ``backlot.main``). Measured against ecosystem.atlassian.net and
+    brekkylab.atlassian.net on 2026-09-04 with a failed ``email:api_token`` pair, with an empty
+    password, with a value that is not base64, with an unknown scheme and with no header: each one
+    answers `project/search` 200, a bounded `search/jql` 200, and `issue/{key}` 404. Only
+    ``GET /rest/api/3/myself``, which Backlot does not serve, answers 401.
+    """
+    return auth.atlassian_caller(request)
+
+
+def _confluence_caller(request: Request) -> Caller:
+    """The caller for a Confluence read, refusing where Jira would go anonymous.
+
+    Confluence rejects the request outright, and which refusal depends on the credential rather
+    than on the route: a pair it read and rejected, and a request carrying none, are its 403; a
+    Basic value it could not read is a 401 naming the site's OAuth realm. Measured on both sites
+    on 2026-09-04, every route and every credential shape (see ``auth.basic_credential_kind``).
+    """
+    caller = auth.atlassian_caller(request)
+    if not caller.is_anonymous:
+        return caller
+    if auth.basic_credential_kind(request) == auth.BASIC_UNPARSEABLE:
+        realm = quote(f"{_site(request)}/wiki", safe="")
+        raise HTTPException(
+            status_code=401,
+            detail=errors_atlassian.CONFLUENCE_UNAUTHORIZED,
+            headers={"WWW-Authenticate": f'OAuth realm="{realm}"'},
+        )
+    raise HTTPException(status_code=403, detail=errors_atlassian.CONFLUENCE_FORBIDDEN)
 
 
 def _site(request: Request) -> str:
@@ -185,12 +218,28 @@ async def jira_server_info(request: Request):
     }
 
 
+def _reachable_projects(conn, ids) -> list:
+    """The projects the caller can reach, as container rows.
+
+    A project is listed when the caller can see an issue in it: Backlot's ACL grants per document
+    rather than per project, so Jira's "can browse this project" has to be read off the issues.
+    Measured anonymously on 2026-09-04 — `project/search` answers 200 with an empty `values` on a
+    site whose projects are all private (brekkylab.atlassian.net) and with the public ones on a
+    site that has them (ecosystem.atlassian.net).
+    """
+    rows = store.list_containers(conn, "jira")
+    if ids is None:
+        return rows
+    return [r for r in rows if store.count_documents(conn, "jira", r["name"], ids)]
+
+
 @router.get("/rest/api/3/project/search")
 async def jira_project_search(request: Request):
     conn = auth.conn(request)
-    _require(request)
+    caller = _jira_caller(request)
+    ids = auth.visible_ids(request, caller)
     values = []
-    for r in store.list_containers(conn, "jira"):
+    for r in _reachable_projects(conn, ids):
         key = _project_key(conn, r["name"])
         values.append(
             {
@@ -208,16 +257,36 @@ async def jira_project_search(request: Request):
     return {"values": values, "maxResults": 50, "startAt": 0, "total": len(values), "isLast": True}
 
 
+def _require_project(request: Request, conn, key: str) -> str:
+    """The container behind a project key the caller can reach, or Jira's own 404 for it.
+
+    A role read is where Jira keeps refusing a caller it will not show a project to, and which
+    refusal it gives is decided by the project rather than by the credential: anonymously, a key
+    naming a project the caller may see draws 401 ("You cannot edit the configuration of this
+    project.") and a key naming nothing draws the 404 below. Measured on
+    ecosystem.atlassian.net, whose `AA` is public, and brekkylab.atlassian.net, which has no such
+    key, on 2026-09-04. An unreachable project is reported as an absent one, the way
+    `issue/{key}` reports an issue the caller cannot see.
+    """
+    ids = auth.visible_ids(request, _jira_caller(request))
+    container = _jira_container_for_key(conn, key, request)
+    if container is not None and (
+        ids is None or store.count_documents(conn, "jira", container, ids)
+    ):
+        return container
+    raise HTTPException(status_code=404, detail=f"No project could be found with key '{key}'.")
+
+
 @router.get("/rest/api/3/project/{key}/role")
 async def jira_project_roles(key: str, request: Request):
+    _require_project(request, auth.conn(request), key)
     return {"Users": f"{_site(request)}/rest/api/3/project/{key}/role/10002"}
 
 
 @router.get("/rest/api/3/project/{key}/role/{role_id}")
 async def jira_project_role(key: str, role_id: int, request: Request):
     conn = auth.conn(request)
-    _require(request)
-    container = _jira_container_for_key(conn, key, request)
+    container = _require_project(request, conn, key)
     actors = []
     if container:
         c = store.get_container(conn, "jira", container)
@@ -248,7 +317,7 @@ async def jira_project_role(key: str, role_id: int, request: Request):
 )
 async def jira_search(request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
     params = dict(request.query_params)
     if request.method == "POST":
@@ -290,11 +359,14 @@ async def jira_search(request: Request):
 @router.get("/rest/api/3/issue/{key}", response_model=JiraIssue, openapi_extra=_P_EXPAND)
 async def jira_get_issue(key: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
     row = _resolve_jira_key(request, conn, key, ids)
     if row is None:
-        raise HTTPException(status_code=404, detail="Issue does not exist")
+        raise HTTPException(
+            status_code=404,
+            detail="Issue does not exist or you do not have permission to see it.",
+        )
     return _jira_issue(conn, request, row, expand=request.query_params.get("expand", ""))
 
 
@@ -302,11 +374,14 @@ async def jira_get_issue(key: str, request: Request):
 @router.get("/rest/api/3/issue/{key}/comment", response_model=JiraComments)
 async def jira_issue_comments(key: str, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _jira_caller(request)
     ids = auth.visible_ids(request, caller)
     row = _resolve_jira_key(request, conn, key, ids)
     if row is None:
-        raise HTTPException(status_code=404, detail="Issue does not exist")
+        raise HTTPException(
+            status_code=404,
+            detail="Issue does not exist or you do not have permission to see it.",
+        )
     cs = store.doc_comments(conn, "jira", row["key"])
     site = _site(request)
     return {
@@ -319,7 +394,7 @@ async def jira_issue_comments(key: str, request: Request):
 
 @router.get("/rest/api/3/issueLinkType")
 async def jira_link_types(request: Request):
-    _require(request)
+    # No credential check: real Jira answers this to an anonymous caller (measured 2026-09-04).
     return {
         "issueLinkTypes": [
             {"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
@@ -480,7 +555,7 @@ _JIRA_FIELDS = [
 )  # atlassian-python-api / mcp-atlassian field discovery
 @router.get("/rest/api/3/field", response_model=list[JiraField])
 async def jira_fields(request: Request):
-    _require(request)
+    # No credential check: real Jira answers this to an anonymous caller (measured 2026-09-04).
     return _JIRA_FIELDS
 
 
@@ -755,7 +830,7 @@ def _space_container_for_key(conn, space_key: str) -> str | None:
 @router.get("/wiki/rest/api/space", response_model=ConfluenceResults)
 async def confluence_spaces(request: Request):
     conn = auth.conn(request)
-    _require(request)
+    _confluence_caller(request)
     results = []
     for r in store.list_containers(conn, "confluence"):
         key = synth.confluence_space_key(r["name"])
@@ -774,7 +849,7 @@ async def confluence_spaces(request: Request):
 @router.get("/wiki/rest/api/space/{key}/permission")
 async def confluence_space_permission(key: str, request: Request):
     conn = auth.conn(request)
-    _require(request)
+    _confluence_caller(request)
     container = _space_container_for_key(conn, key)
     perms = []
     if container:
@@ -809,7 +884,7 @@ async def confluence_space_get(key: str, request: Request):
     """Single-space fetch (atlassian-python-api's ``get_space`` / mcp-atlassian result enrichment).
     404s (Atlassian-shaped) for an unknown key."""
     conn = auth.conn(request)
-    _require(request)
+    _confluence_caller(request)
     container = _space_container_for_key(conn, key)
     if container is None:
         raise HTTPException(status_code=404, detail="No space with the given key exists")
@@ -831,7 +906,7 @@ async def confluence_cql_search(request: Request):
     """CQL search used by Confluence clients (e.g. mcp-atlassian). We parse the
     `~ "term"` operand and do a keyword search over the ACL-visible corpus."""
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
     cql = request.query_params.get("cql", "")
     m = re.search(r'(?:text|title)\s*~\s*"?([^"~]+)"?', cql) or re.search(r'~\s*"?([^"~]+)"?', cql)
@@ -905,7 +980,7 @@ async def confluence_cql_search(request: Request):
 @router.get("/wiki/rest/api/content", response_model=ConfluenceResults, openapi_extra=_P_CONTENT)
 async def confluence_content_list(request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
     expand = request.query_params.get("expand", "")
     space_key = request.query_params.get("spaceKey")
@@ -940,7 +1015,7 @@ async def confluence_content_list(request: Request):
 )
 async def confluence_content_get(content_id: int, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
     row = store.confluence_by_id(conn, content_id, visible_ids=ids)
     if row is None:
@@ -955,7 +1030,7 @@ async def confluence_content_get(content_id: int, request: Request):
 )
 async def confluence_child_pages(content_id: int, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
@@ -974,7 +1049,7 @@ async def confluence_child_pages(content_id: int, request: Request):
 @router.get("/wiki/rest/api/content/{content_id}/child/comment")
 async def confluence_comments(content_id: int, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")
@@ -1010,7 +1085,7 @@ async def confluence_comments(content_id: int, request: Request):
 @router.get("/wiki/rest/api/content/{content_id}/label")
 async def confluence_labels(content_id: int, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
     row = store.get_document(conn, "confluence", content_id, visible_ids=ids)
     if row is None:
@@ -1026,7 +1101,7 @@ async def confluence_labels(content_id: int, request: Request):
 @router.get("/wiki/rest/api/content/{content_id}/restriction/byOperation")
 async def confluence_restrictions(content_id: int, request: Request):
     conn = auth.conn(request)
-    caller = _require(request)
+    caller = _confluence_caller(request)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise HTTPException(status_code=404, detail="No content found with id")

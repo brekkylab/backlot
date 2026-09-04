@@ -607,7 +607,6 @@ def _qual_repos(conn, quals: dict, org: str, ids) -> list[str] | None:
     """
     if "repo" not in quals:
         return None
-    visible = set(_visible_repos(conn, ids))
     names = []
     for v in quals["repo"]:
         owner, _, name = v.rpartition("/")
@@ -616,8 +615,13 @@ def _qual_repos(conn, quals: dict, org: str, ids) -> list[str] | None:
         # The corpus's spelling, from a qualifier in any case — as the owner half is already
         # compared (see :func:`store.container_spelling` for what real answers).
         spelled = store.container_spelling(conn, "github", name)
-        if spelled is not None and spelled in visible:
-            names.append(spelled)
+        if spelled is None:
+            continue
+        # `_visible_repos`'s rule for the one name asked about rather than for every repo in the
+        # corpus: a repo with no document this caller can read is not visible to them.
+        if ids is not None and store.count_documents(conn, "github", spelled, ids) == 0:
+            continue
+        names.append(spelled)
     return names
 
 

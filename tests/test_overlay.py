@@ -153,3 +153,144 @@ def test_a_run_of_writes_leaves_the_corpus_file_identical(sample_settings):
     store.tombstone_document(conn, "slack", ("incidents", ts))
     conn.close()
     assert hashlib.sha256(sample_settings.db_path.read_bytes()).hexdigest() == digest
+
+
+# --- the overlay's own control surface --------------------------------------------------------
+
+
+@pytest.fixture
+def oclient(sample_settings):
+    """A server of its own per test, so one test's writes are not another's starting state.
+
+    `reload=True` for the reason `test_slack.py`'s write fixture uses it: `client_for` without it
+    starts a second lifespan on the module-level `app`, closing the connection any other live
+    client is holding.
+    """
+    from tests._helpers import client_for
+
+    with client_for(sample_settings, reload=True) as c:
+        yield c
+
+
+def _tokens(sample_settings):
+    import yaml
+
+    data = yaml.safe_load(sample_settings.tokens_path.read_text())
+    return {u["email"]: u["token"] for u in data["users"]}
+
+
+def test_meta_overlay_reports_what_was_written(oclient, sample_settings):
+    from backlot import synth
+
+    cid = synth.slack_channel_id("incidents")
+    h = {"Authorization": f"Bearer {_tokens(sample_settings)['ava@acme.com']}"}
+    ts = oclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "audited"}
+    ).json()["ts"]
+    j = oclient.get("/_meta/overlay").json()
+    assert any(m["ts"] == ts and m["content"] == "audited" for m in j["slack_messages"])
+    # the grants the write copied are reported too -- an ACL oracle reads what an agent could
+    # make visible, not only what it said
+    assert any(g["ts"] == ts for g in j["slack_acl"])
+
+
+def test_meta_overlay_is_empty_on_a_fresh_server(oclient):
+    j = oclient.get("/_meta/overlay").json()
+    assert j["slack_messages"] == []
+    assert j["slack_patch"] == []
+    assert j["slack_tombstone"] == []
+    assert j["slack_membership"] == []
+
+
+def test_meta_overlay_names_every_table_but_the_index(oclient):
+    from backlot import overlay, store
+
+    j = oclient.get("/_meta/overlay").json()
+    expected = set()
+    for src in store.WRITABLE:
+        expected |= {n for n in overlay.table_names(src).values() if not n.endswith("_fts_ov")}
+        expected |= set(overlay.EXTRA_DDL.get(src, {}))
+    assert set(j) == expected
+
+
+def test_meta_overlay_reports_a_patch_and_a_tombstone(oclient, sample_settings):
+    from backlot import synth
+
+    cid = synth.slack_channel_id("incidents")
+    h = {"Authorization": f"Bearer {_tokens(sample_settings)['ava@acme.com']}"}
+    ts = oclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "first"}
+    ).json()["ts"]
+    oclient.post(
+        "/slack/api/chat.update", headers=h, data={"channel": cid, "ts": ts, "text": "second"}
+    )
+    oclient.post("/slack/api/chat.delete", headers=h, data={"channel": cid, "ts": ts})
+    j = oclient.get("/_meta/overlay").json()
+    assert {p["field"] for p in j["slack_patch"] if p["ts"] == ts} == {"content", "edited"}
+    assert any(d["ts"] == ts for d in j["slack_tombstone"])
+
+
+def test_meta_overlay_reset_empties_it(oclient, sample_settings):
+    from backlot import synth
+
+    cid = synth.slack_channel_id("incidents")
+    h = {"Authorization": f"Bearer {_tokens(sample_settings)['ava@acme.com']}"}
+    oclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "gone soon"}
+    )
+    assert oclient.post("/_meta/overlay/reset").json() == {"ok": True}
+    assert oclient.get("/_meta/overlay").json()["slack_messages"] == []
+    hist = oclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    assert "gone soon" not in [m["text"] for m in hist]
+
+
+def test_reset_restores_a_deleted_corpus_message(oclient, sample_settings, ro_conn):
+    # A tombstone is the overlay's, not the corpus's, so throwing the overlay away has to bring
+    # the message back. That is the property that makes one eval run repeatable after another.
+    from backlot import synth
+
+    email, channel, ts = ro_conn.execute(
+        "SELECT author_email, channel, ts FROM slack_messages WHERE channel = 'incidents' LIMIT 1"
+    ).fetchone()
+    h = {"Authorization": f"Bearer {_tokens(sample_settings)[email]}"}
+    cid = synth.slack_channel_id(channel)
+    oclient.post("/slack/api/chat.delete", headers=h, data={"channel": cid, "ts": ts})
+    gone = oclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    assert ts not in [m["ts"] for m in gone]
+    oclient.post("/_meta/overlay/reset")
+    back = oclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    assert ts in [m["ts"] for m in back]
+
+
+def test_a_write_drops_the_stale_member_count(oclient, sample_settings):
+    # `num_members` is answered from a warm cache in preference to a query, so a write has to drop
+    # the entry or conversations.list keeps reporting the count from before it.
+    from backlot import synth
+
+    tokens = _tokens(sample_settings)
+    admin = {"Authorization": f"Bearer {sample_settings.admin_token}"}
+    cid = synth.slack_channel_id("eng-announcements")
+
+    def num_members():
+        page = oclient.post("/slack/api/conversations.list", headers=admin, data={"limit": 200})
+        return [c["num_members"] for c in page.json()["channels"] if c["id"] == cid][0]
+
+    before = num_members()
+    h = {"Authorization": f"Bearer {tokens['hana@acme.com']}"}
+    oclient.post("/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "new"})
+    # The poster is written `out`, so the count must NOT move -- but it has to be recomputed to
+    # know that, rather than served from a cache that happens to agree.
+    assert num_members() == before
+    # A member who leaves is the case where the cached number would be wrong.
+    from backlot import store
+
+    conn = oclient.app.state.conn
+    store.slack_set_membership(conn, "eng-announcements", "ava@acme.com", "out")
+    oclient.app.state.channel_members = None
+    assert num_members() == before - 1

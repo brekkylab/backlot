@@ -1499,10 +1499,16 @@ def _is_member(conn, name: str, caller: Caller, *, is_private: bool) -> bool:
 def _member_count(request: Request, conn, name: str) -> int:
     """A channel's member count — the same set conversations.members pages, so `num_members` and
     walking the members cannot disagree. Read from the warm cache; if the background thread has not
-    finished, count this one channel directly rather than blocking on all of them."""
+    finished, count this one channel directly rather than blocking on all of them.
+
+    A MISSING key is counted, not answered as zero. `slack_channel_member_counts` keys every
+    channel, including one with no messages at all, so the only way a key is absent from a filled
+    cache is that a write dropped it (`_invalidate`) — and reporting that channel as empty is how
+    a posted message made `num_members` collapse to 0.
+    """
     cache = getattr(request.app.state, "channel_members", None)
-    if cache is not None:
-        return cache.get(name, 0)
+    if cache is not None and name in cache:
+        return cache[name]
     return store.count_slack_channel_members(conn, name)
 
 

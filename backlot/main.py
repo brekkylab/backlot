@@ -365,6 +365,49 @@ async def meta_openapi(source: str):
     return openapi.build_mcp_spec(app.openapi(), source)
 
 
+@app.get("/_meta/overlay")
+def meta_overlay():
+    """Everything written since the last reset — the read an evaluation's grader makes.
+
+    An ACL oracle asks what an agent did, and answering it by diffing the served surface against
+    itself means knowing what the surface looked like before. The overlay already IS that
+    difference, so it is reported directly: the documents written, the grants they carry, the
+    columns overwritten, the documents subtracted, and the memberships changed.
+
+    The FTS index is left out. It holds no fact the document rows do not.
+
+    Unauthenticated, like every other `/_meta` route: `/_meta/users` already hands out every
+    user's token to any caller, so this namespace is a test fixture's control surface rather than
+    a secured one, and a gate on this route alone would be the only one of its kind.
+    """
+    conn = app.state.conn
+    out: dict[str, list[dict]] = {}
+    for src in sorted(store.WRITABLE):
+        names = [n for n in overlay.table_names(src).values() if not n.endswith("_fts_ov")]
+        names += list(overlay.EXTRA_DDL.get(src, {}))
+        for name in names:
+            out[name] = [dict(r) for r in conn.execute(f"SELECT * FROM ov.{name}")]
+    return out
+
+
+@app.post("/_meta/overlay/reset")
+def meta_overlay_reset():
+    """Throw the overlay away — an evaluation run's teardown.
+
+    Every write goes, including a tombstone, so a message deleted in one run is back for the next.
+    That is what makes two runs over one server comparable. The corpus is untouched either way; it
+    was never opened writable.
+
+    Unauthenticated for the same reason as `/_meta/overlay` above.
+    """
+    overlay.reset(app.state.conn, app.state.overlay_name)
+    # The warm caches were computed against the pre-write world and are correct for it again, but
+    # only the two a write can move are dropped; `channel_acl` is rebuilt from the corpus alone.
+    app.state.doc_counts = None
+    app.state.channel_members = None
+    return {"ok": True}
+
+
 app.include_router(oauth.router)
 app.include_router(slack.router)
 app.include_router(google.router)

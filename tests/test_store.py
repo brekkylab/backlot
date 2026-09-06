@@ -2570,7 +2570,7 @@ def test_writing_to_a_non_writable_source_is_refused(ov_db):
         store.insert_document(ov_db, "gmail", {"id": "x", "mailbox": "m"})
 
 
-@pytest.mark.parametrize("terms", ["deploy", "gateway", "deploy gateway", "the"])
+@pytest.mark.parametrize("terms", ["deploy", "gateway", "gateway 502s", "the", "the the"])
 def test_python_bm25_agrees_with_sqlite_on_corpus_rows(ov_db, terms):
     # The scorer is only worth anything if it reproduces SQLite's number on rows SQLite scored.
     # A fixture asserting hand-picked constants would pass while being wrong.
@@ -2581,7 +2581,9 @@ def test_python_bm25_agrees_with_sqlite_on_corpus_rows(ov_db, terms):
     #
     # "the" is in the list on purpose — a term in almost every document drives IDF non-positive,
     # which fts5 clamps rather than letting it go negative. Without a clamping case the parametrize
-    # would pass against a scorer that omits the clamp entirely.
+    # would pass against a scorer that omits the clamp entirely. "the the" is there because fts5
+    # sums bm25 per PHRASE, so a repeated term counts twice; a scorer that de-duplicates the query
+    # into a set would diverge only here.
     rows = ov_db.execute(
         "SELECT slack_fts.rowid AS rid, bm25(slack_fts) AS r FROM slack_fts "
         "WHERE slack_fts MATCH ? LIMIT 5",
@@ -2737,3 +2739,31 @@ def test_someone_removed_is_not_a_membership_violation(ov_db):
 def test_setting_an_unknown_membership_state_is_refused(ov_db):
     with pytest.raises(ValueError, match="not a membership state"):
         store.slack_set_membership(ov_db, "incidents", "ava@acme.com", "maybe")
+
+
+def test_next_ts_does_not_reuse_a_tombstoned_ts(ov_db):
+    # The physical row is still in the overlay, so handing its ts out again fails the primary key.
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "doomed",
+            "created_ts": 4000000000,
+        },
+    )
+    store.tombstone_document(ov_db, "slack", ("incidents", ts))
+    assert store.slack_next_ts(ov_db, "incidents", 4000000000) != ts
+
+
+def test_a_patched_corpus_row_is_not_counted_twice_by_search(ov_db):
+    row = store.list_slack_top_level(ov_db, "incidents", None, limit=1)[0]
+    store.patch_document(
+        ov_db, "slack", (row["channel"], row["ts"]), "content", "zarquon replaced the body"
+    )
+    hits = store.search_documents(ov_db, "zarquon", "slack", None, limit=50)
+    assert [h["ts"] for h in hits].count(row["ts"]) == 1
+    assert store.count_search(ov_db, "zarquon", "slack", None) == len(hits)

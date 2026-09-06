@@ -1069,6 +1069,164 @@ def merged_source(conn, source_type: str) -> str:
     )
 
 
+# --- writes: the overlay -----------------------------------------------------------------
+#
+# Inserting a document, granting it what its container grants, subtracting it at read time and
+# indexing it are the same four operations for every source, so they are written once and keyed on
+# `source_type`. Minting an identifier is not: slack probes a free `ts` fraction within a
+# channel-second, gmail draws a 63-bit integer, github defers a number -- `importer.byo` already
+# carries one of these per source. So these take an ALREADY-MINTED key and the minting stays where
+# the vendor knowledge is (see `slack_next_ts`).
+
+
+def _require_writable(source_type: str) -> None:
+    """A write to a source outside :data:`WRITABLE` fails here, naming the registry, rather than
+    three frames down as an opaque ``no such table: ov.gmail_messages``."""
+    if source_type not in WRITABLE:
+        raise ValueError(
+            f"{source_type!r} is not writable — add it to store.WRITABLE and give it "
+            f"PATCHABLE columns before serving writes for it"
+        )
+
+
+def insert_document(conn, source_type: str, values: dict) -> None:
+    """Write one document to the overlay, grant it what its container grants, and index it.
+
+    ``values`` maps column name to value, and its identifier columns must already be minted.
+
+    The grants copied are the container's own distinct set — the org for a public Slack channel,
+    the grantee list for a private one — so a written document is exactly as visible as the
+    container it landed in. Without them it is visible to nobody: a grant names its document by
+    :func:`id_columns`, so a row with no ACL rows fails every ``_acl_clause``.
+    """
+    from backlot import overlay
+
+    _require_writable(source_type)
+    tbl = table(source_type)
+    names = overlay.table_names(source_type)
+    key = id_columns(source_type)
+    container = grouping_col(source_type)
+    cols = list(values)
+    key_cols = ", ".join(key)
+    with overlay.LOCK:
+        conn.execute(
+            f"INSERT INTO ov.{tbl} ({', '.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
+            [values[c] for c in cols],
+        )
+        conn.execute(
+            f"INSERT INTO ov.{names['acl']} ({key_cols}, principal_type, principal_id) "
+            f"SELECT {', '.join('?' for _ in key)}, principal_type, principal_id FROM ("
+            f"  SELECT DISTINCT principal_type, principal_id FROM main.{names['acl']} "
+            f"  WHERE {container} = ?"
+            f"  UNION SELECT DISTINCT principal_type, principal_id FROM ov.{names['acl']} "
+            f"  WHERE {container} = ? AND revoked = 0"
+            f")",
+            [*(values[c] for c in key), values[container], values[container]],
+        )
+        _fts_index_overlay(conn, source_type, tuple(values[c] for c in key), values)
+        conn.commit()
+
+
+def patch_document(conn, source_type: str, key: tuple, field: str, value) -> None:
+    """Overwrite one column of a document that may live in either database."""
+    from backlot import overlay
+
+    _require_writable(source_type)
+    if field not in PATCHABLE.get(source_type, frozenset()):
+        raise ValueError(
+            f"{source_type}.{field} is not patchable — see store.PATCHABLE. An identifier column "
+            f"is never patchable: it would move the row out from under its own ACL grant"
+        )
+    names = overlay.table_names(source_type)
+    cols = id_columns(source_type)
+    with overlay.LOCK:
+        conn.execute(
+            f"INSERT OR REPLACE INTO ov.{names['patch']} ({', '.join(cols)}, field, value) "
+            f"VALUES ({','.join('?' for _ in cols)},?,?)",
+            [*key, field, value],
+        )
+        if field in _fts_text_columns(source_type):
+            # Re-index from the MERGED row, not from `value` alone: an index entry carries every
+            # text column, and a source with both a title and a body would otherwise lose the one
+            # this patch did not touch.
+            row = conn.execute(
+                f"SELECT * FROM {merged_source(conn, source_type)} "
+                f"WHERE {' AND '.join(f'{c} = ?' for c in cols)}",
+                list(key),
+            ).fetchone()
+            if row is not None:
+                _fts_index_overlay(conn, source_type, key, dict(row))
+        conn.commit()
+
+
+def tombstone_document(conn, source_type: str, key: tuple) -> None:
+    """Subtract a document from every read. A corpus row cannot be deleted, so it is subtracted."""
+    from backlot import overlay
+
+    _require_writable(source_type)
+    names = overlay.table_names(source_type)
+    cols = id_columns(source_type)
+    where = " AND ".join(f"{c} = ?" for c in cols)
+    with overlay.LOCK:
+        conn.execute(
+            f"INSERT OR IGNORE INTO ov.{names['tombstone']} ({', '.join(cols)}) "
+            f"VALUES ({','.join('?' for _ in cols)})",
+            list(key),
+        )
+        conn.execute(f"DELETE FROM ov.{names['fts']} WHERE {where}", list(key))
+        conn.commit()
+
+
+def document_by_key(conn, source_type: str, key: tuple, visible_ids=None) -> sqlite3.Row | None:
+    """One document by its identifier, from whichever side holds it, or None if it is tombstoned
+    or not visible to this caller."""
+    cols = id_columns(source_type)
+    where = " AND ".join(f"{c} = ?" for c in cols)
+    sql = f"SELECT * FROM {merged_source(conn, source_type)} WHERE {where}"
+    clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
+    return conn.execute(sql + clause, [*key, *cparams]).fetchone()
+
+
+def _fts_index_overlay(conn, source_type: str, key: tuple, values: dict) -> None:
+    """Delete-then-insert one document in the overlay index — an upsert, the same shape
+    :func:`fts_add_docs` uses for an append import. Caller holds ``overlay.LOCK`` and commits."""
+    from backlot import overlay
+
+    names = overlay.table_names(source_type)
+    cols = id_columns(source_type)
+    text = _fts_text_columns(source_type)
+    where = " AND ".join(f"{c} = ?" for c in cols)
+    conn.execute(f"DELETE FROM ov.{names['fts']} WHERE {where}", list(key))
+    conn.execute(
+        f"INSERT INTO ov.{names['fts']} ({', '.join(cols)}, {', '.join(text)}) "
+        f"VALUES ({','.join('?' for _ in cols)},{','.join('?' for _ in text)})",
+        [*key, *(values.get(c) or "" for c in text)],
+    )
+
+
+def slack_next_ts(conn, channel: str, epoch_sec: int) -> str:
+    """A free ``ts`` for a new Slack message in this channel at this second.
+
+    Same shape and same collision rule as an imported message's (``byo._Loader._slack_ts``): the
+    integer part is the second, the six-digit fraction is probed until it is free within the
+    channel. A posted message's second is *now* and the corpus is historical, so a collision is
+    almost always with another posted message — but "almost always" is why this probes rather than
+    assumes.
+
+    Slack's own, not a generic minter: what a served id looks like is a fact about a vendor, and
+    the sources that already synthesize one do it several different ways.
+    """
+    for salt in range(synth.SLACK_TS_FRACTIONS):
+        candidate = synth.slack_fmt_ts(epoch_sec, f"post:{channel}:{epoch_sec}:{salt}")
+        taken = conn.execute(
+            f"SELECT 1 FROM {merged_source(conn, 'slack')} WHERE channel = ? AND ts = ?",
+            (channel, candidate),
+        ).fetchone()
+        if taken is None:
+            return candidate
+    raise RuntimeError(f"slack: channel {channel!r} has no free ts fraction in second {epoch_sec}")
+
+
 def _acl_join(source_type: str, acl_alias: str, doc_alias: str) -> str:
     """The ON clause tying a source's ACL table to its doc table — every identifier column, since
     a grant names its document by exactly the key the document is stored under."""

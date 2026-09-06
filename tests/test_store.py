@@ -2487,3 +2487,80 @@ def test_an_overlay_message_is_acl_scoped_like_any_other(ov_db, acl):
     outsider = acl.visible_ids(ov_db, Caller(email="bob@acme.com", is_admin=False))
     rows = store.list_slack_top_level(ov_db, "people-confidential", outsider, limit=100)
     assert "secret add" not in [r["content"] for r in rows]
+
+
+def test_a_written_document_gets_its_container_grants(ov_db):
+    # `slack_acl` is keyed (channel, ts) — a grant is per DOCUMENT — so a row written without
+    # grants is visible to nobody, including its own author. Generic: the container column comes
+    # from `grouping_col`, which is `channel` for slack and `mailbox`/`repo`/`project` elsewhere.
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "grants copied",
+            "created_ts": 4000000000,
+        },
+    )
+    channel_grants = {
+        tuple(r)
+        for r in ov_db.execute(
+            "SELECT DISTINCT principal_type, principal_id FROM main.slack_acl WHERE channel = ?",
+            ("incidents",),
+        )
+    }
+    written_grants = {
+        tuple(r)
+        for r in ov_db.execute(
+            "SELECT principal_type, principal_id FROM ov.slack_acl WHERE channel = ? AND ts = ?",
+            ("incidents", ts),
+        )
+    }
+    assert written_grants == channel_grants and written_grants
+
+
+def test_next_ts_does_not_collide_within_a_channel_second(ov_db):
+    a = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": a,
+            "author_email": "ava@acme.com",
+            "content": "first",
+            "created_ts": 4000000000,
+        },
+    )
+    b = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    assert a != b
+    assert a.split(".")[0] == b.split(".")[0] == "4000000000"
+    assert len(a.split(".")[1]) == 6
+
+
+def test_document_by_key_finds_both_sides_and_honours_the_tombstone(ov_db):
+    corpus = store.list_slack_top_level(ov_db, "incidents", None, limit=1)[0]
+    key = (corpus["channel"], corpus["ts"])
+    assert store.document_by_key(ov_db, "slack", key) is not None
+    store.tombstone_document(ov_db, "slack", key)
+    assert store.document_by_key(ov_db, "slack", key) is None
+
+
+def test_patching_an_unpatchable_column_is_refused(ov_db):
+    # A patch to an identifier column would move a row out from under its own ACL grant, since a
+    # grant names its document by exactly ID_COLUMNS.
+    corpus = store.list_slack_top_level(ov_db, "incidents", None, limit=1)[0]
+    with pytest.raises(ValueError, match="not patchable"):
+        store.patch_document(
+            ov_db, "slack", (corpus["channel"], corpus["ts"]), "channel", "elsewhere"
+        )
+
+
+def test_writing_to_a_non_writable_source_is_refused(ov_db):
+    # A source outside WRITABLE has no overlay tables at all, so this must fail loudly rather
+    # than raise an opaque "no such table" from three frames down.
+    with pytest.raises(ValueError, match="not writable"):
+        store.insert_document(ov_db, "gmail", {"id": "x", "mailbox": "m"})

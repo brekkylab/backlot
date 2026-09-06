@@ -129,3 +129,27 @@ def test_is_attached_is_false_before_attach(sample_settings):
     conn = store.connect_ro(sample_settings.db_path)
     assert overlay.is_attached(conn) is False
     conn.close()
+
+
+def test_a_run_of_writes_leaves_the_corpus_file_identical(sample_settings):
+    import hashlib
+
+    digest = hashlib.sha256(sample_settings.db_path.read_bytes()).hexdigest()
+    conn = store.connect_ro(sample_settings.db_path)
+    overlay.attach(conn, overlay.name_for(object()))
+    ts = store.slack_next_ts(conn, "incidents", 4000000000)
+    store.insert_document(
+        conn,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "written",
+            "created_ts": 4000000000,
+        },
+    )
+    store.patch_document(conn, "slack", ("incidents", ts), "content", "edited")
+    store.tombstone_document(conn, "slack", ("incidents", ts))
+    conn.close()
+    assert hashlib.sha256(sample_settings.db_path.read_bytes()).hexdigest() == digest

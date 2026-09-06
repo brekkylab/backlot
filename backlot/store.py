@@ -1019,6 +1019,56 @@ def _acl_clause(
     )
 
 
+def merged_source(conn, source_type: str) -> str:
+    """What a query over this source's documents should read FROM.
+
+    For a source outside :data:`WRITABLE`, or with no overlay attached, this is the table name and
+    every reader is character-for-character what it was before writes existed. Otherwise it is the
+    corpus and the overlay unioned, tombstoned documents subtracted and patches applied,
+    **aliased to the corpus table's own name**.
+
+    The alias is not cosmetic: :func:`_acl_clause` emits ``_acl.<col> = <table>.<col>``,
+    hard-referencing that name, so the alias is what lets fourteen readers keep their ACL clause
+    verbatim and makes the substitution one token per query.
+
+    One function rather than an inlined union per reader, and keyed on ``source_type`` rather than
+    written for Slack: the tombstone and patch correlations are over :func:`id_columns`, which is
+    already the registry saying how a document of any source is addressed, and ``SCHEMA`` already
+    generates the eleven ACL tables from it rather than writing eleven blocks that drift.
+
+    Columns are projected explicitly. ``SELECT *`` over a ``UNION ALL`` is correct only while both
+    sides agree on column ORDER, and when that stops being true the failure is a value in the
+    wrong column rather than an error.
+    """
+    from backlot import overlay  # local: overlay imports store
+
+    tbl = table(source_type)
+    if source_type not in WRITABLE or not overlay.is_attached(conn):
+        return tbl
+    names = overlay.table_names(source_type)
+    patchable = PATCHABLE.get(source_type, frozenset())
+    on = " AND ".join(f"x.{c} = m.{c}" for c in id_columns(source_type))
+    cols = []
+    for c in (r[1] for r in conn.execute(f"PRAGMA main.table_info({tbl})")):
+        if c in patchable:
+            # A correlated subquery rather than a LEFT JOIN: the patch table is keyed
+            # (…id…, field), so a join needs one per patchable column, and three joins multiply
+            # rows for a document patched in two of them.
+            cols.append(
+                f"COALESCE((SELECT value FROM ov.{names['patch']} x "
+                f"WHERE {on} AND x.field = '{c}'), m.{c}) AS {c}"
+            )
+        else:
+            cols.append(f"m.{c} AS {c}")
+    projection = ", ".join(cols)
+    alive = f"NOT EXISTS (SELECT 1 FROM ov.{names['tombstone']} x WHERE {on})"
+    return (
+        f"(SELECT {projection} FROM main.{tbl} m WHERE {alive} "
+        f"UNION ALL "
+        f"SELECT {projection} FROM ov.{tbl} m WHERE {alive}) AS {tbl}"
+    )
+
+
 def _acl_join(source_type: str, acl_alias: str, doc_alias: str) -> str:
     """The ON clause tying a source's ACL table to its doc table — every identifier column, since
     a grant names its document by exactly the key the document is stored under."""
@@ -2353,7 +2403,7 @@ def list_slack_top_level(
     ``created_ts`` for a time-windowed conversations.history, so a day window is an indexed range
     rather than the whole channel filtered in Python. Widen the bounds by ±1s — the public ts
     carries a sub-second fraction — and re-check the exact float window in the caller."""
-    sql = "SELECT * FROM slack_messages WHERE channel = ? AND thread_seq = 0"
+    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
     params: list = [channel]
     if ts_lo is not None or ts_hi is not None:
         lo = ts_lo if ts_lo is not None else -(1 << 62)
@@ -2367,7 +2417,9 @@ def list_slack_top_level(
 
 
 def count_slack_top_level(conn, channel, visible_ids=None) -> int:
-    sql = "SELECT COUNT(*) FROM slack_messages WHERE channel = ? AND thread_seq = 0"
+    sql = (
+        f"SELECT COUNT(*) FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
+    )
     params: list = [channel]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause
@@ -2379,7 +2431,7 @@ def list_slack_channel_messages(conn, channel, visible_ids=None) -> list[sqlite3
     """Every visible message in a channel (roots AND replies). Used by conversations.replies to
     resolve a ts that may belong to a reply (e.g. a search hit landed on one), since ts is
     synthesized and can't be queried directly."""
-    sql = "SELECT * FROM slack_messages WHERE channel = ?"
+    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ?"
     params: list = [channel]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause + " ORDER BY thread_ts, thread_seq"
@@ -2422,7 +2474,7 @@ def slack_messages_at_created_ts(conn, channel, created_ts, visible_ids=None) ->
     conversations.replies resolving a ts, whose integer part IS ``created_ts`` (see the router's
     ``_msg_ts``). Narrows to the handful of rows at that second instead of the whole channel. A row
     with a NULL ``created_ts`` misses this; the caller falls back to a full scan for those."""
-    sql = "SELECT * FROM slack_messages WHERE channel = ? AND created_ts = ?"
+    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND created_ts = ?"
     params: list = [channel, created_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause + " ORDER BY thread_ts, thread_seq"
@@ -2435,7 +2487,8 @@ def slack_reply_count(conn, channel, thread_ts, visible_ids=None) -> int:
     is unique only within its channel (see store.ID_COLUMNS) — a bare `thread_ts = ?` would count
     another channel's thread too."""
     sql = (
-        "SELECT COUNT(*) FROM slack_messages WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
+        f"SELECT COUNT(*) FROM {merged_source(conn, 'slack')} "
+        f"WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
     )
     params: list = [channel, thread_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
@@ -2469,7 +2522,7 @@ def slack_latest_ts(conn, channel, visible_ids=None) -> str | None:
     Ordered by ``created_ts`` rather than ``MAX(ts)`` for the reason slack_latest_reply_ts gives:
     ts is TEXT, so a max over it is lexicographic and picks the wrong row when a channel straddles
     a digit-count change in the epoch second."""
-    sql = "SELECT ts FROM slack_messages WHERE channel = ?"
+    sql = f"SELECT ts FROM {merged_source(conn, 'slack')} WHERE channel = ?"
     params: list = [channel]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     row = conn.execute(
@@ -2486,7 +2539,10 @@ def slack_latest_reply_ts(conn, channel, thread_ts, visible_ids=None) -> str | N
 
     Ordered rather than ``MAX(ts)``: ts is TEXT, so a max over it is lexicographic and a thread
     whose replies straddle a digit-count change (second 9 to second 10) names the wrong reply."""
-    sql = "SELECT ts FROM slack_messages WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
+    sql = (
+        f"SELECT ts FROM {merged_source(conn, 'slack')} "
+        f"WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
+    )
     params: list = [channel, thread_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     row = conn.execute(
@@ -2498,7 +2554,7 @@ def slack_latest_reply_ts(conn, channel, thread_ts, visible_ids=None) -> str | N
 def slack_reply_authors(conn, channel, thread_ts, visible_ids=None) -> list[str]:
     """Distinct reply-author emails in a thread, in reply order (for reply_users)."""
     sql = (
-        "SELECT author_email FROM slack_messages "
+        f"SELECT author_email FROM {merged_source(conn, 'slack')} "
         "WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
     )
     params: list = [channel, thread_ts]
@@ -2515,7 +2571,7 @@ def slack_reply_authors(conn, channel, thread_ts, visible_ids=None) -> list[str]
 def slack_thread(conn, channel, thread_ts, visible_ids=None) -> list[sqlite3.Row]:
     """A thread's root and replies in order. Scoped to the channel: a ts identifies a message only
     within one (see store.ID_COLUMNS)."""
-    sql = "SELECT * FROM slack_messages WHERE channel = ? AND thread_ts = ?"
+    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_ts = ?"
     params: list = [channel, thread_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause + " ORDER BY thread_seq"

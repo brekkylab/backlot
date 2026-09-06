@@ -14,7 +14,8 @@ import sqlite3
 
 import pytest
 
-from backlot import store, synth
+from backlot import overlay, store, synth
+from backlot.acl import Caller
 from tests._helpers import complete
 
 ALL_SOURCES = [
@@ -2358,3 +2359,131 @@ def test_write_meta_commits_the_entire_transaction(tmp_path):
     )
     assert store.read_meta(check_conn, "test_key") == "test_value"
     check_conn.close()
+
+
+# --- the mutation overlay's merge -----------------------------------------------------------
+#
+# `merged_source` is the one place corpus and overlay are joined. Everything below is about that
+# fragment being correct, because fourteen readers depend on it, none of them restates it, and
+# every source that takes writes later will depend on the same one.
+
+
+@pytest.fixture
+def ov_db(sample_settings):
+    """A read-only corpus connection with an empty overlay attached."""
+    conn = store.connect_ro(sample_settings.db_path)
+    overlay.attach(conn, overlay.name_for(object()))
+    yield conn
+    conn.close()
+
+
+def _post(conn, channel, ts, author, content, created_ts):
+    conn.execute(
+        "INSERT INTO ov.slack_messages (channel, ts, author_email, content, created_ts) "
+        "VALUES (?,?,?,?,?)",
+        (channel, ts, author, content, created_ts),
+    )
+    for ptype, pid in conn.execute(
+        "SELECT DISTINCT principal_type, principal_id FROM main.slack_acl WHERE channel = ?",
+        (channel,),
+    ).fetchall():
+        conn.execute(
+            "INSERT INTO ov.slack_acl (channel, ts, principal_type, principal_id) VALUES (?,?,?,?)",
+            (channel, ts, ptype, pid),
+        )
+    conn.commit()
+
+
+def test_merged_source_is_the_bare_table_for_a_source_that_takes_no_writes(ov_db):
+    # The property that lets this ship without re-validating ten other vendors: a non-writable
+    # source's SQL is character-for-character what it was before the overlay existed.
+    for src in store.SOURCE_TABLE:
+        if src in store.WRITABLE:
+            continue
+        assert store.merged_source(ov_db, src) == store.table(src)
+
+
+def test_merged_source_is_the_bare_table_with_no_overlay_attached(db):
+    assert store.merged_source(db, "slack") == "slack_messages"
+
+
+def test_merged_source_aliases_to_the_corpus_table_name(ov_db):
+    # `_acl_clause` emits `_acl.channel = slack_messages.channel`, hard-referencing the table
+    # name. If the alias ever stops matching, every merged read silently loses its ACL join.
+    assert store.merged_source(ov_db, "slack").rstrip().endswith("AS slack_messages")
+
+
+def test_overlay_message_appears_in_history(ov_db):
+    before = store.count_slack_top_level(ov_db, "incidents", None)
+    _post(ov_db, "incidents", "4000000000.000001", "ava@acme.com", "posted now", 4000000000)
+    assert store.count_slack_top_level(ov_db, "incidents", None) == before + 1
+    rows = store.list_slack_top_level(ov_db, "incidents", None, limit=100)
+    assert "posted now" in [r["content"] for r in rows]
+
+
+def test_a_tombstoned_corpus_message_leaves_history(ov_db):
+    row = store.list_slack_top_level(ov_db, "incidents", None, limit=1)[0]
+    before = store.count_slack_top_level(ov_db, "incidents", None)
+    ov_db.execute("INSERT INTO ov.slack_tombstone VALUES (?,?)", (row["channel"], row["ts"]))
+    ov_db.commit()
+    assert store.count_slack_top_level(ov_db, "incidents", None) == before - 1
+    assert row["ts"] not in [
+        r["ts"] for r in store.list_slack_top_level(ov_db, "incidents", None, limit=100)
+    ]
+
+
+def test_a_patch_overrides_a_corpus_column(ov_db):
+    row = store.list_slack_top_level(ov_db, "incidents", None, limit=1)[0]
+    ov_db.execute(
+        "INSERT INTO ov.slack_patch VALUES (?,?,?,?)",
+        (row["channel"], row["ts"], "content", "edited text"),
+    )
+    ov_db.commit()
+    got = [
+        r
+        for r in store.list_slack_top_level(ov_db, "incidents", None, limit=100)
+        if r["ts"] == row["ts"]
+    ][0]
+    assert got["content"] == "edited text"
+
+
+def test_a_merged_row_keeps_the_corpus_column_order(ov_db):
+    # The merge selects columns explicitly rather than `SELECT *` over a UNION ALL, whose
+    # correctness depends on both sides agreeing on column ORDER — a silent wrong-column bug
+    # rather than an error. This asserts the projection did not reorder anything.
+    _post(ov_db, "incidents", "4000000000.000009", "ava@acme.com", "ordered", 4000000000)
+    corpus_cols = [r[1] for r in ov_db.execute("PRAGMA main.table_info(slack_messages)")]
+    row = store.list_slack_top_level(ov_db, "incidents", None, limit=100)[0]
+    assert list(row.keys()) == corpus_cols
+
+
+def test_paging_across_the_boundary_neither_repeats_nor_drops(ov_db):
+    # An overlay row sorts after every corpus row (its created_ts is now), so a page boundary
+    # drawn anywhere must still see each row exactly once.
+    _post(ov_db, "incidents", "4000000000.000002", "ava@acme.com", "boundary a", 4000000000)
+    _post(ov_db, "incidents", "4000000000.000003", "ava@acme.com", "boundary b", 4000000001)
+    total = store.count_slack_top_level(ov_db, "incidents", None)
+    seen = []
+    for offset in range(0, total, 2):
+        seen += [
+            (r["channel"], r["ts"])
+            for r in store.list_slack_top_level(ov_db, "incidents", None, limit=2, offset=offset)
+        ]
+    assert len(seen) == total
+    assert len(set(seen)) == total
+
+
+def test_an_overlay_message_is_acl_scoped_like_any_other(ov_db, acl):
+    # The overlay grants what the channel grants, so a caller who cannot read the channel cannot
+    # read what was posted into it.
+    _post(
+        ov_db,
+        "people-confidential",
+        "4000000000.000004",
+        "hana@acme.com",
+        "secret add",
+        4000000000,
+    )
+    outsider = acl.visible_ids(ov_db, Caller(email="bob@acme.com", is_admin=False))
+    rows = store.list_slack_top_level(ov_db, "people-confidential", outsider, limit=100)
+    assert "secret add" not in [r["content"] for r in rows]

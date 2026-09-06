@@ -20,7 +20,14 @@ import pytest
 from backlot import store, synth
 from backlot.config import get_settings
 from backlot.pagination import encode_cursor
-from tests._helpers import build_corpus, client_for, crawl_github_repo, db_count, tiny_corpus
+from tests._helpers import (
+    build_corpus,
+    client_for,
+    crawl_github_repo,
+    db_count,
+    tiny_corpus,
+    tok,
+)
 
 
 def test_github_serves_a_comment_dated_at_the_epoch(tmp_path):
@@ -2282,6 +2289,75 @@ def test_github_raw_accept_leaves_the_json_envelope_alone(gh_client, gh_admin_h,
         headers={**gh_admin_h, "Accept": "application/vnd.github.raw"},
     )
     assert isinstance(dirs.json(), list)
+
+
+# A repo that exists only as a `subtype: repo` record, beside a repo with one readable document.
+# `github.schema.json` says the record-only repo "stays visible to a scoped caller exactly when one of
+# its documents is, and to the admin as soon as the record itself exists"; this is what pins it.
+_GH_CONTAINER_ONLY_DOCS = [
+    {"source_type": "github", "subtype": "repo", "repo": "pipeline"},
+    {
+        "source_type": "github",
+        "doc_id": "gh-docs-1",
+        "repo": "docs-site",
+        "group": "engineering",
+        "title": "Docs build is red",
+        "content": "The nightly docs build fails on the API reference page.",
+        "author_email": "ava@acme.com",
+        "author_groups": ["engineering"],
+        "visibility": "public",
+        "state": "open",
+    },
+]
+
+
+def test_github_a_container_only_repo_reaches_the_admin_and_no_scoped_caller(tmp_path):
+    """The repo visibility checks ask "can this caller see anything in the repo?" with an existence
+    read (`store.has_visible_document`) rather than by counting every document, which was #134's
+    swap on the Jira side. The one thing the swap could have lost is the admin's view of a repo
+    that holds no document at all: `has_visible_document` is False for it under every ACL, the
+    admin's included, so the `ids is None` short-circuit in `_repo_visible` and `_visible_repos` is
+    load-bearing here where it was a no-op on Jira, whose records cannot create an empty container.
+    Each route that resolves a repo goes through `_require_repo`, so one of them stands for all."""
+    from backlot.acl import Acl, Caller
+
+    settings = build_corpus(tmp_path, _GH_CONTAINER_ONLY_DOCS)
+    with client_for(settings, reload=True) as c:
+        org = c.get("/_meta/users").json()["org"]
+        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        admin = {"Authorization": f"Bearer {tokens['admin_token']}"}
+        ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+
+        names = lambda h, path: [r["name"] for r in c.get(path, headers=h).json()]  # noqa: E731
+        for listing in ("/github/user/repos", f"/github/orgs/{org}/repos"):
+            assert names(admin, listing) == ["docs-site", "pipeline"], listing
+            assert names(ava, listing) == ["docs-site"], listing
+        assert c.get(f"/github/repos/{org}/pipeline", headers=admin).status_code == 200
+        assert c.get(f"/github/repos/{org}/pipeline", headers=ava).status_code == 404
+        assert c.get(f"/github/repos/{org}/pipeline/issues", headers=admin).json() == []
+        assert c.get(f"/github/repos/{org}/docs-site", headers=ava).status_code == 200
+        # the `repo:` qualifier on an issue search resolves the repo by the same rule: the admin
+        # searches the empty repo and gets nothing, a scoped caller gets the 422 a repo they cannot
+        # see shares with one that does not exist, so the record's existence is not confirmed
+        r = c.get(f"/github/search/issues?q=repo:{org}/pipeline", headers=admin)
+        assert (r.status_code, r.json()["total_count"]) == (200, 0)
+        assert c.get(f"/github/search/issues?q=repo:{org}/pipeline", headers=ava).status_code == 422
+        assert c.get(f"/github/search/issues?q=repo:{org}/nosuch", headers=ava).status_code == 422
+
+        # ...and the existence read is why the short-circuit has to stay: on the container-only
+        # repo it says False to everyone, while it agrees with the count wherever a document exists
+        conn = store.connect_ro(settings.db_path)
+        try:
+            acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
+            scoped = acl.visible_ids(conn, Caller(email="ava@acme.com", is_admin=False))
+            for ids in (None, scoped, set()):
+                assert store.has_visible_document(conn, "github", "pipeline", ids) is False, ids
+                assert store.has_visible_document(conn, "github", "docs-site", ids) is (
+                    store.count_documents(conn, "github", "docs-site", ids) > 0
+                ), ids
+            assert store.has_visible_document(conn, "github", "docs-site", set()) is False
+        finally:
+            conn.close()
 
 
 # --- GET /user/repos ------------------------------------------------------

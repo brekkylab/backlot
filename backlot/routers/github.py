@@ -646,7 +646,7 @@ def _qual_repos(conn, quals: dict, org: str, ids) -> list[str] | None:
             continue
         # `_visible_repos`'s rule for the one name asked about rather than for every repo in the
         # corpus: a repo with no document this caller can read is not visible to them.
-        if ids is not None and store.count_documents(conn, "github", spelled, ids) == 0:
+        if ids is not None and not store.has_visible_document(conn, "github", spelled, ids):
             continue
         names.append(spelled)
     return names
@@ -880,10 +880,16 @@ def _repo_visible(conn, repo: str, ids) -> bool:
     repo every one of whose documents is hidden from a caller is one they must not be able to
     confirm the existence of. Every repo route resolves it through here so the answer cannot drift
     between them, and it is the same predicate :func:`_visible_repos` filters the listing by.
+
+    The ``ids is None`` short-circuit is load-bearing, not a fast path: a ``subtype: repo`` record
+    creates a container holding no document, and ``github.schema.json`` says the repo "stays visible
+    to a scoped caller exactly when one of its documents is, and to the admin as soon as the record
+    itself exists". :func:`store.has_visible_document` is False for such a repo under every ACL,
+    the admin's included, so the existence read is only ever asked for a scoped caller.
     """
     if store.get_container(conn, "github", repo) is None:
         return False
-    return ids is None or store.count_documents(conn, "github", repo, ids) > 0
+    return ids is None or store.has_visible_document(conn, "github", repo, ids)
 
 
 def _require_repo(conn, repo: str, ids) -> None:
@@ -893,10 +899,16 @@ def _require_repo(conn, repo: str, ids) -> None:
 
 
 def _visible_repos(conn, ids) -> list[str]:
-    """Repo names the caller can see at all — one with no visible document is not visible."""
+    """Repo names the caller can see at all — one with no visible document is not visible.
+
+    An existence read per repo rather than a count: the listing asks "anything visible here?" once
+    per repo in the corpus, and a count walks every visible document in each to total a number
+    nothing uses. The ``ids is None`` branch keeps the container-only repo for the admin, as
+    :func:`_repo_visible` explains.
+    """
     repos = [r["name"] for r in store.list_containers(conn, "github")]
     if ids is not None:
-        repos = [n for n in repos if store.count_documents(conn, "github", n, ids) > 0]
+        repos = [n for n in repos if store.has_visible_document(conn, "github", n, ids)]
     return repos
 
 

@@ -1240,37 +1240,66 @@ def _map_comment_ids(conn, spec: dict) -> dict:
 
 
 def compile_comment_filter(conn, flt: dict | None) -> tuple[str, list] | None:
-    """``CommentFilter`` -> ``(sql_fragment, params)``. Columns are on the aliased ``c`` table,
-    matching :func:`backlot.store.list_linear_comments`'s join."""
-    sql, params = _comment_filter(conn, flt or {})
+    """``CommentFilter`` -> ``(sql_fragment, params)``, or None when there is nothing to filter.
+    Columns are on the aliased ``c`` table, matching :func:`backlot.store.list_linear_comments`'s
+    join."""
+    sql, params, _ = _comment_parts(conn, flt or {})
     return (sql, params) if sql else None
 
 
-def _comment_filter(conn, flt: dict) -> tuple[str, list]:
+def _comment_parts(conn, flt: dict) -> tuple[str, list, bool]:
+    """``(fragment, params, vacuous)`` for one ``CommentFilter`` object, read as `_issue_parts` reads
+    an ``IssueFilter``: api.linear.app's ``or`` is the same on both (measured 2026-09-06 on
+    ``comments`` over two throwaway comments, ``zz-c1`` on BRE-1 and ``zz-c2`` on BRE-2, in a
+    workspace holding no others). The keys of one ``or`` branch are alternatives: ``{or: [{body:
+    {eq: A}, id: {eq: B}}]}`` answered both comments where ``{body: {eq: A}, id: {eq: B}}`` and
+    ``{and: [{body: {eq: A}, id: {eq: B}}]}`` answered none, so a branch with n keys is n branches. A
+    branch with nothing in it (``{}``, ``{and: []}``, ``{or: []}``, ``{body: null}``) is dropped:
+    ``{or: [{body: {eq: A}}, {}]}`` answered A's comment alone. A branch whose key constrains nothing
+    (``{body: {}}``, ``{id: {}}``, ``{createdAt: {}}``, or an ``or`` holding such a branch) makes the
+    whole ``or`` constrain nothing: ``{or: [{body: {}}, {id: {eq: B}}]}`` and ``{or: [{body: {}, id:
+    {eq: B}}]}`` each answered both comments, while a key beside the ``or`` still applies (``{or:
+    [{body: {}}], id: {eq: B}}`` answered B) and inside an ``and`` such a branch is dropped (``{and:
+    [{body: {}}, {id: {eq: B}}]}`` answered B). ``vacuous`` is how the empty fragment of a dropped
+    branch is told from the empty fragment of a vacuous one."""
     parts: list[str] = []
     params: list = []
+    vacuous = False
+
+    def add(frag, p):
+        nonlocal vacuous
+        if frag:
+            parts.append(frag)
+            params.extend(p)
+        else:
+            vacuous = True
+
     for key, spec in (flt or {}).items():
         if spec is None:
             continue
         if key in ("and", "or"):
-            subs = [_comment_filter(conn, s) for s in spec]
-            frags = [f for f, _ in subs if f]
-            for _, p in subs:
-                params.extend(p)
-            if frags:
-                parts.append("(" + (" AND " if key == "and" else " OR ").join(frags) + ")")
+            branches = spec
+            if key == "or":
+                branches = [{k: v} for branch in spec for k, v in (branch or {}).items()]
+            subs = [_comment_parts(conn, s) for s in branches]
+            if key == "or" and any(v for _, _, v in subs):
+                vacuous = True
+                continue
+            kept = [(f, p) for f, p, _ in subs if f]
+            if not kept:
+                vacuous = vacuous or bool(spec)
+                continue
+            parts.append("(" + (" AND " if key == "and" else " OR ").join(f for f, _ in kept) + ")")
+            params.extend(x for _, p in kept for x in p)
             continue
         if key == "id":
             # `Comment.id` is served as synth.linear_comment_id(row id), so a filter written from
             # a served id must be translated back or it can never match what the client just saw.
-            frag, p = _Comparator("c.id").render(_map_comment_ids(conn, spec))
+            add(*_Comparator("c.id").render(_map_comment_ids(conn, spec)))
         elif key == "body":
-            frag, p = _Comparator("c.body").render(spec)
+            add(*_Comparator("c.body").render(spec))
         elif key in ("createdAt", "updatedAt"):
-            frag, p = _Comparator("c.created_ts", epoch=True).render(spec)
+            add(*_Comparator("c.created_ts", epoch=True).render(spec))
         else:
             raise GraphQLError(f"unsupported comment filter field {key!r}")
-        if frag:
-            parts.append(frag)
-            params.extend(p)
-    return _join(parts, "AND"), params
+    return _join(parts, "AND"), params, vacuous

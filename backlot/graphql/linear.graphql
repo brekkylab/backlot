@@ -347,6 +347,9 @@ input CommentFilter {
   createdAt: DateComparator
   updatedAt: DateComparator
   and: [CommentFilter!]
+  """The keys of one branch are alternatives, as on every `or` here: `{or: [{body: {eq: A}, id: {eq:
+  B}}]}` is the comment with body A and the comment with id B, where the same object outside an `or`
+  is neither (measured 2026-09-06)."""
   or: [CommentFilter!]
 }
 

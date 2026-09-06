@@ -1048,6 +1048,84 @@ def test_comment_filter_by_the_served_id_round_trips(fclient):
     assert [n["body"] for n in got["data"]["comments"]["nodes"]] == [first["body"]]
 
 
+def comment_bodies(fclient, filter_literal, root="comments") -> list[str]:
+    """Bodies matching a CommentFilter, in a stable order. ``root`` is the `comments` root or
+    `issue(id: …) { comments … }`; the literal may name the served id of ``second note`` as ``%(B)s``."""
+    listed = post(fclient, "{ comments(first: 50) { nodes { id body } } }").json()
+    served = {n["body"]: n["id"] for n in listed["data"]["comments"]["nodes"]}
+    literal = filter_literal % {"B": served["second note"]}
+    if root == "comments":
+        q = "{ comments(first: 50, filter: %s) { nodes { body } } }" % literal
+        path = ("comments",)
+    else:
+        q = '{ issue(id: "%s") { comments(filter: %s) { nodes { body } } } }' % (root, literal)
+        path = ("issue", "comments")
+    body = post(fclient, q).json()
+    assert "errors" not in body, body["errors"]
+    node = body["data"]
+    for step in path:
+        node = node[step]
+    return sorted(n["body"] for n in node["nodes"])
+
+
+FIRST, SECOND = "first note", "second note"
+BOTH = [FIRST, SECOND]
+# Every cell is one answer api.linear.app gave on 2026-09-06 over two throwaway comments (`zz-c1` on
+# BRE-1, `zz-c2` on BRE-2) in a workspace holding no others; A is the first comment's body and B the
+# second's id. The fixture's two comments, `first note` on ENG-1 and `second note` on ENG-2, stand in,
+# and share the substring `note` where the workspace pair shared `zz-c`.
+_COMMENT_OR_CELLS = [
+    # the keys of one `or` branch are alternatives; outside an `or`, and under `and`, they AND
+    ('{or: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}]}', BOTH),
+    ('{body: {eq: "first note"}, id: {eq: "%(B)s"}}', []),
+    ('{and: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}]}', []),
+    ('{or: [{body: {eq: "first note"}}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{body: {contains: "note"}, id: {eq: "%(B)s"}}], body: {eq: "second note"}}', [SECOND]),
+    ('{or: [{or: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}]}]}', BOTH),
+    ('{and: [{or: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}]}]}', BOTH),
+    # a branch with nothing in it is dropped
+    ('{or: [{body: {eq: "first note"}}, {}]}', [FIRST]),
+    ('{or: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}, {}]}', BOTH),
+    ('{or: [{body: {eq: "first note"}, id: null}]}', [FIRST]),
+    ('{or: [{body: null}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+    ('{or: [{and: []}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+    ('{or: [{or: []}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+    # a branch whose key constrains nothing makes the whole `or` constrain nothing; a key beside
+    # the `or` still applies, and under `and` such a branch is dropped
+    ("{body: {}}", BOTH),
+    ("{or: [{body: {}}]}", BOTH),
+    ('{or: [{body: {}}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{body: {}, id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{createdAt: {}}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{id: {}}, {body: {eq: "first note"}}]}', BOTH),
+    ('{or: [{or: [{body: {}}]}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{body: {}}], id: {eq: "%(B)s"}}', [SECOND]),
+    ('{or: [{body: {}, id: {eq: "%(B)s"}}], body: {eq: "second note"}}', [SECOND]),
+    ('{and: [{body: {}}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+    ('{or: [{and: [{body: {}}, {body: {eq: "nosuch"}}]}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+]
+
+
+@pytest.mark.parametrize(
+    "literal,expected", _COMMENT_OR_CELLS, ids=[c[0] for c in _COMMENT_OR_CELLS]
+)
+def test_comment_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+    """Linear's `or` on `CommentFilter` is the `or` `_issue_parts` compiles: the keys of one branch
+    are alternatives, a branch with nothing in it is dropped, and a branch whose key constrains
+    nothing makes the whole `or` constrain nothing. Compiling a branch as one conjunction, as this
+    router did until #136, answered `{or: [{body: {eq: A}, id: {eq: B}}]}` with no comment where
+    Linear answers two, and nothing in the well-formed empty list said so."""
+    assert comment_bodies(fclient, literal) == expected
+
+
+def test_issue_comments_connection_reads_an_or_branch_the_same_way(fclient):
+    """`Issue.comments(filter:)` goes through the same compiler, scoped to the issue: on the real
+    API the two-key branch answered the one comment on BRE-1 when asked under `issue(id: BRE-1)`."""
+    two_keys = '{or: [{body: {eq: "first note"}, id: {eq: "%(B)s"}}]}'
+    assert comment_bodies(fclient, two_keys, root="ENG-1") == [FIRST]
+    assert comment_bodies(fclient, two_keys, root="ENG-2") == [SECOND]
+
+
 def test_an_empty_labels_predicate_constrains_nothing_as_it_does_on_linear(fclient):
     """`labels: {}`, `labels: {some: {}}`, `labels: {every: {}}` and `labels: {some: {name: {}}}` each
     answered every issue on api.linear.app (measured 2026-09-03), the label-less ones included: an

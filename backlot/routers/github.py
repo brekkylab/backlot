@@ -15,7 +15,7 @@ from email.utils import formatdate
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, store, synth
@@ -23,6 +23,7 @@ from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.pagination import (
     PageParam,
+    github_code_search_page_refusal,
     clamp_page,
     github_code_search_link_header,
     github_cursor_link_header,
@@ -797,7 +798,16 @@ async def search_code(
     A blank `q` is real's 422 rather than a listing: a code search with no term is a client bug
     better reported than answered with a corpus dump. `/search/issues` above answers a blank `q`
     the same way, and for the same measured reason.
+
+    A `page` / `per_page` that will not parse is refused first, and in text/plain: this is the one
+    GitHub route that does not absorb such a value (see
+    :func:`backlot.pagination.github_code_search_page_refusal` for the measured shape). The
+    `PageParam` validator has already absorbed it by the time this runs, so the raw query string is
+    what is read, and the refusal precedes the blank-`q` 422 as it does on real.
     """
+    refusal = github_code_search_page_refusal(request.query_params)
+    if refusal is not None:
+        return PlainTextResponse(refusal, status_code=400)
     caller = _require(request)
     if not q.strip():
         raise _search_validation_failed("q")

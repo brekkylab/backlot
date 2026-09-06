@@ -80,10 +80,15 @@ def clamp_limit(limit: int | None, default: int, maximum: int) -> int:
 def _absorb_page(v):
     """A page parameter's value, or ``None`` for one that will not parse.
 
-    Real GitHub refuses no value here: `per_page=0`, `per_page=abc`, `page=0`, `page=-1` and
-    `page=abc` are each a 200 with the defaults applied, and a `per_page` over the cap is a 200 at
-    the cap (measured against a public repository's issue listing). Refusing them would hand a
-    paginator computing an edge value a hard error where production absorbs it.
+    Real GitHub refuses no value on its listings and on every search but code search: `per_page=0`,
+    `per_page=abc`, `page=0`, `page=-1` and `page=abc` are each a 200 with the defaults applied, and
+    a `per_page` over the cap is a 200 at the cap (measured against a public repository's issue
+    listing; the same five values are a 200 on `/repos/{o}/{r}/tags`, `/user/repos`,
+    `/search/issues`, `/search/repositories`, `/search/users`, `/search/commits`, `/search/labels`
+    and `/search/topics`, 2026-09-06). Refusing them would hand a paginator computing an edge value a
+    hard error where production absorbs it. `/search/code` is the one surface that refuses, and
+    refuses before this validator's answer matters: see :func:`github_code_search_page_refusal`,
+    which that route asks first.
 
     A `BeforeValidator` rather than a `str` annotation: the parameter stays an integer in the
     OpenAPI schema, which is what real's own spec declares, so the tolerance is in the runtime
@@ -101,6 +106,59 @@ def _absorb_page(v):
 #: Only the GitHub surface uses it — the other vendors' answers to an unparseable page value are
 #: not measured, and a helper that spread this tolerance to them would be asserting they share it.
 PageParam = Annotated[int | None, BeforeValidator(_absorb_page), Query()]
+
+#: The largest `page` / `per_page` value real's code search parses: it deserializes both into an
+#: unsigned 32-bit integer, so 4294967295 is a 200 and 4294967296 the "number too large" refusal.
+GITHUB_CODE_SEARCH_PAGE_MAX = 4_294_967_295
+
+
+def github_code_search_page_refusal(query_params) -> str | None:
+    """The body of the 400 real's `/search/code` answers for a `page` / `per_page` it cannot parse,
+    or ``None`` when it would parse both.
+
+    Code search is the one GitHub surface that refuses a page value, and it refuses in a shape no
+    other GitHub error has: status 400, `content-type: text/plain; charset=utf-8`, no JSON envelope,
+    and a body that is a Rust deserializer's own message (measured against api.github.com on
+    2026-09-06 with `q=repo:psf/requests+def`):
+
+    * a value with anything but ASCII digits in it, `abc`, `-1`, `1.5`, `5abc`, `1e2`, ` 5` (which is
+      how `+5` arrives) and the Arabic-Indic `١` or fullwidth `１` that Python's ``int`` would read
+      as 1, is `Failed to deserialize query string: per_page: invalid digit found in string`;
+    * an empty value is `… per_page: cannot parse integer from empty string`;
+    * a value over 4294967295 is `… per_page: number too large to fit in target type`, and
+      4294967295 itself is a 200;
+    * the parameter given twice is `… duplicate field `per_page``, reported at the second
+      occurrence, so `per_page=5&per_page=abc` is the duplicate and `per_page=abc&per_page=5` the
+      invalid digit;
+    * `page` answers the same lines with `page:` in place of `per_page:`.
+
+    The first failure in query-string order is the one reported (`page=abc&per_page=abc` names
+    `page`, the reverse names `per_page`), it comes before `q` is looked at (a blank `q` beside
+    `per_page=abc` is this 400, not the 422), and it is only the parse: `0` and `01` are a 200, as is
+    `per_page=101` (served at the cap), and `sort=abc`, `order=abc` or an unknown parameter beside a
+    good page value change nothing. Every other GitHub route absorbs these values, which is what
+    :func:`_absorb_page` is for; that validator still runs on this route and its answer is unused
+    when this function refuses, so the parameter stays an integer in the OpenAPI slice, as real's
+    spec declares it, on this route as on the others.
+    """
+    seen: set[str] = set()
+    for key, value in query_params.multi_items():
+        if key not in ("page", "per_page"):
+            continue
+        if key in seen:
+            return f"Failed to deserialize query string: duplicate field `{key}`"
+        seen.add(key)
+        if value == "":
+            return (
+                f"Failed to deserialize query string: {key}: cannot parse integer from empty string"
+            )
+        if not all(c in "0123456789" for c in value):
+            return f"Failed to deserialize query string: {key}: invalid digit found in string"
+        if int(value) > GITHUB_CODE_SEARCH_PAGE_MAX:
+            return (
+                f"Failed to deserialize query string: {key}: number too large to fit in target type"
+            )
+    return None
 
 
 def clamp_page(

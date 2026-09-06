@@ -1617,9 +1617,10 @@ def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admi
 
 
 def test_github_tolerates_the_pagination_values_real_tolerates(gh_client, gh_admin_h, gh_org):
-    """Real refuses no pagination value at all. Measured on a public repository's issue listing:
+    """Real's listings refuse no pagination value. Measured on a public repository's issue listing:
     `per_page=0`, `per_page=abc`, `page=0`, `page=-1` and `page=abc` are each a 200 with the
-    defaults applied, and a per_page above the cap is a 200 at the cap.
+    defaults applied, and a per_page above the cap is a 200 at the cap. (`/search/code` is the one
+    route that refuses, and refuses in text/plain; see the code search tests.)
 
     Backlot declared `ge=1` and an `int` annotation, so FastAPI answered its 422 before
     `clamp_page` was reached and a paginator computing an edge value got a hard error where
@@ -2003,6 +2004,91 @@ def test_github_search_pages_with_a_link_header(gh_client, gh_admin_h, path, q, 
 
     # one page of results carries no Link at all, as real sends none
     assert "Link" not in c.get(path, headers=gh_admin_h, params={"q": q, "per_page": 100}).headers
+
+
+_INVALID_DIGIT = "Failed to deserialize query string: {}: invalid digit found in string"
+_EMPTY = "Failed to deserialize query string: {}: cannot parse integer from empty string"
+_TOO_LARGE = "Failed to deserialize query string: {}: number too large to fit in target type"
+_DUPLICATE = "Failed to deserialize query string: duplicate field `{}`"
+# Each row is one answer api.github.com gave on 2026-09-06 to `/search/code?q=repo:psf/requests+def`
+# with the query string below appended (`+5` arrives as ` 5`, which is why it is an invalid digit).
+_CODE_SEARCH_PAGE_REFUSALS = [
+    ("per_page=abc", _INVALID_DIGIT.format("per_page")),
+    ("per_page=-1", _INVALID_DIGIT.format("per_page")),
+    ("per_page=1.5", _INVALID_DIGIT.format("per_page")),
+    ("per_page=+5", _INVALID_DIGIT.format("per_page")),
+    ("per_page=5abc", _INVALID_DIGIT.format("per_page")),
+    ("per_page=1e2", _INVALID_DIGIT.format("per_page")),
+    # digits that are not ASCII digits: Python's int() reads each of these as 1, real does not
+    ("per_page=%D9%A1", _INVALID_DIGIT.format("per_page")),
+    ("page=%D9%A1", _INVALID_DIGIT.format("page")),
+    ("per_page=%EF%BC%91", _INVALID_DIGIT.format("per_page")),
+    ("per_page=", _EMPTY.format("per_page")),
+    ("per_page=4294967296", _TOO_LARGE.format("per_page")),
+    ("per_page=99999999999999999999", _TOO_LARGE.format("per_page")),
+    ("page=abc", _INVALID_DIGIT.format("page")),
+    ("page=-1", _INVALID_DIGIT.format("page")),
+    ("page=1.5", _INVALID_DIGIT.format("page")),
+    ("page=", _EMPTY.format("page")),
+    ("page=99999999999999999999", _TOO_LARGE.format("page")),
+    # the first failure in query-string order is the one named
+    ("page=abc&per_page=abc", _INVALID_DIGIT.format("page")),
+    ("per_page=abc&page=abc", _INVALID_DIGIT.format("per_page")),
+    # a repeated parameter is refused at its second occurrence, so order decides which line
+    ("per_page=5&per_page=abc", _DUPLICATE.format("per_page")),
+    ("per_page=abc&per_page=5", _INVALID_DIGIT.format("per_page")),
+    # a good page value beside an unknown or a bad other parameter is not what is refused
+    ("per_page=abc&sort=abc", _INVALID_DIGIT.format("per_page")),
+]
+
+
+@pytest.mark.parametrize(
+    "qs,body", _CODE_SEARCH_PAGE_REFUSALS, ids=[r[0] for r in _CODE_SEARCH_PAGE_REFUSALS]
+)
+def test_github_code_search_refuses_an_unparseable_page_value_in_text_plain(
+    gh_client, gh_admin_h, qs, body
+):
+    """`/search/code` is the one GitHub route that refuses a `page` / `per_page` it cannot parse,
+    and it refuses in a shape no other GitHub error has: 400, `text/plain; charset=utf-8`, no
+    envelope, a Rust deserializer's own line. Every other route absorbs the same values (see
+    `test_github_tolerates_the_pagination_values_real_tolerates`), which this route did too, so a
+    client's error path for the 400 was never reached against Backlot and `.json()` on it would
+    have parsed where real's answer raises."""
+    c, _ = gh_client
+    r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
+    assert r.status_code == 400
+    assert r.headers["content-type"] == "text/plain; charset=utf-8"
+    assert r.text == body
+    with pytest.raises(ValueError):
+        r.json()
+
+
+def test_github_code_search_page_refusal_is_the_parse_and_comes_before_q(gh_client, gh_admin_h):
+    """What is refused is the parse, not the range or the query: `0`, `01` and 4294967295 (the
+    largest value real's unsigned 32-bit parameter holds) are each a 200, `01` served as 1; a blank
+    `q` beside `per_page=abc` is this 400 and not the blank-query 422; a bad `per_page` on
+    `/search/issues` is still absorbed; and the OpenAPI slice still declares the parameter an
+    integer, since the refusal is the route's and not the validator's (all measured 2026-09-06)."""
+    c, _ = gh_client
+    full = c.get("/github/search/code?q=extension:md", headers=gh_admin_h).json()
+    assert full["total_count"] >= 2
+    for qs in ("per_page=0", "page=0", "per_page=4294967295", "page=01", "foo=abc&per_page=100"):
+        r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
+        assert r.status_code == 200, qs
+        assert r.json() == full, qs
+    one = c.get("/github/search/code?q=extension:md&per_page=01", headers=gh_admin_h).json()
+    assert one["total_count"] == full["total_count"] and len(one["items"]) == 1
+    r = c.get("/github/search/code?q=&per_page=abc", headers=gh_admin_h)
+    assert (r.status_code, r.headers["content-type"]) == (400, "text/plain; charset=utf-8")
+    assert r.text == _INVALID_DIGIT.format("per_page")
+    assert c.get("/github/search/code?q=", headers=gh_admin_h).status_code == 422
+    assert (
+        c.get("/github/search/issues?q=is:open&per_page=abc", headers=gh_admin_h).status_code == 200
+    )
+    spec = c.get("/openapi.json").json()["paths"]["/github/search/code"]["get"]
+    for name in ("page", "per_page"):
+        param = next(p for p in spec["parameters"] if p["name"] == name)
+        assert {"type": "integer"} in param["schema"]["anyOf"], name
 
 
 def test_github_code_search_paginates(gh_client, gh_admin_h):

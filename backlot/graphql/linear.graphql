@@ -297,6 +297,9 @@ input NullableProjectFilter {
 input IssueLabelFilter {
   name: StringComparator
   and: [IssueLabelFilter!]
+  """The keys of one branch are alternatives, as on every `or` here: `{or: [{name: {eq: A}, and:
+  [{name: {eq: B}}]}]}` is a label named A or B, where the same object under `and` is a label named
+  both (measured 2026-09-06)."""
   or: [IssueLabelFilter!]
 }
 
@@ -317,6 +320,9 @@ input IssueLabelCollectionFilter {
   length: NumberComparator
   null: Boolean
   and: [IssueLabelCollectionFilter!]
+  """Each branch is one collection filter, read by the same precedence as the object itself (`and`,
+  `or`, `length`, `every`, `some`, `name`): `{or: [{length: {eq: 1}, some: {name: {eq: A}}}]}` is the
+  issues with one label, not those plus the issues carrying A (measured 2026-09-06)."""
   or: [IssueLabelCollectionFilter!]
 }
 

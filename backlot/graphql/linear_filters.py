@@ -490,9 +490,23 @@ _VACUOUS = "vacuous"  # a key that constrains nothing (`name: {}`) -- makes the 
 _REAL = "real"  # a condition
 
 
-def _label_predicate(spec: dict) -> tuple[str, list, str]:
+def _label_predicate(spec: dict, *, alternatives: bool = False) -> tuple[str, list, str]:
     """One ``IssueLabelFilter`` against the ``value`` column of a ``json_each`` row, INCLUDING its
     ``and`` / ``or``. Returns ``(fragment, params, kind)``; the kind is one of the four above.
+
+    ``alternatives`` is how an ``or`` branch is read: its keys OR where every other object's keys
+    AND, as on every ``or`` Linear serves (measured 2026-09-06 over ``[Bug, Feature]`` and ``[Bug]``
+    beside two label-less issues; ``Improvement`` is a label nobody has). ``some: {or: [{name: {eq:
+    "Feature"}, and: [{name: {eq: "Improvement"}}]}]}`` answered the ``[Bug, Feature]`` issue, where
+    ``some: {and: [{name: {eq: "Feature"}, or: [{name: {eq: "Improvement"}}]}]}`` answered none, and
+    ``some: {or: [{name: {eq: "Improvement"}, and: [{name: {eq: "Feature"}}, {name: {eq: "Bug"}}]}]}``
+    none too (one label cannot be both). A key that constrains nothing beside one that does makes
+    the branch a predicate every label satisfies, not a vacuous branch: ``some: {or: [{name: {},
+    and: [{name: {eq: "Improvement"}}]}]}``, ``some: {or: [{name: {eq: "nope"}, and: [{}]}]}`` and
+    ``some: {or: [{name: {eq: "nope"}, or: [{}]}]}`` each answered the two labelled issues, not
+    every issue and not none. ``and: []`` and ``or: []`` beside a key drop out: ``some: {or: [{name:
+    {eq: "Feature"}, and: []}]}`` and the ``or: []`` twin each answered ``[Bug, Feature]`` alone. The
+    polarity of such a branch is still read from the branch as written (see `_reads_as_negation`).
 
     An empty fragment is right in two places and wrong in a third, which is what the kind is for.
     At the top of a quantifier it is right: ``some: {}`` and ``some: {name: {}}`` each answered every
@@ -532,7 +546,9 @@ def _label_predicate(spec: dict) -> tuple[str, list, str]:
             parts.append(frag)
             params.extend(p)
     if parts:
-        return _join(parts, "AND"), params, _REAL
+        if alternatives and _VACUOUS in kinds:
+            return "1", [], _REAL
+        return _join(parts, "OR" if alternatives else "AND"), params, _REAL
     for kind in (_QUANT, _VACUOUS):
         if kind in kinds:
             return "", [], kind
@@ -540,10 +556,11 @@ def _label_predicate(spec: dict) -> tuple[str, list, str]:
 
 
 def _label_branches(key: str, sub: list) -> tuple[str, list, str]:
-    """The ``and`` / ``or`` of an ``IssueLabelFilter``, by the rules in ``_label_predicate``."""
+    """The ``and`` / ``or`` of an ``IssueLabelFilter``, by the rules in ``_label_predicate``: the
+    keys of an ``or`` branch are alternatives, those of an ``and`` branch a conjunction."""
     if not sub:
         return "", [], _QUANT if key == "or" else _NONE
-    subs = [_label_predicate(x) for x in sub]
+    subs = [_label_predicate(x, alternatives=key == "or") for x in sub]
     if key == "or" and any(kind == _VACUOUS for _, _, kind in subs):
         return "", [], _VACUOUS
     real = [(f, p) for f, p, kind in subs if kind == _REAL]
@@ -581,7 +598,14 @@ _LABEL_EACH = "json_each(COALESCE(labels, '[]'))"
 
 
 def _reads_as_negation(spec: dict | None) -> bool:
-    """Whether an ``IssueLabelFilter`` is a negative predicate, by the rule above."""
+    """Whether an ``IssueLabelFilter`` is a negative predicate, by the rule above.
+
+    Read from the object as written, an ``or`` branch included: its keys are alternatives for the
+    predicate (`_label_predicate`) but a conjunction for the polarity. ``some: {or: [{name: {neq:
+    "Feature"}, and: [{name: {eq: "Improvement"}}]}]}`` answered the two labelled issues, the
+    positive reading, where ``some: {or: [{name: {neq: "Feature"}}, {and: [{name: {eq:
+    "Improvement"}}]}]}`` answered every issue, the negative one; ``every`` over the same pair
+    answered the labelled issues and every issue in turn (measured 2026-09-06)."""
     parts = []
     for key, sub in (spec or {}).items():
         if sub is None:
@@ -693,7 +717,17 @@ def _labels_filter(spec: dict) -> tuple[str, list]:
 
 
 def _labels_branches(key: str, sub: list) -> tuple[str, list]:
-    """The ``and`` / ``or`` of an ``IssueLabelCollectionFilter``, by the rules in ``_labels_filter``."""
+    """The ``and`` / ``or`` of an ``IssueLabelCollectionFilter``, by the rules in ``_labels_filter``.
+
+    Unlike every other ``or`` Linear serves, the keys of a branch here are NOT alternatives: each
+    branch is one collection filter, read by the precedence above. ``{or: [{length: {eq: 1}, some:
+    {name: {eq: "Feature"}}}]}`` answered the one-label issue alone, as ``length`` alone does, where
+    alternatives would add the issue carrying ``Feature``; ``{or: [{length: {eq: 0}, name: {eq:
+    "Feature"}}]}`` the label-less issues, ``{or: [{every: {name: {eq: "Bug"}}, some: {name: {eq:
+    "Feature"}}}]}`` the one-label issue, ``{or: [{and: [{length: {eq: 1}}], length: {eq: 2}}]}`` the
+    same, ``{or: [{null: true, length: {eq: 1}}]}`` none and ``{or: [{null: false, length: {eq:
+    1}}]}`` the one-label issue (measured 2026-09-06 over ``[Bug, Feature]`` and ``[Bug]`` beside two
+    label-less issues; 19 shapes, key order included, every one the precedence reading)."""
     subs = [_labels_filter(x) for x in sub]
     if key == "or" and any(not f for f, _ in subs):
         return "", []

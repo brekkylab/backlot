@@ -1328,6 +1328,60 @@ _LABEL_CELLS = [
     ("{length: {eq: null}}", set()),
     ("{length: {neq: null}}", set()),
     ("{length: {eq: 2, lt: null}}", set()),
+    # the keys of one `or` branch (measured 2026-09-06 over `[Bug, Feature]` and `[Bug]` beside two
+    # label-less issues; `bug` stands for `Bug`, `gateway` for `Feature`, `nope` for `Improvement`,
+    # which nobody has). On the collection filter they are NOT alternatives: each branch is one
+    # collection filter, read by the precedence above, key order included
+    ('{or: [{length: {eq: 1}, some: {name: {eq: "gateway"}}}]}', {L1}),
+    ('{or: [{some: {name: {eq: "gateway"}}, length: {eq: 1}}]}', {L1}),
+    ('{or: [{length: {eq: 0}, name: {eq: "gateway"}}]}', {U}),
+    ('{or: [{every: {name: {eq: "bug"}}, some: {name: {eq: "gateway"}}}]}', {L1}),
+    ('{or: [{some: {name: {eq: "gateway"}}, every: {name: {eq: "bug"}}}]}', {L1}),
+    ("{or: [{and: [{length: {eq: 1}}], length: {eq: 2}}]}", {L1}),
+    ("{or: [{or: [{length: {eq: 1}}], length: {eq: 2}}]}", {L1}),
+    ("{or: [{null: false, length: {eq: 1}}]}", {L1}),
+    ("{or: [{null: true, length: {eq: 1}}]}", set()),
+    ("{or: [{length: {eq: 1}, null: true}]}", set()),
+    ('{or: [{length: {eq: 1}, some: {name: {eq: "gateway"}}}], length: {eq: 0}}', {L1}),
+    ('{or: [{length: {eq: 1}, some: {name: {eq: "gateway"}}}, {}]}', EVERY),
+    ("{or: [{length: {eq: 1}, some: {}}]}", {L1}),
+    ('{or: [{length: {eq: 1}, some: {name: {eq: "nope"}}}]}', {L1}),
+    ('{and: [{length: {eq: 1}, some: {name: {eq: "gateway"}}}]}', {L1}),
+    ('{and: [{some: {name: {eq: "gateway"}}, length: {eq: 1}}]}', {L1}),
+    ('{and: [{length: {eq: 0}, name: {eq: "gateway"}}]}', {U}),
+    # on the predicate (`IssueLabelFilter`) they ARE alternatives, as on every other `or`: a label
+    # named A or B, where the same object under `and` is a label named both
+    ('{some: {or: [{name: {eq: "gateway"}, and: [{name: {eq: "nope"}}]}]}}', {L2}),
+    ('{some: {or: [{name: {eq: "nope"}, and: [{name: {eq: "gateway"}}]}]}}', {L2}),
+    ('{some: {or: [{name: {eq: "gateway"}}, {and: [{name: {eq: "nope"}}]}]}}', {L2}),
+    ('{some: {or: [{name: {eq: "gateway"}, or: [{name: {eq: "nope"}}]}]}}', {L2}),
+    (
+        '{some: {or: [{name: {eq: "nope"}, or: [{name: {eq: "gateway"}}, {name: {eq: "nope"}}]}]}}',
+        {L2},
+    ),
+    ('{every: {or: [{name: {eq: "bug"}, and: [{name: {eq: "nope"}}]}]}}', {L1}),
+    ('{some: {and: [{name: {eq: "gateway"}, or: [{name: {eq: "nope"}}]}]}}', set()),
+    ('{some: {and: [{name: {eq: "bug"}, or: [{name: {eq: "gateway"}}]}]}}', set()),
+    ('{some: {and: [{name: {eq: "bug"}, or: [{name: {eq: "bug"}}]}]}}', {L2, L1}),
+    (
+        '{some: {or: [{name: {eq: "nope"}, and: [{name: {eq: "gateway"}}, {name: {eq: "bug"}}]}]}}',
+        set(),
+    ),
+    # the polarity of such a branch is read from the branch as written: negative only when every
+    # key is, where the same keys as separate branches read negative when any is
+    ('{some: {or: [{name: {neq: "gateway"}, and: [{name: {eq: "nope"}}]}]}}', {L2, L1}),
+    ('{some: {or: [{name: {neq: "gateway"}}, {and: [{name: {eq: "nope"}}]}]}}', EVERY),
+    ('{some: {or: [{name: {eq: "nope"}, and: [{name: {neq: "gateway"}}]}]}}', {L2, L1}),
+    ('{every: {or: [{name: {neq: "gateway"}, and: [{name: {eq: "nope"}}]}]}}', {L1}),
+    ('{every: {or: [{name: {neq: "bug"}, and: [{name: {eq: "bug"}}]}]}}', {L2, L1}),
+    ('{every: {or: [{name: {neq: "bug"}}, {and: [{name: {eq: "bug"}}]}]}}', EVERY),
+    # a key that constrains nothing beside one that does is a predicate every label satisfies (the
+    # quantifier still asks for a label), not a vacuous branch; `and: []` / `or: []` beside a key drop
+    ('{some: {or: [{name: {}, and: [{name: {eq: "nope"}}]}]}}', {L2, L1}),
+    ('{some: {or: [{name: {eq: "nope"}, and: [{}]}]}}', {L2, L1}),
+    ('{some: {or: [{name: {eq: "nope"}, or: [{}]}]}}', {L2, L1}),
+    ('{some: {or: [{name: {eq: "gateway"}, and: []}]}}', {L2}),
+    ('{some: {or: [{name: {eq: "gateway"}, or: []}]}}', {L2}),
 ]
 
 

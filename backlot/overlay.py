@@ -158,6 +158,37 @@ def _source_ddl(conn: sqlite3.Connection, source_type: str) -> list[str]:
     ]
 
 
+def _acl_view_ddl(conn: sqlite3.Connection, source_type: str) -> str:
+    """A ``temp`` view that shadows the source's ACL table with corpus-plus-overlay grants.
+
+    Sixty-seven call sites reach the ACL through :func:`store._acl_clause`, which emits an
+    unqualified table name — so an overlay grant would be invisible to every one of them, and a
+    posted message would be readable by nobody including its author. Threading a connection
+    through all sixty-seven to union the two tables would be the alternative.
+
+    A ``temp`` view is the whole fix instead, because SQLite resolves an unqualified name in
+    ``temp`` before ``main`` (measured). Every reader keeps its query verbatim and sees one ACL
+    relation; ``main.<acl>`` stays reachable, qualified, for the writer that copies grants.
+
+    A row in ``ov.<acl>`` with ``revoked = 1`` hides the matching corpus grant, which is how a
+    grant on an unwritable corpus row is taken away. Nothing writes one yet —
+    `conversations.kick` will — but expressing it here is what keeps that from being a change to
+    this view.
+    """
+    names = table_names(source_type)
+    acl = names["acl"]
+    cols = [r[1] for r in conn.execute(f"PRAGMA main.table_info({acl})")]
+    projection = ", ".join(cols)
+    match = " AND ".join(f"r.{c} = m.{c}" for c in cols)
+    return (
+        f"CREATE VIEW IF NOT EXISTS temp.{acl} AS "
+        f"SELECT {projection} FROM main.{acl} m WHERE NOT EXISTS ("
+        f"  SELECT 1 FROM ov.{acl} r WHERE {match} AND r.revoked = 1) "
+        f"UNION ALL "
+        f"SELECT {projection} FROM ov.{acl} WHERE revoked = 0"
+    )
+
+
 def attach(conn: sqlite3.Connection, name: str) -> None:
     """Attach an empty overlay as ``ov`` and create every writable source's tables in it."""
     conn.execute("ATTACH DATABASE ? AS ov", (_uri(name),))
@@ -166,10 +197,18 @@ def attach(conn: sqlite3.Connection, name: str) -> None:
             conn.execute(ddl)
         for ddl in EXTRA_DDL.get(source_type, {}).values():
             conn.execute(ddl)
+        conn.execute(_acl_view_ddl(conn, source_type))
     conn.commit()
 
 
 def detach(conn: sqlite3.Connection) -> None:
+    """Drop the overlay, and the temp views that read from it first.
+
+    A view left behind would name a schema that no longer exists, so the next unqualified ACL read
+    fails rather than falling back to the corpus.
+    """
+    for source_type in sorted(store.WRITABLE):
+        conn.execute(f"DROP VIEW IF EXISTS temp.{table_names(source_type)['acl']}")
     conn.execute("DETACH DATABASE ov")
 
 

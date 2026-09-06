@@ -1396,3 +1396,168 @@ def test_slack_one_person_has_one_handle_across_the_surface(tmp_path):
         assert hit["user"] == member["id"]  # the id already agreed
         assert hit["username"] == member["name"] == "avachen"
         assert "." not in hit["username"], "a handle drops the dot the address carries"
+
+
+# --- writes -----------------------------------------------------------------------------------
+#
+# Every method answers both verbs. Measured against slack.com on 2026-09-06 with a read-only
+# token: all nine answer `missing_scope` -- not `unknown_method` -- over GET and POST alike, so
+# the method and the verb are recognised and the request reaches the scope check.
+
+
+@pytest.fixture
+def wclient(sample_settings):
+    """A client of its own for each write test, over the SAMPLE corpus.
+
+    Not the module-scoped `client`, for two reasons. The overlay lives for the life of a server, so
+    sharing one would carry every test's writes into the next and make an assertion about a message
+    count depend on file order. And `client_for` without `reload` starts a second lifespan on the
+    module-level `app` object, so a `corpus_client` anywhere earlier in this file leaves the shared
+    client's connection closed -- `reload=True` gives this one its own app and leaves that one
+    alone.
+    """
+    from tests._helpers import client_for
+
+    with client_for(sample_settings, reload=True) as c:
+        yield c
+
+
+def _uh(tokens, email):
+    return {"Authorization": f"Bearer {tokens[email]}"}
+
+
+def test_post_message_is_readable_back_by_the_poster(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    posted = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "shipping now"}
+    ).json()
+    assert posted["ok"] is True
+    assert posted["channel"] == cid
+    assert posted["message"]["text"] == "shipping now"
+    assert posted["ts"] == posted["message"]["ts"]
+    hist = wclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()
+    assert posted["ts"] in [m["ts"] for m in hist["messages"]]
+
+
+def test_post_message_to_an_unreadable_channel_is_channel_not_found(wclient, tokens):
+    # Slack's non-leaking answer: a caller who cannot see the channel is told it does not exist
+    # rather than that they lack permission. Quoted from the spec's chat.postMessage error enum.
+    h = _uh(tokens, "bob@acme.com")
+    cid = synth.slack_channel_id("people-confidential")
+    j = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "hello"}
+    ).json()
+    assert j == {"ok": False, "error": "channel_not_found"}
+
+
+def test_post_message_with_no_text_is_no_text(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    j = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": ""}
+    ).json()
+    assert j == {"ok": False, "error": "no_text"}
+
+
+def test_post_message_without_text_at_all_is_invalid_arguments(wclient, tokens):
+    # `_missing_argument`'s existing split: an absent argument is about the request the client
+    # built, an empty one is about the workspace. Slack answers them differently and clients
+    # branch on it.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    j = wclient.post("/slack/api/chat.postMessage", headers=h, data={"channel": cid}).json()
+    assert j == {"ok": False, "error": "invalid_arguments"}
+
+
+def test_post_message_answers_over_get_too(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    j = wclient.get(
+        "/slack/api/chat.postMessage", headers=h, params={"channel": cid, "text": "over get"}
+    ).json()
+    assert j["ok"] is True
+
+
+def test_post_message_needs_a_credential(wclient):
+    cid = synth.slack_channel_id("incidents")
+    j = wclient.post("/slack/api/chat.postMessage", data={"channel": cid, "text": "anon"}).json()
+    assert j == {"ok": False, "error": "not_authed"}
+
+
+def test_posting_does_not_silently_join_a_public_channel(wclient, tokens):
+    # Membership is derived from having spoken, so the row just written would join the poster.
+    # Real Slack does not join you when you post through the API.
+    h = _uh(tokens, "bob@acme.com")
+    cid = synth.slack_channel_id("eng-announcements")
+    before = wclient.post("/slack/api/conversations.info", headers=h, data={"channel": cid}).json()
+    assert before["channel"]["is_member"] is False
+    wclient.post("/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "hi"})
+    after = wclient.post("/slack/api/conversations.info", headers=h, data={"channel": cid}).json()
+    assert after["channel"]["is_member"] is False
+
+
+def test_post_ephemeral_stores_nothing(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    before = wclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    j = wclient.post(
+        "/slack/api/chat.postEphemeral",
+        headers=h,
+        data={"channel": cid, "user": synth.slack_user_id("bob@acme.com"), "text": "just you"},
+    ).json()
+    assert j["ok"] is True and j["message_ts"]
+    after = wclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    assert len(after) == len(before)
+
+
+def test_the_service_token_posts_as_a_bot(wclient, admin_h):
+    # auth.test already answers the service token as USERVICE0 by analogy to a bot token; a
+    # message it writes carries the same identity and the subtype real Slack gives an app post.
+    # A client that calls auth.test and matches user_id against message authors -- the use case
+    # auth.test's own docstring names -- has to find this message.
+    cid = synth.slack_channel_id("incidents")
+    j = wclient.post(
+        "/slack/api/chat.postMessage", headers=admin_h, data={"channel": cid, "text": "from ci"}
+    ).json()
+    assert j["ok"] is True
+    assert j["message"]["subtype"] == "bot_message"
+    assert j["message"]["user"] == "USERVICE0"
+    me = wclient.post("/slack/api/auth.test", headers=admin_h).json()
+    assert me["user_id"] == j["message"]["user"]
+    hist = wclient.post(
+        "/slack/api/conversations.history", headers=admin_h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    posted = [m for m in hist if m["ts"] == j["ts"]][0]
+    assert posted["user"] == "USERVICE0" and posted["subtype"] == "bot_message"
+    # A bot message carries no client_msg_id or blocks -- the client that would have minted them
+    # is Slack itself. `_message` already draws that line off `subtype`.
+    assert "client_msg_id" not in posted
+
+
+def test_a_posted_message_is_visible_only_where_the_channel_is(wclient, tokens):
+    # The ACL rows a write copies are the channel's own, so a post into a private channel is as
+    # private as the channel. Written by a member; read by somebody outside it.
+    inside = _uh(tokens, "hana@acme.com")
+    cid = synth.slack_channel_id("people-confidential")
+    posted = wclient.post(
+        "/slack/api/chat.postMessage",
+        headers=inside,
+        data={"channel": cid, "text": "confidential addendum"},
+    ).json()
+    assert posted["ok"] is True
+    outside = _uh(tokens, "bob@acme.com")
+    hits = wclient.post(
+        "/slack/api/search.messages", headers=outside, data={"query": "confidential addendum"}
+    ).json()
+    assert hits["messages"]["matches"] == []
+    mine = wclient.post(
+        "/slack/api/search.messages", headers=inside, data={"query": "confidential addendum"}
+    ).json()
+    assert posted["ts"] in [m["ts"] for m in mine["messages"]["matches"]]

@@ -1,8 +1,50 @@
 {
   "source": "slack",
   "endpoint": "https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json",
-  "measured": "2026-09-01",
+  "measured": "2026-09-06",
   "acknowledged": [
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /chat.delete",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API answers this method over BOTH GET and POST. Every one of the nine write and write-adjacent methods answers `missing_scope` rather than `unknown_method` on both verbs with a read-only token, so the method and the verb are recognised; `chat.getPermalink`, whose scope that token holds, reaches argument validation on both. Slack's published spec documents one verb per method, and of the search methods only `search.messages`, so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /chat.postEphemeral",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API answers this method over BOTH GET and POST. Every one of the nine write and write-adjacent methods answers `missing_scope` rather than `unknown_method` on both verbs with a read-only token, so the method and the verb are recognised; `chat.getPermalink`, whose scope that token holds, reaches argument validation on both. Slack's published spec documents one verb per method, and of the search methods only `search.messages`, so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /chat.postMessage",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API answers this method over BOTH GET and POST. Every one of the nine write and write-adjacent methods answers `missing_scope` rather than `unknown_method` on both verbs with a read-only token, so the method and the verb are recognised; `chat.getPermalink`, whose scope that token holds, reaches argument validation on both. Slack's published spec documents one verb per method, and of the search methods only `search.messages`, so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /chat.update",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API answers this method over BOTH GET and POST. Every one of the nine write and write-adjacent methods answers `missing_scope` rather than `unknown_method` on both verbs with a read-only token, so the method and the verb are recognised; `chat.getPermalink`, whose scope that token holds, reaches argument validation on both. Slack's published spec documents one verb per method, and of the search methods only `search.messages`, so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /reactions.add",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API answers this method over BOTH GET and POST. Every one of the nine write and write-adjacent methods answers `missing_scope` rather than `unknown_method` on both verbs with a read-only token, so the method and the verb are recognised; `chat.getPermalink`, whose scope that token holds, reaches argument validation on both. Slack's published spec documents one verb per method, and of the search methods only `search.messages`, so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "GET /reactions.remove",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API answers this method over BOTH GET and POST. Every one of the nine write and write-adjacent methods answers `missing_scope` rather than `unknown_method` on both verbs with a read-only token, so the method and the verb are recognised; `chat.getPermalink`, whose scope that token holds, reaches argument validation on both. Slack's published spec documents one verb per method, and of the search methods only `search.messages`, so its silence is not evidence of absence."
+    },
     {
       "kind": "extra_operation",
       "severity": "breaking",
@@ -30,6 +72,13 @@
       "path": "POST /auth.test",
       "detail": "the vendor's spec declares no such operation",
       "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /chat.getPermalink",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API answers this method over BOTH GET and POST. Every one of the nine write and write-adjacent methods answers `missing_scope` rather than `unknown_method` on both verbs with a read-only token, so the method and the verb are recognised; `chat.getPermalink`, whose scope that token holds, reaches argument validation on both. Slack's published spec documents one verb per method, and of the search methods only `search.messages`, so its silence is not evidence of absence."
     },
     {
       "kind": "extra_operation",
@@ -69,6 +118,20 @@
     {
       "kind": "extra_operation",
       "severity": "breaking",
+      "path": "POST /reactions.get",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API answers this method over BOTH GET and POST. Every one of the nine write and write-adjacent methods answers `missing_scope` rather than `unknown_method` on both verbs with a read-only token, so the method and the verb are recognised; `chat.getPermalink`, whose scope that token holds, reaches argument validation on both. Slack's published spec documents one verb per method, and of the search methods only `search.messages`, so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
+      "path": "POST /reactions.list",
+      "detail": "the vendor's spec declares no such operation",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API answers this method over BOTH GET and POST. Every one of the nine write and write-adjacent methods answers `missing_scope` rather than `unknown_method` on both verbs with a read-only token, so the method and the verb are recognised; `chat.getPermalink`, whose scope that token holds, reaches argument validation on both. Slack's published spec documents one verb per method, and of the search methods only `search.messages`, so its silence is not evidence of absence."
+    },
+    {
+      "kind": "extra_operation",
+      "severity": "breaking",
       "path": "POST /search.all",
       "detail": "the vendor's spec declares no such operation",
       "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
@@ -102,112 +165,1201 @@
       "note": "Measured against slack.com on 2026-09-01: the real Web API answers 200/ok for this method over BOTH GET and POST. Slack's published spec documents one verb per method, and of the search methods only `search.messages` \u2014 `search.all` and `search.files` are absent \u2014 so its silence is not evidence of absence."
     },
     {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /chat.delete?channel",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /chat.delete?ts",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /chat.postEphemeral?channel",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /chat.postEphemeral?text",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /chat.postEphemeral?user",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /chat.postMessage?channel",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /chat.postMessage?text",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /chat.update?channel",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /chat.update?text",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /chat.update?ts",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /reactions.add?channel",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /reactions.add?name",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /reactions.add?timestamp",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /reactions.remove?channel",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /reactions.remove?name",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
+      "kind": "extra_param",
+      "severity": "breaking",
+      "path": "POST /reactions.remove?timestamp",
+      "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
+      "note": "Measured against slack.com on 2026-09-06: the real Web API reads an argument from the QUERY STRING on a POST exactly as it reads one from the form body. `POST chat.getPermalink` with no arguments answers `invalid_arguments`; with `channel` and `message_ts` in the query string it answers `channel_not_found`, the same answer it gives with them in the body. The vendor's spec documents only the body location, which is the spec being incomplete rather than Backlot inventing a parameter. Backlot reads every argument query-or-form through `_param`, so a client written against either location works against both."
+    },
+    {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.apps.approved.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.apps.requests.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.apps.restricted.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.conversations.ekm.listOriginalConnectedChannelInfo",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.conversations.getConversationPrefs",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.conversations.getTeams",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.conversations.restrictAccess.listGroups",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.conversations.search",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.emoji.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.inviteRequests.approved.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.inviteRequests.denied.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.inviteRequests.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.teams.admins.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.teams.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.teams.owners.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.teams.settings.info",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.usergroups.listChannels",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
     },
     {
       "kind": "missing_operation",
       "severity": "gap",
       "path": "GET /admin.users.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.event.authorizations.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.info",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.request",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.resources.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.scopes.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.users.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.permissions.users.request",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /apps.uninstall",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /auth.revoke",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Revokes the calling token. A Backlot token is a line in `tokens.yaml` rather than something the server issued, so revoking one at runtime would make the served surface disagree with the file that defines it."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /bots.info",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /calls.info",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The Calls API registers a third-party call in Slack. A corpus records what was said, not a live or ended call in another product, so there is nothing for these to register."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /chat.scheduledMessages.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Lists scheduled messages. Nothing can be scheduled \u2014 see `chat.scheduleMessage`."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /dialog.open",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The app and interactivity platform: modals, dialogs and Workflow Builder steps. Each one acts on an interaction Slack delivered to an app over a socket or a request URL, and Backlot serves no app and receives no interaction, so there is no state for these to act on."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /dnd.info",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /dnd.teamInfo",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /emoji.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /files.info",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /files.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /files.remote.info",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /files.remote.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /files.remote.share",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /migration.exchange",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /oauth.access",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /oauth.token",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /oauth.v2.access",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /pins.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /reminders.info",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /reminders.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /rtm.connect",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Installed-app lifecycle: permissions, token exchange, workspace migration and the RTM socket. Backlot authenticates a caller as a person from `tokens.yaml` rather than as an installed app, so there is no installation for these to describe."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /stars.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Slack replaced stars with saved items and the `stars.*` methods appear to be retired. Deliberately NOT implemented on that basis alone: verify against the vendor before either serving these or recording them as gone. This note is the open question, not the answer."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /team.accessLogs",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /team.billableInfo",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /team.info",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /team.integrationLogs",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /team.profile.get",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /usergroups.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /usergroups.users.list",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /users.conversations",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The channels a user is in. Backlot can answer it \u2014 membership is `store.slack_membership` over the channel list \u2014 and it is how an agent finds its own channels, so it is ranked with the free-riding reads rather than declined."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /users.getPresence",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Presence is live state. Backlot serves a fixed corpus, so there is nothing to report and reporting a constant would tell a client something untrue about every person in it."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /users.identity",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The Sign in with Slack identity. It reports what an OAuth identity token was issued for, and Backlot issues none: a caller authenticates with a token from `tokens.yaml`, whose identity `auth.test` already reports."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /users.lookupByEmail",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Resolves an address to a user. Backlot knows every corpus address, so this is cheap and is ranked with the other free-riding reads rather than declined."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /users.profile.get",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The profile object alone. `users.info` already serves it nested under `user.profile`, built from the same roster row, so this is a second spelling of a served fact rather than a gap in what Backlot knows. Cheap to add."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /views.open",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The app and interactivity platform: modals, dialogs and Workflow Builder steps. Each one acts on an interaction Slack delivered to an app over a socket or a request URL, and Backlot serves no app and receives no interaction, so there is no state for these to act on."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /views.publish",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The app and interactivity platform: modals, dialogs and Workflow Builder steps. Each one acts on an interaction Slack delivered to an app over a socket or a request URL, and Backlot serves no app and receives no interaction, so there is no state for these to act on."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /views.push",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The app and interactivity platform: modals, dialogs and Workflow Builder steps. Each one acts on an interaction Slack delivered to an app over a socket or a request URL, and Backlot serves no app and receives no interaction, so there is no state for these to act on."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /views.update",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The app and interactivity platform: modals, dialogs and Workflow Builder steps. Each one acts on an interaction Slack delivered to an app over a socket or a request URL, and Backlot serves no app and receives no interaction, so there is no state for these to act on."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /workflows.stepCompleted",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The app and interactivity platform: modals, dialogs and Workflow Builder steps. Each one acts on an interaction Slack delivered to an app over a socket or a request URL, and Backlot serves no app and receives no interaction, so there is no state for these to act on."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /workflows.stepFailed",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The app and interactivity platform: modals, dialogs and Workflow Builder steps. Each one acts on an interaction Slack delivered to an app over a socket or a request URL, and Backlot serves no app and receives no interaction, so there is no state for these to act on."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "GET /workflows.updateStep",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The app and interactivity platform: modals, dialogs and Workflow Builder steps. Each one acts on an interaction Slack delivered to an app over a socket or a request URL, and Backlot serves no app and receives no interaction, so there is no state for these to act on."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.apps.approve",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.apps.restrict",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.archive",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.convertToPrivate",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.create",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.delete",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.disconnectShared",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.invite",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.rename",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.restrictAccess.addGroup",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.restrictAccess.removeGroup",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.setConversationPrefs",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.setTeams",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.conversations.unarchive",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.emoji.add",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.emoji.addAlias",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.emoji.remove",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.emoji.rename",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.inviteRequests.approve",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.inviteRequests.deny",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.create",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.settings.setDefaultChannels",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.settings.setDescription",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.settings.setDiscoverability",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.settings.setIcon",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.teams.settings.setName",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.usergroups.addChannels",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.usergroups.addTeams",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.usergroups.removeChannels",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.assign",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.invite",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.remove",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.session.invalidate",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.session.reset",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.setAdmin",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.setExpiration",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.setOwner",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /admin.users.setRegular",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Enterprise Grid administration. It manages workspaces, teams and org-wide user state inside one Grid org; a Backlot corpus expresses a single workspace and has no second team for an operation like this to move anything between. Out of scope until a corpus can say what a Grid org is."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /calls.add",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The Calls API registers a third-party call in Slack. A corpus records what was said, not a live or ended call in another product, so there is nothing for these to register."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /calls.end",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The Calls API registers a third-party call in Slack. A corpus records what was said, not a live or ended call in another product, so there is nothing for these to register."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /calls.participants.add",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The Calls API registers a third-party call in Slack. A corpus records what was said, not a live or ended call in another product, so there is nothing for these to register."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /calls.participants.remove",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The Calls API registers a third-party call in Slack. A corpus records what was said, not a live or ended call in another product, so there is nothing for these to register."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /calls.update",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "The Calls API registers a third-party call in Slack. A corpus records what was said, not a live or ended call in another product, so there is nothing for these to register."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.deleteScheduledMessage",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Cancels a scheduled message. Nothing can be scheduled \u2014 see `chat.scheduleMessage`."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.meMessage",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Posts a `/me` message. It is `chat.postMessage` with the `me_message` subtype and would cost little on top of the write surface; ranked behind the methods a client reaches for first rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.scheduleMessage",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Posts at a future time. The overlay dies with the server and nothing in Backlot runs on a clock, so a scheduled message would either never arrive or arrive immediately \u2014 both answers a client can be written against wrongly. Serving the three scheduling methods means a scheduler, which is its own piece of work."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /chat.unfurl",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Attaches an unfurl to a link an app was notified about. Backlot serves no app and delivers no link_shared event, so there is no unfurl for this to attach to."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.archive",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Planned, not declined. `topic`, `purpose`, `is_archived` and `creator` are constants in `routers.slack._channel_core` today, and these are the writes that would give them meaning. `conversations.create` is the one with a real question behind it: a new channel needs an ACL grant, which decides who can read what an agent made."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.close",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Closes a direct or group message. A Backlot corpus models channels only, so there is no conversation for this to close."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.create",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Planned, not declined. `topic`, `purpose`, `is_archived` and `creator` are constants in `routers.slack._channel_core` today, and these are the writes that would give them meaning. `conversations.create` is the one with a real question behind it: a new channel needs an ACL grant, which decides who can read what an agent made."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.invite",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Planned, not declined. Channel membership became expressible with the write overlay: `store.slack_membership` answers in / out / derived, and `ov.slack_acl` can grant and revoke, which is what an invite into a PRIVATE channel actually is \u2014 a private channel's members are its ACL grantees. The read side already honours all of it; these four are the endpoints."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.join",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Planned, not declined. Channel membership became expressible with the write overlay: `store.slack_membership` answers in / out / derived, and `ov.slack_acl` can grant and revoke, which is what an invite into a PRIVATE channel actually is \u2014 a private channel's members are its ACL grantees. The read side already honours all of it; these four are the endpoints."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.kick",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Planned, not declined. Channel membership became expressible with the write overlay: `store.slack_membership` answers in / out / derived, and `ov.slack_acl` can grant and revoke, which is what an invite into a PRIVATE channel actually is \u2014 a private channel's members are its ACL grantees. The read side already honours all of it; these four are the endpoints."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.leave",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Planned, not declined. Channel membership became expressible with the write overlay: `store.slack_membership` answers in / out / derived, and `ov.slack_acl` can grant and revoke, which is what an invite into a PRIVATE channel actually is \u2014 a private channel's members are its ACL grantees. The read side already honours all of it; these four are the endpoints."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.mark",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Planned, not declined. `topic`, `purpose`, `is_archived` and `creator` are constants in `routers.slack._channel_core` today, and these are the writes that would give them meaning. `conversations.create` is the one with a real question behind it: a new channel needs an ACL grant, which decides who can read what an agent made."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.open",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Opens a direct or group message. A Backlot corpus models channels only, so there is no conversation for this to open \u2014 the same reason `conversations.list` selects nothing for `types=im,mpim`, which is what real Slack answers for a workspace with no DMs."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.rename",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Planned, not declined. `topic`, `purpose`, `is_archived` and `creator` are constants in `routers.slack._channel_core` today, and these are the writes that would give them meaning. `conversations.create` is the one with a real question behind it: a new channel needs an ACL grant, which decides who can read what an agent made."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.setPurpose",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Planned, not declined. `topic`, `purpose`, `is_archived` and `creator` are constants in `routers.slack._channel_core` today, and these are the writes that would give them meaning. `conversations.create` is the one with a real question behind it: a new channel needs an ACL grant, which decides who can read what an agent made."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.setTopic",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Planned, not declined. `topic`, `purpose`, `is_archived` and `creator` are constants in `routers.slack._channel_core` today, and these are the writes that would give them meaning. `conversations.create` is the one with a real question behind it: a new channel needs an ACL grant, which decides who can read what an agent made."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /conversations.unarchive",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Planned, not declined. `topic`, `purpose`, `is_archived` and `creator` are constants in `routers.slack._channel_core` today, and these are the writes that would give them meaning. `conversations.create` is the one with a real question behind it: a new channel needs an ACL grant, which decides who can read what an agent made."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /dnd.endDnd",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /dnd.endSnooze",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /dnd.setSnooze",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.comments.delete",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.delete",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.remote.add",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.remote.remove",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.remote.update",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.revokePublicURL",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.sharedPublicURL",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /files.upload",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers ok with no matches. Serving these means inventing a file store, its ids and its sharing model, which is its own piece of work rather than part of the message write surface."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /pins.add",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /pins.remove",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /reminders.add",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /reminders.complete",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /reminders.delete",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /stars.add",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Slack replaced stars with saved items and the `stars.*` methods appear to be retired. Deliberately NOT implemented on that basis alone: verify against the vendor before either serving these or recording them as gone. This note is the open question, not the answer."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /stars.remove",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Slack replaced stars with saved items and the `stars.*` methods appear to be retired. Deliberately NOT implemented on that basis alone: verify against the vendor before either serving these or recording them as gone. This note is the open question, not the answer."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /usergroups.create",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /usergroups.disable",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /usergroups.enable",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /usergroups.update",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /usergroups.users.update",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "A self-contained entity family Backlot serves neither the read nor the write half of. Each is cheap on its own and none carries an ACL decision the corpus can express, so they are ranked behind the message surface rather than ruled out."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /users.deletePhoto",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Profile photos. No corpus states one, so there is nothing to delete."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /users.profile.set",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Edits a profile. A Backlot identity comes from the corpus roster and its display name is what the corpus said; a served edit would make the roster and the served profile disagree about the same person. Expressible with the overlay, and worth doing only alongside the read half."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /users.setActive",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Marks the caller active, which is presence. Backlot has no live state \u2014 see `users.setPresence`."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /users.setPhoto",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Profile photos. No corpus states one, so there is nothing to replace."
+    },
+    {
+      "kind": "missing_operation",
+      "severity": "gap",
+      "path": "POST /users.setPresence",
+      "detail": "the vendor serves it; Backlot does not",
+      "note": "Presence is live state \u2014 who is at their keyboard right now. Backlot serves a fixed corpus and has no such state, which is also why `users.getPresence` is not served."
     },
     {
       "kind": "missing_param",
@@ -222,88 +1374,18 @@
       "detail": "the vendor accepts it; Backlot does not"
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /apps.event.authorizations.list",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /apps.permissions.info",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /apps.permissions.request",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /apps.permissions.resources.list",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /apps.permissions.scopes.list",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /apps.permissions.users.list",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /apps.permissions.users.request",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /apps.uninstall",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /auth.revoke",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /bots.info",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /calls.info",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /chat.getPermalink",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /chat.scheduledMessages.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "GET /chat.getPermalink?token",
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Slack accepts the credential as a `token` argument as well as a bearer header, and Backlot honours all three forms (`auth.slack_token`). It is not declared in the served OpenAPI because it is a credential rather than a query parameter a generated client should bind \u2014 the same choice every other method here makes."
     },
     {
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /conversations.history?token",
-      "detail": "the vendor accepts it; Backlot does not"
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Slack accepts the credential as a `token` argument as well as a bearer header, and Backlot honours all three forms (`auth.slack_token`). It is not declared in the served OpenAPI because it is a credential rather than a query parameter a generated client should bind \u2014 the same choice every other method here makes."
     },
     {
       "kind": "missing_param",
@@ -315,7 +1397,8 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /conversations.info?token",
-      "detail": "the vendor accepts it; Backlot does not"
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Slack accepts the credential as a `token` argument as well as a bearer header, and Backlot honours all three forms (`auth.slack_token`). It is not declared in the served OpenAPI because it is a credential rather than a query parameter a generated client should bind \u2014 the same choice every other method here makes."
     },
     {
       "kind": "missing_param",
@@ -327,7 +1410,8 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /conversations.list?token",
-      "detail": "the vendor accepts it; Backlot does not"
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Slack accepts the credential as a `token` argument as well as a bearer header, and Backlot honours all three forms (`auth.slack_token`). It is not declared in the served OpenAPI because it is a credential rather than a query parameter a generated client should bind \u2014 the same choice every other method here makes."
     },
     {
       "kind": "missing_param",
@@ -345,7 +1429,8 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /conversations.members?token",
-      "detail": "the vendor accepts it; Backlot does not"
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Slack accepts the credential as a `token` argument as well as a bearer header, and Backlot honours all three forms (`auth.slack_token`). It is not declared in the served OpenAPI because it is a credential rather than a query parameter a generated client should bind \u2014 the same choice every other method here makes."
     },
     {
       "kind": "missing_param",
@@ -381,121 +1466,78 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /conversations.replies?token",
-      "detail": "the vendor accepts it; Backlot does not"
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Slack accepts the credential as a `token` argument as well as a bearer header, and Backlot honours all three forms (`auth.slack_token`). It is not declared in the served OpenAPI because it is a credential rather than a query parameter a generated client should bind \u2014 the same choice every other method here makes."
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /dialog.open",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "GET /reactions.get?file",
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Addresses a FILE rather than a message. Backlot has no uploaded-file corpus \u2014 files exist only as message attachments, which is why `search.files` answers empty \u2014 so there is nothing for this to name."
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /dnd.info",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "GET /reactions.get?file_comment",
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Addresses a comment on a FILE. Backlot has no uploaded-file corpus, so there is nothing for this to name."
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /dnd.teamInfo",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "GET /reactions.get?full",
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Asks for the complete item rather than a reference. Backlot serves the complete message either way, built by the same `_message` that `conversations.history` uses, so there is no reduced form for this to switch off."
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /emoji.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "GET /reactions.get?token",
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Slack accepts the credential as a `token` argument as well as a bearer header, and Backlot honours all three forms (`auth.slack_token`). It is not declared in the served OpenAPI because it is a credential rather than a query parameter a generated client should bind \u2014 the same choice every other method here makes."
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /files.info",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "GET /reactions.list?cursor",
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Cursor paging on this method. Backlot pages it with `count` alone."
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /files.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "GET /reactions.list?full",
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Asks for the complete item rather than a reference. Backlot serves the complete message either way, built by the same `_message` that `conversations.history` uses, so there is no reduced form for this to switch off."
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /files.remote.info",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "GET /reactions.list?limit",
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Cursor paging on this method. Backlot pages it with `count` alone."
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /files.remote.list",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "GET /reactions.list?page",
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Page paging on this method. Backlot pages it with `count` alone."
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /files.remote.share",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "GET /reactions.list?token",
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Slack accepts the credential as a `token` argument as well as a bearer header, and Backlot honours all three forms (`auth.slack_token`). It is not declared in the served OpenAPI because it is a credential rather than a query parameter a generated client should bind \u2014 the same choice every other method here makes."
     },
     {
-      "kind": "missing_operation",
+      "kind": "missing_param",
       "severity": "gap",
-      "path": "GET /migration.exchange",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /oauth.access",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /oauth.token",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /oauth.v2.access",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /pins.list",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /reactions.get",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /reactions.list",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /reminders.info",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /reminders.list",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /rtm.connect",
-      "detail": "the vendor serves it; Backlot does not"
+      "path": "GET /reactions.list?user",
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Reads another user's reactions. Backlot answers `reactions.list` for the caller alone: a reaction the corpus shipped carries synthesized ids the corpus never attributed to anybody, so reporting them per user would report reactions nobody in this workspace left."
     },
     {
       "kind": "missing_param",
@@ -507,73 +1549,8 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /search.messages?token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /stars.list",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /team.accessLogs",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /team.billableInfo",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /team.info",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /team.integrationLogs",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /team.profile.get",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /usergroups.list",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /usergroups.users.list",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /users.conversations",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /users.getPresence",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /users.identity",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Slack accepts the credential as a `token` argument as well as a bearer header, and Backlot honours all three forms (`auth.slack_token`). It is not declared in the served OpenAPI because it is a credential rather than a query parameter a generated client should bind \u2014 the same choice every other method here makes."
     },
     {
       "kind": "missing_param",
@@ -585,7 +1562,8 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /users.info?token",
-      "detail": "the vendor accepts it; Backlot does not"
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Slack accepts the credential as a `token` argument as well as a bearer header, and Backlot honours all three forms (`auth.slack_token`). It is not declared in the served OpenAPI because it is a credential rather than a query parameter a generated client should bind \u2014 the same choice every other method here makes."
     },
     {
       "kind": "missing_param",
@@ -597,625 +1575,8 @@
       "kind": "missing_param",
       "severity": "gap",
       "path": "GET /users.list?token",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /users.lookupByEmail",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /users.profile.get",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /views.open",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /views.publish",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /views.push",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /views.update",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /workflows.stepCompleted",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /workflows.stepFailed",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "GET /workflows.updateStep",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.apps.approve",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.apps.restrict",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.archive",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.convertToPrivate",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.create",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.delete",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.disconnectShared",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.invite",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.rename",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.restrictAccess.addGroup",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.restrictAccess.removeGroup",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.setConversationPrefs",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.setTeams",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.conversations.unarchive",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.emoji.add",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.emoji.addAlias",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.emoji.remove",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.emoji.rename",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.inviteRequests.approve",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.inviteRequests.deny",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.teams.create",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.teams.settings.setDefaultChannels",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.teams.settings.setDescription",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.teams.settings.setDiscoverability",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.teams.settings.setIcon",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.teams.settings.setName",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.usergroups.addChannels",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.usergroups.addTeams",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.usergroups.removeChannels",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.users.assign",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.users.invite",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.users.remove",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.users.session.invalidate",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.users.session.reset",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.users.setAdmin",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.users.setExpiration",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.users.setOwner",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /admin.users.setRegular",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /calls.add",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /calls.end",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /calls.participants.add",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /calls.participants.remove",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /calls.update",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /chat.delete",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /chat.deleteScheduledMessage",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /chat.meMessage",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /chat.postEphemeral",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /chat.postMessage",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /chat.scheduleMessage",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /chat.unfurl",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /chat.update",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.archive",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.close",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.create",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.invite",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.join",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.kick",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.leave",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.mark",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.open",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.rename",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.setPurpose",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.setTopic",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /conversations.unarchive",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /dnd.endDnd",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /dnd.endSnooze",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /dnd.setSnooze",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /files.comments.delete",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /files.delete",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /files.remote.add",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /files.remote.remove",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /files.remote.update",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /files.revokePublicURL",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /files.sharedPublicURL",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /files.upload",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /pins.add",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /pins.remove",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /reactions.add",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /reactions.remove",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /reminders.add",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /reminders.complete",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /reminders.delete",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /stars.add",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /stars.remove",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /usergroups.create",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /usergroups.disable",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /usergroups.enable",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /usergroups.update",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /usergroups.users.update",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /users.deletePhoto",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /users.profile.set",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /users.setActive",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /users.setPhoto",
-      "detail": "the vendor serves it; Backlot does not"
-    },
-    {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /users.setPresence",
-      "detail": "the vendor serves it; Backlot does not"
+      "detail": "the vendor accepts it; Backlot does not",
+      "note": "Slack accepts the credential as a `token` argument as well as a bearer header, and Backlot honours all three forms (`auth.slack_token`). It is not declared in the served OpenAPI because it is a credential rather than a query parameter a generated client should bind \u2014 the same choice every other method here makes."
     }
   ]
 }

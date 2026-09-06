@@ -1,4 +1,4 @@
-"""Slack Web API (read-only).
+"""Slack Web API.
 
 Base URL for a client: ``http://<host>/slack/api/`` (methods live under ``/api/``).
 Slack always returns HTTP 200 with an ``{"ok": bool}`` envelope, so auth failures are
@@ -119,6 +119,22 @@ _P_SEARCH = [
     qp("sort_dir"),
 ]
 _P_SEARCH_FILES = [qp("query", required=True), qp("count", "integer")]
+
+# The write surface. Each lists what Backlot actually READS, the way every other `_P_` here does:
+# a param the vendor documents but Backlot ignores stays an acknowledged gap in the fidelity
+# baseline rather than a declaration that promises behaviour it does not have.
+_P_POST_MESSAGE = [qp("channel", required=True), qp("text", required=True)]
+_P_POST_EPHEMERAL = [
+    qp("channel", required=True),
+    qp("user", required=True),
+    qp("text", required=True),
+]
+_P_UPDATE = [qp("channel", required=True), qp("ts", required=True), qp("text", required=True)]
+_P_DELETE = [qp("channel", required=True), qp("ts", required=True)]
+_P_PERMALINK = [qp("channel", required=True), qp("message_ts", required=True)]
+_P_REACTION = [qp("channel"), qp("timestamp"), qp("name", required=True)]
+_P_REACTION_GET = [qp("channel"), qp("timestamp")]
+_P_REACTION_LIST = [qp("count", "integer")]
 
 # conversations.history page cap (thread roots). Slack recommends limit<=200; capping here bounds
 # how many authors a client resolves per call so history stays fast even with a small users.list.
@@ -976,7 +992,9 @@ def _writable_channel(request: Request, conn, caller: Caller):
     return name, None
 
 
-@router.api_route("/chat.postMessage", methods=["GET", "POST"])
+@router.api_route(
+    "/chat.postMessage", methods=["GET", "POST"], openapi_extra={"parameters": _P_POST_MESSAGE}
+)
 async def chat_post_message(request: Request):
     """Post a message to a channel.
 
@@ -1035,7 +1053,9 @@ async def chat_post_message(request: Request):
     }
 
 
-@router.api_route("/chat.postEphemeral", methods=["GET", "POST"])
+@router.api_route(
+    "/chat.postEphemeral", methods=["GET", "POST"], openapi_extra={"parameters": _P_POST_EPHEMERAL}
+)
 async def chat_post_ephemeral(request: Request):
     """A message only one user sees.
 
@@ -1081,7 +1101,7 @@ def _own_message(request: Request, conn, caller: Caller, ts_param: str, refusal:
     return name, ts, row, None
 
 
-@router.api_route("/chat.update", methods=["GET", "POST"])
+@router.api_route("/chat.update", methods=["GET", "POST"], openapi_extra={"parameters": _P_UPDATE})
 async def chat_update(request: Request):
     """Edit a message's text.
 
@@ -1130,7 +1150,7 @@ async def chat_update(request: Request):
     }
 
 
-@router.api_route("/chat.delete", methods=["GET", "POST"])
+@router.api_route("/chat.delete", methods=["GET", "POST"], openapi_extra={"parameters": _P_DELETE})
 async def chat_delete(request: Request):
     """Delete a message.
 
@@ -1156,7 +1176,9 @@ async def chat_delete(request: Request):
     return {"ok": True, "channel": synth.slack_channel_id(name), "ts": ts}
 
 
-@router.api_route("/chat.getPermalink", methods=["GET", "POST"])
+@router.api_route(
+    "/chat.getPermalink", methods=["GET", "POST"], openapi_extra={"parameters": _P_PERMALINK}
+)
 async def chat_get_permalink(request: Request):
     """A message's archive URL.
 
@@ -1211,7 +1233,9 @@ def _reaction_target(request: Request, conn, caller: Caller):
     return name, ts, row, None
 
 
-@router.api_route("/reactions.add", methods=["GET", "POST"])
+@router.api_route(
+    "/reactions.add", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION}
+)
 async def reactions_add(request: Request):
     """Add an emoji reaction to a message.
 
@@ -1254,7 +1278,9 @@ async def reactions_add(request: Request):
     return {"ok": True}
 
 
-@router.api_route("/reactions.remove", methods=["GET", "POST"])
+@router.api_route(
+    "/reactions.remove", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION}
+)
 async def reactions_remove(request: Request):
     """Remove one of the caller's own reactions.
 
@@ -1289,7 +1315,9 @@ async def reactions_remove(request: Request):
     return {"ok": True}
 
 
-@router.api_route("/reactions.get", methods=["GET", "POST"])
+@router.api_route(
+    "/reactions.get", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION_GET}
+)
 async def reactions_get(request: Request):
     """A message with its reactions.
 
@@ -1314,7 +1342,9 @@ async def reactions_get(request: Request):
     }
 
 
-@router.api_route("/reactions.list", methods=["GET", "POST"])
+@router.api_route(
+    "/reactions.list", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION_LIST}
+)
 async def reactions_list(request: Request):
     """Items the caller has reacted to.
 

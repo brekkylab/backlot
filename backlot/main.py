@@ -1,7 +1,8 @@
 """FastAPI app hosting every emulated vendor API under path prefixes.
 
 Startup opens the read-only corpus DB, attaches the writable mutation overlay to it, loads the
-ACL/token map, and starts a background cache warm-up.
+ACL/token map, and starts a background cache warm-up. The corpus file is never opened writable —
+see `backlot/overlay.py`.
 """
 
 from __future__ import annotations

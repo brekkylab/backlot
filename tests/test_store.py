@@ -1,4 +1,4 @@
-"""Tests for the read-only SQLite store layer (`backlot.store`).
+"""Tests for the SQLite store layer (`backlot.store`).
 
 The store is shared by every router, search, and the importers, so it gets its own file rather
 than being verified incidentally through a load/route test. Registry wiring is checked across
@@ -7,6 +7,10 @@ tuning uses hand-built / SAMPLE DBs.
 
 ACL-filtered reads live in test_acl.py (the ACL is the subject there) and FTS search in
 test_search.py (search is its own sub-domain); this file covers the plain store surface.
+
+The corpus connection is read-only and stays that way. Writes go to the attached overlay, and the
+merge that reads corpus and overlay as one is `store.merged_source`; the overlay module itself is
+covered by test_overlay.py.
 """
 
 import json

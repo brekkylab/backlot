@@ -1070,9 +1070,9 @@ def comment_bodies(fclient, filter_literal, root="comments") -> list[str]:
 
 FIRST, SECOND = "first note", "second note"
 BOTH = [FIRST, SECOND]
-# Every cell is one answer api.linear.app gave on 2026-09-06 over two throwaway comments (`zz-c1` on
-# BRE-1, `zz-c2` on BRE-2) in a workspace holding no others; A is the first comment's body and B the
-# second's id. The fixture's two comments, `first note` on ENG-1 and `second note` on ENG-2, stand in,
+# Every cell is one answer api.linear.app gave over two throwaway comments (`zz-c1` on BRE-1, `zz-c2`
+# on BRE-2) in a workspace holding no others, on 2026-09-06 except the `and` row, measured 2026-09-04;
+# A is the first comment's body and B the second's id. The fixture's two comments, `first note` on ENG-1 and `second note` on ENG-2, stand in,
 # and share the substring `note` where the workspace pair shared `zz-c`.
 _COMMENT_OR_CELLS = [
     # the keys of one `or` branch are alternatives; outside an `or`, and under `and`, they AND
@@ -1090,6 +1090,15 @@ _COMMENT_OR_CELLS = [
     ('{or: [{body: null}, {id: {eq: "%(B)s"}}]}', [SECOND]),
     ('{or: [{and: []}, {id: {eq: "%(B)s"}}]}', [SECOND]),
     ('{or: [{or: []}, {id: {eq: "%(B)s"}}]}', [SECOND]),
+    ('{or: [{}], id: {eq: "%(B)s"}}', [SECOND]),
+    ('{and: [{}], id: {eq: "%(B)s"}}', [SECOND]),
+    # ... but an `and` / `or` whose every branch is dropped constrains nothing, and so makes an
+    # enclosing `or` constrain nothing, while a key beside it and an enclosing `and` still apply
+    ('{or: [{or: [{}]}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{and: [{}]}, {id: {eq: "%(B)s"}}]}', BOTH),
+    ('{or: [{or: [{}]}], id: {eq: "%(B)s"}}', [SECOND]),
+    ('{or: [{and: [{}]}], id: {eq: "%(B)s"}}', [SECOND]),
+    ('{and: [{or: [{}]}, {id: {eq: "%(B)s"}}]}', [SECOND]),
     # a branch whose key constrains nothing makes the whole `or` constrain nothing; a key beside
     # the `or` still applies, and under `and` such a branch is dropped
     ("{body: {}}", BOTH),
@@ -1113,8 +1122,8 @@ def test_comment_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
     """Linear's `or` on `CommentFilter` is the `or` `_issue_parts` compiles: the keys of one branch
     are alternatives, a branch with nothing in it is dropped, and a branch whose key constrains
     nothing makes the whole `or` constrain nothing. Compiling a branch as one conjunction, as this
-    router did until #136, answered `{or: [{body: {eq: A}, id: {eq: B}}]}` with no comment where
-    Linear answers two, and nothing in the well-formed empty list said so."""
+    router used to, answered `{or: [{body: {eq: A}, id: {eq: B}}]}` with no comment where Linear
+    answers two, and nothing in the well-formed empty list said so."""
     assert comment_bodies(fclient, literal) == expected
 
 
@@ -1389,6 +1398,16 @@ _LABEL_CELLS = [
     ('{some: {or: [{name: {}, and: []}, {name: {eq: "gateway"}}]}}', EVERY),
     ("{some: {or: [{name: {}, or: []}]}}", {L2, L1}),
     ('{some: {or: [{name: {}, or: []}, {name: {eq: "gateway"}}]}}', {L2, L1}),
+    # and such a branch still carries its polarity, read from the branch as written: with a negative
+    # key it is a negative predicate every label satisfies, so the label-less issues qualify too
+    ('{some: {or: [{name: {}, and: [{name: {neq: "gateway"}}]}]}}', EVERY),
+    ('{some: {or: [{name: {}, or: [{name: {neq: "gateway"}}]}]}}', EVERY),
+    ('{every: {or: [{name: {}, and: [{name: {neq: "gateway"}}]}]}}', EVERY),
+    ('{every: {or: [{name: {}, or: [{name: {neq: "gateway"}}]}]}}', EVERY),
+    ('{some: {or: [{name: {}, and: [{name: {neq: "nope"}}]}]}}', EVERY),
+    ('{some: {or: [{name: {neq: "nope"}, and: [{}]}]}}', EVERY),
+    ('{some: {or: [{name: {neq: "gateway"}, and: [{}]}]}}', EVERY),
+    ('{every: {or: [{name: {neq: "gateway"}, and: [{}]}]}}', EVERY),
     # outside an `or` branch, at the top of a quantifier and in an `and` branch, the keys AND and a
     # key that constrains nothing is not read (measured 2026-09-06, same fixture)
     ('{some: {name: {}, and: [{name: {eq: "nope"}}]}}', set()),

@@ -24,6 +24,7 @@ it. JSON columns are TEXT — read with :func:`jcol`.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 from collections.abc import Callable, Iterator
@@ -1019,7 +1020,7 @@ def _acl_clause(
     )
 
 
-def merged_source(conn, source_type: str) -> str:
+def merged_source(conn, source_type: str, alias: str | None = None) -> str:
     """What a query over this source's documents should read FROM.
 
     For a source outside :data:`WRITABLE`, or with no overlay attached, this is the table name and
@@ -1028,8 +1029,10 @@ def merged_source(conn, source_type: str) -> str:
     **aliased to the corpus table's own name**.
 
     The alias is not cosmetic: :func:`_acl_clause` emits ``_acl.<col> = <table>.<col>``,
-    hard-referencing that name, so the alias is what lets fourteen readers keep their ACL clause
-    verbatim and makes the substitution one token per query.
+    hard-referencing whatever name the caller gave it, so the alias is what lets fourteen readers
+    keep their ACL clause verbatim and makes the substitution one token per query. ``alias``
+    overrides it for the one caller that already knows the table by a short name — the FTS join in
+    :func:`search_documents`, which passes ``"t"`` and an ``_acl_clause`` scoped to the same.
 
     One function rather than an inlined union per reader, and keyed on ``source_type`` rather than
     written for Slack: the tombstone and patch correlations are over :func:`id_columns`, which is
@@ -1043,8 +1046,9 @@ def merged_source(conn, source_type: str) -> str:
     from backlot import overlay  # local: overlay imports store
 
     tbl = table(source_type)
+    alias = alias or tbl
     if source_type not in WRITABLE or not overlay.is_attached(conn):
-        return tbl
+        return tbl if alias == tbl else f"{tbl} {alias}"
     names = overlay.table_names(source_type)
     patchable = PATCHABLE.get(source_type, frozenset())
     on = " AND ".join(f"x.{c} = m.{c}" for c in id_columns(source_type))
@@ -1065,7 +1069,7 @@ def merged_source(conn, source_type: str) -> str:
     return (
         f"(SELECT {projection} FROM main.{tbl} m WHERE {alive} "
         f"UNION ALL "
-        f"SELECT {projection} FROM ov.{tbl} m WHERE {alive}) AS {tbl}"
+        f"SELECT {projection} FROM ov.{tbl} m WHERE {alive}) AS {alias}"
     )
 
 
@@ -2438,6 +2442,139 @@ def _fts_relevance_order(source_type: str, query, tbl: str = "t") -> tuple[str, 
     return f"{fts}.rank", []
 
 
+# FTS5's bm25 constants. Restated here because the Python scorer has to agree with the SQLite
+# implementation digit for digit; a difference shows up as a ranking that is subtly, untestably
+# wrong rather than as an error. Verified against sqlite 3.49.1 -- see
+# `test_python_bm25_agrees_with_sqlite_on_a_corpus_row`.
+_BM25_K1 = 1.2
+_BM25_B = 0.75
+# fts5_aux.c clamps a non-positive IDF to this rather than letting a term present in nearly every
+# document score zero or negative. It is also why an overlay index scores everything at ~-1e-06:
+# in a near-empty index every term is in every document, so every IDF clamps.
+_BM25_MIN_IDF = 1e-6
+
+
+def _vocab(conn, schema: str, fts: str, kind: str) -> str:
+    """An fts5vocab view over one index, created once per connection and reused.
+
+    `row` gives per-term document counts and total occurrences; `instance` gives one row per token
+    occurrence, which is how a document's length and a term's frequency in it are counted without
+    reimplementing the tokenizer in Python.
+    """
+    name = f"vocab_{schema}_{fts}_{kind}"
+    conn.execute(
+        f"CREATE VIRTUAL TABLE IF NOT EXISTS temp.{name} USING fts5vocab({schema}, {fts}, '{kind}')"
+    )
+    return f"temp.{name}"
+
+
+def _fts_query_terms(conn, source_type: str, query: str) -> list[str]:
+    """The query's terms as the index's own tokenizer stems them.
+
+    Tokenized by an FTS5 table declared with the same tokenizer rather than by a regex here: the
+    index stores `deploi`, not `deploy`, so a Python split would look up terms the vocabulary does
+    not contain and score every one of them zero.
+    """
+    conn.execute("DROP TABLE IF EXISTS temp.bm25_q")
+    conn.execute("CREATE VIRTUAL TABLE temp.bm25_q USING fts5(t, tokenize='porter unicode61')")
+    conn.execute("INSERT INTO temp.bm25_q VALUES (?)", (query,))
+    vocab = _vocab(conn, "temp", "bm25_q", "row")
+    conn.execute(f"DROP TABLE IF EXISTS {vocab}")
+    conn.execute(f"CREATE VIRTUAL TABLE {vocab} USING fts5vocab(temp, bm25_q, 'row')")
+    return [r[0] for r in conn.execute(f"SELECT term FROM {vocab}")]
+
+
+def _corpus_bm25(conn, source_type: str, query: str, rowid: int, *, schema: str = "ov") -> float:
+    """bm25 for one row of ``schema``'s index, computed from the CORPUS index's statistics.
+
+    Necessary because bm25's IDF is a property of the index a term is in — the argument
+    :func:`build_fts` already makes for giving each source its own index. An overlay holding a
+    handful of rows gives every term in it an IDF of zero, which fts5 clamps to
+    :data:`_BM25_MIN_IDF`, so `bm25()` there returns about -1e-06 where the corpus index returns
+    -2.70 for identical text. Lower is better-ranked, so an overlay hit would sort behind every
+    corpus hit however well it matched.
+
+    Document length and term frequency come from ``schema``'s own instance vocabulary, so the
+    tokenizer that indexed the row is the one that counts it. Only N, n and the average document
+    length come from the corpus — which is exactly the substitution this function exists to make.
+
+    Returns a negative number, matching fts5's sign convention. With ``schema="main"`` it
+    reproduces `bm25()` exactly, which is how it is tested.
+    """
+    fts = _fts_table(source_type)
+    ov_fts = fts if schema == "main" else f"{source_type}_fts_ov"
+    stats_row = _vocab(conn, "main", fts, "row")
+    inst = _vocab(conn, schema, ov_fts, "instance")
+
+    n_rows = conn.execute(f"SELECT COUNT(*) FROM main.{fts}").fetchone()[0]
+    if not n_rows:
+        return 0.0
+    total_tokens = conn.execute(f"SELECT SUM(cnt) FROM {stats_row}").fetchone()[0] or 0
+    avgdl = (total_tokens / n_rows) or 1.0
+    doclen = conn.execute(f"SELECT COUNT(*) FROM {inst} WHERE doc = ?", (rowid,)).fetchone()[0]
+
+    score = 0.0
+    for term in _fts_query_terms(conn, source_type, query):
+        freq = conn.execute(
+            f"SELECT COUNT(*) FROM {inst} WHERE doc = ? AND term = ?", (rowid, term)
+        ).fetchone()[0]
+        if not freq:
+            continue
+        hit = conn.execute(f"SELECT doc FROM {stats_row} WHERE term = ?", (term,)).fetchone()
+        n_docs = hit[0] if hit else 0
+        idf = math.log((n_rows - n_docs + 0.5) / (n_docs + 0.5))
+        if idf <= 0.0:
+            idf = _BM25_MIN_IDF
+        denom = freq + _BM25_K1 * (1 - _BM25_B + _BM25_B * doclen / avgdl)
+        score += idf * (freq * (_BM25_K1 + 1)) / denom
+    return -score
+
+
+def _overlay_hits(conn, source_type, query, visible_ids, *, container, phrase):
+    """``(row, score)`` for every overlay document matching this query.
+
+    FTS5 does the MATCHING — phrases, prefixes, NEAR, the porter tokenizer — so none of
+    :func:`_fts_match`'s query semantics are reimplemented. Its own bm25 is discarded for
+    :func:`_corpus_bm25`, which puts both sides on one scale.
+
+    Empty for a source outside :data:`WRITABLE` or with no overlay attached — a source that takes
+    no writes has no overlay index to query, and searching it must cost nothing it did not cost
+    before.
+    """
+    from backlot import overlay
+
+    if source_type not in WRITABLE or not overlay.is_attached(conn):
+        return []
+    names = overlay.table_names(source_type)
+    key = id_columns(source_type)
+    m = _fts_match(query, phrase=phrase)
+    if not m:
+        return []
+    cont_sql, cont_p = "", []
+    if container is not None:
+        cont_sql, cont_p = f" AND o.{grouping_col(source_type)} = ?", [container]
+    clause, cparams = _acl_clause(source_type, "o", visible_ids)
+    on = " AND ".join(f"o.{c} = f.{c}" for c in key)
+    rows = conn.execute(
+        f"SELECT o.*, f.rowid AS _ov_rowid FROM ov.{names['fts']} f "
+        f"JOIN ({merged_source(conn, source_type)}) o ON {on} "
+        f"WHERE f.{names['fts']} MATCH ?{cont_sql}{clause}",
+        [m, *cont_p, *cparams],
+    ).fetchall()
+    return [(r, _corpus_bm25(conn, source_type, query, r["_ov_rowid"])) for r in rows]
+
+
+def _without(row: sqlite3.Row, *drop: str) -> sqlite3.Row:
+    """A row without the internal scoring columns the merge needs.
+
+    `search_documents` has always returned rows shaped like the document table, and its callers
+    index them by column name; leaking `_rank` into that would be a shape change nobody asked for.
+    Returns a plain mapping-compatible object rather than a `sqlite3.Row`, which cannot be built
+    outside the driver -- every caller reads it by key, which both support.
+    """
+    return {k: row[k] for k in row.keys() if k not in drop}
+
+
 def search_documents(
     conn,
     query,
@@ -2474,12 +2611,36 @@ def search_documents(
             order_sql, order_p = f"t.created_ts {direction}, {fts}.rank", []
         else:
             order_sql, order_p = _fts_relevance_order(source_type, query, "t")
+        # The merged source, not the bare table: a tombstoned document has to leave search the
+        # way it leaves history, and a patched one has to be found by its new text. The index
+        # still carries the corpus row either way -- `main.slack_fts` cannot be written -- so
+        # subtracting it here is the only place that can happen.
+        src = merged_source(conn, source_type, alias="t")
         sql = (
-            f"SELECT t.* FROM {fts} JOIN {tbl} t ON {on} "
+            f"SELECT t.*, {fts}.rank AS _rank FROM {fts} JOIN {src} ON {on} "
             f"WHERE {fts} MATCH ?{cont_sql.format(a='t')}{clause} "
             f"ORDER BY {order_sql} LIMIT ? OFFSET ?"
         )
-        return conn.execute(sql, [m, *cont_p, *cparams, *order_p, limit, offset]).fetchall()
+        params = [m, *cont_p, *cparams, *order_p]
+        hits = _overlay_hits(
+            conn, source_type, query, visible_ids, container=container, phrase=phrase
+        )
+        if not hits:
+            return [_without(r, "_rank") for r in conn.execute(sql, [*params, limit, offset])]
+        # Both sides on one scale. Corpus rows keep the rank SQLite computed -- re-scoring them
+        # would be a second implementation of a ranking that was already right -- and each overlay
+        # row carries the score `_corpus_bm25` gave it against the same statistics.
+        corpus = conn.execute(sql, [*params, limit + offset, 0]).fetchall()
+        merged = [(r["_rank"], r) for r in corpus] + [(score, r) for r, score in hits]
+        if order_by in ("recency", "recency_asc"):
+            order = order_columns(source_type)
+            merged.sort(
+                key=lambda pair: tuple(pair[1][c] or 0 for c in order),
+                reverse=(order_by != "recency_asc"),
+            )
+        else:
+            merged.sort(key=lambda pair: pair[0])  # bm25 is negative; lower ranks higher
+        return [_without(r, "_rank", "_ov_rowid") for _, r in merged[offset : offset + limit]]
     like = f"%{query}%"
     ttl = title_expr(source_type)
     sql = f"SELECT * FROM {tbl} WHERE ({ttl} LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
@@ -2511,12 +2672,22 @@ def count_search(
         clause, cparams = _acl_clause(source_type, "t", visible_ids)
         fts = _fts_table(source_type)
         on = _fts_join(source_type, "t")
+        # The merged source, for the reason the search query itself uses it: a tombstoned document
+        # must not be counted. It drops out of this join on its own, so nothing is subtracted —
+        # only the overlay's own matches are added.
+        src = merged_source(conn, source_type, alias="t")
         sql = (
-            f"SELECT COUNT(*) FROM (SELECT 1 FROM {fts} JOIN {tbl} t "
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM {fts} JOIN {src} "
             f"ON {on} WHERE {fts} MATCH ?"
             f"{cont_sql.format(a='t')}{clause} LIMIT ?)"
         )
-        return conn.execute(sql, [m, *cont_p, *cparams, cap]).fetchone()[0]
+        total = conn.execute(sql, [m, *cont_p, *cparams, cap]).fetchone()[0]
+        # A total the pages contradict is worse than no total: search.messages reports it verbatim
+        # as `total` and derives its page count from it.
+        hits = _overlay_hits(
+            conn, source_type, query, visible_ids, container=container, phrase=phrase
+        )
+        return min(total + len(hits), cap)
     like = f"%{query}%"
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql = (

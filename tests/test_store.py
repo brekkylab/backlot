@@ -2564,3 +2564,98 @@ def test_writing_to_a_non_writable_source_is_refused(ov_db):
     # than raise an opaque "no such table" from three frames down.
     with pytest.raises(ValueError, match="not writable"):
         store.insert_document(ov_db, "gmail", {"id": "x", "mailbox": "m"})
+
+
+@pytest.mark.parametrize("terms", ["deploy", "gateway", "deploy gateway", "the"])
+def test_python_bm25_agrees_with_sqlite_on_corpus_rows(ov_db, terms):
+    # The scorer is only worth anything if it reproduces SQLite's number on rows SQLite scored.
+    # A fixture asserting hand-picked constants would pass while being wrong.
+    #
+    # Pointed at `main`, `_corpus_bm25` is scoring a row of the same index it draws its statistics
+    # from, so it must equal `bm25()` exactly. Pointed at `ov` it does the one thing that differs:
+    # the row comes from the overlay, the statistics still from the corpus.
+    #
+    # "the" is in the list on purpose — a term in almost every document drives IDF non-positive,
+    # which fts5 clamps rather than letting it go negative. Without a clamping case the parametrize
+    # would pass against a scorer that omits the clamp entirely.
+    rows = ov_db.execute(
+        "SELECT slack_fts.rowid AS rid, bm25(slack_fts) AS r FROM slack_fts "
+        "WHERE slack_fts MATCH ? LIMIT 5",
+        (terms,),
+    ).fetchall()
+    if not rows:
+        pytest.skip(f"the sample corpus has no slack message matching {terms!r}")
+    for row in rows:
+        mine = store._corpus_bm25(ov_db, "slack", terms, row["rid"], schema="main")
+        assert mine == pytest.approx(row["r"], rel=1e-9), f"{terms!r} rowid={row['rid']}"
+
+
+def test_a_posted_message_is_findable_by_search(ov_db):
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "zarquon telemetry rollout",
+            "created_ts": 4000000000,
+        },
+    )
+    hits = store.search_documents(ov_db, "zarquon", "slack", None, limit=10)
+    assert ts in [h["ts"] for h in hits]
+
+
+def test_a_posted_message_can_outrank_a_corpus_hit(ov_db):
+    # The whole point of scoring on the corpus's scale. With the overlay index's own bm25 an
+    # overlay row sorts last however well it matches (measured: -1e-06 against -2.70).
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "gateway gateway gateway",
+            "created_ts": 4000000000,
+        },
+    )
+    hits = store.search_documents(ov_db, "gateway", "slack", None, limit=10)
+    assert hits and hits[0]["ts"] == ts
+
+
+def test_a_tombstoned_message_leaves_search(ov_db):
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "zarquon telemetry rollout",
+            "created_ts": 4000000000,
+        },
+    )
+    store.tombstone_document(ov_db, "slack", ("incidents", ts))
+    assert store.search_documents(ov_db, "zarquon", "slack", None, limit=10) == []
+
+
+def test_count_search_agrees_with_what_search_pages(ov_db):
+    # A total the pages contradict is worse than no total: search.messages reports it verbatim.
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "zarquon telemetry rollout",
+            "created_ts": 4000000000,
+        },
+    )
+    total = store.count_search(ov_db, "zarquon", "slack", None)
+    assert total == len(store.search_documents(ov_db, "zarquon", "slack", None, limit=1000))

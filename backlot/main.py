@@ -1,6 +1,7 @@
 """FastAPI app hosting every emulated vendor API under path prefixes.
 
-Startup opens the read-only DB, loads the ACL/token map, and starts a background cache warm-up.
+Startup opens the read-only corpus DB, attaches the writable mutation overlay to it, loads the
+ACL/token map, and starts a background cache warm-up.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backlot import auth, errors, openapi, store, synth
+from backlot import auth, errors, openapi, overlay, store, synth
 from backlot.acl import Acl
 from backlot.config import get_settings
 from backlot.oauth import Oauth
@@ -58,6 +59,11 @@ async def lifespan(app: FastAPI):
         busy_ms=settings.sqlite_busy_ms,
     )
     app.state.conn = conn
+    # The mutation overlay. Attached to the same connection as the corpus, which stays mode=ro:
+    # served writes land in `ov` and the corpus file is never opened writable. A per-app name so
+    # two servers in one process (every pytest run) do not share one overlay.
+    app.state.overlay_name = overlay.name_for(app)
+    overlay.attach(conn, app.state.overlay_name)
     app.state.acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     app.state.oauth = Oauth.load(settings.credentials_path)  # None if credentials.yaml absent
 

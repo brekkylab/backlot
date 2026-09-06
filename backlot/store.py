@@ -216,6 +216,20 @@ def order_columns(source_type: str) -> tuple[str, ...]:
     return ORDER_COLUMNS.get(source_type) or id_columns(source_type)
 
 
+# Sources whose writes are served. A source outside this set has no overlay tables and its read
+# path is byte-identical to a build without writes, which is what lets a new write surface ship
+# without re-validating every other vendor. Adding one is this entry, its PATCHABLE columns, and
+# its endpoints.
+WRITABLE = frozenset({"slack"})
+
+# Per source, the columns a served write may overwrite. Everything else is immutable once written:
+# a patch to an identifier column would move a row out from under its own ACL grant, since a grant
+# names its document by exactly `ID_COLUMNS`.
+PATCHABLE = {
+    "slack": frozenset({"content", "reactions", "edited"}),
+}
+
+
 def id_columns(source_type: str) -> tuple[str, ...]:
     """The full key a row of this source is addressed by — its PRIMARY KEY, in key order."""
     try:

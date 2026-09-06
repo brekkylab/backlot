@@ -259,8 +259,11 @@ def test_build_mcp_spec_collapses_exactly_the_known_aliases():
             [
                 "api_test",
                 "auth_test",
+                "chat_delete",
+                "chat_get_permalink",
                 "chat_post_ephemeral",
                 "chat_post_message",
+                "chat_update",
                 "conversations_history",
                 "conversations_info",
                 "conversations_list",

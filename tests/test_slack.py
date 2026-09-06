@@ -1561,3 +1561,196 @@ def test_a_posted_message_is_visible_only_where_the_channel_is(wclient, tokens):
         "/slack/api/search.messages", headers=inside, data={"query": "confidential addendum"}
     ).json()
     assert posted["ts"] in [m["ts"] for m in mine["messages"]["matches"]]
+
+
+def test_update_own_message_changes_history_and_search(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "zarquon one"}
+    ).json()["ts"]
+    j = wclient.post(
+        "/slack/api/chat.update", headers=h, data={"channel": cid, "ts": ts, "text": "zarquon two"}
+    ).json()
+    assert j["ok"] is True and j["text"] == "zarquon two"
+    hist = wclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    assert [m["text"] for m in hist if m["ts"] == ts] == ["zarquon two"]
+    hits = wclient.post("/slack/api/search.messages", headers=h, data={"query": "zarquon"}).json()[
+        "messages"
+    ]["matches"]
+    assert [m["text"] for m in hits if m["ts"] == ts] == ["zarquon two"]
+
+
+def test_an_edited_message_carries_the_edited_stamp(wclient, tokens):
+    # Real Slack marks an edited message with `edited: {user, ts}`, and a client renders "(edited)"
+    # off it. `_message` already serves the column; the write has to fill it.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "before"}
+    ).json()["ts"]
+    wclient.post(
+        "/slack/api/chat.update", headers=h, data={"channel": cid, "ts": ts, "text": "after"}
+    )
+    hist = wclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    msg = [m for m in hist if m["ts"] == ts][0]
+    assert msg["edited"]["user"] == synth.slack_user_id("ava@acme.com")
+    assert msg["edited"]["ts"]
+
+
+def test_updating_someone_elses_message_is_cant_update_message(wclient, tokens):
+    author = _uh(tokens, "ava@acme.com")
+    other = _uh(tokens, "bob@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=author, data={"channel": cid, "text": "mine"}
+    ).json()["ts"]
+    j = wclient.post(
+        "/slack/api/chat.update", headers=other, data={"channel": cid, "ts": ts, "text": "yours"}
+    ).json()
+    assert j == {"ok": False, "error": "cant_update_message"}
+    # and the text is unchanged
+    hist = wclient.post(
+        "/slack/api/conversations.history", headers=author, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    assert [m["text"] for m in hist if m["ts"] == ts] == ["mine"]
+
+
+def test_updating_a_message_in_an_unreadable_channel_is_channel_not_found(wclient, tokens, ro_conn):
+    outsider = _uh(tokens, "bob@acme.com")
+    ts = ro_conn.execute(
+        "SELECT ts FROM slack_messages WHERE channel = 'people-confidential' LIMIT 1"
+    ).fetchone()[0]
+    cid = synth.slack_channel_id("people-confidential")
+    j = wclient.post(
+        "/slack/api/chat.update", headers=outsider, data={"channel": cid, "ts": ts, "text": "x"}
+    ).json()
+    assert j == {"ok": False, "error": "channel_not_found"}
+
+
+def test_updating_a_ts_that_does_not_exist_is_message_not_found(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    j = wclient.post(
+        "/slack/api/chat.update",
+        headers=h,
+        data={"channel": cid, "ts": "1.000001", "text": "ghost"},
+    ).json()
+    assert j == {"ok": False, "error": "message_not_found"}
+
+
+def test_deleting_someone_elses_message_is_cant_delete_message(wclient, tokens):
+    author = _uh(tokens, "ava@acme.com")
+    other = _uh(tokens, "bob@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=author, data={"channel": cid, "text": "mine too"}
+    ).json()["ts"]
+    j = wclient.post(
+        "/slack/api/chat.delete", headers=other, data={"channel": cid, "ts": ts}
+    ).json()
+    assert j == {"ok": False, "error": "cant_delete_message"}
+
+
+def test_a_deleted_message_leaves_every_read(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "zarquon gone"}
+    ).json()["ts"]
+    assert (
+        wclient.post("/slack/api/chat.delete", headers=h, data={"channel": cid, "ts": ts}).json()[
+            "ok"
+        ]
+        is True
+    )
+    hist = wclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    assert ts not in [m["ts"] for m in hist]
+    hits = wclient.post(
+        "/slack/api/search.messages", headers=h, data={"query": "zarquon gone"}
+    ).json()["messages"]
+    assert ts not in [m["ts"] for m in hits["matches"]]
+    assert hits["total"] == len(hits["matches"])
+    perma = wclient.post(
+        "/slack/api/chat.getPermalink", headers=h, data={"channel": cid, "message_ts": ts}
+    ).json()
+    assert perma == {"ok": False, "error": "message_not_found"}
+
+
+def test_a_corpus_message_can_be_deleted_by_its_author(wclient, tokens, ro_conn):
+    # The tombstone has to work over a row that lives in the READ-ONLY corpus, not only over one
+    # the overlay wrote. That is the case the corpus cannot express by deletion.
+    email, channel, ts = ro_conn.execute(
+        "SELECT author_email, channel, ts FROM slack_messages WHERE channel = 'incidents' LIMIT 1"
+    ).fetchone()
+    h = _uh(tokens, email)
+    cid = synth.slack_channel_id(channel)
+    before = wclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    assert ts in [m["ts"] for m in before]
+    assert (
+        wclient.post("/slack/api/chat.delete", headers=h, data={"channel": cid, "ts": ts}).json()[
+            "ok"
+        ]
+        is True
+    )
+    after = wclient.post(
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+    ).json()["messages"]
+    assert ts not in [m["ts"] for m in after]
+
+
+def test_the_service_token_cannot_delete_a_persons_message(wclient, tokens, admin_h):
+    # The admin token bypasses the ACL, which is about what it may SEE. Authorship is a different
+    # question and it is not the author, so `cant_delete_message` is the honest answer.
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "hers"}
+    ).json()["ts"]
+    j = wclient.post(
+        "/slack/api/chat.delete", headers=admin_h, data={"channel": cid, "ts": ts}
+    ).json()
+    assert j == {"ok": False, "error": "cant_delete_message"}
+
+
+def test_get_permalink_returns_an_archives_url(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "link me"}
+    ).json()["ts"]
+    j = wclient.post(
+        "/slack/api/chat.getPermalink", headers=h, data={"channel": cid, "message_ts": ts}
+    ).json()
+    assert j["ok"] is True and j["channel"] == cid
+    assert j["permalink"].endswith(f"/archives/{cid}/p{ts.replace('.', '')}")
+
+
+def test_delete_and_update_answer_over_get_too(wclient, tokens):
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "verb check"}
+    ).json()["ts"]
+    upd = wclient.get(
+        "/slack/api/chat.update",
+        params={"channel": cid, "ts": ts, "text": "verb checked"},
+        headers=h,
+    ).json()
+    assert upd["ok"] is True
+    perma = wclient.get(
+        "/slack/api/chat.getPermalink", params={"channel": cid, "message_ts": ts}, headers=h
+    ).json()
+    assert perma["ok"] is True
+    dele = wclient.get(
+        "/slack/api/chat.delete", params={"channel": cid, "ts": ts}, headers=h
+    ).json()
+    assert dele["ok"] is True

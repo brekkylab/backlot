@@ -10,6 +10,7 @@ up — so ``_caller_or_error`` decides it once for every method here.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 
@@ -1057,6 +1058,133 @@ async def chat_post_ephemeral(request: Request):
     if not (_param(request, "text") or "").strip():
         return _err("no_text")
     return {"ok": True, "message_ts": synth.slack_fmt_ts(int(time.time()), f"ephemeral:{name}")}
+
+
+def _own_message(request: Request, conn, caller: Caller, ts_param: str, refusal: str):
+    """``(channel_name, ts, row, None)`` for a message this caller wrote, else an error in the
+    last slot.
+
+    The three refusals are ordered the way Slack answers them, and the order is the point: a
+    caller outside the channel is told `channel_not_found` before anything about the message is
+    looked up, so the message-level errors cannot be used to probe a channel they cannot see.
+    """
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return None, None, None, err
+    ts = _param(request, ts_param) or ""
+    row = store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller))
+    if row is None:
+        return None, None, None, _err("message_not_found")
+    author, _uid_, _bot = _writer(caller)
+    if row["author_email"] != author:
+        return None, None, None, _err(refusal)
+    return name, ts, row, None
+
+
+@router.api_route("/chat.update", methods=["GET", "POST"])
+async def chat_update(request: Request):
+    """Edit a message's text.
+
+    Errors quoted from `slack_web_openapi_v2.json`,
+    ``paths./chat.update.post.responses.default``: `message_not_found`, `cant_update_message`,
+    `channel_not_found`, `edit_window_closed`, `msg_too_long`, `too_many_attachments`, `no_text`,
+    `is_inactive`. Backlot answers the first three and `no_text`; `edit_window_closed` is a
+    workspace retention setting no corpus states, and the rest are limits it does not model.
+
+    That Slack answers `cant_update_message` rather than a permission error is quoted from that
+    enum. WHICH condition fires it is Backlot's decision, since the spec enumerates the string
+    without describing when — here, a message the caller did not write. The admin/service token is
+    refused too: bypassing the ACL is about what a caller may SEE, and authorship is a different
+    question it does not answer.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel", "ts", "text"):
+        return err
+    name, ts, row, err = _own_message(request, conn, caller, "ts", "cant_update_message")
+    if err is not None:
+        return err
+    text = _param(request, "text") or ""
+    if not text.strip():
+        return _err("no_text")
+    author, uid, _bot = _writer(caller)
+    store.patch_document(conn, "slack", (name, ts), "content", text)
+    # Real Slack stamps an edited message with `edited: {user, ts}`, which is what a client renders
+    # "(edited)" from. `_message` already serves the column, so filling it is the whole of it.
+    store.patch_document(
+        conn,
+        "slack",
+        (name, ts),
+        "edited",
+        json.dumps({"user": uid, "ts": synth.slack_fmt_ts(int(time.time()), f"edit:{name}:{ts}")}),
+    )
+    updated = store.document_by_key(conn, "slack", (name, ts))
+    return {
+        "ok": True,
+        "channel": synth.slack_channel_id(name),
+        "ts": ts,
+        "text": text,
+        "message": _message(updated),
+    }
+
+
+@router.api_route("/chat.delete", methods=["GET", "POST"])
+async def chat_delete(request: Request):
+    """Delete a message.
+
+    Errors quoted from the spec's ``default`` response: `message_not_found`, `channel_not_found`,
+    `cant_delete_message`, `compliance_exports_prevent_deletion`. The last is a workspace
+    compliance setting no corpus states.
+
+    A CORPUS message can be deleted. The row stays in the read-only database and is subtracted at
+    read time by the overlay's tombstone, which is the only way this can work over a corpus that
+    is never written.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel", "ts"):
+        return err
+    name, ts, _row, err = _own_message(request, conn, caller, "ts", "cant_delete_message")
+    if err is not None:
+        return err
+    store.tombstone_document(conn, "slack", (name, ts))
+    _invalidate(request, name)
+    return {"ok": True, "channel": synth.slack_channel_id(name), "ts": ts}
+
+
+@router.api_route("/chat.getPermalink", methods=["GET", "POST"])
+async def chat_get_permalink(request: Request):
+    """A message's archive URL.
+
+    Errors quoted from the spec's ``default`` response: `channel_not_found`, `message_not_found`.
+
+    The path is Slack's own shape — ``/archives/<channel id>/p<ts with the dot removed>`` — so a
+    permalink Backlot mints parses the way a real one does.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel", "message_ts"):
+        return err
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return err
+    ts = _param(request, "message_ts") or ""
+    if store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller)) is None:
+        return _err("message_not_found")
+    cid = synth.slack_channel_id(name)
+    return {
+        "ok": True,
+        "channel": cid,
+        "permalink": (
+            f"https://{get_settings().org_name}.slack.com/archives/{cid}/p{ts.replace('.', '')}"
+        ),
+    }
 
 
 # --- helpers --------------------------------------------------------------------

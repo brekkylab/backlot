@@ -25,7 +25,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
 | `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
 | `s3` | Amazon S3 | `/s3` | 4 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
-| `slack` | Slack | `/slack/api` | 14 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
+| `slack` | Slack | `/slack/api` | 17 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
 <!-- generated:sources end -->
 
 ## Per-service detail

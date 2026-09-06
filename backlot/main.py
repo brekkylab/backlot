@@ -154,10 +154,12 @@ async def echo_github_api_version(request: Request, call_next):
     the header describes would ship without it.
 
     A rejected version gets no echo, matching real: it selected nothing. That is `None` from
-    ``selected_api_version``, the same call the router's 400 is raised from.
+    ``selected_api_version``, the same call the router's 400 is raised from. Code search gets no
+    echo either, whatever it pinned: real's code search backend does not read the header (see
+    ``github.honours_api_version``).
     """
     response = await call_next(request)
-    if request.url.path.startswith("/github"):
+    if request.url.path.startswith("/github") and github.honours_api_version(request):
         version = github.selected_api_version(request)
         if version is not None:
             response.headers[github.SELECTED_VERSION_HEADER] = version

@@ -107,6 +107,12 @@ def _absorb_page(v):
 #: not measured, and a helper that spread this tolerance to them would be asserting they share it.
 PageParam = Annotated[int | None, BeforeValidator(_absorb_page), Query()]
 
+#: How deep a GitHub search pages: real serves the first 1000 results of a search and refuses a
+#: page past them with a 422 (measured 2026-09-06 on `/search/issues`, `/search/code` and
+#: `/search/repositories`), whatever the total. Where exactly the refusal falls differs by route
+#: and is each route's own rule; this is the number both share, and what caps a `last` link.
+GITHUB_SEARCH_RESULT_CAP = 1000
+
 #: The largest `page` / `per_page` value real's code search parses: it deserializes both into an
 #: unsigned 32-bit integer, so 4294967295 is a 200 and 4294967296 the "number too large" refusal.
 GITHUB_CODE_SEARCH_PAGE_MAX = 4_294_967_295
@@ -184,8 +190,16 @@ def github_link_header(
     total: int,
     *,
     per_page_param: str | None = None,
+    max_page: int | None = None,
 ) -> str | None:
     """Build a Link header with rel=next/prev/first/last. ``params`` are extra query args.
+
+    ``max_page`` is the deepest page the route will serve, for a search: `last` never names a page
+    past it, and the page it names is the end of the listing for `next` too. Measured on
+    api.github.com on 2026-09-06 on an issue search of 2.8 million results: `per_page=100` links
+    last=10, `per_page=30` last=34 and `per_page=7` last=143, which is ``ceil(1000 / per_page)``
+    each time, and on that page the header carries `prev, first` alone, as on any last page. A
+    listing has no such depth and passes nothing.
 
     ``per_page_param`` is the page size the CALLER sent, verbatim, or ``None`` when it sent none.
     A size the handler defaulted is left out of the urls, the rule a listing's filters already
@@ -218,6 +232,8 @@ def github_link_header(
     arrive at the query it was paging, not at a truncated one.
     """
     last_page = max(1, (total + per_page - 1) // per_page)
+    if max_page is not None:
+        last_page = min(last_page, max_page)
     if last_page <= 1:
         return None
 
@@ -275,8 +291,16 @@ def github_code_search_link_header(
 
     `/search/issues` shares none of that and pages by :func:`github_link_header`. A result set that
     fits one page carries no header, which is the one rule all three surfaces share.
+
+    `last` stops at the search depth, ``ceil(1000 / per_page)``: on 294 million hits `per_page=100`
+    links last=10, `per_page=30` last=34, `per_page=7` last=143 and `per_page=1` last=1000
+    (measured 2026-09-06). That is one page further than the route serves at `per_page=30` and
+    `per_page=7`, where page 34 and page 143 are the 422 (see ``search_code`` for the route's own
+    boundary, ``page * per_page > 1000``): real's `last`, and so this one, names a page real refuses.
+    Page 33 at `per_page=30` links next=34 for the same reason.
     """
     last_page = max(1, (total + per_page - 1) // per_page)
+    last_page = min(last_page, -(-GITHUB_SEARCH_RESULT_CAP // per_page))
     if last_page <= 1:
         return None
 

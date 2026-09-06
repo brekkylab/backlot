@@ -1022,9 +1022,16 @@ def _is_member(conn, name: str, caller: Caller, *, is_private: bool) -> bool:
     A service token is not a person: it bypasses the ACL rather than belonging to anything, so it
     is a member of nothing — the reasoning `_subscribed` and `_last_read` apply to a thread and a
     read cursor.
+
+    An explicit membership overrides both derivations. On a private channel that is the only thing
+    that can: being shown it is otherwise being in it, and someone removed from one has to stop
+    reading as a member while the corpus still holds their messages.
     """
     if not caller.email:
         return False
+    state = store.slack_membership(conn, name, caller.email)
+    if state != "derived":
+        return state == "in"
     if is_private:
         return True
     return store.slack_channel_has_author(conn, name, caller.email)

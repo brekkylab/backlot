@@ -2659,3 +2659,77 @@ def test_count_search_agrees_with_what_search_pages(ov_db):
     )
     total = store.count_search(ov_db, "zarquon", "slack", None)
     assert total == len(store.search_documents(ov_db, "zarquon", "slack", None, limit=1000))
+
+
+def test_membership_is_derived_when_nothing_was_written(ov_db):
+    assert store.slack_membership(ov_db, "incidents", "nobody@acme.com") == "derived"
+
+
+def test_an_explicit_out_removes_a_speaker_from_every_membership_answer(ov_db):
+    # `is_member` alone is not enough: a poster absent from is_member but present in the list
+    # conversations.members pages is the exact disagreement the current code is written to make
+    # impossible. One function has to answer all three.
+    email = ov_db.execute(
+        "SELECT DISTINCT author_email FROM main.slack_messages WHERE channel = 'incidents' LIMIT 1"
+    ).fetchone()[0]
+    assert store.slack_channel_has_author(ov_db, "incidents", email) is True
+    before = store.count_slack_channel_members(ov_db, "incidents")
+    store.slack_set_membership(ov_db, "incidents", email, "out")
+    assert store.slack_membership(ov_db, "incidents", email) == "out"
+    assert store.slack_channel_has_author(ov_db, "incidents", email) is False
+    assert email not in store.slack_channel_member_emails(ov_db, "incidents", limit=1000)
+    assert store.count_slack_channel_members(ov_db, "incidents") == before - 1
+    assert store.slack_channel_member_counts(ov_db)["incidents"] == before - 1
+
+
+def test_an_explicit_in_adds_someone_who_never_spoke(ov_db):
+    # Nothing writes `in` yet, but the read side has to be complete now: `conversations.join`
+    # lands on it, and a half-applied tri-state is the disagreement above in the other direction.
+    before = store.count_slack_channel_members(ov_db, "incidents")
+    store.slack_set_membership(ov_db, "incidents", "hana@acme.com", "in")
+    assert store.slack_channel_has_author(ov_db, "incidents", "hana@acme.com") is True
+    assert "hana@acme.com" in store.slack_channel_member_emails(ov_db, "incidents", limit=1000)
+    assert store.count_slack_channel_members(ov_db, "incidents") == before + 1
+    assert store.slack_channel_member_counts(ov_db)["incidents"] == before + 1
+
+
+def test_membership_overrides_a_private_channels_grants(ov_db):
+    # A private channel derives membership from its ACL grants, so the override has to reach that
+    # branch too — it is the branch `conversations.kick` will act on.
+    members = store.slack_private_channel_members(ov_db, "people-confidential")
+    assert members, "sample corpus should grant people-confidential to somebody"
+    store.slack_set_membership(ov_db, "people-confidential", members[0], "out")
+    assert members[0] not in store.slack_channel_member_emails(
+        ov_db, "people-confidential", limit=1000
+    )
+    assert store.count_slack_channel_members(ov_db, "people-confidential") == len(members) - 1
+
+
+def test_member_paging_is_stable_with_an_override(ov_db):
+    # The set arithmetic has to happen before the slice, or a page boundary drops or repeats.
+    store.slack_set_membership(ov_db, "incidents", "hana@acme.com", "in")
+    total = store.count_slack_channel_members(ov_db, "incidents")
+    seen = []
+    for offset in range(0, total, 2):
+        seen += store.slack_channel_member_emails(ov_db, "incidents", limit=2, offset=offset)
+    assert len(seen) == total
+    assert len(set(seen)) == total
+    assert seen == sorted(seen)
+
+
+def test_someone_removed_is_not_a_membership_violation(ov_db):
+    # `slack_membership_violations` calls "spoke in a private channel but cannot read it" a corpus
+    # that cannot be true, because the corpus has no way to say "left". An explicit `out` IS that
+    # way, so a person removed from a channel must stop being reported as a broken corpus.
+    channel = "people-confidential"
+    speaker = ov_db.execute(
+        "SELECT DISTINCT author_email FROM main.slack_messages WHERE channel = ? LIMIT 1",
+        (channel,),
+    ).fetchone()[0]
+    store.slack_set_membership(ov_db, channel, speaker, "out")
+    assert (channel, speaker) not in store.slack_membership_violations(ov_db)
+
+
+def test_setting_an_unknown_membership_state_is_refused(ov_db):
+    with pytest.raises(ValueError, match="not a membership state"):
+        store.slack_set_membership(ov_db, "incidents", "ava@acme.com", "maybe")

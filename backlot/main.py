@@ -162,6 +162,27 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
 
 
 @app.middleware("http")
+async def vendor_json_media_type(request: Request, call_next):
+    """Put the vendor's own `content-type` on a JSON body, where one is measured.
+
+    Real GitHub answers `application/json; charset=utf-8` on every JSON response but code search's
+    (see ``backlot.errors.github.json_media_type``); FastAPI's ``JSONResponse`` answers
+    `application/json`. A middleware rather than a ``default_response_class`` on the router, because
+    FastAPI writes a response class's media type into the OpenAPI document as the content key, and
+    real's own spec says `application/json` there: the charset is a fact about the wire, not about
+    the contract, and `backlot diff` compares the contract. Only a response that is exactly
+    `application/json` is touched, so the raw, diff and text/plain answers keep their own types, and
+    the error handlers below are covered along with the handlers.
+    """
+    response = await call_next(request)
+    if response.headers.get("content-type") == "application/json":
+        media_type = errors.json_media_type(request.url.path)
+        if media_type is not None:
+            response.headers["content-type"] = media_type
+    return response
+
+
+@app.middleware("http")
 async def echo_github_api_version(request: Request, call_next):
     """Report which API version served the response, as real GitHub does on every github request.
 

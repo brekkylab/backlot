@@ -97,6 +97,30 @@ def owns(path: str) -> bool:
     return path.startswith(PREFIX)
 
 
+#: What real's JSON responses declare, 200 and error alike, on every GitHub route measured but one.
+JSON_MEDIA_TYPE = "application/json; charset=utf-8"
+
+
+def json_media_type(path: str) -> str:
+    """The `content-type` real puts on a JSON body answered at ``path``.
+
+    `application/json; charset=utf-8` everywhere: measured 2026-09-06 on api.github.com over
+    thirteen responses, the 200s of `/repos/{o}/{r}/issues`, `/repos/{o}/{r}`, `/branches`,
+    `/commits`, `/contents/{path}`, `/orgs/{org}`, `/user/repos` and `/search/issues`, the 404 for
+    a repository that does not exist, the 422 for a blank search `q`, the version 400 and the 401 for
+    no credential. Code search is the exception, served by a backend that is not the rest of the
+    API's: `/search/code` answers `application/json` with no charset on its 200 and on its 422s
+    alike, the same backend that reads no version header (see ``routers.github.honours_api_version``).
+
+    The parameter changes no byte of the body, JSON being UTF-8 by definition; what it changes is
+    the header a client or a recorded fixture compares as a string. Imported lazily, as
+    :func:`_routes` is, so the dependency between this package and the router stays one-way.
+    """
+    from backlot.routers.github import CODE_SEARCH_PATH
+
+    return "application/json" if path == CODE_SEARCH_PATH else JSON_MEDIA_TYPE
+
+
 @lru_cache(maxsize=1)
 def _routes() -> list[tuple[object, str]]:
     """The router's own routes, each paired with the key :data:`ROUTE_DOCS` uses.

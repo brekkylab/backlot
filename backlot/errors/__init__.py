@@ -15,6 +15,9 @@ A module in ``_ENVELOPES`` provides:
   ``None`` to keep FastAPI's own 422. Google is the one that keeps it: its editor APIs answer a bad
   *parameter* through a router-raised ``GoogleError``, so the validator is not the path that
   reports one.
+- ``json_media_type(path)``, optional — the `content-type` the vendor puts on a JSON body at that
+  path, when it is measured to differ from FastAPI's bare `application/json`. Only GitHub has one so
+  far; a vendor without it keeps the default, which is not a claim about what real sends.
 
 Adding a vendor is a module plus one entry below — not an edit to the handler.
 """
@@ -31,6 +34,15 @@ def http_body(path: str, exc) -> dict | None:
     for envelope in _ENVELOPES:
         if envelope.owns(path):
             return envelope.http_body(path, exc)
+    return None
+
+
+def json_media_type(path: str) -> str | None:
+    """The vendor's measured `content-type` for a JSON body on ``path``, or ``None`` for FastAPI's."""
+    for envelope in _ENVELOPES:
+        if envelope.owns(path):
+            pick = getattr(envelope, "json_media_type", None)
+            return pick(path) if pick is not None else None
     return None
 
 

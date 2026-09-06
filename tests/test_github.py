@@ -3196,6 +3196,70 @@ def test_github_api_version_selects_the_payload(
     assert listing and all(("assignee" in p) is serves_removed_fields for p in listing)
 
 
+def test_github_json_carries_the_charset_real_sends_except_on_code_search(
+    gh_client, gh_admin_h, gh_org
+):
+    """Real answers `application/json; charset=utf-8` on every GitHub JSON response measured
+    (2026-09-06: eight 200s, a 404, a 422, the version 400 and a 401) and `application/json` on
+    `/search/code`, whose backend is not the rest of the API's, on its 200 and its 422s alike.
+    Backlot answered FastAPI's bare `application/json` everywhere, so a client or a recorded fixture
+    comparing the header as a string agreed with real on code search alone. The other media types
+    this router answers are not JSON and are not touched."""
+    c, _ = gh_client
+    from backlot import synth
+
+    utf8, bare = "application/json; charset=utf-8", "application/json"
+    pr = synth.github_number("gh-pr-1")
+    repo_id = c.get(f"/github/repos/{gh_org}/gateway", headers=gh_admin_h).json()["id"]
+    cells = [
+        (f"/github/repos/{gh_org}/gateway/issues?per_page=1", gh_admin_h, 200, utf8),
+        (f"/github/repos/{gh_org}/gateway", gh_admin_h, 200, utf8),
+        (f"/github/orgs/{gh_org}", gh_admin_h, 200, utf8),
+        ("/github/user/repos?per_page=1", gh_admin_h, 200, utf8),
+        ("/github/search/issues?q=is:open&per_page=1", gh_admin_h, 200, utf8),
+        (f"/github/repos/{gh_org}/ghost-zz-9876", gh_admin_h, 404, utf8),
+        ("/github/search/issues?q=", gh_admin_h, 422, utf8),
+        (
+            f"/github/repos/{gh_org}/gateway",
+            {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"},
+            400,
+            utf8,
+        ),
+        ("/github/user/repos", {}, 401, utf8),
+        ("/github/user/repos", {"Authorization": "Bearer nope"}, 401, utf8),
+        # the same repository asked for by id, which the middleware rewrites onto the login path
+        (f"/github/repositories/{repo_id}", gh_admin_h, 200, utf8),
+        # code search: the one route where real sends no charset, on every status it answers in JSON
+        ("/github/search/code?q=extension:md", gh_admin_h, 200, bare),
+        ("/github/search/code?q=", gh_admin_h, 422, bare),
+        ("/github/search/code?q=extension:md&per_page=1&page=1001", gh_admin_h, 422, bare),
+        # and its parse 400 is text, as before
+        (
+            "/github/search/code?q=extension:md&per_page=abc",
+            gh_admin_h,
+            400,
+            "text/plain; charset=utf-8",
+        ),
+        # non-JSON answers on this router keep their own types
+        (
+            f"/github/repos/{gh_org}/gateway/pulls/{pr}",
+            {**gh_admin_h, "Accept": "application/vnd.github.diff"},
+            200,
+            "application/vnd.github.diff; charset=utf-8",
+        ),
+    ]
+    for path, headers, status, ctype in cells:
+        r = c.get(path, headers=headers)
+        assert (r.status_code, r.headers["content-type"]) == (status, ctype), path
+    # the OpenAPI document still keys the JSON body as `application/json`, as real's spec does: the
+    # charset is on the wire, not in the contract `backlot diff` compares
+    op = c.get("/openapi.json").json()["paths"]["/github/repos/{owner}/{repo}/issues"]["get"]
+    assert list(op["responses"]["200"]["content"]) == ["application/json"]
+    # ...and a JSON response outside `/github` is untouched: not a claim about what another vendor
+    # sends, only that this rule is GitHub's alone
+    assert c.get("/openapi.json").headers["content-type"] == bare
+
+
 def test_github_unsupported_api_version_is_refused_ahead_of_everything(gh_client, gh_org):
     """An unsupported version is a malformed request, so real answers it before authenticating and
     before routing — verified against api.github.com, which 400s a bad version on a nonexistent repo
